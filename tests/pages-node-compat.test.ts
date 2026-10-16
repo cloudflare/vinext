@@ -330,3 +330,47 @@ describe("Pages Node compat response", () => {
     ]);
   });
 });
+
+describe("Pages Node compat appendHeader", () => {
+  function createApiResponse() {
+    return createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/append"),
+      url: "/api/append",
+    });
+  }
+
+  it("validates appended headers at the call site like Node", () => {
+    const { res } = createApiResponse();
+
+    expect(() => res.appendHeader("x-bad", "bad\nvalue")).toThrow(
+      expect.objectContaining({ code: "ERR_INVALID_CHAR" }),
+    );
+    expect(() => res.appendHeader("bad name", "1")).toThrow(
+      expect.objectContaining({ code: "ERR_INVALID_HTTP_TOKEN" }),
+    );
+    expect(res.getHeader("x-bad")).toBeUndefined();
+  });
+
+  it("rejects appendHeader after writeHead like Node", () => {
+    const { res } = createApiResponse();
+
+    res.writeHead(200);
+    expect(() => res.appendHeader("x-late", "1")).toThrow(
+      expect.objectContaining({ code: "ERR_HTTP_HEADERS_SENT" }),
+    );
+  });
+
+  it("keeps an existing scalar's type when appending to it", async () => {
+    const { res, responsePromise } = createApiResponse();
+
+    res.setHeader("x-count", 123);
+    res.appendHeader("x-count", "later");
+    expect(res.getHeader("x-count")).toEqual([123, "later"]);
+
+    res.end();
+    const response = await responsePromise;
+    expect(response.headers.get("x-count")).toBe("123, later");
+  });
+});

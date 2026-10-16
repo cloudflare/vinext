@@ -38,17 +38,52 @@ export type PagesReqResRequest = Readable & {
   previewData: PagesPreviewData | false;
 };
 
+// Like @types/node's OutgoingHttpHeader, arrays are typed as string[] even
+// though appending to a number or boolean keeps that scalar in the list.
+type PagesReqResHeaderValue = string | number | boolean | string[];
+
 type PagesReqResHeaders = {
-  [key: string]: string | number | boolean | string[];
+  [key: string]: PagesReqResHeaderValue;
 };
+
+// Node's http validateHeaderName/validateHeaderValue rules.
+const HTTP_TOKEN_PATTERN = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+const INVALID_HEADER_VALUE_CHAR_PATTERN = /[^\t\x20-\x7e\x80-\xff]/;
+
+function createNodeTypeError(code: string, message: string): TypeError {
+  return Object.assign(new TypeError(message), { code });
+}
+
+function validateAppendedHeader(name: string, value: string | readonly string[]): void {
+  if (typeof name !== "string" || !name || !HTTP_TOKEN_PATTERN.test(name)) {
+    throw createNodeTypeError(
+      "ERR_INVALID_HTTP_TOKEN",
+      `Header name must be a valid HTTP token ["${String(name)}"]`,
+    );
+  }
+  for (const item of Array.isArray(value) ? value : [value]) {
+    if (item === undefined) {
+      throw createNodeTypeError(
+        "ERR_HTTP_INVALID_HEADER_VALUE",
+        `Invalid value "undefined" for header "${name}"`,
+      );
+    }
+    if (INVALID_HEADER_VALUE_CHAR_PATTERN.test(String(item))) {
+      throw createNodeTypeError(
+        "ERR_INVALID_CHAR",
+        `Invalid character in header content ["${name}"]`,
+      );
+    }
+  }
+}
 
 export type PagesReqResResponse = Writable & {
   statusCode: number;
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
-  setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
-  appendHeader: (name: string, value: string | string[]) => PagesReqResResponse;
-  getHeader: (name: string) => string | number | boolean | string[] | undefined;
+  setHeader: (name: string, value: PagesReqResHeaderValue) => PagesReqResResponse;
+  appendHeader: (name: string, value: string | readonly string[]) => PagesReqResResponse;
+  getHeader: (name: string) => PagesReqResHeaderValue | undefined;
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
@@ -248,6 +283,9 @@ class PagesResponseStream extends Writable {
   private readonly resHeaders: PagesReqResHeaders = {};
   private readonly setCookieHeaders: string[] = [];
   private resolved = false;
+  // Node's ServerResponse commits its head on writeHead(), not only on the
+  // first body write.
+  private headWritten = false;
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
@@ -286,29 +324,32 @@ class PagesResponseStream extends Writable {
         this.setHeaderValue(key, value, { append: false });
       }
     }
+    this.headWritten = true;
     return this as PagesReqResResponse;
   }
 
-  setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
+  setHeader(name: string, value: PagesReqResHeaderValue): PagesReqResResponse {
     this.setHeaderValue(name, value, { append: false });
     return this as PagesReqResResponse;
   }
 
   // Node's ServerResponse.appendHeader (Node 18.3+): adds to any existing
   // value instead of replacing it.
-  appendHeader(name: string, value: string | string[]): PagesReqResResponse {
-    if (this.headersSent) {
+  appendHeader(name: string, value: string | readonly string[]): PagesReqResResponse {
+    if (this.headWritten || this.headersSent) {
       // The Response headers were snapshotted on the first write, so a late
       // append would be silently dropped. Node throws here.
       throw Object.assign(new Error("Cannot append headers after they are sent to the client"), {
         code: "ERR_HTTP_HEADERS_SENT",
       });
     }
+    // Node validates at the call site, so handlers can catch the error.
+    validateAppendedHeader(name, value);
     this.setHeaderValue(name, value, { append: true });
     return this as PagesReqResResponse;
   }
 
-  getHeader(name: string): string | number | boolean | string[] | undefined {
+  getHeader(name: string): PagesReqResHeaderValue | undefined {
     if (name.toLowerCase() === "set-cookie") {
       return this.setCookieHeaders.length > 0 ? this.setCookieHeaders : undefined;
     }
@@ -470,7 +511,7 @@ class PagesResponseStream extends Writable {
 
   private setHeaderValue(
     name: string,
-    value: string | number | boolean | string[],
+    value: PagesReqResHeaderValue | readonly string[],
     options: { append: boolean },
   ): void {
     const key = name.toLowerCase();
@@ -485,15 +526,17 @@ class PagesResponseStream extends Writable {
       return;
     }
 
-    // Like Node, keep header arrays (and appended values) as a list so
-    // getHeader() returns every value.
+    // Like Node, keep header arrays (and appended values) as a list of the
+    // original values so getHeader() returns every value in its own type.
     const existing = this.resHeaders[key];
     if (!options.append || existing === undefined) {
-      this.resHeaders[key] = Array.isArray(value) ? value.map(String) : value;
+      this.resHeaders[key] = Array.isArray(value)
+        ? [...value]
+        : (value as Exclude<PagesReqResHeaderValue, string[]>);
       return;
     }
-    const values = Array.isArray(existing) ? existing : [String(existing)];
-    values.push(...(Array.isArray(value) ? value.map(String) : [String(value)]));
+    const values = (Array.isArray(existing) ? existing : [existing]) as string[];
+    values.push(...((Array.isArray(value) ? value : [value]) as string[]));
     this.resHeaders[key] = values;
   }
 
@@ -512,7 +555,7 @@ class PagesResponseStream extends Writable {
     const headers = new Headers();
     for (const [key, value] of Object.entries(this.resHeaders)) {
       if (Array.isArray(value)) {
-        for (const item of value) headers.append(key, item);
+        for (const item of value) headers.append(key, String(item));
       } else {
         headers.set(key, String(value));
       }
