@@ -543,6 +543,12 @@ describe("unsafe middleware matcher rejection", () => {
   it.each([
     ["/:path(.*)*/end", /may match an empty value or path delimiter/],
     ["/:path(.*)+/end", /may match an empty value or path delimiter/],
+    ["/x.:ext([^/]+)+/end", /can match its repetitions in more than one way/],
+    ["/x{-:part([^/]+)}+", /can match its repetitions in more than one way/],
+    ["/:x(a(?:/a)?)+/end", /can match its repetitions in more than one way/],
+    ["/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end", /can match its repetitions in more than one way/],
+    ["/:x(a|A)+/end", /can match its repetitions in more than one way/],
+    ["/:x(ab?|a)+/end", /can match its repetitions in more than one way/],
     ["/:path((?:a+)+)", /contains nested repetition/],
     ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
     ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],

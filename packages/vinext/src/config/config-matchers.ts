@@ -32,6 +32,11 @@ import { requestContextFromRequest, type RequestContext } from "./request-contex
 import { isExternalUrl } from "../utils/external-url.js";
 import { attachRequestCfMetadata } from "../server/request-pipeline.js";
 import {
+  parseMiddlewarePath,
+  pathTokensToRegExpSource,
+} from "../server/middleware-path-to-regexp.js";
+import { validatePathTokens } from "../server/middleware-matcher-pattern.js";
+import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
   type RedirectDestinationQueryPart,
@@ -63,13 +68,13 @@ const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[]
 /**
  * Cache for compiled header source regexes in matchHeaders.
  *
- * Each NextHeader rule has a `source` that is run through escapeHeaderSource()
- * then safeRegExp() to produce a RegExp. Both are pure functions of the source
- * string and the result never changes. Without caching, every request
- * re-runs the full escapeHeaderSource tokeniser + isSafeRegex scan + new RegExp()
- * for every header rule.
+ * Each NextHeader rule has a `source` that is run through compileHeaderSource()
+ * to produce a RegExp. It is a pure function of the source string and the
+ * result never changes. Without caching, every request re-runs the
+ * path-to-regexp tokeniser + regex safety checks + new RegExp() for every
+ * header rule.
  *
- * Value is `null` when safeRegExp rejected the pattern (ReDoS risk).
+ * Value is `null` when the source is invalid or unsafe (ReDoS risk).
  */
 const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
 
@@ -314,76 +319,38 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
 }
 
 /**
- * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
+ * Compile a next.config `headers()` source the way Next.js does: path-to-regexp
+ * 6 with delimiter `/`, `strict: true` and case-insensitive matching, plus
+ * `modifyRouteRegex`'s optional trailing slash. Invalid sources never match.
  *
- * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
- * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
- * which CodeQL flags as incomplete sanitization), then groups are restored.
+ * @see https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/filesystem.ts
+ * @see https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/redirect-status.ts
  */
-export function escapeHeaderSource(source: string): string {
-  // Sentinel character for group placeholders. Uses a Unicode private-use-area
-  // codepoint that will never appear in real source patterns.
-  const S = "\uE000";
-
-  // Step 1: extract regex groups and replace with numbered placeholders.
-  const groups: string[] = [];
-  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-    groups.push(inner);
-    return `${S}G${groups.length - 1}${S}`;
-  });
-
-  // Step 2: single-pass conversion of the placeholder-bearing string.
-  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
-  // The regex uses non-overlapping alternatives to avoid backtracking:
-  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
-  //              param names may contain hyphens, e.g. :auth-method)
-  //   sentinel group — standalone regex group placeholder
-  //   [.+?*] — single metachar to escape/convert
-  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
-  let result = "";
-  const re = new RegExp(
-    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
-    "g",
-  );
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(withPlaceholders)) !== null) {
-    if (m[1] !== undefined) {
-      // Standalone regex group — restore as-is
-      result += `(${groups[Number(m[1])]})`;
-    } else if (m[0].startsWith(":")) {
-      // Named parameter — check if followed by a constraint group placeholder
-      const afterParam = withPlaceholders.slice(re.lastIndex);
-      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
-      if (constraintMatch) {
-        // :param(constraint) — use the constraint as the capture group
-        re.lastIndex += constraintMatch[0].length;
-        result += `(${groups[Number(constraintMatch[1])]})`;
-      } else {
-        // Plain named parameter → match one segment
-        result += "[^/]+";
-      }
-    } else {
-      switch (m[0]) {
-        case ".":
-          result += "\\.";
-          break;
-        case "+":
-          result += "\\+";
-          break;
-        case "?":
-          result += "\\?";
-          break;
-        case "*":
-          result += ".*";
-          break;
-        default:
-          result += m[0];
-          break;
-      }
+function compileHeaderSource(source: string): RegExp | null {
+  const options = { delimiter: "/", strict: true };
+  try {
+    const tokens = parseMiddlewarePath(source, options);
+    // The generated repeat structure (`(?:\/[^\/]+?)*`) trips the whole-regex
+    // safeRegExp() check. Validate each parameter pattern (including its repeat
+    // separator) the way the middleware matcher does, then analyze the route
+    // with repeats unrolled to catch overlap between neighbouring parameters.
+    let unsafeReason = validatePathTokens(tokens);
+    if (!unsafeReason) {
+      const analysisRoute = pathTokensToRegExpSource(tokens, { ...options, unrollRepeats: true });
+      unsafeReason = analyzeRegexSafety(analysisRoute, { ignoreCase: true });
     }
+    if (unsafeReason) {
+      console.warn(`[vinext] Ignoring unsafe headers() source "${source}": ${unsafeReason}.`);
+      return null;
+    }
+    const route = pathTokensToRegExpSource(tokens, options);
+    return new RegExp(route.replace(/\$$/, "(?:\\/)?$"), "i");
+  } catch (error) {
+    // Next.js rejects these sources at build time.
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`[vinext] Ignoring invalid headers() source "${source}": ${reason}.`);
+    return null;
   }
-
-  return result;
 }
 
 /**
@@ -1423,19 +1390,13 @@ export function matchHeaders(
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   onRuleSourceMatch?: (rule: NextHeader) => void,
 ): Array<{ key: string; value: string }> {
-  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
-  pathname = stripTrailingSlashForConfigMatch(pathname);
-
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
-    // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
-    // pure functions of rule.source and the result never changes between requests.
-    const source = pathnameHadTrailingSlash
-      ? stripTrailingSlashForConfigMatch(rule.source)
-      : rule.source;
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
-      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
+    // Cache the compiled source regex — compiling is a pure function of
+    // rule.source and the result never changes between requests.
+    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
+      compileHeaderSource(rule.source),
     );
     if (sourceRegex && sourceRegex.test(pathname)) {
       onRuleSourceMatch?.(rule);

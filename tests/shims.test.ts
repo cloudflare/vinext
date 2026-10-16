@@ -13790,54 +13790,6 @@ describe("safeRegExp", () => {
   });
 });
 
-describe("escapeHeaderSource", () => {
-  it("passes through literal paths unchanged", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
-  });
-
-  it("escapes dots", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
-  });
-
-  it("converts named param to [^/]+", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
-  });
-
-  it("converts glob * to .*", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
-  });
-
-  it("escapes + and ?", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
-    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
-  });
-
-  it("handles constrained param :param(constraint)", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
-  });
-
-  it("handles constrained param with alternation", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
-  });
-
-  it("preserves standalone regex groups", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
-  });
-
-  it("handles multiple groups and params", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
-  });
-});
-
 describe("matchConfigPattern rejects ReDoS patterns", () => {
   it("returns null for pathological source patterns", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
@@ -14566,7 +14518,7 @@ describe("matchHeaders", () => {
 
   // Regression for #1331: under `trailingSlash: true` the incoming pathname
   // arrives as `/about/`, but header source patterns are written without a
-  // trailing slash. `matchHeaders` must strip the slash before matching.
+  // trailing slash. Next.js appends an optional trailing slash to every source.
   it("matches when the request pathname has a trailing slash", async () => {
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
     const rules: any[] = [
@@ -14595,8 +14547,143 @@ describe("matchHeaders", () => {
   });
 });
 
+// Next.js compiles header sources with path-to-regexp (delimiter "/", strict,
+// case-insensitive) plus modifyRouteRegex's optional trailing slash. Compare
+// against the real implementation so optional/repeated params and nested
+// regex groups match exactly the same pathnames.
+describe("matchHeaders source matching parity with Next.js", () => {
+  const ctx = {
+    headers: new Headers(),
+    cookies: {},
+    query: new URLSearchParams(),
+    host: "localhost",
+  };
+  const sources = [
+    "/:path*",
+    "/dashboard/:path*",
+    "/admin/:path+",
+    "/admin/:id?",
+    "/((?!api|_next/static).*)",
+    "/:path((?!api).*)",
+    "/a/:b/:c*",
+    "/(.*)",
+    "/api/(.*)",
+    "/blog/:slug",
+    "/about",
+    "/docs/",
+    "/user/:id(\\d+)",
+    "/:locale(en|fr)/blog",
+    "/file.txt",
+    "/:slug.md",
+    "/blog-:slug",
+    "/:auth-method",
+    "/x{-:y}?",
+    // Fixed-width repeat chunks are unambiguous; Next.js accepts these.
+    "/x{--:id(-)}+/end",
+    "/file.:ext+",
+  ];
+  const pathnames = [
+    "/",
+    "/dashboard",
+    "/dashboard/",
+    "/dashboard/settings",
+    "/dashboard/a/b",
+    "/admin",
+    "/admin/",
+    "/admin/x",
+    "/admin/x/y",
+    "/api",
+    "/api/x",
+    "/_next/static/x",
+    "/about",
+    "/about/",
+    "/ABOUT",
+    "/docs",
+    "/docs/",
+    "/blog/a",
+    "/blog/a/b",
+    "/user/12",
+    "/user/ab",
+    "/en/blog",
+    "/de/blog",
+    "/file.txt",
+    "/fileXtxt",
+    "/foo.md",
+    "/blog-x",
+    "/x-method",
+    "/a/b",
+    "/a/b/c/d",
+    "/x",
+    "/x-z",
+    "/x---/end",
+    "/x------/end",
+    "/x--/end",
+    "/file.js",
+    "/file.tar.gz",
+    "//",
+  ];
+
+  it.each(sources)("matches the same pathnames as Next.js for %s", async (source) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { modifyRouteRegex } = await import("next/dist/lib/redirect-status.js");
+    // Same options as buildCustomRoute("header") in Next.js's filesystem.ts.
+    const nextMatch = getPathMatch(source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+    const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+    for (const pathname of pathnames) {
+      expect
+        .soft(matchHeaders(pathname, rules, ctx).length > 0, pathname)
+        .toBe(nextMatch(pathname) !== false);
+    }
+  });
+
+  it("covers the base path of :param* and every path of a negative lookahead", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const rule = (source: string) => [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+    expect(matchHeaders("/", rule("/:path*"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/dashboard", rule("/dashboard/:path*"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/admin/x/y", rule("/admin/:path+"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/admin", rule("/admin/:path+"), ctx)).toHaveLength(0);
+    expect(matchHeaders("/admin", rule("/admin/:id?"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/", rule("/((?!api|_next/static).*)"), ctx)).toHaveLength(1);
+    expect(matchHeaders("/api/x", rule("/((?!api|_next/static).*)"), ctx)).toHaveLength(0);
+  });
+
+  it.each([
+    // Nested repetition inside one parameter.
+    "/unsafe/:path((?:a+)+)",
+    // Repeats joined by `.` that the constraint can also match.
+    "/unsafe/x.:ext([^/]+)+/end",
+    // Neighbouring parameters with overlapping constraints.
+    "/unsafe/:a(a+):b(a+):c(a+):d(a+)",
+    // A constraint that can consume the `/` separator plus adjacent text.
+    "/unsafe/:x(a(?:/a)?)+/end",
+    // A negative lookahead that can never match does not shield the separator.
+    "/unsafe/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end",
+    // Repeated constraints that can match one segment in more than one way.
+    "/unsafe/:x(a|A)+/end",
+    "/unsafe/:x(ab?|a)+/end",
+  ])("ignores the unsafe source %s", async (source) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+      expect(matchHeaders(`/unsafe/x.${"a.".repeat(30)}a/nope`, rules, ctx)).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("Ignoring unsafe headers() source"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
+  // Regression test: header source compilation + safety checks were re-run on every
   // request for every header rule. The result is now cached in _compiledHeaderSourceCache
   // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
   function makeCtx(h: Record<string, string> = {}) {
