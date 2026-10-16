@@ -1990,13 +1990,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   //
   // Pre-resolve the plugins eagerly so all import() calls in this module use
   // consistent resolution.
-  let resolvedReactPath: string | null = null;
   let resolvedRscPath: string | null = null;
   let rscPluginModulePromise: Promise<typeof import("@vitejs/plugin-rsc")> | null = null;
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
-  resolvedReactPath = resolvePluginReactPath(earlyBaseDir);
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
   const rscVersion =
     earlyAppDirExists && resolvedRscPath ? assertPluginRscVersion(resolvedRscPath) : null;
@@ -2071,6 +2069,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let reactPluginPromise: Promise<PluginOption[]> | null = null;
   let reactCompilerPluginPromise: Promise<PluginOption[]> | null = null;
   if (options.react !== false) {
+    const resolvedReactPath = resolvePluginReactPath(earlyBaseDir);
     if (!resolvedReactPath) {
       throw new Error(
         "vinext: @vitejs/plugin-react is not installed.\n" +

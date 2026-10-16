@@ -3,7 +3,14 @@ import Module from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import vinext from "../packages/vinext/src/index.js";
 import { resolvePluginReactPath } from "../packages/vinext/src/utils/plugin-react-version.js";
+
+vi.mock("../packages/vinext/src/utils/plugin-react-version.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/utils/plugin-react-version.js")>();
+  return { ...actual, resolvePluginReactPath: vi.fn(actual.resolvePluginReactPath) };
+});
 
 let roots: string[] = [];
 
@@ -111,5 +118,13 @@ describe("resolvePluginReactPath", () => {
     const fallback = makeRoot();
 
     expect(resolvePluginReactPath(project.root, path.join(fallback.root, "index.js"))).toBeNull();
+  });
+
+  it("is not called when vinext's React plugin is disabled", () => {
+    vi.mocked(resolvePluginReactPath).mockClear();
+
+    void vinext({ react: false, rsc: false });
+
+    expect(resolvePluginReactPath).not.toHaveBeenCalled();
   });
 });
