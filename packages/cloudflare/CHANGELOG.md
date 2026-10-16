@@ -1,5 +1,7 @@
 # @vinext/cloudflare
 
+## 1.1.2
+
 ## 1.1.1
 
 Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
