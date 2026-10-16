@@ -7890,6 +7890,63 @@ describe("createAppRscHandler", () => {
       expect(await rewritten.text()).toBe("action:/about");
     });
 
+    it("runs forwarded actions on an encoded literal path of a dynamic owner", async () => {
+      const cafePage = createPageRoute({
+        isDynamic: true,
+        params: ["id"],
+        pattern: "/café/:id",
+        routeSegments: ["café", "[id]"],
+      });
+      const { handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/:segment/:id", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        matchRoute: (pathname) => {
+          if (pathname === "/about") return { params: emptyParams, route: aboutPage };
+          return pathname.startsWith("/café/")
+            ? { params: { id: pathname.slice("/café/".length) }, route: cafePage }
+            : null;
+        },
+      });
+
+      // Forwarding builds the owner URL from its pattern, so the path arrives encoded.
+      const response = await handler(actionPost("/caf%C3%A9/[id]"), null);
+
+      expect(await response.text()).toBe("action:/café/:id");
+    });
+
+    it("runs actions on the final route for the literal path of a dynamic route handler", async () => {
+      const dynamicRouteHandler = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        isDynamic: true,
+        page: null,
+        pattern: "/api/:slug",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "[slug]"],
+      });
+      const { dispatchMatchedRouteHandler, handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/api/:slug", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        matchRoute: (pathname) => {
+          if (pathname === "/about") return { params: emptyParams, route: aboutPage };
+          return pathname.startsWith("/api/")
+            ? { params: { slug: pathname.slice("/api/".length) }, route: dynamicRouteHandler }
+            : null;
+        },
+      });
+
+      const response = await handler(actionPost("/api/[slug]"), null);
+
+      expect(await response.text()).toBe("action:/about");
+      expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+    });
+
     it("runs them with the root params of the page an afterFiles rewrite reaches", async () => {
       const localizedPage = createPageRoute({
         isDynamic: true,
