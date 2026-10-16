@@ -362,6 +362,32 @@ describe("Pages Node compat appendHeader", () => {
     );
   });
 
+  it("treats Object.prototype names as ordinary headers", async () => {
+    const { res, responsePromise } = createApiResponse();
+
+    res.appendHeader("constructor", "route");
+    res.appendHeader("__proto__", "route");
+    res.end();
+
+    const response = await responsePromise;
+    expect(response.headers.get("constructor")).toBe("route");
+    expect(response.headers.get("__proto__")).toBe("route");
+  });
+
+  it("keeps the caller's array like Node", async () => {
+    const { res, responsePromise } = createApiResponse();
+
+    const values = ["a"];
+    res.appendHeader("x-list", values);
+    values.push("b");
+    res.appendHeader("x-list", "c");
+    expect(res.getHeader("x-list")).toBe(values);
+
+    res.end();
+    const response = await responsePromise;
+    expect(response.headers.get("x-list")).toBe("a, b, c");
+  });
+
   it("keeps an existing scalar's type when appending to it", async () => {
     const { res, responsePromise } = createApiResponse();
 

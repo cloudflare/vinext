@@ -280,7 +280,9 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
 
 class PagesResponseStream extends Writable {
   private resStatusCode = 200;
-  private readonly resHeaders: PagesReqResHeaders = {};
+  // Null-prototype like Node's header map, so names such as `constructor` or
+  // `__proto__` are ordinary headers.
+  private readonly resHeaders: PagesReqResHeaders = Object.create(null);
   private readonly setCookieHeaders: string[] = [];
   private resolved = false;
   // Node's ServerResponse commits its head on writeHead(), not only on the
@@ -530,9 +532,9 @@ class PagesResponseStream extends Writable {
     // original values so getHeader() returns every value in its own type.
     const existing = this.resHeaders[key];
     if (!options.append || existing === undefined) {
-      this.resHeaders[key] = Array.isArray(value)
-        ? [...value]
-        : (value as Exclude<PagesReqResHeaderValue, string[]>);
+      // Node keeps the caller's array itself, so later pushes to it (and later
+      // appends) are emitted too.
+      this.resHeaders[key] = value as PagesReqResHeaderValue;
       return;
     }
     const values = (Array.isArray(existing) ? existing : [existing]) as string[];
