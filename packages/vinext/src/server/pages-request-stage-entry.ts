@@ -675,7 +675,7 @@ async function handleRequestImpl(
           publicFiles,
           basePath,
           assetPathPrefix,
-          hadBasePath,
+          resolvedPathnameHasBasePath,
         );
       },
     };
@@ -720,6 +720,7 @@ async function handleRequestImpl(
             phase,
             _resolvedUrl,
             filesystemRequest,
+            candidateHasBasePath,
           ) => {
             if (isImageOptimizationPath(candidate)) return false;
             const asset = await fetchWorkerFilesystemRoute(
@@ -730,7 +731,7 @@ async function handleRequestImpl(
               publicFiles,
               basePath,
               assetPathPrefix,
-              sourceHadBasePath,
+              candidateHasBasePath,
             );
             if (asset === false) return false;
             sourceAsset = asset;

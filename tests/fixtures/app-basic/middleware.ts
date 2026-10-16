@@ -98,8 +98,27 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  // `nextUrl` keeps the basePath, which a rewrite destination needs to
+  // resolve when the fixture is built with one.
   if (pathname === "/%61dmin") {
-    return NextResponse.rewrite(new URL("/admin", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/admin";
+    return NextResponse.rewrite(target);
+  }
+
+  // Without a basePath, these unprefixed destinations resolve. Behind one,
+  // they resolve nothing, as in Next.js.
+  if (pathname === "/middleware-rewrite-unprefixed/page") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+  if (pathname === "/middleware-rewrite-unprefixed/file") {
+    return NextResponse.rewrite(new URL("/heart.png", request.url));
+  }
+  if (pathname === "/middleware-rewrite-unprefixed/control") {
+    // nextUrl keeps the basePath, so this destination resolves either way.
+    const target = request.nextUrl.clone();
+    target.pathname = "/about";
+    return NextResponse.rewrite(target);
   }
 
   if (pathname.startsWith("/encoded-parity/middleware/")) {
@@ -182,7 +201,9 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Rewrite /middleware-rewrite to render / content (URL stays the same)
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite
   if (pathname === "/middleware-rewrite") {
-    return NextResponse.rewrite(new URL("/", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/";
+    return NextResponse.rewrite(target);
   }
 
   // Used by Vitest: nextjs-compat/hooks.test.ts — verifies usePathname()
@@ -519,6 +540,7 @@ export const config = {
     "/middleware-rewrite-query",
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
+    "/middleware-rewrite-unprefixed/:path*",
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",

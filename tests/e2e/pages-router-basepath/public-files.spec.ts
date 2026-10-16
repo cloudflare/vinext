@@ -54,3 +54,27 @@ test.describe("public files outside basePath", () => {
     }
   });
 });
+
+// Next.js' resolve-routes matches files and pages only for a pathname under
+// basePath, so a middleware rewrite resolves only a basePath-prefixed target.
+test.describe("middleware rewrites outside basePath", () => {
+  test("resolves nothing for an unprefixed destination", async ({ request }) => {
+    const file = await request.get(`${BASE}/docs/mw-rewrite/outside-file/`, { maxRedirects: 0 });
+    expect(file.status()).toBe(404);
+    expect(await file.text()).not.toContain("open file");
+
+    const page = await request.get(`${BASE}/docs/mw-rewrite/outside-page/`, { maxRedirects: 0 });
+    expect(page.status()).toBe(404);
+    expect(await page.text()).not.toContain("hello page");
+  });
+
+  test("resolves a destination under basePath", async ({ request }) => {
+    const file = await request.get(`${BASE}/docs/mw-rewrite/inside-file/`, { maxRedirects: 0 });
+    expect(file.status()).toBe(200);
+    expect(await file.text()).toBe("open file\n");
+
+    const page = await request.get(`${BASE}/docs/mw-rewrite/inside-page/`, { maxRedirects: 0 });
+    expect(page.status()).toBe(200);
+    expect(await page.text()).toContain("hello page");
+  });
+});

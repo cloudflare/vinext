@@ -2365,6 +2365,54 @@ describe("fetchWorkerFilesystemRoute", () => {
     },
   );
 
+  // Like Next.js' filesystem getItem, nothing resolves outside the basePath,
+  // whether the request's own pathname or a rewrite destination.
+  it.each(["direct", "beforeFiles", "afterFiles", "fallback"] as const)(
+    "resolves nothing outside the basePath during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("asset"));
+      for (const pathname of ["/file.txt", "/_next/static/app.js"]) {
+        expect(
+          await fetchWorkerFilesystemRoute(
+            new Request("https://example.com/docs/source"),
+            pathname,
+            phase,
+            fetchAsset,
+            new Set(["/file.txt"]),
+            "/docs",
+            "",
+            false,
+          ),
+        ).toBe(false);
+      }
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  // Next.js' built-in assetPrefix rewrite maps `${assetPrefix}/_next/*` into
+  // the basePath, so a path assetPrefix outside it still reaches build assets.
+  it("still resolves build assets under an assetPrefix outside the basePath", async () => {
+    const fetchAsset = vi.fn(async () => new Response("asset"));
+    const lookup = (pathname: string) =>
+      fetchWorkerFilesystemRoute(
+        new Request("https://example.com/cdn/source", { method: "POST" }),
+        pathname,
+        "direct",
+        fetchAsset,
+        new Set(["/cdn/file.txt"]),
+        "/docs",
+        "/cdn",
+        false,
+      );
+
+    const result = await lookup("/cdn/_next/static/app.js");
+    expect(result).not.toBe(false);
+    expect((result as Response).status).toBe(405);
+    expect(await lookup("/cdn/file.txt")).toBe(false);
+    expect(await lookup("/_next/static/app.js")).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
   it("falls through on asset misses and preserves HEAD", async () => {
     const fetchAsset = vi.fn(async (request: Request) => {
       expect(request.method).toBe("HEAD");
@@ -2520,9 +2568,10 @@ describe("fetchWorkerFilesystemRoute", () => {
     },
   );
 
-  it("serves a public file a rewrite brings in from outside basePath", async () => {
+  it("serves a public file a rewrite brings into basePath from outside it", async () => {
     const fetchAsset = vi.fn(async () => new Response("public"));
 
+    // The destination's basePath decides, not the request's.
     const result = await fetchWorkerFilesystemRoute(
       new Request("https://example.com/source"),
       "/file.txt",
@@ -2531,7 +2580,7 @@ describe("fetchWorkerFilesystemRoute", () => {
       new Set(["/file.txt"]),
       "/docs",
       "",
-      false,
+      true,
     );
 
     expect(result).toBeInstanceOf(Response);

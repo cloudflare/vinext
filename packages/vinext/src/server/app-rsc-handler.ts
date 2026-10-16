@@ -1570,7 +1570,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return markAppRscResponseConfigHeadersApplied(response);
   };
   const postMiddlewareRequestContext = buildPostMwRequestContext(userlandRequest);
-  filesystemRouteEligible ||= didMiddlewareRewrite;
+  // Like Next.js, only a pathname under the basePath resolves to a route or
+  // file. A rewrite's destination decides this, not the request.
+  if (didMiddlewareRewrite) filesystemRouteEligible = resolvedPathnameHasBasePath;
 
   // Rewrites (beforeFiles, afterFiles, fallback) use `matchPathname` from
   // above to splice in the default locale before matching. Route matching
@@ -1605,8 +1607,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       resolvedUrl = mergeRewriteQuery(resolvedUrl, beforeFilesRewrite);
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
-      filesystemRouteEligible = true;
       resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+      filesystemRouteEligible = resolvedPathnameHasBasePath;
     }
   }
 
@@ -1984,8 +1986,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         // Rewrites such as locale insertion are valid only when they resolve to
         // the exact source route and params selected for interception. A
         // different route, params, or query would authorize one identity and
-        // render another, so fail closed instead.
+        // render another, so fail closed instead. A destination outside the
+        // basePath resolves no route at all.
         if (
+          (options.basePath && sourceMiddlewareResult.rewriteHadBasePath === false) ||
           sourceMiddlewareResult.search !== sourceUrl.search ||
           !adoptRewrittenInterceptionSource(sourceMiddlewareResult.cleanPathname)
         ) {
@@ -2411,8 +2415,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       invalidateInterceptionCacheProof();
-      filesystemRouteEligible = true;
       resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+      filesystemRouteEligible = resolvedPathnameHasBasePath;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
       const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();
@@ -2476,8 +2480,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       cleanPathname = pathnameForResolvedUrl(resolvedUrl);
       cleanPathnameIsRequestPathname = false;
       invalidateInterceptionCacheProof();
-      filesystemRouteEligible = true;
       resolvedPathnameHasBasePath = !options.basePath || rewrite.basePath !== false;
+      filesystemRouteEligible = resolvedPathnameHasBasePath;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
       const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();

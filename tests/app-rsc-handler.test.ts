@@ -392,7 +392,9 @@ describe("createAppRscHandler", () => {
       const handler = createHandler({
         configHeaders: cacheableConfigHeaders,
         configRewrites: {
-          beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
+          beforeFiles: [
+            { source: "/outside", destination: "https://upstream.example/about", basePath: false },
+          ],
           afterFiles: [],
           fallback: [],
         },
@@ -3685,9 +3687,11 @@ describe("createAppRscHandler", () => {
     expect(await response.text()).toBe("icon-page");
   });
 
-  // Ported from Next.js: test/e2e/app-dir/app-basepath/index.test.ts
-  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-basepath/index.test.ts
-  it("applies basePath: false rewrites outside the App Router basePath", async () => {
+  // Next.js rejects an internal `basePath: false` rewrite when it loads the
+  // config. At runtime, its destination is outside the basePath, so like
+  // Next.js' resolve-routes it resolves no route or file.
+  it("does not resolve basePath: false rewrites to internal destinations", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({
       configHeaders: [],
       configRewrites: {
@@ -3695,15 +3699,17 @@ describe("createAppRscHandler", () => {
         afterFiles: [],
         fallback: [],
       },
+      dispatchMatchedPage,
     });
 
     const response = await handler(new Request("https://example.test/outside"), null);
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("page");
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
-  it("allows identity basePath: false rewrites to claim App routes", async () => {
+  it("does not let identity basePath: false rewrites claim App routes", async () => {
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
     const handler = createHandler({
       configHeaders: [],
       configRewrites: {
@@ -3711,12 +3717,13 @@ describe("createAppRscHandler", () => {
         afterFiles: [],
         fallback: [],
       },
+      dispatchMatchedPage,
     });
 
     const response = await handler(new Request("https://example.test/about"), null);
 
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("page");
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -3788,7 +3795,7 @@ describe("createAppRscHandler", () => {
   );
 
   it.each(["afterFiles", "fallback"] as const)(
-    "allows out-of-basePath %s rewrites to reach Pages routes",
+    "does not let out-of-basePath %s rewrites reach Pages routes",
     async (phase) => {
       const renderPagesFallback = vi.fn(async () => new Response("pages", { status: 200 }));
       const handler = createHandler({
@@ -3810,11 +3817,8 @@ describe("createAppRscHandler", () => {
 
       const response = await handler(new Request("https://example.test/outside"), null);
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("pages");
-      expect(renderPagesFallback).toHaveBeenCalledWith(
-        expect.objectContaining({ pathname: "/pages" }),
-      );
+      expect(response.status).toBe(404);
+      expect(renderPagesFallback).not.toHaveBeenCalled();
     },
   );
 
@@ -3931,7 +3935,7 @@ describe("createAppRscHandler", () => {
   });
 
   it.each(["afterFiles", "fallback"] as const)(
-    "allows out-of-basePath POST requests through %s rewrites to App route handlers",
+    "does not let out-of-basePath POST requests through %s rewrites reach App route handlers",
     async (phase) => {
       const route = createPageRoute({
         __loadPage: undefined,
@@ -3964,9 +3968,8 @@ describe("createAppRscHandler", () => {
         null,
       );
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("route");
-      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      expect(response.status).toBe(404);
+      expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
     },
   );
 
@@ -4067,7 +4070,7 @@ describe("createAppRscHandler", () => {
   });
 
   it.each(["afterFiles", "fallback"] as const)(
-    "allows out-of-basePath Server Actions through %s rewrites",
+    "does not let out-of-basePath Server Actions through %s rewrites",
     async (phase) => {
       const handleServerActionRequest = vi.fn(async () => new Response("action"));
       const handler = createHandler({
@@ -4094,16 +4097,13 @@ describe("createAppRscHandler", () => {
         null,
       );
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("action");
-      expect(handleServerActionRequest).toHaveBeenCalledWith(
-        expect.objectContaining({ cleanPathname: "/about" }),
-      );
+      expect(response.status).toBe(404);
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
     },
   );
 
   it.each(["afterFiles", "fallback"] as const)(
-    "allows out-of-basePath progressive Server Actions through %s rewrites",
+    "does not let out-of-basePath progressive Server Actions through %s rewrites",
     async (phase) => {
       const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
       const handler = createHandler({
@@ -4130,19 +4130,16 @@ describe("createAppRscHandler", () => {
         null,
       );
 
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("progressive-action");
-      expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
-        expect.objectContaining({ cleanPathname: "/about" }),
-      );
+      expect(response.status).toBe(404);
+      expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
     },
   );
 
   it.each(["afterFiles", "fallback"] as const)(
-    "checks public files after an out-of-basePath %s rewrite",
+    "checks public files after a %s rewrite",
     async (phase) => {
       const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
-      const rewrite = { source: "/outside", destination: "/logo.svg", basePath: false as const };
+      const rewrite = { source: "/alias", destination: "/logo.svg" };
       const handler = createHandler({
         configHeaders: [],
         configRewrites: {
@@ -4154,9 +4151,9 @@ describe("createAppRscHandler", () => {
         publicFiles: new Set(["/logo.svg"]),
       });
 
-      const getResponse = await handler(new Request("https://example.test/outside"), null);
+      const getResponse = await handler(new Request("https://example.test/docs/alias"), null);
       const postResponse = await handler(
-        new Request("https://example.test/outside", {
+        new Request("https://example.test/docs/alias", {
           method: "POST",
           headers: { "content-type": "multipart/form-data; boundary=vinext" },
         }),
@@ -4170,7 +4167,7 @@ describe("createAppRscHandler", () => {
     },
   );
 
-  it("lets a Pages route claim an out-of-basePath progressive POST before fallback rewrites", async () => {
+  it("lets a Pages route claim a progressive POST before fallback rewrites", async () => {
     const handleProgressiveActionRequest = vi.fn(async () => new Response("progressive-action"));
     const renderPagesFallback = vi.fn<NonNullable<HandlerOptions["renderPagesFallback"]>>(
       async (options) =>
@@ -4182,15 +4179,15 @@ describe("createAppRscHandler", () => {
       configHeaders: [],
       configRewrites: {
         beforeFiles: [],
-        afterFiles: [{ source: "/outside", destination: "/api/upload", basePath: false }],
-        fallback: [{ source: "/api/upload", destination: "/about", basePath: false }],
+        afterFiles: [{ source: "/alias", destination: "/api/upload" }],
+        fallback: [{ source: "/api/upload", destination: "/about" }],
       },
       handleProgressiveActionRequest,
       renderPagesFallback,
     });
 
     const response = await handler(
-      new Request("https://example.test/outside", {
+      new Request("https://example.test/docs/alias", {
         method: "POST",
         headers: { "content-type": "multipart/form-data; boundary=vinext" },
       }),
@@ -4202,10 +4199,9 @@ describe("createAppRscHandler", () => {
   });
 
   it.each(["afterFiles", "fallback"] as const)(
-    "validates out-of-basePath RSC requests claimed by %s rewrites",
+    "does not validate out-of-basePath RSC requests that %s rewrites keep outside basePath",
     async (phase) => {
       const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-      const expectedHash = await computeRscCacheBustingSearchParam(headers);
       const handler = createHandler({
         configHeaders: [],
         configRewrites: {
@@ -4226,10 +4222,32 @@ describe("createAppRscHandler", () => {
         null,
       );
 
-      expect(response.status).toBe(307);
-      expect(response.headers.get("location")).toBe(`/outside.rsc?tab=latest&_rsc=${expectedHash}`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
     },
   );
+
+  it("validates out-of-basePath RSC requests middleware rewrites into basePath", async () => {
+    const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
+    const expectedHash = await computeRscCacheBustingSearchParam(headers);
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: {
+        default: (request: Request) =>
+          new Response(null, {
+            headers: { "x-middleware-rewrite": new URL("/docs/about", request.url).toString() },
+          }),
+      },
+    });
+
+    const response = await handler(
+      new Request("https://example.test/outside.rsc?tab=latest", { headers }),
+      null,
+    );
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toBe(`/outside.rsc?tab=latest&_rsc=${expectedHash}`);
+  });
 
   it("does not expose App routes directly outside basePath", async () => {
     const renderNotFound = vi.fn(async () => new Response("rendered not found", { status: 404 }));
@@ -6458,6 +6476,53 @@ describe("createAppRscHandler", () => {
     expect(interceptSources).toContain("/en/feed");
   });
 
+  // Next.js resolves no route for a pathname outside the basePath, so a source
+  // rewritten there cannot authorize the interception.
+  it("does not render an interception source that middleware rewrites outside basePath", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/feed" || sourcePathname === "/en/feed"
+          ? { route: feedRoute, params: { locale: "en" } }
+          : null,
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(404);
+    expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
   it("hands a Server Action the interception source its locale rewrite reaches", async () => {
     const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
     const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
@@ -8674,7 +8739,9 @@ describe("createAppRscHandler", () => {
     const handler = createHandler({
       configHeaders: [],
       configRewrites: {
-        beforeFiles: [{ source: "/outside", destination: "/about", basePath: false }],
+        beforeFiles: [
+          { source: "/outside", destination: "https://upstream.example/about", basePath: false },
+        ],
         afterFiles: [],
         fallback: [],
       },
@@ -9535,7 +9602,13 @@ describe("createAppRscHandler", () => {
     const handler = createHandler({
       configHeaders: [],
       configRewrites: {
-        beforeFiles: [{ source: "/only-this-path", destination: "/about", basePath: false }],
+        beforeFiles: [
+          {
+            source: "/only-this-path",
+            destination: "https://upstream.example/about",
+            basePath: false,
+          },
+        ],
         afterFiles: [],
         fallback: [],
       },
@@ -9619,26 +9692,34 @@ describe("createAppRscHandler", () => {
     expect(renderNotFound).not.toHaveBeenCalled();
   });
 
-  it("allows query-only middleware rewrites to make outside-basePath routes eligible", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
-    const handler = createHandler({
-      configHeaders: [{ source: "/about", headers: [], basePath: false }],
-      dispatchMatchedPage,
-      middlewareModule: {
-        default: (request: Request) =>
-          new Response(null, {
-            headers: {
-              "x-middleware-rewrite": new URL("/about?from=middleware", request.url).toString(),
-            },
-          }),
-      },
-    });
+  // Like Next.js' resolve-routes, the rewrite destination's basePath decides
+  // whether an outside-basePath request reaches a route.
+  it.each([
+    { destination: "/docs/about?from=middleware", expectedStatus: 200 },
+    { destination: "/about?from=middleware", expectedStatus: 404 },
+  ])(
+    "makes outside-basePath routes eligible only for middleware rewrites to $destination under basePath",
+    async ({ destination, expectedStatus }) => {
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handler = createHandler({
+        configHeaders: [{ source: "/about", headers: [], basePath: false }],
+        dispatchMatchedPage,
+        middlewareModule: {
+          default: (request: Request) =>
+            new Response(null, {
+              headers: {
+                "x-middleware-rewrite": new URL(destination, request.url).toString(),
+              },
+            }),
+        },
+      });
 
-    const response = await handler(new Request("https://example.test/about"), null);
+      const response = await handler(new Request("https://example.test/about"), null);
 
-    expect(response.status).toBe(200);
-    expect(dispatchMatchedPage).toHaveBeenCalled();
-  });
+      expect(response.status).toBe(expectedStatus);
+      expect(dispatchMatchedPage).toHaveBeenCalledTimes(expectedStatus === 200 ? 1 : 0);
+    },
+  );
 
   it("preserves Node route handler RSC URLs while hiding internal parsed params", async () => {
     // Ported from Next.js:
@@ -10618,7 +10699,7 @@ describe("createAppRscHandler", () => {
               headers: {
                 "set-cookie": "probe=1; Path=/",
                 "x-test-header": "middleware",
-                "x-middleware-rewrite": new URL("/about", request.url).toString(),
+                "x-middleware-rewrite": new URL("/docs/about", request.url).toString(),
               },
             });
           }
@@ -10674,7 +10755,9 @@ describe("createAppRscHandler", () => {
         default: (request: NextRequest) =>
           request.nextUrl.pathname === "/source"
             ? new Response(null, {
-                headers: { "x-middleware-rewrite": new URL("/protected", request.url).toString() },
+                headers: {
+                  "x-middleware-rewrite": new URL("/docs/protected", request.url).toString(),
+                },
               })
             : undefined,
       },
@@ -10717,7 +10800,7 @@ describe("createAppRscHandler", () => {
                 headers: {
                   "set-cookie": "probe=1; Path=/",
                   "x-test-header": "middleware",
-                  "x-middleware-rewrite": new URL("/app-only", request.url).toString(),
+                  "x-middleware-rewrite": new URL("/docs/app-only", request.url).toString(),
                 },
               })
             : undefined,

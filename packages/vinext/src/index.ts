@@ -7073,7 +7073,10 @@ export const loadServerActionClient = ${
                       : new Response("Invalid image optimization parameters", { status: 400 });
                   }
                   const isRetrievalMethod = req.method === "GET" || req.method === "HEAD";
+                  // Like Next.js, nothing in the filesystem resolves for a
+                  // rewrite destination outside the basePath.
                   if (
+                    !resolvedPathnameHasBasePath ||
                     (phase === "direct" && isRetrievalMethod) ||
                     requestPathname === "/" ||
                     requestPathname === "/api" ||
