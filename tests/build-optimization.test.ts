@@ -1428,16 +1428,23 @@ describe("optimizeDeps.exclude for vinext", () => {
   });
 
   it("drops next/image includes that would re-inline the Image client reference in dev", async () => {
-    // Vite pre-bundles explicit optimizeDeps.include entries without checking
-    // exclude, so an inherited next/image include would inline the nested
-    // "use client" shims/image-component module again.
+    // Vite pre-bundles explicit optimizeDeps.include entries, and every match of
+    // a glob include, without checking exclude, so an inherited next/image include
+    // would inline the nested "use client" shims/image-component module again.
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
     const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-image-include-"));
     await fsp.mkdir(path.join(root, "app"));
     await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
     try {
-      const userInclude = ["next/image", "lib > next/legacy/image.js", "other-dep"];
+      const userInclude = [
+        "next/image",
+        "lib > next/legacy/image.js",
+        "next/image*",
+        "lib > next/{image,link}.js",
+        "other-dep",
+        "other-dep/*",
+      ];
       const config = await plugin.config(
         { root, build: {}, optimizeDeps: { include: userInclude } },
         { command: "serve" },
@@ -1456,9 +1463,16 @@ describe("optimizeDeps.exclude for vinext", () => {
       });
       for (const include of [clientConfig.optimizeDeps.include, rscConfig.optimizeDeps.include]) {
         expect(include).toContain("other-dep");
-        expect(include).not.toContain("next/image");
-        expect(include).not.toContain("next/image.js");
-        expect(include).not.toContain("lib > next/legacy/image.js");
+        expect(include).toContain("other-dep/*");
+        for (const id of [
+          "next/image",
+          "next/image.js",
+          "lib > next/legacy/image.js",
+          "next/image*",
+          "lib > next/{image,link}.js",
+        ]) {
+          expect(include).not.toContain(id);
+        }
       }
     } finally {
       await fsp.rm(root, { recursive: true, force: true });

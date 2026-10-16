@@ -463,6 +463,16 @@ const NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
   "next/legacy/image",
   "next/legacy/image.js",
 ]);
+// Vite pre-bundles explicit includes without checking excludes, including every
+// file a glob include like `next/image*` expands to, so any next/* glob is dropped.
+const OPTIMIZE_DEPS_GLOB_RE = /[*?[\]{}()!]/;
+function includesNextImageEntry(id: string): boolean {
+  const target = id.slice(id.lastIndexOf(">") + 1).trim();
+  return (
+    NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE.includes(target) ||
+    (target.startsWith("next/") && OPTIMIZE_DEPS_GLOB_RE.test(target))
+  );
+}
 
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
@@ -4484,14 +4494,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
             if (hasAppDir && (name === "rsc" || name === "client") && optimizer.include) {
-              // Vite pre-bundles explicit includes without checking excludes, so an
-              // inherited next/image include would still inline image-component.
-              optimizer.include = optimizer.include.filter(
-                (id) =>
-                  !NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE.includes(
-                    id.slice(id.lastIndexOf(">") + 1).trim(),
-                  ),
-              );
+              // An inherited next/image include would still inline image-component.
+              optimizer.include = optimizer.include.filter((id) => !includesNextImageEntry(id));
             }
             const optionalIncludes = hasAppDir
               ? optimizer.noDiscovery
