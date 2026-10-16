@@ -7929,7 +7929,7 @@ describe("createAppRscHandler", () => {
       },
     );
 
-    it("runs forwarded actions on the literal path of a dynamic owner before afterFiles rewrites", async () => {
+    it("runs actions on the literal path of a dynamic owner before afterFiles rewrites", async () => {
       const blogPage = createPageRoute({
         isDynamic: true,
         params: ["slug"],
@@ -7957,7 +7957,7 @@ describe("createAppRscHandler", () => {
       expect(await rewritten.text()).toBe("action:/about");
     });
 
-    it("runs forwarded actions on the literal path of a dynamic owner before Pages routes", async () => {
+    it("runs actions on the literal path of a dynamic owner before Pages routes", async () => {
       const blogPage = createPageRoute({
         isDynamic: true,
         params: ["slug"],
@@ -7980,7 +7980,7 @@ describe("createAppRscHandler", () => {
       expect(await direct.text()).toBe("pages");
     });
 
-    it("runs forwarded actions on an encoded literal path of a dynamic owner", async () => {
+    it("runs actions on an encoded literal path of a dynamic owner", async () => {
       const cafePage = createPageRoute({
         isDynamic: true,
         params: ["id"],
@@ -8007,7 +8007,7 @@ describe("createAppRscHandler", () => {
       expect(await response.text()).toBe("action:/café/:id");
     });
 
-    it("runs forwarded actions on a literal owner path that a beforeFiles rewrite reaches", async () => {
+    it("runs actions on a literal owner path that a beforeFiles rewrite reaches", async () => {
       const blogPage = createPageRoute({
         isDynamic: true,
         params: ["slug"],

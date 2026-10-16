@@ -2108,7 +2108,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   // Next.js only handles Server Actions while rendering App pages. Route
   // Handlers and Pages routes receive action POSTs untouched: no action runs,
-  // and multipart bodies skip the action origin check and body size limit. A
+  // so the action origin check and body size limit don't apply either. A
   // static or interception App match is final here, and so is a page's literal
   // path such as `/blog/[slug]`, which action forwarding requests and Next.js
   // serves decoded, without a trailing slash, from its filesystem check before
