@@ -247,7 +247,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-test
         shell: bash
         run: |
-          vp exec vite dev --host 127.0.0.1 --port 3099 &
+          node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3099 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
 
@@ -303,7 +303,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-test
         run: |
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
-          vp exec vite dev --host 127.0.0.1 --port 3098 &
+          node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3098 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3098
@@ -405,7 +405,7 @@ jobs:
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
-          vp exec vite dev --host 127.0.0.1 --port 3097 &
+          node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3097 &
           SERVER_PID=$!
           trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3097
