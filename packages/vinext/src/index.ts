@@ -379,6 +379,7 @@ import {
   getViteCliInvocation,
   isViteCliConfigFile,
 } from "./utils/vite-cli-invocation.js";
+import { resolvePluginReactPath } from "./utils/plugin-react-version.js";
 import { assertPluginRscVersion, needsAppReactServerDom } from "./utils/plugin-rsc-version.js";
 import { getReactUpgradeDeps, reactUpgradeRequiredMessage } from "./utils/react-version.js";
 import {
@@ -1995,7 +1996,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Prefer the user's project graph so vinext shares the app's Vite/plugin
   // instances. In source/workspace development, test fixtures may not declare
   // peer deps explicitly, so fall back to vinext's own install location.
-  resolvedReactPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-react");
+  resolvedReactPath = resolvePluginReactPath(earlyBaseDir);
   resolvedRscPath = resolveOptionalDependency(earlyBaseDir, "@vitejs/plugin-rsc");
   const rscVersion =
     earlyAppDirExists && resolvedRscPath ? assertPluginRscVersion(resolvedRscPath) : null;

@@ -1,0 +1,60 @@
+import { createRequire } from "node:module";
+import path from "pathslash";
+import { findPackageVersion, isVersionBelow } from "./react-version.js";
+
+// The floor of the `^5.1.4 || ^6.0.0` peer range. Node never checks peer
+// ranges, so a project-side lookup can load any copy it reaches. For example,
+// pnpm's bin shims put node_modules/.pnpm/node_modules on NODE_PATH, which
+// exposes copies hoisted for other workspace packages. Older versions append a
+// React Refresh footer that breaks under vinext's import.meta.url rewrite.
+const MINIMUM_PLUGIN_REACT_VERSION: [number, number, number] = [5, 1, 4];
+
+type ResolvedPluginReact = { path: string; version: string | null };
+
+function resolveFrom(from: string): ResolvedPluginReact | null {
+  try {
+    const resolved = createRequire(from).resolve("@vitejs/plugin-react");
+    return { path: resolved, version: findPackageVersion(resolved, "@vitejs/plugin-react") };
+  } catch {
+    return null;
+  }
+}
+
+function isSupported(plugin: ResolvedPluginReact): boolean {
+  return plugin.version !== null && !isVersionBelow(plugin.version, MINIMUM_PLUGIN_REACT_VERSION);
+}
+
+/**
+ * Resolve @vitejs/plugin-react from the project, falling back to vinext's own
+ * install when the project has none or reaches an unsupported version.
+ * Returns null when it is not installed, and throws when every copy found is
+ * unsupported.
+ */
+export function resolvePluginReactPath(
+  projectRoot: string,
+  fallbackFrom: string = import.meta.url,
+): string | null {
+  const project = resolveFrom(path.join(projectRoot, "package.json"));
+  if (project && isSupported(project)) return project.path;
+
+  const fallback = resolveFrom(fallbackFrom);
+  if (fallback && isSupported(fallback)) {
+    if (project) {
+      console.warn(
+        `[vinext] Ignoring @vitejs/plugin-react ${project.version ?? "(unknown version)"} at ` +
+          `${project.path}: vinext requires ${MINIMUM_PLUGIN_REACT_VERSION.join(".")} or newer. ` +
+          `Using ${fallback.version} instead. Add @vitejs/plugin-react to your app's ` +
+          `devDependencies to choose the version explicitly.`,
+      );
+    }
+    return fallback.path;
+  }
+
+  const found = project ?? fallback;
+  if (!found) return null;
+  throw new Error(
+    `vinext: @vitejs/plugin-react ${MINIMUM_PLUGIN_REACT_VERSION.join(".")} or newer is required ` +
+      `(found ${found.version ?? "an unknown version"} at ${found.path}). ` +
+      `Add @vitejs/plugin-react@^6 to your app's devDependencies.`,
+  );
+}
