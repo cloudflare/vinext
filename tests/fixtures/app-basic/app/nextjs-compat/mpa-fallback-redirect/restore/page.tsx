@@ -56,6 +56,9 @@ export default function RestorePage() {
       >
         Push in transition
       </button>
+      <button type="button" onClick={() => router.replace(TARGET)}>
+        Replace
+      </button>
       <button type="button" onClick={() => router.push("https://external.example/page")}>
         Push external
       </button>

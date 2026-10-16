@@ -11,7 +11,6 @@ export type AppBrowserMpaNavigationWindow = {
 
 type PendingMpaNavigation = {
   href: string;
-  historyUpdateMode: HistoryUpdateMode;
   token: number;
 };
 
@@ -45,25 +44,18 @@ export class AppBrowserMpaNavigationScheduler {
     href: string,
     historyUpdateMode: HistoryUpdateMode,
   ): void {
-    const pendingNavigation = this.#pendingNavigation;
-    if (
-      pendingNavigation?.href === href &&
-      pendingNavigation.historyUpdateMode === historyUpdateMode
-    ) {
+    // Like Next.js's pendingMpaPath, the first navigation to a URL wins until
+    // a bfcache restore resets it, whatever history mode a later one asks for.
+    if (this.#pendingNavigation?.href === href) {
       return;
     }
 
     const token = this.#nextToken + 1;
     this.#nextToken = token;
-    this.#pendingNavigation = { href, historyUpdateMode, token };
+    this.#pendingNavigation = { href, token };
 
     const navigate = () => {
-      const currentNavigation = this.#pendingNavigation;
-      if (
-        currentNavigation?.href !== href ||
-        currentNavigation.historyUpdateMode !== historyUpdateMode ||
-        currentNavigation.token !== token
-      ) {
+      if (this.#pendingNavigation?.token !== token) {
         return;
       }
 

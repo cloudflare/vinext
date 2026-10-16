@@ -69,7 +69,7 @@ describe("hasPendingAppRouterPageRedirect", () => {
 });
 
 describe("AppBrowserMpaNavigationScheduler", () => {
-  it("supersedes a pending same-href push with a replace before the delayed navigation fires", () => {
+  it("keeps the first navigation's history mode for a later navigation to the same href", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
     const { assign, flushNextTimeout, replace, targetWindow, timeoutCount } =
       createNavigationWindow();
@@ -77,16 +77,15 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     scheduler.navigate(targetWindow, "https://external.test/login", "push");
     scheduler.navigate(targetWindow, "https://external.test/login", "replace");
 
-    expect(timeoutCount()).toBe(2);
+    expect(timeoutCount()).toBe(1);
 
     flushNextTimeout();
-    expect(assign).not.toHaveBeenCalled();
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith("https://external.test/login");
+
+    scheduler.navigate(targetWindow, "https://external.test/login", "replace");
+    expect(timeoutCount()).toBe(0);
     expect(replace).not.toHaveBeenCalled();
-
-    flushNextTimeout();
-    expect(assign).not.toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledTimes(1);
-    expect(replace).toHaveBeenCalledWith("https://external.test/login");
   });
 
   it("dedupes an identical pending external navigation", () => {

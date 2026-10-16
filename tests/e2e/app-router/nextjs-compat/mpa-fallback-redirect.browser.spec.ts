@@ -117,6 +117,32 @@ test("a pushed navigation whose RSC fetch fails adds a history entry", async ({ 
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength + 1);
 });
 
+// Next.js loads a URL once until a bfcache restore (app-router.tsx's
+// pendingMpaPath), so a later replace() to the same URL doesn't restart it.
+test("a later navigation to a URL already loading as a document is ignored", async ({ page }) => {
+  await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
+  await waitForAppRouterHydration(page);
+
+  await page.route(
+    (url) => url.pathname === TARGET_PATH,
+    (route) => {
+      if (route.request().isNavigationRequest()) return route.fulfill({ status: 204 });
+      return route.fulfill({ status: 503, body: "" });
+    },
+  );
+  let targetDocumentRequests = 0;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    if (new URL(request.url()).pathname === TARGET_PATH) targetDocumentRequests++;
+  });
+
+  await page.getByRole("link", { name: "Login" }).click();
+  await expect.poll(() => targetDocumentRequests).toBe(1);
+  await page.getByRole("button", { name: "Replace" }).click();
+  await page.waitForTimeout(1_000);
+  expect(targetDocumentRequests).toBe(1);
+});
+
 // Next.js keeps only the navigation's transition suspended until the document
 // unloads (app-router.tsx: "useTransition isPending should stay true until the
 // page unloads"); other updates keep rendering. vinext covers the external-URL
