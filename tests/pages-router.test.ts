@@ -1851,7 +1851,18 @@ export default class CustomDocument extends Document {
     expect(res.status).toBe(200);
     expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
     expect(res.headers.get("x-multi")).toBe("a, b");
-    await expect(res.json()).resolves.toEqual({ ok: true });
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
 
   it("handles dynamic API routes with query params", async () => {
@@ -7497,7 +7508,18 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(200);
     expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
     expect(res.headers.get("x-multi")).toBe("a, b");
-    await expect(res.json()).resolves.toEqual({ ok: true });
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
 
   it("redirects /old-page to /about via middleware", async () => {

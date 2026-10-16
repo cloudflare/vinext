@@ -245,7 +245,7 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
 
 class PagesResponseStream extends Writable {
   private resStatusCode = 200;
-  private readonly resHeaders: Record<string, string | number | boolean> = {};
+  private readonly resHeaders: PagesReqResHeaders = {};
   private readonly setCookieHeaders: string[] = [];
   private resolved = false;
   private controller: ReadableStreamDefaultController | null = null;
@@ -297,6 +297,13 @@ class PagesResponseStream extends Writable {
   // Node's ServerResponse.appendHeader (Node 18.3+): adds to any existing
   // value instead of replacing it.
   appendHeader(name: string, value: string | string[]): PagesReqResResponse {
+    if (this.headersSent) {
+      // The Response headers were snapshotted on the first write, so a late
+      // append would be silently dropped. Node throws here.
+      throw Object.assign(new Error("Cannot append headers after they are sent to the client"), {
+        code: "ERR_HTTP_HEADERS_SENT",
+      });
+    }
     this.setHeaderValue(name, value, { append: true });
     return this as PagesReqResResponse;
   }
@@ -478,10 +485,16 @@ class PagesResponseStream extends Writable {
       return;
     }
 
-    const nextValue = Array.isArray(value) ? value.join(", ") : value;
+    // Like Node, keep header arrays (and appended values) as a list so
+    // getHeader() returns every value.
     const existing = this.resHeaders[key];
-    this.resHeaders[key] =
-      options.append && existing !== undefined ? `${existing}, ${nextValue}` : nextValue;
+    if (!options.append || existing === undefined) {
+      this.resHeaders[key] = Array.isArray(value) ? value.map(String) : value;
+      return;
+    }
+    const values = Array.isArray(existing) ? existing : [String(existing)];
+    values.push(...(Array.isArray(value) ? value.map(String) : [String(value)]));
+    this.resHeaders[key] = values;
   }
 
   private releasePendingWrite(error?: Error | null): void {
@@ -498,7 +511,11 @@ class PagesResponseStream extends Writable {
 
     const headers = new Headers();
     for (const [key, value] of Object.entries(this.resHeaders)) {
-      headers.set(key, String(value));
+      if (Array.isArray(value)) {
+        for (const item of value) headers.append(key, item);
+      } else {
+        headers.set(key, String(value));
+      }
     }
     for (const cookie of this.setCookieHeaders) {
       headers.append("set-cookie", cookie);
