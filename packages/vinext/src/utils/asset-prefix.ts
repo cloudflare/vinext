@@ -139,3 +139,17 @@ export function isNextStaticPath(
   }
   return p.startsWith(`/${ASSET_PREFIX_URL_DIR}/`);
 }
+
+/**
+ * Whether `pathname` is a build asset under a path `assetPrefix`. Next.js adds
+ * a built-in beforeFiles rewrite from `${assetPrefix}/_next/:path+` into the
+ * basePath (`loadRewrites` in `packages/next/src/lib/load-custom-routes.ts`),
+ * so such a path resolves even when it lies outside the basePath.
+ */
+export function isAssetPrefixBuildAsset(pathname: string, assetPathPrefix: string): boolean {
+  return (
+    !!assetPathPrefix &&
+    (pathname === assetPathPrefix || pathname.startsWith(assetPathPrefix + "/")) &&
+    isNextStaticPath(pathname, "", assetPathPrefix)
+  );
+}

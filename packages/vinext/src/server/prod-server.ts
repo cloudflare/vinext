@@ -75,6 +75,7 @@ import {
   ASSET_PREFIX_URL_DIR,
   assetPrefixPathname,
   isAbsoluteAssetPrefix,
+  isAssetPrefixBuildAsset,
 } from "../utils/asset-prefix.js";
 import { computeClientRuntimeMetadata } from "../utils/client-runtime-metadata.js";
 import { setPagesClientAssets, type AssetCrossOrigin } from "./pages-client-assets.js";
@@ -2728,8 +2729,10 @@ async function createPagesRouterRequestHandler(
             ) => {
               // Like Next.js, a file resolves only for a pathname under the
               // basePath, whether the source's own or a rewrite destination.
+              // Its built-in rewrite still maps `${assetPrefix}/_next/*` into it.
               if (
-                !candidateHasBasePath ||
+                (!candidateHasBasePath &&
+                  !isAssetPrefixBuildAsset(candidate, pagesAssetPathPrefix)) ||
                 isImageOptimizationPath(candidate) ||
                 isPagesFilesystemExcludedPath(candidate, phase)
               ) {
@@ -2921,8 +2924,10 @@ async function createPagesRouterRequestHandler(
           }
           // Like Next.js, a file resolves only for a pathname under the
           // basePath, whether the request's own or a rewrite destination.
+          // Its built-in rewrite still maps `${assetPrefix}/_next/*` into it.
           if (
-            !resolvedPathnameHasBasePath ||
+            (!resolvedPathnameHasBasePath &&
+              !isAssetPrefixBuildAsset(requestPathname, pagesAssetPathPrefix)) ||
             isPagesFilesystemExcludedPath(requestPathname, phase)
           ) {
             return false;

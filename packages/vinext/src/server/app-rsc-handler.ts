@@ -1826,7 +1826,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         matchPathname(sourceRequestPathname),
         options.configRedirects,
         preMiddlewareRequestContext,
-        basePathState,
+        currentBasePathState(),
         dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
       )
     ) {
@@ -1840,11 +1840,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const sourceUrl = new URL(userlandRequest.url);
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
-      // carries: the raw, still-encoded context. Concatenate basePath rather
+      // carries: the raw, still-encoded context, under the basePath the
+      // target's rewrites resolved to. Concatenate basePath rather
       // than using `addBasePathToPathname`, which leaves a context that already
       // starts with basePath unprefixed, so middleware would miss that segment.
       const sourceUrlPathname =
-        hadBasePath && options.basePath
+        resolvedPathnameHasBasePath && options.basePath
           ? sourceRequestPathname === "/"
             ? options.basePath
             : options.basePath + sourceRequestPathname
@@ -1906,7 +1907,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             // or status to the target's response, which belongs to another route.
             context: sourceMiddlewareContext,
             externalRewriteRequest: normalizedUserlandRequest,
-            hadBasePath,
+            hadBasePath: resolvedPathnameHasBasePath,
             isDataRequest: isMiddlewareDataRequest,
             request: sourceMiddlewareRequest,
             validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
@@ -2015,7 +2016,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           matchPathname(sourceRulesPathname),
           [rewrite],
           sourceRewriteContext,
-          basePathState,
+          currentBasePathState(),
           matchPathname(sourceRulesPathname),
           dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
         );

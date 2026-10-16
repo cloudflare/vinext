@@ -6476,6 +6476,67 @@ describe("createAppRscHandler", () => {
     expect(interceptSources).toContain("/en/feed");
   });
 
+  // The source is authorized under the basePath the target resolved to, so a
+  // target middleware rewrites into the basePath keeps its source there too.
+  it("authorizes the interception source of a target middleware rewrites into basePath", async () => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const localeRootRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+    const feedRoute = createPageRoute({
+      pattern: "/:locale/feed",
+      routeSegments: ["[locale]", "feed"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        if (sourcePathname === "/feed") {
+          return { route: localeRootRoute, params: { locale: "feed" } };
+        }
+        if (sourcePathname === "/en/feed") {
+          return { route: feedRoute, params: { locale: "en" } };
+        }
+        return null;
+      },
+      matchRoute(pathname: string) {
+        if (pathname === "/photos/1") {
+          return { params: {} as Record<string, string | string[]>, route: targetRoute };
+        }
+        if (pathname === "/en/feed") {
+          return {
+            params: { locale: "en" } as Record<string, string | string[]>,
+            route: feedRoute,
+          };
+        }
+        return null;
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          const pathname = new URL(request.url).pathname;
+          if (pathname === "/photos/1") {
+            return new Response(null, {
+              headers: { "x-middleware-rewrite": "https://example.test/docs/photos/1" },
+            });
+          }
+          return pathname === "/docs/feed"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/en/feed" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed" });
+    const rscUrl = await createRscRequestUrl("/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/en/feed" }),
+    );
+  });
+
   // Next.js resolves no route for a pathname outside the basePath, so a source
   // rewritten there cannot authorize the interception.
   it("does not render an interception source that middleware rewrites outside basePath", async () => {
@@ -8193,12 +8254,12 @@ describe("createAppRscHandler", () => {
       );
     });
 
-    it("lets a Pages route claim an out-of-basePath action before fallback rewrites", async () => {
+    it("lets a Pages route claim an action before fallback rewrites", async () => {
       const { handleServerActionRequest, handler } = createActionHandler({
         configRewrites: {
           beforeFiles: [],
-          afterFiles: [{ source: "/outside", destination: "/api/upload", basePath: false }],
-          fallback: [{ source: "/api/upload", destination: "/about", basePath: false }],
+          afterFiles: [{ source: "/alias", destination: "/api/upload" }],
+          fallback: [{ source: "/api/upload", destination: "/about" }],
         },
         renderPagesFallback: async (options) =>
           (options.pathname ?? options.url.pathname) === "/api/upload"
@@ -8207,7 +8268,7 @@ describe("createAppRscHandler", () => {
       });
 
       const response = await handler(
-        new Request("https://example.test/outside", {
+        new Request("https://example.test/docs/alias", {
           method: "POST",
           headers: { "content-type": "text/plain;charset=UTF-8", "next-action": "action-id" },
           body: "[]",

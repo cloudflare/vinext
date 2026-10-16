@@ -34,7 +34,11 @@ import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
-import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
+import {
+  assetPrefixPathname,
+  isAssetPrefixBuildAsset,
+  isNextStaticPath,
+} from "../utils/asset-prefix.js";
 import {
   detectPathnameLocale,
   normalizeDefaultLocalePathname,
@@ -105,10 +109,6 @@ function headersFromRecord(record: HeaderRecord): Headers {
 type PageRouteMatch = {
   route: { isDynamic: boolean; pattern?: string; dataKind?: PagesRouteDataKind };
 };
-
-function isAssetPrefixBuildAsset(pathname: string, assetPathPrefix: string): boolean {
-  return hasBasePath(pathname, assetPathPrefix) && isNextStaticPath(pathname, "", assetPathPrefix);
-}
 
 export async function fetchWorkerFilesystemRoute(
   request: Request,
