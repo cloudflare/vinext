@@ -39,6 +39,7 @@ import {
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
+import { getPluginReactUpgradeDeps } from "./utils/plugin-react-version.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
 export { getReactUpgradeDeps } from "./utils/react-version.js";
@@ -1012,6 +1013,31 @@ export async function init(options: InitOptions): Promise<InitResult> {
         if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
         dependencyInstallNeedsApproval = true;
       }
+    }
+  }
+
+  // A declared @vitejs/plugin-react below vinext's peer range must move before
+  // vinext installs, or npm stops with ERESOLVE.
+  const pluginReactUpgrade = getPluginReactUpgradeDeps(root);
+  if (pluginReactUpgrade.length > 0) {
+    console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Upgrading devDependencies:"))}`);
+    console.log(
+      formatList(
+        pluginReactUpgrade.map((dep) => dep.replace(/@latest$/, "")),
+        "    ",
+      ),
+    );
+    try {
+      if (shouldInstall) {
+        const installOutput = await installDeps(root, pluginReactUpgrade, exec);
+        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, pluginReactUpgrade, { dev: true });
+        devDependencyEntriesAdded.push(...added);
+      }
+    } catch (error) {
+      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
+      dependencyInstallNeedsApproval = true;
     }
   }
 

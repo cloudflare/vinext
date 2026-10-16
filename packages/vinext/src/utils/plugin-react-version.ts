@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { findPackageVersion, isVersionBelow } from "./react-version.js";
@@ -57,4 +58,35 @@ export function resolvePluginReactPath(
       `(found ${found.version ?? "an unknown version"} at ${found.path}). ` +
       `Add @vitejs/plugin-react@^6 to your app's devDependencies.`,
   );
+}
+
+/**
+ * The @vitejs/plugin-react upgrade vinext init must install before vinext.
+ * A declared copy below the floor conflicts with vinext's peer range: npm stops
+ * with ERESOLVE, and pnpm installs but vinext refuses to start.
+ */
+export function getPluginReactUpgradeDeps(root: string): string[] {
+  const manifest = path.join(root, "package.json");
+  let declared: string | undefined;
+  try {
+    const pkg = JSON.parse(fs.readFileSync(manifest, "utf-8")) as {
+      dependencies?: Record<string, string>;
+      devDependencies?: Record<string, string>;
+    };
+    declared =
+      pkg.dependencies?.["@vitejs/plugin-react"] ?? pkg.devDependencies?.["@vitejs/plugin-react"];
+  } catch {
+    return [];
+  }
+  if (typeof declared !== "string") return [];
+
+  // A range's newest match keeps its major, so a declared major below the
+  // floor's can never install a supported version.
+  const major = /^[~^]?(\d+)/.exec(declared)?.[1];
+  if (major !== undefined && Number(major) < MINIMUM_PLUGIN_REACT_VERSION[0]) {
+    return ["@vitejs/plugin-react@latest"];
+  }
+  // A lockfile can still hold an older match of a supported major.
+  const installed = resolveFrom(manifest);
+  return installed && !isSupported(installed) ? ["@vitejs/plugin-react@latest"] : [];
 }
