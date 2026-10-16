@@ -215,6 +215,7 @@ import {
   reactCompilerUnsupportedMessage,
 } from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
+import { escapeRegExp } from "./utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import {
   ASSET_PREFIX_URL_DIR,
@@ -1496,7 +1497,6 @@ function generateRootParamsModule(rootParamNames: Iterable<string>): string {
  * Shims with a `.react-server.ts` variant for the RSC environment.
  * Maps import specifier → base shim name. In the RSC env, resolveId
  * appends `.react-server`; in other envs it resolves to the base.
- * next/image is the exception: its RSC entry is a virtual module.
  *
  * These MUST NOT appear in `nextShimMap` (resolve.alias) because Vite's
  * alias plugin runs before user `enforce:"pre"` plugins — aliases are
@@ -1851,6 +1851,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
+  // resolve.alias target for next/image. The alias keeps every dep optimizer
+  // on the shim; vinext:config sends it to the RSC entry in that environment.
+  const nextImageAliasTarget = toSlash(path.join(shimsDir, "image"));
+  const nextImageAliasTargetRE = new RegExp(
+    `^${nextImageAliasTarget.split("/").map(escapeRegExp).join("[\\\\/]")}$`,
+  );
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
@@ -4705,9 +4711,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // direct @vercel/og imports in metadata routes, and \0-prefixed
         // re-imports from @vitejs/plugin-rsc.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: [
+            /(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+            nextImageAliasTargetRE,
+          ],
         },
         handler(id, importer) {
+          // Like Next.js's image-external, next/image in RSC exports the
+          // server-safe getImageProps and only Image as a client reference.
+          if (nextImageAliasTargetRE.test(id)) {
+            return this.environment?.name === "rsc" ? RESOLVED_NEXT_IMAGE_RSC : undefined;
+          }
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
@@ -4744,6 +4758,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");
+          }
+
+          // The RSC next/image entry references Image as vinext/shims/image.
+          // Elsewhere that is next/image, so the browser and SSR load one image
+          // module, the dep optimizer's when it has pre-bundled next/image.
+          if (cleanId === "vinext/shims/image" && this.environment?.name !== "rsc") {
+            return this.resolve("next/image", importer, { skipSelf: true });
           }
 
           const vinextShimPrefix = "vinext/shims/";
@@ -4880,13 +4901,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // See https://github.com/cloudflare/vinext/issues/834
           const reactServerShim = _reactServerShims.get(cleanId);
           if (reactServerShim !== undefined) {
-            if (this.environment?.name !== "rsc") {
-              return resolveShimModulePath(_shimsDir, reactServerShim);
-            }
-            // Like Next.js's image-external, next/image in RSC exports the
-            // server-safe getImageProps and only Image as a client reference.
-            if (reactServerShim === "image") return RESOLVED_NEXT_IMAGE_RSC;
-            return resolveShimModulePath(_shimsDir, `${reactServerShim}.react-server`);
+            const shimName =
+              this.environment?.name === "rsc"
+                ? `${reactServerShim}.react-server`
+                : reactServerShim;
+            return resolveShimModulePath(_shimsDir, shimName);
           }
         },
       },

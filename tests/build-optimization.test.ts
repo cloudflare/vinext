@@ -527,6 +527,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(
         aliasEntriesToRecord(result.resolve.alias)["vinext/server/pages-client-assets"],
       ).toMatch(/server\/pages-client-assets\.ts$/);
+      // Dep optimizers resolve only through resolve.alias, so a pre-bundled
+      // library's next/image import must still reach the shim.
+      expect(aliasEntriesToRecord(result.resolve.alias)["next/image"]).toMatch(/shims[\\/]image$/);
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
