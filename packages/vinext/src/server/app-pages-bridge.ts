@@ -182,7 +182,7 @@ export async function renderPagesFallback(
       pagesRequest,
       pagesUrl,
       executionContext ?? undefined,
-      executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext?.trustedRevalidateOrigin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
     const pagesApiResponse = await (initialResponseHeaders

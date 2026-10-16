@@ -830,7 +830,7 @@ describe("renderPagesFallback", () => {
       request,
       "/api/caf%C3%A9?value=hello%20world",
       undefined,
-      "http://localhost",
+      undefined,
       "node",
     );
   });
