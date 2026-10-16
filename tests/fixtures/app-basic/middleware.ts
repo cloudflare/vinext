@@ -124,6 +124,24 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  // next.config.ts adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (pathname === "/config-cookie-redirect" || pathname === "/config-cookie-response") {
+    const response =
+      pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : new NextResponse("from middleware");
+    if (request.nextUrl.searchParams.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    return response;
+  }
+  if (pathname === "/api/config-cookie" && request.nextUrl.searchParams.has("middleware-cookie")) {
+    const response = NextResponse.next();
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
@@ -537,6 +555,9 @@ export const config = {
     "/header-override-delete",
     "/api/header-override-delete",
     "/api/session-refresh",
+    "/api/config-cookie",
+    "/config-cookie-redirect",
+    "/config-cookie-response",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-fallback-to-app/:path*",
