@@ -290,7 +290,28 @@ describe("App Router Production build", () => {
               .digest("hex")}`,
         ),
         rscBuildId: fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8"),
+        // @vitejs/plugin-rsc encrypts Server Action and "use cache" closure
+        // arguments with the key this module exports.
+        encryptionKeyModule: fs.readFileSync(
+          path.join(outDir, "server", "__vite_rsc_encryption_key.js"),
+          "utf-8",
+        ),
       };
+    }
+
+    let encryptionKeyLoads = 0;
+    // Evaluate the module afresh each time, since it reads process.env when
+    // it is evaluated.
+    async function loadEncryptionKey(): Promise<string> {
+      const copy = path.join(outDir, "server", `encryption-key-${++encryptionKeyLoads}.mjs`);
+      fs.copyFileSync(path.join(outDir, "server", "__vite_rsc_encryption_key.js"), copy);
+      const mod = await import(pathToFileURL(copy).href);
+      return mod.default;
+    }
+
+    function readCachedKey(): string {
+      const info = JSON.parse(fs.readFileSync(path.join(keyCacheDir(), ".rscinfo"), "utf-8"));
+      return info["encryption.key"];
     }
 
     beforeEach(() => {
@@ -315,6 +336,23 @@ describe("App Router Production build", () => {
       // The server-side build identity still changes per build.
       expect(second.rscBuildId).not.toBe(first.rscBuildId);
       expect(second.files).toEqual(first.files);
+      // Closure arguments encrypted by the first build still decrypt.
+      expect(second.encryptionKeyModule).toBe(first.encryptionKeyModule);
+      expect(await loadEncryptionKey()).toBe(readCachedKey());
+    }, 60000);
+
+    // Ported from Next.js: getActionEncryptionKey in
+    // packages/next/src/server/app-render/encryption-utils.ts reads
+    // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY at runtime before the build's key.
+    it("encrypts closure arguments with NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", async () => {
+      const buildKey = Buffer.alloc(32, 1).toString("base64");
+      const runtimeKey = Buffer.alloc(32, 2).toString("base64");
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", buildKey);
+      await buildClient();
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+      expect(await loadEncryptionKey()).toBe(buildKey);
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", runtimeKey);
+      expect(await loadEncryptionKey()).toBe(runtimeKey);
     }, 60000);
 
     it("renames cache references once the generated key cache is removed", async () => {

@@ -23,6 +23,11 @@ type Options = {
   projectRoot: string;
   cacheRuntime: string;
   allowMissingRsc?: boolean;
+  /**
+   * The Server Actions encryption key vinext loaded for an auto-registered
+   * @vitejs/plugin-rsc, so reference names derive from the same key.
+   */
+  getEncryptionKey?: () => string | undefined;
 };
 
 type CacheWrapperOptions = {
@@ -358,10 +363,11 @@ export async function createUseCacheCallablePlugin(
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
       // Read after vinext's config hook has loaded `.env` files.
       referenceSecret ??= createReferenceSecret(
-        loadOrGenerateServerActionsEncryptionKey({
-          root: config.root,
-          isBuild: config.command === "build",
-        }),
+        options.getEncryptionKey?.() ??
+          loadOrGenerateServerActionsEncryptionKey({
+            root: config.root,
+            isBuild: config.command === "build",
+          }),
       );
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");

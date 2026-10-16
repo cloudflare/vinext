@@ -123,6 +123,8 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
+import type { RscPluginOptions } from "@vitejs/plugin-rsc";
+import { loadOrGenerateServerActionsEncryptionKey } from "./build/server-actions-encryption-key.js";
 import {
   findOpenTelemetryPackages,
   mergeServerExternalPackages,
@@ -2026,6 +2028,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   let manualUseCachePluginPromise: Promise<Plugin> | null = null;
+  // Set by the config hook once `.env` files are loaded. @vitejs/plugin-rsc
+  // reads `defineEncryptionKey` in its configEnvironment hook, which runs
+  // after every config hook.
+  const rscPluginOptions: RscPluginOptions = {
+    entries: {
+      rsc: VIRTUAL_RSC_ENTRY,
+      ssr: VIRTUAL_APP_SSR_ENTRY,
+      client: VIRTUAL_APP_BROWSER_ENTRY,
+    },
+  };
+  let serverActionsEncryptionKey: string | undefined;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -2040,17 +2053,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     rscPluginPromise = rscImport
       .then(async (mod) => {
         const rsc = mod.default;
-        const plugins: Plugin[] = rsc({
-          entries: {
-            rsc: VIRTUAL_RSC_ENTRY,
-            ssr: VIRTUAL_APP_SSR_ENTRY,
-            client: VIRTUAL_APP_BROWSER_ENTRY,
-          },
-        });
+        const plugins: Plugin[] = rsc(rscPluginOptions);
         const useCachePlugin = await createUseCacheCallablePlugin({
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
+          getEncryptionKey: () => serverActionsEncryptionKey,
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
@@ -2680,6 +2688,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (config.envDir !== false) {
           const envDir = config.envDir ?? root;
           loadDotenv({ root: envDir, mode });
+        }
+        if (rscPluginPromise) {
+          // Like Next.js, closure arguments of Server Actions and "use cache"
+          // functions are encrypted with this key, and a runtime
+          // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY overrides it
+          // (getActionEncryptionKey in server/app-render/encryption-utils.ts).
+          // A stable key keeps them decryptable across identical rebuilds.
+          serverActionsEncryptionKey = loadOrGenerateServerActionsEncryptionKey({
+            root,
+            isBuild: env.command === "build",
+          });
+          rscPluginOptions.defineEncryptionKey = `process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY || ${JSON.stringify(serverActionsEncryptionKey)}`;
         }
         // Build output always receives production defines. Preserve the
         // explicit NODE_ENV=test config-time behavior supported by the previous
