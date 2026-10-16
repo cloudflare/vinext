@@ -70,9 +70,20 @@ export function mergeMiddlewareResponseHeaders(
 }
 
 // Next.js send-response.ts appends a response's own values for these after the
-// middleware values already on the outgoing response. Other response headers
-// yield to middleware.
+// middleware values already on the outgoing response. Vary is merged by
+// mergeMiddlewareResponseHeaders; other response headers yield to middleware.
 const RESPONSE_APPENDED_HEADER_NAMES = ["set-cookie", "www-authenticate", "proxy-authenticate"];
+const RESPONSE_APPENDED_COOKIE_HEADER_NAMES = ["set-cookie"];
+
+export type MiddlewareResponseMergeOptions = {
+  /**
+   * Keep the response's WWW-Authenticate and Proxy-Authenticate after
+   * middleware's, as Next.js does for App route handlers. Pages API handlers
+   * write to the Node response that already holds middleware's headers, so
+   * their callers opt out.
+   */
+  appendResponseChallenges?: boolean;
+};
 
 /**
  * Merge middleware response headers onto an already-built response's headers.
@@ -86,13 +97,18 @@ const RESPONSE_APPENDED_HEADER_NAMES = ["set-cookie", "www-authenticate", "proxy
 export function mergeMiddlewareResponseHeadersOntoResponse(
   target: Headers,
   middlewareHeaders: Headers | null,
+  options: MiddlewareResponseMergeOptions = {},
 ): void {
   if (!middlewareHeaders) {
     return;
   }
 
   const responseValues: [string, string[]][] = [];
-  for (const name of RESPONSE_APPENDED_HEADER_NAMES) {
+  const appendedNames =
+    options.appendResponseChallenges === false
+      ? RESPONSE_APPENDED_COOKIE_HEADER_NAMES
+      : RESPONSE_APPENDED_HEADER_NAMES;
+  for (const name of appendedNames) {
     if (!middlewareHeaders.has(name)) continue;
     const value = target.get(name);
     responseValues.push([
@@ -103,6 +119,8 @@ export function mergeMiddlewareResponseHeadersOntoResponse(
   }
   mergeMiddlewareResponseHeaders(target, middlewareHeaders);
   for (const [name, values] of responseValues) {
+    // Next.js only stages truthy middleware header values.
+    if (!middlewareHeaders.get(name)) target.delete(name);
     for (const value of values) {
       target.append(name, value);
     }

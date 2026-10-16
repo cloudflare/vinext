@@ -1,5 +1,6 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
+import type { MiddlewareResponseMergeOptions } from "./middleware-response-headers.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
@@ -51,6 +52,7 @@ type RenderPagesFallbackDependencies = {
   applyRouteHandlerMiddlewareContext: (
     response: Response,
     middlewareContext: AppMiddlewareContext,
+    options?: MiddlewareResponseMergeOptions,
   ) => Response;
   /**
    * Returns the `__prerender_bypass` Set-Cookie header emitted by a
@@ -190,7 +192,12 @@ export async function renderPagesFallback(
       : pagesEntry.handleApiRoute(...apiArgs));
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
-      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+      // A Node-runtime Pages API handler in Next.js writes to the response that
+      // already holds middleware's headers, so its challenges replace
+      // middleware's rather than joining them.
+      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext, {
+        appendResponseChallenges: false,
+      }),
       draftCookie,
     );
   }

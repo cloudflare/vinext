@@ -490,6 +490,15 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("x-auth-source")).toBe("middleware");
   });
 
+  it("never joins a hybrid Pages API route's challenge to middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/pages-auth-challenge`);
+    expect(res.status).toBe(401);
+    // Next.js lets the handler's setHeader() replace middleware's challenge.
+    expect(['Basic realm="middleware"', 'Bearer realm="handler"']).toContain(
+      res.headers.get("www-authenticate"),
+    );
+  });
+
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
     // request.url))`, so routing this request would echo the target's origin.

@@ -154,7 +154,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.headers.set("x-mw-has-session", "true");
   }
 
-  if (pathname === "/api/auth-challenge") {
+  if (pathname === "/api/auth-challenge" || pathname === "/api/pages-auth-challenge") {
     response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
     response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
     response.headers.set("x-auth-source", "middleware");
@@ -545,6 +545,7 @@ export const config = {
     "/api/header-override-delete",
     "/api/session-refresh",
     "/api/auth-challenge",
+    "/api/pages-auth-challenge",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-fallback-to-app/:path*",
