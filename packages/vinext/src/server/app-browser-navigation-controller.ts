@@ -94,6 +94,8 @@ type SameUrlServerActionLifecycleOptions = {
 type BrowserNavigationControllerDeps = {
   basePath?: string;
   commitClientNavigationState?: typeof commitClientNavigationState;
+  // Loads a URL as a new document once the reload-loop guard allows it.
+  navigateDocument?: (href: string, mode: HardNavigationMode) => void;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
   getRouteManifest?: () => RouteManifest | null;
   syncHistoryStatePreviousNextUrl?: (
@@ -220,9 +222,18 @@ export function clearHardNavigationLoopGuard(): void {
   } catch {}
 }
 
+function navigateDocumentDirectly(href: string, mode: HardNavigationMode): void {
+  if (mode === "replace") {
+    window.location.replace(href);
+  } else {
+    window.location.assign(href);
+  }
+}
+
 function performHardNavigationWithLoopGuard(
   href: string,
   mode: HardNavigationMode = "assign",
+  navigateDocument: (href: string, mode: HardNavigationMode) => void = navigateDocumentDirectly,
 ): boolean {
   const targetHref = normalizeBrowserHref(href);
   const currentHref = normalizeBrowserHref(window.location.href);
@@ -248,11 +259,7 @@ function performHardNavigationWithLoopGuard(
   // can still make forward progress. Only same-target reloads need a persisted
   // guard because they can re-enter this exact recovery path indefinitely.
 
-  if (mode === "replace") {
-    window.location.replace(href);
-  } else {
-    window.location.assign(href);
-  }
+  navigateDocument(href, mode);
   return true;
 }
 
@@ -287,7 +294,10 @@ export function createAppBrowserNavigationController(
   const basePath = deps.basePath ?? "";
   const commitClientNavigationStateImpl =
     deps.commitClientNavigationState ?? commitClientNavigationState;
-  const performHardNavigation = deps.performHardNavigation ?? performHardNavigationWithLoopGuard;
+  const performHardNavigation =
+    deps.performHardNavigation ??
+    ((href: string, mode?: HardNavigationMode) =>
+      performHardNavigationWithLoopGuard(href, mode, deps.navigateDocument));
   const getRouteManifest = deps.getRouteManifest ?? (() => null);
   const syncHistoryStatePreviousNextUrl = deps.syncHistoryStatePreviousNextUrl ?? (() => {});
 

@@ -3,6 +3,7 @@ import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 const NEXT_APP_ROUTER_PAGE_REDIRECT_MARKER_ID = "__next-page-redirect";
 
 export type AppBrowserMpaNavigationWindow = {
+  document?: Pick<Document, "visibilityState">;
   location: Pick<Location, "assign" | "replace">;
   requestAnimationFrame?: (callback: FrameRequestCallback) => unknown;
   setTimeout(callback: () => void, timeout: number): unknown;
@@ -73,7 +74,12 @@ export class AppBrowserMpaNavigationScheduler {
       }
     };
 
-    if (typeof targetWindow.requestAnimationFrame === "function") {
+    // Hidden documents run no animation frames, so waiting for one would hold
+    // the document load until the tab is shown again.
+    if (
+      typeof targetWindow.requestAnimationFrame === "function" &&
+      targetWindow.document?.visibilityState !== "hidden"
+    ) {
       targetWindow.requestAnimationFrame(() => {
         targetWindow.setTimeout(navigate, 0);
       });

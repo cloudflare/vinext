@@ -338,6 +338,18 @@ const historyController = new AppBrowserHistoryController({
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
+  navigateDocument: (href, mode) => {
+    const historyUpdateMode = mode === "replace" ? "replace" : "push";
+    if (enterMpaNavigation) {
+      enterMpaNavigation(href, historyUpdateMode);
+      return;
+    }
+    if (historyUpdateMode === "replace") {
+      window.location.replace(href);
+    } else {
+      window.location.assign(href);
+    }
+  },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),
 });
@@ -408,6 +420,11 @@ let browserRouterStateHasEverCommitted = false;
 let initialPrefetchRouterState: { pathAndSearch: string; routeId: string } | null = null;
 const mpaNavigationScheduler = new AppBrowserMpaNavigationScheduler();
 const unresolvedMpaNavigation = new Promise<never>(() => {});
+// Next.js loads every hard navigation through the router's MPA state, which
+// suspends the tree until the document unloads. Without it, a RedirectBoundary
+// re-rendering its committed redirect() starts RSC requests that race the load.
+let enterMpaNavigation: ((href: string, historyUpdateMode: HistoryUpdateMode) => void) | null =
+  null;
 const RSC_HMR_SETTLE_DELAY_MS = 150;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType<{
   error: unknown;
@@ -1358,13 +1375,17 @@ function BrowserRoot({
       setAppRouterStateValue,
       stateRef,
     );
+    const setMpaNavigationState = (href: string, historyUpdateMode: HistoryUpdateMode) => {
+      setTreeStateValue({
+        href,
+        historyUpdateMode,
+        kind: "mpa-navigation",
+      });
+    };
+    enterMpaNavigation = setMpaNavigationState;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
-        setTreeStateValue({
-          href,
-          historyUpdateMode,
-          kind: "mpa-navigation",
-        });
+        setMpaNavigationState(href, historyUpdateMode);
         return new Promise<void>(() => {});
       },
     });
@@ -1372,6 +1393,9 @@ function BrowserRoot({
     hydrationCachePublication.commit();
     return () => {
       hydrationCachePublication.invalidate();
+      if (enterMpaNavigation === setMpaNavigationState) {
+        enterMpaNavigation = null;
+      }
       registerNavigationRuntimeFunctions({ navigateExternal: undefined });
       detach();
       setMountedSlotsHeader(null);

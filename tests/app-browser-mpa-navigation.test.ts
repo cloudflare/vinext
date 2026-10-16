@@ -102,6 +102,46 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     expect(replace).toHaveBeenCalledTimes(1);
   });
 
+  it("waits for a frame before navigating a visible document", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow, timeoutCount } = createNavigationWindow();
+    const frames: FrameRequestCallback[] = [];
+
+    scheduler.navigate(
+      {
+        ...targetWindow,
+        document: { visibilityState: "visible" },
+        requestAnimationFrame(callback) {
+          frames.push(callback);
+          return frames.length;
+        },
+      },
+      "/login",
+      "push",
+    );
+
+    expect(timeoutCount()).toBe(0);
+    frames.shift()?.(0);
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("does not wait for a frame that a hidden document never runs", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+    const requestAnimationFrame = vi.fn();
+
+    scheduler.navigate(
+      { ...targetWindow, document: { visibilityState: "hidden" }, requestAnimationFrame },
+      "/login",
+      "push",
+    );
+
+    flushNextTimeout();
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
   it("allows the same external navigation again after reset", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
     const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
