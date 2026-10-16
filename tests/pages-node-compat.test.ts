@@ -388,6 +388,23 @@ describe("Pages Node compat appendHeader", () => {
     expect(response.headers.get("x-list")).toBe("a, b, c");
   });
 
+  it("stores Set-Cookie like any other header", async () => {
+    const { res, responsePromise } = createApiResponse();
+
+    res.appendHeader("Set-Cookie", "a=1; Path=/");
+    expect(res.getHeader("Set-Cookie")).toBe("a=1; Path=/");
+    const cookies = ["b=1; Path=/"];
+    res.appendHeader("x-unrelated", "1");
+    res.setHeader("Set-Cookie", cookies);
+    cookies.push("c=1; Path=/");
+    res.appendHeader("Set-Cookie", "d=1; Path=/");
+    expect(res.getHeader("Set-Cookie")).toBe(cookies);
+
+    res.end();
+    const response = await responsePromise;
+    expect(response.headers.getSetCookie()).toEqual(["b=1; Path=/", "c=1; Path=/", "d=1; Path=/"]);
+  });
+
   it("keeps an existing scalar's type when appending to it", async () => {
     const { res, responsePromise } = createApiResponse();
 

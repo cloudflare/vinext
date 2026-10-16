@@ -283,7 +283,6 @@ class PagesResponseStream extends Writable {
   // Null-prototype like Node's header map, so names such as `constructor` or
   // `__proto__` are ordinary headers.
   private readonly resHeaders: PagesReqResHeaders = Object.create(null);
-  private readonly setCookieHeaders: string[] = [];
   private resolved = false;
   // Node's ServerResponse commits its head on writeHead(), not only on the
   // first body write.
@@ -352,9 +351,6 @@ class PagesResponseStream extends Writable {
   }
 
   getHeader(name: string): PagesReqResHeaderValue | undefined {
-    if (name.toLowerCase() === "set-cookie") {
-      return this.setCookieHeaders.length > 0 ? this.setCookieHeaders : undefined;
-    }
     return this.resHeaders[name.toLowerCase()];
   }
 
@@ -407,11 +403,7 @@ class PagesResponseStream extends Writable {
   }
 
   getHeaders(): PagesReqResHeaders {
-    const headers: PagesReqResHeaders = { ...this.resHeaders };
-    if (this.setCookieHeaders.length > 0) {
-      headers["set-cookie"] = this.setCookieHeaders;
-    }
-    return headers;
+    return { ...this.resHeaders };
   }
 
   setPreviewData(
@@ -517,17 +509,6 @@ class PagesResponseStream extends Writable {
     options: { append: boolean },
   ): void {
     const key = name.toLowerCase();
-    if (key === "set-cookie") {
-      // getHeader() exposes this array like Node's ServerResponse. Snapshot it
-      // before replacement so passing that live value back does not clear it.
-      const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (!options.append) {
-        this.setCookieHeaders.length = 0;
-      }
-      this.setCookieHeaders.push(...values);
-      return;
-    }
-
     // Like Node, keep header arrays (and appended values) as a list of the
     // original values so getHeader() returns every value in its own type.
     const existing = this.resHeaders[key];
@@ -561,9 +542,6 @@ class PagesResponseStream extends Writable {
       } else {
         headers.set(key, String(value));
       }
-    }
-    for (const cookie of this.setCookieHeaders) {
-      headers.append("set-cookie", cookie);
     }
 
     // Fetch rejects a Response that pairs 204/205/304 with any body, including
