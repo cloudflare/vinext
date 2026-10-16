@@ -1122,6 +1122,21 @@ describe("validateServerActionPayload", () => {
 // ── processMiddlewareHeaders ────────────────────────────────────────────
 
 describe("processMiddlewareHeaders", () => {
+  it("drops each empty Set-Cookie value like Next.js", () => {
+    const headers = new Headers();
+    headers.append("set-cookie", "");
+    headers.append("set-cookie", "mw=1; Path=/");
+    headers.append("set-cookie", "");
+    processMiddlewareHeaders(headers);
+    expect(headers.getSetCookie()).toEqual(["mw=1; Path=/"]);
+
+    const emptyOnly = new Headers();
+    emptyOnly.append("set-cookie", "");
+    emptyOnly.append("set-cookie", "");
+    processMiddlewareHeaders(emptyOnly);
+    expect(emptyOnly.has("set-cookie")).toBe(false);
+  });
+
   it("strips x-middleware-next header", () => {
     const headers = new Headers({
       "x-middleware-next": "1",
