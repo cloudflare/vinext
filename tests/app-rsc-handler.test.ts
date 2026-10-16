@@ -7862,6 +7862,34 @@ describe("createAppRscHandler", () => {
       },
     );
 
+    it("runs forwarded actions on the literal path of a dynamic owner before afterFiles rewrites", async () => {
+      const blogPage = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const { handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/blog/:slug", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        matchRoute: (pathname) => {
+          if (pathname === "/about") return { params: emptyParams, route: aboutPage };
+          return pathname.startsWith("/blog/")
+            ? { params: { slug: pathname.slice("/blog/".length) }, route: blogPage }
+            : null;
+        },
+      });
+
+      const forwarded = await handler(actionPost("/blog/[slug]"), null);
+      const rewritten = await handler(actionPost("/blog/hello"), null);
+
+      expect(await forwarded.text()).toBe("action:/blog/:slug");
+      expect(await rewritten.text()).toBe("action:/about");
+    });
+
     it("runs them with the root params of the page an afterFiles rewrite reaches", async () => {
       const localizedPage = createPageRoute({
         isDynamic: true,

@@ -2200,10 +2200,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (progressiveActionResult instanceof Response) return progressiveActionResult;
     progressiveActionFormState = progressiveActionResult;
   }
+  // Action forwarding requests the owner route's literal path, such as
+  // `/blog/[slug]`. Next.js serves that path from its filesystem check before
+  // afterFiles rewrites, so it is final here too.
+  const requestsLiteralRoutePattern =
+    preActionMatch !== null &&
+    cleanPathnameIsRequestPathname &&
+    patternToNextFormat(preActionMatch.route.pattern) === requestCleanPathname;
   if (
     isServerActionRequest &&
     preActionMatch &&
-    (isInterceptionMatch || !preActionMatch.route.isDynamic)
+    (isInterceptionMatch || !preActionMatch.route.isDynamic || requestsLiteralRoutePattern)
   ) {
     serverActionHandled = true;
     const serverActionResponse = await handleServerAction(
