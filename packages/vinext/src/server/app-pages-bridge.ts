@@ -6,6 +6,7 @@ import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { applyRouteHandlerMiddlewareContext as applyMiddlewareHeadersToResponse } from "./app-route-handler-middleware-context.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -109,6 +110,30 @@ function applyPagesMiddlewareContext(
   }
 
   return mergeHeaders(response, middlewareHeaders, middlewareContext.status ?? undefined);
+}
+
+/**
+ * Compose request-stage middleware headers onto a Pages API response returned
+ * by a response stage. The stage installed them on the handler's `res` before
+ * it ran (handler values win, as in Next.js) and removed the inherited
+ * cookies, so only the headers the response lacks (for example on a framework
+ * error response) and middleware's cookies, ahead of the response's own, are
+ * re-added here.
+ */
+export function applyMiddlewareHeadersToStagedPagesApiResponse(
+  response: Response,
+  middlewareHeaders: Headers | null | undefined,
+): Response {
+  if (!middlewareHeaders) return response;
+  const missingHeaders = new Headers();
+  for (const [name, value] of middlewareHeaders) {
+    if (name.toLowerCase() !== "set-cookie" && !response.headers.has(name)) {
+      missingHeaders.set(name, value);
+    }
+  }
+  for (const cookie of middlewareHeaders.getSetCookie())
+    missingHeaders.append("Set-Cookie", cookie);
+  return applyMiddlewareHeadersToResponse(response, { headers: missingHeaders, status: null });
 }
 
 /**

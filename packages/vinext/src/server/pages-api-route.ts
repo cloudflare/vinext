@@ -190,8 +190,16 @@ function applyEdgeMiddlewareResponseHeaders(
 }
 
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
+  // Next.js writes middleware headers onto `res` before apiResolver runs, and
+  // its error responses reuse that `res`, so they keep middleware's headers.
+  const frameworkResponse = (response: Response) =>
+    applyRouteHandlerMiddlewareContext(response, {
+      headers: options.middlewareResponseHeaders ?? null,
+      status: null,
+    });
+
   if (!options.match) {
-    return new Response("404 - API route not found", { status: 404 });
+    return frameworkResponse(new Response("404 - API route not found", { status: 404 }));
   }
 
   const { route, params } = options.match;
@@ -246,7 +254,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // This is redundant at runtime after the edge branch for function exports, but it
     // keeps the Node handler ABI narrowed without a production type assertion.
     if (!isNodeApiRouteModule(route.module)) {
-      return new Response("API route does not export a default function", { status: 500 });
+      return frameworkResponse(
+        new Response("API route does not export a default function", { status: 500 }),
+      );
     }
     const handler = route.module.default;
 
@@ -361,16 +371,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     return finalizeResponse(await responsePromise);
   } catch (error) {
     if (error instanceof PagesApiBodyParseError) {
-      return new Response(error.message, {
-        status: error.statusCode,
-        statusText: error.message,
-      });
+      return frameworkResponse(
+        new Response(error.message, {
+          status: error.statusCode,
+          statusText: error.message,
+        }),
+      );
     }
 
     await options.reportRequestError?.(
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,
     );
-    return internalServerErrorResponse();
+    return frameworkResponse(internalServerErrorResponse());
   }
 }
