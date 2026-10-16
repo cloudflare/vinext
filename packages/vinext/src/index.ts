@@ -4708,13 +4708,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       resolveId: {
         // Hook filter: only invoke JS for handled compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // direct @vercel/og imports in metadata routes, and \0-prefixed
-        // re-imports from @vitejs/plugin-rsc.
+        // direct @vercel/og imports in metadata routes, \0-prefixed re-imports
+        // from @vitejs/plugin-rsc, and the next/image alias target.
         filter: {
-          id: [
-            /(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
-            nextImageAliasTargetRE,
-          ],
+          id: new RegExp(
+            `${/(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/.source}|${nextImageAliasTargetRE.source}`,
+          ),
         },
         handler(id, importer) {
           // Like Next.js's image-external, next/image in RSC exports the

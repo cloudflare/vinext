@@ -31264,6 +31264,30 @@ describe("shim alias map .js variants", () => {
     );
   });
 
+  it("resolves the next/image alias target to the RSC entry only in the RSC environment", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+    };
+    // The extensionless resolve.alias target for next/image.
+    const aliasTarget = toSlash(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image"),
+    );
+
+    expect(hook.filter.id.test(aliasTarget)).toBe(true);
+    expect(hook.filter.id.test(aliasTarget.replaceAll("/", "\\"))).toBe(true);
+    expect(hook.handler.call({ environment: { name: "rsc" } }, aliasTarget)).toBe(
+      "\0virtual:vinext-next-image-rsc",
+    );
+    expect(hook.handler.call({ environment: { name: "ssr" } }, aliasTarget)).toBeUndefined();
+  });
+
   it("keeps the App Router request handler source-resolved in source checkouts", () => {
     const plugins = vinext() as Plugin[];
     const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
