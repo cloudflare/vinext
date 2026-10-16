@@ -178,6 +178,18 @@ function propagateInvalidDynamicUsageError(state: VinextHeadersShimState, error:
   });
 }
 
+/**
+ * Record an invalid dynamic API use on `state`, keeping the first one, like
+ * Next.js's `workStore.invalidDynamicUsageError ??= error`.
+ */
+export function recordInvalidDynamicUsageError(
+  state: VinextHeadersShimState,
+  error: unknown,
+): void {
+  state.invalidDynamicUsageError ??= error;
+  propagateInvalidDynamicUsageError(state, error);
+}
+
 export function markRenderRequestApiUsage(kind: RenderRequestApiKind): void {
   getHeadersShimState().renderRequestApiUsage.add(kind);
 }
@@ -240,6 +252,15 @@ export function isInsideAnyCacheScope(): boolean {
   return _getUseCacheGuardContext() !== null || _isInsideUnstableCache();
 }
 
+/** The error a dynamic request API throws inside a public "use cache". */
+export function createUseCacheAccessError(apiName: string): Error {
+  return new Error(
+    `\`${apiName}\` cannot be called inside "use cache". ` +
+      `If you need this data inside a cached function, call \`${apiName}\` ` +
+      "outside and pass the required data as an argument.",
+  );
+}
+
 /**
  * Throw if the current execution is inside a "use cache" or unstable_cache()
  * scope. Called by dynamic request APIs (headers, cookies, connection) to
@@ -249,11 +270,7 @@ export function isInsideAnyCacheScope(): boolean {
  */
 export function throwIfInsideCacheScope(apiName: string): void {
   if (_isInsidePublicUseCache()) {
-    const error = new Error(
-      `\`${apiName}\` cannot be called inside "use cache". ` +
-        `If you need this data inside a cached function, call \`${apiName}\` ` +
-        "outside and pass the required data as an argument.",
-    );
+    const error = createUseCacheAccessError(apiName);
     // Record the error on the request context so it survives user try/catch
     // and can be forwarded to the dev overlay on client-side navigations.
     // Ported from Next.js: workStore.invalidDynamicUsageError assignment in

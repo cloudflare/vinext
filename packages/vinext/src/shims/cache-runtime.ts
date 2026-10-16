@@ -48,17 +48,18 @@ import {
   runWithDetachedFetchObservations,
 } from "./fetch-cache.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import { isWellKnownProperty } from "./internal/thenable-well-known-properties.js";
+import {
+  createUseCacheAccessError,
+  recordInvalidDynamicUsageError,
+} from "./internal/headers-state.js";
 import {
   isInsideUnifiedScope,
   getRequestContext,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
-import { isDraftModeEnabled, markDynamicUsage, throwIfInsideCacheScope } from "./headers.js";
-import {
-  makeThenableParams,
-  getFallbackParamsSnapshot,
-  restoreThenableParams,
-} from "./thenable-params.js";
+import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
+import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
@@ -782,19 +783,20 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             outerParams,
           ),
         }) as TArgs;
-        // The encoded args omit a public page's searchParams. Access must still
-        // fail like Next's erroring searchParams, including on a replay.
-        if (pagePropsIndex !== undefined) {
-          callArgs = withErroringPageSearchParams(callArgs, pagePropsIndex) as TArgs;
-        }
       }
+      // The encoded args omit a public page's searchParams. Access must still
+      // fail like Next's erroring searchParams, including on a replay.
+      const callFn =
+        segmentPropsIndex !== -1 && pagePropsIndex !== undefined
+          ? withErroringPageSearchParams(fn, pagePropsIndex)
+          : fn;
 
       if (fallbackParams) {
         // Speculative shell params are incomplete: a placeholder must not hit
         // a concrete route's entry or become an unguarded persisted replay.
         // Keep decoded values plus lazy framework suspension for execution;
         // concrete params still follow the normal cache path below.
-        return (await executeWithContext(fn, callArgs, cacheVariant, rsc)).result;
+        return (await executeWithContext(callFn, callArgs, cacheVariant, rsc)).result;
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -816,7 +818,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           return privateHit.result;
         }
 
-        const execution = await executeWithContext(fn, callArgs, cacheVariant, rsc);
+        const execution = await executeWithContext(callFn, callArgs, cacheVariant, rsc);
         if (execution.cacheable) privateCache.set(cacheKey, execution);
         return execution.result;
       }
@@ -826,7 +828,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // preview request would otherwise seed unpublished content into an entry
       // later served to public requests. Mirrors Next.js's `isDraftMode` guard.
       if (isDev || isDraftModeEnabled()) {
-        return (await executeWithContext(fn, callArgs, cacheVariant, rsc)).result;
+        return (await executeWithContext(callFn, callArgs, cacheVariant, rsc)).result;
       }
 
       // Shared cache ("use cache" / "use cache: remote")
@@ -879,7 +881,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // propagate: the request already used the stale value.
       const generate = async (propagate: boolean): Promise<TResult> => {
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
-          fn,
+          callFn,
           callArgs,
           cacheVariant,
           (value) => serializeCacheResult(value, rsc),
@@ -1464,19 +1466,65 @@ function toReplayablePageArgs(args: readonly unknown[], index: number): unknown[
 }
 
 /**
- * Give page props at `index` without `searchParams` (a Response Store replay of
- * args encoded by `toReplayablePageArgs`) a value that throws on
- * access inside the cache scope, like Next.js's
- * `makeErroringSearchParamsForUseCache`, instead of `undefined`.
+ * Run `fn` with an erroring `searchParams` in the page props at `index` when
+ * they have none (they are omitted from a public page cache's arguments, and
+ * from a Response Store replay of them), instead of `undefined`.
  */
-function withErroringPageSearchParams(args: readonly unknown[], index: number): readonly unknown[] {
-  const props = args[index];
-  if (!isPagePropsObject(props) || "searchParams" in props) return args;
-  return replaceArgument(args, index, {
-    ...props,
-    searchParams: makeThenableParams(
-      {},
-      { observeParamAccess: () => throwIfInsideCacheScope("searchParams") },
-    ),
+function withErroringPageSearchParams<TArgs extends unknown[], TResult>(
+  fn: (...args: TArgs) => Promise<TResult>,
+  index: number,
+): (...args: TArgs) => Promise<TResult> {
+  return (...args) => {
+    const props = args[index];
+    if (!isPagePropsObject(props) || "searchParams" in props) return fn(...args);
+    // Made inside the cache scope, so it can record an access on this scope.
+    return fn(
+      ...(replaceArgument(args, index, {
+        ...props,
+        searchParams: makeErroringPageSearchParams(),
+      }) as TArgs),
+    );
+  };
+}
+
+// Next.js's `wellKnownProperties` (shared/lib/utils/reflect-utils.ts). Unlike
+// `isWellKnownProperty`, `value` and `error` aren't reserved, so reading them
+// throws unless React wrote them onto the promise.
+function isNextWellKnownProperty(prop: string): boolean {
+  return prop !== "value" && prop !== "error" && isWellKnownProperty(prop);
+}
+
+/**
+ * Ported from Next.js's `makeErroringSearchParamsForUseCache`
+ * (server/request/search-params.ts): reading `then` or a param throws, and
+ * everything else reads the underlying promise, with methods bound to it.
+ */
+function makeErroringPageSearchParams(): Promise<Record<string, never>> {
+  // Like Next.js, which closes over the workStore, an access records the
+  // invalid use on the cache scope and request the value was made for, even
+  // after it escapes the cache function.
+  const cacheContext = cacheContextStorage.getStore() ?? null;
+  const requestContext = isInsideUnifiedScope() ? getRequestContext() : null;
+  const promise = Promise.resolve({});
+  return new Proxy(promise, {
+    get(target, prop, receiver) {
+      if (
+        !Object.hasOwn(target, prop) &&
+        typeof prop === "string" &&
+        (prop === "then" || !isNextWellKnownProperty(prop))
+      ) {
+        const error = createUseCacheAccessError("searchParams");
+        if (cacheContext) cacheContext.invalidDynamicUsageError ??= error;
+        // A cache the value escaped into must not store a result either.
+        const activeCacheContext = cacheContextStorage.getStore();
+        if (activeCacheContext && activeCacheContext !== cacheContext) {
+          activeCacheContext.invalidDynamicUsageError ??= error;
+        }
+        if (requestContext) recordInvalidDynamicUsageError(requestContext, error);
+        throw error;
+      }
+      const value: unknown = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
   });
 }

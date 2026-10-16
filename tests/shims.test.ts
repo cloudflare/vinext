@@ -8164,6 +8164,196 @@ describe('"use cache" runtime', () => {
     ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
   });
 
+  // Next.js: `makeErroringSearchParamsForUseCache` throws when `then` is read,
+  // so React fails while it checks the value, before it counts pending work.
+  it("fails a read of searchParams.then inside the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => typeof Reflect.get(props.searchParams!, "then"),
+      "/fixture/app/cached/then-read/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+  });
+
+  // Next.js: `makeErroringSearchParamsForUseCache` throws on every access, not
+  // only while the cache function runs.
+  it("keeps the page searchParams erroring after they escape the cache scope", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let escaped: Promise<Record<string, unknown>> | undefined;
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => {
+        escaped = props.searchParams;
+        return "done";
+      },
+      "/fixture/app/cached/escape/page.tsx:default",
+      "",
+    );
+
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const requestContext = createRequestContext({
+      headersContext: { headers: new Headers(), cookies: new Map() },
+    });
+    let caught: unknown;
+    await runWithRequestContext(requestContext, async () => {
+      await expect(
+        cached(
+          asPageInvocation({
+            params: makeThenableParams({ slug: "same" }),
+            searchParams: makeThenableParams({ q: "first" }),
+          }),
+        ),
+      ).resolves.toBe("done");
+    });
+    // Read later, outside that request's scope.
+    try {
+      Reflect.get(escaped!, "then");
+    } catch (error) {
+      caught = error;
+    }
+    expect(String(caught)).toMatch(/`searchParams` cannot be called inside "use cache"/);
+    // The caught access is still recorded on the request the value was made
+    // for, like Next.js's `workStore.invalidDynamicUsageError`.
+    await runWithRequestContext(requestContext, async () => {
+      expect(consumeInvalidDynamicUsageError()).toBe(caught);
+    });
+    expect(() => Reflect.get(escaped!, "q")).toThrow(
+      /`searchParams` cannot be called inside "use cache"/,
+    );
+
+    // Another "use cache" that catches the read still fails, so it can't
+    // store a fallback.
+    const fallsBack = registerCachedFunction(
+      async () => {
+        try {
+          return typeof Reflect.get(escaped!, "then");
+        } catch {
+          return "fallback";
+        }
+      },
+      "/fixture/app/cached/escape-fallback.tsx:default",
+      "",
+    );
+    await expect(fallsBack()).rejects.toThrow(/`searchParams` cannot be called inside "use cache"/);
+
+    // A read inside another cache scope fails with the same error.
+    const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+    const readsEscaped = unstable_cache(
+      async () => typeof Reflect.get(escaped!, "then"),
+      ["escaped-search-params"],
+    );
+    await expect(readsEscaped()).rejects.toThrow(
+      /`searchParams` cannot be called inside "use cache"/,
+    );
+  });
+
+  // Next.js keeps the first invalid access (`workStore.invalidDynamicUsageError
+  // ??= error`).
+  it("fails the cache with the first caught searchParams access", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    const { consumeInvalidDynamicUsageError } =
+      await import("../packages/vinext/src/shims/headers.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const caught: unknown[] = [];
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => {
+        for (const key of ["then", "q"]) {
+          try {
+            Reflect.get(props.searchParams!, key);
+          } catch (error) {
+            caught.push(error);
+          }
+        }
+        return "done";
+      },
+      "/fixture/app/cached/caught-twice/page.tsx:default",
+      "",
+    );
+
+    const rejection = await cached(
+      asPageInvocation({
+        params: makeThenableParams({ slug: "same" }),
+        searchParams: makeThenableParams({ q: "first" }),
+      }),
+    ).catch((error: unknown) => error);
+    expect(caught).toHaveLength(2);
+    expect(caught[0]).not.toBe(caught[1]);
+    expect(rejection).toBe(caught[0]);
+    consumeInvalidDynamicUsageError();
+  });
+
+  // Next.js's erroring proxy only traps `get`, and binds `catch` and
+  // `finally` to the underlying promise, so they don't read its `then`.
+  it("lets catch, finally and key checks on the page searchParams settle", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { makeThenableParams } = await import("../packages/vinext/src/shims/thenable-params.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    const cached = registerCachedFunction(
+      async (props: {
+        params: Promise<{ slug: string }>;
+        searchParams?: Promise<Record<string, unknown>>;
+      }) => [
+        await props.searchParams!.catch(() => "rejected"),
+        await props.searchParams!.finally(() => {}),
+        Object.keys(props.searchParams!),
+        "q" in props.searchParams!,
+        Object.hasOwn(props.searchParams!, "q"),
+      ],
+      "/fixture/app/cached/catch-finally/page.tsx:default",
+      "",
+    );
+
+    await expect(
+      cached(
+        asPageInvocation({
+          params: makeThenableParams({ slug: "same" }),
+          searchParams: makeThenableParams({ q: "first" }),
+        }),
+      ),
+    ).resolves.toEqual([{}, {}, [], false, false]);
+  });
+
   // Next.js passes `$$isPage` to a "use cache" function invoked as a page
   // component or page metadata resolver (create-component-tree.tsx,
   // resolve-metadata.ts), so page semantics also hold for a cache function
