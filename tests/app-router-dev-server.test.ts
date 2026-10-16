@@ -1163,11 +1163,27 @@ describe("App Router integration", () => {
     },
     { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
     { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
   ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
-    const res = await fetch(`${baseUrl}${path}`, { redirect: "manual" });
-    expect(res.headers.getSetCookie()).toEqual(cookies);
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      http
+        .get(`${baseUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        })
+        .on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
   });
 
   it("renders custom not-found.tsx for unmatched routes", async () => {

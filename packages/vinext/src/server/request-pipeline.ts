@@ -485,7 +485,16 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * @param headers - The Headers object to modify in place
  */
+/**
+ * Next.js only stages truthy middleware response-header values, so a lone
+ * empty middleware Set-Cookie never reaches the response.
+ */
+export function dropEmptyMiddlewareSetCookie(headers: Headers): void {
+  if (headers.has("set-cookie") && !headers.get("set-cookie")) headers.delete("set-cookie");
+}
+
 export function processMiddlewareHeaders(headers: Headers): void {
+  dropEmptyMiddlewareSetCookie(headers);
   const keysToDelete: string[] = [];
   const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 

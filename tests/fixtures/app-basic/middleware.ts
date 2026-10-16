@@ -134,6 +134,10 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     if (request.nextUrl.searchParams.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (request.nextUrl.searchParams.has("empty-middleware-cookie")) {
+      response.headers.set("Set-Cookie", "");
+    }
     return response;
   }
   if (pathname === "/api/config-cookie" && request.nextUrl.searchParams.has("middleware-cookie")) {
