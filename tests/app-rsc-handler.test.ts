@@ -7632,6 +7632,324 @@ describe("createAppRscHandler", () => {
     });
   });
 
+  describe("server actions after late routing", () => {
+    const routeHandler = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      pattern: "/upload",
+      routeHandler: { GET: () => new Response("route") },
+      routeSegments: ["upload"],
+    });
+    const aboutPage = createPageRoute();
+    const dynamicPage = createPageRoute({
+      isDynamic: true,
+      pattern: "/:slug",
+      routeSegments: ["[slug]"],
+    });
+    const emptyParams: Record<string, string | string[]> = {};
+    const actionPost = (pathname: string, origin = "https://example.test") =>
+      new Request(`${origin}/docs${pathname}`, {
+        method: "POST",
+        headers: { "content-type": "text/plain;charset=UTF-8", "next-action": "action-id" },
+        body: "[]",
+      });
+    const createActionHandler = (overrides: Partial<TestHandlerOptions>) => {
+      const handleServerActionRequest = vi.fn<
+        NonNullable<HandlerOptions["handleServerActionRequest"]>
+      >(async ({ routeMatch }) => new Response(`action:${routeMatch?.route.pattern ?? "none"}`));
+      const dispatchMatchedRouteHandler = vi.fn<DispatchMatchedRouteHandler>(
+        async ({ request }) => new Response(`route:${await request.text()}`, { status: 200 }),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedRouteHandler,
+        handleServerActionRequest,
+        ...overrides,
+      });
+      return { dispatchMatchedRouteHandler, handleServerActionRequest, handler };
+    };
+
+    it("leaves them to a statically matched route handler", async () => {
+      const { dispatchMatchedRouteHandler, handleServerActionRequest, handler } =
+        createActionHandler({
+          matchRoute: (pathname) =>
+            pathname === "/upload" ? { params: emptyParams, route: routeHandler } : null,
+        });
+
+      const response = await handler(actionPost("/upload"), null);
+
+      expect(await response.text()).toBe("route:[]");
+      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("leaves them to a route handler in a build without server actions", async () => {
+      const { handler } = createActionHandler({
+        handleServerActionRequest: undefined,
+        matchRoute: (pathname) =>
+          pathname === "/upload" ? { params: emptyParams, route: routeHandler } : null,
+      });
+
+      const response = await handler(actionPost("/upload"), null);
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("route:[]");
+    });
+
+    it("leaves them to an unrewritten dynamic route handler", async () => {
+      const dynamicRouteHandler = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        isDynamic: true,
+        page: null,
+        pattern: "/api/:slug",
+        routeHandler: { GET: () => new Response("route") },
+        routeSegments: ["api", "[slug]"],
+      });
+      const { dispatchMatchedRouteHandler, handleServerActionRequest, handler } =
+        createActionHandler({
+          matchRoute: (pathname) =>
+            pathname.startsWith("/api/")
+              ? { params: { slug: pathname.slice("/api/".length) }, route: dynamicRouteHandler }
+              : null,
+        });
+
+      const response = await handler(actionPost("/api/upload"), null);
+
+      expect(await response.text()).toBe("route:[]");
+      expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "leaves them to a route handler that %s rewrites reach",
+      async (phase) => {
+        const { dispatchMatchedRouteHandler, handleServerActionRequest, handler } =
+          createActionHandler({
+            configRewrites: {
+              afterFiles: [],
+              beforeFiles: [],
+              fallback: [],
+              [phase]: [{ source: "/upload-alias", destination: "/upload" }],
+            },
+            matchRoute: (pathname) =>
+              pathname === "/upload" ? { params: emptyParams, route: routeHandler } : null,
+          });
+
+        const response = await handler(actionPost("/upload-alias"), null);
+
+        expect(await response.text()).toBe("route:[]");
+        expect(dispatchMatchedRouteHandler).toHaveBeenCalledOnce();
+        expect(handleServerActionRequest).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "proxies them through %s external rewrites",
+      async (phase) => {
+        const received: { action: string | undefined; body: string }[] = [];
+        const server = createServer((req, res) => {
+          let body = "";
+          req.setEncoding("utf8");
+          req.on("data", (chunk: string) => (body += chunk));
+          req.on("end", () => {
+            received.push({ action: req.headers["next-action"] as string | undefined, body });
+            res.writeHead(200, { "content-type": "text/plain" });
+            res.end("upstream");
+          });
+        });
+        await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+        const address = server.address() as AddressInfo;
+
+        try {
+          const { handleServerActionRequest, handler } = createActionHandler({
+            configRewrites: {
+              afterFiles: [],
+              beforeFiles: [],
+              fallback: [],
+              [phase]: [
+                { source: "/proxy", destination: `http://127.0.0.1:${address.port}/upload` },
+              ],
+            },
+            matchRoute: () => null,
+          });
+
+          const response = await handler(actionPost("/proxy"), null);
+
+          expect(await response.text()).toBe("upstream");
+          expect(received).toEqual([{ action: "action-id", body: "[]" }]);
+          expect(handleServerActionRequest).not.toHaveBeenCalled();
+        } finally {
+          await new Promise<void>((resolve) => server.close(() => resolve()));
+        }
+      },
+    );
+
+    it("leaves them to a Pages route", async () => {
+      const { handleServerActionRequest, handler } = createActionHandler({
+        matchRoute: () => null,
+        renderPagesFallback: async ({ request }) => new Response(`pages:${await request.text()}`),
+      });
+
+      const response = await handler(actionPost("/legacy"), null);
+
+      expect(await response.text()).toBe("pages:[]");
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("leaves them to a Pages route that outranks a dynamic page match", async () => {
+      const { handleServerActionRequest, handler } = createActionHandler({
+        matchRoute: (pathname) => ({ params: { slug: pathname.slice(1) }, route: dynamicPage }),
+        renderPagesFallback: async () => new Response("pages"),
+      });
+
+      const response = await handler(actionPost("/legacy"), null);
+
+      expect(await response.text()).toBe("pages");
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("runs them against the page an afterFiles rewrite moves a dynamic match to", async () => {
+      const { handleServerActionRequest, handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/about-alias", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        matchRoute: (pathname) =>
+          pathname === "/about"
+            ? { params: emptyParams, route: aboutPage }
+            : { params: { slug: pathname.slice(1) }, route: dynamicPage },
+      });
+
+      const response = await handler(actionPost("/about-alias"), null);
+
+      expect(await response.text()).toBe("action:/about");
+      expect(handleServerActionRequest).toHaveBeenCalledOnce();
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cleanPathname: "/about",
+          routeMatch: { params: emptyParams, route: aboutPage },
+          routePathname: "/about",
+        }),
+      );
+    });
+
+    it.each(["afterFiles", "fallback"] as const)(
+      "runs them against the page that %s rewrites reach from an unmatched path",
+      async (phase) => {
+        const { handleServerActionRequest, handler } = createActionHandler({
+          configRewrites: {
+            afterFiles: [],
+            beforeFiles: [],
+            fallback: [],
+            [phase]: [{ source: "/about-alias", destination: "/about" }],
+          },
+          matchRoute: (pathname) =>
+            pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
+        });
+
+        const response = await handler(actionPost("/about-alias"), null);
+
+        expect(await response.text()).toBe("action:/about");
+        expect(handleServerActionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({
+            cleanPathname: "/about",
+            routeMatch: { params: emptyParams, route: aboutPage },
+          }),
+        );
+      },
+    );
+
+    it("runs them with the root params of the page an afterFiles rewrite reaches", async () => {
+      const localizedPage = createPageRoute({
+        isDynamic: true,
+        params: ["lang"],
+        pattern: "/:lang/contact",
+        rootParamNames: ["lang"],
+        routeSegments: ["[lang]", "contact"],
+      });
+      let observedRootParams: unknown = null;
+      const { handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/contact-alias", destination: "/en/contact" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        handleServerActionRequest: async () => {
+          const { getCurrentRootParams } =
+            await import("../packages/vinext/src/shims/root-params.js");
+          observedRootParams = getCurrentRootParams();
+          return new Response("action");
+        },
+        matchRoute: (pathname) =>
+          pathname === "/en/contact" ? { params: { lang: "en" }, route: localizedPage } : null,
+      });
+
+      await handler(actionPost("/contact-alias"), null);
+
+      expect(observedRootParams).toEqual({ lang: "en" });
+    });
+
+    it("answers a page match in a build without server actions with action-not-found", async () => {
+      const { handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/about-alias", destination: "/about" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        handleServerActionRequest: undefined,
+        matchRoute: (pathname) =>
+          pathname === "/about" ? { params: emptyParams, route: aboutPage } : null,
+      });
+
+      const response = await handler(actionPost("/about-alias"), null);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("x-nextjs-action-not-found")).toBe("1");
+    });
+
+    it("still runs them for an unmatched route", async () => {
+      const { handleServerActionRequest, handler } = createActionHandler({
+        matchRoute: () => null,
+      });
+
+      const response = await handler(actionPost("/missing"), null);
+
+      expect(await response.text()).toBe("action:none");
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ routeMatch: null }),
+      );
+    });
+
+    it("lets a Pages route claim an out-of-basePath action before fallback rewrites", async () => {
+      const { handleServerActionRequest, handler } = createActionHandler({
+        configRewrites: {
+          beforeFiles: [],
+          afterFiles: [{ source: "/outside", destination: "/api/upload", basePath: false }],
+          fallback: [{ source: "/api/upload", destination: "/about", basePath: false }],
+        },
+        renderPagesFallback: async (options) =>
+          (options.pathname ?? options.url.pathname) === "/api/upload"
+            ? new Response("pages-api")
+            : null,
+      });
+
+      const response = await handler(
+        new Request("https://example.test/outside", {
+          method: "POST",
+          headers: { "content-type": "text/plain;charset=UTF-8", "next-action": "action-id" },
+          body: "[]",
+        }),
+        null,
+      );
+
+      expect(await response.text()).toBe("pages-api");
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+  });
+
   it("marks progressive action page renders even when decoded form state is null", async () => {
     const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
     const handler = createHandler({

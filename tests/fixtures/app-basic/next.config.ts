@@ -271,6 +271,8 @@ const nextConfig: NextConfig = {
         { source: "/after-rewrite-about", destination: "/about" },
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/after-files-upload", destination: "/api/methods" },
+        // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
+        { source: "/after-files-revalidate", destination: "/nextjs-compat/action-revalidate" },
         // Ported from Next.js: test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
         // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/revalidate-path-with-rewrites/next.config.js
         {
@@ -307,6 +309,8 @@ const nextConfig: NextConfig = {
       fallback: [
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/fallback-upload", destination: "/api/methods" },
+        // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
+        { source: "/fallback-revalidate", destination: "/nextjs-compat/action-revalidate" },
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
