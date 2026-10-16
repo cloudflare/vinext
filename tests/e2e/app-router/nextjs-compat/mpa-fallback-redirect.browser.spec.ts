@@ -33,8 +33,11 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  if (server) await stopChildProductionServer(server);
-  if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true });
+  try {
+    if (server) await stopChildProductionServer(server);
+  } finally {
+    if (cacheDir) await fs.rm(cacheDir, { recursive: true, force: true });
+  }
 });
 
 for (const mode of ["first-aborts", "all-503"] as const) {
@@ -123,10 +126,12 @@ test("a later navigation to a URL already loading as a document is ignored", asy
   await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
   await waitForAppRouterHydration(page);
 
+  let targetRscReads = 0;
   await page.route(
     (url) => url.pathname === TARGET_PATH,
     (route) => {
       if (route.request().isNavigationRequest()) return route.fulfill({ status: 204 });
+      targetRscReads++;
       return route.fulfill({ status: 503, body: "" });
     },
   );
@@ -135,12 +140,17 @@ test("a later navigation to a URL already loading as a document is ignored", asy
     if (!request.isNavigationRequest()) return;
     if (new URL(request.url()).pathname === TARGET_PATH) targetDocumentRequests++;
   });
+  const historyLength = await page.evaluate(() => window.history.length);
 
   await page.getByRole("link", { name: "Login" }).click();
   await expect.poll(() => targetDocumentRequests).toBe(1);
   await page.getByRole("button", { name: "Replace" }).click();
+  // The replace reaches the router and fails over to a document load too.
+  await expect.poll(() => targetRscReads).toBe(2);
   await page.waitForTimeout(1_000);
   expect(targetDocumentRequests).toBe(1);
+  // The 204 leaves this document in place, so history is untouched too.
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
 });
 
 // Next.js keeps only the navigation's transition suspended until the document

@@ -88,6 +88,31 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     expect(replace).not.toHaveBeenCalled();
   });
 
+  it("navigates only to the latest href when a navigation supersedes a pending one", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+
+    scheduler.navigate(targetWindow, "/first", "push");
+    scheduler.navigate(targetWindow, "/second", "push");
+
+    flushNextTimeout();
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith("/second");
+  });
+
+  it("drops a pending navigation when reset before it fires", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, replace, targetWindow } = createNavigationWindow();
+
+    scheduler.navigate(targetWindow, "/login", "push");
+    scheduler.reset();
+
+    flushNextTimeout();
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
   it("dedupes an identical pending external navigation", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
     const { flushNextTimeout, replace, targetWindow, timeoutCount } = createNavigationWindow();
