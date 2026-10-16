@@ -1,6 +1,7 @@
 /**
  * Application initialization (`register()`, then the middleware and route
- * imports it gates) is memoized for the isolate and awaited by every request.
+ * imports it gates) is memoized for the isolate and awaited by every request,
+ * and so is the server `React.lazy` that each `next/dynamic` call creates.
  * workerd binds a promise's I/O continuations to the request that started it:
  * if that request is canceled before the work settles, the continuations are
  * dropped and the promise never settles. Without keeping the creating request
@@ -44,9 +45,9 @@ type Wrangler = {
 
 // A client disconnect over a local socket does not cancel the request, but
 // aborting a subrequest does. The Worker forwards `?cancel` to itself through
-// `ctx.exports`, in the same isolate, and aborts it once register() has started.
-// `/__warm` evaluates the Worker's modules without initializing the app, so the
-// canceled request is the one that starts initialization.
+// `ctx.exports`, in the same isolate, and aborts it once the shared work has
+// started. `/__warm` evaluates the Worker's modules without rendering anything,
+// so the canceled request is the one that starts the shared work.
 const CANCELING_WORKER = `import handler from "vinext/server/fetch-handler";
 
 type Ctx = ExecutionContext & {
@@ -61,11 +62,11 @@ export default {
 
     url.searchParams.delete("cancel");
     const controller = new AbortController();
-    const abortOnceRegisterStarts = () => {
-      if ((globalThis as { __registerStarted?: boolean }).__registerStarted) controller.abort();
-      else setTimeout(abortOnceRegisterStarts, 10);
+    const abortOnceSharedWorkStarts = () => {
+      if ((globalThis as { __sharedWorkStarted?: boolean }).__sharedWorkStarted) controller.abort();
+      else setTimeout(abortOnceSharedWorkStarts, 10);
     };
-    abortOnceRegisterStarts();
+    abortOnceSharedWorkStarts();
     try {
       const response = await ctx.exports.default.fetch(new Request(url, request), {
         signal: controller.signal,
@@ -73,8 +74,8 @@ export default {
       await response.text();
       return new Response("completed");
     } catch (error) {
-      // The abort only fires once register() has started, so this request is
-      // the one that started initialization. Anything else fails the test.
+      // The abort only fires once the shared work has started, so this request
+      // is the one that started it. Anything else fails the test.
       if (!controller.signal.aborted) return new Response(String(error), { status: 500 });
       return new Response("canceled");
     }
@@ -82,11 +83,34 @@ export default {
 };
 `;
 
-function describeCanceledInitialization(
+// Stands in for a loader that waits on I/O, such as fetching data.
+const SLOW_DYNAMIC = `import dynamic from "next/dynamic";
+
+export const Slow = dynamic(async () => {
+  (globalThis as { __sharedWorkStarted?: boolean }).__sharedWorkStarted = true;
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  return function SlowContent() {
+    return <p>slow</p>;
+  };
+});
+`;
+
+const SLOW_DYNAMIC_PAGE = `import { Slow } from "./slow-dynamic";
+
+export default function Page() {
+  return <Slow />;
+}
+`;
+
+function describeCanceledSharedWork(
   name: string,
   options: {
+    /** Files written into the fixture to start the shared work. */
+    files: Record<string, string>;
     filter?: (src: string) => boolean;
     pathname: string;
+    /** Text the next response must render. */
+    text: string;
     rscEnvironment: boolean;
     /** Where @cloudflare/vite-plugin writes the Worker's generated config. */
     workerOutDir: string;
@@ -122,15 +146,10 @@ function describeCanceledInitialization(
         options.filter,
         CLOUDFLARE_NODE_MODULES,
       );
-      // Stands in for a register() that waits on I/O, such as fetching config.
-      await fs.writeFile(
-        path.join(root, "instrumentation.ts"),
-        `export async function register() {
-  (globalThis as { __registerStarted?: boolean }).__registerStarted = true;
-  await new Promise((resolve) => setTimeout(resolve, 1000));
-}
-`,
-      );
+      for (const [file, contents] of Object.entries(options.files)) {
+        await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+        await fs.writeFile(path.join(root, file), contents);
+      }
       await fs.writeFile(path.join(root, "worker/index.ts"), CANCELING_WORKER);
       const cloudflarePluginPath = path.join(
         root,
@@ -165,9 +184,9 @@ function describeCanceledInitialization(
       if (root) await fs.rm(root, { recursive: true, force: true });
     });
 
-    it("serves the next request after the one that started initialization is canceled", async () => {
+    it("serves the next request after the one that started the shared work is canceled", async () => {
       const baseUrl = await startWorker();
-      // register() takes 1s, so the abort lands while initialization is pending.
+      // The shared work takes 1s, so the abort lands while it is pending.
       const first = await fetch(`${baseUrl}${options.pathname}?cancel`);
       expect(await first.text()).toBe("canceled");
 
@@ -175,22 +194,74 @@ function describeCanceledInitialization(
         signal: AbortSignal.timeout(10_000),
       });
       expect(second.status).toBe(200);
-      await second.text();
+      expect(await second.text()).toContain(options.text);
     }, 30_000);
   });
 }
 
-describeCanceledInitialization("canceled initialization: App Router on Workers", {
+// Stands in for a register() that waits on I/O, such as fetching config.
+const SLOW_INSTRUMENTATION = {
+  "instrumentation.ts": `export async function register() {
+  (globalThis as { __sharedWorkStarted?: boolean }).__sharedWorkStarted = true;
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+}
+`,
+};
+
+// Without app/, the same fixture builds as a Pages Router app, which renders
+// through the Pages server entry instead of the RSC entry.
+const pagesRouterOnly = (src: string) => !src.includes(`${path.sep}cf-app-basic${path.sep}app`);
+
+describeCanceledSharedWork("canceled initialization: App Router on Workers", {
+  files: SLOW_INSTRUMENTATION,
   pathname: "/",
+  text: "<h1>Home</h1>",
   rscEnvironment: true,
   workerOutDir: "dist/server",
 });
 
-describeCanceledInitialization("canceled initialization: Pages Router on Workers", {
-  // Without app/, the same fixture builds as a Pages Router app, which
-  // initializes through the Pages server entry instead of the RSC entry.
-  filter: (src) => !src.includes(`${path.sep}cf-app-basic${path.sep}app`),
+describeCanceledSharedWork("canceled initialization: Pages Router on Workers", {
+  files: SLOW_INSTRUMENTATION,
+  filter: pagesRouterOnly,
   pathname: "/pages-home",
+  text: "CF Hybrid Home (Pages)",
+  rscEnvironment: false,
+  workerOutDir: "dist/cf_app_basic",
+});
+
+describeCanceledSharedWork("canceled next/dynamic: App Router server component on Workers", {
+  files: {
+    "app/slow-dynamic/slow-dynamic.tsx": SLOW_DYNAMIC,
+    "app/slow-dynamic/page.tsx": SLOW_DYNAMIC_PAGE,
+  },
+  pathname: "/slow-dynamic",
+  text: "<p>slow</p>",
+  rscEnvironment: true,
+  workerOutDir: "dist/server",
+});
+
+describeCanceledSharedWork("canceled next/dynamic: App Router client component on Workers", {
+  files: {
+    "app/slow-dynamic/slow-dynamic.tsx": `"use client";\n${SLOW_DYNAMIC}`,
+    "app/slow-dynamic/page.tsx": SLOW_DYNAMIC_PAGE,
+  },
+  pathname: "/slow-dynamic",
+  text: "<p>slow</p>",
+  rscEnvironment: true,
+  workerOutDir: "dist/server",
+});
+
+describeCanceledSharedWork("canceled next/dynamic: Pages Router on Workers", {
+  files: {
+    "components/slow-dynamic.tsx": SLOW_DYNAMIC,
+    "pages/slow-dynamic.tsx": SLOW_DYNAMIC_PAGE.replace(
+      "./slow-dynamic",
+      "../components/slow-dynamic",
+    ),
+  },
+  filter: pagesRouterOnly,
+  pathname: "/slow-dynamic",
+  text: "<p>slow</p>",
   rscEnvironment: false,
   workerOutDir: "dist/cf_app_basic",
 });

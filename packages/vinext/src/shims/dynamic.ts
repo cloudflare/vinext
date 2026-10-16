@@ -100,13 +100,37 @@ function normalizeDynamicOptions<P>(
   };
 }
 
-function createLazyComponent<P>(loader: LoaderFn<P>) {
-  return React.lazy(async () => {
-    const mod = await loader();
-    if (hasDefaultExport(mod)) return mod;
-    return { default: mod };
-  });
+type ShareLoad = <T>(load: Promise<T>) => Promise<T>;
+
+function createLazyComponent<P>(loader: LoaderFn<P>, share: ShareLoad = (load) => load) {
+  return React.lazy(() =>
+    share(
+      (async () => {
+        const mod = await loader();
+        if (hasDefaultExport(mod)) return mod;
+        return { default: mod };
+      })(),
+    ),
+  );
 }
+
+// Installed by server/isolate-shared-promise.ts; keep the key in sync.
+const SHARE_ISOLATE_PROMISE_KEY = Symbol.for("vinext.shareIsolatePromise");
+
+/**
+ * The server React.lazy is created once per dynamic() call, so every request
+ * in the isolate renders the same load. On Workers, the request that starts it
+ * owns its I/O; if that request is canceled first, the load never settles and
+ * every later render of the component hangs. The server installs
+ * `shareIsolatePromise` on a global symbol, which keeps the starting request
+ * alive until the load settles, without this shim importing request state.
+ */
+const shareServerLoad: ShareLoad = (load) => {
+  const share = (globalThis as { [SHARE_ISOLATE_PROMISE_KEY]?: ShareLoad })[
+    SHARE_ISOLATE_PROMISE_KEY
+  ];
+  return share ? share(load) : load;
+};
 
 function useRetryableLazyComponent<P>(
   loader: LoaderFn<P>,
@@ -376,7 +400,7 @@ function dynamic<P = {}>(
 
     // SSR path: Use React.lazy so that renderToReadableStream can suspend
     // until the dynamically-imported component is available.
-    const LazyServer = createLazyComponent(loader);
+    const LazyServer = createLazyComponent(loader, shareServerLoad);
 
     const ServerDynamic = (props: P) => {
       const isAppRouterTree = useIsAppRouterTree();

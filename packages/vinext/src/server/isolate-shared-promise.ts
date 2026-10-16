@@ -36,3 +36,13 @@ export function shareIsolatePromise<T>(
   context?.waitUntil?.(promise.then(ignore, ignore));
   return promise;
 }
+
+// Shims that are also bundled for the browser, such as next/dynamic, cannot
+// import request state. Every server build loads this module before it renders
+// (the App and Pages entries, the cache handler and the ISR cache all import
+// it), so publishing the helper on a global symbol lets those shims reach it on
+// the server only. Keep the key in sync with shims/dynamic.ts.
+const SHARE_ISOLATE_PROMISE_KEY = Symbol.for("vinext.shareIsolatePromise");
+(globalThis as { [SHARE_ISOLATE_PROMISE_KEY]?: typeof shareIsolatePromise })[
+  SHARE_ISOLATE_PROMISE_KEY
+] ??= shareIsolatePromise;
