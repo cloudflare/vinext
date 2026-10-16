@@ -80,13 +80,18 @@ export function getPluginReactUpgradeDeps(root: string): string[] {
   }
   if (typeof declared !== "string") return [];
 
-  // A range's newest match keeps its major, so a declared major below the
-  // floor's can never install a supported version.
-  const major = /^[~^]?(\d+)/.exec(declared)?.[1];
+  // A simple range's newest match keeps its major, so a declared major below
+  // the floor's can never install a supported version. Comparator sets and
+  // unions (`<5`, `4 || ^6`) are left to the installed check below and to
+  // vinext's startup check.
+  const major = /^[~^]?(\d+)(?:\.(?:\d+|[x*])){0,2}$/.exec(declared.trim())?.[1];
   if (major !== undefined && Number(major) < MINIMUM_PLUGIN_REACT_VERSION[0]) {
     return ["@vitejs/plugin-react@latest"];
   }
-  // A lockfile can still hold an older match of a supported major.
+  // A lockfile can still hold an older match of a supported major, or a
+  // prerelease, which vinext's `^5.1.4 || ^6.0.0` peer range never matches.
   const installed = resolveFrom(manifest);
-  return installed && !isSupported(installed) ? ["@vitejs/plugin-react@latest"] : [];
+  return installed && (!isSupported(installed) || installed.version?.includes("-"))
+    ? ["@vitejs/plugin-react@latest"]
+    : [];
 }

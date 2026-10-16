@@ -2591,6 +2591,30 @@ describe("init — dependency installation", () => {
     expect(execCalls.some((c) => c.cmd.includes('"@vitejs/plugin-react@latest"'))).toBe(true);
   });
 
+  it("upgrades an installed @vitejs/plugin-react prerelease outside vinext's peer range", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { devDependencies: { "@vitejs/plugin-react": "6.0.0-beta.0" } },
+    });
+    setupFakePackage(tmpDir, "@vitejs/plugin-react", "6.0.0-beta.0");
+
+    const { execCalls } = await runInit(tmpDir);
+
+    expect(execCalls.some((c) => c.cmd.includes('"@vitejs/plugin-react@latest"'))).toBe(true);
+  });
+
+  it("keeps a declared @vitejs/plugin-react union whose installed match is supported", async () => {
+    setupProject(tmpDir, {
+      router: "pages",
+      extraPkg: { devDependencies: { "@vitejs/plugin-react": "4 || ^6" } },
+    });
+    setupFakePackage(tmpDir, "@vitejs/plugin-react", "6.1.2");
+
+    const { execCalls } = await runInit(tmpDir);
+
+    expect(execCalls.some((c) => c.cmd.includes("@vitejs/plugin-react"))).toBe(false);
+  });
+
   it("keeps a declared @vitejs/plugin-react inside vinext's peer range", async () => {
     setupProject(tmpDir, {
       router: "pages",
