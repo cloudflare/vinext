@@ -249,7 +249,8 @@ jobs:
         run: |
           node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3099 &
           SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # Wait for the server to exit: vinext allows one dev server per directory.
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; for _ in $(seq 1 20); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 0.5; done' EXIT
 
           for i in $(seq 1 45); do
             STATUS=$(node -e '
@@ -306,7 +307,8 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
           node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3098 &
           SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # Wait for the server to exit: vinext allows one dev server per directory.
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; for _ in $(seq 1 20); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 0.5; done' EXIT
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3098
 
   create-next-app-cloudflare:
@@ -409,7 +411,8 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
           node node_modules/vite/bin/vite.js dev --host 127.0.0.1 --port 3097 &
           SERVER_PID=$!
-          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          # Wait for the server to exit: vinext allows one dev server per directory.
+          trap 'kill "$SERVER_PID" 2>/dev/null || true; for _ in $(seq 1 20); do kill -0 "$SERVER_PID" 2>/dev/null || break; sleep 0.5; done' EXIT
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3097
 
       - name: Build generated Cloudflare project

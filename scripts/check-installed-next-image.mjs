@@ -12,7 +12,8 @@
  * `write` adds app/image-check/ to the app: a Server Component calling
  * getImageProps and rendering Image, plus a Client Component rendering Image.
  * Run it before starting the dev server. `check` then waits for
- * <base-url>/image-check to render and hydrate without errors or reloads.
+ * <base-url>/image-check to render on the first request and hydrate without
+ * errors or reloads.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -68,31 +69,27 @@ if (command !== "check" || !target) {
 
 const url = new URL("/image-check", target).href;
 
-async function waitForPage() {
-  // The first request compiles the page, so allow it a while, but bound the
-  // whole wait so a stalled server fails the job quickly.
+// Wait only for the server to listen. The browser makes the first request to
+// the page, so a failure or reload on that cold request fails the check.
+async function waitForServer() {
   const deadline = Date.now() + 120_000;
-  let lastStatus = "no response";
+  let lastError = "no response";
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, {
-        signal: AbortSignal.timeout(Math.min(30_000, deadline - Date.now())),
+      const response = await fetch(new URL("/@vite/client", target), {
+        signal: AbortSignal.timeout(10_000),
       });
-      const body = await response.text();
-      if (response.status === 200) return body;
-      lastStatus = `${response.status}: ${body.slice(0, 2000)}`;
+      await response.body?.cancel();
+      return;
     } catch (error) {
-      lastStatus = String(error);
+      lastError = String(error);
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error(`${url} did not respond with 200 within 2 minutes. Last response: ${lastStatus}`);
+  throw new Error(`${target} did not start listening within 2 minutes: ${lastError}`);
 }
 
-const html = await waitForPage();
-for (const id of ["props-image", "server-image", "client-image"]) {
-  if (!html.includes(`id="${id}"`)) throw new Error(`SSR HTML is missing #${id}`);
-}
+await waitForServer();
 
 const browser = await chromium.launch();
 try {
@@ -105,7 +102,14 @@ try {
   let loads = 0;
   page.on("load", () => loads++);
 
-  await page.goto(url, { waitUntil: "load" });
+  const response = await page.goto(url, { waitUntil: "load", timeout: 120_000 });
+  const html = (await response?.text()) ?? "";
+  if (response?.status() !== 200) {
+    throw new Error(`${url} responded with ${response?.status()}: ${html.slice(0, 2000)}`);
+  }
+  for (const id of ["props-image", "server-image", "client-image"]) {
+    if (!html.includes(`id="${id}"`)) errors.push(`SSR HTML is missing #${id}`);
+  }
   try {
     await page.waitForSelector('#client-image[data-hydrated="true"]', { timeout: 30_000 });
     // Give a late dependency optimization (which reloads the page) time to land.
