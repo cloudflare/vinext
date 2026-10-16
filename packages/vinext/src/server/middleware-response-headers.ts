@@ -69,27 +69,60 @@ export function mergeMiddlewareResponseHeaders(
   }
 }
 
+// Next.js send-response.ts appends a response's own values for these after the
+// middleware values already on the outgoing response. Vary is merged by
+// mergeMiddlewareResponseHeaders; other response headers yield to middleware.
+const RESPONSE_APPENDED_HEADER_NAMES = ["set-cookie", "www-authenticate", "proxy-authenticate"];
+const RESPONSE_APPENDED_COOKIE_HEADER_NAMES = ["set-cookie"];
+
+export type MiddlewareResponseMergeOptions = {
+  /**
+   * Keep the response's WWW-Authenticate and Proxy-Authenticate after
+   * middleware's, as Next.js does for App route handlers. Pages API handlers
+   * write to the Node response that already holds middleware's headers, so
+   * their callers opt out.
+   */
+  appendResponseChallenges?: boolean;
+};
+
 /**
  * Merge middleware response headers onto an already-built response's headers.
  *
  * Next.js writes middleware response headers before the handler runs and then
- * appends the handler response's Set-Cookie values, so middleware cookies come
- * first. Keeping that order makes a handler's cookie for the same name (a
- * logout deletion or session rotation) the one the browser applies last.
+ * appends the handler response's Set-Cookie, WWW-Authenticate and
+ * Proxy-Authenticate values, so middleware values come first and the
+ * response's own are kept. A handler's cookie for the same name (a logout
+ * deletion or session rotation) is then the one the browser applies last.
  */
-export function mergeMiddlewareResponseHeadersBeforeResponseCookies(
+export function mergeMiddlewareResponseHeadersOntoResponse(
   target: Headers,
   middlewareHeaders: Headers | null,
+  options: MiddlewareResponseMergeOptions = {},
 ): void {
-  if (!middlewareHeaders?.has("set-cookie")) {
-    mergeMiddlewareResponseHeaders(target, middlewareHeaders);
+  if (!middlewareHeaders) {
     return;
   }
 
-  const responseCookies = target.getSetCookie();
-  target.delete("set-cookie");
+  const responseValues: [string, string[]][] = [];
+  const appendedNames =
+    options.appendResponseChallenges === false
+      ? RESPONSE_APPENDED_COOKIE_HEADER_NAMES
+      : RESPONSE_APPENDED_HEADER_NAMES;
+  for (const name of appendedNames) {
+    if (!middlewareHeaders.has(name)) continue;
+    const value = target.get(name);
+    responseValues.push([
+      name,
+      name === "set-cookie" ? target.getSetCookie() : value === null ? [] : [value],
+    ]);
+    target.delete(name);
+  }
   mergeMiddlewareResponseHeaders(target, middlewareHeaders);
-  for (const cookie of responseCookies) {
-    target.append("set-cookie", cookie);
+  for (const [name, values] of responseValues) {
+    // Next.js only stages truthy middleware header values.
+    if (!middlewareHeaders.get(name)) target.delete(name);
+    for (const value of values) {
+      target.append(name, value);
+    }
   }
 }
