@@ -475,6 +475,21 @@ describe("App Router Production server (startProdServer)", () => {
     },
   );
 
+  // Next.js's send-response keeps a route handler's WWW-Authenticate and
+  // Proxy-Authenticate values after middleware's; singular headers stay
+  // middleware-owned.
+  it("keeps a route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
+  });
+
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
     // request.url))`, so routing this request would echo the target's origin.

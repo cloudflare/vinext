@@ -438,6 +438,18 @@ describe("generic HTTP multi-stage transport", () => {
     expect(sessionCookies[1]).toMatch(/^session=; /);
   });
 
+  it("keeps a response-stage route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${requestServer.origin}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
+  });
+
   it("clears stale shared-cache policy when an admitted response becomes private", () => {
     expect(
       createHttpStageCacheAdapter().buildResponseHeaders({

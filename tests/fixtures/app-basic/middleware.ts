@@ -154,6 +154,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.headers.set("x-mw-has-session", "true");
   }
 
+  if (pathname === "/api/auth-challenge") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("x-auth-source", "middleware");
+    return response;
+  }
+
   // Sliding-session refresh: re-issue the session cookie with a renewed
   // expiry. The route handler's logout/rotation cookie must still win.
   if (pathname === "/api/session-refresh" && sessionToken) {
@@ -537,6 +544,7 @@ export const config = {
     "/header-override-delete",
     "/api/header-override-delete",
     "/api/session-refresh",
+    "/api/auth-challenge",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-fallback-to-app/:path*",
