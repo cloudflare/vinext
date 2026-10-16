@@ -1,5 +1,42 @@
 # vinext
 
+## 1.2.2
+
+### Bug Fixes
+
+#### App Router
+
+- use React 19.3's #441 message for sanitized server errors (#4049)
+- keep root params in stale page regeneration (#4004)
+- stop dynamic = "error" searchParams from hanging the RSC stream (#4002)
+
+#### Server
+
+- run JS Server Actions against the final route (#4061)
+- decide progressive actions after late routing (#4037)
+- skip progressive actions for multipart route handlers (#3905)
+
+#### Misc
+
+- resolve nothing for rewrite destinations outside basePath (#4059)
+- **Config:** reject basePath: false rewrites to internal destinations (#4058)
+- **OG:** import @vercel/og again after a failed import (#4052)
+- **Middleware:** run Node middleware against the server's own origin (#4033)
+- **Init:** upgrade a declared @vitejs/plugin-react below vinext's peer range (#4047)
+- **Plugins:** skip unsupported @vitejs/plugin-react copies the app resolves (#4043)
+- **Dynamic:** keep the request that starts a server next/dynamic load alive until it settles (#4046)
+- **Prod Server:** don't serve Pages public files outside basePath (#4025)
+- **App:** order middleware Set-Cookie before route handler cookies (#4026)
+- **Build:** list Pages routes in _buildManifest.js sortedPages (#4035)
+- **Cloudflare:** keep the request that starts isolate-shared work alive until it settles (#4024)
+- **App:** keep route handler request.signal aborting after GC (#4022)
+
+### Contributors
+
+- @caumeira
+- @james-elicx
+- @pitahashi
+
 ## 1.2.1
 
 ### Bug Fixes
@@ -21,12 +58,12 @@
 - **Deps:** require React 19.3.1 (#3995)
 - **Headers:** share RequestCookies method symbols across shim module instances (#4001)
 - **Nitro:** stop generating Nitro SWR route rules from revalidate exports (#3979)
-- **Head:** drop on* attributes in any case from next/head tags (#3984)
+- **Head:** drop on\* attributes in any case from next/head tags (#3984)
 - **Middleware:** match matcher paths case-sensitively like Next.js (#3978)
 - **Build:** compile "use cache" imports in browser Web Workers as references (#3980)
 - **Server:** 404 absolute-form request targets on Node entries (#3986)
 - **Navigation:** never treat a same-origin // pathname as a protocol-relative local path (#3992)
-- **Image:** keep encoded dot segments in _next/static sources literal on Workers (#3982)
+- **Image:** keep encoded dot segments in \_next/static sources literal on Workers (#3982)
 - **Image:** reject image sources whose dot segments resolve to a protocol-relative path (#3983)
 - **Server:** only trust NextRequest.ip/geo from Cloudflare metadata or a trusted proxy (#3989)
 - **i18n:** keep relative hrefs on the configured locale domain (#3990)
