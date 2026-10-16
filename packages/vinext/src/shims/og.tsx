@@ -43,7 +43,13 @@ export class ImageResponse extends Response {
           // embedded wasm/fonts) is code-split into its own chunk instead of
           // being inlined into the main worker entry, regardless of whether the
           // app imports next/og statically or dynamically.
-          vercelOg = import("@vercel/og");
+          const loading = import("@vercel/og");
+          vercelOg = loading;
+          // Next.js imports @vercel/og for every image, so forget a failed
+          // import and let the next image try again.
+          loading.catch(() => {
+            if (vercelOg === loading) vercelOg = undefined;
+          });
           void shareIsolatePromise(
             new Promise<void>((resolve) => {
               settleInitialization = resolve;
