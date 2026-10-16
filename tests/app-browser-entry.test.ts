@@ -3508,6 +3508,8 @@ describe("app browser navigation controller", () => {
 
     try {
       const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const resolvedPendingState = vi.fn();
+      void pendingRouterState.promise.then(resolvedPendingState);
       const navId = controller.beginNavigation();
       let resolvePayload!: (elements: AppElements) => void;
       const nextElements = new Promise<AppElements>((resolve) => {
@@ -3547,7 +3549,9 @@ describe("app browser navigation controller", () => {
       resolvePayload(createResolvedElements("route:/marketing", "/", null, {}, ["layout:/stale"]));
 
       await expect(result).resolves.toBe("hard-navigate");
+      await Promise.resolve();
       expect(pendingRouterState.settled).toBe(true);
+      expect(resolvedPendingState).not.toHaveBeenCalled();
       expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing", "assign");
       expect(stateRef.current.routeId).toBe("route:/app");
     } finally {

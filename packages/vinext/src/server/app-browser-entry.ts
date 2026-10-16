@@ -429,6 +429,20 @@ let mpaNavigationTree: {
   // ACTION_RESTORE does when bfcache restores the document.
   restore(): void;
 } | null = null;
+let mpaNavigationRestore: { promise: Promise<void>; resolve: () => void } | null = null;
+
+// A navigation the document load replaces stays pending until unload, or until
+// bfcache restores this document and the navigation's transition can finish.
+function waitForMpaNavigationRestore(): Promise<void> {
+  if (!mpaNavigationRestore) {
+    let resolve = () => {};
+    const promise = new Promise<void>((resolvePromise) => {
+      resolve = resolvePromise;
+    });
+    mpaNavigationRestore = { promise, resolve };
+  }
+  return mpaNavigationRestore.promise;
+}
 const RSC_HMR_SETTLE_DELAY_MS = 150;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType<{
   error: unknown;
@@ -1386,10 +1400,15 @@ function BrowserRoot({
       stateRef,
     );
     const setMpaNavigationState = (href: string, historyUpdateMode: HistoryUpdateMode) => {
-      setTreeStateValue({
-        href,
-        historyUpdateMode,
-        kind: "mpa-navigation",
+      // Next.js reaches the MPA state through the navigation's transition, so
+      // only transitions suspend; a default-priority update would freeze every
+      // other update in the app until unload.
+      startTransition(() => {
+        setTreeStateValue({
+          href,
+          historyUpdateMode,
+          kind: "mpa-navigation",
+        });
       });
     };
     const currentMpaNavigationTree = {
@@ -1404,7 +1423,7 @@ function BrowserRoot({
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
         setMpaNavigationState(href, historyUpdateMode);
-        return new Promise<void>(() => {});
+        return waitForMpaNavigationRestore();
       },
     });
     browserRouterStateHasEverCommitted = true;
@@ -2967,9 +2986,7 @@ function bootstrapHydration(
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
       if (startedHardNavigation) {
-        // Like navigateExternal, a navigation the document load replaces never
-        // finishes, so callers keep its pending state until unload.
-        await unresolvedMpaNavigation;
+        await waitForMpaNavigationRestore();
       }
     }
   };
@@ -3229,6 +3246,8 @@ if (typeof document !== "undefined") {
     if (event.persisted) {
       mpaNavigationScheduler.reset();
       mpaNavigationTree?.restore();
+      mpaNavigationRestore?.resolve();
+      mpaNavigationRestore = null;
     }
   });
   void main();

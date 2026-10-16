@@ -47,10 +47,12 @@ for (const mode of ["first-aborts", "all-503"] as const) {
       return route.continue();
     });
 
+    let rscRequests = 0;
     let targetDocumentRequests = 0;
     page.on("request", (request) => {
-      if (!request.isNavigationRequest()) return;
-      if (new URL(request.url()).pathname === TARGET_PATH) targetDocumentRequests++;
+      const url = new URL(request.url());
+      if (url.searchParams.has("_rsc")) rscRequests++;
+      if (request.isNavigationRequest() && url.pathname === TARGET_PATH) targetDocumentRequests++;
     });
     const historyLength = await page.evaluate(() => window.history.length);
 
@@ -61,6 +63,8 @@ for (const mode of ["first-aborts", "all-503"] as const) {
     // Give a looping RedirectBoundary time to show up as extra requests.
     await page.waitForTimeout(2_000);
     expect(targetRscReads).toBe(1);
+    // The source's refresh and the target's failed read, as in Next.js.
+    expect(rscRequests).toBe(2);
     expect(targetDocumentRequests).toBe(1);
     // The boundary follows the redirect with router.replace, so the document
     // load replaces the entry instead of pushing one.
@@ -105,9 +109,10 @@ test("a pushed navigation whose RSC fetch fails adds a history entry", async ({ 
   expect(await page.evaluate(() => window.history.length)).toBe(historyLength + 1);
 });
 
-// Next.js keeps the navigation's transition suspended until the document
-// unloads: "useTransition isPending should stay true until the page unloads".
-// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx
+// Next.js keeps only the navigation's transition suspended until the document
+// unloads (app-router.tsx: "useTransition isPending should stay true until the
+// page unloads"); other updates keep rendering. vinext covers the external-URL
+// case in navigation.spec.ts, ported from test/e2e/app-dir/navigation.
 test("a transition whose RSC fetch fails stays pending during the document load", async ({
   page,
 }) => {
@@ -133,6 +138,10 @@ test("a transition whose RSC fetch fails stays pending during the document load"
   await page.waitForTimeout(1_000);
   await expect(page.locator("#mpa-restore-pending")).toHaveText("true");
   await expect(page.locator("#mpa-restore-pushed")).toHaveText("false");
+  const tick = Number(await page.locator("#mpa-restore-tick").textContent());
+  await expect
+    .poll(async () => Number(await page.locator("#mpa-restore-tick").textContent()))
+    .toBeGreaterThan(tick);
 });
 
 // Ported from Next.js: test/production/bfcache-routing/index.test.ts
@@ -161,10 +170,13 @@ test("a document restored after a hard navigation renders and navigates again", 
 
   await page.getByRole("link", { name: "Login" }).click();
   await expect.poll(() => targetDocumentRequests).toBe(1);
+  await expect(page.locator("#mpa-restore-link-pending")).toHaveText("true");
 
   await page.evaluate(() => {
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
   });
+  // Restoring finishes the navigation's transition, as Next.js's ACTION_RESTORE does.
+  await expect(page.locator("#mpa-restore-link-pending")).toHaveText("false");
   await page.getByRole("button", { name: "Trigger re-render" }).click();
   await expect(page.locator("#mpa-restore-count")).toHaveText("1");
   await page.waitForTimeout(1_000);
@@ -174,4 +186,34 @@ test("a document restored after a hard navigation renders and navigates again", 
   // The restored router can start the same hard navigation again.
   await page.getByRole("link", { name: "Login" }).click();
   await expect.poll(() => targetDocumentRequests).toBe(2);
+});
+
+// The external-URL case of Next's bfcache-routing test.
+test("a document restored after an external navigation stays put", async ({ page }) => {
+  await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
+  await waitForAppRouterHydration(page);
+
+  await page.route(
+    (url) => url.hostname === "external.example",
+    (route) => route.fulfill({ status: 204 }),
+  );
+  let externalDocumentRequests = 0;
+  page.on("request", (request) => {
+    if (!request.isNavigationRequest()) return;
+    if (new URL(request.url()).hostname === "external.example") externalDocumentRequests++;
+  });
+
+  await page.getByRole("button", { name: "Push external" }).click();
+  await expect.poll(() => externalDocumentRequests).toBe(1);
+
+  await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+  });
+  await page.getByRole("button", { name: "Trigger re-render" }).click();
+  await expect(page.locator("#mpa-restore-count")).toHaveText("1");
+  await page.waitForTimeout(1_000);
+  expect(externalDocumentRequests).toBe(1);
+
+  await page.getByRole("button", { name: "Push external" }).click();
+  await expect.poll(() => externalDocumentRequests).toBe(2);
 });
