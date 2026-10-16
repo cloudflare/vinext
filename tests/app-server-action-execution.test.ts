@@ -49,6 +49,7 @@ import {
 import { withEnvVar } from "./env-test-helpers.js";
 import {
   createRscOnErrorHandler as createRealRscOnErrorHandler,
+  PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
 
@@ -1478,7 +1479,7 @@ describe("app server action execution helpers", () => {
       expect(response?.status).toBe(500);
       const { digest, reason } = (await rejection) as { digest: unknown; reason: unknown };
       expect(reason).toBeInstanceOf(Error);
-      expect((reason as Error).message).toContain("omitted in production builds");
+      expect((reason as Error).message).toBe(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
       expect(digest).toEqual(expect.any(String));
       expect(digest).toBe((reason as { digest?: unknown }).digest);
       expect(reportRequestError).toHaveBeenCalledTimes(1);

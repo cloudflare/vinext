@@ -3,6 +3,7 @@ import {
   createRscOnErrorHandler,
   errorDigest,
   getDigestForWellKnownError,
+  PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
 
@@ -51,7 +52,7 @@ describe("app RSC error primitives", () => {
     const digestError = expectDigestError(sanitized);
 
     expect(sanitized).not.toBe(error);
-    expect(digestError.message).toContain("omitted in production");
+    expect(digestError.message).toBe(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
     expect(digestError.digest).toBe(errorDigest("secret detailsstack"));
   });
 
@@ -361,8 +362,8 @@ describe("app RSC error primitives", () => {
           original,
         );
         // Terminal diagnostics must not alter production error sanitization.
-        expect(expectDigestError(sanitizeErrorForClient(original, "production")).message).toContain(
-          "omitted in production",
+        expect(expectDigestError(sanitizeErrorForClient(original, "production")).message).toBe(
+          PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
         );
       } finally {
         consoleError.mockRestore();

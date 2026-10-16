@@ -147,6 +147,9 @@ jobs:
           VINEXT_BUILD: "0"
           NEXTJS_PREPARE: "1"
           NEXTJS_PREPARE_ONLY: "1"
+          # The React-dependent test expectation updates follow the React
+          # installed in the vinext tree under test, including backfills.
+          VINEXT_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
           # The Next.js workspace pulls `playwright-chromium` as a transitive
           # dep, whose postinstall downloads Chrome via the Playwright CDN.
           # Since 2026-05-22 that postinstall has wedged on this runner after

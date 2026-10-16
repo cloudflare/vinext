@@ -87,6 +87,15 @@ export function errorDigest(input: string): string {
   return (hash >>> 0).toString();
 }
 
+/**
+ * The message React 19.3's production Flight client gives a Server Components
+ * error in the browser (minified error #441). Sanitized errors that vinext
+ * serializes itself, such as the error passed to app/global-error, use the
+ * same text so they read the same as errors React reconstructs.
+ */
+export const PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE =
+  "Minified React error #441; visit https://react.dev/errors/441 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
+
 export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NODE_ENV): unknown {
   if (resolveAppPageSpecialError(error)) {
     return error;
@@ -96,11 +105,7 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
     return error;
   }
 
-  const sanitized: DigestError = new Error(
-    "An error occurred in the Server Components render. " +
-      "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-      "A digest property is included on this error instance which may provide additional details about the nature of the error.",
-  );
+  const sanitized: DigestError = new Error(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
   sanitized.digest = hasDigest(error) ? String(error.digest) : getThrownValueDigest(error);
   Object.defineProperty(sanitized, ORIGINAL_SERVER_ERROR, {
     configurable: false,
