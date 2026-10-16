@@ -15,7 +15,6 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "dynamic-preload-chunks",
   "form",
   "image",
-  "image-component",
   "image-props",
   "internal/hybrid-client-route-owner",
   "layout-segment-context",

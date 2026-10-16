@@ -186,7 +186,6 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
-    expect(appClientManualChunks("/vinext/shims/image-component.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image-props.js")).toBeUndefined();
     expect(
       appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js"),
@@ -647,18 +646,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
-      // Pre-bundling next/image or next/legacy/image would inline the nested
-      // "use client" shims/image-component module: the RSC optimizer drops its
-      // directive and the client optimizer duplicates it.
-      for (const spelling of [
-        "next/image",
-        "next/image.js",
-        "next/legacy/image",
-        "next/legacy/image.js",
-      ]) {
-        expect(result.environments.rsc.optimizeDeps?.exclude).toContain(spelling);
-        expect(result.environments.client.optimizeDeps?.exclude).toContain(spelling);
-      }
       for (const shimExclude of rscClientShimExcludes) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
@@ -1426,98 +1413,6 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(root, { recursive: true, force: true });
     }
   });
-
-  it("drops next/image includes that would re-inline the Image client reference in dev", async () => {
-    // Vite pre-bundles explicit optimizeDeps.include entries, and every match of
-    // a glob include, without checking exclude, so an inherited next/image include
-    // would inline the nested "use client" shims/image-component module again.
-    const vinext = (await import("../packages/vinext/src/index.js")).default;
-    const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
-    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-image-include-"));
-    await fsp.mkdir(path.join(root, "app"));
-    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
-    try {
-      const userInclude = [
-        "next/image",
-        "lib > next/legacy/image.js",
-        "next/image*",
-        "lib > next/{image,link}.js",
-        "other-dep",
-        "other-dep/*",
-      ];
-      const config = await plugin.config(
-        { root, build: {}, optimizeDeps: { include: userInclude } },
-        { command: "serve" },
-      );
-      const clientConfig = mergeConfig({}, config.environments.client);
-      const rscConfig = mergeConfig(config.environments.rsc, {
-        optimizeDeps: { include: ["next/image.js"], noDiscovery: false },
-      });
-      await plugin.configResolved({
-        cacheDir: path.join(root, ".vite"),
-        command: "serve",
-        configFile: false,
-        environments: { client: clientConfig, rsc: rscConfig },
-        logger: createLogger("silent"),
-        plugins: [],
-      });
-      for (const include of [clientConfig.optimizeDeps.include, rscConfig.optimizeDeps.include]) {
-        expect(include).toContain("other-dep");
-        expect(include).toContain("other-dep/*");
-        for (const id of [
-          "next/image",
-          "next/image.js",
-          "lib > next/legacy/image.js",
-          "next/image*",
-          "lib > next/{image,link}.js",
-        ]) {
-          expect(include).not.toContain(id);
-        }
-      }
-    } finally {
-      await fsp.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    { name: "RSC discovery enabled (Cloudflare)", rscNoDiscovery: false },
-    { name: "RSC discovery disabled (Node)", rscNoDiscovery: true },
-  ])(
-    "pre-bundles the CommonJS deps of the next/image client reference in dev: $name",
-    async ({ rscNoDiscovery }) => {
-      // In dev, plugin-rsc serves the nested "use client" shims/image-component
-      // module straight from node_modules, where Vite does not discover deps.
-      // ipaddr.js is CommonJS, so it must be pre-bundled up front or the browser
-      // cannot import its default export. The RSC env only runs the optimizer
-      // with discovery under @cloudflare/vite-plugin, which needs the same include.
-      const vinext = (await import("../packages/vinext/src/index.js")).default;
-      const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
-      const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-image-optdeps-"));
-      await fsp.mkdir(path.join(root, "app"));
-      await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
-      try {
-        const config = await plugin.config({ root, build: {} }, { command: "serve" });
-        const clientConfig = mergeConfig({}, config.environments.client);
-        const rscConfig = mergeConfig(config.environments.rsc, {
-          optimizeDeps: { noDiscovery: rscNoDiscovery },
-        });
-        await plugin.configResolved({
-          cacheDir: path.join(root, ".vite"),
-          command: "serve",
-          configFile: false,
-          environments: { client: clientConfig, rsc: rscConfig },
-          logger: createLogger("silent"),
-          plugins: [],
-        });
-        expect(clientConfig.optimizeDeps.include).toEqual(
-          expect.arrayContaining(["vinext > ipaddr.js", "vinext > @unpic/react"]),
-        );
-        expect(rscConfig.optimizeDeps.include.includes("vinext > ipaddr.js")).toBe(!rscNoDiscovery);
-      } finally {
-        await fsp.rm(root, { recursive: true, force: true });
-      }
-    },
-  );
 });
 
 // ─── process.env.NODE_ENV define ─────────────────────────────────────────────

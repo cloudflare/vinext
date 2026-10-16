@@ -284,6 +284,30 @@ jobs:
           echo "Server did not respond with HTTP 200 before the retry limit"
           exit 1
 
+      # Installed packages live under node_modules, where Vite's dep optimizer
+      # and plugin-rsc handle vinext's shims differently from the workspace link
+      # the in-repo tests use. Check next/image there in a real browser.
+      - name: Cache Playwright browsers
+        if: runner.os == 'Linux'
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          mode: restore
+
+      - name: Install Playwright Chromium
+        if: runner.os == 'Linux' && steps.playwright-cache.outputs.cache-hit != 'true'
+        run: vp exec playwright install chromium
+
+      - name: Check next/image in the dev server
+        if: runner.os == 'Linux'
+        working-directory: ${{ runner.temp }}/cna-test
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
+          vp exec vite dev --host 127.0.0.1 --port 3098 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3098
+
   create-next-app-cloudflare:
     name: create-next-app (legacy Wrangler init)
     runs-on: ubuntu-latest
@@ -366,6 +390,25 @@ jobs:
             config.preview_urls = true;
             fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
           '
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          mode: restore
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: vp exec playwright install chromium
+
+      - name: Check next/image in the Cloudflare dev server
+        working-directory: ${{ runner.temp }}/cna-cloudflare
+        run: |
+          node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
+          vp exec vite dev --host 127.0.0.1 --port 3097 &
+          SERVER_PID=$!
+          trap 'kill "$SERVER_PID" 2>/dev/null || true' EXIT
+          node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" check http://127.0.0.1:3097
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cna-cloudflare

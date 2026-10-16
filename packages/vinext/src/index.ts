@@ -438,41 +438,7 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/shim/with-selector.js",
   "use-sync-external-store/with-selector",
   "use-sync-external-store/with-selector.js",
-  // The next/image client reference (shims/image-component) is one of these
-  // nested "use client" modules. Its CommonJS ipaddr.js import needs a
-  // pre-bundle, and prebundling @unpic/react avoids a raw module waterfall.
-  "vinext > ipaddr.js",
-  "vinext > @unpic/react",
 ]);
-
-// The RSC optimizer has discovery enabled under @cloudflare/vite-plugin. Once
-// next/image stops being pre-bundled there (see NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE),
-// the CommonJS ipaddr.js import behind shims/image-props would otherwise be
-// served raw from an installed vinext (Vite does not discover deps imported by
-// node_modules files) or, from a workspace link, discovered late.
-const APP_RSC_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze(["vinext > ipaddr.js"]);
-
-// next/image and next/legacy/image render Image from the nested "use client"
-// shims/image-component module. Pre-bundling either would inline that module,
-// which drops its directive in the RSC optimizer (Image would then run as a
-// server component) and duplicates it in the client optimizer. Both published
-// spellings are aliased, and Vite matches excludes exactly.
-const NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
-  "next/image",
-  "next/image.js",
-  "next/legacy/image",
-  "next/legacy/image.js",
-]);
-// Vite pre-bundles explicit includes without checking excludes, including every
-// file a glob include like `next/image*` expands to, so any next/* glob is dropped.
-const OPTIMIZE_DEPS_GLOB_RE = /[*?[\]{}()!]/;
-function includesNextImageEntry(id: string): boolean {
-  const target = id.slice(id.lastIndexOf(">") + 1).trim();
-  return (
-    NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE.includes(target) ||
-    (target.startsWith("next/") && OPTIMIZE_DEPS_GLOB_RE.test(target))
-  );
-}
 
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
@@ -1384,6 +1350,8 @@ const VIRTUAL_APP_CAPABILITIES = "virtual:vinext-app-capabilities";
 const RESOLVED_APP_CAPABILITIES = VIRTUAL_PREFIX + VIRTUAL_APP_CAPABILITIES;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
+const VIRTUAL_NEXT_IMAGE_RSC = "virtual:vinext-next-image-rsc";
+const RESOLVED_NEXT_IMAGE_RSC = VIRTUAL_PREFIX + VIRTUAL_NEXT_IMAGE_RSC;
 const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-independent-entry");
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
@@ -1528,6 +1496,7 @@ function generateRootParamsModule(rootParamNames: Iterable<string>): string {
  * Shims with a `.react-server.ts` variant for the RSC environment.
  * Maps import specifier → base shim name. In the RSC env, resolveId
  * appends `.react-server`; in other envs it resolves to the base.
+ * next/image is the exception: its RSC entry is a virtual module.
  *
  * These MUST NOT appear in `nextShimMap` (resolve.alias) because Vite's
  * alias plugin runs before user `enforce:"pre"` plugins — aliases are
@@ -4119,11 +4088,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(
-                  incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-                  NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE,
-                ),
+                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
@@ -4187,7 +4152,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // renderer and any 'use client' module SSR'd through it. See
                 // https://github.com/cloudflare/vinext/issues/1103.
                 //
-                // `ipaddr.js` is imported by the next/image shim for
+                // `ipaddr.js` is imported by the next/image client shim for
                 // server-side private-IP validation. We externalize it on Node
                 // SSR via resolve.external above; excluding it from the dep
                 // optimizer prevents Vite from pre-bundling it on first request
@@ -4239,7 +4204,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   nextServerExternal,
-                  NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
@@ -4493,18 +4457,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
-            if (hasAppDir && (name === "rsc" || name === "client") && optimizer.include) {
-              // An inherited next/image include would still inline image-component.
-              optimizer.include = optimizer.include.filter((id) => !includesNextImageEntry(id));
-            }
             const optionalIncludes = hasAppDir
-              ? optimizer.noDiscovery
-                ? []
-                : name === "client"
-                  ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                  : name === "rsc"
-                    ? APP_RSC_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                    : []
+              ? name === "client" && !optimizer.noDiscovery
+                ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+                : []
               : name !== "client"
                 ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : [];
@@ -4924,11 +4880,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // See https://github.com/cloudflare/vinext/issues/834
           const reactServerShim = _reactServerShims.get(cleanId);
           if (reactServerShim !== undefined) {
-            const shimName =
-              this.environment?.name === "rsc"
-                ? `${reactServerShim}.react-server`
-                : reactServerShim;
-            return resolveShimModulePath(_shimsDir, shimName);
+            if (this.environment?.name !== "rsc") {
+              return resolveShimModulePath(_shimsDir, reactServerShim);
+            }
+            // Like Next.js's image-external, next/image in RSC exports the
+            // server-safe getImageProps and only Image as a client reference.
+            if (reactServerShim === "image") return RESOLVED_NEXT_IMAGE_RSC;
+            return resolveShimModulePath(_shimsDir, `${reactServerShim}.react-server`);
           }
         },
       },
@@ -5139,6 +5097,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               instrumentationPath,
             );
+          }
+          if (id === RESOLVED_NEXT_IMAGE_RSC) {
+            // Vite never pre-bundles virtual modules, so the "use client" image
+            // shim keeps its directive even where the RSC optimizer runs with
+            // discovery (Cloudflare dev). The bare vinext/shims/image import
+            // gives plugin-rsc a package client reference, like vinext's other
+            // client shims.
+            return [
+              `export { getImageProps, imageOptimizationUrl } from "vinext/shims/image-props";`,
+              `export { default } from "vinext/shims/image";`,
+              "",
+            ].join("\n");
           }
           if (id === RESOLVED_ROOT_PARAMS) {
             const routes = hasAppDir
