@@ -438,6 +438,30 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/shim/with-selector.js",
   "use-sync-external-store/with-selector",
   "use-sync-external-store/with-selector.js",
+  // The next/image client reference (shims/image-component) is one of these
+  // nested "use client" modules. Its CommonJS ipaddr.js import needs a
+  // pre-bundle, and prebundling @unpic/react avoids a raw module waterfall.
+  "vinext > ipaddr.js",
+  "vinext > @unpic/react",
+]);
+
+// The RSC optimizer has discovery enabled under @cloudflare/vite-plugin. Once
+// next/image stops being pre-bundled there (see NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE),
+// the CommonJS ipaddr.js import behind shims/image-props would otherwise be
+// served raw from an installed vinext (Vite does not discover deps imported by
+// node_modules files) or, from a workspace link, discovered late.
+const APP_RSC_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze(["vinext > ipaddr.js"]);
+
+// next/image and next/legacy/image render Image from the nested "use client"
+// shims/image-component module. Pre-bundling either would inline that module,
+// which drops its directive in the RSC optimizer (Image would then run as a
+// server component) and duplicates it in the client optimizer. Both published
+// spellings are aliased, and Vite matches excludes exactly.
+const NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
+  "next/image",
+  "next/image.js",
+  "next/legacy/image",
+  "next/legacy/image.js",
 ]);
 
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -4085,7 +4109,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE,
+                ),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
@@ -4149,7 +4177,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // renderer and any 'use client' module SSR'd through it. See
                 // https://github.com/cloudflare/vinext/issues/1103.
                 //
-                // `ipaddr.js` is imported by the next/image client shim for
+                // `ipaddr.js` is imported by the next/image shim for
                 // server-side private-IP validation. We externalize it on Node
                 // SSR via resolve.external above; excluding it from the dep
                 // optimizer prevents Vite from pre-bundling it on first request
@@ -4201,6 +4229,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   nextServerExternal,
+                  NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
@@ -4455,9 +4484,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
             const optionalIncludes = hasAppDir
-              ? name === "client" && !optimizer.noDiscovery
-                ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : []
+              ? optimizer.noDiscovery
+                ? []
+                : name === "client"
+                  ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+                  : name === "rsc"
+                    ? APP_RSC_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+                    : []
               : name !== "client"
                 ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : [];

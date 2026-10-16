@@ -121,7 +121,7 @@ const SCROLL_RESTORE_TOLERANCE_PX = 1;
  * `wrapWithRouterContext` is shared with the server-side Pages Router render
  * path, where a raw useLayoutEffect would log React's "useLayoutEffect does
  * nothing on the server" warning on every render. Same pattern as
- * `shims/image.tsx`; Next.js only runs the commit callback on the client.
+ * `shims/image-component.tsx`; Next.js only runs the commit callback on the client.
  */
 const useNonWarningLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
