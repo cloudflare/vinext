@@ -25,14 +25,21 @@ describe("next/og import failure", () => {
     const { ImageResponse } = await import("../packages/vinext/src/shims/og.js");
     const element = React.createElement("div");
 
+    const failed = { waitUntil: vi.fn() };
+    const failing = runWithExecutionContext(failed, () => new ImageResponse(element));
     // vitest wraps a throwing mock factory's error in its own.
-    await expect(new ImageResponse(element).arrayBuffer()).rejects.toMatchObject({
+    await expect((await failing).arrayBuffer()).rejects.toMatchObject({
       cause: { message: "failed to load @vercel/og" },
     });
-    expect(new Uint8Array(await new ImageResponse(element).arrayBuffer())).toEqual(
-      new Uint8Array([1]),
-    );
+    expect(failed.waitUntil).toHaveBeenCalledOnce();
+
+    // The retry starts the initialization again, so the request that starts it
+    // must stay alive until it settles, like the first attempt.
+    const retry = { waitUntil: vi.fn() };
+    const retried = runWithExecutionContext(retry, () => new ImageResponse(element));
+    expect(new Uint8Array(await (await retried).arrayBuffer())).toEqual(new Uint8Array([1]));
     expect(og.imports).toBe(2);
+    expect(retry.waitUntil).toHaveBeenCalledOnce();
 
     // A successful import stays memoized: the next image starts no new
     // initialization, so it keeps no request alive.
