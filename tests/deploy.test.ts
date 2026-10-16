@@ -1635,6 +1635,16 @@ describe("scanPublicFileRoutes", () => {
     expect(scanPublicFileRoutes(tmpDir, "")).toEqual([]);
   });
 
+  it("lists the files under every symlink to a directory without following a loop", () => {
+    writeFile(tmpDir, "shared/logo.svg", "<svg />");
+    mkdir(tmpDir, "public");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/a"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/b"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "public"), path.join(tmpDir, "public/loop"), "junction");
+
+    expect(scanPublicFileRoutes(tmpDir)).toEqual(["/a/logo.svg", "/b/logo.svg"]);
+  });
+
   // Ported from Next.js: test/e2e/dynamic-routing/shared.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/shared.ts
   it("stores public-file routes as normalized request pathnames", () => {
@@ -2179,6 +2189,13 @@ describe("readPagesRouterEntrySource", () => {
     expect(assetRequest.url).toBe("https://example.com/asset.txt");
     expect(assetRequest.method).toBe("HEAD");
     expect(Object.fromEntries(assetRequest.headers)).toEqual(Object.fromEntries(source.headers));
+  });
+
+  it("keeps a ? or # in a public file's name in the asset path", () => {
+    const source = new Request("https://example.com/a%23b.txt?x=1");
+
+    expect(createStaticAssetRequest("/a#b.txt", source).url).toBe("https://example.com/a%23b.txt");
+    expect(createStaticAssetRequest("/a?b.txt", source).url).toBe("https://example.com/a%3Fb.txt");
   });
 
   it("retargets Worker assets with middleware's request header overrides", () => {
