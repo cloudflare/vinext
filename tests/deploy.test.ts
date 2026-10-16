@@ -26,7 +26,9 @@ import {
   runWranglerDeploy,
   validateWranglerEnvName,
   withCloudflareEnv,
+  withCloudflarePreviewBuild,
 } from "../packages/cloudflare/src/deploy.js";
+import { parsePreviewsDeployArgs } from "../packages/cloudflare/src/previews-deploy.js";
 import {
   detectPackageManager,
   detectPackageManagerName,
@@ -602,6 +604,65 @@ describe("cf Build Output deployment", () => {
       args: ["deploy", "--prebuilt", "--mode", "staging"],
       mode: "staging",
     });
+    expect(buildCfDeployArgs({ preview: true })).toEqual({
+      args: ["deploy", "--prebuilt", "--mode", "preview"],
+      mode: "preview",
+    });
+  });
+
+  it.each([undefined, "pr-123"])("builds Preview deploy args (name: %s)", (name) => {
+    expect(buildCfDeployArgs({ env: "preview", target: { type: "preview", name } })).toEqual({
+      args: ["previews", "deploy", ...(name ? [name] : []), "--prebuilt", "--mode", "preview"],
+      mode: "preview",
+    });
+  });
+
+  it.each([true, false])("parses CF's Preview output (named URL: %s)", async (hasNamedUrl) => {
+    writeCfPackageForTest(tmpDir);
+    const output = JSON.stringify(
+      {
+        type: "preview",
+        deployment_urls: ["https://deployment.example.workers.dev"],
+        preview_urls: hasNamedUrl ? ["https://main.example.workers.dev"] : [],
+      },
+      null,
+      2,
+    );
+    const invocations: Parameters<typeof spawn>[] = [];
+    const execute = ((...args: Parameters<typeof spawn>) => {
+      invocations.push(args);
+      return createMockChildProcess(`${output}\n`);
+    }) as typeof spawn;
+
+    await expect(
+      runCfDeploy(tmpDir, { env: "preview", target: { type: "preview", name: "main" } }, execute),
+    ).resolves.toBe(
+      hasNamedUrl ? "https://main.example.workers.dev" : "https://deployment.example.workers.dev",
+    );
+    expect(invocations).toEqual([
+      [
+        process.execPath,
+        [resolveCfBin(tmpDir), "previews", "deploy", "main", "--prebuilt", "--mode", "preview"],
+        { cwd: tmpDir, stdio: ["inherit", "pipe", "pipe"], shell: false },
+      ],
+    ]);
+  });
+
+  it("reports a failed Preview deployment", async () => {
+    writeCfPackageForTest(tmpDir);
+    const execute = (() => createMockChildProcess("", 1)) as typeof spawn;
+
+    await expect(runCfDeploy(tmpDir, { target: { type: "preview" } }, execute)).rejects.toThrow(
+      "cf previews deploy failed with exit code 1",
+    );
+  });
+
+  it("rejects Preview deployments for Wrangler projects", async () => {
+    writeFile(tmpDir, "wrangler.jsonc", "{}");
+
+    await expect(deploy({ root: tmpDir, target: { type: "preview" } })).rejects.toThrow(
+      "require a cloudflare.config.ts project",
+    );
   });
 
   it("runs cf with shell disabled and returns its workers.dev URL", async () => {
@@ -739,6 +800,73 @@ describe("parseWorkerDeploymentUrl", () => {
 });
 
 // ─── Deploy CLI arg parsing ─────────────────────────────────────────────────
+
+describe("parsePreviewsDeployArgs", () => {
+  it("accepts an optional name, mode, skip-build, and help", () => {
+    expect(parsePreviewsDeployArgs([])).toEqual({
+      name: undefined,
+      mode: undefined,
+      skipBuild: false,
+      help: false,
+    });
+    expect(parsePreviewsDeployArgs(["pr-123", "--mode", "staging", "--skip-build"])).toEqual({
+      name: "pr-123",
+      mode: "staging",
+      skipBuild: true,
+      help: false,
+    });
+    expect(parsePreviewsDeployArgs(["--help"]).help).toBe(true);
+    expect(parsePreviewsDeployArgs(["-h"]).help).toBe(true);
+  });
+
+  it.each([
+    "--env",
+    "--prebuilt",
+    "--worker",
+    "--name",
+    "--dry-run",
+    "--preview",
+    "--warm-cache",
+    "--traffic-aware-warm-cache",
+    "--no-promote",
+  ])("rejects unsupported option %s", (option) => {
+    expect(() => parsePreviewsDeployArgs([option])).toThrow();
+  });
+
+  it("rejects multiple or invalid Preview names", () => {
+    expect(() => parsePreviewsDeployArgs(["one", "two"])).toThrow("at most one");
+    expect(() => parsePreviewsDeployArgs([" "])).toThrow("must not be empty");
+    expect(() => parsePreviewsDeployArgs(["pr\0name"])).toThrow("null bytes");
+  });
+
+  it.each([["--mode="], ["--mode", " "]])("rejects an empty mode: %j", (...args) => {
+    expect(() => parsePreviewsDeployArgs(args)).toThrow("--mode requires a non-empty value.");
+  });
+});
+
+describe("withCloudflarePreviewBuild", () => {
+  it.each([undefined, "false"])(
+    "restores the previous flag %s after success and failure",
+    async (previous) => {
+      vi.stubEnv("CLOUDFLARE_PREVIEW_BUILD", previous);
+      try {
+        await withCloudflarePreviewBuild(async () => {
+          expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("true");
+        });
+        expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe(previous);
+        await expect(
+          withCloudflarePreviewBuild(async () => {
+            expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe("true");
+            throw new Error("Preview build failed");
+          }),
+        ).rejects.toThrow("Preview build failed");
+        expect(process.env.CLOUDFLARE_PREVIEW_BUILD).toBe(previous);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+});
 
 describe("parseDeployArgs", () => {
   it("forwards the parsed Wrangler config through the deploy CLI", () => {
