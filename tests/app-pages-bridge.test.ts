@@ -618,7 +618,17 @@ describe("renderPagesFallback", () => {
   });
 
   it("routes /api and /api/* through handleApiRoute and applies middleware context", async () => {
-    const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api-response"));
+    const handleApiRoute = vi.fn(
+      (
+        _req: Request,
+        _url: string,
+        _ctx?: unknown,
+        _origin?: string,
+        _runtime?: string,
+        _initialHeaders?: Headers,
+        _middlewareHeaders?: Headers,
+      ) => new Response("api-response"),
+    );
     const mwHeaders = new Headers({ "x-res-mw": "value" });
     const deps = {
       ...defaultDeps,
@@ -642,7 +652,11 @@ describe("renderPagesFallback", () => {
     expect(handleApiRoute.mock.calls[0][1]).toBe("/api/foo/bar");
     expect(res).not.toBeNull();
     expect(res!.status).toBe(201);
-    expect(res!.headers.get("x-res-mw")).toBe("value");
+    // Next.js installs middleware headers on the Node response before the
+    // handler runs, so the API route receives them instead of a later merge
+    // overriding the handler's own values.
+    expect(handleApiRoute.mock.calls[0][6]?.get("x-res-mw")).toBe("value");
+    expect(res!.headers.get("x-res-mw")).toBeNull();
     expect(await res!.text()).toBe("api-response");
   });
 

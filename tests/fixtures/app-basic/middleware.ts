@@ -165,6 +165,16 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return response;
   }
 
+  // The Node Pages API handler's own headers must replace these, as in Next.js.
+  if (pathname === "/api/middleware-header-precedence") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Cache-Control", "private, max-age=7");
+    response.headers.set("x-header-precedence", "middleware");
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
   // Same-origin redirect to a double-slash path. vinext must keep the
@@ -537,6 +547,7 @@ export const config = {
     "/header-override-delete",
     "/api/header-override-delete",
     "/api/session-refresh",
+    "/api/middleware-header-precedence",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-fallback-to-app/:path*",

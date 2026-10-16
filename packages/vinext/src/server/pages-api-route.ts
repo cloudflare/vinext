@@ -30,7 +30,8 @@ import {
 } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
-import { hasCdnResponsePolicy } from "./cache-control.js";
+import { hasCdnResponsePolicy, isCdnResponsePolicyHeader } from "./cache-control.js";
+import { applyRouteHandlerMiddlewareContext } from "./app-route-handler-middleware-context.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 type PagesApiRouteConfig = {
@@ -107,6 +108,12 @@ type HandlePagesApiRouteOptions = {
   edgeRuntime?: EdgeApiExecutionRuntime;
   /** Headers installed before user code, matching Next.js custom-route ordering. */
   initialResponseHeaders?: Headers;
+  /**
+   * Middleware response headers. Node handlers receive them on `res` before
+   * they run, as in Next.js, so the handler's own `setHeader()` wins. Edge
+   * handlers keep vinext's middleware-wins merge onto the returned Response.
+   */
+  middlewareResponseHeaders?: Headers | null;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -149,10 +156,37 @@ function isNodeApiRouteModule(
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
   const run = async () => {
     const response = await _handlePagesApiRoute(options);
-    if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+    if (hasHandlerCdnResponsePolicy(response.headers, options.middlewareResponseHeaders)) {
+      markRouteCacheabilityExplicitResponsePolicy();
+    }
     return response;
   };
   return options.ctx ? runWithExecutionContext(options.ctx, run) : run();
+}
+
+/**
+ * Whether user code authored a CDN policy. A middleware value installed on
+ * the response (or merged onto it) is not the handler's explicit policy.
+ */
+function hasHandlerCdnResponsePolicy(
+  headers: Headers,
+  middlewareHeaders: Headers | null | undefined,
+): boolean {
+  if (!middlewareHeaders) return hasCdnResponsePolicy(headers);
+  for (const [name, value] of headers) {
+    if (isCdnResponsePolicyHeader(name) && middlewareHeaders.get(name) !== value) return true;
+  }
+  return false;
+}
+
+function applyEdgeMiddlewareResponseHeaders(
+  response: Response,
+  middlewareHeaders: Headers | null | undefined,
+): Response {
+  if (!middlewareHeaders) return response;
+  // Record the handler's own policy before middleware can replace its value.
+  if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+  return applyRouteHandlerMiddlewareContext(response, { headers: middlewareHeaders, status: null });
 }
 
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
@@ -183,7 +217,10 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await tracePagesApiHandler(route.pattern, () => handler(nextRequest));
       if (response instanceof Response) {
-        const finalized = finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
+        const finalized = applyEdgeMiddlewareResponseHeaders(
+          finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker"),
+          options.middlewareResponseHeaders,
+        );
         if (
           !options.initialResponseHeaders ||
           !options.initialResponseHeaders.keys().next().value
@@ -232,6 +269,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       initialResponseHeaders: options.initialResponseHeaders,
+      middlewareResponseHeaders: options.middlewareResponseHeaders,
       query,
       request: options.request,
       trustedRevalidateOrigin: options.trustedRevalidateOrigin,

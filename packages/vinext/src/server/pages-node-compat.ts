@@ -82,6 +82,8 @@ type CreatePagesReqResOptions = {
 
 type CreatePagesApiReqResOptions = CreatePagesReqResOptions & {
   allowedRevalidateHeaderKeys?: readonly string[];
+  /** Middleware response headers, installed on `res` before the handler runs. */
+  middlewareResponseHeaders?: Headers | null;
   trustedRevalidateOrigin?: string;
 };
 
@@ -246,6 +248,7 @@ class PagesResponseStream extends Writable {
   private resStatusCode = 200;
   private readonly resHeaders: Record<string, string | number | boolean> = {};
   private readonly setCookieHeaders: string[] = [];
+  private middlewareSetCookieHeaders: readonly string[] = [];
   private resolved = false;
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
@@ -282,15 +285,31 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: true });
+        this.setHeaderValue(key, value);
       }
     }
     return this as PagesReqResResponse;
   }
 
   setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
-    this.setHeaderValue(name, value, { replaceSetCookie: true });
+    this.setHeaderValue(name, value);
     return this as PagesReqResResponse;
+  }
+
+  /**
+   * Install middleware response headers before the API handler runs, as
+   * Next.js's router server does, so the handler's own `setHeader()` replaces
+   * a middleware value. Middleware cookies stay first even when the handler
+   * replaces Set-Cookie (Next.js `patchSetHeaderWithCookieSupport`).
+   */
+  seedMiddlewareResponseHeaders(headers: Headers): void {
+    for (const [name, value] of headers) {
+      if (name.toLowerCase() !== "set-cookie") this.setHeaderValue(name, value);
+    }
+    const cookies = headers.getSetCookie();
+    if (cookies.length === 0) return;
+    this.setCookieHeaders.push(...cookies);
+    this.middlewareSetCookieHeaders = [...this.middlewareSetCookieHeaders, ...cookies];
   }
 
   getHeader(name: string): string | number | boolean | string[] | undefined {
@@ -453,18 +472,21 @@ class PagesResponseStream extends Writable {
     callback(error);
   }
 
-  private setHeaderValue(
-    name: string,
-    value: string | number | boolean | string[],
-    options: { replaceSetCookie: boolean },
-  ): void {
+  private setHeaderValue(name: string, value: string | number | boolean | string[]): void {
     if (name.toLowerCase() === "set-cookie") {
       // getHeader() exposes this array like Node's ServerResponse. Snapshot it
       // before replacement so passing that live value back does not clear it.
-      const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (options.replaceSetCookie) {
-        this.setCookieHeaders.length = 0;
+      let values = Array.isArray(value) ? value.map(String) : [String(value)];
+      const middlewareCookies = this.middlewareSetCookieHeaders;
+      // Next.js keeps middleware cookies ahead of a replacement unless the
+      // handler passes back (a prefix of) the middleware cookies themselves.
+      if (
+        middlewareCookies.length > 0 &&
+        !(Array.isArray(value) && values.every((cookie, i) => cookie === middlewareCookies[i]))
+      ) {
+        values = [...new Set([...middlewareCookies, ...values])];
       }
+      this.setCookieHeaders.length = 0;
       this.setCookieHeaders.push(...values);
       return;
     }
@@ -608,6 +630,9 @@ export function createPagesApiReqRes(
   options: CreatePagesApiReqResOptions,
 ): CreatePagesReqResResult<PagesApiReqResResponse> {
   const { req, res, responsePromise } = createPagesReqRes(options);
+  if (options.middlewareResponseHeaders && res instanceof PagesResponseStream) {
+    res.seedMiddlewareResponseHeaders(options.middlewareResponseHeaders);
+  }
   // Fetch runtimes do not expose a listening socket origin. Fall back to the
   // platform-provided Request URL origin and deliberately ignore any raw Host
   // header carried in request.headers.

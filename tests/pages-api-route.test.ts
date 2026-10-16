@@ -106,6 +106,79 @@ describe("pages api route", () => {
     expect(response.headers.getSetCookie()).toEqual(initialResponseHeaders.getSetCookie());
   });
 
+  // Ported from Next.js: packages/next/src/server/lib/router-server.ts writes
+  // middleware response headers onto `res` before the API handler runs, and
+  // packages/next/src/server/lib/patch-set-header.ts keeps middleware cookies.
+  it("installs middleware headers before a Node handler so its setHeader() wins", async () => {
+    const middlewareResponseHeaders = new Headers({
+      "Cache-Control": "private, max-age=7",
+      "Proxy-Authenticate": 'Basic realm="middleware"',
+      "WWW-Authenticate": 'Basic realm="middleware"',
+    });
+    middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        expect(res.getHeader("Cache-Control")).toBe("private, max-age=7");
+        res.setHeader("Cache-Control", "no-store");
+        res.setHeader("WWW-Authenticate", 'Bearer realm="handler"');
+        res.setHeader("Set-Cookie", ["handler=1; Path=/", "middleware=1; Path=/"]);
+        res.status(401).end("no");
+      }),
+      middlewareResponseHeaders,
+      request: new Request("https://example.com/api/auth"),
+      url: "/api/auth",
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.get("WWW-Authenticate")).toBe('Bearer realm="handler"');
+    expect(response.headers.get("Proxy-Authenticate")).toBe('Basic realm="middleware"');
+    expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
+  });
+
+  it("lets a Node handler pass middleware cookies back without duplicating them", async () => {
+    const middlewareResponseHeaders = new Headers();
+    middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        const existing = res.getHeader("Set-Cookie");
+        res.setHeader("Set-Cookie", Array.isArray(existing) ? existing : []);
+        res.end("ok");
+      }),
+      middlewareResponseHeaders,
+      request: new Request("https://example.com/api/cookies"),
+      url: "/api/cookies",
+    });
+
+    expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/"]);
+  });
+
+  it("keeps middleware headers ahead of an edge handler's own", async () => {
+    const middlewareResponseHeaders = new Headers({ "Cache-Control": "private, max-age=7" });
+    middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        () => {
+          const headers = new Headers({ "Cache-Control": "no-store", "x-edge": "1" });
+          headers.append("Set-Cookie", "handler=1; Path=/");
+          return new Response("edge", { headers });
+        },
+        {},
+        { runtime: "edge" },
+      ),
+      middlewareResponseHeaders,
+      request: new Request("https://example.com/api/edge"),
+      url: "/api/edge",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=7");
+    expect(response.headers.get("x-edge")).toBe("1");
+    expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
+  });
+
   it("does not expose process environment variables on the request", async () => {
     const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
     process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";

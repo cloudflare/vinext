@@ -5,6 +5,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -14,6 +15,7 @@ export type PagesEntry = {
     trustedRevalidateOrigin: string | undefined,
     edgeRuntime: EdgeApiExecutionRuntime,
     initialResponseHeaders?: Headers,
+    middlewareResponseHeaders?: Headers,
   ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
@@ -185,12 +187,21 @@ export async function renderPagesFallback(
       executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
-    const pagesApiResponse = await (initialResponseHeaders
-      ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders)
+    // Next.js writes middleware response headers onto the Node response before
+    // a Pages API handler runs, so the handler's own setHeader() replaces them.
+    // The API route installs them itself (and keeps the middleware-wins merge
+    // for edge handlers); only middleware's status is applied here.
+    let middlewareResponseHeaders: Headers | undefined;
+    if (middlewareContext.headers) {
+      middlewareResponseHeaders = new Headers();
+      mergeMiddlewareResponseHeaders(middlewareResponseHeaders, middlewareContext.headers);
+    }
+    const pagesApiResponse = await (initialResponseHeaders || middlewareResponseHeaders
+      ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders, middlewareResponseHeaders)
       : pagesEntry.handleApiRoute(...apiArgs));
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
-      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+      applyRouteHandlerMiddlewareContext(pagesApiResponse, { ...middlewareContext, headers: null }),
       draftCookie,
     );
   }

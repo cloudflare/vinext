@@ -609,7 +609,12 @@ const __requestHandler = createAppRscRequestHandler({
           }
           return {
             ...__pagesRequestEntry,
-            handleApiRoute(stageRequest) { return dispatchPagesResponseStage(stageRequest, "api"); },
+            // The response stage cannot tell the gateway which runtime handled
+            // the route, so middleware headers keep their post-handler merge.
+            async handleApiRoute(stageRequest, _url, _ctx, _origin, _runtime, _initialHeaders, middlewareResponseHeaders) {
+              const response = await dispatchPagesResponseStage(stageRequest, "api");
+              return __applyRouteHandlerMiddlewareContext(response, { headers: middlewareResponseHeaders ?? null, status: null });
+            },
             renderPage(stageRequest, pagesUrl) {
               const dataKind = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
               return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument);
@@ -2048,8 +2053,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
             ...__pagesEntry,
             ...(typeof __pagesEntry.handleApiRoute === "function"
               ? {
-                  handleApiRoute(stageRequest) {
-                    return dispatchPagesResponseStage(stageRequest, "api");
+                  // The response stage cannot tell the gateway which runtime
+                  // handled the route, so middleware headers keep their
+                  // post-handler merge.
+                  async handleApiRoute(stageRequest, _url, _ctx, _origin, _runtime, _initialHeaders, middlewareResponseHeaders) {
+                    const response = await dispatchPagesResponseStage(stageRequest, "api");
+                    return __applyRouteHandlerMiddlewareContext(response, { headers: middlewareResponseHeaders ?? null, status: null });
                   },
                 }
               : {}),
