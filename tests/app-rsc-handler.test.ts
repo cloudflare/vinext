@@ -7536,6 +7536,34 @@ describe("createAppRscHandler", () => {
       expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
     });
 
+    it("runs forwarded actions on the literal path of a dynamic owner before afterFiles rewrites", async () => {
+      const blogPage = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/blog/:slug", destination: "/upload" }],
+          beforeFiles: [],
+          fallback: [],
+        },
+        matchRoute: (pathname) => {
+          if (pathname === "/upload") return { params: emptyParams, route: routeHandler };
+          return pathname.startsWith("/blog/")
+            ? { params: { slug: pathname.slice("/blog/".length) }, route: blogPage }
+            : null;
+        },
+      });
+
+      await handler(multipartPost("/blog/[slug]"), null);
+
+      expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ routeMatch: { params: { slug: "[slug]" }, route: blogPage } }),
+      );
+    });
+
     it("runs them with the root params of the page an afterFiles rewrite reaches", async () => {
       const localizedPage = createPageRoute({
         isDynamic: true,
@@ -7915,6 +7943,32 @@ describe("createAppRscHandler", () => {
       const response = await handler(actionPost("/caf%C3%A9/[id]"), null);
 
       expect(await response.text()).toBe("action:/café/:id");
+    });
+
+    it("runs forwarded actions on a literal owner path that a beforeFiles rewrite reaches", async () => {
+      const blogPage = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const { handler } = createActionHandler({
+        configRewrites: {
+          afterFiles: [{ source: "/blog/:slug", destination: "/about" }],
+          beforeFiles: [{ source: "/owner", destination: "/blog/[slug]" }],
+          fallback: [],
+        },
+        matchRoute: (pathname) => {
+          if (pathname === "/about") return { params: emptyParams, route: aboutPage };
+          return pathname.startsWith("/blog/")
+            ? { params: { slug: pathname.slice("/blog/".length) }, route: blogPage }
+            : null;
+        },
+      });
+
+      const response = await handler(actionPost("/owner"), null);
+
+      expect(await response.text()).toBe("action:/blog/:slug");
     });
 
     it("runs actions on the final route for the literal path of a dynamic route handler", async () => {
