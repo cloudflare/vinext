@@ -1842,6 +1842,27 @@ export async function resolveNextConfig(
 
   {
     const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+
+    // Like Next.js' checkCustomRoutes (packages/next/src/lib/load-custom-routes.ts),
+    // reject a `basePath: false` rewrite to an internal destination: nothing
+    // outside the basePath resolves, so only an external URL is valid there.
+    const invalidBasePathRewrites = allRewrites.filter(
+      (rewrite) =>
+        rewrite.basePath === false &&
+        !(rewrite.destination.startsWith("http://") || rewrite.destination.startsWith("https://")),
+    );
+    if (invalidBasePathRewrites.length > 0) {
+      throw new Error(
+        invalidBasePathRewrites
+          .map(
+            (rewrite) =>
+              `The route ${rewrite.source} rewrites urls outside of the basePath. Please use a destination that starts with \`http://\` or \`https://\` https://nextjs.org/docs/messages/invalid-external-rewrite`,
+          )
+          .concat(`Invalid rewrite${invalidBasePathRewrites.length === 1 ? "" : "s"} found`)
+          .join("\n"),
+      );
+    }
+
     const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
 
     if (externalRewrites.length > 0) {

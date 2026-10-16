@@ -3111,6 +3111,61 @@ describe("resolveNextConfig external rewrite warning", () => {
   });
 });
 
+// Ported from Next.js' checkCustomRoutes in packages/next/src/lib/load-custom-routes.ts.
+describe("resolveNextConfig basePath: false rewrite validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const outsideBasePathError = (source: string) =>
+    `The route ${source} rewrites urls outside of the basePath. Please use a destination that starts with \`http://\` or \`https://\` https://nextjs.org/docs/messages/invalid-external-rewrite`;
+
+  it("rejects basePath: false rewrites to internal destinations in every phase", async () => {
+    await expect(
+      resolveNextConfig({
+        basePath: "/docs",
+        rewrites: async () => ({
+          beforeFiles: [{ source: "/before", destination: "/open.txt", basePath: false }],
+          afterFiles: [{ source: "/after", destination: "/docs/page", basePath: false }],
+          fallback: [{ source: "/fallback", destination: "//cdn.example.com", basePath: false }],
+        }),
+      }),
+    ).rejects.toThrow(
+      [
+        outsideBasePathError("/before"),
+        outsideBasePathError("/after"),
+        outsideBasePathError("/fallback"),
+        "Invalid rewrites found",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects an internal basePath: false rewrite without a configured basePath", async () => {
+    await expect(
+      resolveNextConfig({
+        rewrites: async () => [{ source: "/old", destination: "/new", basePath: false }],
+      }),
+    ).rejects.toThrow(`${outsideBasePathError("/old")}\nInvalid rewrite found`);
+  });
+
+  it("accepts basePath: false rewrites to http(s) destinations", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = await resolveNextConfig({
+      basePath: "/docs",
+      rewrites: async () => [
+        { source: "/http", destination: "http://example.com/a", basePath: false },
+        { source: "/https", destination: "https://example.com/b", basePath: false },
+        { source: "/internal", destination: "/new" },
+      ],
+    });
+    expect(config.rewrites.afterFiles.map((rewrite) => rewrite.source)).toEqual([
+      "/http",
+      "/https",
+      "/internal",
+    ]);
+  });
+});
+
 describe("resolveNextConfig swcEnvOptions warning", () => {
   afterEach(() => {
     vi.restoreAllMocks();
