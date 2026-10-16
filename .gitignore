@@ -9,6 +9,8 @@ tests/e2e/cloudflare-workers/fixtures/client-module-with-package-type/node_modul
 tests/fixtures/cf-app-basic/node_modules/*
 !tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/
 !tests/fixtures/cf-app-basic/node_modules/module-identity-dependency/**
+!tests/fixtures/cf-app-basic/node_modules/client-only-barrel/
+!tests/fixtures/cf-app-basic/node_modules/client-only-barrel/**
 dist/
 !packages/types/next/upstream/dist/
 !packages/types/next/upstream/dist/**
