@@ -69,10 +69,15 @@ if (command !== "check" || !target) {
 const url = new URL("/image-check", target).href;
 
 async function waitForPage() {
+  // The first request compiles the page, so allow it a while, but bound the
+  // whole wait so a stalled server fails the job quickly.
+  const deadline = Date.now() + 120_000;
   let lastStatus = "no response";
-  for (let attempt = 1; attempt <= 90; attempt++) {
+  while (Date.now() < deadline) {
     try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      const response = await fetch(url, {
+        signal: AbortSignal.timeout(Math.min(30_000, deadline - Date.now())),
+      });
       const body = await response.text();
       if (response.status === 200) return body;
       lastStatus = `${response.status}: ${body.slice(0, 2000)}`;
@@ -81,7 +86,7 @@ async function waitForPage() {
     }
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  throw new Error(`${url} did not respond with 200. Last response: ${lastStatus}`);
+  throw new Error(`${url} did not respond with 200 within 2 minutes. Last response: ${lastStatus}`);
 }
 
 const html = await waitForPage();

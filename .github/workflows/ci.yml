@@ -300,6 +300,7 @@ jobs:
 
       - name: Check next/image in the dev server
         if: runner.os == 'Linux'
+        timeout-minutes: 5
         working-directory: ${{ runner.temp }}/cna-test
         run: |
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
@@ -402,6 +403,7 @@ jobs:
         run: vp exec playwright install chromium
 
       - name: Check next/image in the Cloudflare dev server
+        timeout-minutes: 5
         working-directory: ${{ runner.temp }}/cna-cloudflare
         run: |
           node "$GITHUB_WORKSPACE/scripts/check-installed-next-image.mjs" write .
