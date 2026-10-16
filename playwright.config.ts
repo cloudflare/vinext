@@ -465,6 +465,18 @@ const projectServers = {
       timeout: 30_000,
     },
   },
+  "pages-router-nitro": {
+    testDir: "./tests/e2e/pages-router-nitro",
+    use: { baseURL: "http://localhost:4225" },
+    server: {
+      // Runs Nitro's own Node server, as a node-server deployment does.
+      command: "npx vp run vinext#build && npx vp build && PORT=4225 node .output/server/index.mjs",
+      cwd: "./tests/fixtures/pages-router-nitro",
+      port: 4225,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
   "app-with-src": {
     testDir: "./tests/e2e/app-with-src",
     use: { baseURL: "http://localhost:4181" },

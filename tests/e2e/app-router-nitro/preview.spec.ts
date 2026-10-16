@@ -7,6 +7,14 @@ import { defineNitroAppTests } from "./app-tests";
 test.describe("App Router on Nitro (vite preview)", () => {
   defineNitroAppTests();
 
+  test("serves a public file that a rewrite resolves to", async ({ request }) => {
+    const response = await request.get("/rewrite-to-public");
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/plain");
+    expect(response.headers()["x-vinext-middleware"]).toBe("active");
+    expect(await response.text()).toBe("Hello from public/\n");
+  });
+
   // `revalidate` pages are cached by vinext's own ISR cache, not by Nitro
   // route rules.
   test("serves revalidate pages from the ISR cache", async ({ request }) => {

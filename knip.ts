@@ -86,6 +86,8 @@ export default {
         "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
+        "src/server/nitro-public-files.ts",
+        "src/server/nitro-public-files-plugin.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)

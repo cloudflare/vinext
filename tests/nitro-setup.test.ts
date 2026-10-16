@@ -10,6 +10,11 @@ const tempDirs: string[] = [];
 type NitroSetupTarget = {
   options: {
     dev?: boolean;
+    preset?: string;
+    baseURL?: string;
+    serveStatic?: boolean | string;
+    plugins?: string[];
+    virtual?: Record<string, string | (() => string)>;
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
@@ -196,6 +201,41 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({});
+  });
+
+  // vinext serves the public files its router resolves, such as a rewrite
+  // destination, through Nitro's static handler.
+  it("registers the public files plugin when Nitro's server serves static files", async () => {
+    const nitroPlugin = await initializeNitroSetupPlugin(createPagesProject());
+    const nitro: NitroSetupTarget = {
+      options: { dev: false, preset: "node-server", baseURL: "/", serveStatic: true },
+    };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
+    expect(nitro.options.virtual?.["#vinext/nitro-public-files"]).toContain(
+      "createNitroPublicFilesPlugin",
+    );
+  });
+
+  it.each([
+    ["in dev", { dev: true, serveStatic: true }],
+    ["when Nitro doesn't serve static files", { dev: false, serveStatic: false }],
+    [
+      "on AWS Amplify, whose CDN serves them",
+      { dev: false, preset: "aws_amplify", serveStatic: true },
+    ],
+    ["under a Nitro baseURL", { dev: false, baseURL: "/docs/", serveStatic: true }],
+  ])("does not register the public files plugin %s", async (_, options) => {
+    const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
+    const nitro: NitroSetupTarget = { options };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    expect(nitro.options.plugins).toBeUndefined();
+    expect(nitro.options.virtual).toBeUndefined();
   });
 
   it("propagates server externals during Nitro dev", async () => {
