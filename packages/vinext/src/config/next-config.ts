@@ -17,7 +17,12 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
+import {
+  applyLocaleToRoutes,
+  configSourceError,
+  isExternalUrl,
+  prepareConfigSource,
+} from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
@@ -1709,6 +1714,60 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 }
 
 /**
+ * Fail config loading on an invalid source, as Next.js fails the build
+ * (load-custom-routes.ts checkCustomRoutes), instead of silently skipping a
+ * redirect or security header per request.
+ */
+function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unknown }>): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    const error = configSourceError(route?.source);
+    if (error) invalid.push(`  ${JSON.stringify(route?.source)}: ${error}`);
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} source${invalid.length === 1 ? "" : "s"}:\n${invalid.join("\n")}`,
+    );
+  }
+}
+
+/**
+ * The sources Next.js's processRoutes builds from `routes` by adding the
+ * basePath and locale prefixes, which checkCustomRoutes then checks again
+ * (load-custom-routes.ts). vinext adds basePath at match time instead, so
+ * these exist only for that check.
+ */
+function processedRouteSources(
+  routes: ReadonlyArray<NextRedirect | NextRewrite | NextHeader>,
+  type: "redirect" | "rewrite" | "header",
+  options: { basePath: string; i18n: NextI18nConfig | null; trailingSlash: boolean },
+): Array<{ source: string }> {
+  const { basePath, i18n, trailingSlash } = options;
+  // escapeStringRegexp, which also escapes "-".
+  const escape = (value: string) => value.replace(/[|\\{}()[\]^$+*?.-]/g, "\\$&");
+  const suffixFor = (source: string) => (source === "/" && !trailingSlash ? "" : source);
+  const defaultLocales =
+    i18n && type === "redirect"
+      ? [...(i18n.domains ?? []).map((domain) => domain.defaultLocale), i18n.defaultLocale]
+      : [];
+  const sources: Array<{ source: string }> = [];
+  for (const route of routes) {
+    const sourceBasePath = basePath && route.basePath !== false ? basePath : "";
+    let source = route.source;
+    if (i18n && route.locale !== false) {
+      if ("destination" in route && route.destination?.startsWith("/")) {
+        for (const locale of defaultLocales) {
+          sources.push({ source: `${sourceBasePath}/${locale}${suffixFor(source)}` });
+        }
+      }
+      source = `/:nextInternalLocale(${i18n.locales.map(escape).join("|")})${suffixFor(source)}`;
+    }
+    sources.push({ source: `${sourceBasePath}${source === "/" && sourceBasePath ? "" : source}` });
+  }
+  return sources;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -1885,6 +1944,33 @@ export async function resolveNextConfig(
   let headers: NextHeader[] = [];
   if (config.headers) {
     headers = await config.headers();
+  }
+
+  validateConfigSources("redirect", redirects);
+  validateConfigSources("rewrite", [
+    ...rewrites.beforeFiles,
+    ...rewrites.afterFiles,
+    ...rewrites.fallback,
+  ]);
+  validateConfigSources("header", headers);
+  // Next.js checks the routes again after adding the basePath and locale
+  // prefixes.
+  if (config.basePath || i18n) {
+    const processOptions = {
+      basePath: config.basePath ?? "",
+      i18n,
+      trailingSlash: config.trailingSlash ?? false,
+    };
+    validateConfigSources("redirect", processedRouteSources(redirects, "redirect", processOptions));
+    validateConfigSources(
+      "rewrite",
+      processedRouteSources(
+        [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback],
+        "rewrite",
+        processOptions,
+      ),
+    );
+    validateConfigSources("header", processedRouteSources(headers, "header", processOptions));
   }
 
   // Probe wrapped webpack config for client and server resolution. Alias and
@@ -2083,6 +2169,18 @@ export async function resolveNextConfig(
       fallback: applyLocaleToRoutes(rewrites.fallback, i18n, "rewrite", opts),
     };
     headers = applyLocaleToRoutes(headers, i18n, "header", opts);
+  }
+
+  // Compile the sources requests will match now, so one the ReDoS check
+  // rejects is reported when the config loads.
+  for (const route of [
+    ...redirects,
+    ...rewrites.beforeFiles,
+    ...rewrites.afterFiles,
+    ...rewrites.fallback,
+    ...headers,
+  ]) {
+    prepareConfigSource(route.source);
   }
 
   const images = config.images

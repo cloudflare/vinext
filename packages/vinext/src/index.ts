@@ -8772,10 +8772,9 @@ function getNextPublicEnvDefines(): Record<string, string> {
 
 // matchConfigPattern is imported from config-matchers.ts and re-exported
 // for tests and other consumers that import it from vinext's main entry.
-// The duplicate local implementation and its extractConstraint helper
-// have been removed in favor of the canonical config-matchers.ts version
-// which uses a single-pass tokenizer (fixing the chained .replace()
-// divergence that CodeQL flagged as incomplete sanitization).
+// The duplicate local implementation has been removed in favor of the
+// canonical config-matchers.ts version, which compiles sources with
+// path-to-regexp like Next.js.
 
 /**
  * Write a Web API Response to a Node.js ServerResponse.

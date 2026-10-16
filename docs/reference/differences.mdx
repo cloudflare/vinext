@@ -44,6 +44,10 @@ Next.js also treats an otherwise static route as SSG when a layout above its las
 
 Under `dynamicParams = false`, Next.js checks a request against the params its build generated and runs no `generateStaticParams` per request. vinext runs the route's generators when the cache doesn't answer a request, including a request for params the route doesn't list. A child segment's generator runs only for the parent params that match the request, but a generator in a parallel route slot runs for every combination its parents generate. If a child's generator returns a different value for a parent param, vinext runs it for every parent combination once it sees that change. If the generator changes a parent param only for parent values that don't match the request, vinext can miss the change and answer 404 where Next.js renders the page. A cached page or image metadata response is served without this check, so with a pinned `generateBuildId` and a cache that persists across deploys, an entry an earlier deploy stored can outlive the removal of its params. Keep generators cheap, for example by caching the data they fetch.
 
+## Routing config
+
+vinext checks `redirects`, `rewrites` and `headers` sources and middleware matchers for patterns that could backtrack catastrophically on a crafted path, such as `/:id((?:a+)+b)`. Next.js accepts them. vinext skips such a source, warning when the config loads, and fails a middleware matcher. The check is conservative, so a few linear patterns with very long repeats are rejected too. It does not yet catch polynomial backtracking across several params, such as `/:a(.*)-:b(.*)-:c(.*)`.
+
 ## Compatibility
 
 App Router, Pages Router, RSC, Server Actions, middleware, Route Handlers, static generation, ISR, and the commonly used `next/*` modules are implemented. Cache Components and Partial Prerendering remain incomplete, and build-time image and font optimization do not yet reproduce the full Next.js pipeline.

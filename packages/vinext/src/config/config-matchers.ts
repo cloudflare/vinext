@@ -27,7 +27,14 @@ import {
   buildRequestHeadersFromMiddlewareResponse,
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
-import { analyzeRegexSafety } from "../utils/regex-safety.js";
+import { analyzeRegexSafety, canonicalizeIgnoreCase } from "../utils/regex-safety.js";
+import {
+  normalizePathTokens,
+  parsePathPattern,
+  pathTokensToRegExpSource,
+  type PathToken,
+} from "../utils/path-to-regexp.js";
+import { unsafePathTokensReason } from "../utils/path-token-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { attachRequestCfMetadata } from "../server/request-pipeline.js";
@@ -46,32 +53,17 @@ export {
 export { isExternalUrl } from "../utils/external-url.js";
 
 /**
- * Cache for compiled regex patterns in matchConfigPattern.
+ * Cache for compiled redirect/rewrite/header sources.
  *
- * Redirect/rewrite patterns are static — they come from next.config.js and
- * never change at runtime. Without caching, every request that hits the regex
- * branch re-runs the full tokeniser walk + isSafeRegex + new RegExp() for
- * every rule in the array. On apps with many locale-prefixed rules (which all
- * contain `(` and therefore enter the regex branch) this dominated profiling
- * at ~2.4 seconds of CPU self-time.
+ * Sources come from next.config.js and never change at runtime. Without
+ * caching, every request re-parses and re-validates every rule. On apps with
+ * many locale-prefixed rules this dominated profiling at ~2.4 seconds of CPU
+ * self-time.
  *
- * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
- * skip it on subsequent requests too without re-running the scanner.
+ * Value is `null` when the source is invalid or was rejected as a ReDoS risk,
+ * so we skip it on subsequent requests too without re-running the checks.
  */
-const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
-
-/**
- * Cache for compiled header source regexes in matchHeaders.
- *
- * Each NextHeader rule has a `source` that is run through escapeHeaderSource()
- * then safeRegExp() to produce a RegExp. Both are pure functions of the source
- * string and the result never changes. Without caching, every request
- * re-runs the full escapeHeaderSource tokeniser + isSafeRegex scan + new RegExp()
- * for every header rule.
- *
- * Value is `null` when safeRegExp rejected the pattern (ReDoS risk).
- */
-const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
+const _compiledSourceCache = new Map<string, CompiledConfigSource | null>();
 
 /**
  * Cache for compiled has/missing condition value regexes in checkSingleCondition.
@@ -150,8 +142,27 @@ function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V 
  *      by `applyLocaleToRoutes` for the locale-capture variant)
  * Both forms benefit from O(1) suffix lookup; the optionality is recorded
  * on the entry so we know whether to try the no-locale-prefix bucket.
+ *
+ * The index must match exactly what the compiled source would. So the param
+ * name follows path-to-regexp's `\w` name lexer, the alternatives are plain
+ * words, possibly empty (a `.*` alternative could span several segments), and
+ * the suffix class only admits characters path-to-regexp treats as literals:
+ * `:` (param), `*` and `+` (modifiers), `(`, `{`, `?` and `\` are excluded.
  */
-const _LOCALE_STATIC_RE = /^\/:[\w-]+\(([^)]+)\)(\??)\/([a-zA-Z0-9_~.%@!$&'*+,;=:/-]+)$/;
+const _LOCALE_STATIC_RE = /^\/:\w+\(([\w-]*(?:\|[\w-]*)*)\)(\??)\/([a-zA-Z0-9_~.%@!$&',;=/-]+)$/;
+
+/**
+ * Folds case as a RegExp with `i` and without `u` compares characters, as
+ * the compiled source does: `toLowerCase()` would also read the Kelvin sign
+ * as `k`.
+ */
+function foldCase(value: string): string {
+  // Printable ASCII uppercases one character at a time.
+  if (!/[^ -~]/.test(value)) return value.toUpperCase();
+  let folded = "";
+  for (let i = 0; i < value.length; i++) folded += canonicalizeIgnoreCase(value[i]!);
+  return folded;
+}
 
 type LocaleStaticEntry = {
   /** The param name extracted from the source (e.g. "locale"). */
@@ -195,7 +206,10 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
   for (let i = 0; i < redirects.length; i++) {
     const redirect = redirects[i];
     const m = _LOCALE_STATIC_RE.exec(redirect.source);
-    if (m) {
+    // Lookups use the slash-stripped pathname, so a slash-ending suffix could
+    // never be found; leave those rules to the linear scan.
+    // An empty group is not a valid source at all.
+    if (m && m[1] !== "" && !m[3].endsWith("/")) {
       const paramName = redirect.source.slice(2, redirect.source.indexOf("("));
       const alternation = m[1];
       const optional = m[2] === "?";
@@ -217,7 +231,7 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
         redirect,
         originalIndex: i,
       };
-      const bucketKey = suffix.toLowerCase();
+      const bucketKey = foldCase(suffix);
       const bucket = localeStatic.get(bucketKey);
       if (bucket) {
         bucket.push(entry);
@@ -311,79 +325,6 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Convert a Next.js header/rewrite/redirect source pattern into a regex string.
- *
- * Regex groups in the source (e.g. `(\d+)`) are extracted first, the remaining
- * text is escaped/converted in a **single pass** (avoiding chained `.replace()`
- * which CodeQL flags as incomplete sanitization), then groups are restored.
- */
-export function escapeHeaderSource(source: string): string {
-  // Sentinel character for group placeholders. Uses a Unicode private-use-area
-  // codepoint that will never appear in real source patterns.
-  const S = "\uE000";
-
-  // Step 1: extract regex groups and replace with numbered placeholders.
-  const groups: string[] = [];
-  const withPlaceholders = source.replace(/\(([^)]+)\)/g, (_m, inner) => {
-    groups.push(inner);
-    return `${S}G${groups.length - 1}${S}`;
-  });
-
-  // Step 2: single-pass conversion of the placeholder-bearing string.
-  // Match named params (:[\w-]+), sentinel group placeholders, metacharacters, and literal text.
-  // The regex uses non-overlapping alternatives to avoid backtracking:
-  //   :[\w-]+  — named parameter (constraint sentinel is checked procedurally;
-  //              param names may contain hyphens, e.g. :auth-method)
-  //   sentinel group — standalone regex group placeholder
-  //   [.+?*] — single metachar to escape/convert
-  //   [^.+?*:\uE000]+ — literal text (excludes all chars that start other alternatives)
-  let result = "";
-  const re = new RegExp(
-    `${S}G(\\d+)${S}|:[\\w-]+|[.+?*]|[^.+?*:\\uE000]+`, // lgtm[js/redos] — alternatives are non-overlapping
-    "g",
-  );
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(withPlaceholders)) !== null) {
-    if (m[1] !== undefined) {
-      // Standalone regex group — restore as-is
-      result += `(${groups[Number(m[1])]})`;
-    } else if (m[0].startsWith(":")) {
-      // Named parameter — check if followed by a constraint group placeholder
-      const afterParam = withPlaceholders.slice(re.lastIndex);
-      const constraintMatch = afterParam.match(new RegExp(`^${S}G(\\d+)${S}`));
-      if (constraintMatch) {
-        // :param(constraint) — use the constraint as the capture group
-        re.lastIndex += constraintMatch[0].length;
-        result += `(${groups[Number(constraintMatch[1])]})`;
-      } else {
-        // Plain named parameter → match one segment
-        result += "[^/]+";
-      }
-    } else {
-      switch (m[0]) {
-        case ".":
-          result += "\\.";
-          break;
-        case "+":
-          result += "\\+";
-          break;
-        case "?":
-          result += "\\?";
-          break;
-        case "*":
-          result += ".*";
-          break;
-        default:
-          result += m[0];
-          break;
-      }
-    }
-  }
-
-  return result;
 }
 
 /**
@@ -602,198 +543,171 @@ export function checkHasConditions(
   return collectConditionParams(has, missing, ctx) !== null;
 }
 
+type CompiledConfigSource = {
+  re: RegExp;
+  /** Capture-group names in order; unnamed groups are numbers. */
+  keys: Array<string | number>;
+};
+
 /**
- * If the current position in `str` starts with a parenthesized group, consume
- * it and advance `re.lastIndex` past the closing `)`. Returns the group
- * contents or null if no group is present.
+ * Compile a redirect/rewrite/header source the way Next.js does at runtime:
+ * path-to-regexp 6 with `strict: true`, `delimiter: "/"` and case-insensitive
+ * matching, then `modifyRouteRegex` appends an optional trailing slash.
+ *
+ * Returns an error for sources path-to-regexp rejects (`invalid`) and for
+ * custom param patterns that could backtrack catastrophically (`unsafe`).
+ *
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/filesystem.ts
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/path-match.ts
  */
-function extractConstraint(str: string, re: RegExp): string | null {
-  if (str[re.lastIndex] !== "(") return null;
-  const start = re.lastIndex + 1;
-  let depth = 1;
-  let i = start;
-  while (i < str.length && depth > 0) {
-    if (str[i] === "(") depth++;
-    else if (str[i] === ")") depth--;
-    i++;
+function compileConfigSourceUncached(
+  source: string,
+): CompiledConfigSource | { kind: "invalid" | "unsafe"; error: string } {
+  const parsed = parseConfigSource(source);
+  if ("kind" in parsed) return parsed;
+  const { tokens, re } = parsed;
+  const unsafeReason = unsafePathTokensReason(tokens, { ignoreCase: true });
+  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
+  const keys: Array<string | number> = [];
+  for (const token of tokens) {
+    if (typeof token !== "string" && token.pattern) keys.push(token.name);
   }
-  if (depth !== 0) return null;
-  re.lastIndex = i;
-  return str.slice(start, i - 1);
+  return { re, keys };
+}
+
+function parseConfigSource(
+  source: string,
+): { tokens: PathToken[]; re: RegExp } | { kind: "invalid"; error: string } {
+  try {
+    const tokens = parsePathPattern(source, { delimiter: "/" });
+    return { tokens, re: new RegExp(`${pathTokensToRegExpSource(tokens)}(?:\\/)?$`, "i") };
+  } catch (error) {
+    return { kind: "invalid", error: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 /**
- * Match a Next.js config pattern (from redirects/rewrites sources) against a pathname.
- * Returns matched params or null.
- *
- * Supports:
- *   :param     - matches a single path segment
- *   :param*    - matches zero or more segments (catch-all)
- *   :param+    - matches one or more segments
- *   (regex)    - inline regex patterns in the source
- *   :param(constraint) - named param with inline regex constraint
+ * Length of the RegExp Next.js builds when validating a source
+ * (tryToParsePath: path-to-regexp defaults, retried with normalized repeat
+ * tokens), or null when it cannot be built.
  */
+function validationRegExpLength(source: string): number | null {
+  try {
+    const tokens = parsePathPattern(source);
+    const build = (value: PathToken[]) =>
+      new RegExp(`${pathTokensToRegExpSource(value)}[\\/#\\?]?$`).source.length;
+    try {
+      return build(tokens);
+    } catch {
+      return build(normalizePathTokens(tokens));
+    }
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Strip a single trailing slash from a pathname for config-source matching.
+ * Why `source` is not a valid redirects/rewrites/headers source, or null.
+ * Mirrors the source checks in Next.js's checkCustomRoutes, which fail the
+ * build; config loading calls this to do the same. ReDoS-unsafe sources are
+ * not errors, since Next.js accepts them and the safety check is
+ * conservative: see prepareConfigSource.
  *
- * Next.js conditionally appends `(/)?` to rewrite/redirect/header source
- * regexes when `trailingSlash: true` (see Next.js
- * `resolve-rewrites.ts` and `server-utils.ts:checkRewrite`). Rather than
- * threading the trailingSlash flag through every matcher, we unconditionally
- * strip a trailing slash from the incoming pathname. When `trailingSlash: false`
- * the request pipeline emits a normalizing redirect (step 3) before config
- * rewrites/redirects (step 6) ever run, so the pathname is already slash-free;
- * the unconditional strip is defense-in-depth for that ordering. When
- * `trailingSlash: true` it bridges the gap between the canonicalized request
- * path (`/rewrite-1/`) and source patterns written without a trailing slash
- * (`/rewrite-1`).
- *
- * The root path `"/"` is preserved as-is.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/load-custom-routes.ts
  */
-function stripTrailingSlashForConfigMatch(value: string): string {
-  return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
+export function configSourceError(source: unknown): string | null {
+  if (!source) return "`source` is missing";
+  if (typeof source !== "string") return "`source` is not a string";
+  if (!source.startsWith("/")) return "`source` does not start with /";
+  const parsed = parseConfigSource(source);
+  if ("kind" in parsed) return parsed.error;
+  const length = validationRegExpLength(source);
+  if (length !== null && length > 4096) return "`source` exceeds max built length of 4096";
+  return null;
 }
 
-function configPathEquals(a: string, b: string): boolean {
-  return a.toLowerCase() === b.toLowerCase();
+/**
+ * Compile and cache a valid source at config load, so a ReDoS-unsafe one is
+ * reported as skipped then, rather than on the first request that reaches
+ * it, and its analysis is not repeated per request.
+ */
+export function prepareConfigSource(source: string): void {
+  compileConfigSource(source);
 }
 
-function configPathStartsWith(pathname: string, prefix: string): boolean {
-  return pathname.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase();
+function compileConfigSource(source: string): CompiledConfigSource | null {
+  return getCachedRegex(_compiledSourceCache, source, () => {
+    const compiled = compileConfigSourceUncached(source);
+    if (!("kind" in compiled)) return compiled;
+    if (compiled.kind === "invalid") {
+      console.warn(
+        `[vinext] Ignoring invalid next.config.js source "${source}": ${compiled.error}`,
+      );
+    } else {
+      console.warn(
+        `[vinext] Ignoring next.config.js source "${source}" (ReDoS risk): ${compiled.error}.\n` +
+          `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
+      );
+    }
+    return null;
+  });
 }
 
+/**
+ * Match a Next.js config source (from redirects/rewrites/headers) against a
+ * pathname. Returns the named params or null.
+ *
+ * Unnamed groups are dropped, as Next.js does with `removeUnnamedParams`.
+ * Repeated params (`:path*`, `:path+`) keep the captured string (`a/b`), and
+ * an optional param that did not match is `""`.
+ */
 export function matchConfigPattern(
   pathname: string,
   pattern: string,
 ): Record<string, string> | null {
-  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
-  pathname = stripTrailingSlashForConfigMatch(pathname);
-  if (pathnameHadTrailingSlash) pattern = stripTrailingSlashForConfigMatch(pattern);
+  return execConfigSource(pathname, pattern)?.params ?? null;
+}
 
-  // If the pattern contains regex groups like (\d+) or (.*), use regex matching.
-  // Also enter this branch when a catch-all parameter (:param* or :param+) is
-  // followed by a literal suffix (e.g. "/:path*.md"). Without this, the suffix
-  // pattern falls through to the simple segment matcher which incorrectly treats
-  // the whole segment (":path*.md") as a named parameter and matches everything.
-  // The last condition catches simple params with literal suffixes (e.g. "/:slug.md")
-  // where the param name is followed by a dot — the simple matcher would treat
-  // "slug.md" as the param name and match any single segment regardless of suffix.
-  // Enter the full regex branch when:
-  //   - the pattern uses explicit regex groups or escapes,
-  //   - a catch-all (`:foo*` / `:foo+`) is followed by a literal suffix that
-  //     the simple catch-all branch cannot express,
-  //   - a named param is followed by a dot (the simple branch would treat
-  //     "slug.md" as the whole param name),
-  //   - a named param is embedded after a literal prefix in the same path
-  //     segment (e.g. `/blog-:slug`),
-  //   - the pattern has multiple named params and any of them is a catch-all
-  //     (e.g. `/:locale/files/:path*`). The simple catch-all branch only
-  //     handles trailing-catch-all-with-static-prefix; mixed cases need regex.
-  const catchAllAnchor = /:[\w-]+[*+]/.test(pattern);
-  const namedParamCount = (pattern.match(/:[\w-]+/g) || []).length;
-  if (
-    pattern.includes("(") ||
-    pattern.includes("\\") ||
-    /:[\w-]+[*+][^/]/.test(pattern) ||
-    /:[\w-]+\./.test(pattern) ||
-    /[^/]:[\w-]+/.test(pattern) ||
-    (catchAllAnchor && namedParamCount > 1)
-  ) {
-    try {
-      // Look up the compiled regex in the module-level cache. Patterns come
-      // from next.config.js and are static, so we only need to compile each
-      // one once across the lifetime of the worker/server process.
-      // null is stored for rejected patterns so we don't re-run isSafeRegex.
-      const compiled = getCachedRegex(_compiledPatternCache, pattern, () => {
-        // Cache miss — compile the pattern now and store the result.
-        // Param names may contain hyphens (e.g. :auth-method, :sign-in).
-        const paramNames: string[] = [];
-        // Single-pass conversion with procedural suffix handling. The tokenizer
-        // matches only simple, non-overlapping tokens; quantifier/constraint
-        // suffixes after :param are consumed procedurally to avoid polynomial
-        // backtracking in the regex engine.
-        let regexStr = "";
-        const tokenRe = /:([\w-]+)|[.]|[^:.]+/g; // lgtm[js/redos] — alternatives are non-overlapping (`:` and `.` excluded from `[^:.]+`)
-        let tok: RegExpExecArray | null;
-        while ((tok = tokenRe.exec(pattern)) !== null) {
-          if (tok[1] !== undefined) {
-            const name = tok[1];
-            const rest = pattern.slice(tokenRe.lastIndex);
-            // Check for quantifier (* or +) with optional constraint
-            if (rest.startsWith("*") || rest.startsWith("+")) {
-              const quantifier = rest[0];
-              tokenRe.lastIndex += 1;
-              const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
-              if (constraint !== null) {
-                regexStr += `(${constraint})`;
-              } else {
-                regexStr += quantifier === "*" ? "(.*)" : "(.+)";
-              }
-            } else {
-              // Check for inline constraint without quantifier
-              const constraint = extractConstraint(pattern, tokenRe);
-              paramNames.push(name);
-              regexStr += constraint !== null ? `(${constraint})` : "([^/]+)";
-            }
-          } else if (tok[0] === ".") {
-            regexStr += "\\.";
-          } else {
-            regexStr += tok[0];
-          }
-        }
-        const re = safeRegExp("^" + regexStr + "$", "i");
-        return re ? { re, paramNames } : null;
-      });
-      if (!compiled) return null;
-      const match = compiled.re.exec(pathname);
-      if (!match) return null;
-      const params: Record<string, string> = Object.create(null);
-      for (let i = 0; i < compiled.paramNames.length; i++) {
-        params[compiled.paramNames[i]] = match[i + 1] ?? "";
-      }
-      return params;
-    } catch {
-      // Fall through to segment-based matching
+/**
+ * matchConfigPattern, also reporting the optional params that did not match.
+ * Next.js leaves those out of its params entirely.
+ */
+function execConfigSource(
+  pathname: string,
+  source: string,
+): { params: Record<string, string>; unmatched: string[] } | null {
+  const compiled = compileConfigSource(source);
+  if (!compiled) return null;
+  const match = compiled.re.exec(pathname);
+  if (!match) return null;
+  const params: Record<string, string> = Object.create(null);
+  const matched = new Set<string>();
+  for (let i = 0; i < compiled.keys.length; i++) {
+    const key = compiled.keys[i];
+    if (typeof key !== "string") continue;
+    const value = match[i + 1];
+    // Like Next.js, an unmatched capture never overwrites a duplicate name
+    // that did match (`/:id?/:id?` on `/x` gives `{ id: "x" }`).
+    if (value === undefined) {
+      if (!matched.has(key)) params[key] = "";
+      continue;
     }
-  }
-
-  // Check for catch-all patterns (:param* or :param+) without regex groups
-  // Param names may contain hyphens (e.g. :sign-in*, :sign-up+).
-  const catchAllMatch = pattern.match(/:([\w-]+)(\*|\+)$/);
-  if (catchAllMatch) {
-    const prefix = pattern.slice(0, pattern.lastIndexOf(":"));
-    const paramName = catchAllMatch[1];
-    const isPlus = catchAllMatch[2] === "+";
-
-    const prefixNoSlash = prefix.replace(/\/$/, "");
-    if (!configPathStartsWith(pathname, prefixNoSlash)) return null;
-    const charAfter = pathname[prefixNoSlash.length];
-    if (charAfter !== undefined && charAfter !== "/") return null;
-
-    const rest = pathname.slice(prefixNoSlash.length);
-    if (isPlus && (!rest || rest === "/")) return null;
-    let restValue = rest.startsWith("/") ? rest.slice(1) : rest;
+    matched.add(key);
     // NOTE: Do NOT decodeURIComponent here. The pathname is already decoded at
     // the request entry point. Decoding again would produce incorrect param values.
-    return { [paramName]: restValue };
+    params[key] = value;
   }
+  const unmatched = Object.keys(params).filter((key) => !matched.has(key));
+  return { params, unmatched };
+}
 
-  // Simple segment-based matching for exact patterns and :param
-  const parts = pattern.split("/");
-  const pathParts = pathname.split("/");
-
-  if (parts.length !== pathParts.length) return null;
-
-  const params: Record<string, string> = Object.create(null);
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i].startsWith(":")) {
-      params[parts[i].slice(1)] = pathParts[i];
-    } else if (!configPathEquals(parts[i], pathParts[i])) {
-      return null;
-    }
-  }
-  return params;
+/**
+ * Strip one trailing slash, preserving the root path `"/"`. Compiled sources
+ * accept an optional trailing slash, so the redirect index looks up the
+ * slash-free form.
+ */
+function stripTrailingSlashForConfigMatch(value: string): string {
+  return value.length > 1 && value.endsWith("/") ? value.slice(0, -1) : value;
 }
 
 /**
@@ -852,8 +766,8 @@ export function matchRedirect(
 
   // Strip trailing slash for the locale-static fast path (Map.get on the
   // pathname) matches keys derived from slash-free source patterns. The
-  // linear fallback receives the original pathname so matchConfigPattern can
-  // apply the same optional-slash behavior to slash-ending source patterns.
+  // linear fallback receives the original pathname; compiled sources accept
+  // the optional trailing slash themselves.
   const normalizedPathname = stripTrailingSlashForConfigMatch(pathname);
 
   const index = _getRedirectIndex(redirects);
@@ -880,7 +794,7 @@ export function matchRedirect(
     // (the locale segment was optional). Mandatory-locale entries — emitted
     // by `applyLocaleToRoutes` as `/:nextInternalLocale(en|fr)/foo` — must
     // not match here because they require the locale segment to be present.
-    const noLocaleBucket = index.localeStatic.get(normalizedPathname.toLowerCase());
+    const noLocaleBucket = index.localeStatic.get(foldCase(normalizedPathname));
     if (noLocaleBucket) {
       for (const entry of noLocaleBucket) {
         if (!entry.optional) continue; // mandatory-locale rule — skip
@@ -910,7 +824,7 @@ export function matchRedirect(
     if (slashTwo !== -1) {
       const suffix = normalizedPathname.slice(slashTwo); // e.g. "/security"
       const localePart = normalizedPathname.slice(1, slashTwo); // e.g. "en"
-      const localeBucket = index.localeStatic.get(suffix.toLowerCase());
+      const localeBucket = index.localeStatic.get(foldCase(suffix));
       if (localeBucket) {
         for (const entry of localeBucket) {
           if (entry.originalIndex >= localeMatchIndex) continue;
@@ -983,16 +897,16 @@ export function matchRewrite(
 ): string | null {
   for (const rewrite of rewrites) {
     if (!shouldEvaluateRule(rewrite.basePath, basePathState)) continue;
-    const matchedParams = matchConfigPattern(pathname, rewrite.source);
-    if (matchedParams) {
+    const matched = execConfigSource(pathname, rewrite.source);
+    if (matched) {
       onRuleSourceMatch?.(rewrite);
       // App request routing matches against a segment-normalized pathname but
       // Next.js prepareDestination substitutes the encoded source captures.
       // Prefer those captures when the caller retained the encoded pathname.
-      const params =
+      const { params, unmatched } =
         paramsPathname === pathname
-          ? matchedParams
-          : (matchConfigPattern(paramsPathname, rewrite.source) ?? matchedParams);
+          ? matched
+          : (execConfigSource(paramsPathname, rewrite.source) ?? matched);
       const conditionParams =
         rewrite.has || rewrite.missing
           ? collectConditionParams(rewrite.has, rewrite.missing, ctx)
@@ -1006,6 +920,7 @@ export function matchRewrite(
       return substituteAndSanitizeRewriteDestination(
         serializeRewriteDestinationTemplate(rewrite.destination),
         rewriteParams,
+        unmatched.filter((key) => !(key in conditionParams)),
       );
     }
   }
@@ -1074,20 +989,28 @@ function resolveRedirectMatch(
 /**
  * Match Next.js's rewrite-specific prepareDestination behavior: source params
  * that are not consumed by the destination path/host are exposed to the target
- * page through query.
+ * page through query. Optional params that did not match are not params at
+ * all in Next.js, so they are neither appended nor count as consumed.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  */
 function substituteAndSanitizeRewriteDestination(
   destination: string,
   params: Record<string, string>,
+  unmatchedParams: string[],
 ): string {
   const rewritten = substituteAndSanitizeDestination(destination, params, "rewrite");
-  if (!shouldAppendRewriteParamsToQuery(destination, params)) return rewritten;
+  const matchedParams =
+    unmatchedParams.length === 0
+      ? params
+      : Object.fromEntries(
+          Object.entries(params).filter(([key]) => !unmatchedParams.includes(key)),
+        );
+  if (!shouldAppendRewriteParamsToQuery(destination, matchedParams)) return rewritten;
 
   const existingQueryKeys = getDestinationQueryKeys(destination);
   const paramsToAppend: [string, string][] = [];
-  for (const [key, value] of Object.entries(params)) {
+  for (const [key, value] of Object.entries(matchedParams)) {
     if (key === "nextInternalLocale" || existingQueryKeys.has(key)) continue;
     paramsToAppend.push([key, value]);
   }
@@ -1423,21 +1346,10 @@ export function matchHeaders(
   basePathState: BasePathMatchState = _BASEPATH_DEFAULT,
   onRuleSourceMatch?: (rule: NextHeader) => void,
 ): Array<{ key: string; value: string }> {
-  const pathnameHadTrailingSlash = pathname.length > 1 && pathname.endsWith("/");
-  pathname = stripTrailingSlashForConfigMatch(pathname);
-
   const result: Array<{ key: string; value: string }> = [];
   for (const rule of headers) {
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
-    // Cache the compiled source regex — escapeHeaderSource() + safeRegExp() are
-    // pure functions of rule.source and the result never changes between requests.
-    const source = pathnameHadTrailingSlash
-      ? stripTrailingSlashForConfigMatch(rule.source)
-      : rule.source;
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, source, () =>
-      safeRegExp("^" + escapeHeaderSource(source) + "$", "i"),
-    );
-    if (sourceRegex && sourceRegex.test(pathname)) {
+    if (compileConfigSource(rule.source)?.re.test(pathname)) {
       onRuleSourceMatch?.(rule);
       if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {

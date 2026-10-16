@@ -9560,9 +9560,8 @@ describe("middleware matcher patterns", () => {
   it("matches Next.js 16.2.7 path-to-regexp tokens and compiled regexes", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const { parseMiddlewarePath } =
-      await import("../packages/vinext/src/server/middleware-path-to-regexp.js");
-    type Token = ReturnType<typeof parseMiddlewarePath>[number];
+    const { parsePathPattern } = await import("../packages/vinext/src/utils/path-to-regexp.js");
+    type Token = ReturnType<typeof parsePathPattern>[number];
     const nextPathToRegexp = createRequire(import.meta.url)(
       "next/dist/compiled/path-to-regexp",
     ) as {
@@ -9586,7 +9585,7 @@ describe("middleware matcher patterns", () => {
 
     for (const pattern of patterns) {
       const nextTokens = nextPathToRegexp.parse(pattern);
-      expect(parseMiddlewarePath(pattern), pattern).toEqual(nextTokens);
+      expect(parsePathPattern(pattern), pattern).toEqual(nextTokens);
 
       let nextRegexp: RegExp;
       try {
@@ -9684,6 +9683,206 @@ describe("middleware matcher patterns", () => {
     expect(compileMiddlewareMatcherPattern("/:path((?:k|K)+)").regexp).toBeInstanceOf(RegExp);
   });
 
+  it("rejects a repeated param whose repeats can split the same text many ways", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // `/{a:id(a+)}*X` joins repeats with "a", so `a+` can take either side.
+    // Surrogates count separately: the RegExp has no `u` flag. The rest have
+    // two ways to match each segment.
+    for (const matcher of [
+      "/{a:id(a+)}*X",
+      "/{a:id(a+)}+X",
+      "/x{-:id([a-z-]+)}+",
+      "/{\u{1F600}:id([\u{1F600}]+)}+X",
+      "/:id(a|aa?)+",
+      "/{x:id(a|a)}+",
+      "/:id(a?a?b)+",
+      "/:id(|)+/end",
+      "/:id(a?|b?)+/end",
+      "/{ab:id((?:(?!ab)a|a))}+",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("exponentially ambiguous repetition"),
+      });
+    }
+
+    for (const matcher of [
+      "/:path*",
+      "/:lang(en|fr)*",
+      "/foo{-:bar}+",
+      "/x{.:ext}*",
+      "/{-:id([a-z]+)-}+",
+      // The `cd` before the next `ab` fixes where each repeat ends.
+      "/{ab:id(a+)cd}+",
+      // Middleware matchers are case-sensitive.
+      "/{a:id(A+)}*X",
+      // A fixed-width repeat splits by length alone.
+      "/{a:id(a)}+",
+      "/{a:id(\\/)}+",
+      "/docs/:lang(en|fr)*",
+      // The delimiter or the pattern's own ends fix each split.
+      "/:a([^/]*)+/end",
+      "/:lang(en|en-US)+",
+      "/:id([a-z]+\\/[a-z]+)+",
+      "/:id(a?)+/end",
+      "/:id(a|)+/end",
+      // path-to-regexp guards each repeat with `(?!ab)`.
+      "/{ab:id}+",
+      "/x{--:id}+",
+      // Next.js accepts sources up to 4096 characters.
+      "/" + "a".repeat(4_095),
+      // Unrolled exactly while it fits: as `a+` the repeat would overlap the
+      // repeated token's "a" prefix.
+      "/{a:id(a{1025})}+X",
+      "/{a:id(a{8000})}+X",
+      // Read as `a+` rather than unrolled.
+      "/:id(a{16385})",
+      "/:id([a-z]{2,20000})",
+      "/:id(a{20000,})",
+      // An empty lookahead never matches.
+      "/:id((?!(?:))a)",
+      // `(?!a)` rules out the first copy of `a+`, so only `b+` can match.
+      "/{a:id((?:(?!a)a+|b+))}+",
+      "/" + "a/".repeat(2_044) + ":path*",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+  });
+
+  it("analyzes long bounded ranges without unrolling them all", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // Each skippable copy unrolled to a new first set made the first two take
+    // seconds; a zero-width child costs no positions but was copied anyway.
+    for (const matcher of [
+      "/:id(a{0,16384})",
+      "/:id([a-z]{1,16384})",
+      "/:id(a(?=a){1000000000})",
+      "/:id((?:){1000000000,})",
+    ]) {
+      const started = performance.now();
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+      expect(performance.now() - started, matcher).toBeLessThan(2_000);
+    }
+    // Stops at the product budget rather than exploring the whole product.
+    const started = performance.now();
+    expect(compileMiddlewareMatcherPattern("/{x:id([a-z]{1000}|[a-z]{1001})}+")).toMatchObject({
+      kind: "unsafe",
+    });
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+
+  it("accepts long lists of alternatives that share no character", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // 1,500 caseless CJK ideographs: checking every pair would take 2.25M
+    // steps, past the product budget.
+    const alternatives = Array.from({ length: 1_500 }, (_, index) =>
+      String.fromCharCode(0x4e00 + index),
+    ).join("|");
+    expect(compileMiddlewareMatcherPattern(`/:id(${alternatives})`).regexp).toBeInstanceOf(RegExp);
+    expect(compileMiddlewareMatcherPattern(`/{x:id(${alternatives})}+`).regexp).toBeInstanceOf(
+      RegExp,
+    );
+  });
+
+  it("rejects a chain of overlapping repeats across adjacent params", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    expect(compileMiddlewareMatcherPattern("/:a(a+):b(a+):c(a+)")).toMatchObject({
+      kind: "unsafe",
+      error: expect.stringContaining("overlapping sequential repetition"),
+    });
+    for (const matcher of [
+      "/:a(a+):b(a+)",
+      "/(foo.*|bar)/:path*",
+      "/:a(\\d+)/:b(\\d+)/:c(\\d+)",
+      "/foo-:path*",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
+  });
+
+  it("decides repeated params that can match empty or a slash by their ambiguity", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // Each repeat starts with `/`, which the param cannot read or can read
+    // only one way, so these run in linear time.
+    for (const matcher of ["/:p([a-z]*)+", "/:p(a?)+", "/:p([^/]*)*", "/:p(a|)+", "/:p(\\w*)*"]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      for (const pathname of [
+        `/${"a/".repeat(8_000)}!`,
+        `/${"a".repeat(16_000)}!`,
+        `/${"/".repeat(16_000)}!`,
+      ]) {
+        compiled.regexp!.test(pathname);
+      }
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    // A param that can read the `/` between repeats splits a path many ways.
+    for (const matcher of ["/:p(.*)+", "/:p(\\/?)*", "/:path(.*)*/end"]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("exponentially ambiguous repetition"),
+      });
+    }
+  });
+
+  it("accepts backreferences to captures that always take part and impossible lookahead branches", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // The capture always reads `a`, `a` or `bb`, or one run of `x` or `a`,
+    // which the engine compares one way, and `(?!é|x)é` never matches, so each path is
+    // read one way.
+    for (const matcher of [
+      "/:id((?<x>a)\\k<x>+)",
+      "/:a(x+)/:id(y\\1)+",
+      "/:a((?<g>a|aa?))/:id(\\k<g>)+",
+      "/:a(a|bb)/:id(\\1+)",
+      "/:id(x(?:(?!é|x)é|é))+",
+    ]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      compiled.regexp!.test(`/${"a".repeat(16_000)}!`);
+      compiled.regexp!.test(`/${"xé/".repeat(8_000)}!`);
+      compiled.regexp!.test(`/xx/${"yxx/".repeat(8_000)}!`);
+      compiled.regexp!.test(`/aa/${"aa/".repeat(8_000)}!`);
+      compiled.regexp!.test(`/bb/${"b".repeat(16_000)}!`);
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    // A capture that may not take part leaves its backreference reading
+    // nothing, so both alternatives read `a`; and `(?!ê|x)` does not rule out
+    // `é`.
+    for (const matcher of [
+      "/:id((?:(?<g>x)|y)(?:\\k<g>a|a)+)",
+      "/:id((?<g>x)?(?:\\k<g>a|a)+)",
+      "/:id((?!(?<g>x))(?:\\k<g>a|a)+)",
+      // A capture that may read nothing does too.
+      "/:id((?<g>x*)(?:\\k<g>a|a)+)",
+      // Groups in different alternatives may share a name, and the
+      // backreference reads whichever took part, here `a`.
+      "/:a((?:(?<g>a)|(?<g>b)))/:id(\\k<g>|a)+",
+      // `\2` is `g`, counting the capture the compiled source adds around
+      // the param, so it repeats `a+`.
+      `/:id((?<g>${"a+"})\\2{20})`,
+      // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
+      `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
+      "/:id(x(?:(?!ê|x)é|é))+",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });
+    }
+  });
+
   it("handles fixed-width nested repeats and simple class intersections", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
@@ -9758,6 +9957,43 @@ describe("middleware matcher patterns", () => {
       kind: "unsafe",
       error: expect.stringContaining("ambiguous sequence expansion"),
     });
+  });
+
+  it("reads scoped flag groups and legacy octal escapes like the RegExp engine", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // `(?i:...)` bodies and `\141` (an octal "a" with no group 141) were
+    // opaque atoms, hiding the overlapping repeats inside them.
+    // A folded `a` keyed as `A` looked disjoint from a case-sensitive `a`.
+    for (const matcher of [
+      "/:id(a(?i:a+)(?i:a+)(?i:a+))",
+      "/:id(\\141+\\141+\\141+)",
+      "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
+      "/:a((?i:a+)):b(a+):c(a+)",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("overlapping sequential repetition"),
+      });
+    }
+    // A case-sensitive `(?!A)` lets "a" through even though `(?i:...)`
+    // elsewhere folds the pattern's symbols, so both alternatives read "a".
+    expect(compileMiddlewareMatcherPattern("/:id((?:(?!A)a+|(?i:a)+))+")).toMatchObject({
+      kind: "unsafe",
+    });
+    for (const matcher of [
+      "/:id((?i:ab)+)",
+      // An escaped `\(` opens no scoped flag group, so `A+` keeps the
+      // case-sensitive `a+` repeats on either side apart.
+      "/:a(a+):b(A+):c(a+\\(?i:)",
+      "/:id((?-i:a)b)",
+      "/:id((?s:.)x)",
+      "/:id(\\8+)",
+      "/:id(\\101\\102)",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
+    }
   });
 
   // Ported from Next.js path-to-regexp matcher semantics:
@@ -13632,9 +13868,8 @@ describe("matchConfigPattern", () => {
 
   // Regression for #1331: a trailing slash on the request pathname must not
   // hide a config rewrite/redirect/header source written without one. This
-  // mirrors Next.js's conditional `source + '(/)?'` suffix under
-  // `trailingSlash: true` — see `stripTrailingSlashForConfigMatch`.
-  it("strips a trailing slash on the incoming pathname before matching", async () => {
+  // mirrors the optional `(?:\/)?$` ending Next.js's modifyRouteRegex appends.
+  it("accepts a trailing slash on the incoming pathname", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Exact match: trailing slash on the pathname is ignored.
     expect(matchConfigPattern("/about/", "/about")).toEqual({});
@@ -13789,6 +14024,26 @@ describe("isSafeRegex", () => {
     // (a*?) is non-greedy '*', still just one quantifier
     expect(isSafeRegex("(a*?)")).toBe(true);
   });
+
+  it("reads a backreference to a capture that always takes part as its word", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    // The capture always reads `a`, so the backreference does too.
+    expect(isSafeRegex("^(a)\\1+$")).toBe(true);
+    expect(isSafeRegex("^(?<x>a)\\k<x>+$")).toBe(true);
+    expect(isSafeRegex("^(?:(a)b)+\\1+$")).toBe(true);
+    // A capture that may not take part leaves the backreference reading
+    // nothing, so both alternatives read `a`.
+    for (const pattern of [
+      "^(?:(x)|y)(?:\\1a|a)+$",
+      "^(?:y|(x))(?:\\1a|a)+$",
+      "^(x)?(?:\\1a|a)+$",
+      "^(?:(x)y)*(?:\\1a|a)+$",
+      "^(?!(x))(?:\\1a|a)+$",
+      "^(?:(x)|(?:\\1a|a)+)$",
+    ]) {
+      expect(isSafeRegex(pattern), pattern).toBe(false);
+    }
+  });
 });
 
 describe("safeRegExp", () => {
@@ -13819,62 +14074,14 @@ describe("safeRegExp", () => {
   });
 });
 
-describe("escapeHeaderSource", () => {
-  it("passes through literal paths unchanged", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/users")).toBe("/api/users");
-  });
-
-  it("escapes dots", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/file.txt")).toBe("/file\\.txt");
-  });
-
-  it("converts named param to [^/]+", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/user/:id")).toBe("/user/[^/]+");
-  });
-
-  it("converts glob * to .*", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/*")).toBe("/api/.*");
-  });
-
-  it("escapes + and ?", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/path+query")).toBe("/path\\+query");
-    expect(escapeHeaderSource("/maybe?")).toBe("/maybe\\?");
-  });
-
-  it("handles constrained param :param(constraint)", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/:version(\\d+)/users")).toBe("/api/(\\d+)/users");
-  });
-
-  it("handles constrained param with alternation", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/page")).toBe("/(en|fr)/page");
-  });
-
-  it("preserves standalone regex groups", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/api/(v1|v2)/users")).toBe("/api/(v1|v2)/users");
-  });
-
-  it("handles multiple groups and params", async () => {
-    const { escapeHeaderSource } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(escapeHeaderSource("/:lang(en|fr)/:id(\\d+)/page")).toBe("/(en|fr)/(\\d+)/page");
-  });
-});
-
 describe("matchConfigPattern rejects ReDoS patterns", () => {
   it("returns null for pathological source patterns", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
-    // This pattern has nested quantifiers: the compiled regex would be (a+)+b
-    // which causes catastrophic backtracking. matchConfigPattern should return
-    // null (no match) rather than hanging.
-    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    const result = matchConfigPattern("/aaaaaaaaaaaaaaaaaaaac", "/:id((a+)+b)");
+    // This pattern has nested quantifiers: the compiled regex would contain
+    // (?:a+)+b, which causes catastrophic backtracking. matchConfigPattern
+    // should return null (no match) rather than hanging.
+    // lgtm[js/redos] — deliberate pathological regex to test the ReDoS guard
+    const result = matchConfigPattern("/aaaaaaaaaaaaaaaaaaaac", "/:id((?:a+)+b)");
     expect(result).toBeNull();
   });
 });
@@ -13917,9 +14124,9 @@ describe("matchConfigPattern compiled pattern cache", () => {
   it("caches rejection for unsafe (ReDoS) patterns and returns null on repeat calls", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // lgtm[js/redos] — deliberate pathological regex to test cache-of-null path
-    const unsafe = "/:id((a+)+b)";
+    const unsafe = "/:id((?:a+)+b)";
     expect(matchConfigPattern("/x", unsafe)).toBeNull();
-    // Second call must not re-run isSafeRegex — just return null from cache.
+    // Second call must not re-run the ReDoS checks — just return null from cache.
     expect(matchConfigPattern("/x", unsafe)).toBeNull();
   });
 });
@@ -14625,9 +14832,9 @@ describe("matchHeaders", () => {
 });
 
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: escapeHeaderSource() + safeRegExp() were re-run on every
-  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  // Regression test: header sources were recompiled and re-validated on every
+  // request for every header rule. The result is now cached by rule.source so
+  // subsequent calls skip the parser and the ReDoS checks.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),
@@ -14646,7 +14853,7 @@ describe("matchHeaders compiled source cache", () => {
       },
     ];
 
-    // First call — populates _compiledHeaderSourceCache.
+    // First call — populates the compiled source cache.
     const first = matchHeaders("/blog/hello-world", rules, makeCtx());
     expect(first).toEqual([{ key: "x-content-type", value: "article" }]);
 
@@ -15269,11 +15476,12 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/archive/2024-06");
   });
 
-  it("replaces hyphenated param names without truncating them", async () => {
+  it("reads a hyphen after a param name as literal text, like path-to-regexp", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    // `:auth-method` is the `auth` param followed by the literal `-method`.
     const rewrites = [{ source: "/auth/:auth-method", destination: "/signin/:auth-method" }];
-    const result = matchRewrite("/auth/google", rewrites, emptyCtx);
-    expect(result).toBe("/signin/google");
+    expect(matchRewrite("/auth/google", rewrites, emptyCtx)).toBeNull();
+    expect(matchRewrite("/auth/google-method", rewrites, emptyCtx)).toBe("/signin/google-method");
   });
 
   it("treats hyphen as a literal delimiter when only the shorter param key exists", async () => {
@@ -15722,7 +15930,8 @@ describe("open redirect prevention in catch-all redirects", () => {
 
   it("matchRedirect sanitizes double-slash in already-decoded paths", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
-    const redirects = [{ source: "/old/:path*", destination: "/:path*", permanent: false }];
+    // `:path*` never matches an empty segment, but `(.*)` captures `/evil.com`.
+    const redirects = [{ source: "/old/:path(.*)", destination: "/:path", permanent: false }];
     // Even if an already-decoded path somehow contains //, the sanitizer should handle it
     const result = matchRedirect("/old//evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
@@ -25830,6 +26039,105 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("appends unused source params to the rewrite query like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // The case-insensitive sync match must not skip the `?id=123` that
+    // Next.js appends when the destination uses none of the params.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/123")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "123" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves dot segments in a rewrite destination before substituting params", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // Like the server, `/target/:id/..` is parsed to `/target/` first, so `id`
+    // goes unused and is appended to the query.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target/:id/.." }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/x")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "x" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("collapses a leading double slash in a rewrite destination like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/target/[id]": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `//target/1` would read as protocol-relative; the server's
+    // sanitizeDestination makes it the local `/target/1`.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "//target/:id" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/1")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target/[id]", query: { id: "1" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it.each([
     [
       "an HttpOnly cookie",
@@ -25873,6 +26181,50 @@ describe("Pages Router _next/data client navigation", () => {
       expect(hrefAssignments).toContain("/conditional");
       expect(fetchMock).not.toHaveBeenCalled();
       expect(destinationLoader).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("skips a conditional rewrite whose source cannot match before reusing the mounted page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      page: "/target",
+      pathname: "/foobar",
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `/foo` shares a prefix with `/foobar` but never matches it, so its
+    // condition needs no server evaluation.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [
+        { source: "/foo", destination: "/private", has: [{ type: "query", key: "secret" }] },
+        { source: "/foobar", destination: "/target" },
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const pushPromise = Router.push({ query: { param: 1 } });
+      // The mounted page is reused, so history updates in the same turn.
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ as: "/foobar?param=1" }),
+        "",
+        "/foobar?param=1",
+      );
+      await expect(pushPromise).resolves.toBe(true);
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;

@@ -541,8 +541,8 @@ describe("valid middleware matcher auth guards", () => {
 
 describe("unsafe middleware matcher rejection", () => {
   it.each([
-    ["/:path(.*)*/end", /may match an empty value or path delimiter/],
-    ["/:path(.*)+/end", /may match an empty value or path delimiter/],
+    ["/:path(.*)*/end", /contains exponentially ambiguous repetition/],
+    ["/:path(.*)+/end", /contains exponentially ambiguous repetition/],
     ["/:path((?:a+)+)", /contains nested repetition/],
     ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
     ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
@@ -603,7 +603,7 @@ describe("unsafe middleware matcher rejection", () => {
     try {
       await writeMatcherFixture(root, "/:path(.*)*/end");
       await expect(startFixtureServer(root)).rejects.toThrow(
-        /Invalid middleware matcher.*may match an empty value or path delimiter/,
+        /Invalid middleware matcher.*contains exponentially ambiguous repetition/,
       );
     } finally {
       await fs.rm(root, { recursive: true, force: true });

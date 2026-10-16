@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -33,6 +33,7 @@ export type RegexSafetyIssue =
   | "ambiguous alternatives under repetition"
   | "ambiguous sequence expansion"
   | "overlapping sequential repetition"
+  | "exponentially ambiguous repetition"
   | "analysis budget exceeded";
 
 const MAX_NODES = 16_384;
@@ -43,8 +44,21 @@ const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
+// Above Next.js's 4096-character source limit, plus room for unrolled repeats.
+const MAX_POSITIONS = 16_384;
+// When unrolling every repeat exceeds a budget, repeats past this many
+// positions are read as unbounded instead.
+const MAX_UNROLLED_REPEAT = 1_024;
+const MAX_AUTOMATON_EDGES = 262_144;
+// Map entries read while building the automaton: unrolling a long repeat
+// whose copies may be skipped, such as `a{0,16384}`, copies ever larger
+// first and last sets.
+const MAX_AUTOMATON_WORK = 4_000_000;
+const MAX_PRODUCT_EDGES = 500_000;
+// Follow lists longer than this are indexed by character for the product.
+const MAX_UNINDEXED_FOLLOW = 16;
 
-function canonicalizeIgnoreCase(character: string): string {
+export function canonicalizeIgnoreCase(character: string): string {
   const upper = character.toUpperCase();
   // ECMAScript's non-Unicode Canonicalize operation keeps the original UTF-16
   // code unit when uppercasing expands it or maps a non-ASCII character to
@@ -144,20 +158,96 @@ function simpleClassSymbol(raw: string, ignoreCase: boolean): RegexSymbol | null
   return createClassSymbol(values, nonAscii);
 }
 
+/**
+ * Whether a `(?i:...)` group turns on case folding for part of `pattern`.
+ * Symbols are compared by key, and a folded `a` keys as `A`, so a pattern
+ * that mixes both is read case-insensitively throughout; that only lets
+ * more characters overlap, except in negative lookaheads, which the parser
+ * drops when they hold a case-sensitive symbol.
+ */
+function hasScopedIgnoreCase(pattern: string): boolean {
+  const scoped = /\?[ims]*i[ims]*(?:-[ims]+)?:/y;
+  let inClass = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "\\") index++;
+    else if (character === "[") inClass = true;
+    else if (character === "]") inClass = false;
+    else if (!inClass && character === "(") {
+      scoped.lastIndex = index + 1;
+      if (scoped.test(pattern)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Where a pattern sits in the RegExp it is compiled into: after `before`
+ * capturing groups, with `total` in the whole RegExp. Numbered
+ * backreferences count them all.
+ */
+export type CaptureContext = { before: number; total: number };
+
+/** Capturing groups in `pattern`, named or not, outside classes and escapes. */
+export function countCapturingGroups(pattern: string): number {
+  let count = 0;
+  let inClass = false;
+  for (let index = 0; index < pattern.length; index++) {
+    const character = pattern[index];
+    if (character === "\\") index++;
+    else if (character === "[") inClass = true;
+    else if (character === "]") inClass = false;
+    else if (!inClass && character === "(") {
+      if (pattern[index + 1] !== "?") count++;
+      else if (pattern[index + 2] === "<" && !"=!".includes(pattern[index + 3] ?? "")) count++;
+    }
+  }
+  return count;
+}
+
 class RegexParser {
   index = 0;
   nodes = 0;
   depth = 0;
   exceededBudget = false;
+  private readonly ignoreCase: boolean;
+  // Whether the current `(?i:...)`/`(?-i:...)` scope folds case, and whether a
+  // symbol it reads case-sensitively has been folded anyway: a folded `A`
+  // also matches `a`, so `(?!A)` would exclude more than the RegExp does.
+  private scopeIgnoreCase: boolean;
+  private foldedCaseSensitive = false;
+  // Whether `.` matches line terminators, which `(?s:...)` sets for its body.
+  private dotAll = false;
+  // Annex B reads `\N` as a backreference only up to the capture count.
+  private readonly captures: number;
+  // Each closed capturing group's body, by number and by name, so a
+  // backreference to it can be read as the text it captures.
+  private captureIndex = 0;
+  private skippedGroup = false;
+  private readonly groups: RegexNode[] = [];
+  /** Groups that may not have taken part by the time a later term runs. */
+  private readonly optionalGroups = new Set<number>();
+  /** Each group name's capture, or undefined when several groups share it. */
+  private readonly groupNames = new Map<string, number | undefined>();
 
   constructor(
     private readonly pattern: string,
-    private readonly ignoreCase: boolean,
+    ignoreCase: boolean,
     private readonly namedGroups: boolean,
-  ) {}
+    private readonly context: CaptureContext = { before: 0, total: countCapturingGroups(pattern) },
+  ) {
+    this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
+    this.scopeIgnoreCase = ignoreCase;
+    this.captures = context.total;
+  }
 
   parse(): RegexNode {
     return this.parseAlternation();
+  }
+
+  private fold(): boolean {
+    if (this.ignoreCase && !this.scopeIgnoreCase) this.foldedCaseSensitive = true;
+    return this.ignoreCase;
   }
 
   private node<T extends RegexNode>(node: T): T {
@@ -166,12 +256,21 @@ class RegexParser {
     return node;
   }
 
+  /** Marks the groups opened since group `after` as possibly not taking part. */
+  private markGroupsOptional(after: number): void {
+    for (let group = after + 1; group <= this.captureIndex; group++) this.optionalGroups.add(group);
+  }
+
   private parseAlternation(): RegexNode {
+    const before = this.captureIndex;
     const branches = [this.parseSequence()];
     while (this.pattern[this.index] === "|") {
       this.index++;
+      // A later branch runs only when the earlier ones did not match.
+      this.markGroupsOptional(before);
       branches.push(this.parseSequence());
     }
+    if (branches.length > 1) this.markGroupsOptional(before);
     return branches.length === 1 ? branches[0] : this.node({ kind: "alternation", branches });
   }
 
@@ -191,9 +290,11 @@ class RegexParser {
   }
 
   private parseTerm(): RegexNode {
+    const before = this.captureIndex;
     const atom = this.parseAtom();
     const quantifier = this.parseQuantifier();
     if (!quantifier) return atom;
+    if (quantifier.min === 0) this.markGroupsOptional(before);
     if (this.pattern[this.index] === "?") this.index++;
     // An exact-one quantifier does not change the language or consumption of
     // its child. Remove it so it cannot hide a variable repetition from the
@@ -211,17 +312,57 @@ class RegexParser {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
     if (character === ".") {
+      const pattern = this.dotAll ? "[\\s\\S]" : ".";
       return this.node({
         kind: "atom",
-        symbol: { kind: "opaque", key: "opaque:.", pattern: ".", ignoreCase: this.ignoreCase },
+        symbol: { kind: "opaque", key: `opaque:${pattern}`, pattern, ignoreCase: this.ignoreCase },
         fixedWidth: true,
       });
     }
     return this.node({
       kind: "atom",
-      symbol: literalSymbol(character, this.ignoreCase),
+      symbol: literalSymbol(character, this.fold()),
       fixedWidth: true,
     });
+  }
+
+  /**
+   * A backreference matches the text its group captured, or nothing when the
+   * group did not take part. A group that reads a few fixed words captured
+   * one of them, each read one way. Otherwise the text is a run of the
+   * characters the group reads, as long as the group reads, which one repeat
+   * of their class reads one way per length, as the engine compares the text
+   * one way. Each occurrence is read on its own, so `(a|aa)\1+` still looks
+   * ambiguous. Lookarounds in the group only constrained the capture, so they
+   * are not replayed. An open or unknown group may have captured any text.
+   */
+  private backreference(group: number | undefined): RegexNode {
+    const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
+    const characters = body && capturedCharacters(body);
+    if (!body || characters === null) {
+      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+    }
+    const optional = this.optionalGroups.has(group!);
+    const words = fixedWords(body, { words: 0, symbols: 0, exceeded: false });
+    if (words) {
+      const distinct = new Map<string, RegexSymbol[]>();
+      for (const word of words) distinct.set(word.map((symbol) => symbol.key).join("\0"), word);
+      const branches = [...distinct.values()].map((word) =>
+        this.node({
+          kind: "sequence",
+          children: word.map((symbol) => this.node({ kind: "atom", symbol, fixedWidth: true })),
+        }),
+      );
+      const text =
+        branches.length === 1 ? branches[0]! : this.node({ kind: "alternation", branches });
+      return optional ? this.node({ kind: "repeat", child: text, min: 0, max: 1 }) : text;
+    }
+    const [min, max] = widthRange(body, new WeakMap());
+    if (characters === undefined || max === 0) {
+      return this.node({ kind: "sequence", children: [] });
+    }
+    const child = this.node({ kind: "atom", symbol: characters, fixedWidth: true });
+    return this.node({ kind: "repeat", child, min: optional ? 0 : min, max });
   }
 
   private parseGroup(): RegexNode {
@@ -233,39 +374,81 @@ class RegexParser {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
     }
     let assertion = false;
-    if (this.pattern[this.index] === "?") {
+    let negativeLookahead = false;
+    let negativeAssertion = false;
+    let capture = false;
+    const outerDotAll = this.dotAll;
+    const outerIgnoreCase = this.scopeIgnoreCase;
+    const outerFolded = this.foldedCaseSensitive;
+    const modifiers = /^\?([ims]*)(?:-([ims]+))?:/.exec(this.pattern.slice(this.index));
+    if (modifiers && (modifiers[1] !== "" || modifiers[2] !== undefined)) {
+      this.index += modifiers[0].length;
+      if (modifiers[1]!.includes("s")) this.dotAll = true;
+      if (modifiers[2]?.includes("s")) this.dotAll = false;
+      if (modifiers[1]!.includes("i")) this.scopeIgnoreCase = true;
+      if (modifiers[2]?.includes("i")) this.scopeIgnoreCase = false;
+    } else if (this.pattern[this.index] !== "?") {
+      capture = true;
+    } else {
       const marker = this.pattern[this.index + 1];
       if (marker === ":") {
         this.index += 2;
       } else if (marker === "=" || marker === "!") {
         assertion = true;
+        negativeLookahead = marker === "!";
+        negativeAssertion = negativeLookahead;
         this.index += 2;
       } else if (
         marker === "<" &&
         (this.pattern[this.index + 2] === "=" || this.pattern[this.index + 2] === "!")
       ) {
         assertion = true;
+        negativeAssertion = this.pattern[this.index + 2] === "!";
         this.index += 3;
       } else if (marker === "<") {
         const nameEnd = this.pattern.indexOf(">", this.index + 2);
+        if (nameEnd !== -1) {
+          const name = this.pattern.slice(this.index + 2, nameEnd);
+          // Groups in different alternatives may share a name, and a
+          // backreference reads whichever one took part.
+          this.groupNames.set(name, this.groupNames.has(name) ? undefined : this.captureIndex + 1);
+        }
         this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
+        capture = true;
       } else {
         // Unsupported group prefixes will be rejected by RegExp compilation.
         // Keep analysis conservative if this parser is asked to inspect one.
-        while (this.index < this.pattern.length && this.pattern[this.index] !== ")") this.index++;
-        if (this.pattern[this.index] === ")") this.index++;
+        this.skipGroup();
         this.depth--;
         return this.node({ kind: "atom", symbol: null, fixedWidth: false });
       }
     }
 
+    this.foldedCaseSensitive = false;
+    const before = this.captureIndex;
+    const captureNumber = capture ? ++this.captureIndex : 0;
     const child = this.parseAlternation();
+    // Groups in a negative assertion never keep a capture.
+    if (negativeAssertion) this.markGroupsOptional(before);
     if (this.pattern[this.index] === ")") this.index++;
+    if (capture) this.groups[captureNumber] = child;
+    const folded = this.foldedCaseSensitive;
+    this.foldedCaseSensitive = outerFolded || folded;
+    this.dotAll = outerDotAll;
+    this.scopeIgnoreCase = outerIgnoreCase;
     this.depth--;
-    return assertion ? this.node({ kind: "assertion", child }) : child;
+    if (!assertion) return child;
+    // A negative lookahead over a folded case-sensitive symbol would exclude
+    // too much, so read it as matching nothing; that only adds paths.
+    if (negativeLookahead && folded) {
+      return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
+    }
+    return this.node({ kind: "assertion", child, negativeLookahead });
   }
 
   private skipGroup(): void {
+    // Groups inside are not numbered, so later backreferences are unknown.
+    this.skippedGroup = true;
     let depth = 1;
     let inClass = false;
     while (this.index < this.pattern.length && depth > 0) {
@@ -289,15 +472,16 @@ class RegexParser {
       else if (character === "]") break;
     }
     const raw = this.pattern.slice(start, this.index);
+    const ignoreCase = this.fold();
     return this.node({
       kind: "atom",
       symbol:
-        simpleClassSymbol(raw, this.ignoreCase) ??
+        simpleClassSymbol(raw, ignoreCase) ??
         ({
           kind: "opaque",
           key: `opaque:${raw}`,
           pattern: raw,
-          ignoreCase: this.ignoreCase,
+          ignoreCase,
         } as const),
       fixedWidth: true,
     });
@@ -311,7 +495,7 @@ class RegexParser {
     if (escaped === "b" || escaped === "B") {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
-    const shorthand = shorthandClassSymbol(escaped, this.ignoreCase);
+    const shorthand = shorthandClassSymbol(escaped, this.fold());
     if (shorthand) {
       return this.node({ kind: "atom", symbol: shorthand, fixedWidth: true });
     }
@@ -320,15 +504,32 @@ class RegexParser {
     // groups, Annex B reads `\k` as a literal `k`.
     if (escaped === "k" && this.namedGroups && this.pattern[this.index] === "<") {
       const nameEnd = this.pattern.indexOf(">", this.index);
+      const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
-      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
+      return this.backreference(this.groupNames.get(name));
     }
-    if (/\d/.test(escaped)) {
-      return this.node({ kind: "atom", symbol: null, fixedWidth: false });
-    }
-
     let literal: string | null = null;
-    if (escaped === "x" && /^[\da-fA-F]{2}/.test(this.pattern.slice(this.index, this.index + 2))) {
+    if (/\d/.test(escaped)) {
+      const digits = /^\d*/.exec(this.pattern.slice(this.index))![0];
+      if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
+        this.index += digits.length;
+        // A group outside `pattern` is unknown here.
+        return this.backreference(Number(escaped + digits) - this.context.before);
+      }
+      // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
+      // start a legacy octal escape of up to three digits, at most `\377`.
+      if (escaped === "8" || escaped === "9") {
+        literal = escaped;
+      } else {
+        const octal = /^[0-7]{0,2}/.exec(this.pattern.slice(this.index))![0];
+        const length = escaped <= "3" ? octal.length : Math.min(octal.length, 1);
+        literal = String.fromCharCode(Number.parseInt(escaped + octal.slice(0, length), 8));
+        this.index += length;
+      }
+    } else if (
+      escaped === "x" &&
+      /^[\da-fA-F]{2}/.test(this.pattern.slice(this.index, this.index + 2))
+    ) {
       literal = String.fromCharCode(
         Number.parseInt(this.pattern.slice(this.index, this.index + 2), 16),
       );
@@ -352,9 +553,9 @@ class RegexParser {
         literal = "\\";
         this.index--;
       }
-    } else if ("nrtvf0".includes(escaped)) {
-      literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f", 0: "\0" } as const)[
-        escaped as "n" | "r" | "t" | "v" | "f" | "0"
+    } else if ("nrtvf".includes(escaped)) {
+      literal = ({ n: "\n", r: "\r", t: "\t", v: "\v", f: "\f" } as const)[
+        escaped as "n" | "r" | "t" | "v" | "f"
       ];
     } else if (!/[A-Za-z]/.test(escaped)) {
       literal = escaped;
@@ -363,14 +564,14 @@ class RegexParser {
     if (literal !== null) {
       return this.node({
         kind: "atom",
-        symbol: literalSymbol(literal, this.ignoreCase),
+        symbol: literalSymbol(literal, this.fold()),
         fixedWidth: true,
       });
     }
     const raw = `\\${escaped}`;
     return this.node({
       kind: "atom",
-      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.ignoreCase },
+      symbol: { kind: "opaque", key: `opaque:${raw}`, pattern: raw, ignoreCase: this.fold() },
       fixedWidth: true,
     });
   }
@@ -409,6 +610,112 @@ class RegexParser {
     this.index = cursor + 1;
     return { min, max };
   }
+}
+
+/**
+ * The characters a lookahead body reads, as with `a`, `[ab]` or `a|[bc]`, or
+ * null when it reads more or other characters.
+ */
+function lookaheadCharacters(node: RegexNode): RegexSymbol[] | null {
+  const branches = node.kind === "alternation" ? node.branches : [node];
+  const characters: RegexSymbol[] = [];
+  for (const branch of branches) {
+    if (branch.kind !== "atom") return null;
+    const symbol = branch.symbol;
+    if (symbol?.kind !== "literal" && symbol?.kind !== "class") return null;
+    characters.push(symbol);
+  }
+  return characters;
+}
+
+/**
+ * One symbol for every character `node` reads outside lookarounds, undefined
+ * when it reads none, or null when it may read text of unknown shape.
+ */
+function capturedCharacters(node: RegexNode): RegexSymbol | null | undefined {
+  const literals = new Map<string, Extract<RegexSymbol, { kind: "literal" }>>();
+  const values = new Set<string>();
+  let nonAscii: NonAsciiDomain = "none";
+  let any = false;
+  const visit = (current: RegexNode): boolean => {
+    switch (current.kind) {
+      case "atom": {
+        const symbol = current.symbol;
+        if (symbol === null || !current.fixedWidth) return false;
+        if (symbol.kind === "literal") literals.set(symbol.key, symbol);
+        else if (symbol.kind === "class") {
+          for (const value of symbol.values) values.add(value);
+          nonAscii = unionNonAscii(nonAscii, symbol.nonAscii);
+        } else any = true;
+        return true;
+      }
+      case "assertion":
+        return true;
+      case "sequence":
+        return current.children.every(visit);
+      case "alternation":
+        return current.branches.every(visit);
+      case "repeat":
+        return visit(current.child);
+    }
+  };
+  if (!visit(node)) return null;
+  if (any) {
+    return { kind: "opaque", key: "opaque:[\\s\\S]", pattern: "[\\s\\S]", ignoreCase: false };
+  }
+  if (literals.size === 1 && values.size === 0 && nonAscii === "none") {
+    return literals.values().next().value!;
+  }
+  for (const literal of literals.values()) {
+    if (literal.key.charCodeAt(0) <= 0x7f) values.add(literal.key);
+    else
+      nonAscii = unionNonAscii(
+        nonAscii,
+        /\s/.test(literal.value) ? "whitespace" : "non-whitespace",
+      );
+  }
+  if (values.size === 0 && nonAscii === "none") return undefined;
+  return createClassSymbol(values, nonAscii);
+}
+
+/** The fewest and most characters `node` reads, the most possibly Infinity. */
+function widthRange(
+  node: RegexNode,
+  cache: WeakMap<RegexNode, [number, number]>,
+): [number, number] {
+  const cached = cache.get(node);
+  if (cached) return cached;
+  let range: [number, number];
+  switch (node.kind) {
+    case "atom":
+      range = node.fixedWidth ? [1, 1] : [0, Infinity];
+      break;
+    case "assertion":
+      range = [0, 0];
+      break;
+    case "sequence":
+      range = [0, 0];
+      for (const child of node.children) {
+        const [min, max] = widthRange(child, cache);
+        range = [range[0] + min, range[1] + max];
+      }
+      break;
+    case "alternation":
+      range = [Infinity, 0];
+      for (const branch of node.branches) {
+        const [min, max] = widthRange(branch, cache);
+        range = [Math.min(range[0], min), Math.max(range[1], max)];
+      }
+      if (node.branches.length === 0) range = [0, 0];
+      break;
+    case "repeat": {
+      const [min, max] = widthRange(node.child, cache);
+      range = [node.min * min, max === 0 ? 0 : node.max * max];
+      break;
+    }
+  }
+  cache.set(node, range);
+  return range;
 }
 
 function exactWidth(node: RegexNode): number | null {
@@ -819,7 +1126,12 @@ function findSequenceIssue(
   if (ambiguousExpansionFactor(node) > MAX_SEQUENCE_EXPANSIONS) {
     return "ambiguous sequence expansion";
   }
+  return findOverlappingRepetitionChain(node);
+}
 
+function findOverlappingRepetitionChain(
+  node: Extract<RegexNode, { kind: "sequence" }>,
+): RegexSafetyIssue | null {
   let pendingRepetitionEnds: Array<RegexSymbol[] | null> = [];
   const comparisons = { count: 0 };
   let overlappingBoundaryCount = 0;
@@ -892,6 +1204,51 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
   }
 }
 
+function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
+  switch (node.kind) {
+    case "atom":
+      return null;
+    case "assertion":
+    case "repeat":
+      return findRepetitionChainDeep(node.child);
+    case "sequence": {
+      const chainIssue = findOverlappingRepetitionChain(node);
+      if (chainIssue) return chainIssue;
+      for (const child of node.children) {
+        const issue = findRepetitionChainDeep(child);
+        if (issue) return issue;
+      }
+      return null;
+    }
+    case "alternation":
+      for (const branch of node.branches) {
+        const issue = findRepetitionChainDeep(branch);
+        if (issue) return issue;
+      }
+      return null;
+  }
+}
+
+/**
+ * Only analyzeRegexSafety's check for chains of overlapping variable repeats
+ * in a sequence. For a RegExp compiled from separately checked parts, where
+ * each part is known to be safe but a chain across parts is not.
+ */
+export function analyzeRegexRepetitionChains(
+  pattern: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): RegexSafetyIssue | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget) return "analysis budget exceeded";
+  return findRepetitionChainDeep(node);
+}
+
 /**
  * Whether a RegExp source declares a named group, which turns `\k<name>` into
  * a backreference. Escaped characters and character classes cannot open one.
@@ -924,13 +1281,14 @@ export function mayHaveNamedGroups(pattern: string): boolean {
  */
 export function analyzeRegexSafety(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: { ignoreCase?: boolean; namedGroups?: boolean; captures?: CaptureContext } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.captures,
   );
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
@@ -938,6 +1296,8 @@ export function analyzeRegexSafety(
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
+  // Both sides must key symbols the same way to compare them.
+  ignoreCase ||= hasScopedIgnoreCase(left) || hasScopedIgnoreCase(right);
   const leftParser = new RegexParser(left, ignoreCase, true);
   const rightParser = new RegexParser(right, ignoreCase, true);
   const leftNode = leftParser.parse();
@@ -949,4 +1309,600 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   const rightSymbol = rightWords[0][0];
   if (!leftSymbol || !rightSymbol) return true;
   return symbolsMayOverlap(leftSymbol, rightSymbol);
+}
+
+// Path counts saturate at two: two distinct paths are enough for ambiguity.
+type PathCounts = Map<number, number>;
+type PositionFragment = { first: PathCounts; last: PathCounts; empty: number };
+
+function saturate(count: number): number {
+  return Math.min(count, 2);
+}
+
+function addPaths(target: PathCounts, source: PathCounts, factor = 1): PathCounts {
+  if (factor === 0) return target;
+  for (const [position, count] of source) {
+    target.set(position, saturate((target.get(position) ?? 0) + count * factor));
+  }
+  return target;
+}
+
+/**
+ * The position (Glushkov) automaton of a parsed RegExp: one state per
+ * consuming atom, entered by reading that atom's symbol, plus start state 0.
+ * Repeats are unrolled, `x{1,3}` as `x(?:x(?:x)?)?`, so each state is one
+ * place the backtracking engine can be. A repeat that would unroll past
+ * `maxUnrolledRepeat` positions is read as `x+` (or `x*`) instead: each of
+ * its paths is still a distinct path there, so that only adds ambiguity.
+ * Fragments count their paths, and edges keep that count: `(a*)*` builds
+ * `a -> a` twice and `\/(?:|)` ends at "/" two ways, and each is two ways for the engine to move. Like the
+ * engine, a repeat past its minimum never takes an empty iteration.
+ * Assertions are read as empty, which only adds paths, except a negative
+ * lookahead right before a single-character atom, which path-to-regexp emits
+ * to keep a param out of the text after it: `(?!-)` or `(?![ab])` removes
+ * those characters from what the atom reads, and a literal word such as
+ * `(?!ab)` is kept as a guard for applyLookaheadGuards.
+ */
+class PositionAutomaton {
+  readonly symbols: Array<RegexSymbol | null> = [null];
+  readonly excluded: RegexSymbol[][] = [[]];
+  readonly guards: Array<RegexSymbol[] | null> = [null];
+  /** Each edge's target, listed once per path that builds it. */
+  readonly follow: number[][] = [];
+  exceeded = false;
+  /** Whether a repeat past MAX_UNROLLED_REPEAT positions was unrolled. */
+  unrolledLongRepeat = false;
+  private readonly edges: PathCounts[] = [new Map()];
+  private edgeCount = 0;
+  private work = 0;
+  private readonly sizes = new WeakMap<RegexNode, number>();
+
+  constructor(private readonly maxUnrolledRepeat: number) {}
+
+  build(node: RegexNode): void {
+    const fragment = this.fragment(node);
+    this.connect(new Map([[0, 1]]), fragment.first);
+    for (const targets of this.edges) {
+      const follow: number[] = [];
+      for (const [target, count] of targets) {
+        for (let copy = 0; copy < count; copy++) follow.push(target);
+      }
+      this.follow.push(follow);
+    }
+  }
+
+  private position(
+    symbol: RegexSymbol | null,
+    excluded: RegexSymbol[] = [],
+    guard: RegexSymbol[] | null = null,
+  ): number {
+    // The start state is not counted.
+    if (this.symbols.length > MAX_POSITIONS) this.exceeded = true;
+    this.symbols.push(symbol);
+    this.excluded.push(excluded);
+    this.guards.push(guard);
+    this.edges.push(new Map());
+    return this.symbols.length - 1;
+  }
+
+  private single(position: number): PositionFragment {
+    return { first: new Map([[position, 1]]), last: new Map([[position, 1]]), empty: 0 };
+  }
+
+  private spend(work: number): void {
+    this.work += work;
+    if (this.work > MAX_AUTOMATON_WORK) this.exceeded = true;
+  }
+
+  private connect(from: PathCounts, to: PathCounts): void {
+    this.spend(from.size * to.size);
+    if (this.exceeded) return;
+    for (const [source, sourceCount] of from) {
+      const targets = this.edges[source]!;
+      for (const [target, targetCount] of to) {
+        const existing = targets.get(target);
+        if (existing === undefined && ++this.edgeCount > MAX_AUTOMATON_EDGES) {
+          this.exceeded = true;
+          return;
+        }
+        targets.set(target, saturate((existing ?? 0) + sourceCount * targetCount));
+      }
+    }
+  }
+
+  private concat(left: PositionFragment, right: PositionFragment): PositionFragment {
+    this.connect(left.last, right.first);
+    this.spend(left.first.size + right.first.size + left.last.size + right.last.size);
+    return {
+      first: addPaths(new Map(left.first), right.first, left.empty),
+      last: addPaths(new Map(right.last), left.last, right.empty),
+      empty: saturate(left.empty * right.empty),
+    };
+  }
+
+  /** The positions `node` unrolls to. */
+  private size(node: RegexNode): number {
+    let size = this.sizes.get(node);
+    if (size !== undefined) return size;
+    switch (node.kind) {
+      case "atom":
+        size = 1;
+        break;
+      case "assertion":
+        size = 0;
+        break;
+      case "sequence":
+        size = node.children.reduce((total, child) => total + this.size(child), 0);
+        break;
+      case "alternation":
+        size = node.branches.reduce((total, branch) => total + this.size(branch), 0);
+        break;
+      case "repeat": {
+        const child = this.size(node.child);
+        size = this.unrollsTooFar(node) ? child : child * this.copies(node);
+        break;
+      }
+    }
+    this.sizes.set(node, size);
+    return size;
+  }
+
+  /** How many copies of its child `node` unrolls to. */
+  private copies(node: Extract<RegexNode, { kind: "repeat" }>): number {
+    return Number.isFinite(node.max) ? node.max : Math.max(node.min, 1);
+  }
+
+  private unrollsTooFar(node: Extract<RegexNode, { kind: "repeat" }>): boolean {
+    return this.size(node.child) * this.copies(node) > this.maxUnrolledRepeat;
+  }
+
+  /**
+   * `fragment` repeated without bound, at least once when `required`. A
+   * required first iteration may match empty and be followed by one that
+   * does not, so it can also start where the second iteration starts.
+   */
+  private loop(fragment: PositionFragment, required: boolean): PositionFragment {
+    this.connect(fragment.last, fragment.first);
+    this.spend(fragment.first.size);
+    if (!required) return { ...fragment, empty: 1 };
+    return {
+      first: addPaths(new Map(fragment.first), fragment.first, fragment.empty),
+      last: fragment.last,
+      empty: fragment.empty,
+    };
+  }
+
+  private fragment(node: RegexNode): PositionFragment {
+    if (this.exceeded) return { first: new Map(), last: new Map(), empty: 1 };
+    switch (node.kind) {
+      case "atom": {
+        const fragment = this.single(this.position(node.symbol));
+        // An unmodelled atom, such as a backreference, may match any text.
+        return node.symbol === null ? this.loop(fragment, false) : fragment;
+      }
+      case "assertion":
+        return { first: new Map(), last: new Map(), empty: 1 };
+      case "sequence": {
+        let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
+        for (let index = 0; index < node.children.length; index++) {
+          const child = node.children[index]!;
+          const next = node.children[index + 1];
+          const lookahead =
+            child.kind === "assertion" && child.negativeLookahead ? child.child : null;
+          // The lookahead constrains the next character: that of the next
+          // atom, or of the first required copy of a repeated atom.
+          const guarded =
+            next?.kind === "repeat" && next.min > 0 && next.child.kind === "atom"
+              ? next.child
+              : next;
+          if (
+            lookahead &&
+            guarded?.kind === "atom" &&
+            guarded.symbol !== null &&
+            guarded.fixedWidth
+          ) {
+            let position: number | null = null;
+            const characters = lookaheadCharacters(lookahead);
+            if (characters) {
+              position = this.position(guarded.symbol, characters);
+            } else if (
+              lookahead.kind === "sequence" &&
+              lookahead.children.length > 1 &&
+              lookahead.children.every(
+                (part) => part.kind === "atom" && part.symbol?.kind === "literal",
+              )
+            ) {
+              const word = lookahead.children.map(
+                (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
+              );
+              position = this.position(guarded.symbol, [], word);
+            }
+            if (position !== null) {
+              fragment = this.concat(fragment, this.single(position));
+              if (next!.kind === "repeat") {
+                const rest = { ...next!, min: next!.min - 1, max: next!.max - 1 };
+                fragment = this.concat(fragment, this.fragment(rest));
+              }
+              index++;
+              continue;
+            }
+          }
+          fragment = this.concat(fragment, this.fragment(child));
+        }
+        return fragment;
+      }
+      case "alternation": {
+        const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
+        for (const branch of node.branches) {
+          const child = this.fragment(branch);
+          addPaths(fragment.first, child.first);
+          addPaths(fragment.last, child.last);
+          fragment.empty = saturate(fragment.empty + child.empty);
+        }
+        return fragment;
+      }
+      case "repeat": {
+        if (this.unrollsTooFar(node)) return this.loop(this.fragment(node.child), node.min > 0);
+        // A zero-width child can only match empty, which no iteration past
+        // the minimum may do. More required copies only multiply its path
+        // count, which one copy has already saturated or kept at 0 or 1.
+        if (this.size(node.child) === 0) {
+          return node.min === 0
+            ? { first: new Map(), last: new Map(), empty: 1 }
+            : this.fragment(node.child);
+        }
+        if (this.size(node) > MAX_UNROLLED_REPEAT) this.unrolledLongRepeat = true;
+        // Iterations up to the minimum may match empty; later ones may not.
+        let fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
+        const required = Number.isFinite(node.max) ? node.min : Math.max(node.min - 1, 0);
+        for (let count = 0; count < required && !this.exceeded; count++) {
+          fragment = this.concat(fragment, this.fragment(node.child));
+        }
+        if (!Number.isFinite(node.max)) {
+          return this.concat(fragment, this.loop(this.fragment(node.child), node.min > 0));
+        }
+        // Nest the optional copies so a shorter run has a single parse.
+        let optional: PositionFragment = { first: new Map(), last: new Map(), empty: 1 };
+        for (let count = node.min; count < node.max && !this.exceeded; count++) {
+          optional = this.concat({ ...this.fragment(node.child), empty: 0 }, optional);
+          optional.empty = 1;
+        }
+        return this.concat(fragment, optional);
+      }
+    }
+  }
+}
+
+type AmbiguityGraph = {
+  symbols: Array<RegexSymbol | null>;
+  /** Characters each state's symbol does not read. */
+  excluded: RegexSymbol[][];
+  /** Each edge's target, listed once per path that takes it. */
+  follow: number[][];
+};
+
+/**
+ * The automaton with each literal `(?!word)` guard enforced. A state also
+ * records how far each pending guard word has matched, and a step that would
+ * complete one is dropped, as the engine's lookahead fails there. A symbol is
+ * split only at the characters a guard checks next, so every input still
+ * takes as many paths as it does in the engine.
+ */
+function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | null {
+  const { excluded, follow, guards, symbols } = automaton;
+  if (!guards.some((guard) => guard !== null)) {
+    return { symbols, excluded, follow };
+  }
+
+  const graph: AmbiguityGraph = { symbols: [null], excluded: [[]], follow: [[]] };
+  // Pending guards as [guarded position, characters matched so far].
+  const states: Array<{ position: number; pending: Array<[number, number]> }> = [
+    { position: 0, pending: [] },
+  ];
+  const ids = new Map<string, number>();
+  const queue = [0];
+  const stateFor = (
+    position: number,
+    symbol: RegexSymbol | null,
+    without: RegexSymbol[],
+    pending: Array<[number, number]>,
+  ): number | null => {
+    const key = [
+      position,
+      symbol?.key ?? "",
+      without.map((character) => character.key).join("\0"),
+      pending.map(([guard, matched]) => `${guard}:${matched}`).join(","),
+    ].join("\u0001");
+    let id = ids.get(key);
+    if (id === undefined) {
+      if (graph.symbols.length > MAX_POSITIONS) return null;
+      id = graph.symbols.length;
+      ids.set(key, id);
+      graph.symbols.push(symbol);
+      graph.excluded.push(without);
+      graph.follow.push([]);
+      states.push({ position, pending });
+      queue.push(id);
+    }
+    return id;
+  };
+
+  while (queue.length > 0) {
+    const id = queue.pop()!;
+    const { position, pending } = states[id]!;
+    for (const target of follow[position]!) {
+      const symbol = symbols[target]!;
+      const guard = guards[target]!;
+      const checked = new Map<string, RegexSymbol>();
+      for (const [guarded, matched] of pending) {
+        const character = guards[guarded]![matched]!;
+        checked.set(character.key, character);
+      }
+      if (guard) checked.set(guard[0]!.key, guard[0]!);
+
+      // Each checked character the symbol may read, then everything else.
+      const parts: Array<{
+        symbol: RegexSymbol | null;
+        character: string | null;
+        without: RegexSymbol[];
+      }> = [];
+      const exclusions = excluded[target]!;
+      for (const character of checked.values()) {
+        if (symbol !== null && !symbolsMayOverlap(symbol, character)) continue;
+        if (exclusions.some((exclusion) => symbolsMayOverlap(exclusion, character))) continue;
+        parts.push({ symbol: character, character: character.key, without: [] });
+      }
+      if (symbol?.kind !== "literal" || !checked.has(symbol.key)) {
+        parts.push({ symbol, character: null, without: [...exclusions, ...checked.values()] });
+      }
+
+      for (const part of parts) {
+        const next: Array<[number, number]> = [];
+        let blocked = false;
+        const advance = (guarded: number, matched: number) => {
+          if (part.character !== guards[guarded]![matched]!.key) return;
+          if (matched + 1 === guards[guarded]!.length) blocked = true;
+          else next.push([guarded, matched + 1]);
+        };
+        for (const [guarded, matched] of pending) advance(guarded, matched);
+        if (guard) advance(target, 0);
+        if (blocked) continue;
+        next.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+        const nextId = stateFor(target, part.symbol, part.without, next);
+        if (nextId === null) return null;
+        graph.follow[id]!.push(nextId);
+      }
+    }
+  }
+  return graph;
+}
+
+/**
+ * Whether two paths through the automaton can leave the same state and meet
+ * again in it after reading the same text, by different states or by
+ * parallel edges. Such a loop doubles the paths a backtracking engine tries
+ * on each pass, so a near miss takes exponential time. This is the
+ * exponential-ambiguity test of Allauzen, Mohri and Rastogi (2008): a
+ * strongly connected component of the automaton's self-product holding both
+ * a pair `(p, p)` and either a pair `(q, r)` with q != r or an edge from a
+ * parallel pair. States unreachable from the start are never explored, and
+ * dead ends are kept, since the engine explores those paths too.
+ */
+function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
+  const { excluded, follow, symbols } = graph;
+  const size = symbols.length;
+  // Whether `symbol` minus `without` may share a character with `other`.
+  // Exact when `other` is a single character; conservative otherwise.
+  const remainderMayOverlap = (
+    symbol: RegexSymbol | null,
+    without: RegexSymbol[],
+    other: RegexSymbol | null,
+  ): boolean => {
+    if (symbol == null || other == null) return true;
+    if (!symbolsMayOverlap(symbol, other)) return false;
+    return (
+      other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
+    );
+  };
+  const overlaps = new Map<number, boolean>();
+  const symbolsOverlap = (left: number, right: number): boolean => {
+    const key = left < right ? left * size + right : right * size + left;
+    let overlap = overlaps.get(key);
+    if (overlap === undefined) {
+      overlap =
+        remainderMayOverlap(symbols[left]!, excluded[left]!, symbols[right]!) &&
+        remainderMayOverlap(symbols[right]!, excluded[right]!, symbols[left]!);
+      overlaps.set(key, overlap);
+    }
+    return overlap;
+  };
+
+  // Iterative Tarjan over the product states reachable from (0, 0). States
+  // are numbered in visiting order, so the per-state data are dense arrays.
+  const index = new Map<number, number>();
+  const lowLink: number[] = [];
+  const component: number[] = [];
+  const stack: number[] = [];
+  const onStack: boolean[] = [];
+  const parallelEdges: Array<[number, number]> = [];
+  let components = 0;
+  let edges = 0;
+
+  // Each follow list's targets by the ASCII characters they may read, so a
+  // pair of disjoint alternatives is never checked or charged. `wide` holds
+  // the targets that may read other characters, which every target checks.
+  type FollowIndex = { byCharacter: Map<string, number[]>; wide: number[] };
+  const followIndexes = new Map<number, FollowIndex>();
+  const followIndex = (position: number): FollowIndex => {
+    let followed = followIndexes.get(position);
+    if (followed) return followed;
+    followed = { byCharacter: new Map(), wide: [] };
+    const targets = follow[position]!;
+    for (let j = 0; j < targets.length; j++) {
+      const symbol = symbols[targets[j]!];
+      let characters: Iterable<string> = [];
+      if (symbol?.kind === "literal") characters = [symbol.key];
+      else if (symbol?.kind === "class" && symbol.nonAscii === "none") characters = symbol.values;
+      else followed.wide.push(j);
+      for (const character of characters) {
+        let indexes = followed.byCharacter.get(character);
+        if (!indexes) followed.byCharacter.set(character, (indexes = []));
+        indexes.push(j);
+      }
+    }
+    followIndexes.set(position, followed);
+    return followed;
+  };
+  // The targets of `followed` that `target` may share a character with, or
+  // null for all of them.
+  const candidates = (target: number, followed: FollowIndex): number[] | null => {
+    const symbol = symbols[target];
+    let characters: Iterable<string>;
+    if (symbol?.kind === "literal") {
+      const indexes = followed.byCharacter.get(symbol.key) ?? [];
+      if (followed.wide.length === 0) return indexes;
+      characters = [symbol.key];
+    } else if (symbol?.kind === "class" && symbol.nonAscii === "none") {
+      characters = symbol.values;
+    } else {
+      return null;
+    }
+    const result = new Set(followed.wide);
+    for (const character of characters) {
+      for (const j of followed.byCharacter.get(character) ?? []) result.add(j);
+    }
+    return [...result];
+  };
+
+  // The successors of every state on the DFS path, each frame's after its
+  // parent's.
+  const pending: number[] = [];
+  const pushSuccessors = (state: number): void => {
+    const left = Math.floor(state / size);
+    const right = state % size;
+    const leftFollow = follow[left]!;
+    const rightFollow = follow[right]!;
+    // Short lists are cheaper to check pair by pair.
+    const rightIndex = rightFollow.length > MAX_UNINDEXED_FOLLOW ? followIndex(right) : null;
+    for (let i = 0; i < leftFollow.length; i++) {
+      const leftTarget = leftFollow[i]!;
+      const indexes = rightIndex ? candidates(leftTarget, rightIndex) : null;
+      const count = indexes ? indexes.length : rightFollow.length;
+      for (let k = 0; k < count; k++) {
+        const j = indexes ? indexes[k]! : k;
+        if (++edges > MAX_PRODUCT_EDGES) return;
+        const rightTarget = rightFollow[j]!;
+        if (!symbolsOverlap(leftTarget, rightTarget)) continue;
+        const target = leftTarget * size + rightTarget;
+        if (left === right && leftTarget === rightTarget && i !== j) {
+          parallelEdges.push([state, target]);
+        }
+        pending.push(target);
+      }
+    }
+  };
+
+  const states: number[] = [];
+  // The DFS path as parallel arrays: each frame's state id, and where its
+  // successors start and end in `pending`, and the next one to visit.
+  const frameIds: number[] = [];
+  const frameStart: number[] = [];
+  const frameNext: number[] = [];
+  const frameEnd: number[] = [];
+  const visit = (state: number): void => {
+    const id = states.length;
+    index.set(state, id);
+    states.push(state);
+    lowLink.push(id);
+    component.push(-1);
+    onStack.push(true);
+    stack.push(id);
+    frameIds.push(id);
+    frameStart.push(pending.length);
+    frameNext.push(pending.length);
+    pushSuccessors(state);
+    frameEnd.push(pending.length);
+  };
+
+  visit(0);
+  while (frameIds.length > 0) {
+    if (edges > MAX_PRODUCT_EDGES) return null;
+    const top = frameIds.length - 1;
+    const id = frameIds[top]!;
+    if (frameNext[top]! < frameEnd[top]!) {
+      const target = pending[frameNext[top]!++]!;
+      const targetId = index.get(target);
+      if (targetId === undefined) {
+        visit(target);
+      } else if (onStack[targetId]) {
+        lowLink[id] = Math.min(lowLink[id]!, targetId);
+      }
+      continue;
+    }
+    frameIds.pop();
+    frameNext.pop();
+    frameEnd.pop();
+    pending.length = frameStart.pop()!;
+    if (top > 0) {
+      const parent = frameIds[top - 1]!;
+      lowLink[parent] = Math.min(lowLink[parent]!, lowLink[id]!);
+    }
+    if (lowLink[id] !== id) continue;
+    let hasDiagonal = false;
+    let hasOffDiagonal = false;
+    let member: number;
+    do {
+      member = stack.pop()!;
+      onStack[member] = false;
+      component[member] = components;
+      const state = states[member]!;
+      if (Math.floor(state / size) === state % size) hasDiagonal = true;
+      else hasOffDiagonal = true;
+    } while (member !== id);
+    components++;
+    if (hasDiagonal && hasOffDiagonal) return true;
+  }
+
+  return parallelEdges.some(
+    ([from, to]) => component[index.get(from)!] === component[index.get(to)!],
+  );
+}
+
+/**
+ * Whether a backtracking engine can take exponentially many paths through
+ * `pattern` on one input, as with `(a|aa?)+`, `(a?a?b)+` or `(.*\/)*x`.
+ * Polynomial blowups, such as a chain of overlapping repeats, are left to
+ * analyzeRegexSafety and analyzeRegexRepetitionChains.
+ */
+export function analyzeRegexAmbiguity(
+  pattern: string,
+  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+): RegexSafetyIssue | null {
+  if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
+  const parser = new RegexParser(
+    pattern,
+    options.ignoreCase === true,
+    options.namedGroups ?? mayHaveNamedGroups(pattern),
+  );
+  const node = parser.parse();
+  if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  // Unroll repeats exactly while the automaton fits, and only read long
+  // repeats as loops when it does not.
+  const exact = new PositionAutomaton(MAX_POSITIONS);
+  const issue = analyzePositionAutomaton(exact, node);
+  if (issue !== "analysis budget exceeded" || !exact.unrolledLongRepeat) return issue;
+  return analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node);
+}
+
+function analyzePositionAutomaton(
+  automaton: PositionAutomaton,
+  node: RegexNode,
+): RegexSafetyIssue | null {
+  automaton.build(node);
+  if (automaton.exceeded) return "analysis budget exceeded";
+  const graph = applyLookaheadGuards(automaton);
+  if (graph === null) return "analysis budget exceeded";
+  const ambiguous = hasExponentialAmbiguity(graph);
+  if (ambiguous === null) return "analysis budget exceeded";
+  return ambiguous ? "exponentially ambiguous repetition" : null;
 }

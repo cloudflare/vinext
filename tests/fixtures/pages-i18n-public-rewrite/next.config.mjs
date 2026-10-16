@@ -20,6 +20,23 @@ export default {
         destination: "/about",
         permanent: false,
       },
+      // Used by E2E: pages-router/i18n-locale-case-config.spec.ts — redirects
+      // whose source has params after the locale segment must fire under
+      // every locale prefix, both when expanded by i18n and when written with
+      // an explicit locale param.
+      {
+        source: "/locale-param-gated/:path*",
+        destination: "/about",
+        permanent: false,
+        missing: [{ type: "cookie", key: "session" }],
+      },
+      {
+        source: "/:locale(en|sv)?/locale-param-raw/:path*",
+        destination: "/about",
+        permanent: false,
+        locale: false,
+        missing: [{ type: "cookie", key: "session" }],
+      },
     ];
   },
   async rewrites() {
