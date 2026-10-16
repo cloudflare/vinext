@@ -25,6 +25,7 @@ import { cloneRequestWithUrl } from "./request-pipeline.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
+const NO_BODY_RESPONSE_STATUSES = new Set([204, 205, 304]);
 
 type NextDataMatch = {
   /**
@@ -162,9 +163,15 @@ export function buildNextDataPropsJsonResponse(
 ): Response {
   const body = safeJsonStringify(props);
   const headers = new Headers(init?.headers);
+  const status = init?.status ?? 200;
   headers.set("Content-Type", "application/json");
+  if (NO_BODY_RESPONSE_STATUSES.has(status)) {
+    if (status === 205) headers.delete("content-length");
+    return new Response(null, { status, statusText: init?.statusText, headers });
+  }
+
   return new Response(body, {
-    status: init?.status ?? 200,
+    status,
     statusText: init?.statusText,
     headers,
   });

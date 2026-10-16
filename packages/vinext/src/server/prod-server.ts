@@ -1337,6 +1337,10 @@ async function sendWebResponse(
     }
   });
 
+  if (!webResponse.body && status === 205) {
+    delete nodeHeaders["content-length"];
+  }
+
   // Decide compression before writing headers. Streamed bodies of unknown
   // length are compressed regardless of size; an empty body never is.
   const { varyAcceptEncoding: varyByEncoding, encoding } = resolveResponseCompression(
