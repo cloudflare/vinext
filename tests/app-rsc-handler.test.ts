@@ -7536,31 +7536,70 @@ describe("createAppRscHandler", () => {
       expect(handleProgressiveActionRequest).not.toHaveBeenCalled();
     });
 
-    it("runs forwarded actions on the literal path of a dynamic owner before afterFiles rewrites", async () => {
-      const blogPage = createPageRoute({
-        isDynamic: true,
-        params: ["slug"],
-        pattern: "/blog/:slug",
-        routeSegments: ["blog", "[slug]"],
-      });
+    it.each([
+      ["/blog/[slug]", false],
+      ["/blog/[slug]/", true],
+    ])(
+      "runs them on the literal path %s of a dynamic page and renders that page",
+      async (pathname, trailingSlash) => {
+        const blogPage = createPageRoute({
+          isDynamic: true,
+          params: ["slug"],
+          pattern: "/blog/:slug",
+          routeSegments: ["blog", "[slug]"],
+        });
+        const renderPagesFallback = vi.fn(async () => new Response("pages"));
+        const { dispatchMatchedRouteHandler, handleProgressiveActionRequest, handler } =
+          createProgressiveHandler({
+            configRewrites: {
+              afterFiles: [{ source: "/blog/:slug", destination: "/upload" }],
+              beforeFiles: [],
+              fallback: [],
+            },
+            matchRoute: (routePathname) => {
+              if (routePathname === "/upload") return { params: emptyParams, route: routeHandler };
+              return routePathname.startsWith("/blog/")
+                ? {
+                    params: { slug: routePathname.slice("/blog/".length).replace(/\/$/, "") },
+                    route: blogPage,
+                  }
+                : null;
+            },
+            renderPagesFallback,
+            trailingSlash,
+          });
+
+        const response = await handler(multipartPost(pathname), null);
+
+        expect(await response.text()).toBe("page:/blog/:slug");
+        expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
+          expect.objectContaining({ routeMatch: { params: { slug: "[slug]" }, route: blogPage } }),
+        );
+        expect(dispatchMatchedRouteHandler).not.toHaveBeenCalled();
+        expect(renderPagesFallback).not.toHaveBeenCalled();
+      },
+    );
+
+    it("runs them with an empty action header on the page an afterFiles rewrite reaches", async () => {
       const { handleProgressiveActionRequest, handler } = createProgressiveHandler({
         configRewrites: {
-          afterFiles: [{ source: "/blog/:slug", destination: "/upload" }],
+          afterFiles: [{ source: "/:slug", destination: "/about" }],
           beforeFiles: [],
           fallback: [],
         },
-        matchRoute: (pathname) => {
-          if (pathname === "/upload") return { params: emptyParams, route: routeHandler };
-          return pathname.startsWith("/blog/")
-            ? { params: { slug: pathname.slice("/blog/".length) }, route: blogPage }
-            : null;
-        },
+        matchRoute: (pathname) =>
+          pathname === "/about"
+            ? { params: emptyParams, route: aboutPage }
+            : { params: { slug: pathname.slice(1) }, route: dynamicPage },
       });
+      const request = multipartPost("/hello");
+      request.headers.set("next-action", "");
 
-      await handler(multipartPost("/blog/[slug]"), null);
+      const response = await handler(request, null);
 
+      expect(await response.text()).toBe(`page:${aboutPage.pattern}`);
       expect(handleProgressiveActionRequest).toHaveBeenCalledWith(
-        expect.objectContaining({ routeMatch: { params: { slug: "[slug]" }, route: blogPage } }),
+        expect.objectContaining({ routeMatch: { params: emptyParams, route: aboutPage } }),
       );
     });
 
@@ -7918,6 +7957,29 @@ describe("createAppRscHandler", () => {
       expect(await rewritten.text()).toBe("action:/about");
     });
 
+    it("runs forwarded actions on the literal path of a dynamic owner before Pages routes", async () => {
+      const blogPage = createPageRoute({
+        isDynamic: true,
+        params: ["slug"],
+        pattern: "/blog/:slug",
+        routeSegments: ["blog", "[slug]"],
+      });
+      const renderPagesFallback = vi.fn(async () => new Response("pages"));
+      const { handler } = createActionHandler({
+        matchRoute: (pathname) =>
+          pathname.startsWith("/blog/")
+            ? { params: { slug: pathname.slice("/blog/".length) }, route: blogPage }
+            : null,
+        renderPagesFallback,
+      });
+
+      const forwarded = await handler(actionPost("/blog/[slug]"), null);
+      const direct = await handler(actionPost("/blog/hello"), null);
+
+      expect(await forwarded.text()).toBe("action:/blog/:slug");
+      expect(await direct.text()).toBe("pages");
+    });
+
     it("runs forwarded actions on an encoded literal path of a dynamic owner", async () => {
       const cafePage = createPageRoute({
         isDynamic: true,
@@ -7971,7 +8033,11 @@ describe("createAppRscHandler", () => {
       expect(await response.text()).toBe("action:/blog/:slug");
     });
 
-    it("runs actions on the final route for the literal path of a dynamic route handler", async () => {
+    // Next.js serves any App file's literal path from its filesystem check,
+    // Route Handlers included. vinext doesn't for any method yet, so a crafted
+    // POST to a dynamic handler's literal path keeps the normal late routing,
+    // and the action never skips its checks on the page it reaches.
+    it("keeps late routing for the literal path of a dynamic route handler", async () => {
       const dynamicRouteHandler = createPageRoute({
         __loadPage: undefined,
         __loadRouteHandler() {},

@@ -2111,24 +2111,29 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // and multipart bodies skip the action origin check and body size limit. A
   // static or interception App match is final here, and so is a page's literal
   // path such as `/blog/[slug]`, which action forwarding requests and Next.js
-  // serves (raw or decoded) from its filesystem check before afterFiles
-  // rewrites. Otherwise afterFiles and fallback rewrites or Pages routes may
-  // still claim the request, so the action waits for the final route.
+  // serves decoded, without a trailing slash, from its filesystem check before
+  // afterFiles rewrites. Otherwise afterFiles and fallback rewrites or Pages
+  // routes may still claim the request, so the action waits for the final
+  // route.
   const literalRoutePattern =
     preActionMatch !== null && !isAppRouteHandlerRoute(preActionMatch.route)
       ? patternToNextFormat(preActionMatch.route.pattern)
       : null;
+  const routeMatchPathname = cleanPathnameIsRequestPathname
+    ? cleanPathname
+    : normalizePathnameForRouteMatch(cleanPathname);
+  const isServerActionRequest = isPostRequest && Boolean(actionId);
   const requestsLiteralRoutePattern =
+    (isProgressiveActionRequest || isServerActionRequest) &&
     literalRoutePattern !== null &&
-    (literalRoutePattern ===
-      (cleanPathnameIsRequestPathname
-        ? cleanPathname
-        : normalizePathnameForRouteMatch(cleanPathname)) ||
-      (cleanPathnameIsRequestPathname && literalRoutePattern === requestCleanPathname));
+    literalRoutePattern ===
+      (routeMatchPathname.length > 1 && routeMatchPathname.endsWith("/")
+        ? routeMatchPathname.slice(0, -1)
+        : routeMatchPathname);
+  // Late routing must not move an action request off the page it ran on.
+  const isFinalRouteMatch = isInterceptionMatch || requestsLiteralRoutePattern;
   const preActionMatchIsFinal =
-    preActionMatch !== null &&
-    (isInterceptionMatch || !preActionMatch.route.isDynamic || requestsLiteralRoutePattern);
-  const isServerActionRequest = isPostRequest && actionId !== null;
+    preActionMatch !== null && (isFinalRouteMatch || !preActionMatch.route.isDynamic);
   let serverActionHandled = false;
   const handleServerAction = async (
     routeMatch: AppRscRouteMatch<TRoute> | null,
@@ -2317,7 +2322,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         }
       : undefined;
     const response =
-      !isInterceptionMatch && (match === null || match.route.isDynamic)
+      !isFinalRouteMatch && (match === null || match.route.isDynamic)
         ? ((await runOutsideWorkStoreScope(() =>
             options.renderPagesFallback?.({
               appRouteMatch: match ?? null,
@@ -2374,7 +2379,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     options.clearRequestContext();
     return staticPagesFallbackResponse;
   }
-  if (!isInterceptionMatch && (!match || match.route.isDynamic)) {
+  if (!isFinalRouteMatch && (!match || match.route.isDynamic)) {
     for (const rewrite of options.configRewrites.afterFiles) {
       const afterFilesRewrite = await applyRewrite(
         {

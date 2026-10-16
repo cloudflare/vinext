@@ -15,11 +15,15 @@ for (const path of ["/after-files-revalidate", "/fallback-revalidate"]) {
     await expect(page.locator("h1")).toHaveText("Revalidate Test");
     await waitForAppRouterHydration(page);
     const initialTime = await page.locator("#time").textContent();
+    // Client state survives only a soft RSC re-render, not a reload.
+    await page.click("#action-revalidate-increment");
+    await expect(page.locator("#action-revalidate-client-count")).toHaveText("1");
 
     await page.click("#revalidate");
 
     await expect(page.locator("#time")).not.toHaveText(initialTime!);
     await expect(page.locator("h1")).toHaveText("Revalidate Test");
+    await expect(page.locator("#action-revalidate-client-count")).toHaveText("1");
     expect(new URL(page.url()).pathname).toBe(path);
   });
 }
