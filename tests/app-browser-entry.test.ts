@@ -3508,6 +3508,8 @@ describe("app browser navigation controller", () => {
 
     try {
       const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const resolvedPendingState = vi.fn();
+      void pendingRouterState.promise.then(resolvedPendingState);
       const navId = controller.beginNavigation();
       let resolvePayload!: (elements: AppElements) => void;
       const nextElements = new Promise<AppElements>((resolve) => {
@@ -3547,8 +3549,10 @@ describe("app browser navigation controller", () => {
       resolvePayload(createResolvedElements("route:/marketing", "/", null, {}, ["layout:/stale"]));
 
       await expect(result).resolves.toBe("hard-navigate");
-      await expect(pendingRouterState.promise).resolves.toBe(stateRef.current);
-      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing");
+      await Promise.resolve();
+      expect(pendingRouterState.settled).toBe(true);
+      expect(resolvedPendingState).not.toHaveBeenCalled();
+      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing", "assign");
       expect(stateRef.current.routeId).toBe("route:/app");
     } finally {
       detach();
@@ -3930,7 +3934,10 @@ describe("app browser navigation controller", () => {
       });
 
       expect(result).toBe("hard-navigate");
-      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/dashboard/settings");
+      expect(performHardNavigation).toHaveBeenCalledWith(
+        "https://example.com/dashboard/settings",
+        "assign",
+      );
       expect(createNavigationCommitEffect).not.toHaveBeenCalled();
       expect(stateRef.current.routeId).toBe("route:/dashboard/profile");
     } finally {
@@ -5915,6 +5922,39 @@ describe("app browser navigation lifecycle settlement", () => {
   });
 });
 
+describe("app browser hard navigation document loads", () => {
+  it("hands an allowed hard navigation to navigateDocument with its history mode", () => {
+    const { assign, replace } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+
+    expect(controller.performHardNavigation("https://example.com/login")).toBe(true);
+    expect(controller.performHardNavigation("https://example.com/login", "replace")).toBe(true);
+
+    expect(navigateDocument.mock.calls).toEqual([
+      ["https://example.com/login", "assign"],
+      ["https://example.com/login", "replace"],
+    ]);
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("checks the reload-loop guard before navigateDocument", () => {
+    const { storage } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+    storage.set("__vinext_hard_navigation_target__", "https://example.com/current");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(controller.performHardNavigation("https://example.com/current")).toBe(false);
+      expect(navigateDocument).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
+
 describe("app browser root-layout hard navigation", () => {
   it("renderNavigationPayload calls window.location.assign when root layout changes", async () => {
     const { controller, detach } = createControllerHarness(
@@ -5957,20 +5997,104 @@ describe("app browser root-layout hard navigation", () => {
     }
   });
 
-  it("hard-navigate settles the pending router state before navigating away", async () => {
+  it("renderNavigationPayload replaces the entry when a replace changes root layout", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+      { getRouteManifest: () => createRootChangeRouteManifest() },
+    );
+    const { assign, replace } = stubWindow("https://example.com/marketing");
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "replace",
+        createNavigationCommitEffect: vi.fn(),
+        historyUpdateMode: "replace",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+
+      await expect(renderPromise).resolves.toBe("hard-navigate");
+      expect(replace).toHaveBeenCalledWith("https://example.com/dashboard");
+      expect(assign).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("hard-navigate leaves the pending router state unresolved until unload", async () => {
     const { controller, detach } = createControllerHarness(
       createState({ rootLayoutTreePath: "/(marketing)" }),
       { getRouteManifest: () => createRootChangeRouteManifest() },
     );
     const { assign } = stubWindow("https://example.com/marketing");
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    assign.mockImplementation(() => {
-      expect(pendingRouterState.settled).toBe(true);
-    });
+    const resolved = vi.fn();
+    void pendingRouterState.promise.then(resolved);
 
     try {
       const navId = controller.beginNavigation();
-      void renderCurrentStateNavigationPayload(controller, {
+      const outcome = await renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => () => {},
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+      controller.finalizeNavigation(navId, pendingRouterState);
+      await Promise.resolve();
+
+      expect(outcome).toBe("hard-navigate");
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(pendingRouterState.settled).toBe(true);
+      expect(resolved).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("settles the pending router state when the reload-loop guard blocks a hard navigation", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+      {
+        getRouteManifest: () => createRootChangeRouteManifest(),
+        performHardNavigation: () => false,
+      },
+    );
+    stubWindow("https://example.com/marketing");
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+
+    try {
+      const navId = controller.beginNavigation();
+      const outcome = await renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
         createNavigationCommitEffect: () => () => {},
@@ -5992,12 +6116,7 @@ describe("app browser root-layout hard navigation", () => {
         navId,
       });
 
-      // Yield so the async function runs the settle+hard-navigate path.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(assign).toHaveBeenCalledTimes(1);
+      expect(outcome).toBe("no-commit");
       await expect(pendingRouterState.promise).resolves.toBeDefined();
     } finally {
       detach();

@@ -69,7 +69,7 @@ describe("hasPendingAppRouterPageRedirect", () => {
 });
 
 describe("AppBrowserMpaNavigationScheduler", () => {
-  it("supersedes a pending same-href push with a replace before the delayed navigation fires", () => {
+  it("keeps the first navigation's history mode for a later navigation to the same href", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
     const { assign, flushNextTimeout, replace, targetWindow, timeoutCount } =
       createNavigationWindow();
@@ -77,16 +77,40 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     scheduler.navigate(targetWindow, "https://external.test/login", "push");
     scheduler.navigate(targetWindow, "https://external.test/login", "replace");
 
-    expect(timeoutCount()).toBe(2);
+    expect(timeoutCount()).toBe(1);
+
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith("https://external.test/login");
+
+    scheduler.navigate(targetWindow, "https://external.test/login", "replace");
+    expect(timeoutCount()).toBe(0);
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("navigates only to the latest href when a navigation supersedes a pending one", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+
+    scheduler.navigate(targetWindow, "/first", "push");
+    scheduler.navigate(targetWindow, "/second", "push");
+
+    flushNextTimeout();
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith("/second");
+  });
+
+  it("drops a pending navigation when reset before it fires", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, replace, targetWindow } = createNavigationWindow();
+
+    scheduler.navigate(targetWindow, "/login", "push");
+    scheduler.reset();
 
     flushNextTimeout();
     expect(assign).not.toHaveBeenCalled();
     expect(replace).not.toHaveBeenCalled();
-
-    flushNextTimeout();
-    expect(assign).not.toHaveBeenCalled();
-    expect(replace).toHaveBeenCalledTimes(1);
-    expect(replace).toHaveBeenCalledWith("https://external.test/login");
   });
 
   it("dedupes an identical pending external navigation", () => {
@@ -100,6 +124,49 @@ describe("AppBrowserMpaNavigationScheduler", () => {
 
     flushNextTimeout();
     expect(replace).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for a frame before navigating a visible document", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, flushNextTimeout, targetWindow, timeoutCount } = createNavigationWindow();
+    const frames: FrameRequestCallback[] = [];
+
+    scheduler.navigate(
+      {
+        ...targetWindow,
+        document: { visibilityState: "visible" },
+        requestAnimationFrame(callback) {
+          frames.push(callback);
+          return frames.length;
+        },
+      },
+      "/login",
+      "push",
+    );
+
+    expect(timeoutCount()).toBe(0);
+    frames.shift()?.(0);
+    flushNextTimeout();
+    expect(assign).toHaveBeenCalledWith("/login");
+  });
+
+  it("navigates a hidden document without waiting for a frame or timer", () => {
+    const scheduler = new AppBrowserMpaNavigationScheduler();
+    const { assign, targetWindow, timeoutCount } = createNavigationWindow();
+    const requestAnimationFrame = vi.fn();
+    const hiddenWindow = {
+      ...targetWindow,
+      document: { visibilityState: "hidden" as const },
+      requestAnimationFrame,
+    };
+
+    scheduler.navigate(hiddenWindow, "/login", "push");
+    scheduler.navigate(hiddenWindow, "/login", "push");
+
+    expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(timeoutCount()).toBe(0);
+    expect(assign).toHaveBeenCalledTimes(1);
+    expect(assign).toHaveBeenCalledWith("/login");
   });
 
   it("allows the same external navigation again after reset", () => {

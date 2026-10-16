@@ -2682,6 +2682,13 @@ export async function navigateClientSide(
     if (mode === "push") {
       saveScrollPosition();
     }
+    // Suspend the tree like Next.js's MPA navigation, so a RedirectBoundary
+    // that started this navigation can't reset and follow its redirect again.
+    const mpaNavigate = getNavigationRuntime()?.functions.navigateExternal;
+    if (mpaNavigate) {
+      await mpaNavigate(fullHref, mode);
+      return;
+    }
     hardNavigateTo(fullHref, mode);
     await new Promise<void>(() => {});
     return;

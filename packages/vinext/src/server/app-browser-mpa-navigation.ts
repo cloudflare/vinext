@@ -3,6 +3,7 @@ import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 const NEXT_APP_ROUTER_PAGE_REDIRECT_MARKER_ID = "__next-page-redirect";
 
 export type AppBrowserMpaNavigationWindow = {
+  document?: Pick<Document, "visibilityState">;
   location: Pick<Location, "assign" | "replace">;
   requestAnimationFrame?: (callback: FrameRequestCallback) => unknown;
   setTimeout(callback: () => void, timeout: number): unknown;
@@ -10,7 +11,6 @@ export type AppBrowserMpaNavigationWindow = {
 
 type PendingMpaNavigation = {
   href: string;
-  historyUpdateMode: HistoryUpdateMode;
   token: number;
 };
 
@@ -44,25 +44,18 @@ export class AppBrowserMpaNavigationScheduler {
     href: string,
     historyUpdateMode: HistoryUpdateMode,
   ): void {
-    const pendingNavigation = this.#pendingNavigation;
-    if (
-      pendingNavigation?.href === href &&
-      pendingNavigation.historyUpdateMode === historyUpdateMode
-    ) {
+    // Like Next.js's pendingMpaPath, the first navigation to a URL wins until
+    // a bfcache restore resets it, whatever history mode a later one asks for.
+    if (this.#pendingNavigation?.href === href) {
       return;
     }
 
     const token = this.#nextToken + 1;
     this.#nextToken = token;
-    this.#pendingNavigation = { href, historyUpdateMode, token };
+    this.#pendingNavigation = { href, token };
 
     const navigate = () => {
-      const currentNavigation = this.#pendingNavigation;
-      if (
-        currentNavigation?.href !== href ||
-        currentNavigation.historyUpdateMode !== historyUpdateMode ||
-        currentNavigation.token !== token
-      ) {
+      if (this.#pendingNavigation?.token !== token) {
         return;
       }
 
@@ -72,6 +65,13 @@ export class AppBrowserMpaNavigationScheduler {
         targetWindow.location.assign(href);
       }
     };
+
+    // A hidden document paints nothing before unload, runs no animation
+    // frames, and throttles timers, so navigate now as Next.js does.
+    if (targetWindow.document?.visibilityState === "hidden") {
+      navigate();
+      return;
+    }
 
     if (typeof targetWindow.requestAnimationFrame === "function") {
       targetWindow.requestAnimationFrame(() => {
