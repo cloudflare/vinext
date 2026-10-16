@@ -6,12 +6,22 @@ export function scanPublicFileRoutes(
   root: string,
   configuredPublicDir: string | false = "public",
 ): string[] {
+  return [...new Set(scanPublicFiles(root, configuredPublicDir).map(publicFileRouteKey))].sort();
+}
+
+/** List the files in the public directory as `/`-prefixed relative paths. */
+export function scanPublicFiles(
+  root: string,
+  configuredPublicDir: string | false = "public",
+): string[] {
   // Vite normalizes `publicDir: false` to an empty string in resolved config.
   // Treat both representations as disabled rather than scanning the project root.
   if (configuredPublicDir === false || configuredPublicDir === "") return [];
   const publicDir = path.resolve(root, configuredPublicDir);
-  const routes: string[] = [];
-  const visitedDirs = new Set<string>();
+  const files: string[] = [];
+  // The directories being walked, so a symlink to one of them can't loop.
+  // Two links to the same directory are both walked, since each serves the files.
+  const ancestorDirs = new Set<string>();
 
   function walk(dir: string): void {
     let realDir: string;
@@ -20,9 +30,16 @@ export function scanPublicFileRoutes(
     } catch {
       return;
     }
-    if (visitedDirs.has(realDir)) return;
-    visitedDirs.add(realDir);
+    if (ancestorDirs.has(realDir)) return;
+    ancestorDirs.add(realDir);
+    try {
+      walkEntries(dir);
+    } finally {
+      ancestorDirs.delete(realDir);
+    }
+  }
 
+  function walkEntries(dir: string): void {
     const entries = fs.readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const fullPath = path.join(dir, entry.name);
@@ -46,7 +63,7 @@ export function scanPublicFileRoutes(
         continue;
       }
       const relativePath = path.relative(publicDir, fullPath);
-      routes.push(publicFileRouteKey("/" + relativePath));
+      files.push("/" + relativePath);
     }
   }
 
@@ -58,5 +75,5 @@ export function scanPublicFileRoutes(
     }
   }
 
-  return [...new Set(routes)].sort();
+  return files;
 }

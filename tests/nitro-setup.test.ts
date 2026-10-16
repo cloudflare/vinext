@@ -15,6 +15,7 @@ type NitroSetupTarget = {
     serveStatic?: boolean | string;
     plugins?: string[];
     virtual?: Record<string, string | (() => string)>;
+    output?: { publicDir?: string };
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
@@ -206,18 +207,64 @@ describe("vinext Nitro setup integration", () => {
   // vinext serves the public files its router resolves, such as a rewrite
   // destination, through Nitro's static handler.
   it("registers the public files plugin when Nitro's server serves static files", async () => {
-    const nitroPlugin = await initializeNitroSetupPlugin(createPagesProject());
+    const root = createPagesProject();
+    writeProjectFile(root, "public/a%20b.txt", "file\n");
+    writeProjectFile(root, "public/%2Fsecret.txt", "file\n");
+    writeProjectFile(root, "public/data.json", "{}\n");
+    writeProjectFile(root, "public/uncopied.txt", "file\n");
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
     const nitro: NitroSetupTarget = {
-      options: { dev: false, preset: "node-server", baseURL: "/", serveStatic: true },
+      options: {
+        dev: false,
+        preset: "node-server",
+        baseURL: "/",
+        serveStatic: true,
+        output: { publicDir: path.join(root, ".output/public") },
+      },
     };
 
     await nitroPlugin.nitro!.setup!(nitro);
     await nitroPlugin.nitro!.setup!(nitro);
+    // Nitro copies the public files, and `compressPublicAssets` writes its
+    // compressed copies, after setup and before it bundles the server.
+    for (const file of ["a%20b.txt", "%2Fsecret.txt", "data.json", "data.json.gz"]) {
+      writeProjectFile(root, `.output/public/${file}`, "");
+    }
 
     expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
-    expect(nitro.options.virtual?.["#vinext/nitro-public-files"]).toContain(
-      "createNitroPublicFilesPlugin",
+    const template = nitro.options.virtual?.["#vinext/nitro-public-files"];
+    expect(typeof template).toBe("function");
+    // Keyed as Nitro keys its static files: decoded, then joined to `/`. A
+    // file Nitro didn't copy to its output isn't listed.
+    expect((template as () => string)()).toContain(
+      'publicAssets: ["/a b.txt","/data.json","/data.json.gz","/secret.txt"]',
     );
+  });
+
+  it("lists the files in Vite's resolved public directory", async () => {
+    const root = createPagesProject();
+    writeProjectFile(root, "public/default.txt", "file\n");
+    writeProjectFile(root, "static/custom.txt", "file\n");
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    writeProjectFile(root, ".output/public/default.txt", "file\n");
+    writeProjectFile(root, ".output/public/custom.txt", "file\n");
+    const nitro: NitroSetupTarget = {
+      options: {
+        dev: false,
+        preset: "node-server",
+        baseURL: "/",
+        serveStatic: true,
+        output: { publicDir: path.join(root, ".output/public") },
+      },
+    };
+
+    (nitroPlugin.configResolved as (config: { publicDir: string }) => void)({
+      publicDir: path.join(root, "static"),
+    });
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    const template = nitro.options.virtual?.["#vinext/nitro-public-files"] as () => string;
+    expect(template()).toContain('publicAssets: ["/custom.txt"]');
   });
 
   it.each([

@@ -362,7 +362,7 @@ import {
   replaceConsumerEnvironmentConditions,
 } from "./plugins/typeof-window.js";
 import { hasMdxFiles, loadMdxEsmReader, pageExtensionsIncludeMdx } from "./utils/mdx-scan.js";
-import { scanPublicFileRoutes } from "./utils/public-routes.js";
+import { scanPublicFileRoutes, scanPublicFiles } from "./utils/public-routes.js";
 import { publicFileRouteKey } from "./utils/public-file-path.js";
 import {
   methodNotAllowedResponse,
@@ -1773,9 +1773,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let warnedInlineNextConfigOverride = false;
   let hasNitroPlugin = false;
   let nitroHostRuntime: "node" | "worker" = "node";
-  // Whether vinext's Nitro runtime plugin serves the public files the router
-  // resolves through Nitro's static handler.
+  // Whether vinext's Nitro runtime plugin runs requests for public files
+  // through vinext and serves the files through Nitro's static handler.
   let nitroPublicFiles = false;
+  let nitroPublicDir = "public";
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
@@ -8161,6 +8162,9 @@ export const loadServerActionClient = ${
     // replay per-user responses to other users.
     {
       name: "vinext:nitro-setup",
+      configResolved(config) {
+        nitroPublicDir = config.publicDir;
+      },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
           nitroBuildDir = nitro.options.buildDir
@@ -8172,7 +8176,11 @@ export const loadServerActionClient = ${
           if (!nextConfig) return;
           if (!hasAppDir && !hasPagesDir) return;
 
-          nitroPublicFiles = registerNitroPublicFiles(nitro.options, NITRO_PUBLIC_FILES_PLUGIN);
+          nitroPublicFiles = registerNitroPublicFiles(
+            nitro.options,
+            NITRO_PUBLIC_FILES_PLUGIN,
+            () => scanPublicFiles(root, nitroPublicDir),
+          );
 
           if (resolvedServerExternalPackages.length > 0) {
             nitro.options.traceDeps = [
