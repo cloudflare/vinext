@@ -85,6 +85,7 @@ import {
   createAppBrowserNavigationController,
   createBasePathStrippedPathAndSearch,
   createSnapshotPathAndSearch,
+  navigateDocumentDirectly,
   type HistoryUpdateMode,
   type NavigationPayloadOutcome,
   type PendingBrowserRouterState,
@@ -339,16 +340,11 @@ const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
   navigateDocument: (href, mode) => {
-    const historyUpdateMode = mode === "replace" ? "replace" : "push";
     if (mpaNavigationTree) {
-      mpaNavigationTree.enter(href, historyUpdateMode);
+      mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
       return;
     }
-    if (historyUpdateMode === "replace") {
-      window.location.replace(href);
-    } else {
-      window.location.assign(href);
-    }
+    navigateDocumentDirectly(href, mode);
   },
   syncHistoryStatePreviousNextUrl: (previousNextUrl, bfcacheIds) =>
     historyController.syncCurrentHistoryStatePreviousNextUrl(previousNextUrl, bfcacheIds),

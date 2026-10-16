@@ -33,7 +33,6 @@ for (const mode of ["first-aborts", "all-503"] as const) {
   test(`a page redirect whose RSC fetch fails loads the target once (${mode})`, async ({
     page,
   }) => {
-    await page.context().clearCookies();
     await page.goto(`${baseUrl}${SOURCE_PATH}`);
     await waitForAppRouterHydration(page);
 
@@ -75,7 +74,6 @@ for (const mode of ["first-aborts", "all-503"] as const) {
 // A Pages Router target loads as a document. Next.js gets there through the
 // same MPA state, because the target's RSC request answers with HTML.
 test("a page redirect to a Pages Router route loads the target once", async ({ page }) => {
-  await page.context().clearCookies();
   await page.goto(`${baseUrl}${SOURCE_PATH}/to-pages`);
   await waitForAppRouterHydration(page);
 
@@ -133,6 +131,8 @@ test("a transition whose RSC fetch fails stays pending during the document load"
     if (new URL(request.url()).pathname === TARGET_PATH) targetDocumentRequests++;
   });
 
+  await page.getByRole("button", { name: "Start ticking" }).click();
+  await expect(page.locator("#mpa-restore-tick")).not.toHaveText("0");
   await page.getByRole("button", { name: "Push in transition" }).click();
   await expect.poll(() => targetDocumentRequests).toBe(1);
   await page.waitForTimeout(1_000);
@@ -144,11 +144,11 @@ test("a transition whose RSC fetch fails stays pending during the document load"
     .toBeGreaterThan(tick);
 });
 
-// Ported from Next.js: test/production/bfcache-routing/index.test.ts
-// https://github.com/vercel/next.js/blob/canary/test/production/bfcache-routing/index.test.ts
-// Next's test needs a headed browser for a real bfcache restore. Answering the
-// document load with 204 keeps this document alive, and a persisted pageshow
-// stands in for the restore.
+// Adapted from Next.js's bfcache-routing test (ported below) for a hard
+// navigation after a failed RSC fetch. Next's test needs a headed browser for
+// a real bfcache restore. Answering the document load with 204 keeps this
+// document alive, and a persisted pagehide/pageshow pair stands in for the
+// restore.
 test("a document restored after a hard navigation renders and navigates again", async ({
   page,
 }) => {
@@ -173,6 +173,7 @@ test("a document restored after a hard navigation renders and navigates again", 
   await expect(page.locator("#mpa-restore-link-pending")).toHaveText("true");
 
   await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
   });
   // Restoring finishes the navigation's transition, as Next.js's ACTION_RESTORE does.
@@ -188,7 +189,8 @@ test("a document restored after a hard navigation renders and navigates again", 
   await expect.poll(() => targetDocumentRequests).toBe(2);
 });
 
-// The external-URL case of Next's bfcache-routing test.
+// Ported from Next.js: test/production/bfcache-routing/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/production/bfcache-routing/index.test.ts
 test("a document restored after an external navigation stays put", async ({ page }) => {
   await page.goto(`${baseUrl}${SOURCE_PATH}/restore`);
   await waitForAppRouterHydration(page);
@@ -207,6 +209,7 @@ test("a document restored after an external navigation stays put", async ({ page
   await expect.poll(() => externalDocumentRequests).toBe(1);
 
   await page.evaluate(() => {
+    window.dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
     window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
   });
   await page.getByRole("button", { name: "Trigger re-render" }).click();

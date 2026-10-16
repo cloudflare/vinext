@@ -15,17 +15,21 @@ function LinkPending() {
   );
 }
 
-export default function RestorePage() {
-  const router = useRouter();
-  const [count, setCount] = useState(0);
+function Ticker() {
   const [tick, setTick] = useState(0);
-  const [pushed, setPushed] = useState(false);
-  const [isPending, startTransition] = useTransition();
-
   useEffect(() => {
     const interval = setInterval(() => setTick((value) => value + 1), 50);
     return () => clearInterval(interval);
   }, []);
+  return <p id="mpa-restore-tick">{tick}</p>;
+}
+
+export default function RestorePage() {
+  const router = useRouter();
+  const [count, setCount] = useState(0);
+  const [ticking, setTicking] = useState(false);
+  const [pushed, setPushed] = useState(false);
+  const [isPending, startTransition] = useTransition();
 
   return (
     <div>
@@ -33,7 +37,10 @@ export default function RestorePage() {
         Trigger re-render
       </button>
       <p id="mpa-restore-count">{count}</p>
-      <p id="mpa-restore-tick">{tick}</p>
+      <button type="button" onClick={() => setTicking(true)}>
+        Start ticking
+      </button>
+      {ticking ? <Ticker /> : null}
       <Link href={TARGET} prefetch={false}>
         Login
         <LinkPending />

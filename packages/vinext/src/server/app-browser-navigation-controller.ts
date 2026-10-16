@@ -223,7 +223,7 @@ export function clearHardNavigationLoopGuard(): void {
   } catch {}
 }
 
-function navigateDocumentDirectly(href: string, mode: HardNavigationMode): void {
+export function navigateDocumentDirectly(href: string, mode: HardNavigationMode): void {
   if (mode === "replace") {
     window.location.replace(href);
   } else {
