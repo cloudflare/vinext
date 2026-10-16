@@ -92,6 +92,8 @@ export function middleware(request: NextRequest) {
     if (url.searchParams.has("middleware-cookie")) {
       res.cookies.set("middleware-cookie", "1", { path: "/" });
     }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (url.searchParams.has("empty-middleware-cookie")) res.headers.set("Set-Cookie", "");
     return res;
   }
 

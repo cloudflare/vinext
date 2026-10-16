@@ -220,7 +220,8 @@ export function applyConfigHeadersToResponse(
   // response when middleware sets none. Every cookie already on the response
   // then comes from the handler or renderer, which Next.js appends after the
   // staged headers.
-  if (configCookies.length > 0 && !options.middlewareHeaders?.has("set-cookie")) {
+  // Like Next.js, an empty middleware Set-Cookie is not staged.
+  if (configCookies.length > 0 && !options.middlewareHeaders?.get("set-cookie")) {
     const responseCookies = responseHeaders.getSetCookie();
     responseHeaders.delete("set-cookie");
     for (const cookie of [...configCookies, ...responseCookies]) {
@@ -248,7 +249,7 @@ export function applyConfigHeadersToHeaderRecord(
   // Callers either stage config into the middleware header record or pass the
   // middleware response's headers.
   const middlewareSetsCookie =
-    options.middlewareHeaders?.has("set-cookie") ||
+    Boolean(options.middlewareHeaders?.get("set-cookie")) ||
     findHeaderRecordKey(headers, "set-cookie") !== undefined;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();

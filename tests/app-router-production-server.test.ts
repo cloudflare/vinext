@@ -483,6 +483,10 @@ describe("App Router Production server (startProdServer)", () => {
       cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
     },
     {
+      path: "/api/config-cookie?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    {
       path: "/api/config-cookie?middleware-cookie",
       cookies: ["middleware-cookie=1; Path=/", "handler-cookie=1; Path=/"],
     },

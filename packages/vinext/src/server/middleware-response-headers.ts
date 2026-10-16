@@ -54,6 +54,9 @@ export function mergeMiddlewareResponseHeaders(
     if (lowerName === "link" && !value) {
       continue;
     }
+    if (lowerName === "set-cookie" && !middlewareHeaders.get("set-cookie")) {
+      continue;
+    }
 
     if (lowerName === "vary") {
       mergeVaryHeader(target, value);

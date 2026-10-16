@@ -399,6 +399,10 @@ describe("applyConfigHeadersToResponse", () => {
   it.each([
     { middlewareHeaders: undefined, cookies: ["config=1; Path=/", "handler=1; Path=/"] },
     {
+      middlewareHeaders: new Headers({ "set-cookie": "" }),
+      cookies: ["config=1; Path=/", "handler=1; Path=/"],
+    },
+    {
       middlewareHeaders: new Headers({ "set-cookie": "mw=1; Path=/" }),
       cookies: ["handler=1; Path=/"],
     },

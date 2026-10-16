@@ -141,6 +141,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.cookies.set("middleware-cookie", "1", { path: "/" });
     return response;
   }
+  // Next.js ignores an empty middleware Set-Cookie.
+  if (
+    pathname === "/api/config-cookie" &&
+    request.nextUrl.searchParams.has("empty-middleware-cookie")
+  ) {
+    return NextResponse.next({ headers: { "Set-Cookie": "" } });
+  }
 
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");

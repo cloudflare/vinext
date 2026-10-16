@@ -604,8 +604,14 @@ export async function runPagesRequest(
 
     // Collect middleware response headers (Set-Cookie as array, same logic as both prod copies)
     if (result.responseHeaders) {
-      for (const [key, value] of result.responseHeaders) {
+      const responseHeaders = [...result.responseHeaders];
+      // Next.js only stages truthy middleware header values.
+      const stagesSetCookie = responseHeaders.some(
+        ([key, value]) => key === "set-cookie" && value !== "",
+      );
+      for (const [key, value] of responseHeaders) {
         if (key === "set-cookie") {
+          if (!stagesSetCookie) continue;
           const existing = middlewareHeaders[key];
           if (Array.isArray(existing)) {
             existing.push(value);

@@ -1849,6 +1849,7 @@ export default class CustomDocument extends Document {
   it.each([
     { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
     { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
@@ -7501,6 +7502,7 @@ describe("Production server middleware (Pages Router)", () => {
   it.each([
     { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
     { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
     { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
