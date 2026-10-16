@@ -95,6 +95,7 @@ const projectServers = {
       "app-router-prod/multipart-late-routing.spec.ts",
       "app-router-prod/server-action-late-routing.spec.ts",
       "app-router-prod/image-middleware.spec.ts",
+      "app-router-prod/image-get-image-props.spec.ts",
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
       "app-router-prod/middleware-external-rewrite-host.spec.ts",

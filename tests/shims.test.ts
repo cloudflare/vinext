@@ -31264,6 +31264,64 @@ describe("shim alias map .js variants", () => {
     );
   });
 
+  it("resolves the next/image alias target to the RSC entry only in the RSC environment", () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      filter: { id: RegExp };
+      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+    };
+    // The extensionless resolve.alias target for next/image.
+    const aliasTarget = toSlash(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image"),
+    );
+
+    expect(hook.filter.id.test(aliasTarget)).toBe(true);
+    expect(hook.filter.id.test(aliasTarget.replaceAll("/", "\\"))).toBe(true);
+    expect(hook.handler.call({ environment: { name: "rsc" } }, aliasTarget)).toBe(
+      "\0virtual:vinext-next-image-rsc",
+    );
+    expect(hook.handler.call({ environment: { name: "ssr" } }, aliasTarget)).toBeUndefined();
+  });
+
+  it("resolves vinext/shims/image as next/image outside the RSC environment", async () => {
+    const plugins = vinext() as Plugin[];
+    const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
+    if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
+      throw new Error("vinext:config resolveId hook not found");
+    }
+
+    const hook = configPlugin.resolveId as {
+      handler: (
+        this: { environment?: { name?: string }; resolve?: (...args: unknown[]) => unknown },
+        id: string,
+        importer?: string,
+      ) => unknown;
+    };
+    const resolve = vi.fn(async () => ({ id: "/node_modules/.vite/deps/next_image.js" }));
+
+    // The RSC next/image entry's client reference shares next/image's module
+    // in the browser and SSR, including its dep optimizer pre-bundle.
+    await expect(
+      hook.handler.call(
+        { environment: { name: "client" }, resolve },
+        "vinext/shims/image",
+        "/x.js",
+      ),
+    ).resolves.toEqual({ id: "/node_modules/.vite/deps/next_image.js" });
+    expect(resolve).toHaveBeenCalledWith("next/image", "/x.js", { skipSelf: true });
+
+    resolve.mockClear();
+    expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "vinext/shims/image", "/x.js"),
+    ).toBe(toSlash(path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx")));
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
   it("keeps the App Router request handler source-resolved in source checkouts", () => {
     const plugins = vinext() as Plugin[];
     const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");

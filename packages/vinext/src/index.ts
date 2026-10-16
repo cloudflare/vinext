@@ -215,6 +215,7 @@ import {
   reactCompilerUnsupportedMessage,
 } from "./utils/react-compiler-support.js";
 import { isUnknownRecord as isRecord } from "./utils/record.js";
+import { escapeRegExp } from "./utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE, VIRTUAL_PREFIX } from "./utils/virtual-module.js";
 import {
   ASSET_PREFIX_URL_DIR,
@@ -1350,6 +1351,8 @@ const VIRTUAL_APP_CAPABILITIES = "virtual:vinext-app-capabilities";
 const RESOLVED_APP_CAPABILITIES = VIRTUAL_PREFIX + VIRTUAL_APP_CAPABILITIES;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
 const RESOLVED_ROOT_PARAMS = VIRTUAL_PREFIX + VIRTUAL_ROOT_PARAMS;
+const VIRTUAL_NEXT_IMAGE_RSC = "virtual:vinext-next-image-rsc";
+const RESOLVED_NEXT_IMAGE_RSC = VIRTUAL_PREFIX + VIRTUAL_NEXT_IMAGE_RSC;
 const APP_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("app-request-stage-independent-entry");
 const APP_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("app-response-stage-entry");
 const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage-entry");
@@ -1848,6 +1851,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Resolve shim paths - works both from source (.ts) and built (.js).
   const shimsDir = path.resolve(__dirname, "shims");
+  // resolve.alias target for next/image. The alias keeps every dep optimizer
+  // on the shim; vinext:config sends it to the RSC entry in that environment.
+  const nextImageAliasTarget = toSlash(path.join(shimsDir, "image"));
+  const nextImageAliasTargetRE = new RegExp(
+    `^${nextImageAliasTarget.split("/").map(escapeRegExp).join("[\\\\/]")}$`,
+  );
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
@@ -4699,12 +4708,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       resolveId: {
         // Hook filter: only invoke JS for handled compatibility modules.
         // Matches "next/navigation", "next/router.js", "virtual:vinext-rsc-entry",
-        // direct @vercel/og imports in metadata routes, and \0-prefixed
-        // re-imports from @vitejs/plugin-rsc.
+        // direct @vercel/og imports in metadata routes, \0-prefixed re-imports
+        // from @vitejs/plugin-rsc, and the next/image alias target.
         filter: {
-          id: /(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/,
+          id: new RegExp(
+            `${/(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/.source}|${nextImageAliasTargetRE.source}`,
+          ),
         },
         handler(id, importer) {
+          // Like Next.js's image-external, next/image in RSC exports the
+          // server-safe getImageProps and only Image as a client reference.
+          if (nextImageAliasTargetRE.test(id)) {
+            return this.environment?.name === "rsc" ? RESOLVED_NEXT_IMAGE_RSC : undefined;
+          }
           // Strip \0 prefix if present — @vitejs/plugin-rsc's generated
           // browser entry imports our virtual module using the already-resolved
           // ID (with \0 prefix). We need to re-resolve it so the client
@@ -4741,6 +4757,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           if (isVercelOgImport(cleanId) && !isVinextOgShimImporter(importer)) {
             return resolveShimModulePath(_shimsDir, "og");
+          }
+
+          // The RSC next/image entry references Image as vinext/shims/image.
+          // Elsewhere that is next/image, so the browser and SSR load one image
+          // module, the dep optimizer's when it has pre-bundled next/image.
+          if (cleanId === "vinext/shims/image" && this.environment?.name !== "rsc") {
+            return this.resolve("next/image", importer, { skipSelf: true });
           }
 
           const vinextShimPrefix = "vinext/shims/";
@@ -5092,6 +5115,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               instrumentationPath,
             );
+          }
+          if (id === RESOLVED_NEXT_IMAGE_RSC) {
+            // Vite never pre-bundles virtual modules, so the "use client" image
+            // shim keeps its directive even where the RSC optimizer runs with
+            // discovery (Cloudflare dev). The bare vinext/shims/image import
+            // gives plugin-rsc a package client reference, like vinext's other
+            // client shims.
+            return [
+              `export { getImageProps, imageOptimizationUrl } from "vinext/shims/image-props";`,
+              `export { default } from "vinext/shims/image";`,
+              "",
+            ].join("\n");
           }
           if (id === RESOLVED_ROOT_PARAMS) {
             const routes = hasAppDir
