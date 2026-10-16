@@ -1844,6 +1844,27 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Next.js API routes get a real Node ServerResponse, so res.appendHeader()
+  // (Node 18.3+) works and its cookies follow middleware's.
+  it("supports res.appendHeader in API routes after middleware cookies", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
   it("handles dynamic API routes with query params", async () => {
     const res = await fetch(`${baseUrl}/api/users/123`);
     expect(res.status).toBe(200);
@@ -7480,6 +7501,25 @@ describe("Production server middleware (Pages Router)", () => {
     // The trailingSlash: false rule strips the redirect target to the root;
     // it is never relativized to a protocol-relative `//`.
     expect(res.headers.get("location")).toBe("/");
+  });
+
+  it("supports res.appendHeader in API routes after middleware cookies in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
 
   it("redirects /old-page to /about via middleware", async () => {
