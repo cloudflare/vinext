@@ -65,6 +65,16 @@ export function middleware(request: NextRequest) {
   // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
   response.headers.set("x-mw-pathname", url.pathname);
 
+  // The Node Pages API handler's own headers must replace these, as in Next.js.
+  if (url.pathname === "/api/middleware-header-precedence") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Cache-Control", "private, max-age=7");
+    response.headers.set("x-header-precedence", "middleware");
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+
   // Same-origin redirect to a double-slash path. vinext must keep the
   // Location absolute so it never becomes protocol-relative.
   if (url.pathname === "/mw-redirect-double-slash") {
@@ -358,6 +368,7 @@ export const config = {
   matcher: [
     "/api/edge-search-params",
     "/api/edge-request-signal",
+    "/api/middleware-header-precedence",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {

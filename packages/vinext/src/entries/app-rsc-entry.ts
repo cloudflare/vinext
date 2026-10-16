@@ -460,7 +460,7 @@ ${
   hasPagesDir
     ? `import { getDraftModeCookieHeader } from "next/headers";
 import * as __pagesRequestEntry from "virtual:vinext-pages-request-entry";
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
+import { applyMiddlewareHeadersToStagedPagesApiResponse as __applyMiddlewareHeadersToStagedPagesApiResponse, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};
 import { buildRequestHeadersFromMiddlewareResponse as __buildRequestHeadersFromMiddlewareResponse } from ${JSON.stringify(middlewareRequestHeadersPath)};
 import { applyRouteHandlerMiddlewareContext as __applyRouteHandlerMiddlewareContext } from ${JSON.stringify(appRouteHandlerMiddlewareContextPath)};`
     : ""
@@ -609,7 +609,10 @@ const __requestHandler = createAppRscRequestHandler({
           }
           return {
             ...__pagesRequestEntry,
-            handleApiRoute(stageRequest) { return dispatchPagesResponseStage(stageRequest, "api"); },
+            async handleApiRoute(stageRequest, _url, _ctx, _origin, _runtime, _initialHeaders, middlewareResponseHeaders) {
+              const response = await dispatchPagesResponseStage(stageRequest, "api");
+              return __applyMiddlewareHeadersToStagedPagesApiResponse(response, middlewareResponseHeaders);
+            },
             renderPage(stageRequest, pagesUrl) {
               const dataKind = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
               return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument);
@@ -945,7 +948,7 @@ function _getSSRFontPreloads() { return [..._getSSRFontPreloadsGoogle(), ..._get
 ${
   hasPagesDir
     ? `// Pages Router routes are loaded lazily from the SSR environment for internal prerender requests.
-import { renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
+import { applyMiddlewareHeadersToStagedPagesApiResponse as __applyMiddlewareHeadersToStagedPagesApiResponse, renderPagesFallback as __renderPagesFallback } from ${JSON.stringify(appPagesBridgePath)};`
     : ""
 }
 
@@ -2031,8 +2034,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
             ...__pagesEntry,
             ...(typeof __pagesEntry.handleApiRoute === "function"
               ? {
-                  handleApiRoute(stageRequest) {
-                    return dispatchPagesResponseStage(stageRequest, "api");
+                  async handleApiRoute(stageRequest, _url, _ctx, _origin, _runtime, _initialHeaders, middlewareResponseHeaders) {
+                    const response = await dispatchPagesResponseStage(stageRequest, "api");
+                    return __applyMiddlewareHeadersToStagedPagesApiResponse(response, middlewareResponseHeaders);
                   },
                 }
               : {}),
