@@ -2,13 +2,13 @@
 
 import { useRouter } from "next/navigation";
 
-export function SignOut() {
+export function SignOut({ cookie }: { cookie: string }) {
   const router = useRouter();
   return (
     <button
       type="button"
       onClick={() => {
-        document.cookie = "mpa-fallback-signed-out=1; path=/";
+        document.cookie = `${cookie}=1; path=/`;
         router.refresh();
       }}
     >

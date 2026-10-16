@@ -5915,6 +5915,39 @@ describe("app browser navigation lifecycle settlement", () => {
   });
 });
 
+describe("app browser hard navigation document loads", () => {
+  it("hands an allowed hard navigation to navigateDocument with its history mode", () => {
+    const { assign, replace } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+
+    expect(controller.performHardNavigation("https://example.com/login")).toBe(true);
+    expect(controller.performHardNavigation("https://example.com/login", "replace")).toBe(true);
+
+    expect(navigateDocument.mock.calls).toEqual([
+      ["https://example.com/login", "assign"],
+      ["https://example.com/login", "replace"],
+    ]);
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("checks the reload-loop guard before navigateDocument", () => {
+    const { storage } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+    storage.set("__vinext_hard_navigation_target__", "https://example.com/current");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(controller.performHardNavigation("https://example.com/current")).toBe(false);
+      expect(navigateDocument).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+});
+
 describe("app browser root-layout hard navigation", () => {
   it("renderNavigationPayload calls window.location.assign when root layout changes", async () => {
     const { controller, detach } = createControllerHarness(

@@ -74,12 +74,14 @@ export class AppBrowserMpaNavigationScheduler {
       }
     };
 
-    // Hidden documents run no animation frames, so waiting for one would hold
-    // the document load until the tab is shown again.
-    if (
-      typeof targetWindow.requestAnimationFrame === "function" &&
-      targetWindow.document?.visibilityState !== "hidden"
-    ) {
+    // A hidden document paints nothing before unload, runs no animation
+    // frames, and throttles timers, so navigate now as Next.js does.
+    if (targetWindow.document?.visibilityState === "hidden") {
+      navigate();
+      return;
+    }
+
+    if (typeof targetWindow.requestAnimationFrame === "function") {
       targetWindow.requestAnimationFrame(() => {
         targetWindow.setTimeout(navigate, 0);
       });

@@ -126,19 +126,22 @@ describe("AppBrowserMpaNavigationScheduler", () => {
     expect(assign).toHaveBeenCalledWith("/login");
   });
 
-  it("does not wait for a frame that a hidden document never runs", () => {
+  it("navigates a hidden document without waiting for a frame or timer", () => {
     const scheduler = new AppBrowserMpaNavigationScheduler();
-    const { assign, flushNextTimeout, targetWindow } = createNavigationWindow();
+    const { assign, targetWindow, timeoutCount } = createNavigationWindow();
     const requestAnimationFrame = vi.fn();
+    const hiddenWindow = {
+      ...targetWindow,
+      document: { visibilityState: "hidden" as const },
+      requestAnimationFrame,
+    };
 
-    scheduler.navigate(
-      { ...targetWindow, document: { visibilityState: "hidden" }, requestAnimationFrame },
-      "/login",
-      "push",
-    );
+    scheduler.navigate(hiddenWindow, "/login", "push");
+    scheduler.navigate(hiddenWindow, "/login", "push");
 
-    flushNextTimeout();
     expect(requestAnimationFrame).not.toHaveBeenCalled();
+    expect(timeoutCount()).toBe(0);
+    expect(assign).toHaveBeenCalledTimes(1);
     expect(assign).toHaveBeenCalledWith("/login");
   });
 

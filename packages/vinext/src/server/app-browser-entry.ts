@@ -340,8 +340,8 @@ const browserNavigationController = createAppBrowserNavigationController({
   getRouteManifest: getBrowserRouteManifest,
   navigateDocument: (href, mode) => {
     const historyUpdateMode = mode === "replace" ? "replace" : "push";
-    if (enterMpaNavigation) {
-      enterMpaNavigation(href, historyUpdateMode);
+    if (mpaNavigationTree) {
+      mpaNavigationTree.enter(href, historyUpdateMode);
       return;
     }
     if (historyUpdateMode === "replace") {
@@ -423,8 +423,12 @@ const unresolvedMpaNavigation = new Promise<never>(() => {});
 // Next.js loads every hard navigation through the router's MPA state, which
 // suspends the tree until the document unloads. Without it, a RedirectBoundary
 // re-rendering its committed redirect() starts RSC requests that race the load.
-let enterMpaNavigation: ((href: string, historyUpdateMode: HistoryUpdateMode) => void) | null =
-  null;
+let mpaNavigationTree: {
+  enter(href: string, historyUpdateMode: HistoryUpdateMode): void;
+  // Leaves the MPA state for the last committed tree, as Next.js's
+  // ACTION_RESTORE does when bfcache restores the document.
+  restore(): void;
+} | null = null;
 const RSC_HMR_SETTLE_DELAY_MS = 150;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as React.ComponentType<{
   error: unknown;
@@ -1361,6 +1365,12 @@ function BrowserRoot({
   const stateRef = useRef(treeState);
   // oxlint-disable-next-line react/refs -- navigation from child layout effects needs this render's state
   stateRef.current = treeState;
+  // Written on commit only, so a bfcache restore never shows a render React
+  // discarded.
+  const committedStateRef = useRef(treeState);
+  useLayoutEffect(() => {
+    committedStateRef.current = treeState;
+  }, [treeState]);
 
   // Publish the stable ref object and dispatch during layout commit. This keeps
   // the module-level escape hatches aligned with React's committed tree without
@@ -1382,7 +1392,15 @@ function BrowserRoot({
         kind: "mpa-navigation",
       });
     };
-    enterMpaNavigation = setMpaNavigationState;
+    const currentMpaNavigationTree = {
+      enter: setMpaNavigationState,
+      restore() {
+        setTreeStateValue((current) =>
+          isMpaNavigationState(current) ? committedStateRef.current : current,
+        );
+      },
+    };
+    mpaNavigationTree = currentMpaNavigationTree;
     registerNavigationRuntimeFunctions({
       navigateExternal: (href, historyUpdateMode) => {
         setMpaNavigationState(href, historyUpdateMode);
@@ -1393,8 +1411,8 @@ function BrowserRoot({
     hydrationCachePublication.commit();
     return () => {
       hydrationCachePublication.invalidate();
-      if (enterMpaNavigation === setMpaNavigationState) {
-        enterMpaNavigation = null;
+      if (mpaNavigationTree === currentMpaNavigationTree) {
+        mpaNavigationTree = null;
       }
       registerNavigationRuntimeFunctions({ navigateExternal: undefined });
       detach();
@@ -2077,7 +2095,12 @@ function bootstrapHydration(
       mode?: "assign" | "replace",
     ): boolean => {
       consumeAppRouterScrollIntent(scrollIntent ?? null);
-      const didNavigate = browserNavigationController.performHardNavigation(targetHref, mode);
+      // Like Next.js's completeHardNavigation, only a push adds a history
+      // entry; refresh, replace, and traversal load in place.
+      const didNavigate = browserNavigationController.performHardNavigation(
+        targetHref,
+        mode ?? (currentHistoryMode === "push" ? "assign" : "replace"),
+      );
       if (!didNavigate) {
         clearAppNavigationFailureTarget(targetHref);
       }
@@ -3188,6 +3211,7 @@ if (typeof document !== "undefined") {
     isPageUnloading = false;
     if (event.persisted) {
       mpaNavigationScheduler.reset();
+      mpaNavigationTree?.restore();
     }
   });
   void main();

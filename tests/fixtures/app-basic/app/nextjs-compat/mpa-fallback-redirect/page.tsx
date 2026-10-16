@@ -8,5 +8,5 @@ export default async function Page() {
   if ((await cookies()).has("mpa-fallback-signed-out")) {
     redirect("/nextjs-compat/mpa-fallback-redirect/login");
   }
-  return <SignOut />;
+  return <SignOut cookie="mpa-fallback-signed-out" />;
 }
