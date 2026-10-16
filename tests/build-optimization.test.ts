@@ -1427,6 +1427,44 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   });
 
+  it("drops next/image includes that would re-inline the Image client reference in dev", async () => {
+    // Vite pre-bundles explicit optimizeDeps.include entries without checking
+    // exclude, so an inherited next/image include would inline the nested
+    // "use client" shims/image-component module again.
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugin = vinext().find((p: any) => p.name === "vinext:config") as any;
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-image-include-"));
+    await fsp.mkdir(path.join(root, "app"));
+    await fsp.writeFile(path.join(root, "app/page.tsx"), "export default () => null;");
+    try {
+      const userInclude = ["next/image", "lib > next/legacy/image.js", "other-dep"];
+      const config = await plugin.config(
+        { root, build: {}, optimizeDeps: { include: userInclude } },
+        { command: "serve" },
+      );
+      const clientConfig = mergeConfig({}, config.environments.client);
+      const rscConfig = mergeConfig(config.environments.rsc, {
+        optimizeDeps: { include: ["next/image.js"], noDiscovery: false },
+      });
+      await plugin.configResolved({
+        cacheDir: path.join(root, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { client: clientConfig, rsc: rscConfig },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
+      for (const include of [clientConfig.optimizeDeps.include, rscConfig.optimizeDeps.include]) {
+        expect(include).toContain("other-dep");
+        expect(include).not.toContain("next/image");
+        expect(include).not.toContain("next/image.js");
+        expect(include).not.toContain("lib > next/legacy/image.js");
+      }
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each([
     { name: "RSC discovery enabled (Cloudflare)", rscNoDiscovery: false },
     { name: "RSC discovery disabled (Node)", rscNoDiscovery: true },

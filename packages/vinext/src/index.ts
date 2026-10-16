@@ -4483,6 +4483,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
+            if (hasAppDir && (name === "rsc" || name === "client") && optimizer.include) {
+              // Vite pre-bundles explicit includes without checking excludes, so an
+              // inherited next/image include would still inline image-component.
+              optimizer.include = optimizer.include.filter(
+                (id) =>
+                  !NEXT_IMAGE_OPTIMIZE_DEPS_EXCLUDE.includes(
+                    id.slice(id.lastIndexOf(">") + 1).trim(),
+                  ),
+              );
+            }
             const optionalIncludes = hasAppDir
               ? optimizer.noDiscovery
                 ? []
