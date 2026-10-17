@@ -113,6 +113,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     headersContext: null,
     actionRevalidationKind: 0,
     cacheLifeSink: null,
+    pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
@@ -388,7 +389,8 @@ export function runWithUnifiedStateMutation<T>(
   ensureRenderDynamicLatch(parentCtx);
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
-  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
+  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren,
+  // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (unstableCacheObservations, _privateCache),

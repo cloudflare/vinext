@@ -850,6 +850,37 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(purge).not.toHaveBeenCalled();
   });
 
+  it("revalidateTag splits batches into 100-tag purges and dedupes tags", async () => {
+    const purge = vi.fn(async (_options: { tags: string[] }) => ({ errors: [], success: true }));
+    const tags = Array.from({ length: 150 }, (_, i) => `tag-${i}`);
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag([...tags, "tag-0"]);
+    });
+    expect(purge.mock.calls.map(([options]) => options.tags)).toEqual([
+      tags.slice(0, 100).map(encodeCloudflareCacheTag),
+      tags.slice(100).map(encodeCloudflareCacheTag),
+    ]);
+  });
+
+  it("surfaces a failure from any chunk of a batched purge", async () => {
+    let call = 0;
+    const purge = vi.fn(async () =>
+      call++ === 1
+        ? {
+            errors: [{ code: 1134, message: "Unable to purge, rate limit reached" }],
+            success: false,
+          }
+        : { errors: [], success: true },
+    );
+    const tags = Array.from({ length: 101 }, (_, i) => `tag-${i}`);
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+        adapter.revalidateTag(tags),
+      ),
+    ).rejects.toThrow("Workers Cache purge failed: 1134: Unable to purge, rate limit reached");
+    expect(purge).toHaveBeenCalledTimes(2);
+  });
+
   it("surfaces a resolved Workers Cache purge failure", async () => {
     const purge = vi.fn(async () => ({
       errors: [{ code: 10000, message: "rate limited" }],
