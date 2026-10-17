@@ -46,7 +46,7 @@ Under `dynamicParams = false`, Next.js checks a request against the params its b
 
 ## Routing config
 
-vinext checks `redirects`, `rewrites` and `headers` sources and middleware matchers for patterns that could backtrack catastrophically on a crafted path, such as `/:id((?:a+)+b)`. Next.js accepts them. vinext skips such a source, warning when the config loads, and fails a middleware matcher. The check is conservative, so a few linear patterns with very long repeats are rejected too. It does not yet catch polynomial backtracking across several params, such as `/:a(.*)-:b(.*)-:c(.*)`.
+vinext checks `redirects`, `rewrites` and `headers` sources and middleware matchers for patterns that could backtrack catastrophically on a crafted path, such as `/:id((?:a+)+b)`. Next.js accepts them. vinext skips such a source, warning when the config loads, and fails a middleware matcher. The check is conservative, so a few linear patterns with very long repeats are rejected too. Backtracking that grows faster than quadratically, as across three `(.*)` params in `/:a(.*)-:b(.*)-:c(.*)`, counts as catastrophic; a quadratic pattern such as `/:a(.*)-:b(.*)` is accepted.
 
 ## Compatibility
 

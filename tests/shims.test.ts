@@ -9671,7 +9671,8 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
+        // Unbounded repeats get the exact automaton verdict.
+        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
       });
     }
 
@@ -9796,7 +9797,7 @@ describe("middleware matcher patterns", () => {
 
     expect(compileMiddlewareMatcherPattern("/:a(a+):b(a+):c(a+)")).toMatchObject({
       kind: "unsafe",
-      error: expect.stringContaining("overlapping sequential repetition"),
+      error: expect.stringContaining("polynomially ambiguous repetition"),
     });
     for (const matcher of [
       "/:a(a+):b(a+)",
@@ -9878,9 +9879,262 @@ describe("middleware matcher patterns", () => {
       // `g` captured `a`, so `(?!ab)` does not apply where it is compared.
       `/:x((?<g>${"(?!ab)a"})c)/:id(\\k<g>?a?b)+`,
       "/:id(x(?:(?!ê|x)é|é))+",
+      // A capture in another param is read in the whole source, here `a`.
+      "/:a(a)/:id((?:\\1|a)+)",
+      "/:a(a)/:id(\\1(?:a*)*)",
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({ kind: "unsafe" });
     }
+  });
+
+  it("rejects polynomial blowups that a shared mandatory atom does not separate", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // `[ab]*` can read the literal `a` between the repeats, so a near miss
+    // splits across all three: cubic time.
+    for (const matcher of [
+      "/:id([ab]*a[ab]*a[ab]*)X",
+      "/:a([^/]*)-:b([^/]*)-:c([^/]*)x",
+      "/:id(a+.a+.a+)",
+      // `\2` reads another param's capture, any run of `a`, 20 times.
+      "/:a((?<x>a+)):b(\\2{20})X",
+    ]) {
+      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
+        kind: "unsafe",
+        error: expect.stringContaining("polynomially ambiguous repetition"),
+      });
+    }
+    for (const pattern of [
+      "[ab]*a[ab]*a[ab]*",
+      "(.*)-(.*)-(.*)",
+      "[\\w.]+\\.[\\w.]+\\.[\\w.]+!",
+      // Too long to unroll, so read as loops.
+      "[ab]{0,20000}a[ab]{0,20000}a[ab]{0,20000}X",
+      // Short enough to unroll, but each near miss still takes cubic time.
+      "[ab]{0,500}a[ab]{0,500}a[ab]{0,500}X",
+    ]) {
+      expect(isSafeRegex(pattern), pattern).toBe(false);
+    }
+  });
+
+  it("accepts nested repeats whose loops never share text", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    const slug = "[a-z0-9]+(?:-[a-z0-9]+)*";
+    expect(isSafeRegex(slug)).toBe(true);
+    expect(isSafeRegex("(?:[a-z0-9]+-){1,1000}x")).toBe(true);
+    for (const matcher of [`/:slug(${slug})`, `/blog/:slug(${slug})/:page(\\d+)?`]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      const start = performance.now();
+      compiled.regexp!.test(`/${"a1-".repeat(5_000)}-`);
+      compiled.regexp!.test(`/blog/${"a-".repeat(8_000)}!`);
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    expect(compileMiddlewareMatcherPattern(`/:slug(${slug})`).regexp!.test("/my-first-post")).toBe(
+      true,
+    );
+  });
+
+  it("analyzes lookaround bodies and three-way character intersections", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
+
+    // The engine runs a lookaround body wherever it is reached, so a
+    // catastrophic repeat inside one is as dangerous as one outside.
+    // Built from parts so static ReDoS scanners do not flag the fixtures.
+    const [aPlus, aOrAa] = ["(?:a+)", "(?:a|aa)"];
+    expect(analyzeRegexSafety(`(?=${aPlus}+X)a*`)).toBe("exponentially ambiguous repetition");
+    expect(analyzeRegexSafety(`(?!${aOrAa}+$)x`)).toBe("exponentially ambiguous repetition");
+    expect(isSafeRegex("(?=.*foo)")).toBe(true);
+    // A body outside any repeat runs once per match attempt, so it may be
+    // quadratic like the rest of the pattern. Under a repeat it may run at
+    // every position, so it must be linear.
+    expect(isSafeRegex("(?=[^/]+.*X)")).toBe(true);
+    expect(isSafeRegex("(?:(?=[^/]+.*X).)*")).toBe(false);
+    expect(isSafeRegex("(?=.*a.*a.*b)")).toBe(false);
+    expect(isSafeRegex("^(?=a*a*X)")).toBe(true);
+    // Backtracking through text of varying length reaches a lookaround at
+    // each position, and each path to a position runs it again.
+    const [quadratic, linear] = ["a*a*X", "a*X"];
+    expect(analyzeRegexSafety(`^a*(?=${quadratic})$`)).toBe("polynomially ambiguous repetition");
+    expect(analyzeRegexSafety(`^a*a*(?=${linear})$`)).toBe("polynomially ambiguous repetition");
+    expect(analyzeRegexSafety(`(?:(?=${quadratic})a+){2}`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety(`^a*(?=${linear})$`)).toBeNull();
+    // A few positions only multiply the body's cost by a constant.
+    expect(analyzeRegexSafety(`(?:(?=${quadratic})a){2}`)).toBeNull();
+    expect(analyzeRegexSafety(`^a{0,3}(?=${quadratic})`)).toBeNull();
+    // A lookbehind reads right to left, so there a lookahead before a repeat
+    // runs after each way through it, and one after the repeat runs once.
+    expect(analyzeRegexSafety(`(?<=(?=a[ab]*[ab]*X)(?:ab*)*)$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety(`(?<=(?:ab*)*(?=a[ab]*[ab]*X))$`)).toBeNull();
+    // `(?!a)` guards the `a+` after it only when read left to right.
+    expect(analyzeRegexSafety("(?:(?!a)a+a+|a)+$")).toBeNull();
+    expect(analyzeRegexSafety("$(?<=(?:(?!a)a+a+|a)+)")).toBe("exponentially ambiguous repetition");
+    // An empty iteration ends a repeat, so a zero-width one runs once.
+    expect(analyzeRegexSafety(`^(?:(?=${quadratic}))+$`)).toBeNull();
+    // Only the lengths the text before it can have count, here 1 and 100.
+    expect(analyzeRegexSafety(`^(?:a|b{100})(?=${quadratic})a*$`)).toBeNull();
+    expect(analyzeRegexSafety(`^(?:a|b{2,40})(?=${quadratic})a*$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    // Alternatives that start differently never both match, so this reads
+    // any text one way.
+    expect(
+      analyzeRegexSafety(`^(?:a|bb)(?:c|dd)(?:e|ff)(?:g|hh)(?:i|jj)(?=${quadratic})a*$`),
+    ).toBeNull();
+    // However many there are.
+    const characters = Array.from({ length: 257 }, (_, index) =>
+      String.fromCharCode(0x100 + index),
+    );
+    expect(analyzeRegexSafety(`^(?:${characters.join("|")})(?=${quadratic})a*$`)).toBeNull();
+    // 32 combinations, but at most three can start one text.
+    expect(
+      analyzeRegexSafety(`^(?:a|ab)(?:b|bc)(?:c|cd)(?:d|de)(?:e|ef)(?=${quadratic})a*$`),
+    ).toBeNull();
+    // These read a run of `a` 256 and 32 ways, each running the body again,
+    // although they end at only nine positions and one.
+    expect(analyzeRegexSafety(`^${"(?:a|aa)".repeat(8)}(?=${quadratic})a*$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety(`^${"(?:a|a)".repeat(5)}(?=${quadratic})a*$`)).toBe(
+      "polynomially ambiguous repetition",
+    );
+    expect(analyzeRegexSafety("^(?:/(en|de))?/((?!api|_next|.*\\..*).*)$")).toBeNull();
+
+    // `[ab]`, `[ac]` and `[bc]` overlap pairwise, but no one character is in
+    // all three, so the loops cannot share a word.
+    const pattern = "[ab]*[ac][bc]*[bd][cd]*X";
+    expect(isSafeRegex(pattern)).toBe(true);
+    const start = performance.now();
+    new RegExp(`^(?:${pattern})$`).test(`${"b".repeat(5_000)}a${"c".repeat(5_000)}!`);
+    expect(performance.now() - start).toBeLessThan(500);
+
+    // Each guarded loop is `\S*`, so neither can read a separating `\s`,
+    // ASCII or not.
+    const notSpace = "(?:(?!\\s)[\\s\\S])*";
+    expect(isSafeRegex(`${notSpace}\\s${notSpace}\\s${notSpace}X`)).toBe(true);
+    expect(isSafeRegex("[\\s\\S]*\\s[\\s\\S]*\\s[\\s\\S]*X")).toBe(false);
+  });
+
+  it("accepts the next-intl middleware matchers", async () => {
+    const { compileMiddlewareMatcherPattern } =
+      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+
+    // next-intl's documented matchers skip paths with a dot through a
+    // quadratic lookahead that runs once per match.
+    for (const matcher of [
+      "/((?!api|trpc|_next|_vercel|.*\\..*).*)",
+      "/((?!_next|.*/opengraph-image|.*\\..*).*)",
+    ]) {
+      const compiled = compileMiddlewareMatcherPattern(matcher);
+      expect(compiled.regexp, matcher).toBeInstanceOf(RegExp);
+      expect(compiled.regexp!.test("/en/about"), matcher).toBe(true);
+      expect(compiled.regexp!.test("/favicon.ico"), matcher).toBe(false);
+      const start = performance.now();
+      for (const pathname of [
+        `/${"a".repeat(16_000)}`,
+        `/${"a/".repeat(8_000)}`,
+        `/${".".repeat(16_000)}`,
+      ]) {
+        compiled.regexp!.test(pathname);
+      }
+      expect(performance.now() - start, matcher).toBeLessThan(500);
+    }
+    expect(compileMiddlewareMatcherPattern("/((?!.*a.*a.*b).*)")).toMatchObject({
+      kind: "unsafe",
+      error: expect.stringContaining("polynomially ambiguous repetition"),
+    });
+  });
+
+  it("keeps analysis cheap for long alternations", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { analyzeRegexSafety } = await import("../packages/vinext/src/utils/regex-safety.js");
+
+    const words = Array.from({ length: 300 }, (_, i) => `item-${String(i).padStart(4, "0")}`);
+    expect(isSafeRegex(`^(?:${words.join("|")})$`)).toBe(true);
+
+    const characters = Array.from({ length: 2_000 }, (_, i) => String.fromCharCode(0x4e00 + i));
+    let start = performance.now();
+    expect(analyzeRegexSafety(`(?:${characters.join("|")}){16000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    start = performance.now();
+    analyzeRegexSafety(Array.from({ length: 3_000 }, () => "c*c*").join("|"));
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    start = performance.now();
+    analyzeRegexSafety(`(?:${Array.from({ length: 16_000 }, () => "\\w").join("|")})?`);
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Every lookaround body draws on one budget, so many bodies cannot each
+    // spend a full one.
+    const lookahead = `(?=(?:${Array.from({ length: 700 }, () => "a").join("|")})?)`;
+    start = performance.now();
+    expect(analyzeRegexSafety(lookahead.repeat(20))).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(2_000);
+
+    // A long guard that every iteration restarts.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${"a".repeat(4_000)}b).)*`)).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Copies of one guard share its characters.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${"a|".repeat(8_000)}a).){0,2000}`)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Each step compares the characters a guard checks with the exclusions.
+    const word = Array.from({ length: 5_000 }, (_, index) => String.fromCharCode(0x4e00 + index));
+    const exclusions = Array.from({ length: 5_000 }, (_, index) =>
+      String.fromCharCode(0x100 + index),
+    );
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?!${word.join("")}).(?!${exclusions.join("|")}).)*`)).toBe(
+      "analysis budget exceeded",
+    );
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Each reference is checked against the pattern's own captures once.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(a)${"\\1".repeat(32_700)}?`)).not.toBeNull();
+    expect(performance.now() - start).toBeLessThan(1_000);
+
+    // Copies of empty lookarounds add no positions but still take time.
+    start = performance.now();
+    expect(analyzeRegexSafety(`(?:(?:${"(?=)".repeat(4_000)}a){16000})*X`)).not.toBeNull();
+    expect(performance.now() - start).toBeLessThan(2_000);
+
+    // A large loop of product states is read without spreading it into one
+    // call.
+    start = performance.now();
+    expect(analyzeRegexSafety("(?:a{499})*|(?:a{503})*")).toBe("analysis budget exceeded");
+    expect(performance.now() - start).toBeLessThan(2_000);
+  });
+
+  it("reads `.` as matching line terminators under the s flag", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    expect(isSafeRegex("(.*\\n)+X")).toBe(true);
+    expect(isSafeRegex("(.*\\n)+X", "s")).toBe(false);
+    expect(isSafeRegex("a.*b", "s")).toBe(true);
+  });
+
+  it("does not vouch for Unicode-mode patterns", async () => {
+    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
+
+    // Under `u`, `\p{ASCII}` is one class, which the analyzer does not parse.
+    expect(isSafeRegex("(?:\\p{ASCII}+)+Z", "u")).toBe(false);
+    expect(isSafeRegex("abc", "v")).toBe(false);
+    expect(isSafeRegex("abc", "i")).toBe(true);
   });
 
   it("handles fixed-width nested repeats and simple class intersections", async () => {
@@ -9916,7 +10170,8 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
+        // Unbounded repeats get the exact automaton verdict.
+        error: expect.stringMatching(/ambiguous alternatives|exponentially ambiguous repetition/),
       });
     }
   });
@@ -9974,7 +10229,9 @@ describe("middleware matcher patterns", () => {
     ]) {
       expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
         kind: "unsafe",
-        error: expect.stringContaining("overlapping sequential repetition"),
+        error: expect.stringMatching(
+          /overlapping sequential repetition|polynomially ambiguous repetition/,
+        ),
       });
     }
     // A case-sensitive `(?!A)` lets "a" through even though `(?i:...)`
@@ -13966,9 +14223,12 @@ describe("isSafeRegex", () => {
 
   it("rejects bounded outer repetition around an unbounded inner atom", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+){2}")).toBe(false);
+    // Three or more copies chain their overlapping loops: cubic or worse.
+    expect(isSafeRegex("(a+){3}")).toBe(false);
     expect(isSafeRegex("(a+){2,4}")).toBe(false);
     expect(isSafeRegex("(a+){10}")).toBe(false);
+    // Two copies are one overlapping pair, quadratic like `(?:a+)(?:a+)`.
+    expect(isSafeRegex("(a+){2}")).toBe(true);
   });
 
   it("accepts quantifier on group without inner quantifier", async () => {
@@ -13992,21 +14252,17 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("([+*])+")).toBe(true);
   });
 
-  it("rejects nested optional quantifiers: (a?)+", async () => {
+  it("accepts an optional atom under an unbounded repeat", async () => {
     const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // '?' inside group + quantifier on group = catastrophic backtracking
-    expect(isSafeRegex("(a?)+")).toBe(false);
-    expect(isSafeRegex("(a?)+b")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (.?)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(.?)+")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (a?)*", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a?)*")).toBe(false);
+    // The engine never repeats an empty iteration past the minimum, so each
+    // character is one iteration's `a`: linear, not catastrophic.
+    for (const pattern of ["(a?)+", "(a?)+b", "(.?)+", "(a?)*"]) {
+      expect(isSafeRegex(pattern), pattern).toBe(true);
+      const regexp = new RegExp(`^(?:${pattern})$`);
+      const start = performance.now();
+      regexp.test(`${"a".repeat(20_000)}!`);
+      expect(performance.now() - start, pattern).toBeLessThan(500);
+    }
   });
 
   it("accepts outer '?' on group (zero-or-one is not unbounded repetition)", async () => {
@@ -14031,6 +14287,13 @@ describe("isSafeRegex", () => {
     expect(isSafeRegex("^(a)\\1+$")).toBe(true);
     expect(isSafeRegex("^(?<x>a)\\k<x>+$")).toBe(true);
     expect(isSafeRegex("^(?:(a)b)+\\1+$")).toBe(true);
+    // A reference before its group reads nothing, and the rest is still
+    // analyzed, however the name is spelled.
+    expect(isSafeRegex("^\\k<x>(?<x>[ab]*a[ab]*a[ab]*)X$")).toBe(false);
+    expect(isSafeRegex("^\\k<a>(?<\\u0061>[ab]*a[ab]*a[ab]*)X$")).toBe(false);
+    // A lookbehind matches right to left, so there `\k<x>` runs before `x`
+    // takes part and reads nothing, leaving `(?:a*)+`.
+    expect(isSafeRegex("(?<=(?<x>b)(?:a*\\k<x>)+)$")).toBe(false);
     // A capture that may not take part leaves the backreference reading
     // nothing, so both alternatives read `a`.
     for (const pattern of [

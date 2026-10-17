@@ -978,6 +978,15 @@ describe("config sources do not backtrack catastrophically", () => {
     "/:id((?!(?:))a)",
     // `(?!a)` rules out the first copy of `a+`, so only `b+` can match.
     "/{a:id((?:(?!a)a+|b+))}+",
+    // Slugs: each `-` starts a new word, so the loops never share text.
+    "/:slug([a-z0-9]+(?:-[a-z0-9]+)*)",
+    "/blog/:slug([a-z0-9]+(?:-[a-z0-9]+)*)/:page(\\d+)?",
+    "/:id(\\d+-\\d+-\\d+)",
+    // A suffix-free alternation under a repeat has one parse per text.
+    "/:id((?:a|ab)+)",
+    // The engine never repeats an empty iteration, so `(a?)+` reads one
+    // "a" per iteration.
+    "/:id((?:a?)+)",
   ];
   const ADVERSARIAL_PATHNAMES = [
     "/" + "a/".repeat(8_000) + "!",
@@ -1001,6 +1010,9 @@ describe("config sources do not backtrack catastrophically", () => {
     "/" + "a/b/".repeat(4_000) + "!",
     "/" + "ab".repeat(8_000) + "!",
     "/x" + "--a".repeat(5_000) + "-!",
+    "/" + "a1-".repeat(5_000) + "-",
+    "/blog/" + "a-".repeat(8_000) + "!",
+    "/" + "1-".repeat(8_000) + "!",
   ];
 
   it("accepts sources whose compiled regexes are linear", () => {
@@ -1061,6 +1073,13 @@ describe("config sources do not backtrack catastrophically", () => {
         "/:id(a(?i:a+)(?i:a+)(?i:a+))",
         "/:id(\\141+\\141+\\141+)",
         "/:a((?i:a+)):b((?-i:a+)):c((?i:a+))",
+        // A mandatory atom the repeats around it can also read does not
+        // separate them: each near miss splits across all three.
+        "/:id([ab]*a[ab]*a[ab]*)X",
+        "/:a([^/]*)-:b([^/]*)-:c([^/]*)x",
+        "/:id(a+.a+.a+)",
+        // So does a fixed count of an overlapping repeat.
+        "/:id((?:a+){3})",
         // `(?-i:(?!A))` lets "a" through, so both alternatives read it.
         "/:id((?:(?-i:(?!A)a+)|a+))+",
         // A guard that leaves both alternatives able to read "a".

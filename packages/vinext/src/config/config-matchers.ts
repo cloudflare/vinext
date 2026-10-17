@@ -293,16 +293,24 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
 /**
  * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
  *
- * Uses the same deterministic structural analysis as middleware matcher
- * validation. Nested bounded repetition is accepted only when its repeated
- * language has fixed width and unambiguous branches; a fixed outer count can
- * otherwise still cause polynomially catastrophic backtracking on long near
- * misses.
+ * Uses the same analysis as middleware matcher validation: the pattern's
+ * position automaton is checked for exponential ambiguity and for chains of
+ * ambiguously split loops, and bounded repeats, which unroll without forming
+ * loops, for alternatives or optional parts that multiply the paths.
  *
- * Returns true if the pattern appears safe, false if it's potentially dangerous.
+ * Returns true if the pattern appears safe, false if it's potentially dangerous
+ * or uses the `u` or `v` flag.
  */
 export function isSafeRegex(pattern: string, flags?: string): boolean {
-  return analyzeRegexSafety(pattern, { ignoreCase: flags?.includes("i") }) === null;
+  // The analyzer does not model Unicode-mode syntax such as `\p{…}` or `v`
+  // class sets, so it cannot vouch for those patterns.
+  if (flags?.includes("u") || flags?.includes("v")) return false;
+  return (
+    analyzeRegexSafety(pattern, {
+      ignoreCase: flags?.includes("i"),
+      dotAll: flags?.includes("s"),
+    }) === null
+  );
 }
 
 /**

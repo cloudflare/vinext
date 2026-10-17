@@ -9,7 +9,7 @@
  */
 type RegexNode =
   | { kind: "atom"; symbol: RegexSymbol | null; fixedWidth: boolean }
-  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean }
+  | { kind: "assertion"; child: RegexNode; negativeLookahead?: boolean; lookbehind?: boolean }
   | { kind: "sequence"; children: RegexNode[] }
   | { kind: "alternation"; branches: RegexNode[] }
   | { kind: "repeat"; child: RegexNode; min: number; max: number };
@@ -34,6 +34,7 @@ export type RegexSafetyIssue =
   | "ambiguous sequence expansion"
   | "overlapping sequential repetition"
   | "exponentially ambiguous repetition"
+  | "polynomially ambiguous repetition"
   | "analysis budget exceeded";
 
 const MAX_NODES = 16_384;
@@ -44,6 +45,13 @@ const MAX_WORD_SYMBOLS = 32_768;
 const MAX_OPAQUE_COMPARISONS = 4_096;
 const MAX_SEQUENCE_EXPANSIONS = 256;
 const MAX_SAFE_OVERLAPPING_VARIABLE_BOUNDARIES = 1;
+// One ambiguous pair of loops, such as `[^/]+.*`, makes a near miss take
+// quadratic time; a chain of two, such as `a+.*a+`, cubic.
+const MAX_POLYNOMIAL_DEGREE = 1;
+// A lookaround the engine can reach at no more than this many positions per
+// match attempt, as after `(?:/(en|de))?` or in `(?:(?=…).){2}`, costs a
+// constant factor more than one run.
+const MAX_FIXED_ASSERTION_POSITIONS = 16;
 // Above Next.js's 4096-character source limit, plus room for unrolled repeats.
 const MAX_POSITIONS = 16_384;
 // When unrolling every repeat exceeds a budget, repeats past this many
@@ -54,7 +62,17 @@ const MAX_AUTOMATON_EDGES = 262_144;
 // whose copies may be skipped, such as `a{0,16384}`, copies ever larger
 // first and last sets.
 const MAX_AUTOMATON_WORK = 4_000_000;
-const MAX_PRODUCT_EDGES = 500_000;
+// Each product state the search reaches keeps about 200 bytes of
+// bookkeeping, so this holds one search to roughly 25 MB.
+const MAX_PRODUCT_EDGES = 131_072;
+// Pending guards read and copied while expanding lookahead guards, each of
+// which costs far more than an automaton edge.
+const MAX_GUARD_WORK = 262_144;
+// One analysis may build several automata: an exact pass, a pass that reads
+// long repeats as loops, and one per lookaround body. These cap their total,
+// at what the two passes over the whole pattern may spend.
+const MAX_TOTAL_AUTOMATON_WORK = 2 * MAX_AUTOMATON_WORK;
+const MAX_TOTAL_PRODUCT_EDGES = 4 * MAX_PRODUCT_EDGES;
 // Follow lists longer than this are indexed by character for the product.
 const MAX_UNINDEXED_FOLLOW = 16;
 
@@ -229,16 +247,27 @@ class RegexParser {
   private readonly optionalGroups = new Set<number>();
   /** Each group name's capture, or undefined when several groups share it. */
   private readonly groupNames = new Map<string, number | undefined>();
+  /**
+   * Whether a backreference names a group outside `pattern`, from a part of
+   * the compiled RegExp that `pattern` does not hold.
+   */
+  referencesOuterGroup = false;
+  /** How many lookbehinds enclose the current term. */
+  private lookbehinds = 0;
+  private readonly localCaptures: number;
 
   constructor(
     private readonly pattern: string,
     ignoreCase: boolean,
     private readonly namedGroups: boolean,
+    dotAll = false,
     private readonly context: CaptureContext = { before: 0, total: countCapturingGroups(pattern) },
   ) {
+    this.dotAll = dotAll;
     this.ignoreCase = ignoreCase || hasScopedIgnoreCase(pattern);
     this.scopeIgnoreCase = ignoreCase;
     this.captures = context.total;
+    this.localCaptures = context.before === 0 ? context.total : countCapturingGroups(pattern);
   }
 
   parse(): RegexNode {
@@ -337,7 +366,12 @@ class RegexParser {
    * are not replayed. An open or unknown group may have captured any text.
    */
   private backreference(group: number | undefined): RegexNode {
-    const body = group === undefined || this.skippedGroup ? undefined : this.groups[group];
+    // A lookbehind matches right to left, so which groups have taken part
+    // there does not follow source order.
+    const body =
+      group === undefined || this.skippedGroup || this.lookbehinds > 0
+        ? undefined
+        : this.groups[group];
     const characters = body && capturedCharacters(body);
     if (!body || characters === null) {
       return this.node({ kind: "atom", symbol: null, fixedWidth: false });
@@ -377,6 +411,7 @@ class RegexParser {
     let negativeLookahead = false;
     let negativeAssertion = false;
     let capture = false;
+    let lookbehind = false;
     const outerDotAll = this.dotAll;
     const outerIgnoreCase = this.scopeIgnoreCase;
     const outerFolded = this.foldedCaseSensitive;
@@ -403,6 +438,7 @@ class RegexParser {
         (this.pattern[this.index + 2] === "=" || this.pattern[this.index + 2] === "!")
       ) {
         assertion = true;
+        lookbehind = true;
         negativeAssertion = this.pattern[this.index + 2] === "!";
         this.index += 3;
       } else if (marker === "<") {
@@ -427,7 +463,9 @@ class RegexParser {
     this.foldedCaseSensitive = false;
     const before = this.captureIndex;
     const captureNumber = capture ? ++this.captureIndex : 0;
+    if (lookbehind) this.lookbehinds++;
     const child = this.parseAlternation();
+    if (lookbehind) this.lookbehinds--;
     // Groups in a negative assertion never keep a capture.
     if (negativeAssertion) this.markGroupsOptional(before);
     if (this.pattern[this.index] === ")") this.index++;
@@ -443,7 +481,7 @@ class RegexParser {
     if (negativeLookahead && folded) {
       return this.node({ kind: "assertion", child: this.node({ kind: "sequence", children: [] }) });
     }
-    return this.node({ kind: "assertion", child, negativeLookahead });
+    return this.node({ kind: "assertion", child, negativeLookahead, lookbehind });
   }
 
   private skipGroup(): void {
@@ -506,6 +544,11 @@ class RegexParser {
       const nameEnd = this.pattern.indexOf(">", this.index);
       const name = nameEnd === -1 ? "" : this.pattern.slice(this.index + 1, nameEnd);
       this.index = nameEnd === -1 ? this.pattern.length : nameEnd + 1;
+      // Only a fragment, placed by its context, can name a group outside it.
+      // A whole pattern's unknown name is a group later in it.
+      if (!this.groupNames.has(name) && this.context.before > 0) {
+        this.referencesOuterGroup = true;
+      }
       return this.backreference(this.groupNames.get(name));
     }
     let literal: string | null = null;
@@ -514,7 +557,11 @@ class RegexParser {
       if (escaped !== "0" && Number(escaped + digits) <= this.captures) {
         this.index += digits.length;
         // A group outside `pattern` is unknown here.
-        return this.backreference(Number(escaped + digits) - this.context.before);
+        const group = Number(escaped + digits) - this.context.before;
+        if (group < 1 || group > this.localCaptures) {
+          this.referencesOuterGroup = true;
+        }
+        return this.backreference(group);
       }
       // Annex B: otherwise `\8` and `\9` are literal digits and `\0`-`\7`
       // start a legacy octal escape of up to three digits, at most `\377`.
@@ -618,14 +665,14 @@ class RegexParser {
  */
 function lookaheadCharacters(node: RegexNode): RegexSymbol[] | null {
   const branches = node.kind === "alternation" ? node.branches : [node];
-  const characters: RegexSymbol[] = [];
+  const characters = new Map<string, RegexSymbol>();
   for (const branch of branches) {
     if (branch.kind !== "atom") return null;
     const symbol = branch.symbol;
     if (symbol?.kind !== "literal" && symbol?.kind !== "class") return null;
-    characters.push(symbol);
+    characters.set(symbol.key, symbol);
   }
-  return characters;
+  return [...characters.values()];
 }
 
 /**
@@ -751,18 +798,37 @@ function exactWidth(node: RegexNode): number | null {
   }
 }
 
-function containsConsumingRepetition(node: RegexNode): boolean {
+/** Whether `node`, lookaround bodies included, holds a repeat such as `a?`, `a{0,500}` or `a*`. */
+function containsVariableRepetition(node: RegexNode): boolean {
   switch (node.kind) {
     case "atom":
       return false;
     case "assertion":
+      return containsVariableRepetition(node.child);
+    case "sequence":
+      return node.children.some(containsVariableRepetition);
+    case "alternation":
+      return node.branches.some(containsVariableRepetition);
+    case "repeat":
+      return node.min !== node.max || containsVariableRepetition(node.child);
+  }
+}
+
+/** Whether `node` holds a repeat with a finite range, such as `a?` or `a{1,3}`. */
+function containsBoundedVariableRepetition(node: RegexNode): boolean {
+  switch (node.kind) {
+    case "atom":
+    case "assertion":
       return false;
     case "sequence":
-      return node.children.some(containsConsumingRepetition);
+      return node.children.some(containsBoundedVariableRepetition);
     case "alternation":
-      return node.branches.some(containsConsumingRepetition);
+      return node.branches.some(containsBoundedVariableRepetition);
     case "repeat":
-      return node.min !== 1 || node.max !== 1 || containsConsumingRepetition(node.child);
+      return (
+        (node.min !== node.max && Number.isFinite(node.max)) ||
+        containsBoundedVariableRepetition(node.child)
+      );
   }
 }
 
@@ -1187,7 +1253,12 @@ function findSafetyIssue(node: RegexNode): RegexSafetyIssue | null {
       }
       return null;
     case "repeat": {
-      const nestedRepetition = containsConsumingRepetition(node.child);
+      // An unbounded repeat is a loop of the position automaton, whose
+      // ambiguity analyzeNodeAmbiguity measures exactly. A bounded one is
+      // unrolled into copies, which can still multiply the paths through a
+      // near miss without forming a loop.
+      if (!Number.isFinite(node.max)) return findSafetyIssue(node.child);
+      const nestedRepetition = containsBoundedVariableRepetition(node.child);
       if (node.max > 1 && nestedRepetition && exactWidth(node.child) === null) {
         return "nested repetition";
       }
@@ -1229,6 +1300,9 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
   }
 }
 
+/** The flags of the RegExp a pattern compiles to that change what it matches. */
+type RegexAnalysisOptions = { ignoreCase?: boolean; dotAll?: boolean; namedGroups?: boolean };
+
 /**
  * Only analyzeRegexSafety's check for chains of overlapping variable repeats
  * in a sequence. For a RegExp compiled from separately checked parts, where
@@ -1236,13 +1310,14 @@ function findRepetitionChainDeep(node: RegexNode): RegexSafetyIssue | null {
  */
 export function analyzeRegexRepetitionChains(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: RegexAnalysisOptions = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
   );
   const node = parser.parse();
   if (parser.exceededBudget) return "analysis budget exceeded";
@@ -1277,22 +1352,34 @@ export function mayHaveNamedGroups(pattern: string): boolean {
 
 /**
  * `namedGroups` must describe the whole compiled RegExp when `pattern` is only
- * a fragment of it. It defaults to scanning `pattern` itself.
+ * a fragment of it. It defaults to scanning `pattern` itself. A fragment that
+ * refers back to a group outside it is not checked for ambiguity, so the
+ * caller must also check the whole RegExp, as unsafePathTokensReason does.
  */
 export function analyzeRegexSafety(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean; captures?: CaptureContext } = {},
+  options: RegexAnalysisOptions & { captures?: CaptureContext } = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
     options.captures,
   );
   const node = parser.parse();
-  if (parser.exceededBudget) return "analysis budget exceeded";
-  return findSafetyIssue(node);
+  if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  // Without a variable repeat `node` is a finite list of fixed-length words,
+  // which the structural checks cover. Long literal lists would only spend
+  // the automaton's budget. A group outside `pattern` captures text unknown
+  // here, which the caller's check of the whole RegExp models instead.
+  return (
+    findSafetyIssue(node) ??
+    (containsVariableRepetition(node) && !parser.referencesOuterGroup
+      ? analyzeNodeAmbiguity(node)
+      : null)
+  );
 }
 
 export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = false): boolean {
@@ -1311,7 +1398,51 @@ export function regexAtomsMayOverlap(left: string, right: string, ignoreCase = f
   return symbolsMayOverlap(leftSymbol, rightSymbol);
 }
 
+/**
+ * One symbol for an alternation of distinct single characters, `(?:a|b|c)`,
+ * whose branches never read the same character, so it has a single path for
+ * each like a class does. Its states then take one position instead of one
+ * per branch, which a repeat would connect pairwise. Non-ASCII characters
+ * become an opaque class, matched case-insensitively, which only adds
+ * overlaps.
+ */
+const singleCharacterAlternations = new WeakMap<RegexNode, RegexSymbol | null>();
+
+function singleCharacterAlternationSymbol(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+): RegexSymbol | null {
+  let symbol = singleCharacterAlternations.get(node);
+  if (symbol === undefined) {
+    symbol = buildSingleCharacterAlternationSymbol(node);
+    singleCharacterAlternations.set(node, symbol);
+  }
+  return symbol;
+}
+
+function buildSingleCharacterAlternationSymbol(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+): RegexSymbol | null {
+  const literals = new Map<string, string>();
+  for (const branch of node.branches) {
+    if (branch.kind !== "atom" || branch.symbol?.kind !== "literal") return null;
+    if (literals.has(branch.symbol.key)) return null;
+    literals.set(branch.symbol.key, branch.symbol.value);
+  }
+  const keys = [...literals.keys()];
+  if (keys.every((key) => key.charCodeAt(0) <= 0x7f)) {
+    return createClassSymbol(new Set(keys), "none");
+  }
+  const characters = [...literals.values()]
+    .map((value) => (/[\\\]^-]/.test(value) ? `\\${value}` : value))
+    .join("");
+  const pattern = `[${characters}]`;
+  return { kind: "opaque", key: `opaque:i:${pattern}`, pattern, ignoreCase: true };
+}
+
 // Path counts saturate at two: two distinct paths are enough for ambiguity.
+/** Work spent so far across every automaton one analysis builds. */
+type AnalysisBudget = { automatonWork: number; productEdges: number };
+
 type PathCounts = Map<number, number>;
 type PositionFragment = { first: PathCounts; last: PathCounts; empty: number };
 
@@ -1356,8 +1487,16 @@ class PositionAutomaton {
   private edgeCount = 0;
   private work = 0;
   private readonly sizes = new WeakMap<RegexNode, number>();
+  /** Each guarding lookahead's characters or literal word, shared by copies. */
+  private readonly lookaheads = new WeakMap<
+    RegexNode,
+    { characters: RegexSymbol[] | null; word: RegexSymbol[] | null }
+  >();
 
-  constructor(private readonly maxUnrolledRepeat: number) {}
+  constructor(
+    private readonly maxUnrolledRepeat: number,
+    private readonly budget: AnalysisBudget,
+  ) {}
 
   build(node: RegexNode): void {
     const fragment = this.fragment(node);
@@ -1389,9 +1528,35 @@ class PositionAutomaton {
     return { first: new Map([[position, 1]]), last: new Map([[position, 1]]), empty: 0 };
   }
 
+  private lookaheadGuard(lookahead: RegexNode): {
+    characters: RegexSymbol[] | null;
+    word: RegexSymbol[] | null;
+  } {
+    let guard = this.lookaheads.get(lookahead);
+    if (guard) return guard;
+    const characters = lookaheadCharacters(lookahead);
+    let word: RegexSymbol[] | null = null;
+    if (
+      !characters &&
+      lookahead.kind === "sequence" &&
+      lookahead.children.length > 1 &&
+      lookahead.children.every((part) => part.kind === "atom" && part.symbol?.kind === "literal")
+    ) {
+      word = lookahead.children.map(
+        (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
+      );
+    }
+    guard = { characters, word };
+    this.lookaheads.set(lookahead, guard);
+    return guard;
+  }
+
   private spend(work: number): void {
     this.work += work;
-    if (this.work > MAX_AUTOMATON_WORK) this.exceeded = true;
+    this.budget.automatonWork += work;
+    if (this.work > MAX_AUTOMATON_WORK || this.budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) {
+      this.exceeded = true;
+    }
   }
 
   private connect(from: PathCounts, to: PathCounts): void {
@@ -1435,7 +1600,9 @@ class PositionAutomaton {
         size = node.children.reduce((total, child) => total + this.size(child), 0);
         break;
       case "alternation":
-        size = node.branches.reduce((total, branch) => total + this.size(branch), 0);
+        size = singleCharacterAlternationSymbol(node)
+          ? 1
+          : node.branches.reduce((total, branch) => total + this.size(branch), 0);
         break;
       case "repeat": {
         const child = this.size(node.child);
@@ -1473,6 +1640,8 @@ class PositionAutomaton {
   }
 
   private fragment(node: RegexNode): PositionFragment {
+    // Copies of zero-width nodes add no positions, but still take time.
+    this.spend(1);
     if (this.exceeded) return { first: new Map(), last: new Map(), empty: 1 };
     switch (node.kind) {
       case "atom": {
@@ -1501,22 +1670,12 @@ class PositionAutomaton {
             guarded.symbol !== null &&
             guarded.fixedWidth
           ) {
+            const { characters, word } = this.lookaheadGuard(lookahead);
+            // Later steps check each of its characters for every copy.
+            this.spend((characters ?? word)?.length ?? 0);
             let position: number | null = null;
-            const characters = lookaheadCharacters(lookahead);
-            if (characters) {
-              position = this.position(guarded.symbol, characters);
-            } else if (
-              lookahead.kind === "sequence" &&
-              lookahead.children.length > 1 &&
-              lookahead.children.every(
-                (part) => part.kind === "atom" && part.symbol?.kind === "literal",
-              )
-            ) {
-              const word = lookahead.children.map(
-                (part) => (part as Extract<RegexNode, { kind: "atom" }>).symbol!,
-              );
-              position = this.position(guarded.symbol, [], word);
-            }
+            if (characters) position = this.position(guarded.symbol, characters);
+            else if (word) position = this.position(guarded.symbol, [], word);
             if (position !== null) {
               fragment = this.concat(fragment, this.single(position));
               if (next!.kind === "repeat") {
@@ -1532,6 +1691,8 @@ class PositionAutomaton {
         return fragment;
       }
       case "alternation": {
+        const merged = singleCharacterAlternationSymbol(node);
+        if (merged) return this.single(this.position(merged));
         const fragment: PositionFragment = { first: new Map(), last: new Map(), empty: 0 };
         for (const branch of node.branches) {
           const child = this.fragment(branch);
@@ -1588,7 +1749,10 @@ type AmbiguityGraph = {
  * split only at the characters a guard checks next, so every input still
  * takes as many paths as it does in the engine.
  */
-function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | null {
+function applyLookaheadGuards(
+  automaton: PositionAutomaton,
+  budget: AnalysisBudget,
+): AmbiguityGraph | null {
   const { excluded, follow, guards, symbols } = automaton;
   if (!guards.some((guard) => guard !== null)) {
     return { symbols, excluded, follow };
@@ -1601,6 +1765,7 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
   ];
   const ids = new Map<string, number>();
   const queue = [0];
+  let work = 0;
   const stateFor = (
     position: number,
     symbol: RegexSymbol | null,
@@ -1631,6 +1796,11 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
     const id = queue.pop()!;
     const { position, pending } = states[id]!;
     for (const target of follow[position]!) {
+      // Each target reads and copies the pending guards, so a long guard
+      // that every iteration restarts costs quadratic work.
+      work += pending.length + 1;
+      budget.automatonWork += pending.length + 1;
+      if (work > MAX_GUARD_WORK || budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) return null;
       const symbol = symbols[target]!;
       const guard = guards[target]!;
       const checked = new Map<string, RegexSymbol>();
@@ -1639,6 +1809,13 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
         checked.set(character.key, character);
       }
       if (guard) checked.set(guard[0]!.key, guard[0]!);
+      // Each checked character is compared with the target's exclusions,
+      // which are then copied with them.
+      const exclusions = excluded[target]!;
+      const scan = (checked.size + 1) * (exclusions.length + 1);
+      work += scan;
+      budget.automatonWork += scan;
+      if (work > MAX_GUARD_WORK || budget.automatonWork > MAX_TOTAL_AUTOMATON_WORK) return null;
 
       // Each checked character the symbol may read, then everything else.
       const parts: Array<{
@@ -1646,7 +1823,6 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
         character: string | null;
         without: RegexSymbol[];
       }> = [];
-      const exclusions = excluded[target]!;
       for (const character of checked.values()) {
         if (symbol !== null && !symbolsMayOverlap(symbol, character)) continue;
         if (exclusions.some((exclusion) => symbolsMayOverlap(exclusion, character))) continue;
@@ -1677,35 +1853,26 @@ function applyLookaheadGuards(automaton: PositionAutomaton): AmbiguityGraph | nu
   return graph;
 }
 
-/**
- * Whether two paths through the automaton can leave the same state and meet
- * again in it after reading the same text, by different states or by
- * parallel edges. Such a loop doubles the paths a backtracking engine tries
- * on each pass, so a near miss takes exponential time. This is the
- * exponential-ambiguity test of Allauzen, Mohri and Rastogi (2008): a
- * strongly connected component of the automaton's self-product holding both
- * a pair `(p, p)` and either a pair `(q, r)` with q != r or an edge from a
- * parallel pair. States unreachable from the start are never explored, and
- * dead ends are kept, since the engine explores those paths too.
- */
-function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
-  const { excluded, follow, symbols } = graph;
+// Whether `symbol` minus `without` may share a character with `other`.
+// Exact when `other` is a single character; conservative otherwise.
+function remainderMayOverlap(
+  symbol: RegexSymbol | null,
+  without: RegexSymbol[],
+  other: RegexSymbol | null,
+): boolean {
+  if (symbol == null || other == null) return true;
+  if (!symbolsMayOverlap(symbol, other)) return false;
+  return (
+    other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
+  );
+}
+
+/** Whether two states of `graph` may read the same character, memoized. */
+function stateOverlapChecker(graph: AmbiguityGraph): (left: number, right: number) => boolean {
+  const { excluded, symbols } = graph;
   const size = symbols.length;
-  // Whether `symbol` minus `without` may share a character with `other`.
-  // Exact when `other` is a single character; conservative otherwise.
-  const remainderMayOverlap = (
-    symbol: RegexSymbol | null,
-    without: RegexSymbol[],
-    other: RegexSymbol | null,
-  ): boolean => {
-    if (symbol == null || other == null) return true;
-    if (!symbolsMayOverlap(symbol, other)) return false;
-    return (
-      other.kind !== "literal" || !without.some((character) => symbolsMayOverlap(character, other))
-    );
-  };
   const overlaps = new Map<number, boolean>();
-  const symbolsOverlap = (left: number, right: number): boolean => {
+  return (left, right) => {
     const key = left < right ? left * size + right : right * size + left;
     let overlap = overlaps.get(key);
     if (overlap === undefined) {
@@ -1716,6 +1883,36 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     }
     return overlap;
   };
+}
+
+type ProductAnalysis =
+  | { exponential: true }
+  | {
+      exponential: false;
+      /** Pairs `[p, q]`, p != q, that two paths can occupy on a cycle. */
+      loopPairs: Array<[number, number]>;
+    };
+
+/**
+ * Whether two paths through the automaton can leave the same state and meet
+ * again in it after reading the same text, by different states or by
+ * parallel edges. Such a loop doubles the paths a backtracking engine tries
+ * on each pass, so a near miss takes exponential time. This is the
+ * exponential-ambiguity test of Allauzen, Mohri and Rastogi (2008): a
+ * strongly connected component of the automaton's self-product holding both
+ * a pair `(p, p)` and either a pair `(q, r)` with q != r or an edge from a
+ * parallel pair. States unreachable from the start are never explored, and
+ * dead ends are kept, since the engine explores those paths too. Without
+ * such a loop, the off-diagonal pairs on cycles are what polynomialDegree
+ * starts from.
+ */
+function analyzeProduct(
+  graph: AmbiguityGraph,
+  symbolsOverlap: (left: number, right: number) => boolean,
+  budget: AnalysisBudget,
+): ProductAnalysis | null {
+  const { follow, symbols } = graph;
+  const size = symbols.length;
 
   // Iterative Tarjan over the product states reachable from (0, 0). States
   // are numbered in visiting order, so the per-state data are dense arrays.
@@ -1725,8 +1922,18 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
   const stack: number[] = [];
   const onStack: boolean[] = [];
   const parallelEdges: Array<[number, number]> = [];
+  const selfLoops = new Set<number>();
+  const loopPairs: Array<[number, number]> = [];
   let components = 0;
   let edges = 0;
+  let exceeded = false;
+  // Charges each edge, and each entry the indexes below build or read.
+  const spend = (): boolean => {
+    if (++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES) {
+      exceeded = true;
+    }
+    return exceeded;
+  };
 
   // Each follow list's targets by the ASCII characters they may read, so a
   // pair of disjoint alternatives is never checked or charged. `wide` holds
@@ -1745,6 +1952,7 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
       else if (symbol?.kind === "class" && symbol.nonAscii === "none") characters = symbol.values;
       else followed.wide.push(j);
       for (const character of characters) {
+        if (spend()) return followed;
         let indexes = followed.byCharacter.get(character);
         if (!indexes) followed.byCharacter.set(character, (indexes = []));
         indexes.push(j);
@@ -1769,7 +1977,10 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     }
     const result = new Set(followed.wide);
     for (const character of characters) {
-      for (const j of followed.byCharacter.get(character) ?? []) result.add(j);
+      for (const j of followed.byCharacter.get(character) ?? []) {
+        if (spend()) return [];
+        result.add(j);
+      }
     }
     return [...result];
   };
@@ -1790,13 +2001,14 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
       const count = indexes ? indexes.length : rightFollow.length;
       for (let k = 0; k < count; k++) {
         const j = indexes ? indexes[k]! : k;
-        if (++edges > MAX_PRODUCT_EDGES) return;
+        if (spend()) return;
         const rightTarget = rightFollow[j]!;
         if (!symbolsOverlap(leftTarget, rightTarget)) continue;
         const target = leftTarget * size + rightTarget;
         if (left === right && leftTarget === rightTarget && i !== j) {
           parallelEdges.push([state, target]);
         }
+        if (target === state) selfLoops.add(state);
         pending.push(target);
       }
     }
@@ -1820,13 +2032,13 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     frameIds.push(id);
     frameStart.push(pending.length);
     frameNext.push(pending.length);
-    pushSuccessors(state);
+    if (!exceeded) pushSuccessors(state);
     frameEnd.push(pending.length);
   };
 
   visit(0);
   while (frameIds.length > 0) {
-    if (edges > MAX_PRODUCT_EDGES) return null;
+    if (exceeded) return null;
     const top = frameIds.length - 1;
     const id = frameIds[top]!;
     if (frameNext[top]! < frameEnd[top]!) {
@@ -1849,60 +2061,533 @@ function hasExponentialAmbiguity(graph: AmbiguityGraph): boolean | null {
     }
     if (lowLink[id] !== id) continue;
     let hasDiagonal = false;
-    let hasOffDiagonal = false;
+    const offDiagonal: Array<[number, number]> = [];
     let member: number;
+    let members = 0;
     do {
       member = stack.pop()!;
       onStack[member] = false;
       component[member] = components;
+      members++;
       const state = states[member]!;
-      if (Math.floor(state / size) === state % size) hasDiagonal = true;
-      else hasOffDiagonal = true;
+      const left = Math.floor(state / size);
+      const right = state % size;
+      if (left === right) hasDiagonal = true;
+      else offDiagonal.push([left, right]);
     } while (member !== id);
     components++;
-    if (hasDiagonal && hasOffDiagonal) return true;
+    if (hasDiagonal && offDiagonal.length > 0) return { exponential: true };
+    if (members > 1 || selfLoops.has(states[id]!)) {
+      for (const pair of offDiagonal) loopPairs.push(pair);
+    }
   }
 
-  return parallelEdges.some(
+  const exponential = parallelEdges.some(
     ([from, to]) => component[index.get(from)!] === component[index.get(to)!],
   );
+  return exponential ? { exponential: true } : { exponential: false, loopPairs };
+}
+
+/**
+ * Whether three states of `graph` may read one character in common. Exact
+ * when one reads a single character, or all three read ASCII class
+ * characters; otherwise it falls back to the pairwise test, which only adds
+ * steps.
+ */
+function tripleOverlapChecker(
+  graph: AmbiguityGraph,
+  symbolsOverlap: (left: number, right: number) => boolean,
+): (x: number, y: number, z: number) => boolean {
+  const { excluded, symbols } = graph;
+  // Each class state's ASCII characters, less its exclusions, as a bitset.
+  const asciiSets = new Map<number, Uint32Array>();
+  const asciiSet = (state: number): Uint32Array => {
+    let set = asciiSets.get(state);
+    if (set) return set;
+    set = new Uint32Array(4);
+    const symbol = symbols[state] as Extract<RegexSymbol, { kind: "class" }>;
+    for (const value of symbol.values) {
+      const code = value.charCodeAt(0);
+      if (code <= 0x7f) set[code >> 5]! |= 1 << (code & 31);
+    }
+    for (const exclusion of excluded[state]!) {
+      if (exclusion.kind === "opaque") continue;
+      const values = exclusion.kind === "class" ? exclusion.values : [exclusion.key];
+      for (const value of values) {
+        const code = value.charCodeAt(0);
+        if (code <= 0x7f) set[code >> 5]! &= ~(1 << (code & 31));
+      }
+    }
+    asciiSets.set(state, set);
+    return set;
+  };
+  // Each class state's non-ASCII characters, less the class exclusions. A
+  // single excluded character leaves the domain as it was.
+  const nonAsciiDomain = (state: number): NonAsciiDomain => {
+    let domain = (symbols[state] as Extract<RegexSymbol, { kind: "class" }>).nonAscii;
+    for (const exclusion of excluded[state]!) {
+      if (exclusion.kind !== "class" || exclusion.nonAscii === "none") continue;
+      if (exclusion.nonAscii === "all" || exclusion.nonAscii === domain) domain = "none";
+      else if (domain === "all") {
+        domain = exclusion.nonAscii === "whitespace" ? "non-whitespace" : "whitespace";
+      }
+    }
+    return domain;
+  };
+  return (x, y, z) => {
+    if (!symbolsOverlap(x, y) || !symbolsOverlap(y, z) || !symbolsOverlap(x, z)) return false;
+    const triple = [symbols[x], symbols[y], symbols[z]];
+    // Pairwise tests against a single character are exact, and the other
+    // two states then share that character.
+    if (triple.some((symbol) => symbol?.kind === "literal")) return true;
+    if (!triple.every((symbol) => symbol?.kind === "class")) return true;
+    const [left, middle, right] = [asciiSet(x), asciiSet(y), asciiSet(z)];
+    for (let word = 0; word < 4; word++) {
+      if ((left[word]! & middle[word]! & right[word]!) !== 0) return true;
+    }
+    const domains = [nonAsciiDomain(x), nonAsciiDomain(y), nonAsciiDomain(z)];
+    if (domains.includes("none")) return false;
+    return !(domains.includes("whitespace") && domains.includes("non-whitespace"));
+  };
+}
+
+/**
+ * Tarjan's strongly connected components of the states reachable from state
+ * 0, each numbered after every component it reaches; -1 if unreachable.
+ */
+function reachableComponents(follow: number[][]): { component: number[]; count: number } {
+  const size = follow.length;
+  const index = Array.from<number>({ length: size }).fill(-1);
+  const lowLink = Array.from<number>({ length: size }).fill(0);
+  const component = Array.from<number>({ length: size }).fill(-1);
+  const onStack = Array.from<boolean>({ length: size }).fill(false);
+  const stack: number[] = [];
+  // The DFS path as [state, next follow index] frames.
+  const frames: Array<[number, number]> = [];
+  let visited = 0;
+  let count = 0;
+  const visit = (state: number): void => {
+    index[state] = lowLink[state] = visited++;
+    stack.push(state);
+    onStack[state] = true;
+    frames.push([state, 0]);
+  };
+  visit(0);
+  while (frames.length > 0) {
+    const frame = frames[frames.length - 1]!;
+    const state = frame[0];
+    const targets = follow[state]!;
+    if (frame[1] < targets.length) {
+      const target = targets[frame[1]++]!;
+      if (index[target] === -1) visit(target);
+      else if (onStack[target]) lowLink[state] = Math.min(lowLink[state]!, index[target]!);
+      continue;
+    }
+    frames.pop();
+    if (frames.length > 0) {
+      const parent = frames[frames.length - 1]![0];
+      lowLink[parent] = Math.min(lowLink[parent]!, lowLink[state]!);
+    }
+    if (lowLink[state] !== index[state]) continue;
+    let member: number;
+    do {
+      member = stack.pop()!;
+      onStack[member] = false;
+      component[member] = count;
+    } while (member !== state);
+    count++;
+  }
+  return { component, count };
+}
+
+/**
+ * The longest chain of loop pairs that a near miss can be split across
+ * ambiguously; a backtracking engine takes about n^(d+1) steps on a near miss
+ * of length n when this returns d. Two loops form such a pair when they have
+ * states p != q and some text w with p -w-> p, p -w-> q and q -w-> q (the IDA
+ * condition of Weber and Seidl, 1991): each repetition of w can be read by
+ * either loop. `a*a*` has one pair; `a*a*a*` and `[ab]*a[ab]*a[ab]*` a chain
+ * of two. Each candidate is a search of the triple product from (p, p, q) to
+ * (p, q, q) that keeps the outer paths in their loops, stepping on characters
+ * all three states may read. Only called without exponential ambiguity,
+ * which rules out p and q sharing a loop.
+ */
+function polynomialDegree(
+  graph: AmbiguityGraph,
+  loopPairs: Array<[number, number]>,
+  symbolsOverlap: (left: number, right: number) => boolean,
+  budget: AnalysisBudget,
+): number | null {
+  const { follow } = graph;
+  const statesShareCharacter = tripleOverlapChecker(graph, symbolsOverlap);
+  const size = follow.length;
+  const { component, count } = reachableComponents(follow);
+  const successors = Array.from({ length: count }, () => new Set<number>());
+  for (let state = 0; state < size; state++) {
+    const from = component[state]!;
+    if (from === -1) continue;
+    for (const target of follow[state]!) {
+      if (component[target] !== from) successors[from]!.add(component[target]!);
+    }
+  }
+  const uniqueFollow = follow.map((targets) => [...new Set(targets)]);
+
+  let edges = 0;
+  const pairIsAmbiguous = (p: number, q: number): boolean | null => {
+    const from = component[p]!;
+    const to = component[q]!;
+    const key = (x: number, y: number, z: number) => (x * size + y) * size + z;
+    const goal = key(p, q, q);
+    const seen = new Set<number>([key(p, p, q)]);
+    const queue = [p, p, q];
+    while (queue.length > 0) {
+      const z = queue.pop()!;
+      const y = queue.pop()!;
+      const x = queue.pop()!;
+      for (const nextX of uniqueFollow[x]!) {
+        if (component[nextX] !== from) continue;
+        for (const nextZ of uniqueFollow[z]!) {
+          if (component[nextZ] !== to || !symbolsOverlap(nextX, nextZ)) continue;
+          for (const nextY of uniqueFollow[y]!) {
+            if (++edges > MAX_PRODUCT_EDGES || ++budget.productEdges > MAX_TOTAL_PRODUCT_EDGES) {
+              return null;
+            }
+            if (!statesShareCharacter(nextX, nextY, nextZ)) continue;
+            const next = key(nextX, nextY, nextZ);
+            if (next === goal) return true;
+            if (seen.has(next)) continue;
+            seen.add(next);
+            queue.push(nextX, nextY, nextZ);
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  // The components each component's loops form an ambiguous pair with.
+  const pairs = new Map<number, Set<number>>();
+  for (const [p, q] of loopPairs) {
+    const from = component[p]!;
+    const to = component[q]!;
+    if (from === to || pairs.get(from)?.has(to)) continue;
+    const ambiguous = pairIsAmbiguous(p, q);
+    if (ambiguous === null) return null;
+    if (!ambiguous) continue;
+    let targets = pairs.get(from);
+    if (!targets) pairs.set(from, (targets = new Set()));
+    targets.add(to);
+  }
+
+  // The longest chain from each component, after those it reaches.
+  const longest = Array.from<number>({ length: count }).fill(0);
+  for (let from = 0; from < count; from++) {
+    let chain = 0;
+    for (const next of successors[from]!) chain = Math.max(chain, longest[next]!);
+    for (const next of pairs.get(from) ?? []) chain = Math.max(chain, longest[next]! + 1);
+    longest[from] = chain;
+  }
+  return longest[component[0]!]!;
 }
 
 /**
  * Whether a backtracking engine can take exponentially many paths through
- * `pattern` on one input, as with `(a|aa?)+`, `(a?a?b)+` or `(.*\/)*x`.
- * Polynomial blowups, such as a chain of overlapping repeats, are left to
- * analyzeRegexSafety and analyzeRegexRepetitionChains.
+ * `pattern` on one input, as with `(a|aa?)+`, `(a?a?b)+` or `(.*\/)*x`, or
+ * polynomially many past MAX_POLYNOMIAL_DEGREE, as with `a+.*a+` or
+ * `[ab]*a[ab]*a[ab]*`.
  */
 export function analyzeRegexAmbiguity(
   pattern: string,
-  options: { ignoreCase?: boolean; namedGroups?: boolean } = {},
+  options: RegexAnalysisOptions = {},
 ): RegexSafetyIssue | null {
   if (pattern.length > MAX_PATTERN_LENGTH) return "analysis budget exceeded";
   const parser = new RegexParser(
     pattern,
     options.ignoreCase === true,
     options.namedGroups ?? mayHaveNamedGroups(pattern),
+    options.dotAll === true,
   );
   const node = parser.parse();
   if (parser.exceededBudget || parser.index !== pattern.length) return "analysis budget exceeded";
+  return analyzeNodeAmbiguity(node);
+}
+
+/** `reverse` when the body is a lookbehind's, which runs right to left. */
+type AssertionBody = { body: RegexNode; repeated: boolean; reverse: boolean };
+
+/**
+ * At most how many ways `node` can read the start of one text, or Infinity
+ * past MAX_FIXED_ASSERTION_POSITIONS. Each is a path the engine backtracks
+ * through, running any lookaround after it again. `(?:a|aa)` has two on
+ * `aa`, `(?:a|bb)` one on any text.
+ */
+type PathCache = {
+  paths: WeakMap<RegexNode, number>;
+  widths: WeakMap<RegexNode, [number, number]>;
+  /** Shared by every sequence's literal words, which can multiply. */
+  words: WordBudget;
+};
+
+function pathCount(node: RegexNode, cache: PathCache): number {
+  let count = cache.paths.get(node);
+  if (count !== undefined) return count;
+  switch (node.kind) {
+    case "atom":
+      count = node.fixedWidth ? 1 : Infinity;
+      break;
+    case "assertion":
+      count = 1;
+      break;
+    case "sequence":
+      count = 1;
+      for (const child of node.children) count *= pathCount(child, cache);
+      // Choices that multiply may still not all read one text, which a
+      // literal language shows exactly.
+      if (count > MAX_FIXED_ASSERTION_POSITIONS) {
+        const words = fixedWords(node, cache.words);
+        if (words?.every((word) => word.every((symbol) => symbol.kind === "literal"))) {
+          count = literalPrefixCount(words);
+        }
+      }
+      break;
+    case "alternation":
+      count = alternationPathCount(node, cache);
+      break;
+    case "repeat": {
+      // The engine ends a repeat at an empty iteration.
+      if (widthRange(node.child, cache.widths)[1] === 0) {
+        count = 1;
+        break;
+      }
+      count = repeatPathCount(pathCount(node.child, cache), node.min, node.max);
+      break;
+    }
+  }
+  if (count > MAX_FIXED_ASSERTION_POSITIONS) count = Infinity;
+  cache.paths.set(node, count);
+  return count;
+}
+
+/** The paths through `min` to `max` copies of a child with `paths` each. */
+function repeatPathCount(paths: number, min: number, max: number): number {
+  if (!Number.isFinite(max) || max - min + 1 > MAX_FIXED_ASSERTION_POSITIONS) return Infinity;
+  let total = 0;
+  for (let copies = min; copies <= max; copies++) {
+    total += paths ** copies;
+    if (total > MAX_FIXED_ASSERTION_POSITIONS) return Infinity;
+  }
+  return total;
+}
+
+const MAX_PATH_COUNT_WORDS = 256;
+
+type LiteralTrie = { next: Map<string, LiteralTrie>; ends: number };
+
+/** The most of `words` that one of them starts with, itself included. */
+function literalPrefixCount(words: RegexSymbol[][]): number {
+  const root: LiteralTrie = { next: new Map(), ends: 0 };
+  for (const word of words) {
+    let node = root;
+    for (const symbol of word) {
+      let child = node.next.get(symbol.key);
+      if (!child) node.next.set(symbol.key, (child = { next: new Map(), ends: 0 }));
+      node = child;
+    }
+    node.ends++;
+  }
+  let most = 0;
+  const stack: Array<[LiteralTrie, number]> = [[root, 0]];
+  while (stack.length > 0) {
+    const [node, above] = stack.pop()!;
+    const count = above + node.ends;
+    most = Math.max(most, count);
+    for (const child of node.next.values()) stack.push([child, count]);
+  }
+  return most;
+}
+const MAX_PATH_COUNT_BRANCHES = 64;
+
+function alternationPathCount(
+  node: Extract<RegexNode, { kind: "alternation" }>,
+  cache: PathCache,
+): number {
+  // Words that all read one text are prefixes of the longest, so on each
+  // text at most as many words match as the most that can prefix one word.
+  const words = fixedWords(node, { words: 0, symbols: 0, exceeded: false });
+  if (words?.every((word) => word.every((symbol) => symbol.kind === "literal"))) {
+    return literalPrefixCount(words);
+  }
+  if (words && words.length <= MAX_PATH_COUNT_WORDS) {
+    let most = 0;
+    for (const word of words) {
+      let prefixes = 0;
+      for (const other of words) {
+        if (
+          other.length <= word.length &&
+          other.every((symbol, index) => symbolsMayOverlap(symbol, word[index]!))
+        ) {
+          prefixes++;
+        }
+      }
+      most = Math.max(most, prefixes);
+    }
+    return most;
+  }
+  // Branches that cannot start with the same character never both match.
+  const branchSymbols = node.branches.map((branch) =>
+    isNullable(branch) ? null : firstSymbols(branch),
+  );
+  const disjoint =
+    node.branches.length <= MAX_PATH_COUNT_BRANCHES &&
+    branchSymbols.every(
+      (symbols, index) =>
+        symbols !== null &&
+        branchSymbols
+          .slice(index + 1)
+          .every(
+            (others) =>
+              others !== null &&
+              symbols.every((symbol) => others.every((other) => !symbolsMayOverlap(symbol, other))),
+          ),
+    );
+  let count = 0;
+  for (const branch of node.branches) {
+    const branchCount = pathCount(branch, cache);
+    count = disjoint ? Math.max(count, branchCount) : count + branchCount;
+  }
+  return count;
+}
+
+/**
+ * The lookaround bodies in `node` that read text, outside other lookarounds,
+ * and whether the engine may run each one more than a few times per match
+ * attempt: after text it can read in more ways than that, each of which it
+ * backtracks through, or under a repeat that may run that many times.
+ * `positions` counts the paths an enclosing context allows.
+ */
+function assertionBodies(
+  node: RegexNode,
+  positions = 1,
+  bodies: AssertionBody[] = [],
+  paths: PathCache = {
+    paths: new WeakMap(),
+    widths: new WeakMap(),
+    words: { words: 0, symbols: 0, exceeded: false },
+  },
+): AssertionBody[] {
+  switch (node.kind) {
+    case "atom":
+      break;
+    case "assertion":
+      if (node.child.kind !== "sequence" || node.child.children.length > 0) {
+        bodies.push({
+          body: node.child,
+          repeated: positions > MAX_FIXED_ASSERTION_POSITIONS,
+          reverse: node.lookbehind === true,
+        });
+      }
+      break;
+    case "sequence": {
+      let prefix = 1;
+      for (const [index, child] of node.children.entries()) {
+        assertionBodies(child, positions * prefix, bodies, paths);
+        const wasCounted = prefix <= MAX_FIXED_ASSERTION_POSITIONS;
+        prefix *= pathCount(child, paths);
+        if (wasCounted && prefix > MAX_FIXED_ASSERTION_POSITIONS) {
+          // The children so far may read fewer ways together.
+          const children = node.children.slice(0, index + 1);
+          prefix = pathCount({ kind: "sequence", children }, paths);
+        }
+      }
+      break;
+    }
+    case "alternation":
+      for (const branch of node.branches) assertionBodies(branch, positions, bodies, paths);
+      break;
+    case "repeat": {
+      // Each copy starts after every path through the copies before it. The
+      // engine ends a repeat at an empty iteration, so a zero-width child is
+      // only reached once.
+      const copies =
+        widthRange(node.child, paths.widths)[1] === 0
+          ? 1
+          : repeatPathCount(pathCount(node.child, paths), 0, node.max - 1);
+      assertionBodies(node.child, positions * copies, bodies, paths);
+      break;
+    }
+  }
+  return bodies;
+}
+
+/**
+ * `node` read right to left, as the engine runs a lookbehind body, so it can
+ * be analyzed like a pattern read left to right. A negative lookahead there
+ * no longer guards the atom after it, so it is read as empty, which only
+ * adds paths. Lookaround bodies keep their own direction.
+ */
+function reversedNode(node: RegexNode): RegexNode {
+  switch (node.kind) {
+    case "atom":
+      return node;
+    case "assertion":
+      return { kind: "assertion", child: node.child, lookbehind: node.lookbehind };
+    case "sequence":
+      return { kind: "sequence", children: node.children.map(reversedNode).reverse() };
+    case "alternation":
+      return { kind: "alternation", branches: node.branches.map(reversedNode) };
+    case "repeat":
+      return { ...node, child: reversedNode(node.child) };
+  }
+}
+
+/**
+ * The automaton reads a lookaround as empty, but the engine still runs its
+ * body wherever it is reached. Each body is analyzed on its own. One that
+ * may run at a growing number of positions must stay a degree lower, and so
+ * must the rest of the pattern, as each path to a position runs it again.
+ */
+function analyzeNodeAmbiguity(
+  node: RegexNode,
+  maxDegree = MAX_POLYNOMIAL_DEGREE,
+  budget: AnalysisBudget = { automatonWork: 0, productEdges: 0 },
+  reverse = false,
+): RegexSafetyIssue | null {
+  if (reverse) node = reversedNode(node);
+  // A body without a variable repeat reads fixed-length words, as above.
+  const bodies = assertionBodies(node).filter(({ body }) => containsVariableRepetition(body));
+  const degree = bodies.some(({ repeated }) => repeated) ? maxDegree - 1 : maxDegree;
   // Unroll repeats exactly while the automaton fits, and only read long
   // repeats as loops when it does not.
-  const exact = new PositionAutomaton(MAX_POSITIONS);
-  const issue = analyzePositionAutomaton(exact, node);
-  if (issue !== "analysis budget exceeded" || !exact.unrolledLongRepeat) return issue;
-  return analyzePositionAutomaton(new PositionAutomaton(MAX_UNROLLED_REPEAT), node);
+  const exact = new PositionAutomaton(MAX_POSITIONS, budget);
+  let issue = analyzePositionAutomaton(exact, node, degree, budget);
+  if (issue === "analysis budget exceeded" && exact.unrolledLongRepeat) {
+    const loops = new PositionAutomaton(MAX_UNROLLED_REPEAT, budget);
+    issue = analyzePositionAutomaton(loops, node, degree, budget);
+  }
+  if (issue) return issue;
+  for (const { body, repeated, reverse: bodyReverse } of bodies) {
+    const bodyDegree = repeated ? maxDegree - 1 : maxDegree;
+    const bodyIssue = analyzeNodeAmbiguity(body, bodyDegree, budget, bodyReverse);
+    if (bodyIssue) return bodyIssue;
+  }
+  return null;
 }
 
 function analyzePositionAutomaton(
   automaton: PositionAutomaton,
   node: RegexNode,
+  maxDegree: number,
+  budget: AnalysisBudget,
 ): RegexSafetyIssue | null {
   automaton.build(node);
   if (automaton.exceeded) return "analysis budget exceeded";
-  const graph = applyLookaheadGuards(automaton);
+  const graph = applyLookaheadGuards(automaton, budget);
   if (graph === null) return "analysis budget exceeded";
-  const ambiguous = hasExponentialAmbiguity(graph);
-  if (ambiguous === null) return "analysis budget exceeded";
-  return ambiguous ? "exponentially ambiguous repetition" : null;
+  const symbolsOverlap = stateOverlapChecker(graph);
+  const product = analyzeProduct(graph, symbolsOverlap, budget);
+  if (product === null) return "analysis budget exceeded";
+  if (product.exponential) return "exponentially ambiguous repetition";
+  const degree = polynomialDegree(graph, product.loopPairs, symbolsOverlap, budget);
+  if (degree === null) return "analysis budget exceeded";
+  return degree > maxDegree ? "polynomially ambiguous repetition" : null;
 }
