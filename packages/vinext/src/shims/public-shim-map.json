@@ -3,7 +3,7 @@
   "next/head": { "shim": "head", "types": "upstream" },
   "next/router": { "shim": "router", "types": "upstream" },
   "next/compat/router": { "shim": "compat-router", "types": "upstream" },
-  "next/image": { "shim": "image", "types": "upstream" },
+  "next/image": { "shim": "image-external", "types": "upstream" },
   "next/legacy/image": { "shim": "legacy-image", "types": "upstream" },
   "next/dynamic": { "shim": "dynamic", "types": "upstream" },
   "next/app": { "shim": "app", "types": "upstream" },
