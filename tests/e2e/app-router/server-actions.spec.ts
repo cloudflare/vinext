@@ -185,7 +185,9 @@ test.describe("Server Actions", () => {
 
     await expect(page).toHaveURL(`${BASE}/about`);
     await expect(page.locator("h1")).toHaveText("About");
-    expect(actionResponses).toEqual([303]);
+    // Client-handled (fetch) action redirects answer with 200, not 303 —
+    // see vercel/next.js#96310.
+    expect(actionResponses).toEqual([200]);
   });
 
   // Ported from Next.js: test/e2e/app-dir/actions/app-action-node-middleware.test.ts
@@ -220,7 +222,9 @@ test.describe("Server Actions", () => {
     await expect(page.locator("#target-theme")).toHaveText("dark");
     await expect(page.locator("#target-stale")).toHaveText("missing");
     await expect(page.locator("#target-baz")).toHaveText("1");
-    expect(actionResponses).toEqual([303]);
+    // Client-handled (fetch) action redirects answer with 200, not 303 —
+    // see vercel/next.js#96310.
+    expect(actionResponses).toEqual([200]);
   });
 
   // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
