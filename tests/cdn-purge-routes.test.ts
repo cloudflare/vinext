@@ -20,12 +20,10 @@ function route(segments: string, forceDynamic: boolean) {
 function register(
   routes: ReturnType<typeof route>[],
   options: {
-    configHeaders?: Parameters<typeof registerCdnPurgeRoutes>[0]["configHeaders"];
     metadataRoutes?: Parameters<typeof registerCdnPurgeRoutes>[0]["metadataRoutes"];
   } = {},
 ) {
   registerCdnPurgeRoutes({
-    configHeaders: options.configHeaders ?? [],
     metadataRoutes: options.metadataRoutes ?? [],
     routes,
   });
@@ -81,23 +79,22 @@ describe("isPathKnownNotEdgeCached", () => {
     expect(isPathKnownNotEdgeCached("/dashboard")).toBe(false);
   });
 
-  it("purges when next.config headers set a cacheable policy", () => {
-    register([route("/dashboard", true)], {
-      configHeaders: [
-        { source: "/:path*", headers: [{ key: "Cache-Control", value: "public, max-age=60" }] },
+  it("purges when a generated metadata child can serve the path", () => {
+    register([route("/[...slug]", true)], {
+      metadataRoutes: [
+        { patternParts: null, routeSegments: ["icon"], servedUrl: "/icon" },
+        { patternParts: null, routeSegments: ["sitemap.xml"], servedUrl: "/sitemap.xml" },
       ],
     });
-    expect(isPathKnownNotEdgeCached("/dashboard")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/icon/small")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/sitemap/0.xml")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/dashboard")).toBe(true);
   });
 
-  it("keeps skipping when next.config headers only disable storage", () => {
-    register([route("/dashboard", true)], {
-      configHeaders: [
-        { source: "/:path*", headers: [{ key: "Cache-Control", value: "no-store" }] },
-        { source: "/:path*", headers: [{ key: "X-Frame-Options", value: "DENY" }] },
-      ],
-    });
-    expect(isPathKnownNotEdgeCached("/dashboard")).toBe(true);
+  it("purges paths that end in a derived page, route or layout tag", () => {
+    register([route("/docs", false), route("/docs/page", true), route("/app/layout", true)]);
+    expect(isPathKnownNotEdgeCached("/docs/page")).toBe(false);
+    expect(isPathKnownNotEdgeCached("/app/layout")).toBe(false);
   });
 
   it("purges encoded paths and the /index alias", () => {

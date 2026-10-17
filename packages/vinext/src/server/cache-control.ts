@@ -82,11 +82,6 @@ export function isNonCacheableCdnResponsePolicy(name: string, value: string): bo
   return hasExplicitNonCacheableResponsePolicy(new Headers({ [name]: value }));
 }
 
-/** Whether one header sets a core or adapter cache policy that allows storage. */
-export function isCacheableCdnResponsePolicy(name: string, value: string): boolean {
-  return isCdnResponsePolicyHeader(name) && !isNonCacheableCdnResponsePolicy(name, value);
-}
-
 /** Capture only cache-policy provenance from an outer composition stage. */
 export function captureCdnResponsePolicyHeaders(headers: Headers): Headers {
   const policy = new Headers();

@@ -422,7 +422,6 @@ function generateCdnPurgeRoutesRegistration(
   if (config?.hasPagesDir) return "";
   const forcesDynamic = createForcesDynamicReader();
   const purgeRoutes = {
-    configHeaders: config?.headers ?? [],
     metadataRoutes: (metadataRoutes ?? []).map((route) => ({
       patternParts: route.patternParts ?? null,
       routeSegments: route.routeSegments ?? [],

@@ -422,7 +422,6 @@ describe("revalidation propagates to both data cache and CDN adapter", () => {
   it("revalidatePath skips the CDN purge for a path only force-dynamic routes serve", async () => {
     const { dataRevalidate, edge } = spyAdapters();
     registerCdnPurgeRoutes({
-      configHeaders: [],
       metadataRoutes: [],
       routes: [
         { forceDynamic: true, patternParts: ["dashboard"], routeSegments: ["dashboard"] },
