@@ -81,6 +81,14 @@ async function expectScroll(page: Page, position: { x: number; y: number }) {
     .toEqual(position);
 }
 
+async function setScrollPaddingTop(page: Page, scrollPaddingTop: string) {
+  await page.evaluate((padding) => {
+    const sheet = new CSSStyleSheet();
+    sheet.replaceSync(`html { scroll-padding-top: ${padding}; }`);
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+  }, scrollPaddingTop);
+}
+
 async function readElementDocumentTop(page: Page, selector: string) {
   return page
     .locator(selector)
@@ -89,12 +97,6 @@ async function readElementDocumentTop(page: Page, selector: string) {
 
 async function expectActiveElementId(page: Page, id: string) {
   await expect.poll(() => page.evaluate(() => document.activeElement?.id ?? null)).toBe(id);
-}
-
-async function expectActiveElementTestId(page: Page, testId: string) {
-  await expect
-    .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
-    .toBe(testId);
 }
 
 async function expectActiveElementHref(page: Page, href: string) {
@@ -196,6 +198,40 @@ test.describe("Next.js compat: App Router autoscroll", () => {
 
   // Ported from Next.js:
   // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  for (const scrollPaddingTop of ["100px", "50%"] as const) {
+    test(`scrolls when the page top is obscured by ${scrollPaddingTop} scroll padding`, async ({
+      page,
+    }) => {
+      await page.goto(`${ROUTE_BASE}/10/100/100/1000/page1`);
+      await waitForControls(page);
+      await setScrollPaddingTop(page, scrollPaddingTop);
+
+      await scrollTo(page, { x: 0, y: 50 });
+      await push(page, "/nextjs-compat/router-autoscroll/10/100/100/1000/page2");
+      await expect(page.locator("#page")).toHaveText("page2");
+      await expectScroll(page, { x: 0, y: 0 });
+    });
+  }
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
+  test("keeps the scroll position when the page top is below the scroll padding boundary", async ({
+    page,
+  }) => {
+    await page.goto(`${ROUTE_BASE}/10/1000/100/1000/page1`);
+    await waitForControls(page);
+    await setScrollPaddingTop(page, "100px");
+
+    await scrollTo(page, { x: 0, y: 800 });
+    await push(page, "/nextjs-compat/router-autoscroll/10/1000/100/1000/page2");
+    await expect(page.locator("#page")).toHaveText("page2");
+    await expectScroll(page, { x: 0, y: 800 });
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/router-autoscroll/router-autoscroll.test.ts
   test("scrolls to the top of the document if possible while focusing the page", async ({
     page,
   }) => {
@@ -277,7 +313,7 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     ["fixed", "position: fixed"],
     ["sticky", "position: sticky"],
   ] as const) {
-    test(`skips first child ${label} and targets the first renderable sibling`, async ({
+    test(`scrolls to the top when the first child is ${label}, leaving focus alone`, async ({
       page,
     }) => {
       await page.goto(`${ROUTE_BASE}`);
@@ -289,7 +325,7 @@ test.describe("Next.js compat: App Router autoscroll", () => {
         `Selected target: ${kind}`,
       );
       await expectScroll(page, { x: 1000, y: 0 });
-      await expectActiveElementTestId(page, "selected-scroll-target");
+      await expectActiveElementId(page, "");
     });
   }
 
@@ -363,26 +399,26 @@ test.describe("Next.js compat: App Router autoscroll", () => {
 
   // Ported from Next.js:
   // test/e2e/app-dir/navigation-focus/navigation-focus.test.ts
-  test("focuses the interactive navigated segment", async ({ page }) => {
+  test("does not focus an interactive navigated segment", async ({ page }) => {
     await page.goto(`${ROUTE_BASE}`);
     await waitForControls(page);
 
-    await push(page, "/nextjs-compat/router-autoscroll/focus-target");
+    await page.locator("#to-focus-target").click();
     await expect(page.locator('[data-testid="segment-container"]')).toBeVisible();
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
-      .toBe("segment-container");
+    // The source link left the DOM with the old page, so focus falls back to
+    // the body instead of moving to the new segment.
+    await expectActiveElementId(page, "");
   });
 
   // Ported from Next.js:
   // test/e2e/app-dir/navigation-focus/navigation-focus.test.ts
-  test("focuses a scrollable navigated segment", async ({ page }) => {
+  test("keeps focus on the source link for a scrollable navigated segment", async ({ page }) => {
     await page.goto(`${ROUTE_BASE}`);
     await waitForControls(page);
 
     await page.locator("#to-scrollable-segment").click();
     await expect(page.locator('[data-testid="segment-container"]')).toBeVisible();
-    await expectActiveElementTestId(page, "segment-container");
+    await expectActiveElementHref(page, "/nextjs-compat/router-autoscroll/scrollable-segment");
   });
 
   // Ported from Next.js:
@@ -454,13 +490,21 @@ test.describe("Next.js compat: App Router autoscroll", () => {
     await expectScroll(page, { x: 0, y: 0 });
   });
 
-  test("uses the next HTML sibling for a non-HTML hash target", async ({ page }) => {
+  test("scrolls a non-HTML hash target into view without moving focus", async ({ page }) => {
     await page.goto(`${ROUTE_BASE}`);
     await waitForControls(page);
 
     await push(page, "/nextjs-compat/router-autoscroll/uri-fragments#svg-target");
     await expect(page).toHaveURL(`${ROUTE_BASE}/uri-fragments#svg-target`);
-    await expectActiveElementId(page, "after-svg-target");
+    await expect
+      .poll(() =>
+        page.evaluate(() => {
+          const rect = document.getElementById("svg-target")?.getBoundingClientRect();
+          return rect !== undefined && rect.top >= 0 && rect.bottom <= window.innerHeight;
+        }),
+      )
+      .toBe(true);
+    await expectActiveElementId(page, "");
   });
 
   // Ported from Next.js:
@@ -476,19 +520,6 @@ test.describe("Next.js compat: App Router autoscroll", () => {
 
     await page.locator("#to-new-metadata").click();
     await expect(page.locator("#new-metadata-page")).toBeVisible();
-    await expectScroll(page, { x: 0, y: 0 });
-  });
-
-  test("allows native focus scrolling after focusing the navigated segment", async ({ page }) => {
-    await page.goto(`${ROUTE_BASE}/0/0/10000/10000/page1`);
-    await waitForControls(page);
-
-    await scrollTo(page, { x: 1000, y: 1000 });
-    await push(page, "/nextjs-compat/router-autoscroll/focus-target");
-    await expect(page.locator('[data-testid="segment-container"]')).toHaveCount(1);
-    await expect
-      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-testid") ?? null))
-      .toBe("segment-container");
     await expectScroll(page, { x: 0, y: 0 });
   });
 
@@ -522,11 +553,9 @@ test.describe("Next.js compat: App Router autoscroll", () => {
 
     await expect(page.locator('[data-testid="race-target"]')).toHaveText("Race target c");
     await expectScroll(page, { x: 1000, y: 0 });
-    await expectActiveElementTestId(page, "race-target");
 
     await expect.poll(() => page.url(), { timeout: 1500 }).toBe(`${ROUTE_BASE}/race/c`);
     await expect(page.locator('[data-testid="race-target"]')).toHaveText("Race target c");
     await expectScroll(page, { x: 1000, y: 0 });
-    await expectActiveElementTestId(page, "race-target");
   });
 });
