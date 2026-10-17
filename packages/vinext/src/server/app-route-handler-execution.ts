@@ -423,7 +423,14 @@ async function executeAppRouteHandlerImpl(
         requiresCompletedResponseAdmission: isRouteCacheabilityEvaluation(),
       })
     ) {
-      const completed = await completeAppRouteHandlerResponse(response);
+      const completed = await completeAppRouteHandlerResponse(response).catch(
+        async (error: unknown) => {
+          // Drain what the body queued before it failed. The body error stays
+          // the response error, as the eager drain above does for handlers.
+          await _drainPendingRevalidations().catch(() => {});
+          throw error;
+        },
+      );
       response = completed.response;
       cleanupDeferredToBody = !completed.completed;
       if (completed.completed) {

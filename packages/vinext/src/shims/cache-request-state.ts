@@ -189,8 +189,9 @@ export function _queuePendingRevalidation(promise: Promise<void>): boolean {
  * allows 5 requests a minute per account), so per-call purges run out fast.
  *
  * Only those two phases defer: their executors always drain before the
- * request finishes. Everywhere else returns false and the caller purges
- * immediately.
+ * request finishes. Once the response has closed, `after()` callbacks run
+ * past the last drain, so they purge immediately too. Everywhere else returns
+ * false and the caller purges immediately.
  *
  * @internal
  */
@@ -201,6 +202,7 @@ export function _queuePendingCdnTagInvalidation(
 ): boolean {
   const phase = getHeadersAccessPhase();
   if (phase !== "action" && phase !== "route-handler") return false;
+  if (isInsideUnifiedScope() && getRequestContext().afterContext.responseClosed) return false;
 
   getCacheState().pendingCdnTagInvalidations.push({ tag, durations, dataInvalidation });
   return true;

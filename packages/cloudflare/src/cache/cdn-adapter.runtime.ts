@@ -383,17 +383,24 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     for (let i = 0; i < encodedTags.length; i += MAX_TAGS_PER_PURGE) {
       chunks.push(encodedTags.slice(i, i + MAX_TAGS_PER_PURGE));
     }
-    const results = (await Promise.all(
-      chunks.map((chunk) =>
-        operation === "invalidate"
-          ? invalidateOrPurge(cache, { tags: chunk })
-          : cache.purge({ tags: chunk }),
+    // Settle every chunk before reporting, so no started purge is left
+    // un-awaited (Workers can cancel it).
+    const settled = await Promise.allSettled(
+      chunks.map(
+        async (chunk) =>
+          (await (operation === "invalidate"
+            ? invalidateOrPurge(cache, { tags: chunk })
+            : cache.purge({ tags: chunk }))) as WorkersCachePurgeResult | undefined,
       ),
-    )) as (WorkersCachePurgeResult | undefined)[];
-    const failures = results.filter((result) => result?.success === false);
+    );
+    const rejection = settled.find((result) => result.status === "rejected");
+    if (rejection) throw rejection.reason;
+    const failures = settled.flatMap((result) =>
+      result.status === "fulfilled" && result.value?.success === false ? [result.value] : [],
+    );
     if (failures.length > 0) {
       const errors = failures
-        .flatMap((result) => result?.errors ?? [])
+        .flatMap((result) => result.errors)
         .map(({ code, message }) => `${code}: ${message}`)
         .join(", ");
       throw new Error(`[vinext] Workers Cache ${operation} failed${errors ? `: ${errors}` : ""}`);

@@ -881,6 +881,35 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(purge).toHaveBeenCalledTimes(2);
   });
 
+  it("settles every chunk before surfacing a rejected chunk purge", async () => {
+    let releaseSecond!: () => void;
+    let secondSettled = false;
+    const failure = new Error("network");
+    let call = 0;
+    const purge = vi.fn(async () => {
+      if (call++ === 0) throw failure;
+      await new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      secondSettled = true;
+      return { errors: [], success: true };
+    });
+    const tags = Array.from({ length: 101 }, (_, i) => `tag-${i}`);
+    const result = runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+      adapter.revalidateTag(tags),
+    );
+    let rejected = false;
+    void result.catch(() => {
+      rejected = true;
+    });
+    await expect.poll(() => purge.mock.calls.length).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rejected).toBe(false);
+    releaseSecond();
+    await expect(result).rejects.toBe(failure);
+    expect(secondSettled).toBe(true);
+  });
+
   it("surfaces a resolved Workers Cache purge failure", async () => {
     const purge = vi.fn(async () => ({
       errors: [{ code: 10000, message: "rate limited" }],

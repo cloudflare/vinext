@@ -994,4 +994,62 @@ describe("app route handler dispatch", () => {
       setCdnCacheAdapter(previousAdapter);
     }
   });
+
+  it("purges CDN tags revalidated by after() callbacks during stale route regeneration", async () => {
+    const previousAdapter = getCdnCacheAdapter();
+    const cdnCalls: string[][] = [];
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    try {
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-after",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-after"),
+        route: {
+          pattern: "/api/stale-after",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              after(() => revalidateTag("late"));
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-after"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+      await scheduledRender();
+      await expect.poll(() => cdnCalls).toEqual([["late"]]);
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
+  });
 });
