@@ -426,7 +426,12 @@ async function executeAppRouteHandlerImpl(
       const completed = await completeAppRouteHandlerResponse(response);
       response = completed.response;
       cleanupDeferredToBody = !completed.completed;
-      if (completed.completed) markRouteCacheabilityResponseBodyComplete();
+      if (completed.completed) {
+        markRouteCacheabilityResponseBodyComplete();
+        // The body's producer ran after the eager drain above, so it owns any
+        // next/cache invalidations it queued (incomplete bodies drain at cleanup).
+        await _drainPendingRevalidations();
+      }
       const dynamicUsedDuringCompletion = options.consumeDynamicUsage();
       dynamicUsedInHandler =
         handlerResult.didAccessDynamicRequest() ||
