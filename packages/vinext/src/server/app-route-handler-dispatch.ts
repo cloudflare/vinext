@@ -149,6 +149,9 @@ async function runInRouteHandlerRevalidationContext(
   const requestContext = createRequestContext({
     headersContext,
     executionContext: getRequestExecutionContext(),
+    // Regeneration runs the handler directly, so it needs the phase that
+    // executeAppRouteHandler() would have set for a live request.
+    phase: "route-handler",
     unstableCacheRevalidation: "foreground",
   });
 

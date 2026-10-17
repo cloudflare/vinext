@@ -230,6 +230,8 @@ Explicit provider headers remain a Cloudflare extension: `Cloudflare-CDN-Cache-C
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
 
+`revalidatePath()` and `revalidateTag()` purge the edge by tag. [Workers Cache purges](https://developers.cloudflare.com/workers/cache/purge/) use Cloudflare's Free-tier purge limits, which every Worker in the account shares. As in Next.js, vinext sends one batched purge per cacheLife profile at the end of a Server Action or Route Handler, not one per call. If a purge fails, for example because the rate limit is reached, vinext logs the error and the action still succeeds: the data cache is already invalidated, but edge-cached responses for those tags stay stale until they expire. A route that only needs the client to refetch dynamic data can call `refresh()`, which doesn't purge.
+
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
 
 ```ts

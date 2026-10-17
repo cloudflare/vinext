@@ -30,7 +30,6 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
-import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
@@ -44,7 +43,9 @@ import {
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
   _hasPendingRevalidatedTag,
   _markPendingRevalidatedTag,
+  _queuePendingCdnTagInvalidation,
   _queuePendingRevalidation,
+  _revalidateCdnTags,
   _setRequestScopedCacheLife,
   cacheLifeProfiles,
   getRegisteredCacheContext,
@@ -125,7 +126,7 @@ export function revalidateTag(tag: string, profile?: string | { expire?: number 
   }
   const encodedTag = encodeCacheTag(tag);
   _markPendingRevalidatedTag(encodedTag);
-  return scheduleRevalidation(_invalidateEncodedTag(encodedTag, durations));
+  return scheduleTagInvalidation(encodedTag, durations);
 }
 
 /**
@@ -136,13 +137,24 @@ export function revalidateTag(tag: string, profile?: string | { expire?: number 
  * default CDN adapter), THEN ask the CDN adapter to purge its edge (a no-op for
  * the default adapter). Purging the edge before the store is invalidated would
  * let the edge re-fetch and re-cache stale data.
+ *
+ * The data cache is invalidated right away, so reads later in the same action
+ * see it. Inside a Server Action or Route Handler the purge waits for the
+ * request boundary, which sends one batched adapter call per profile.
  */
-async function _invalidateEncodedTag(
+function scheduleTagInvalidation(encoded: string, durations?: { expire?: number }): undefined {
+  const dataInvalidation = invalidateDataCacheTag(encoded, durations);
+  if (_queuePendingCdnTagInvalidation(encoded, durations, dataInvalidation)) {
+    return scheduleRevalidation(dataInvalidation);
+  }
+  return scheduleRevalidation(dataInvalidation.then(() => _revalidateCdnTags(encoded, durations)));
+}
+
+async function invalidateDataCacheTag(
   encoded: string,
   durations?: { expire?: number },
 ): Promise<void> {
   await getDataCacheHandler().revalidateTag(encoded, durations);
-  await getCdnCacheAdapter().revalidateTag(encoded, durations);
 }
 
 /**
@@ -171,7 +183,7 @@ export function revalidatePath(path: string, type?: "page" | "layout"): undefine
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
   const encodedTag = encodeCacheTag(tag);
   _markPendingRevalidatedTag(encodedTag);
-  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
+  return scheduleTagInvalidation(encodedTag);
 }
 
 /**
@@ -211,7 +223,7 @@ export function updateTag(tag: string): undefined {
   // Expire the tag immediately (same as revalidateTag without SWR)
   const encodedTag = encodeCacheTag(tag);
   _markPendingRevalidatedTag(encodedTag);
-  return scheduleRevalidation(_invalidateEncodedTag(encodedTag));
+  return scheduleTagInvalidation(encodedTag);
 }
 
 /**
