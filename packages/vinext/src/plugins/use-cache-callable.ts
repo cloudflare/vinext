@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
@@ -8,6 +8,10 @@ import type {
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
 import type { ESTree, Plugin } from "vite";
+import {
+  getServerActionsKeyCacheFsDeny,
+  loadOrGenerateServerActionsEncryptionKey,
+} from "../build/server-actions-encryption-key.js";
 import { parseProgramAsync } from "./ast-utils.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
@@ -19,6 +23,11 @@ type Options = {
   projectRoot: string;
   cacheRuntime: string;
   allowMissingRsc?: boolean;
+  /**
+   * The Server Actions encryption key vinext loaded for an auto-registered
+   * @vitejs/plugin-rsc, so reference names derive from the same key.
+   */
+  getEncryptionKey?: () => string | undefined;
 };
 
 type CacheWrapperOptions = {
@@ -257,6 +266,19 @@ function transformBrowserModule(
   return { output: result.output, referenceNames: result.exportNames.map(referenceName) };
 }
 
+/**
+ * Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
+ * salts server-reference IDs with the encryption key (`serverReferenceHashSalt`
+ * in packages/next/src/build/webpack-config.ts), so rebuilds of identical
+ * source emit identical client chunks. See
+ * loadOrGenerateServerActionsEncryptionKey for where the key comes from. The
+ * secret is derived under a label rather than used directly so the reference
+ * names reveal nothing about the key.
+ */
+function createReferenceSecret(encryptionKey: string): Buffer {
+  return createHmac("sha256", encryptionKey).update("vinext use cache reference").digest();
+}
+
 export async function createUseCacheCallablePlugin(
   options: Options,
 ): Promise<Plugin<UseCacheCallableApi>> {
@@ -275,10 +297,15 @@ export async function createUseCacheCallablePlugin(
   // original export name must not also be the remotely addressable name. A
   // per-plugin secret keeps aliases stable across every environment/build pass
   // in one Vite build without making sibling exports derivable from each other.
-  const referenceSecret = randomBytes(32);
+  let referenceSecret: Buffer | undefined;
   let manager: RscPluginManager | undefined;
 
-  async function analyzeModule(manager: RscPluginManager, code: string, id: string) {
+  async function analyzeModule(
+    manager: RscPluginManager,
+    secret: Buffer,
+    code: string,
+    id: string,
+  ) {
     const ast = await parseProgramAsync(code);
     const moduleDirective = findModuleUseCacheDirective(ast);
     const useServerBoundary = transforms.hasDirective(ast.body, "use server");
@@ -291,7 +318,7 @@ export async function createUseCacheCallablePlugin(
     const reference = manager.serverReferences.resolve(id, "rsc");
     const relativeImportId = manager.toRelativeId(reference.importId);
     const secureExportName = (name: string) =>
-      `$$vinext_cache_${createHmac("sha256", referenceSecret)
+      `$$vinext_cache_${createHmac("sha256", secret)
         .update(relativeImportId)
         .update("\0")
         .update(name)
@@ -304,7 +331,8 @@ export async function createUseCacheCallablePlugin(
     api: {
       async transformWorkerModule(code, id, createReference) {
         if (!code.includes("use cache")) return;
-        if (!manager) {
+        const secret = referenceSecret;
+        if (!manager || !secret) {
           // Like the worker "use server" transform, fail rather than ship the
           // module body.
           if (findModuleUseCacheDirective(await parseProgramAsync(code))) {
@@ -315,7 +343,7 @@ export async function createUseCacheCallablePlugin(
           return;
         }
         const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
-          await analyzeModule(manager, code, id);
+          await analyzeModule(manager, secret, code, id);
         if (useServerBoundary) return;
         return transformBrowserModule(transforms, code, ast, id, moduleDirective, {
           environmentName: "worker",
@@ -325,10 +353,22 @@ export async function createUseCacheCallablePlugin(
         })?.output;
       },
     },
+    config(config) {
+      // mergeConfig appends this to a configured deny list.
+      return { server: { fs: { deny: getServerActionsKeyCacheFsDeny(config.server?.fs?.deny) } } };
+    },
     configResolved(config) {
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
+      // Read after vinext's config hook has loaded `.env` files.
+      referenceSecret ??= createReferenceSecret(
+        options.getEncryptionKey?.() ??
+          loadOrGenerateServerActionsEncryptionKey({
+            root: config.root,
+            isBuild: config.command === "build",
+          }),
+      );
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
       }
@@ -353,14 +393,15 @@ export async function createUseCacheCallablePlugin(
         },
       },
       async handler(code, id) {
-        if (!manager) return;
+        const secret = referenceSecret;
+        if (!manager || !secret) return;
         if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
 
         const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
-          await analyzeModule(manager, code, id);
+          await analyzeModule(manager, secret, code, id);
         const isRsc = this.environment.name === "rsc";
 
         if (!isRsc) {
