@@ -101,6 +101,7 @@ export type PagesWorkerExecutionContext = {
   waitUntil?(promise: Promise<unknown>): void;
   passThroughOnException?(): void;
   cache?: unknown;
+  publicFileFetcher?: VinextAssetFetcher;
 } & VinextRequestStageContext;
 
 type PagesStageRuntimeDispatch = (
@@ -642,7 +643,27 @@ async function handleRequestImpl(
         filesystemRequest,
         resolvedPathnameHasBasePath,
       ) => {
-        if (!assets) return false;
+        if (!assets) {
+          // A host whose static handler runs ahead of vinext (Nitro) serves
+          // direct public-file requests itself; only a rewritten one gets here.
+          const publicFileFetcher = platformCtx?.publicFileFetcher;
+          if (
+            !publicFileFetcher ||
+            (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname))
+          ) {
+            return false;
+          }
+          return fetchWorkerFilesystemRoute(
+            filesystemRequest,
+            requestPathname,
+            phase,
+            (assetRequest) => Promise.resolve(publicFileFetcher.fetch(assetRequest)),
+            publicFiles,
+            basePath,
+            assetPathPrefix,
+            hadBasePath,
+          );
+        }
         // Like Next.js, serve the image endpoint only under the basePath,
         // including when a rewrite targets it there.
         if (resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)) {

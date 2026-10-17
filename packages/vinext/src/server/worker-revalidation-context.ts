@@ -27,6 +27,7 @@ function deriveExecutionContext(
     hostRuntime: base?.hostRuntime ?? defaultHostRuntime,
     ...(base?.cache === undefined ? {} : { cache: base.cache }),
     ...(base?.assets === undefined ? {} : { assets: base.assets }),
+    ...(base?.publicFileFetcher === undefined ? {} : { publicFileFetcher: base.publicFileFetcher }),
     ...(base?.trustedRevalidateOrigin === undefined
       ? {}
       : { trustedRevalidateOrigin: base.trustedRevalidateOrigin }),

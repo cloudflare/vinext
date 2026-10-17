@@ -201,6 +201,22 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
 } from "virtual:vinext-server-entry";`);
   });
 
+  it("serves rewritten public files through Nitro only when asked to", () => {
+    expect(generateSsrEntry(false)).toMatch(/export \{ default \} from /);
+    expect(generateSsrEntry(false)).not.toContain("resolveNitroStaticFileSignal");
+
+    const code = generateSsrEntry(false, {
+      nitroPublicFiles: "/vinext/server/nitro-public-files.js",
+    });
+    expect(code).not.toMatch(/export \{ default \} from /);
+    expect(code).toContain(
+      'import { resolveNitroStaticFileSignal } from "/vinext/server/nitro-public-files.js";',
+    );
+    expect(code).toContain(
+      "return resolveNitroStaticFileSignal(await __ssrEntry.fetch(request), request);",
+    );
+  });
+
   it("embeds basePath and trailingSlash alongside config", () => {
     const code = generateRscEntry("/tmp/test/app", minimalRoutes, null, [], null, "/app", true, {
       redirects: [{ source: "/old", destination: "/new", permanent: true }],
