@@ -173,6 +173,7 @@ describe("compiler.define forwarding to Vite", () => {
         "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         "process.env.__VINEXT_RSC_BUILD_IDENTITY": expect.stringMatching(/^"[0-9a-f]{32}"$/),
+        "process.env.__VINEXT_RSC_COMPATIBILITY_ID": expect.stringMatching(/^"[0-9a-f-]{36}"$/),
         ...previewDefines,
       });
       expect(ssrResult?.define).toEqual({
@@ -181,6 +182,7 @@ describe("compiler.define forwarding to Vite", () => {
         "process.env.NEXT_PHASE": "globalThis.__VINEXT_NEXT_PHASE",
         "process.env.NEXT_RUNTIME": '"nodejs"',
         "process.env.__VINEXT_RSC_BUILD_IDENTITY": expect.stringMatching(/^"[0-9a-f]{32}"$/),
+        "process.env.__VINEXT_RSC_COMPATIBILITY_ID": expect.stringMatching(/^"[0-9a-f-]{36}"$/),
         ...previewDefines,
       });
       // Client environment must never receive server-only defines.
@@ -358,6 +360,7 @@ describe("compiler.define forwarding to Vite", () => {
       expect(Object.keys(rscResult!.define!)).toEqual([
         "process.env.NEXT_RUNTIME",
         "process.env.NEXT_PHASE",
+        "process.env.__VINEXT_RSC_COMPATIBILITY_ID",
         "process.env.__VINEXT_RSC_BUILD_IDENTITY",
         ...PREVIEW_DEFINE_NAMES,
       ]);

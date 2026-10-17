@@ -89,6 +89,7 @@ const projectServers = {
       "app-router/metadata-react-cache.spec.ts",
       "app-router-prod/action-error-sanitization.spec.ts",
       "app-router-prod/special-error-navigation.spec.ts",
+      "app-router-prod/rsc-compatibility-id.spec.ts",
       "app-router-prod/static-hydration.spec.ts",
       "app-router-prod/use-cache.spec.ts",
       "app-router-prod/public-file-encoding.spec.ts",
