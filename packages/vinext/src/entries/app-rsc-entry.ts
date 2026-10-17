@@ -217,6 +217,11 @@ type AppRouterConfig = {
   i18n?: NextI18nConfig | null;
   imageConfig?: ImageConfig;
   /**
+   * Answer `/_next/image` from the host application's in-process fetch in
+   * production instead of redirecting to the source. Set for Nitro builds.
+   */
+  serveImagesInProcess?: boolean;
+  /**
    * Absolute path to `app/global-not-found.{tsx,ts,js,jsx}` when present.
    * When provided, route-miss 404s render this module standalone (it owns its
    * own `<html>` and `<body>`) instead of wrapping the regular `not-found.tsx`
@@ -426,6 +431,7 @@ export function generateAppRequestRscEntry(
   return `
 import ${JSON.stringify(serverGlobalsPath)};
 import { createAppRscRequestHandler } from "vinext/server/app-rsc-handler";
+${config?.serveImagesInProcess ? 'import { getNitroImageSourceFetch } from "vinext/server/image-optimization";' : ""}
 import __cacheabilityRequestProjection from "virtual:vinext-cacheability-request-projection";
 import { createAppRscRouteMatcher as __createAppRscRouteMatcher } from ${JSON.stringify(appRscRouteMatchingPath)};
 import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stringify(appRequestStageDispatchPath)};
@@ -491,6 +497,7 @@ export const __imageConfig = ${JSON.stringify({
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
   })};
 export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 const __routes = ${JSON.stringify(requestRoutes)};
@@ -548,6 +555,7 @@ const __requestHandler = createAppRscRequestHandler({
   ${instrumentationPath ? "ensureInstrumentation(ctx) { return __ensureInstrumentation(ctx); }," : ""}
   i18nConfig: ${JSON.stringify(config?.i18n ?? null)},
   imageConfig: ${JSON.stringify(config?.imageConfig)},
+  ${config?.serveImagesInProcess ? "resolveImageSourceFetch: getNitroImageSourceFetch," : ""}
   isMetadataRoute: __isMetadataPath,
   isDev: process.env.NODE_ENV !== "production",
   hasInterceptionId,
@@ -708,6 +716,7 @@ export function generateRscEntry(
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
   };
   const manifestCode = buildAppRscManifestCode({
     deferEagerImports: Boolean(instrumentationPath),
@@ -838,6 +847,7 @@ ${
     : `import { createAppRscHandler } from "vinext/server/app-rsc-combined-handler";`
 }
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+${config?.serveImagesInProcess ? 'import { getNitroImageSourceFetch } from "vinext/server/image-optimization";' : ""}
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${
   actionOwners === undefined
@@ -1389,6 +1399,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   configRedirects: __configRedirects,
   configRewrites: __configRewrites,
   imageConfig: __runtimeImageConfig,
+  ${config?.serveImagesInProcess ? "resolveImageSourceFetch: getNitroImageSourceFetch," : ""}
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
