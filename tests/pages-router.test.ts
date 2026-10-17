@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { get as httpGet, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -1863,6 +1863,35 @@ export default class CustomDocument extends Document {
     expect(res.status).toBe(200);
     expect(res.headers.has("x-late")).toBe(false);
     expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      httpGet(`${baseUrl}${path}`, (res) => {
+        res.resume();
+        resolve(res.headers["set-cookie"] ?? []);
+      }).on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
   });
 
   it("handles dynamic API routes with query params", async () => {
@@ -7521,6 +7550,38 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.has("x-late")).toBe(false);
     expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])(
+    "orders next.config Set-Cookie like Next.js for $path in production",
+    async ({ path, cookies }) => {
+      // Read raw headers: fetch() hides an empty Set-Cookie line.
+      const rawCookies = await new Promise<string[]>((resolve, reject) => {
+        httpGet(`${prodUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        }).on("error", reject);
+      });
+      expect(rawCookies).toEqual(cookies);
+    },
+  );
 
   it("redirects /old-page to /about via middleware", async () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });

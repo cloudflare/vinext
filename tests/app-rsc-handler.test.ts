@@ -3934,6 +3934,44 @@ describe("createAppRscHandler", () => {
     expect(sourceConfigHeader).toBe("applied");
   });
 
+  // Next.js stages next.config headers before middleware, whose own Set-Cookie
+  // replaces a config one.
+  it.each([
+    { middlewareCookie: false, cookies: ["config-cookie=1; Path=/"] },
+    { middlewareCookie: true, cookies: [] },
+  ])(
+    "drops a config Set-Cookie from Server Action source headers when middleware sets cookies: $middlewareCookie",
+    async ({ middlewareCookie, cookies }) => {
+      let sourceConfigCookies: string[] | undefined;
+      const handler = createHandler({
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }] },
+        ],
+        handleServerActionRequest: async (options) => {
+          sourceConfigCookies = options.sourceConfigHeaders?.getSetCookie();
+          return new Response("action");
+        },
+        middlewareModule: {
+          async default() {
+            const headers = new Headers({ "x-middleware-next": "1" });
+            if (middlewareCookie) headers.append("Set-Cookie", "middleware-cookie=1; Path=/");
+            return new Response(null, { headers });
+          },
+        },
+      });
+
+      await handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(sourceConfigCookies).toEqual(cookies);
+    },
+  );
+
   it.each(["afterFiles", "fallback"] as const)(
     "does not let out-of-basePath POST requests through %s rewrites reach App route handlers",
     async (phase) => {

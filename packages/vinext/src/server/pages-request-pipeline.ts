@@ -499,6 +499,7 @@ export async function runPagesRequest(
       pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
+      middlewareHeaders: response.headers,
       recordCacheability: deps.recordCacheability,
     });
     return mergeHeaders(response, matchedConfigHeaders);

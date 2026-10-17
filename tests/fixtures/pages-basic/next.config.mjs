@@ -183,6 +183,13 @@ const nextConfig = {
   },
   async headers() {
     return [
+      // Used by Vitest: pages-router.test.ts
+      ...["/config-cookie-page", "/config-cookie-redirect", "/config-cookie-response"].map(
+        (source) => ({
+          source,
+          headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+        }),
+      ),
       {
         source: "/storage-policy/short-browser",
         headers: [{ key: "Cache-Control", value: "public, max-age=1" }],

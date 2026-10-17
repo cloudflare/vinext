@@ -83,6 +83,27 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/about", request.url));
   }
 
+  // next.config.mjs adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (
+    url.pathname === "/config-cookie-page" ||
+    url.pathname === "/config-cookie-redirect" ||
+    url.pathname === "/config-cookie-response"
+  ) {
+    const res =
+      url.pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : url.pathname === "/config-cookie-response"
+          ? new NextResponse("from middleware")
+          : NextResponse.next();
+    if (url.searchParams.has("middleware-cookie")) {
+      res.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (url.searchParams.has("empty-middleware-cookie")) res.headers.set("Set-Cookie", "");
+    return res;
+  }
+
   // Redirect /redirect-with-cookies to /about and set cookies on the redirect
   if (url.pathname === "/redirect-with-cookies") {
     const res = NextResponse.redirect(new URL("/about", request.url));

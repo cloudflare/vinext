@@ -151,6 +151,35 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  // next.config.ts adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (pathname === "/config-cookie-redirect" || pathname === "/config-cookie-response") {
+    const response =
+      pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : new NextResponse("from middleware");
+    if (request.nextUrl.searchParams.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (request.nextUrl.searchParams.has("empty-middleware-cookie")) {
+      response.headers.set("Set-Cookie", "");
+    }
+    return response;
+  }
+  if (pathname === "/api/config-cookie" && request.nextUrl.searchParams.has("middleware-cookie")) {
+    const response = NextResponse.next();
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+  // Next.js ignores an empty middleware Set-Cookie.
+  if (
+    pathname === "/api/config-cookie" &&
+    request.nextUrl.searchParams.has("empty-middleware-cookie")
+  ) {
+    return NextResponse.next({ headers: { "Set-Cookie": "" } });
+  }
+
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
@@ -576,6 +605,9 @@ export const config = {
     "/api/session-refresh",
     "/api/auth-challenge",
     "/api/pages-auth-challenge",
+    "/api/config-cookie",
+    "/config-cookie-redirect",
+    "/config-cookie-response",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-append-header",

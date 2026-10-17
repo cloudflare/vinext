@@ -393,6 +393,41 @@ describe("applyConfigHeadersToResponse", () => {
     expect(response.headers.get("vary")).toBe("RSC, Accept");
     expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
   });
+
+  // Next.js stages config headers before middleware: config cookies precede
+  // the response's own, and middleware's Set-Cookie replaces them.
+  it.each([
+    { middlewareHeaders: undefined, cookies: ["config=1; Path=/", "handler=1; Path=/"] },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "" }),
+      cookies: ["config=1; Path=/", "handler=1; Path=/"],
+    },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "mw=1; Path=/" }),
+      cookies: ["handler=1; Path=/"],
+    },
+  ])(
+    "orders config Set-Cookie like Next.js (middleware cookie: $middlewareHeaders)",
+    ({ middlewareHeaders, cookies }) => {
+      const headers = new Headers({ "set-cookie": "handler=1; Path=/" });
+
+      applyConfigHeadersToResponse(headers, {
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config=1; Path=/" }] },
+        ],
+        middlewareHeaders,
+        pathname: "/about",
+        requestContext: {
+          headers: new Headers(),
+          cookies: {},
+          query: new URLSearchParams(),
+          host: "example.com",
+        },
+      });
+
+      expect(headers.getSetCookie()).toEqual(cookies);
+    },
+  );
 });
 
 describe("response-stage config policy", () => {
@@ -476,7 +511,8 @@ describe("applyConfigHeadersToHeaderRecord", () => {
     expect(headers["x-middleware"]).toBe("winner");
     expect(headers["x-added"]).toBe("config");
     expect(headers.vary).toBe("RSC, Accept");
-    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/", "cfg=1; Path=/"]);
+    // Next.js drops a config Set-Cookie when middleware sets its own.
+    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/"]);
   });
 });
 
@@ -1086,6 +1122,21 @@ describe("validateServerActionPayload", () => {
 // ── processMiddlewareHeaders ────────────────────────────────────────────
 
 describe("processMiddlewareHeaders", () => {
+  it("drops each empty Set-Cookie value like Next.js", () => {
+    const headers = new Headers();
+    headers.append("set-cookie", "");
+    headers.append("set-cookie", "mw=1; Path=/");
+    headers.append("set-cookie", "");
+    processMiddlewareHeaders(headers);
+    expect(headers.getSetCookie()).toEqual(["mw=1; Path=/"]);
+
+    const emptyOnly = new Headers();
+    emptyOnly.append("set-cookie", "");
+    emptyOnly.append("set-cookie", "");
+    processMiddlewareHeaders(emptyOnly);
+    expect(emptyOnly.has("set-cookie")).toBe(false);
+  });
+
   it("strips x-middleware-next header", () => {
     const headers = new Headers({
       "x-middleware-next": "1",

@@ -23,7 +23,7 @@ import {
   type MiddlewareLocaleMatchContext,
 } from "./middleware-matcher.js";
 import { shouldKeepMiddlewareHeader } from "../utils/middleware-request-headers.js";
-import { processMiddlewareHeaders } from "./request-pipeline.js";
+import { dropEmptyMiddlewareSetCookie, processMiddlewareHeaders } from "./request-pipeline.js";
 import { badRequestResponse, internalServerErrorResponse } from "./http-error-responses.js";
 import { isOpenRedirectShaped } from "./open-redirect.js";
 import {
@@ -260,6 +260,7 @@ function collectMiddlewareHeaders(response: Response): Headers {
       responseHeaders.append(key, value);
     }
   }
+  dropEmptyMiddlewareSetCookie(responseHeaders);
   return responseHeaders;
 }
 
