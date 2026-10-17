@@ -1106,6 +1106,85 @@ describe("external proxy", () => {
     expect(result.response.status).toBe(200);
     mockFetch.mockRestore();
   });
+
+  // Every adapter (Node, dev, Workers) proxies through this pipeline. Next.js
+  // proxies a next.config external rewrite without the headers it staged, and
+  // sets the upstream's headers over a middleware rewrite's, keeping
+  // middleware's cookies ahead of the upstream's.
+  it.each([
+    {
+      rewrite: "config",
+      middlewareCookie: true,
+      cookies: ["middleware-cookie=1", "upstream-cookie=1"],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+    {
+      rewrite: "middleware",
+      middlewareCookie: true,
+      cookies: ["middleware-cookie=1", "upstream-cookie=1"],
+      configHeader: "1",
+      middlewareHeader: "1",
+    },
+    {
+      rewrite: "middleware",
+      middlewareCookie: false,
+      cookies: ["upstream-cookie=1"],
+      configHeader: "1",
+      middlewareHeader: "1",
+    },
+  ])(
+    "applies staged headers to a $rewrite external rewrite like Next.js (middleware cookie: $middlewareCookie)",
+    async ({ rewrite, middlewareCookie, ...expected }) => {
+      const upstreamHeaders = new Headers({
+        "cache-control": "public, max-age=60",
+        "set-cookie": "upstream-cookie=1",
+      });
+      const result = await runPagesRequest(
+        makeRequest("/proxy-me"),
+        baseDeps({
+          configHeaders: [
+            {
+              source: "/proxy-me",
+              headers: [
+                { key: "Set-Cookie", value: "config-cookie=1" },
+                { key: "x-config-header", value: "1" },
+              ],
+            },
+          ],
+          configRewrites: {
+            beforeFiles:
+              rewrite === "config"
+                ? [{ source: "/proxy-me", destination: "https://upstream.example/" }]
+                : [],
+            afterFiles: [],
+            fallback: [],
+          },
+          proxyExternal: async () => new Response("upstream", { headers: upstreamHeaders }),
+          runMiddleware: makeMiddleware({
+            continue: true,
+            responseHeaders: new Headers([
+              ["cache-control", "private, max-age=7"],
+              ["x-mw-response-header", "1"],
+              ...(middlewareCookie
+                ? [["set-cookie", "middleware-cookie=1"] as [string, string]]
+                : []),
+            ]),
+            ...(rewrite === "middleware" ? { rewriteUrl: "https://upstream.example/" } : {}),
+          }),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect({
+        cacheControl: result.response.headers.get("cache-control"),
+        cookies: result.response.headers.getSetCookie(),
+        configHeader: result.response.headers.get("x-config-header"),
+        middlewareHeader: result.response.headers.get("x-mw-response-header"),
+      }).toEqual({ cacheControl: "public, max-age=60", ...expected });
+    },
+  );
 });
 
 // 9. beforeFiles rewrite with external URL → {type:"response"} from proxy

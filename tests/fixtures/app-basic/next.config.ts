@@ -10,6 +10,14 @@
  */
 import type { NextConfig } from "vinext";
 
+// Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts. Proxies
+// /external-headers/<phase>/* to the local upstream whose port the test sends.
+const externalHeadersRewrite = (phase: string) => ({
+  source: `/external-headers/${phase}/:path*`,
+  has: [{ type: "header" as const, key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" }],
+  destination: "http://127.0.0.1::upstreamPort/:path*",
+});
+
 const nextConfig: NextConfig = {
   ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
     ? {
@@ -123,6 +131,7 @@ const nextConfig: NextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        externalHeadersRewrite("before-files"),
         // Used by E2E: app-router-prod/image-middleware.spec.ts — a config
         // rewrite to the image endpoint serves the destination's query.
         {
@@ -247,6 +256,7 @@ const nextConfig: NextConfig = {
         },
       ],
       afterFiles: [
+        externalHeadersRewrite("after-files"),
         // Used by E2E: app-router-encoded-basepath-i18n (see beforeFiles).
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
@@ -307,6 +317,7 @@ const nextConfig: NextConfig = {
         },
       ],
       fallback: [
+        externalHeadersRewrite("fallback"),
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/fallback-upload", destination: "/api/methods" },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
@@ -361,6 +372,14 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
+      {
+        source: "/external-headers/:path*",
+        headers: [
+          { key: "Set-Cookie", value: "config-cookie=1; Path=/" },
+          { key: "x-config-header", value: "1" },
+        ],
+      },
       // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
       {
         source: "/api/config-cookie",

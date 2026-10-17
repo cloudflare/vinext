@@ -1,3 +1,11 @@
+// Used by Vitest: pages-router.test.ts. Proxies
+// /external-headers/<phase>/* to the local upstream whose port the test sends.
+const externalHeadersRewrite = (phase) => ({
+  source: `/external-headers/${phase}/:path*`,
+  has: [{ type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" }],
+  destination: "http://127.0.0.1::upstreamPort/:path*",
+});
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
@@ -95,6 +103,7 @@ const nextConfig = {
   async rewrites() {
     return {
       beforeFiles: [
+        externalHeadersRewrite("before-files"),
         {
           source: "/before-rewrite",
           destination: "/about",
@@ -155,6 +164,7 @@ const nextConfig = {
         },
       ],
       afterFiles: [
+        externalHeadersRewrite("after-files"),
         {
           source: "/after-rewrite",
           destination: "/about",
@@ -174,6 +184,7 @@ const nextConfig = {
         },
       ],
       fallback: [
+        externalHeadersRewrite("fallback"),
         {
           source: "/fallback-rewrite",
           destination: "/about",
@@ -183,6 +194,14 @@ const nextConfig = {
   },
   async headers() {
     return [
+      // Used by Vitest: pages-router.test.ts
+      {
+        source: "/external-headers/:path*",
+        headers: [
+          { key: "Set-Cookie", value: "config-cookie=1; Path=/" },
+          { key: "x-config-header", value: "1" },
+        ],
+      },
       // Used by Vitest: pages-router.test.ts
       ...["/config-cookie-page", "/config-cookie-redirect", "/config-cookie-response"].map(
         (source) => ({

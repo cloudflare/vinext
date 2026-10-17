@@ -34,6 +34,7 @@ import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
 import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import { withExternalRewriteResponseHeaders } from "./middleware-response-headers.js";
 import {
   assetPrefixPathname,
   isAssetPrefixBuildAsset,
@@ -491,6 +492,9 @@ export async function runPagesRequest(
     hadBasePath: resolvedPathnameHasBasePath,
   });
   const middlewareHeaders: HeaderRecord = {};
+  // Middleware's own cookies, which Next.js keeps ahead of an external
+  // rewrite's upstream cookies.
+  let middlewareCookies: string[] = [];
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
     const matchedConfigHeaders: HeaderRecord = {};
@@ -628,6 +632,9 @@ export async function runPagesRequest(
       }
     }
 
+    const stagedCookies = middlewareHeaders["set-cookie"];
+    if (Array.isArray(stagedCookies)) middlewareCookies = [...stagedCookies];
+
     if (result.rewriteUrl) {
       resolvedUrl = result.rewriteUrl;
       resolvedPathnameIsRequestPathname = false;
@@ -712,19 +719,31 @@ export async function runPagesRequest(
     });
   }
 
+  // Next.js proxies a next.config external rewrite without the config and
+  // middleware headers it staged (resolve-routes returns no resHeaders for
+  // one), though its Set-Cookie patch still puts middleware's cookies ahead of
+  // the upstream's.
+  const proxyConfigRewrite = async (destination: string): Promise<PagesPipelineResult> => ({
+    type: "response",
+    response: withExternalRewriteResponseHeaders(
+      await proxyExternal(request, destination),
+      new Headers(),
+      middlewareCookies,
+    ),
+  });
+
   // Step 8: External-URL proxy (post-mw rewrite target)
   //
-  // Intentional asymmetry: ONLY the post-middleware rewrite path merges the staged
-  // middleware headers into the proxied response (`mergeHeaders(...)`). The
-  // beforeFiles/afterFiles/fallback external rewrite paths below return the bare
-  // `proxyExternal(...)` response without merging. Both the pre-refactor prod and
-  // worker copies agreed on this, so it is preserved deliberately — do not "fix" the
-  // bare returns into merges without first confirming the originals.
+  // A middleware external rewrite keeps the staged headers, as in Next.js,
+  // with the upstream's set over them.
   if (isExternalUrl(resolvedUrl)) {
-    const proxyResponse = await proxyExternal(request, resolvedUrl);
     return {
       type: "response",
-      response: mergeHeaders(proxyResponse, middlewareHeaders, undefined),
+      response: withExternalRewriteResponseHeaders(
+        await proxyExternal(request, resolvedUrl),
+        headersFromRecord(middlewareHeaders),
+        middlewareCookies,
+      ),
     };
   }
 
@@ -742,10 +761,7 @@ export async function runPagesRequest(
       conditionalRewriteCacheability,
     );
     if (rewritten) {
-      if (isExternalUrl(rewritten)) {
-        // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, rewritten) };
-      }
+      if (isExternalUrl(rewritten)) return proxyConfigRewrite(rewritten);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;
@@ -863,10 +879,7 @@ export async function runPagesRequest(
         conditionalRewriteCacheability,
       );
       if (rewritten) {
-        if (isExternalUrl(rewritten)) {
-          // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-          return { type: "response", response: await proxyExternal(request, rewritten) };
-        }
+        if (isExternalUrl(rewritten)) return proxyConfigRewrite(rewritten);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, rewritten);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
@@ -918,12 +931,7 @@ export async function runPagesRequest(
           conditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
-        if (isExternalUrl(fallbackRewrite)) {
-          return {
-            type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
-          };
-        }
+        if (isExternalUrl(fallbackRewrite)) return proxyConfigRewrite(fallbackRewrite);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
@@ -976,13 +984,7 @@ export async function runPagesRequest(
           conditionalRewriteCacheability,
         );
         if (!fallbackRewrite) continue;
-        if (isExternalUrl(fallbackRewrite)) {
-          // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-          return {
-            type: "response",
-            response: await proxyExternal(request, fallbackRewrite),
-          };
-        }
+        if (isExternalUrl(fallbackRewrite)) return proxyConfigRewrite(fallbackRewrite);
         resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
         resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
         resolvedPathnameIsRequestPathname = false;
@@ -1090,10 +1092,7 @@ export async function runPagesRequest(
         conditionalRewriteCacheability,
       );
       if (!fallbackRewrite) continue;
-      if (isExternalUrl(fallbackRewrite)) {
-        // Bare proxy — no middleware-header merge (see Step 8 asymmetry note).
-        return { type: "response", response: await proxyExternal(request, fallbackRewrite) };
-      }
+      if (isExternalUrl(fallbackRewrite)) return proxyConfigRewrite(fallbackRewrite);
       resolvedUrl = mergeRewriteQuery(resolvedUrl, fallbackRewrite);
       resolvedPathname = pathnameForResolvedUrl(resolvedUrl);
       resolvedPathnameIsRequestPathname = false;

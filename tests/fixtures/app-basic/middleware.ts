@@ -151,6 +151,27 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  // next.config.ts adds config headers to /external-headers/* and proxies its
+  // before-files, after-files and fallback paths to the local upstream.
+  // Middleware proxies /external-headers/middleware/* there itself.
+  if (pathname.startsWith("/external-headers/")) {
+    const upstreamPort = request.headers.get("x-test-upstream-port");
+    const middlewarePath = pathname.slice("/external-headers/middleware".length);
+    const response =
+      pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
+        : NextResponse.next();
+    const search = request.nextUrl.searchParams;
+    if (search.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    if (search.has("middleware-header")) response.headers.set("x-mw-response-header", "1");
+    if (search.has("middleware-cache-control")) {
+      response.headers.set("Cache-Control", "private, max-age=7");
+    }
+    return response;
+  }
+
   // next.config.ts adds a config Set-Cookie to these paths. Middleware's own
   // cookie replaces it, as in Next.js.
   if (pathname === "/config-cookie-redirect" || pathname === "/config-cookie-response") {
@@ -608,6 +629,7 @@ export const config = {
     "/api/config-cookie",
     "/config-cookie-redirect",
     "/config-cookie-response",
+    "/external-headers/:path*",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-append-header",

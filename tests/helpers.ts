@@ -495,3 +495,111 @@ export async function buildCloudflareAppFixture(fixtureDir: string): Promise<{
     rscBundlePath: path.join(tmpDir, "dist", "server", "index.js"),
   };
 }
+
+// ── External rewrite response headers ─────────────────────────
+// app-basic and pages-basic proxy /external-headers/* to a local upstream (see
+// their next.config and middleware). The expectations match next@16.2.7.
+
+const UPSTREAM_COOKIE = "upstream-cookie=1; Path=/";
+const MIDDLEWARE_COOKIE = "middleware-cookie=1; Path=/";
+const CONFIG_COOKIE = "config-cookie=1; Path=/";
+const ALL_MIDDLEWARE_SWITCHES = "?middleware-cookie&middleware-header&middleware-cache-control";
+
+export type ExternalRewriteHeaders = {
+  cookies: string[];
+  configHeader: string | null;
+  middlewareHeader: string | null;
+};
+
+export const EXTERNAL_REWRITE_HEADER_CASES: ({ path: string } & ExternalRewriteHeaders)[] = [
+  // A next.config rewrite proxies without the staged config and middleware
+  // headers, though middleware's cookies still precede the upstream's.
+  ...["before-files", "after-files", "fallback"].flatMap((phase) => [
+    {
+      path: `/external-headers/${phase}/a`,
+      cookies: [UPSTREAM_COOKIE],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+    {
+      path: `/external-headers/${phase}/a${ALL_MIDDLEWARE_SWITCHES}`,
+      cookies: [MIDDLEWARE_COOKIE, UPSTREAM_COOKIE],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+    {
+      path: `/external-headers/${phase}/no-cookie?middleware-cookie`,
+      cookies: [],
+      configHeader: null,
+      middlewareHeader: null,
+    },
+  ]),
+  // A middleware rewrite keeps the staged headers, with the upstream's set
+  // over them: an upstream cookie replaces the config cookie.
+  {
+    path: "/external-headers/middleware/a",
+    cookies: [UPSTREAM_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+  {
+    path: `/external-headers/middleware/a${ALL_MIDDLEWARE_SWITCHES}`,
+    cookies: [MIDDLEWARE_COOKIE, UPSTREAM_COOKIE],
+    configHeader: "1",
+    middlewareHeader: "1",
+  },
+  {
+    path: "/external-headers/middleware/no-cookie",
+    cookies: [CONFIG_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+  {
+    path: "/external-headers/middleware/no-cookie?middleware-cookie",
+    cookies: [MIDDLEWARE_COOKIE],
+    configHeader: "1",
+    middlewareHeader: null,
+  },
+];
+
+/**
+ * Request an /external-headers/* path through a fresh upstream that sets a
+ * cookie (except on `no-cookie` paths), `x-upstream` and a public
+ * Cache-Control, and return the headers the cases above describe.
+ */
+export async function requestExternalRewriteHeaders(
+  baseUrl: string,
+  requestPath: string,
+): Promise<
+  ExternalRewriteHeaders & {
+    status: number;
+    cacheControl: string | null;
+    upstreamHeader: string | null;
+  }
+> {
+  const upstream = http.createServer((req, res) => {
+    if (!req.url?.includes("no-cookie")) res.setHeader("Set-Cookie", [UPSTREAM_COOKIE]);
+    res.setHeader("x-upstream", "1");
+    res.setHeader("Cache-Control", "public, max-age=60");
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = upstream.address() as { port: number };
+    const response = await fetch(`${baseUrl}${requestPath}`, {
+      headers: { "x-test-upstream-port": String(port) },
+    });
+    expect(await response.text()).toBe("upstream");
+    return {
+      status: response.status,
+      cookies: response.headers.getSetCookie(),
+      configHeader: response.headers.get("x-config-header"),
+      middlewareHeader: response.headers.get("x-mw-response-header"),
+      cacheControl: response.headers.get("cache-control"),
+      upstreamHeader: response.headers.get("x-upstream"),
+    };
+  } finally {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+}

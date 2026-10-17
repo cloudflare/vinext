@@ -14,7 +14,9 @@ import {
 import {
   APP_FIXTURE_DIR,
   createIsolatedFixture,
+  EXTERNAL_REWRITE_HEADER_CASES,
   expectRepeatedSlashRedirects,
+  requestExternalRewriteHeaders,
   testCacheDir,
 } from "./helpers.js";
 
@@ -498,6 +500,20 @@ describe("App Router Production server (startProdServer)", () => {
       res.headers.get("www-authenticate"),
     );
   });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
 
   // Next.js stages next.config headers before middleware: a config Set-Cookie
   // precedes the response's own cookies, and middleware's cookie replaces it.

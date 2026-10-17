@@ -4,7 +4,10 @@ import { applyMiddlewareRequestHeaders, setHeadersContext } from "vinext/shims/h
 import { setNavigationContext } from "vinext/shims/navigation-context-accessors";
 import { FLIGHT_HEADERS, VINEXT_MW_CTX_HEADER } from "./headers.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
-import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import {
+  mergeMiddlewareResponseHeaders,
+  withExternalRewriteResponseHeaders,
+} from "./middleware-response-headers.js";
 import {
   executeMiddleware,
   type MiddlewareModule,
@@ -65,6 +68,12 @@ export type ApplyAppMiddlewareResult =
     }
   | {
       kind: "response";
+      /**
+       * True when `response` proxies a middleware external rewrite. It carries
+       * middleware's headers, and the caller still stages next.config headers
+       * beneath them.
+       */
+      externalRewrite?: boolean;
       /** Present on real middleware results; optional for older generated callers. */
       matched?: boolean;
       /** True when this pathname can match middleware for some request context. */
@@ -217,22 +226,20 @@ export async function proxyExternalMiddlewareRewrite(
   const headers = new Headers(proxyResponse.headers);
   processMiddlewareHeaders(headers);
 
-  if (!context.headers) {
-    return new Response(proxyResponse.body, {
+  // Like Next.js, the upstream's headers replace middleware's.
+  const stagedHeaders = new Headers();
+  const middlewareHeaders = new Headers(context.headers ?? undefined);
+  processMiddlewareHeaders(middlewareHeaders);
+  mergeMiddlewareResponseHeaders(stagedHeaders, middlewareHeaders);
+  return withExternalRewriteResponseHeaders(
+    new Response(proxyResponse.body, {
       status: proxyResponse.status,
       statusText: proxyResponse.statusText,
       headers,
-    });
-  }
-
-  const middlewareHeaders = new Headers(context.headers);
-  processMiddlewareHeaders(middlewareHeaders);
-  mergeMiddlewareResponseHeaders(headers, middlewareHeaders);
-  return new Response(proxyResponse.body, {
-    status: proxyResponse.status,
-    statusText: proxyResponse.statusText,
-    headers,
-  });
+    }),
+    stagedHeaders,
+    middlewareHeaders.getSetCookie(),
+  );
 }
 
 function validationResponseWithMiddlewareHeaders(
@@ -326,6 +333,7 @@ export async function applyAppMiddleware(
         const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
+          externalRewrite: true,
           matched,
           pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(
@@ -429,6 +437,7 @@ export async function applyAppMiddleware(
         const externalRequest = options.externalRewriteRequest ?? options.request;
         return {
           kind: "response",
+          externalRewrite: true,
           matched,
           pathnameEligible,
           response: await proxyExternalMiddlewareRewrite(

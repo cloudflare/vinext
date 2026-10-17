@@ -18,7 +18,9 @@ import {
 import {
   PAGES_FIXTURE_DIR,
   buildPagesFixture,
+  EXTERNAL_REWRITE_HEADER_CASES,
   expectRepeatedSlashRedirects,
+  requestExternalRewriteHeaders,
   startFixtureServer,
 } from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
@@ -1864,6 +1866,20 @@ export default class CustomDocument extends Document {
     expect(res.headers.has("x-late")).toBe(false);
     expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
 
   // Next.js stages next.config headers before middleware, and middleware's
   // own Set-Cookie replaces a config one.
@@ -7550,6 +7566,20 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.has("x-late")).toBe(false);
     expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
   });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path in production",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(prodUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
 
   // Next.js stages next.config headers before middleware, and middleware's
   // own Set-Cookie replaces a config one.
