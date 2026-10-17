@@ -44,6 +44,7 @@ import {
   _drainPendingRevalidations,
   _runWithCacheState,
 } from "../packages/vinext/src/shims/cache-request-state.js";
+import { registerCdnPurgeRoutes } from "../packages/vinext/src/shims/cdn-purge-routes.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
@@ -416,6 +417,32 @@ describe("revalidation propagates to both data cache and CDN adapter", () => {
     expect(dataRevalidate).toHaveBeenCalledTimes(1);
     const tag = dataRevalidate.mock.calls[0][0];
     expect(edge.purges).toEqual([tag]);
+  });
+
+  it("revalidatePath skips the CDN purge for a path only force-dynamic routes serve", async () => {
+    const { dataRevalidate, edge } = spyAdapters();
+    registerCdnPurgeRoutes({
+      configHeaders: [],
+      metadataRoutes: [],
+      routes: [
+        { forceDynamic: true, patternParts: ["dashboard"], routeSegments: ["dashboard"] },
+        { forceDynamic: false, patternParts: ["blog"], routeSegments: ["blog"] },
+      ],
+    });
+    try {
+      await runInPhase("action", async () => {
+        revalidatePath("/dashboard", "layout");
+        revalidatePath("/blog", "layout");
+        await _drainPendingRevalidations();
+      });
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[Symbol.for("vinext.cdnPurgeRoutes")];
+    }
+    expect(dataRevalidate.mock.calls.map(([tag]) => tag)).toEqual([
+      "_N_T_/dashboard/layout",
+      "_N_T_/blog/layout",
+    ]);
+    expect(edge.calls).toEqual([{ tags: ["_N_T_/blog/layout"], durations: undefined }]);
   });
 
   it("updateTag invalidates the data cache and purges the CDN", async () => {

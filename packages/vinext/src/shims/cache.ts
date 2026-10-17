@@ -33,6 +33,7 @@ import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
+import { isPathKnownNotEdgeCached } from "./cdn-purge-routes.js";
 import {
   addCollectedRequestTags,
   getCurrentFetchSoftTags,
@@ -183,6 +184,11 @@ export function revalidatePath(path: string, type?: "page" | "layout"): undefine
   const tag = type ? `_N_T_${stem}/${type}` : `_N_T_${stem || "/"}`;
   const encodedTag = encodeCacheTag(tag);
   _markPendingRevalidatedTag(encodedTag);
+  if (isPathKnownNotEdgeCached(stem || "/")) {
+    // Only force-dynamic routes serve this path, so no edge entry carries the
+    // tag. Skip the rate-limited CDN purge; the data cache still needs it.
+    return scheduleRevalidation(invalidateDataCacheTag(encodedTag));
+  }
   return scheduleTagInvalidation(encodedTag);
 }
 

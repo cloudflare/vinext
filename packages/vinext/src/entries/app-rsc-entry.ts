@@ -315,30 +315,42 @@ function buildAppDecodedPathnamePatterns(
     .map((route) => route.pattern);
 }
 
-function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+type ForcesDynamic = (filePath: string | null | undefined) => boolean;
+
+function createForcesDynamicReader(): ForcesDynamic {
   const readSource = createSegmentSourceReader();
-  const forcesDynamic = (filePath: string | null | undefined): boolean => {
+  return (filePath) => {
     const source = readSource(filePath);
     return source !== null && extractExportConstString(source, "dynamic") === "force-dynamic";
   };
+}
+
+/** Whether a direct request to the route renders a `dynamic = "force-dynamic"` tree. */
+function directRequestForcesDynamic(route: AppRoute, forcesDynamic: ForcesDynamic): boolean {
+  return route.routePath
+    ? forcesDynamic(route.routePath)
+    : appPageSegmentConfigPaths(route).some(forcesDynamic);
+}
+
+function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
+  const forcesDynamic = createForcesDynamicReader();
 
   return routes.map((route) => ({
     canUseCanonicalLoadingShell: appRouteHasMainTreeLoadingBoundary(route),
-    forceDynamic: route.routePath
-      ? forcesDynamic(route.routePath)
-      : [
-          ...appPageSegmentConfigPaths(route),
-          ...route.parallelSlots.flatMap((slot) =>
-            slot.interceptingRoutes.flatMap((intercept) => [
-              ...intercept.layoutPaths,
-              intercept.pagePath,
-            ]),
-          ),
-          ...route.siblingIntercepts.flatMap((intercept) => [
+    forceDynamic:
+      directRequestForcesDynamic(route, forcesDynamic) ||
+      [
+        ...route.parallelSlots.flatMap((slot) =>
+          slot.interceptingRoutes.flatMap((intercept) => [
             ...intercept.layoutPaths,
             intercept.pagePath,
           ]),
-        ].some(forcesDynamic),
+        ),
+        ...route.siblingIntercepts.flatMap((intercept) => [
+          ...intercept.layoutPaths,
+          intercept.pagePath,
+        ]),
+      ].some(forcesDynamic),
     ids: route.ids ?? null,
     pattern: route.pattern,
     patternParts: route.patternParts,
@@ -395,6 +407,35 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       params: intercept.params,
     })),
   }));
+}
+
+/**
+ * Register the build-time route facts `revalidatePath()` uses to skip CDN
+ * purges for force-dynamic routes. A Pages Router can serve the same paths
+ * without those facts, so mixed apps always purge.
+ */
+function generateCdnPurgeRoutesRegistration(
+  routes: AppRoute[],
+  metadataRoutes: MetadataFileRoute[] | undefined,
+  config: AppRouterConfig | undefined,
+): string {
+  if (config?.hasPagesDir) return "";
+  const forcesDynamic = createForcesDynamicReader();
+  const purgeRoutes = {
+    configHeaders: config?.headers ?? [],
+    metadataRoutes: (metadataRoutes ?? []).map((route) => ({
+      patternParts: route.patternParts ?? null,
+      routeSegments: route.routeSegments ?? [],
+      servedUrl: route.servedUrl,
+    })),
+    routes: routes.map((route) => ({
+      forceDynamic: directRequestForcesDynamic(route, forcesDynamic),
+      patternParts: route.patternParts,
+      routeSegments: route.routeSegments,
+    })),
+  };
+  return `import { registerCdnPurgeRoutes as __registerCdnPurgeRoutes } from "vinext/shims/cdn-purge-routes";
+__registerCdnPurgeRoutes(${JSON.stringify(purgeRoutes)});`;
 }
 
 /** Generate the module-free App request stage used by multi-stage Worker outputs. */
@@ -496,6 +537,7 @@ export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 const __routes = ${JSON.stringify(requestRoutes)};
 const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes, config))});
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};
+${generateCdnPurgeRoutesRegistration(routes, metadataRoutes, config)}
 
 function matchRoute(pathname) { return __routeMatcher.matchRoute(pathname); }
 function matchRequestRoute(pathname) { return __routeMatcher.matchRequestRoute(pathname); }
@@ -1241,6 +1283,8 @@ ${
     ? "let __fallbackRenderer;"
     : "const __fallbackRenderer = __createFallbackRenderer();"
 }
+
+${generateCdnPurgeRoutesRegistration(routes, metadataRoutes, config)}
 
 function matchRoute(url) {
   return __routeMatcher.matchRoute(url);

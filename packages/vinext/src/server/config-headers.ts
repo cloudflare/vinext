@@ -10,7 +10,11 @@ import {
   markRouteCacheabilityDynamic,
   markRouteCacheabilityFinalResponseUncacheable,
 } from "vinext/shims/cacheability-classification";
-import { isCdnResponsePolicyHeader, isNonCacheableCdnResponsePolicy } from "./cache-control.js";
+import {
+  isCacheableCdnResponsePolicy,
+  isCdnResponsePolicyHeader,
+  isNonCacheableCdnResponsePolicy,
+} from "./cache-control.js";
 import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "./headers.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 
@@ -41,10 +45,7 @@ export function resolveResponseStageCachePolicy({
   const policy = matched
     .filter((header) => {
       const name = header.key.toLowerCase();
-      return (
-        name === "vary" ||
-        (isCdnResponsePolicyHeader(name) && !isNonCacheableCdnResponsePolicy(name, header.value))
-      );
+      return name === "vary" || isCacheableCdnResponsePolicy(name, header.value);
     })
     .map((header) => [header.key, header.value] as [string, string]);
   return policy.length > 0 ? policy : null;

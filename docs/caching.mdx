@@ -232,6 +232,8 @@ This setup is fast when an entry is present at the edge, but Workers Cache is di
 
 `revalidatePath()` and `revalidateTag()` purge the edge by tag. [Workers Cache purges](https://developers.cloudflare.com/workers/cache/purge/) use Cloudflare's Free-tier purge limits, which every Worker in the account shares. As in Next.js, vinext sends one batched purge per cacheLife profile at the end of a Server Action or Route Handler, not one per call. If a purge fails, for example because the rate limit is reached, vinext logs the error and the action still succeeds: the data cache is already invalidated, but edge-cached responses for those tags stay stale until they expire. A route that only needs the client to refetch dynamic data can call `refresh()`, which doesn't purge.
 
+`revalidatePath()` skips the edge purge when every App route that could serve the path sets `dynamic = "force-dynamic"`, because those responses are never cached at the edge. Marking a signed-in area's layout `force-dynamic` therefore keeps its revalidations off the purge budget. The data cache is still invalidated. vinext purges as usual when the app also has a Pages Router, when a metadata route could serve the path, or when `next.config` `headers()` set a cacheable `Cache-Control` or provider cache policy anywhere.
+
 Use `createWorkersCacheConfig()` to configure the response entrypoints and version metadata, and add the KV binding for the data adapter:
 
 ```ts
