@@ -2247,8 +2247,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     void runWithServerEntryRequire(rscEntryRequire, () => handleRequest(req, res));
   });
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
     server.listen(port, host, () => {
+      server.off("error", onError);
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr ? addr.port : port;
       if (!silent) logProdServerStarted(host, actualPort, purpose);
@@ -2313,8 +2316,11 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const handler = await createPagesRouterRequestHandler(options);
   const server = createServer(handler);
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    server.once("error", onError);
     server.listen(port, host, () => {
+      server.off("error", onError);
       const addr = server.address();
       const actualPort = typeof addr === "object" && addr ? addr.port : port;
       if (!silent) logProdServerStarted(host, actualPort, purpose);
