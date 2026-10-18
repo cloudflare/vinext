@@ -21,6 +21,7 @@ type ProductionApp = {
     cachedProtected: string;
     cookieOwner: string;
     describeArgument: string;
+    describeBoundArgument: string;
     dynamicProtected: string;
     globalErrorOnly: string;
     globalNotFoundOnly: string;
@@ -126,6 +127,7 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       cachedProtected: findOnlyCacheActionId(builtSource),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
       describeArgument: findActionId(builtSource, "describeArgument"),
+      describeBoundArgument: findActionId(builtSource, "describeBoundArgument"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
       globalNotFoundOnly: findActionId(builtSource, "globalNotFoundOnlyAction"),
@@ -207,7 +209,7 @@ async function postRawAction(
 async function postMultipartAction(
   page: Page,
   pathname: string,
-  actionId: string,
+  actionId: string | null,
   parts: ReadonlyArray<readonly [string, string]>,
 ) {
   await page.goto(`${app.baseUrl}${pathname}`);
@@ -217,13 +219,14 @@ async function postMultipartAction(
       for (const [key, value] of parts) body.append(key, value);
       const response = await fetch(pathname, {
         body,
-        headers: { "next-action": actionId },
+        headers: actionId ? { "next-action": actionId } : {},
         method: "POST",
       });
       return {
         body: await response.text(),
         headers: Object.fromEntries(response.headers),
         status: response.status,
+        url: response.url,
       };
     },
     { actionId, parts, pathname },
@@ -607,6 +610,53 @@ test.describe("production server action ownership", () => {
       const response = await postArgumentReference(parts);
       expect(response.status).toBe(500);
       expect(response.body).not.toContain("_ARGUMENT");
+    }
+  });
+
+  test("decodes only route-owned Server Actions in progressive bound arguments", async ({
+    page,
+  }) => {
+    const postBoundAction = (parts: ReadonlyArray<readonly [string, string]>) =>
+      postMultipartAction(page, "/ownership/argument-refs", null, [
+        ["$ACTION_REF_1", ""],
+        ["$ACTION_1:0", JSON.stringify({ id: app.actionIds.describeBoundArgument, bound: "$@1" })],
+        ...parts,
+      ]);
+    const metadata = (id: string) => JSON.stringify({ id, bound: null });
+    const reference = (id: string) =>
+      [
+        ["$ACTION_1:1", JSON.stringify(["$h2"])],
+        ["$ACTION_1:2", metadata(id)],
+      ] as const;
+    const pageComponentId = app.actionIds.inlineArgument.replace(/#.*$/, "#default");
+
+    // The action redirects with its description of the bound argument.
+    const owned = await postBoundAction(reference(app.actionIds.inlineArgument));
+    expect(owned.status).toBe(200);
+    expect(new URL(owned.url).searchParams.get("described")).toBe("FUNCTION_ARGUMENT");
+
+    // React resolves bound arguments through the route-scoped manifest, so an id
+    // outside this route fails decoding as it does in Next.js.
+    const streamed = (type: "$R3" | "$x3", id: string) =>
+      [
+        ["$ACTION_1:1", JSON.stringify([type])],
+        ["$ACTION_1:S3", JSON.stringify("$h2")],
+        ["$ACTION_1:2", metadata(id)],
+      ] as const;
+    for (const parts of [
+      reference(app.actionIds.protected),
+      reference(pageComponentId),
+      reference(`${app.actionIds.inlineArgument}#default`),
+      [
+        ...reference(app.actionIds.inlineArgument),
+        ["$ACTION_1:2", metadata(app.actionIds.protected)],
+      ],
+      streamed("$R3", app.actionIds.protected),
+      streamed("$x3", app.actionIds.protected),
+    ] as const) {
+      const response = await postBoundAction(parts);
+      expect(response.status).toBe(500);
+      expect(response.url).not.toContain("described=");
     }
   });
 

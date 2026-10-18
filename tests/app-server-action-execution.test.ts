@@ -155,6 +155,9 @@ function createOptions(
     cleanPathname: "/action-source",
     clearRequestContext() {},
     contentType: "multipart/form-data; boundary=vinext",
+    createServerManifest() {
+      return {};
+    },
     async decodeAction() {
       return null;
     },
@@ -177,11 +180,17 @@ function createOptions(
     request: createMultipartRequest(),
     routePattern: "/action-source",
     setHeadersAccessPhase,
+    validateActionReferences() {
+      return true;
+    },
     ...overrides,
   };
   const decodeAction = options.decodeAction;
-  options.decodeAction = async (body) =>
-    registerTestServerReference(await decodeAction(body), getDirectTestActionId(body));
+  options.decodeAction = async (body, serverManifest) =>
+    registerTestServerReference(
+      await decodeAction(body, serverManifest),
+      getDirectTestActionId(body),
+    );
   return options;
 }
 
@@ -617,14 +626,10 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  it("validates nested bound server references before decoding modules", async () => {
+  it("rejects an empty progressive action id before decoding", async () => {
     const body = new FormData();
-    body.set("$ACTION_REF_1", "");
-    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
-    body.set("$ACTION_1:1", JSON.stringify(["$ha"]));
-    body.set("$ACTION_1:10", JSON.stringify({ id: "nested-action", bound: null }));
+    body.set("$ACTION_ID_", "");
     const decodeAction = vi.fn();
-    const validateActionReferences = vi.fn(() => false);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -634,16 +639,53 @@ describe("app server action execution helpers", () => {
             decodeAction,
             forwardAction: async () => null,
             readFormDataWithLimit: async () => body,
-            validateActionReferences,
+            validateActionReferences: (actionIds) => !actionIds.includes(""),
           }),
         ),
       );
 
       expect(response.status).toBe(404);
-      expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
       expect(decodeAction).not.toHaveBeenCalled();
     } finally {
       warning.mockRestore();
+    }
+  });
+
+  it("resolves bound server references through the route-scoped manifest", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    const action = vi.fn();
+    const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
+      actionIds.every((actionId) => actionId === "selected-action"),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            createServerManifest: () =>
+              new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
+            // React resolves the action and each bound `$h` reference with
+            // `serverManifest[id]`.
+            async decodeAction(_body, serverManifest) {
+              Reflect.get(serverManifest, "selected-action");
+              Reflect.get(serverManifest, "nested-action");
+              return action;
+            },
+            forwardAction: async () => null,
+            readFormDataWithLimit: async () => body,
+            validateActionReferences,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(500);
+      expect(validateActionReferences).toHaveBeenCalledWith(["nested-action"]);
+      expect(action).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
     }
   });
 
@@ -1057,26 +1099,32 @@ describe("app server action execution helpers", () => {
     const request = createMultipartBodyRequest(formData);
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     let actionRan = false;
+    let actionManifest: object | undefined;
 
     const result = await handleProgressiveServerActionRequest(
       createOptions({
         contentType: request.headers.get("content-type") ?? "",
-        async decodeAction() {
+        async decodeAction(_body, serverManifest) {
+          actionManifest = serverManifest;
           return () => {
             actionRan = true;
             return { count: 1 };
           };
         },
-        async decodeFormState(actionResult, body) {
+        async decodeFormState(actionResult, body, serverManifest) {
           expect(actionResult).toEqual({ count: 1 });
           expect(body.get("$ACTION_ID_test")).toBe("");
           expect(body.get("field")).toBe("value");
+          // Form state decodes the bound references again, through the same scope.
+          expect(serverManifest).toBe(actionManifest);
+          expect(() => Reflect.get(serverManifest, "foreign-action")).toThrow();
           return formState;
         },
         readFormDataWithLimit(readRequest) {
           return readRequest.formData();
         },
         request,
+        validateActionReferences: (actionIds) => !actionIds.includes("foreign-action"),
       }),
     );
 

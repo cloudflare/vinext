@@ -1,5 +1,5 @@
 import { ActionButton } from "../action-button";
-import { describeArgument } from "./actions";
+import { describeArgument, describeBoundArgument } from "./actions";
 
 export default function Page() {
   async function inlineArgumentAction() {
@@ -10,6 +10,7 @@ export default function Page() {
     <main>
       <ActionButton id="argument-refs" action={describeArgument} />
       <ActionButton id="argument-refs-inline" action={inlineArgumentAction} />
+      <ActionButton id="argument-refs-bound" action={describeBoundArgument} />
     </main>
   );
 }

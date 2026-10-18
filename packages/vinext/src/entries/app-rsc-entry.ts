@@ -823,9 +823,7 @@ import {
   renderToReadableStream as _renderToReadableStream,
   ${
     hasServerActions
-      ? `decodeAction,
-  decodeFormState,
-  loadServerAction,
+      ? `loadServerAction,
   createTemporaryReferenceSet,`
       : ""
   }
@@ -843,9 +841,13 @@ import {
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
 ${
   hasServerActions
-    ? `// plugin-rsc's decodeReply() fixes an unscoped server manifest; React's own
-// takes the manifest, so fetch actions can scope argument references per route.
-import { decodeReply as _decodeReply } from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
+    ? `// plugin-rsc's decoders fix an unscoped server manifest; React's own take the
+// manifest, so actions can scope the server references they decode per route.
+import {
+  decodeAction as _decodeAction,
+  decodeFormState as _decodeFormState,
+  decodeReply as _decodeReply,
+} from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
 `
     : ""
 }import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
@@ -1763,8 +1765,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         __clearRequestContext();
       },
       contentType,
-      decodeAction,
-      decodeFormState,
+      createServerManifest: _createServerManifest,
+      decodeAction: _decodeAction,
+      decodeFormState: _decodeFormState,
       getAndClearPendingCookies,
       getDraftModeCookieHeader,
       forwardAction(__progressiveActionId) {
