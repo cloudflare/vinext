@@ -268,7 +268,6 @@ export type HandleProgressiveServerActionRequestOptions = {
   getDraftModeCookieHeader: () => string | null | undefined;
   forwardAction?: (actionId: string) => Promise<Response | null>;
   validateActionReferences?: (actionIds: readonly string[]) => boolean;
-  loadServerAction: (actionId: string) => Promise<unknown>;
   /**
    * Whether the posted-to route resolves to an App Router *page* (as opposed to
    * a route handler or no match). Multipart form POSTs to a page are always
@@ -286,51 +285,6 @@ export type HandleProgressiveServerActionRequestOptions = {
   routePattern: string;
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
-
-/**
- * Collect every server reference (`$h`) a React reply payload can decode into a
- * function. `models` maps reply part ids to the model React resolves a
- * reference's metadata from; `values` are every parsed value the decoder may
- * revive. Returns null when a reference does not resolve to `{ id: string }`
- * metadata in the raw payload, so callers reject it instead of letting the
- * decoder load an unchecked export.
- */
-function collectReplyServerReferenceIds(
-  models: ReadonlyMap<string, unknown>,
-  values: Iterable<unknown>,
-): Set<string> | null {
-  const referencedIds = new Set<string>();
-  const pending: unknown[] = [...values];
-  while (pending.length > 0) {
-    const value = pending.pop();
-    if (typeof value === "string") {
-      if (!value.startsWith("$h")) continue;
-      const [encodedChunkId, ...path] = value.slice(2).split(":");
-      const chunkId = Number.parseInt(encodedChunkId, 16);
-      if (!Number.isSafeInteger(chunkId) || chunkId < 0) return null;
-      let metadata = models.get(String(chunkId));
-      for (const segment of path) {
-        if (
-          typeof metadata !== "object" ||
-          metadata === null ||
-          !Object.hasOwn(metadata, segment)
-        ) {
-          return null;
-        }
-        metadata = Reflect.get(metadata, segment);
-      }
-      if (typeof metadata !== "object" || metadata === null) return null;
-      const id = Reflect.get(metadata, "id");
-      // React revives `$`-prefixed strings before reading the id, so the raw
-      // value would not be the id it loads. Real ids never start with `$`.
-      if (typeof id !== "string" || id.startsWith("$")) return null;
-      referencedIds.add(id);
-    } else if (typeof value === "object" && value !== null) {
-      for (const nested of Object.values(value)) pending.push(nested);
-    }
-  }
-  return referencedIds;
-}
 
 function parseBoundProgressiveActionReference(
   body: FormData,
@@ -359,80 +313,42 @@ function parseBoundProgressiveActionReference(
   }
 
   const actionId = Reflect.get(rootMetadata, "id");
-  const boundReferenceIds = collectReplyServerReferenceIds(chunks, chunks.values());
-  if (!boundReferenceIds) return null;
-  return { actionId, referencedActionIds: [...new Set([actionId, ...boundReferenceIds])] };
-}
-
-function tryParseJson(json: string): { value: unknown } | null {
-  try {
-    return { value: JSON.parse(json) };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Collect the server references in a fetch action's `decodeReply()` body. A
- * string body is React's part `0`; a multipart body carries model parts under
- * numeric keys (FormData and Blob parts use other keys or non-string values).
- * React reads a part's model from its first entry, but stream parts repeat a
- * key: async-iterable entries are parsed inside an iterator-result template, so
- * an entry that is not JSON on its own is scanned in that form too. A part that
- * parses neither way cannot decode to a value and is left for React to reject.
- */
-function collectFetchActionReferenceIds(body: string | FormData): string[] | null {
-  const models = new Map<string, unknown>();
-  const seenKeys = new Set<string>();
-  const values: unknown[] = [];
-  const entries: Iterable<[string, FormDataEntryValue]> =
-    typeof body === "string" ? [["0", body]] : body;
-  for (const [key, value] of entries) {
-    if (!/^\d+$/.test(key)) continue;
-    const isFirstEntry = !seenKeys.has(key);
-    seenKeys.add(key);
-    if (typeof value !== "string") continue;
-    const model = tryParseJson(value);
-    if (model) {
-      if (isFirstEntry) models.set(key, model.value);
-      values.push(model.value);
-      continue;
-    }
-    // A `C` entry closes the stream; a bare `C` closes it with undefined.
-    const iteratorResult = value.startsWith("C")
-      ? value.length > 1
-        ? tryParseJson(`{"done":true,"value":${value.slice(1)}}`)
-        : null
-      : tryParseJson(`{"done":false,"value":${value}}`);
-    if (iteratorResult) values.push(iteratorResult.value);
-  }
-  const referencedIds = collectReplyServerReferenceIds(models, values);
-  return referencedIds ? [...referencedIds] : null;
-}
-
-/**
- * Production references are authorized by the action-owner manifest. Dev has
- * no manifest, so its path-based references must load as the registered
- * Server Action they name, mirroring the check on the invoked action itself.
- */
-async function areServerReferencesRegistered(
-  actionIds: readonly string[],
-  loadServerAction: (actionId: string) => Promise<unknown>,
-): Promise<boolean> {
-  for (const actionId of actionIds) {
-    if (!requiresRegisteredServerReferenceMatch(actionId)) continue;
-    let action: unknown;
-    try {
-      action = await loadOutsideRequestScopes(() => loadServerAction(actionId));
-    } catch (error) {
-      if (isServerActionNotFoundError(error, actionId)) return false;
-      throw error;
-    }
-    if (!isAppServerActionFunction(action) || !matchesRegisteredServerReference(action, actionId)) {
-      return false;
+  const referencedActionIds = new Set<string>([actionId]);
+  for (const chunk of chunks.values()) {
+    const values: unknown[] = [chunk];
+    while (values.length > 0) {
+      const value = values.pop();
+      if (typeof value === "string") {
+        if (!value.startsWith("$h")) continue;
+        const [encodedChunkId, ...path] = value.slice(2).split(":");
+        const chunkId = Number.parseInt(encodedChunkId, 16);
+        if (!Number.isSafeInteger(chunkId) || chunkId < 0) return null;
+        let metadata = chunks.get(String(chunkId));
+        for (const segment of path) {
+          if (
+            typeof metadata !== "object" ||
+            metadata === null ||
+            !Object.hasOwn(metadata, segment)
+          ) {
+            return null;
+          }
+          metadata = Reflect.get(metadata, segment);
+        }
+        if (
+          typeof metadata !== "object" ||
+          metadata === null ||
+          typeof Reflect.get(metadata, "id") !== "string"
+        ) {
+          return null;
+        }
+        referencedActionIds.add(Reflect.get(metadata, "id"));
+      } else if (typeof value === "object" && value !== null) {
+        values.push(...Object.values(value));
+      }
     }
   }
-  return true;
+
+  return { actionId, referencedActionIds: [...referencedActionIds] };
 }
 
 export type HandleServerActionRscRequestOptions<
@@ -465,8 +381,15 @@ export type HandleServerActionRscRequestOptions<
     overrides?: AppRenderErrorContextOverrides,
   ) => (error: unknown) => unknown;
   createTemporaryReferenceSet: () => TTemporaryReferences;
+  /** plugin-rsc's server manifest, which resolves any export of a server-reference module. */
+  createServerManifest: () => object;
+  /**
+   * React's `decodeReply()`. Every server reference in the arguments resolves
+   * through `serverManifest`, so the manifest bounds which functions can decode.
+   */
   decodeReply: (
     body: string | FormData,
+    serverManifest: object,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
   draftModeSecret: string;
@@ -485,12 +408,11 @@ export type HandleServerActionRscRequestOptions<
   isRscRequest: boolean;
   loadServerAction: (actionId: string) => Promise<unknown>;
   /**
-   * Authorize the server references decoded from the action arguments for the
-   * current route. Next.js resolves argument references through the current
-   * page's server-action manifest, so an export that is not a Server Action of
-   * this route must not decode into a callable function.
+   * Whether these Server Actions belong to the current route. Next.js resolves
+   * argument references through the current page's server module map, so an
+   * action owned by another route must not decode into a callable function.
    */
-  validateActionReferences?: (actionIds: readonly string[]) => boolean;
+  validateActionReferences: (actionIds: readonly string[]) => boolean;
   /**
    * Match an action redirect target. Must use *request* route identity — the
    * raw, undecoded pathname — because the target is rendered as if the client
@@ -1404,17 +1326,6 @@ export async function handleProgressiveServerActionRequest(
         getAndClearPendingCookies: options.getAndClearPendingCookies,
       });
     }
-    // Bound arguments of an `$ACTION_REF_` payload are decoded with the action,
-    // so their references must be registered before decodeAction() loads them.
-    if (
-      actionKey?.startsWith("$ACTION_REF_") &&
-      !(await areServerReferencesRegistered(referencedActionIds, options.loadServerAction))
-    ) {
-      return createActionNotFoundResponse(directActionId, {
-        clearRequestContext: options.clearRequestContext,
-        getAndClearPendingCookies: options.getAndClearPendingCookies,
-      });
-    }
 
     const action = await loadOutsideRequestScopes(() => options.decodeAction(body));
     if (!isAppServerActionFunction(action)) {
@@ -1805,25 +1716,19 @@ export async function handleServerActionRscRequest<
       action = loadedAction;
     }
 
-    // decodeReply() resolves `$h` references through a manifest that accepts any
-    // export of a server-reference module. Authorize every argument reference as
-    // a Server Action of this route before decoding can load it.
-    const argumentReferenceIds = collectFetchActionReferenceIds(body);
-    if (
-      argumentReferenceIds === null ||
-      (options.validateActionReferences &&
-        !options.validateActionReferences(argumentReferenceIds)) ||
-      !(await areServerReferencesRegistered(argumentReferenceIds, options.loadServerAction))
-    ) {
-      return createActionNotFoundResponse(options.actionId, {
-        clearRequestContext: options.clearRequestContext,
-        getAndClearPendingCookies: options.getAndClearPendingCookies,
-      });
-    }
-
+    // Scope the manifest React resolves argument references through to this
+    // route's Server Actions, as Next.js scopes its server module map to the
+    // current page. React then fails to resolve any other id wherever the
+    // payload carries it, so that module never loads.
+    const serverManifest = new Proxy(options.createServerManifest(), {
+      get(target, id, receiver) {
+        if (typeof id === "string" && !options.validateActionReferences([id])) return undefined;
+        return Reflect.get(target, id, receiver);
+      },
+    });
     const temporaryReferences = options.createTemporaryReferenceSet();
     const args = await loadOutsideRequestScopes(() =>
-      options.decodeReply(body, { temporaryReferences }),
+      options.decodeReply(body, serverManifest, { temporaryReferences }),
     );
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
