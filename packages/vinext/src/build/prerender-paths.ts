@@ -1060,6 +1060,7 @@ function cachePolicyRuleMatchesWarmPath(
   return hostnames.some((hostname) => {
     const matchPathname = normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
       hostname,
+      trailingSlash: config.trailingSlash,
     });
     let sourceMatched = false;
     matchHeaders(

@@ -71,6 +71,43 @@ test.describe("i18n config rules with mixed-case locale prefixes", () => {
     }
   });
 
+  test("headers() negative lookaheads skip the locale prefix and apply once", async ({
+    request,
+  }) => {
+    // Next.js matches header rules only in their `/:nextInternalLocale(...)`
+    // form against the default-locale-prefixed path, so the lookahead sees
+    // `api/hello` rather than `sv/api/hello`, and `/about` matches once.
+    // `/` becomes `/en`, which `/((?!api).*)` does not match. Expected values
+    // were observed against real Next.js 16.2.7 with the same rule.
+    const lookaheadHeaders = async (pathname: string) => {
+      const response = await request.get(`${BASE_URL}${pathname}?locale-lookahead=1`, {
+        maxRedirects: 0,
+      });
+      const values = (name: string) =>
+        response
+          .headersArray()
+          .filter((header) => header.name.toLowerCase() === name)
+          .map((header) => header.value);
+      return {
+        cookies: values("set-cookie").filter((value) => value.startsWith("locale-lookahead=")),
+        header: response.headers()["x-locale-lookahead-header"],
+        status: response.status(),
+      };
+    };
+
+    for (const pathname of ["/about", "/en/about", "/sv/about", "/SV/about"]) {
+      const { cookies, header, status } = await lookaheadHeaders(pathname);
+      expect(status, pathname).toBe(200);
+      expect(header, pathname).toBe("page");
+      expect(cookies, pathname).toEqual(["locale-lookahead=1"]);
+    }
+    for (const pathname of ["/", "/api/hello", "/en/api/hello", "/sv/api/hello"]) {
+      const { cookies, header } = await lookaheadHeaders(pathname);
+      expect(header, pathname).toBeUndefined();
+      expect(cookies, pathname).toEqual([]);
+    }
+  });
+
   test("rewrites() applies to mixed-case locale prefixes", async ({ request }) => {
     for (const pathname of [
       "/locale-case-rewrite",

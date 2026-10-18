@@ -441,6 +441,15 @@ export async function runPagesRequest(
         hostname: requestHostname,
       })
     : requestConfigPathname;
+  // Header matching keeps the root's trailing slash like Next.js (`/` ->
+  // `/en/` under `trailingSlash: true`), so a root rule's
+  // `/:nextInternalLocale(...)/` source matches.
+  const requestHeaderMatchPathname = i18nConfig
+    ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
+        hostname: requestHostname,
+        trailingSlash,
+      })
+    : requestConfigPathname;
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
@@ -500,7 +509,7 @@ export async function runPagesRequest(
     const matchedConfigHeaders: HeaderRecord = {};
     applyConfigHeadersToHeaderRecord(matchedConfigHeaders, {
       configHeaders,
-      pathname: requestConfigMatchPathname,
+      pathname: requestHeaderMatchPathname,
       requestContext: reqCtx,
       basePathState,
       middlewareHeaders: response.headers,
@@ -712,7 +721,7 @@ export async function runPagesRequest(
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
-      pathname: requestConfigMatchPathname,
+      pathname: requestHeaderMatchPathname,
       requestContext: reqCtx,
       basePathState,
       recordCacheability: deps.recordCacheability,

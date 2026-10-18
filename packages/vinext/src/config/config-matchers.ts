@@ -1433,17 +1433,19 @@ function _escapeRegexString(value: string): string {
  *     starts with `/:nextInternalLocale(en|sv|nl)` so that locale-prefixed
  *     URLs match. For redirects only, a second variant prefixed with
  *     `/${defaultLocale}` is also emitted, matching Next.js exactly.
- *   - **Vinext divergence**: we ALSO retain the original (unprefixed) source
- *     so that requests for the default locale that arrive without a prefix
- *     still match. Next.js solves this upstream by path-normalising every
- *     incoming default-locale request to include the prefix
- *     (`resolve-routes.ts` lines ~251-263); vinext currently does that
- *     normalisation only inside the pages-server-entry route matcher, so
- *     the rewrite/redirect matcher would otherwise miss unprefixed paths.
- *     Keeping the unprefixed variant gives functionally identical behaviour
- *     without requiring a server-wide path normalisation pass. The original
- *     source is appended LAST so the locale-aware variants win when both
- *     forms could match.
+ *   - Headers get only that variant, exactly like Next.js. Every header
+ *     matcher caller splices the (domain-aware) default locale into
+ *     unprefixed request paths first (`normalizeDefaultLocalePathname`,
+ *     mirroring `resolve-routes.ts`), so `/about` is matched as `/en/about`.
+ *     `/_next/*` paths are left unprefixed and therefore only match
+ *     `locale: false` rules, as in Next.js.
+ *   - **Vinext divergence (redirects/rewrites only)**: we ALSO retain the
+ *     original (unprefixed) source, appended LAST so the locale-aware
+ *     variants win when both forms could match. Their callers normalise
+ *     default-locale paths too, so this is a legacy fallback. Headers never
+ *     get it: it would apply rules Next.js skips (`/((?!api).*)` would match
+ *     `/fr/api/x` as `fr/api/x`), and default-locale requests would match
+ *     both variants, appending additive headers such as `Set-Cookie` twice.
  *
  * Destinations that are local (start with `/`) are similarly rewritten with
  * `/:nextInternalLocale` for the locale-capture variant so the locale
@@ -1522,10 +1524,10 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
     }
     out.push(internalRoute);
 
-    // Retain the original unprefixed source as a fallback so default-locale
-    // requests that arrive without a prefix (e.g. `/old`) still match.
-    // See the docblock above for why this differs from upstream Next.js.
-    out.push(r);
+    // Retain the original unprefixed source as a redirect/rewrite fallback.
+    // See the docblock above for why this differs from upstream Next.js and
+    // why headers never get it.
+    if (type !== "header") out.push(r);
   }
   return out;
 }

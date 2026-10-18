@@ -1153,6 +1153,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // request-scoped constants from this point on.
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+  // Header matching keeps the root's trailing slash like Next.js (`/` ->
+  // `/en/` under `trailingSlash: true`), so a root rule's
+  // `/:nextInternalLocale(...)/` source matches.
+  const headerMatchPathname = normalizeDefaultLocalePathname(
+    requestCleanPathname,
+    options.i18nConfig,
+    { hostname: url.hostname, trailingSlash: options.trailingSlash },
+  );
 
   // Config sources match the request's raw encoded identity. Internal route
   // matching uses the normalized pathname separately, but decoding literal
@@ -1274,6 +1282,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           basePath: options.basePath,
           configHeaders: options.configHeaders,
           i18nConfig: options.i18nConfig,
+          trailingSlash: options.trailingSlash,
           middlewareHeaders: middlewareContext.headers,
           recordCacheability: dispatchResponseStage === undefined,
           requestContext: preMiddlewareRequestContext,
@@ -1288,7 +1297,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
-        pathname: matchPathname(requestCleanPathname),
+        pathname: headerMatchPathname,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       });
@@ -1333,7 +1342,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolveResponseStageCachePolicy({
               basePathState,
               configHeaders: options.configHeaders,
-              pathname: matchPathname(requestCleanPathname),
+              pathname: headerMatchPathname,
               requestContext: preMiddlewareRequestContext,
             }),
           ),
@@ -1544,6 +1553,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       basePath: options.basePath,
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
+      trailingSlash: options.trailingSlash,
       middlewareHeaders: middlewareContext.headers,
       overwriteExisting: preserveExistingPolicy ? new Set<string>() : isCdnResponsePolicyHeader,
       recordCacheability: dispatchResponseStage === undefined,
@@ -1566,6 +1576,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        trailingSlash: options.trailingSlash,
         middlewareHeaders: middlewareContext.headers,
         overwriteExisting: isCdnResponsePolicyHeader,
         recordCacheability: false,
@@ -2194,6 +2205,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        trailingSlash: options.trailingSlash,
         middlewareHeaders: middlewareContext.headers,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
@@ -3193,6 +3205,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            trailingSlash: options.trailingSlash,
             middlewareHeaders: middlewareContext.headers,
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,
