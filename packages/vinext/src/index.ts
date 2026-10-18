@@ -2686,7 +2686,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // NEXT_PUBLIC_* defines for the client bundle.
         const mode = env?.mode ?? "development";
         if (config.envDir !== false) {
-          const envDir = config.envDir ?? root;
+          // Like Vite, resolve a relative envDir from the project root.
+          const envDir = config.envDir ? path.resolve(root, config.envDir) : root;
           loadDotenv({ root: envDir, mode });
         }
         if (rscPluginPromise) {

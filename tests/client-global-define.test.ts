@@ -139,6 +139,32 @@ describe("client `global` define (config)", () => {
     },
   );
 
+  it("resolves a relative envDir from the project root, like Vite", async () => {
+    const key = "NEXT_PUBLIC_RELATIVE_ENV_DIR";
+    const previous = process.env[key];
+    delete process.env[key];
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      // The project root is not the cwd, so a cwd-relative envDir would miss it.
+      expect(path.resolve("env")).not.toBe(path.join(tmpDir, "env"));
+      await fsp.mkdir(path.join(tmpDir, "env"));
+      await fsp.writeFile(path.join(tmpDir, "env", ".env.production"), `${key}=from-env-dir\n`);
+      const plugins = vinext() as VinextPlugin[];
+      const mainPlugin = plugins.find((p) => p.name === "vinext:config");
+      const result = (await mainPlugin!.config!(
+        { root: tmpDir, envDir: "env", build: {}, plugins: [], optimizeDeps: {} },
+        { command: "build", mode: "production" },
+      )) as { define?: Record<string, string> };
+
+      expect(process.env[key]).toBe("from-env-dir");
+      expect(result.define?.[`process.env.${key}`]).toBe(JSON.stringify("from-env-dir"));
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
     const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
     const previousLocalOnly = process.env.NEXT_PUBLIC_LOCAL_ONLY;
