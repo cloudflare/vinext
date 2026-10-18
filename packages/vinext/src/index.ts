@@ -489,6 +489,9 @@ function scopeRscPlugin(plugin: Plugin): Plugin {
 // previous CLI contract that project dotenv values are available while that
 // config is evaluated. The plugin hook loads again later for custom envDir.
 const earlyViteCliInvocation = getViteCliInvocation();
+// The values the early pass loaded, so the config hook can replace them when
+// Vite's resolved envDir is another directory.
+let earlyDotenv: { dir: string; env: Record<string, string> } | undefined;
 const viteCliBuildConfigNodeEnv =
   earlyViteCliInvocation?.command === "build" && process.env.NODE_ENV === "test"
     ? "test"
@@ -505,7 +508,11 @@ if (earlyViteCliInvocation) {
           : "development",
     );
   }
-  loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
+  earlyDotenv = {
+    dir: path.resolve(earlyViteCliInvocation.root),
+    env: loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode })
+      .loadedEnv,
+  };
 }
 
 // Install the process-level error backstop at module load.
@@ -2685,11 +2692,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // env vars are available in config, server-side code, and as
         // NEXT_PUBLIC_* defines for the client bundle.
         const mode = env?.mode ?? "development";
-        if (config.envDir !== false) {
-          // Like Vite, resolve a relative envDir from the project root.
-          const envDir = config.envDir ? path.resolve(root, config.envDir) : root;
-          loadDotenv({ root: envDir, mode });
+        // Like Vite, resolve a relative envDir from the project root.
+        const envDir =
+          config.envDir === false
+            ? undefined
+            : config.envDir
+              ? path.resolve(root, config.envDir)
+              : root;
+        if (earlyDotenv && envDir !== earlyDotenv.dir) {
+          // Values the early pass read from another directory must not shadow
+          // this envDir's. Variables set before vinext loaded stay.
+          for (const [key, value] of Object.entries(earlyDotenv.env)) {
+            if (process.env[key] === value) Reflect.deleteProperty(process.env, key);
+          }
+          earlyDotenv = undefined;
         }
+        if (envDir) loadDotenv({ root: envDir, mode });
         if (rscPluginPromise) {
           // Like Next.js, closure arguments of Server Actions and "use cache"
           // functions are encrypted with this key, and a runtime

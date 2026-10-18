@@ -15,7 +15,7 @@
  * (webpack-style), and layered into the client dep optimizer so pre-bundled
  * deps (which bypass plugin transforms) get the rewrite too.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import { createServer, loadEnv, type ViteDevServer } from "vite-plus";
 import os from "node:os";
 import fs from "node:fs";
@@ -164,6 +164,56 @@ describe("client `global` define (config)", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("replaces the CLI's early root .env values with a configured envDir's", async () => {
+    const keys = [
+      "NEXT_PUBLIC_EARLY_ENV_SHARED",
+      "NEXT_PUBLIC_EARLY_ENV_ROOT_ONLY",
+      "NEXT_PUBLIC_EARLY_ENV_CALLER",
+    ];
+    const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+    for (const key of keys) delete process.env[key];
+    process.env.NEXT_PUBLIC_EARLY_ENV_CALLER = "from-caller";
+    const originalArgv = process.argv;
+    const tmpDir = await setupTmpProject(`export default {};`);
+    try {
+      await fsp.writeFile(
+        path.join(tmpDir, ".env"),
+        "NEXT_PUBLIC_EARLY_ENV_SHARED=from-root\n" +
+          "NEXT_PUBLIC_EARLY_ENV_ROOT_ONLY=from-root\n" +
+          "NEXT_PUBLIC_EARLY_ENV_CALLER=from-root\n",
+      );
+      await fsp.mkdir(path.join(tmpDir, "env"));
+      await fsp.writeFile(
+        path.join(tmpDir, "env", ".env"),
+        "NEXT_PUBLIC_EARLY_ENV_SHARED=from-env-dir\n",
+      );
+      // `vite <root>`: vinext loads the root's .env files when it is imported,
+      // before vite.config is evaluated.
+      process.argv = ["node", "/project/node_modules/vite/bin/vite.js", tmpDir];
+      vi.resetModules();
+      const { default: freshVinext } = await import("../packages/vinext/src/index.js");
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_SHARED).toBe("from-root");
+
+      const plugins = freshVinext() as VinextPlugin[];
+      const mainPlugin = plugins.find((p) => p.name === "vinext:config");
+      await mainPlugin!.config!(
+        { root: tmpDir, envDir: "env", build: {}, plugins: [], optimizeDeps: {} },
+        { command: "serve", mode: "development" },
+      );
+
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_SHARED).toBe("from-env-dir");
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_ROOT_ONLY).toBeUndefined();
+      expect(process.env.NEXT_PUBLIC_EARLY_ENV_CALLER).toBe("from-caller");
+    } finally {
+      process.argv = originalArgv;
+      for (const key of keys) {
+        if (previous[key] === undefined) delete process.env[key];
+        else process.env[key] = previous[key];
+      }
+      await fsp.rm(tmpDir, { recursive: true, force: true });
+    }
+  }, 15000);
 
   it("excludes .env.local from NEXT_PUBLIC defines in test mode", async () => {
     const previousFromTest = process.env.NEXT_PUBLIC_FROM_TEST_MODE;
