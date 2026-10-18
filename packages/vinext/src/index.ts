@@ -8203,6 +8203,22 @@ export const loadServerActionClient = ${
       configResolved(config) {
         nitroPublicDir = config.publicDir;
       },
+      // Nitro points the client build at its static output, so Vite's build
+      // metadata (`.vite/`) lands there, and vinext reads it during the build.
+      // Remove it before Nitro bundles its server, which lists every file in
+      // that directory as a static asset, so the source-file → chunk mapping
+      // and unlinked route paths aren't served. The Node server and
+      // `.assetsignore` on Cloudflare keep it private the same way.
+      buildStart() {
+        if (this.environment?.name !== "nitro" || this.environment.mode !== "build") return;
+        const config = this.environment.getTopLevelConfig();
+        const clientOutDir = config.environments.client?.build.outDir;
+        if (!clientOutDir) return;
+        fs.rmSync(path.resolve(config.root, clientOutDir, ".vite"), {
+          recursive: true,
+          force: true,
+        });
+      },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
           nitroBuildDir = nitro.options.buildDir
