@@ -597,6 +597,25 @@ describe("App Router Production server (startProdServer)", () => {
     await expect(res.text()).resolves.toBe("Internal Server Error");
   });
 
+  // Next.js runEdgeFunction() appends each edge response header onto the Node
+  // response that already holds middleware's, so both values are sent.
+  it("appends a hybrid edge Pages API route's headers after middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/middleware-header-precedence-edge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("cache-control")).toBe("private, max-age=7, no-store");
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-header-precedence")).toBe("middleware, handler");
+    expect(res.headers.get("proxy-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+    expect(res.headers.getSetCookie()).toEqual([
+      "middleware-cookie=1; Path=/",
+      "handler-cookie=1; Path=/",
+    ]);
+    await expect(res.text()).resolves.toBe("unauthorized");
+  });
+
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
     // request.url))`, so routing this request would echo the target's origin.

@@ -127,6 +127,7 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -2810,14 +2811,33 @@ async function createPagesRouterRequestHandler(
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? (request: Request, apiUrl: string) =>
-                handleApi(
+            ? async (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+                // Next.js installs middleware and next.config headers before
+                // the API route runs: a Node handler's setHeader() replaces
+                // them and an edge handler's headers follow them, skipping
+                // values already present.
+                const initialResponseHeaders = new Headers(stagedHeaders);
+                initialResponseHeaders.delete("Content-Length");
+                const response = await handleApi(
                   request,
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
-                )
+                  initialResponseHeaders,
+                );
+                // The pipeline adds the staged cookies ahead of the
+                // handler's, so drop the copy the response inherited.
+                const stripped = stripInheritedResponseStageCookies(
+                  response,
+                  initialResponseHeaders,
+                );
+                if (stripped !== response && isVinextStreamedApiResponse(response)) {
+                  (stripped as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse =
+                    true;
+                }
+                return stripped;
+              }
             : null,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served

@@ -117,7 +117,7 @@ function applyPagesMiddlewareContext(
 /**
  * Compose request-stage middleware headers onto a Pages API response returned
  * by a response stage. The stage's API route already applied them per runtime
- * (before a Node handler ran, over an edge handler's) and removed the
+ * (before a Node handler ran, ahead of an edge handler's) and removed the
  * inherited cookies, so only headers the response lacks (for example on a
  * stage protocol error) and middleware's cookies, ahead of the response's
  * own, are re-added here.
@@ -221,8 +221,8 @@ export async function renderPagesFallback(
     ] as const;
     // Next.js writes middleware response headers onto the Node response before
     // a Pages API handler runs, so the handler's own setHeader() replaces them.
-    // The API route installs them itself (and keeps the middleware-wins merge
-    // for edge handlers); only middleware's status is applied here.
+    // The API route installs them itself (and appends an edge handler's after
+    // them); only middleware's status is applied here.
     let middlewareResponseHeaders: Headers | undefined;
     if (middlewareContext.headers) {
       middlewareResponseHeaders = new Headers();

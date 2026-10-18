@@ -30,8 +30,8 @@ export function middleware(request: NextRequest) {
   ) {
     response.cookies.set("session", session.value, { path: "/", httpOnly: true, maxAge: 600 });
   }
-  // The Node Pages API handler's own headers must replace these, as in
-  // Next.js; the edge route keeps vinext's middleware-wins merge.
+  // The Node Pages API handler's own headers must replace these, and the edge
+  // handler's must follow them, as in Next.js.
   if (
     request.nextUrl.pathname === "/api/middleware-header-precedence" ||
     request.nextUrl.pathname === "/api/middleware-header-precedence-edge"

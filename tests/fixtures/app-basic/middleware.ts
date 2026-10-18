@@ -249,8 +249,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return response;
   }
 
-  // The Node Pages API handler's own headers must replace these, as in Next.js.
-  if (pathname === "/api/middleware-header-precedence") {
+  // The Node Pages API handler's own headers must replace these, and the edge
+  // handler's must follow them, as in Next.js.
+  if (
+    pathname === "/api/middleware-header-precedence" ||
+    pathname === "/api/middleware-header-precedence-edge"
+  ) {
     response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
     response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
     response.headers.set("Cache-Control", "private, max-age=7");
@@ -641,6 +645,7 @@ export const config = {
     "/config-cookie-response",
     "/external-headers/:path*",
     "/api/middleware-header-precedence",
+    "/api/middleware-header-precedence-edge",
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-append-header",

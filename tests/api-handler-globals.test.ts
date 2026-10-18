@@ -85,6 +85,9 @@ function mockRes(): MockResponse {
     setHeader(name: string, value: string | string[]) {
       headers[name.toLowerCase()] = value;
     },
+    getHeader(name: string) {
+      return headers[name.toLowerCase()];
+    },
     write(data: string | Buffer | Uint8Array) {
       const chunk =
         typeof data === "string"

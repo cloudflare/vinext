@@ -1221,6 +1221,41 @@ describe("handleApiRoute", () => {
       expect(res._body.toString()).toBe("ok");
     });
 
+    // Ported from Next.js: packages/next/src/server/next-server.ts
+    // runEdgeFunction() and base-http/node.ts NodeNextResponse.appendHeader().
+    it("appends edge API headers after middleware's, skipping values already present", async () => {
+      const handler = vi.fn(() => {
+        const headers = new Headers({
+          "Cache-Control": "no-store",
+          "x-custom": "same",
+          "x-edge": "1",
+        });
+        headers.append("set-cookie", "mw=1; Path=/");
+        headers.append("set-cookie", "h=1; Path=/");
+        return new Response("ok", { headers });
+      });
+      const server = mockServer({
+        config: { runtime: "edge" },
+        default: handler,
+      });
+      const req = mockReq("GET", "/api/users", undefined, {
+        host: "example.com",
+      });
+      const res = mockRes();
+      // As flushed by the dev pipeline before the API route runs.
+      res.setHeader("cache-control", "private, max-age=7");
+      res.setHeader("x-custom", "same");
+      res.setHeader("set-cookie", ["mw=1; Path=/"]);
+
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+
+      expect(res._statusCode).toBe(200);
+      expect(res._headers["cache-control"]).toEqual(["private, max-age=7", "no-store"]);
+      expect(res._headers["x-custom"]).toBe("same");
+      expect(res._headers["x-edge"]).toBe("1");
+      expect(res._headers["set-cookie"]).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    });
+
     it("streams edge API response bodies through the dev bridge", async () => {
       let releaseSecondChunk!: () => void;
       const secondChunkReady = new Promise<void>((resolve) => {

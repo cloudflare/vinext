@@ -111,9 +111,9 @@ type HandlePagesApiRouteOptions = {
   /** Headers installed before user code, matching Next.js custom-route ordering. */
   initialResponseHeaders?: Headers;
   /**
-   * Middleware response headers. Node handlers receive them on `res` before
-   * they run, as in Next.js, so the handler's own `setHeader()` wins. Edge
-   * handlers keep vinext's middleware-wins merge onto the returned Response.
+   * Middleware response headers. As in Next.js, Node handlers receive them on
+   * `res` before they run, so the handler's own `setHeader()` wins, and an
+   * edge handler's headers are appended after them.
    */
   middlewareResponseHeaders?: Headers | null;
   match: PagesApiRouteMatch | null;
@@ -181,20 +181,51 @@ function hasHandlerCdnResponsePolicy(
   return false;
 }
 
-function applyEdgeMiddlewareResponseHeaders(
+/**
+ * Next.js runEdgeFunction() appends every edge response header onto the Node
+ * response that already holds next.config and middleware headers, so a header
+ * both set keeps each value, the edge handler's last. Its appendHeader() skips
+ * a value the header already carries.
+ */
+function appendEdgeApiResponseHeaders(
   response: Response,
+  initialHeaders: Headers | undefined,
   middlewareHeaders: Headers | null | undefined,
 ): Response {
-  if (!middlewareHeaders) return response;
-  // Record the handler's own policy before middleware can replace its value.
+  // Record the handler's own policy before a value middleware shares hides it.
   if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
-  // Next.js's send-response only appends Set-Cookie for Pages API routes, so a
-  // handler's challenge never joins middleware's.
-  return applyRouteHandlerMiddlewareContext(
-    response,
-    { headers: middlewareHeaders, status: null },
-    { appendResponseChallenges: false },
-  );
+  if (!initialHeaders?.keys().next().value && !middlewareHeaders?.keys().next().value) {
+    return response;
+  }
+  // Installed like a Node handler's `res`: middleware's values replace
+  // next.config's, and its cookies follow them.
+  const values = new Map<string, string[]>();
+  for (const source of [initialHeaders, middlewareHeaders]) {
+    for (const [name, value] of source ?? []) {
+      if (name !== "set-cookie") values.set(name, [value]);
+    }
+  }
+  values.set("set-cookie", [
+    ...(initialHeaders?.getSetCookie() ?? []),
+    ...(middlewareHeaders?.getSetCookie() ?? []),
+  ]);
+  const append = (name: string, value: string) => {
+    const current = values.get(name) ?? [];
+    if (!current.includes(value)) values.set(name, [...current, value]);
+  };
+  for (const [name, value] of response.headers) {
+    if (name !== "set-cookie") append(name, value);
+  }
+  for (const cookie of response.headers.getSetCookie()) append("set-cookie", cookie);
+  const headers = new Headers();
+  for (const [name, list] of values) {
+    for (const value of list) headers.append(name, value);
+  }
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
 }
 
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
@@ -247,27 +278,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await tracePagesApiHandler(route.pattern, () => handler(nextRequest));
       if (response instanceof Response) {
-        const finalized = applyEdgeMiddlewareResponseHeaders(
+        return appendEdgeApiResponseHeaders(
           finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker"),
+          options.initialResponseHeaders,
           options.middlewareResponseHeaders,
         );
-        if (
-          !options.initialResponseHeaders ||
-          !options.initialResponseHeaders.keys().next().value
-        ) {
-          return finalized;
-        }
-        const headers = new Headers(options.initialResponseHeaders);
-        for (const [name, value] of finalized.headers) {
-          if (name.toLowerCase() !== "set-cookie") headers.set(name, value);
-        }
-        const finalizedCookies = finalized.headers.getSetCookie();
-        for (const cookie of finalizedCookies) headers.append("Set-Cookie", cookie);
-        return new Response(finalized.body, {
-          headers,
-          status: finalized.status,
-          statusText: finalized.statusText,
-        });
       }
 
       throw new Error("Edge API route did not return a Response");

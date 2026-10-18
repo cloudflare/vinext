@@ -2332,7 +2332,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               matchKind,
               middlewareCookieOverlay,
               // An API route applies middleware headers itself: before a Node
-              // handler runs (its own values win) or over an edge handler's.
+              // handler runs (its own values win) or ahead of an edge handler's.
               preHandlerHeaders:
                 cache === "shared" && resourceKind === "page" && dataKind === "static"
                   ? null

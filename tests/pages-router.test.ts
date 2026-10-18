@@ -2028,6 +2028,25 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Next.js runEdgeFunction() appends each edge response header onto the Node
+  // response that already holds middleware's, so both values are sent.
+  it("appends a Pages edge API route's headers after middleware's in dev", async () => {
+    const res = await fetch(`${baseUrl}/api/middleware-header-precedence-edge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("cache-control")).toBe("private, max-age=7, no-store");
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-header-precedence")).toBe("middleware, handler");
+    expect(res.headers.get("proxy-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+    expect(res.headers.getSetCookie()).toEqual([
+      "middleware-cookie=1; Path=/",
+      "handler-cookie=1; Path=/",
+    ]);
+    await expect(res.text()).resolves.toBe("unauthorized");
+  });
+
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-general/test/index.test.ts
   it("passes middleware rewrite search params to Pages Router edge API nextUrl", async () => {
@@ -8237,6 +8256,25 @@ describe("Production server middleware (Pages Router)", () => {
     // Next.js sends no Content-Type; this server gives every API response
     // without one its application/octet-stream default.
     await expect(res.text()).resolves.toBe("Internal Server Error");
+  });
+
+  // Next.js runEdgeFunction() appends each edge response header onto the Node
+  // response that already holds middleware's, so both values are sent.
+  it("appends a Pages-only edge API route's headers after middleware's", async () => {
+    const res = await fetch(`${prodUrl}/api/middleware-header-precedence-edge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("cache-control")).toBe("private, max-age=7, no-store");
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-header-precedence")).toBe("middleware, handler");
+    expect(res.headers.get("proxy-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+    expect(res.headers.getSetCookie()).toEqual([
+      "middleware-cookie=1; Path=/",
+      "handler-cookie=1; Path=/",
+    ]);
+    await expect(res.text()).resolves.toBe("unauthorized");
   });
 
   it("serves dotted dynamic API route segments in production", async () => {

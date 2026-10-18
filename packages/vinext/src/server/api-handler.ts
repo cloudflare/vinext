@@ -447,13 +447,20 @@ export async function handleApiRoute(
 
       res.statusCode = response.status;
       res.statusMessage = response.statusText;
-      const setCookieHeaders = response.headers.getSetCookie();
+      // Next.js runEdgeFunction() appends every edge response header after the
+      // middleware and next.config headers already on `res`, and its
+      // NodeNextResponse.appendHeader() skips a value the header already has.
+      const appendHeader = (name: string, value: string) => {
+        const current = res.getHeader(name);
+        const values =
+          current === undefined ? [] : (Array.isArray(current) ? current : [current]).map(String);
+        if (!values.includes(value))
+          res.setHeader(name, values.length ? [...values, value] : value);
+      };
       response.headers.forEach((value, name) => {
-        if (name !== "set-cookie") res.setHeader(name, value);
+        if (name !== "set-cookie") appendHeader(name, value);
       });
-      if (setCookieHeaders.length) {
-        res.setHeader("set-cookie", setCookieHeaders);
-      }
+      for (const cookie of response.headers.getSetCookie()) appendHeader("set-cookie", cookie);
       await writeEdgeApiResponseBody(res, response.body, nextRequest.signal);
       return true;
     }

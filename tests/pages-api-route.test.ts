@@ -205,14 +205,66 @@ describe("pages api route", () => {
     expect(cookies[2]).toMatch(/^__next_preview_data=;/);
   });
 
-  it("keeps middleware headers ahead of an edge handler's own", async () => {
-    const middlewareResponseHeaders = new Headers({ "Cache-Control": "private, max-age=7" });
+  // Ported from Next.js: packages/next/src/server/next-server.ts
+  // runEdgeFunction() appends each edge response header onto the Node response
+  // that already holds next.config and middleware headers.
+  it("appends an edge handler's headers after next.config and middleware headers", async () => {
+    const middlewareResponseHeaders = new Headers({
+      "Cache-Control": "private, max-age=7",
+      "Proxy-Authenticate": 'Basic realm="middleware"',
+      "WWW-Authenticate": 'Basic realm="middleware"',
+      "x-custom": "middleware",
+    });
+    middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
+    const initialResponseHeaders = new Headers({ "x-config": "config", "x-custom": "config" });
+
+    const response = await handlePagesApiRoute({
+      initialResponseHeaders,
+      match: createMatch(
+        () => {
+          const headers = new Headers({
+            "Cache-Control": "no-store",
+            "WWW-Authenticate": 'Bearer realm="handler"',
+            "x-custom": "handler",
+            "x-edge": "1",
+          });
+          headers.append("Set-Cookie", "handler=1; Path=/");
+          return new Response("edge", { headers, status: 401 });
+        },
+        {},
+        { runtime: "edge" },
+      ),
+      middlewareResponseHeaders,
+      request: new Request("https://example.com/api/edge"),
+      url: "/api/edge",
+    });
+
+    expect(response.status).toBe(401);
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=7, no-store");
+    expect(response.headers.get("WWW-Authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(response.headers.get("Proxy-Authenticate")).toBe('Basic realm="middleware"');
+    expect(response.headers.get("x-custom")).toBe("middleware, handler");
+    expect(response.headers.get("x-config")).toBe("config");
+    expect(response.headers.get("x-edge")).toBe("1");
+    expect(response.headers.get("Content-Type")).toBe("text/plain;charset=UTF-8");
+    expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
+    await expect(response.text()).resolves.toBe("edge");
+  });
+
+  // Ported from Next.js: packages/next/src/server/base-http/node.ts
+  // NodeNextResponse.appendHeader() only adds a value the header lacks.
+  it("skips edge handler header values that middleware already set", async () => {
+    const middlewareResponseHeaders = new Headers({ "x-custom": "same" });
     middlewareResponseHeaders.append("Set-Cookie", "middleware=1; Path=/");
 
     const response = await handlePagesApiRoute({
       match: createMatch(
         () => {
-          const headers = new Headers({ "Cache-Control": "no-store", "x-edge": "1" });
+          const headers = new Headers({ "x-custom": "same" });
+          headers.append("Set-Cookie", "middleware=1; Path=/");
+          headers.append("Set-Cookie", "handler=1; Path=/");
           headers.append("Set-Cookie", "handler=1; Path=/");
           return new Response("edge", { headers });
         },
@@ -224,9 +276,29 @@ describe("pages api route", () => {
       url: "/api/edge",
     });
 
-    expect(response.headers.get("Cache-Control")).toBe("private, max-age=7");
-    expect(response.headers.get("x-edge")).toBe("1");
+    expect(response.headers.get("x-custom")).toBe("same");
     expect(response.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
+  });
+
+  it("records an edge handler's policy even when middleware set the same value", async () => {
+    const state: { explicitResponseCachePolicy?: boolean } = {};
+    const ctx = { waitUntil() {} };
+    Reflect.set(ctx, CACHEABILITY_REQUEST_STATE, state);
+
+    const response = await handlePagesApiRoute({
+      ctx,
+      match: createMatch(
+        () => new Response("edge", { headers: { "Cache-Control": "public, s-maxage=60" } }),
+        {},
+        { runtime: "edge" },
+      ),
+      middlewareResponseHeaders: new Headers({ "Cache-Control": "public, s-maxage=60" }),
+      request: new Request("https://example.com/api/edge-policy"),
+      url: "/api/edge-policy",
+    });
+
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    expect(state.explicitResponseCachePolicy).toBe(true);
   });
 
   it("does not expose process environment variables on the request", async () => {
@@ -808,8 +880,8 @@ describe("pages api route", () => {
       url: "/api/cookies",
     });
 
+    // As in Next.js, the handler's copy of the staged cookie is not repeated.
     expect(response.headers.getSetCookie()).toEqual([
-      "middleware=one; Path=/",
       "middleware=one; Path=/",
       "handler=one; Path=/",
       "handler=two; Expires=Wed, 21 Oct 2037 07:28:00 GMT; Path=/",

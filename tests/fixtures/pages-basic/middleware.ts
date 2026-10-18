@@ -72,8 +72,12 @@ export function middleware(request: NextRequest) {
   // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
   response.headers.set("x-mw-pathname", url.pathname);
 
-  // The Node Pages API handler's own headers must replace these, as in Next.js.
-  if (url.pathname === "/api/middleware-header-precedence") {
+  // The Node Pages API handler's own headers must replace these, and the edge
+  // handler's must follow them, as in Next.js.
+  if (
+    url.pathname === "/api/middleware-header-precedence" ||
+    url.pathname === "/api/middleware-header-precedence-edge"
+  ) {
     response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
     response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
     response.headers.set("Cache-Control", "private, max-age=7");
@@ -419,6 +423,7 @@ export const config = {
     "/api/edge-request-signal",
     "/api/append-header",
     "/api/middleware-header-precedence",
+    "/api/middleware-header-precedence-edge",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {
