@@ -20,8 +20,7 @@ import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
-import { splitPathSegments } from "../routing/utils.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { addBasePathToPathname, hasBasePath } from "../utils/base-path.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -162,8 +161,6 @@ type ProgressiveServerActionSideEffects = {
   /** Resolved revalidation kind to emit via `x-action-revalidated`. */
   revalidationKind: ActionRevalidationKind;
 };
-
-type AppServerActionRouteRuntime = "edge" | "experimental-edge" | "nodejs" | null;
 
 type ProgressiveServerActionResult =
   | ({
@@ -388,8 +385,8 @@ export type HandleServerActionRscRequestOptions<
   draftModeSecret: string;
   /**
    * Hydrate a route's lazy page/route-handler modules before reading
-   * `route.page` / `route.routeHandler` on action redirect targets and
-   * re-render targets obtained via `matchRoute`/`getSourceRoute`. Idempotent.
+   * `route.page` / `route.routeHandler` on action re-render targets obtained
+   * via `getSourceRoute`. Idempotent.
    */
   ensureRouteLoaded?: (route: TRoute) => unknown;
   findIntercept: (pathname: string) => AppServerActionIntercept<TPage> | null;
@@ -400,14 +397,6 @@ export type HandleServerActionRscRequestOptions<
   isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadServerAction: (actionId: string) => Promise<unknown>;
-  /**
-   * Match an action redirect target. Must use *request* route identity — the
-   * raw, undecoded pathname — because the target is rendered as if the client
-   * had navigated to it. A matcher that decodes would resolve an encoded alias
-   * like `/%61dmin` to `/admin` and render a page the navigation itself, and
-   * the middleware that just ran for `/%61dmin`, would never have reached.
-   */
-  matchRoute: (pathname: string) => AppServerActionMatch<TRoute> | null;
   maxActionBodySize: number;
   /** Verbatim `serverActions.bodySizeLimit` config string (e.g. "2mb") for the body-exceeded error. */
   maxActionBodySizeLabel: string;
@@ -435,7 +424,6 @@ export type HandleServerActionRscRequestOptions<
   resolveRouteFetchCacheMode?: (route: TRoute) => FetchCacheMode | null;
   resolveRouteRevalidateSeconds?: (route: TRoute) => number | null;
   resolveRouteDynamicConfig?: (route: TRoute) => string | null | undefined;
-  resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
   request: Request;
   sanitizeErrorForClient: (error: unknown) => unknown;
   searchParams: URLSearchParams;
@@ -814,6 +802,18 @@ function withoutRscBodyHeaders(headers: Headers): Headers {
   return nextHeaders;
 }
 
+/**
+ * A fetch-action redirect the client follows itself. `redirectHeaders` already
+ * carries the source path's config headers, so mark them applied: at 200,
+ * finalization would otherwise apply them again (duplicate Set-Cookie, or a
+ * Flight Content-Type restored onto the empty body).
+ */
+function createHeaderOnlyActionRedirectResponse(redirectHeaders: Headers): Response {
+  return markAppRscResponseConfigHeadersApplied(
+    new Response(null, { status: 200, headers: withoutRscBodyHeaders(redirectHeaders) }),
+  );
+}
+
 function isReadableStreamBody(body: BodyInit | null): body is ReadableStream<Uint8Array> {
   return typeof ReadableStream !== "undefined" && body instanceof ReadableStream;
 }
@@ -1074,62 +1074,6 @@ function resolveInternalActionRedirectTarget(
   } catch {
     return null;
   }
-}
-
-function isAncestorRouteRedirect(targetPathname: string, currentPathname: string): boolean {
-  return targetPathname !== "/" && currentPathname.startsWith(`${targetPathname}/`);
-}
-
-function isStaleChildSiblingRouteRedirect(
-  targetPathname: string,
-  currentPathname: string,
-): boolean {
-  const targetSegments = splitPathSegments(targetPathname);
-  const currentSegments = splitPathSegments(currentPathname);
-  // Only deeper-to-shallower redirects can be stale in the Next.js worker
-  // model (same-depth siblings share the same page worker). The depth guard
-  // ensures we don't misclassify same-level redirects.
-  if (targetSegments.length === 0 || currentSegments.length <= targetSegments.length) {
-    return false;
-  }
-
-  let commonPrefixLength = 0;
-  const maxPrefixLength = Math.min(targetSegments.length, currentSegments.length);
-  while (
-    commonPrefixLength < maxPrefixLength &&
-    targetSegments[commonPrefixLength] === currentSegments[commonPrefixLength]
-  ) {
-    commonPrefixLength++;
-  }
-
-  return commonPrefixLength > 0 && commonPrefixLength < targetSegments.length;
-}
-
-function normalizeRuntime(runtime: AppServerActionRouteRuntime): "edge" | "nodejs" {
-  if (runtime === "edge" || runtime === "experimental-edge") {
-    return "edge";
-  }
-  return "nodejs";
-}
-
-function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRoute>(options: {
-  actionWasForwarded: boolean;
-  currentPathname: string;
-  currentRoute: TRoute | null;
-  resolveRouteRuntime?: (route: TRoute) => AppServerActionRouteRuntime;
-  targetPathname: string;
-  targetRoute: TRoute | null;
-}): boolean {
-  if (options.actionWasForwarded) return true;
-  if (isAncestorRouteRedirect(options.targetPathname, options.currentPathname)) return true;
-  if (isStaleChildSiblingRouteRedirect(options.targetPathname, options.currentPathname)) {
-    return true;
-  }
-  if (!options.currentRoute || !options.targetRoute || !options.resolveRouteRuntime) return false;
-
-  const currentRuntime = normalizeRuntime(options.resolveRouteRuntime(options.currentRoute));
-  const targetRuntime = normalizeRuntime(options.resolveRouteRuntime(options.targetRoute));
-  return currentRuntime !== targetRuntime;
 }
 
 /**
@@ -1783,6 +1727,11 @@ export async function handleServerActionRscRequest<
       if (actionDraftCookie) redirectHeaders.append("Set-Cookie", actionDraftCookie);
       setActionRevalidatedHeader(redirectHeaders, actionRevalidationKind);
 
+      // Every fetch-action redirect below answers 200, never 303: the client
+      // router navigates from ACTION_REDIRECT_HEADER, and a body-carrying 303
+      // without a Location is mangled by some intermediaries. Only the no-JS
+      // form path (handleProgressiveServerActionRequest) answers 303. Ported
+      // from Next.js action-handler.ts (vercel/next.js#96310, v16.3.0).
       const redirectTarget = resolveInternalActionRedirectTarget(
         actionRedirectUrl,
         options.request.url,
@@ -1790,10 +1739,7 @@ export async function handleServerActionRscRequest<
       );
       if (!redirectTarget) {
         options.clearRequestContext();
-        return new Response(null, {
-          status: 303,
-          headers: withoutRscBodyHeaders(redirectHeaders),
-        });
+        return createHeaderOnlyActionRedirectResponse(redirectHeaders);
       }
 
       let targetResponse: Response | null = null;
@@ -1830,31 +1776,15 @@ export async function handleServerActionRscRequest<
       ) {
         targetResponse?.body?.cancel().catch(() => {});
         options.clearRequestContext();
-        return new Response(null, {
-          status: 303,
-          headers: withoutRscBodyHeaders(redirectHeaders),
-        });
+        return createHeaderOnlyActionRedirectResponse(redirectHeaders);
       }
 
       mergeActionRedirectTargetHeaders(redirectHeaders, targetResponse.headers);
-      const targetPathname = stripBasePath(redirectTarget.pathname, options.basePath ?? "");
-      const targetMatch = options.matchRoute(targetPathname);
-      const currentMatch = options.currentRouteMatch;
-      const redirectResponseStatus = shouldUseForwardedActionRedirectStatus({
-        actionWasForwarded,
-        currentPathname: options.cleanPathname,
-        currentRoute: currentMatch?.route ?? null,
-        resolveRouteRuntime: options.resolveRouteRuntime,
-        targetPathname,
-        targetRoute: targetMatch?.route ?? null,
-      })
-        ? 200
-        : 303;
 
       return markAppRscResponseConfigHeadersApplied(
         createServerActionRscResponse(
           targetResponse.body,
-          { status: redirectResponseStatus, headers: redirectHeaders },
+          { status: 200, headers: redirectHeaders },
           options.clearRequestContext,
         ),
       );

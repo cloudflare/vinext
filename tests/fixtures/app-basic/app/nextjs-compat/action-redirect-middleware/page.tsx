@@ -1,9 +1,11 @@
 import {
+  permanentRedirectToAbout,
   redirectToBlockedPath,
   redirectToAbout,
   redirectToConfigRedirect,
   redirectToConfigRewrite,
   redirectToEncodedBlockedPath,
+  redirectToExternal,
   redirectToMiddlewareRedirect,
   redirectToMiddlewareRewrite,
   redirectToPagesRoute,
@@ -46,6 +48,16 @@ export default function Page() {
       <form action={redirectToAbout}>
         <button id="redirect-to-about" type="submit">
           Redirect to about
+        </button>
+      </form>
+      <form action={permanentRedirectToAbout}>
+        <button id="permanent-redirect-to-about" type="submit">
+          Permanent redirect to about
+        </button>
+      </form>
+      <form action={redirectToExternal}>
+        <button id="redirect-to-external" type="submit">
+          Redirect to external URL
         </button>
       </form>
       <form action={redirectToPagesRoute}>
