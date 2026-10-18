@@ -240,6 +240,8 @@ type AppRouterConfig = {
   draftModeSecret?: string;
   /** Server-only token used to authorize build-time prerender endpoints. */
   prerenderSecret?: string;
+  /** next.config `skipProxyUrlNormalize`. */
+  skipProxyUrlNormalize?: boolean;
   /** next.config `skipTrailingSlashRedirect`. */
   skipTrailingSlashRedirect?: boolean;
   /** Dev-only key authenticating the hybrid Pages handler's forwarded middleware context. */
@@ -667,6 +669,7 @@ const __requestHandler = createAppRscRequestHandler({
   }
   rootParamNamesByPattern: {},
   setNavigationContext,
+  skipProxyUrlNormalize: ${JSON.stringify(config?.skipProxyUrlNormalize ?? false)},
   skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
   staticParamsMap: {},
   trailingSlash: __trailingSlash,
@@ -2099,6 +2102,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   }
   rootParamNamesByPattern: rootParamNamesMap,
   setNavigationContext,
+  skipProxyUrlNormalize: ${JSON.stringify(config?.skipProxyUrlNormalize ?? false)},
   skipTrailingSlashRedirect: ${JSON.stringify(config?.skipTrailingSlashRedirect ?? false)},
   staticParamsMap: generateStaticParamsMap,
   trailingSlash: __trailingSlash,

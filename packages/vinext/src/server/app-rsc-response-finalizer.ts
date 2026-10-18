@@ -27,8 +27,11 @@ type FinalizeAppRscResponseOptions = {
    * default-locale URLs (issue #1336, item 4).
    */
   i18nConfig: NextI18nConfig | null;
-  /** Keeps the root's trailing slash when the default locale is spliced in. */
-  trailingSlash?: boolean;
+  /**
+   * Whether the root keeps its trailing slash when the default locale is
+   * spliced in (`shouldRestoreLocaleRootTrailingSlash` on the raw request).
+   */
+  restoreLocaleRootTrailingSlash?: boolean;
   /**
    * Original pre-middleware request context.
    * Next.js evaluates config header has/missing conditions against the
@@ -80,7 +83,7 @@ export async function applyAppRscConfigHeaders(
   const matchPathname = options.i18nConfig
     ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, {
         hostname: url.hostname,
-        trailingSlash: options.trailingSlash,
+        restoreRootTrailingSlash: options.restoreLocaleRootTrailingSlash,
       })
     : pathname;
 

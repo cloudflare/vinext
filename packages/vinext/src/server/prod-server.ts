@@ -127,6 +127,7 @@ import type { NextI18nConfig } from "../config/next-config.js";
 import { readTrustedRevalidationHostname } from "./revalidation-host.js";
 import { readStaticFileSignal } from "./static-file-signal.js";
 import { traceFrameworkRequest } from "./request-tracing.js";
+import { shouldRestoreLocaleRootTrailingSlash } from "./pages-i18n.js";
 
 /**
  * mtime of the build each bare (query-less) server-entry URL was first
@@ -2576,6 +2577,10 @@ async function createPagesRouterRequestHandler(
       // only applies default rules to requests inside basePath, and only
       // applies `basePath: false` rules to requests outside it.
       const hadBasePath = !basePath || hasBasePath(requestPathname, basePath);
+      const restoreLocaleRootTrailingSlash = shouldRestoreLocaleRootTrailingSlash(requestPathname, {
+        trailingSlash,
+        skipProxyUrlNormalize,
+      });
       let configMatchPathname = stripBasePath(requestPathname, basePath);
       {
         const strippedPathname = stripBasePath(pathname, basePath);
@@ -2714,6 +2719,10 @@ async function createPagesRouterRequestHandler(
             recordCacheability: false,
             rawSearch: sourceUrl.search,
             configMatchPathname: strippedSourcePathname,
+            restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+              sourceRequestPathname,
+              { trailingSlash, skipProxyUrlNormalize },
+            ),
             runMiddleware: runNodeMiddleware
               ? wrapMiddlewareWithBasePath(runNodeMiddleware, basePath, sourceHadBasePath)
               : null,
@@ -2777,6 +2786,7 @@ async function createPagesRouterRequestHandler(
             ? authorizeOnDemandRevalidate
             : undefined,
         configMatchPathname,
+        restoreLocaleRootTrailingSlash,
         matchPageRoute: matchPageRoute ?? null,
         matchApiRoute: matchApiRoute ?? null,
         // Pass the original (pre-basePath-stripping) URL to middleware so that

@@ -32540,20 +32540,34 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     expect(match("/_next/static/chunks/main.js")).toEqual([]);
   });
 
-  it("matchHeaders keeps the root trailing slash under trailingSlash: true", async () => {
-    // Next.js re-adds the trailing slash after splicing in the default locale,
-    // so `/` is matched as `/en/` against the `/:nextInternalLocale(en|fr)/`
-    // source that a root rule becomes under trailingSlash: true.
+  it("matchHeaders keeps the root trailing slash where Next.js restores it", async () => {
+    // Next.js re-adds the root's trailing slash after splicing in the default
+    // locale only when the raw request pathname (basePath included) ended
+    // with `/`, trailingSlash is on, and skipProxyUrlNormalize is off
+    // (resolve-routes.ts `hadTrailingSlash` + `maybeAddTrailingSlash`).
     const { matchHeaders, applyLocaleToRoutes } =
       await import("../packages/vinext/src/config/config-matchers.js");
-    const { normalizeDefaultLocalePathname } =
+    const { normalizeDefaultLocalePathname, shouldRestoreLocaleRootTrailingSlash } =
       await import("../packages/vinext/src/server/pages-i18n.js");
     const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
-    expect(normalizeDefaultLocalePathname("/", i18n, { trailingSlash: true })).toBe("/en/");
-    expect(normalizeDefaultLocalePathname("/about/", i18n, { trailingSlash: true })).toBe(
-      "/en/about/",
-    );
-    expect(normalizeDefaultLocalePathname("/", i18n, { trailingSlash: false })).toBe("/en");
+    const trailing = { trailingSlash: true };
+    const rootPathname = (
+      rawPathname: string,
+      config: { trailingSlash: boolean; skipProxyUrlNormalize?: boolean } = trailing,
+    ) =>
+      normalizeDefaultLocalePathname("/", i18n, {
+        restoreRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(rawPathname, config),
+      });
+
+    expect(rootPathname("/")).toBe("/en/");
+    // basePath "/docs": `/docs` becomes `/docs/en`, `/docs/` becomes `/docs/en/`.
+    expect(rootPathname("/docs")).toBe("/en");
+    expect(rootPathname("/docs/")).toBe("/en/");
+    expect(rootPathname("/", { ...trailing, skipProxyUrlNormalize: true })).toBe("/en");
+    expect(rootPathname("/", { trailingSlash: false })).toBe("/en");
+    expect(
+      normalizeDefaultLocalePathname("/about/", i18n, { restoreRootTrailingSlash: true }),
+    ).toBe("/en/about/");
 
     const rules = applyLocaleToRoutes(
       [
@@ -32562,15 +32576,22 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
       ],
       i18n,
       "header",
-      { trailingSlash: true },
+      trailing,
     );
     const rootHeaders = [
       { key: "x-root", value: "1" },
       { key: "x-page", value: "1" },
     ];
-    const pathname = normalizeDefaultLocalePathname("/", i18n, { trailingSlash: true });
-    expect(matchHeaders(pathname, rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders(rootPathname("/docs/"), rules, emptyCtx)).toEqual(rootHeaders);
     expect(matchHeaders("/fr/", rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders(rootPathname("/docs"), rules, emptyCtx)).toEqual([]);
+    expect(
+      matchHeaders(
+        rootPathname("/", { ...trailing, skipProxyUrlNormalize: true }),
+        rules,
+        emptyCtx,
+      ),
+    ).toEqual([]);
   });
 });
 

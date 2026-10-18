@@ -138,7 +138,11 @@ import {
   shouldAddTrailingSlashToPagesDataPath,
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
-import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
+import {
+  resolvePagesI18nRequest,
+  shouldRestoreLocaleRootTrailingSlash,
+  stripI18nLocaleForApiRoute,
+} from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
@@ -5085,6 +5089,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
                 crossOrigin: nextConfig?.crossOrigin,
+                skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize,
                 skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
@@ -7041,6 +7046,11 @@ export const loadServerActionClient = ${
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
+                // The pre-Vite URL still carries the basePath.
+                restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+                  canonicalOriginalUrl.split("?")[0],
+                  nextConfig ?? {},
+                ),
                 runMiddleware: devRunMiddlewareAdapter,
                 // Treat App route handlers as an API filesystem match too. The
                 // pipeline may then emit an API intent instead of continuing
