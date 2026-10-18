@@ -10,7 +10,10 @@ import {
   handlePagesApiRoute,
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
-import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
+import {
+  isVinextStreamedApiResponse,
+  type PagesApiReqResResponse,
+} from "../packages/vinext/src/server/pages-node-compat.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { CACHEABILITY_REQUEST_STATE } from "../packages/vinext/src/shims/cacheability-classification.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
@@ -383,6 +386,97 @@ describe("pages api route", () => {
       }
     },
   );
+
+  // Ported from Next.js: packages/next/src/server/api-utils/node/api-resolver.ts
+  // answers a thrown handler with sendError() on the same `res`.
+  it("keeps the headers a thrown Node handler set on its 500", async () => {
+    const middlewareResponseHeaders = new Headers({ "x-custom": "mw" });
+    middlewareResponseHeaders.append("Set-Cookie", "mw=1; Path=/");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch((_req, res) => {
+        res.setHeader("x-before", "1");
+        res.setHeader("Set-Cookie", "h=1; Path=/");
+        res.setHeader("Cache-Control", "no-store");
+        throw new Error("boom");
+      }),
+      middlewareResponseHeaders,
+      reportRequestError: vi.fn(),
+      request: new Request("https://example.com/api/throw"),
+      url: "/api/throw",
+    });
+
+    expect(response.status).toBe(500);
+    expect(response.headers.get("x-before")).toBe("1");
+    expect(response.headers.get("x-custom")).toBe("mw");
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(response.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(response.headers.has("Content-Type")).toBe(false);
+    await expect(response.text()).resolves.toBe("Internal Server Error");
+  });
+
+  it.each([
+    {
+      name: "an async throw replaces the status but keeps the Content-Type",
+      handler: async (res: PagesApiReqResResponse) => {
+        res.setHeader("Content-Type", "application/json");
+        res.statusCode = 418;
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        throw new Error("boom");
+      },
+      status: 500,
+      contentType: "application/json",
+      body: "Internal Server Error",
+    },
+    {
+      name: "a written head keeps its status",
+      handler: (res: PagesApiReqResResponse) => {
+        res.writeHead(202, { "x-before": "1" });
+        throw new Error("boom");
+      },
+      status: 202,
+      contentType: null,
+      body: "Internal Server Error",
+    },
+    {
+      name: "a started body gets the message appended",
+      handler: async (res: PagesApiReqResResponse) => {
+        res.status(201);
+        res.write("partial;");
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        throw new Error("boom");
+      },
+      status: 201,
+      contentType: null,
+      body: "partial;Internal Server Error",
+    },
+    {
+      name: "an ended response is left alone",
+      handler: (res: PagesApiReqResResponse) => {
+        res.status(201).end("ok");
+        throw new Error("boom");
+      },
+      status: 201,
+      contentType: null,
+      body: "ok",
+    },
+  ])("answers a thrown Node handler like sendError(): $name", async (testCase) => {
+    const reportRequestError = vi.fn();
+    const response = await handlePagesApiRoute({
+      ctx: { waitUntil() {} },
+      match: createMatch((_req, res) => testCase.handler(res)),
+      reportRequestError,
+      request: new Request("https://example.com/api/throw"),
+      url: "/api/throw",
+    });
+
+    expect(response.status).toBe(testCase.status);
+    expect(response.headers.get("Content-Type")).toBe(testCase.contentType);
+    await expect(response.text()).resolves.toBe(testCase.body);
+    await vi.waitFor(() =>
+      expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test"),
+    );
+  });
 
   it("returns 413 when the API body exceeds the default size limit", async () => {
     const response = await handlePagesApiRoute({
@@ -1149,6 +1243,117 @@ describe("pages api route", () => {
     expect(reportRequestError).toHaveBeenCalledWith(expect.any(Error), "/api/test");
   });
 
+  // Ported from Next.js: packages/next/src/server/api-utils/node/api-resolver.ts
+  // reports a failed handler once, from its catch.
+  it("reports a failed pipeline once when it destroys the response before writing", async () => {
+    const reportRequestError = vi.fn();
+    const failure = new Error("upstream failed");
+    let handlerSettled = false;
+
+    const response = await handlePagesApiRoute({
+      ctx: { waitUntil() {} },
+      match: createMatch(
+        async (_req, res) => {
+          const source = new Readable({
+            read() {
+              this.destroy(failure);
+            },
+          });
+          try {
+            await pipeline(source, res);
+          } finally {
+            handlerSettled = true;
+          }
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      reportRequestError,
+      request: new Request("https://example.com/api/pipe-fail"),
+      url: "/api/pipe-fail",
+    });
+
+    expect(response.status).toBe(500);
+    await vi.waitFor(() => expect(handlerSettled).toBe(true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reportRequestError).toHaveBeenCalledOnce();
+    expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
+  });
+
+  // Ported from Next.js: packages/next/src/server/api-utils/node/api-resolver.ts
+  // reports the handler's error from its catch, not the stream failure behind it.
+  it("reports the handler's own error when it rethrows a failed pipeline as another error", async () => {
+    const reportRequestError = vi.fn();
+    const streamFailure = new Error("upstream failed");
+    const handlerFailure = new Error("proxy failed");
+    const waitUntilPromises: Promise<unknown>[] = [];
+
+    const response = await handlePagesApiRoute({
+      ctx: {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      },
+      match: createMatch(
+        async (_req, res) => {
+          const source = new Readable({
+            read() {
+              this.destroy(streamFailure);
+            },
+          });
+          try {
+            await pipeline(source, res);
+          } catch {
+            throw handlerFailure;
+          }
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      reportRequestError,
+      request: new Request("https://example.com/api/pipe-rethrow"),
+      url: "/api/pipe-rethrow",
+    });
+
+    expect(response.status).toBe(500);
+    await Promise.all(waitUntilPromises);
+    await vi.waitFor(() => expect(reportRequestError).toHaveBeenCalled());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(reportRequestError).toHaveBeenCalledOnce();
+    expect(reportRequestError).toHaveBeenCalledWith(handlerFailure, "/api/test");
+  });
+
+  it("does not hold the 500 back for a handler still running after its response stream failed", async () => {
+    const reportRequestError = vi.fn();
+    let finishHandler!: () => void;
+    const handlerFinished = new Promise<void>((resolve) => {
+      finishHandler = resolve;
+    });
+    const streamFailure = new Error("upstream exploded");
+
+    const response = await handlePagesApiRoute({
+      match: createMatch(
+        async (_req, res) => {
+          res.destroy(streamFailure);
+          await handlerFinished;
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+      reportRequestError,
+      request: new Request("https://example.com/api/destroy-then-wait"),
+      url: "/api/destroy-then-wait",
+    });
+
+    expect(response.status).toBe(500);
+    expect(reportRequestError).not.toHaveBeenCalled();
+    finishHandler();
+    await vi.waitFor(() =>
+      expect(reportRequestError).toHaveBeenCalledWith(streamFailure, "/api/test"),
+    );
+    expect(reportRequestError).toHaveBeenCalledOnce();
+  });
+
   it("does not hang when the response stream is destroyed after partial output has started", async () => {
     // Regression: after the first write, the Fetch Response has already been
     // resolved. Destroying the Node-compatible res must error the body
@@ -1326,13 +1531,14 @@ describe("pages api route", () => {
     await vi.waitFor(() => expect(handlerSettled).toBe(true));
   });
 
-  it("unwinds a parked write when an active streaming handler rejects", async () => {
+  it("finishes a streaming response after its handler rejects with a parked write", async () => {
     let finishReporting!: () => void;
     const reportingFinished = new Promise<void>((resolve) => {
       finishReporting = resolve;
     });
     const reportRequestError = vi.fn(() => reportingFinished);
     const failure = new Error("handler failed after writing");
+    let writeSettled = false;
     let writeError: Error | null | undefined;
     const waitUntilPromises: Promise<unknown>[] = [];
 
@@ -1344,6 +1550,7 @@ describe("pages api route", () => {
       },
       match: createMatch(async (_req, res) => {
         res.write(Buffer.alloc(64 * 1024), (error: Error | null | undefined) => {
+          writeSettled = true;
           writeError = error;
         });
         throw failure;
@@ -1354,11 +1561,12 @@ describe("pages api route", () => {
     });
 
     expect(response.status).toBe(200);
-    await expect(response.text()).rejects.toThrow(failure.message);
+    const body = response.text();
     await vi.waitFor(() => {
-      expect(writeError).toBe(failure);
+      expect(writeSettled).toBe(true);
       expect(reportRequestError).toHaveBeenCalledWith(failure, "/api/test");
     });
+    expect(writeError).toBeFalsy();
     expect(waitUntilPromises).toHaveLength(1);
     let lifecycleSettled = false;
     void waitUntilPromises[0].then(() => {
@@ -1366,9 +1574,12 @@ describe("pages api route", () => {
     });
     await Promise.resolve();
     expect(lifecycleSettled).toBe(false);
+    // Like Next.js sendError(), the error message ends the started body once
+    // the error has been reported.
     finishReporting();
     await waitUntilPromises[0];
     expect(lifecycleSettled).toBe(true);
+    await expect(body).resolves.toBe("\0".repeat(64 * 1024) + "Internal Server Error");
   });
 
   it("passes cancellation errors to a parked write callback", async () => {
