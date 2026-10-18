@@ -1,9 +1,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { appIsrCacheKey, pagesIsrCacheKey } from "vinext/internal/server/isr-cache";
+import {
+  appIsrCacheKey,
+  appIsrFallbackShellKey,
+  pagesIsrCacheKey,
+} from "vinext/internal/server/isr-cache";
 import { extractVinextNextDataJson } from "vinext/internal/client/vinext-next-data";
 import {
+  isFallbackShellArtifactPath,
   readPrerenderManifest,
   type PrerenderManifestRoute,
 } from "vinext/internal/server/prerender-manifest";
@@ -58,14 +63,20 @@ function writeCacheAsset(
   const id = cacheAssetId(key);
   const extension = kind;
   const policy = cacheControl(route);
+  // A page's special error that escaped the shell keeps its status on the RSC
+  // entry too, and a redirect its location, as runtime ISR stores it.
+  const headers =
+    kind !== "rsc"
+      ? route.headers
+      : route.responseStatus !== undefined && route.headers?.location !== undefined
+        ? { location: route.headers.location }
+        : undefined;
   const metadata: StaticAssetCacheMetadata = {
     kind,
     lastModified: fs.statSync(sourcePath).mtimeMs,
     ...(policy ? { cacheControl: policy } : {}),
-    ...(kind !== "rsc" && route.headers ? { headers: route.headers } : {}),
-    ...(kind !== "rsc" && route.responseStatus !== undefined
-      ? { status: route.responseStatus }
-      : {}),
+    ...(headers ? { headers } : {}),
+    ...(route.responseStatus !== undefined ? { status: route.responseStatus } : {}),
   };
 
   fs.mkdirSync(outputDir, { recursive: true });
@@ -101,11 +112,14 @@ export function finalizeStaticAssetsPrerenderOutput(
     const pathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(pathname);
     if (route.router === "app") {
+      const appKey = isFallbackShellArtifactPath(pathname, route)
+        ? appIsrFallbackShellKey
+        : appIsrCacheKey;
       count += Number(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "html", manifest.buildId),
+          appKey(cachePathname, "html", manifest.buildId),
           "html",
           path.join(prerenderDir, getOutputPath(pathname, manifest.trailingSlash ?? false)),
           route,
@@ -115,7 +129,7 @@ export function finalizeStaticAssetsPrerenderOutput(
         writeCacheAsset(
           outputDir,
           index,
-          appIsrCacheKey(cachePathname, "rsc", manifest.buildId),
+          appKey(cachePathname, "rsc", manifest.buildId),
           "rsc",
           path.join(prerenderDir, getRscOutputPath(pathname)),
           route,

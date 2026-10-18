@@ -2,6 +2,7 @@
 
 import {
   handleRequestStageLocally,
+  isPagesClientBuildFileRequest,
   pagesRequestStageBuildId,
   pagesRequestStagePrerenderSecret,
   type PagesWorkerEnv,
@@ -54,15 +55,22 @@ async function handleSingleStageRequest(
   if (readinessResponse) {
     if (readinessResponse.status === 204) {
       await Promise.all([
-        ensureRequestStageInstrumentation(),
-        ensureResponseStageInstrumentation(),
+        ensureRequestStageInstrumentation(ctx),
+        ensureResponseStageInstrumentation(ctx),
       ]);
     }
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
 
+  // Client build files resolve no route, so they keep the ASSETS cache policy
+  // instead of passing through route cacheability admission.
+  const isClientBuildFile = isPagesClientBuildFileRequest(
+    request,
+    env,
+    ctx as PagesWorkerExecutionContext,
+  );
   let finalize: ((response: Response, context: typeof ctx) => Promise<Response>) | undefined;
-  if (request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
+  if (!isClientBuildFile && request.headers.has(VINEXT_CACHEABILITY_PROBE_HEADER)) {
     const cacheability = await import("./cacheability-request.js");
     const probeContext = cacheability.createWorkerCacheabilityContext(
       ctx,
@@ -84,7 +92,11 @@ async function handleSingleStageRequest(
   }
 
   const requiresCompletedResponseAdmission = adapter.requiresCompletedResponseAdmission === true;
-  if (!finalize && (__cacheabilityManifest || requiresCompletedResponseAdmission)) {
+  if (
+    !finalize &&
+    !isClientBuildFile &&
+    (__cacheabilityManifest || requiresCompletedResponseAdmission)
+  ) {
     const cacheability = await import("./cacheability-request.js");
     const admissionContext = cacheability.createWorkerCacheabilityAdmissionContext(
       ctx,

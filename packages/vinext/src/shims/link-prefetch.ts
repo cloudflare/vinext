@@ -1,5 +1,5 @@
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
+import { collapseLeadingSlashes, isAbsoluteOrProtocolRelativeUrl } from "./url-utils.js";
 
 export type LinkPrefetchIntent = "viewport" | "intent";
 export type LinkPrefetchPriority = "low" | "high";
@@ -74,15 +74,17 @@ export function getLinkPrefetchHref(input: {
     const parsed = href.startsWith("//") ? new URL(href, current.origin) : new URL(href);
     if (parsed.origin !== current.origin) return null;
 
+    // Never a protocol-relative "//host" path, matching toSameOriginAppPath().
+    const pathname = collapseLeadingSlashes(parsed.pathname);
     if (!basePath) {
-      return parsed.pathname + parsed.search + parsed.hash;
+      return pathname + parsed.search + parsed.hash;
     }
 
-    if (!hasBasePath(parsed.pathname, basePath)) {
+    if (!hasBasePath(pathname, basePath)) {
       return null;
     }
 
-    return stripBasePath(parsed.pathname, basePath) + parsed.search + parsed.hash;
+    return collapseLeadingSlashes(stripBasePath(pathname, basePath)) + parsed.search + parsed.hash;
   } catch {
     return null;
   }

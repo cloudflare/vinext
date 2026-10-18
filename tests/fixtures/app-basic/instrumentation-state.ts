@@ -62,9 +62,12 @@ export function recordRequestError(entry: CapturedRequestError): void {
   _getCapturedErrors().push(entry);
 }
 
-/** Reset all state (used between test runs if needed). */
+/**
+ * Reset the per-request state between tests. register() runs once at server
+ * startup and never again, so its flag is kept: clearing it would fail a
+ * startup test running in another worker against the same server.
+ */
 export function resetInstrumentationState(): void {
-  (globalThis as any)[REGISTER_CALLED_KEY] = false;
   (globalThis as any)[CAPTURED_ERRORS_KEY] = [];
   (globalThis as any)[MW_COUNT_KEY] = 0;
   (globalThis as any)[MW_PATHS_KEY] = [];

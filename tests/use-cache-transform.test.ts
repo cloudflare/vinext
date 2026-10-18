@@ -6,7 +6,7 @@
  */
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 import { parseAst, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 import { APP_FIXTURE_DIR, RSC_ENTRIES } from "./helpers.js";
@@ -365,16 +365,79 @@ describe("plugin-rsc inline use-cache references", () => {
       moduleId,
     );
     expect(result).not.toBeNull();
-    expect(result!.code).toMatch(
-      /\.bind\(null,\s*\$\$cacheRuntime\.encryptCacheCaptures\(\[capturedSecret\]\)\)/,
-    );
-    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
-    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
     const boundRegistration = result!.code.match(
       /registerCachedFunction\(\$\$hoist_[^,]+_getMessage\$\$impl,[^)]*\)/,
     )?.[0];
     expect(boundRegistration).toBeDefined();
     expect(boundRegistration).toContain('"argumentCount":0');
+    // The wrapper must require the encrypted captures, bound to this reference.
+    expect(boundRegistration).toContain('"captureCount":1');
+    const referenceId = boundRegistration!.match(/"serverReferenceId":("[^"]+")/)?.[1];
+    expect(referenceId).toBeDefined();
+    expect(result!.code).toContain(
+      `.bind(null, $$cacheRuntime.encryptCacheCaptures(${referenceId}, [capturedSecret]))`,
+    );
+    expect(result!.code).not.toMatch(/\.bind\(null,\s*capturedSecret\)/);
+    expect(result!.code).toContain("const [capturedSecret] = $$hoist_encoded");
+    // The enclosing cached component has no captures.
+    const outerRegistration = result!.code.match(
+      /registerCachedFunction\(\$\$hoist_[^,]+_CachedSection\$\$impl,[^)]*\)/,
+    )?.[0];
+    expect(outerRegistration).toBeDefined();
+    expect(outerRegistration).not.toContain("captureCount");
+  });
+
+  it("binds each inline function's exact captures to its own reference", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const code = [
+      `export async function Page({ tenant, label }) {`,
+      `  async function getOrders() {`,
+      `    "use cache";`,
+      `    return [tenant.id, tenant.region, label];`,
+      `  }`,
+      `  async function getStatic() {`,
+      `    "use cache";`,
+      `    return 1;`,
+      `  }`,
+      `  async function getLabel() {`,
+      `    "use cache";`,
+      `    return label;`,
+      `  }`,
+      `  return [getOrders, getStatic, getLabel];`,
+      `}`,
+    ].join("\n");
+
+    const result = await transform.call(
+      { environment: { name: "rsc", mode: "build" } },
+      code,
+      moduleId,
+    );
+    const referenceIdOf = (name: string) =>
+      result!.code
+        .match(
+          new RegExp(`registerCachedFunction\\(\\$\\$hoist_\\d+_${name}\\$\\$impl,[^)]*\\)`),
+        )?.[0]
+        .match(/"serverReferenceId":("[^"]+")/)?.[1];
+    const orders = referenceIdOf("getOrders");
+    const label = referenceIdOf("getLabel");
+    expect(orders).toBeDefined();
+    expect(label).toBeDefined();
+    expect(orders).not.toBe(label);
+    // A partially captured object is one capture.
+    const ordersCall = result!.code.slice(
+      result!.code.indexOf(`encryptCacheCaptures(${orders}, [`),
+    );
+    expect(ordersCall).toMatch(/^encryptCacheCaptures\("[^"]+", \[\{[^\]]*\}, label\]\)/);
+    expect(result!.code).toContain(`encryptCacheCaptures(${label}, [label])`);
+    const captureCounts = [...result!.code.matchAll(/"captureCount":(\d+)/g)].map(
+      (match) => match[1],
+    );
+    expect(captureCounts).toEqual(["2", "1"]);
   });
 
   it.each(["ssr", "client"])(
@@ -838,7 +901,6 @@ describe("plugin-rsc inline use-cache references", () => {
       setCacheHandler(new MemoryCacheHandler());
       for (const [name, options] of Object.entries(wrapperOptions)) {
         let calls = 0;
-        const encodeInvocationArgs = vi.fn(async (_args: unknown[]) => "encrypted");
         const cached = registerCachedFunction(
           async (props: { searchParams: Promise<Record<string, string>> }) => {
             calls++;
@@ -846,7 +908,7 @@ describe("plugin-rsc inline use-cache references", () => {
           },
           `${pageId}:${name}`,
           "",
-          { ...options, encodeInvocationArgs },
+          options,
         );
         const pageProps = (q: string) => ({
           params: makeThenableParams({}),
@@ -856,8 +918,6 @@ describe("plugin-rsc inline use-cache references", () => {
         await expect(cached(pageProps("first"))).resolves.toBe("first");
         await expect(cached(pageProps("second"))).resolves.toBe("second");
         expect(calls).toBe(2);
-        const [[replayProps]] = encodeInvocationArgs.mock.calls[0] as [[Record<string, unknown>]];
-        expect(Object.keys(replayProps)).toEqual(["params", "searchParams"]);
       }
     },
   );

@@ -1323,6 +1323,146 @@ describe("app route handler execution helpers", () => {
     },
   );
 
+  it("purges CDN tags queued while the completed response body is produced", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const cdnCalls: string[][] = [];
+    let cdnCallsAtClear: string[][] | undefined;
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      executeAppRouteHandler({
+        buildPageCacheTags(pathname, extraTags) {
+          return [pathname, ...extraTags];
+        },
+        cleanPathname: "/api/body-revalidate",
+        clearRequestContext() {
+          cdnCallsAtClear = [...cdnCalls];
+        },
+        consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+        executionContext: null,
+        getAndClearPendingCookies() {
+          return [];
+        },
+        getCollectedFetchTags() {
+          return [];
+        },
+        getDraftModeCookieHeader() {
+          return null;
+        },
+        handler: { dynamic: "auto", revalidate: 60 },
+        handlerFn() {
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async pull(controller) {
+                // Run after the handler's eager drain, while completion reads.
+                await new Promise((resolve) => setTimeout(resolve, 0));
+                revalidateTag("from-body");
+                controller.enqueue(new TextEncoder().encode("done"));
+                controller.close();
+              },
+            }),
+          );
+        },
+        isAutoHead: false,
+        isProduction: true,
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        markDynamicUsage: dynamicUsage.markDynamicUsage,
+        method: "GET",
+        middlewareContext: { headers: null, status: null },
+        params: {},
+        reportRequestError() {},
+        request: new Request("https://example.com/api/body-revalidate"),
+        revalidateSeconds: 60,
+        routePattern: "/api/body-revalidate",
+        setHeadersAccessPhase,
+      }),
+    );
+
+    await expect(response.text()).resolves.toBe("done");
+    expect(cdnCallsAtClear).toEqual([["from-body"]]);
+  });
+
+  it("purges CDN tags queued by a response body that fails during completion", async () => {
+    const dynamicUsage = createDynamicUsageState();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const cdnCalls: string[][] = [];
+    let cdnCallsAtClear: string[][] | undefined;
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        executeAppRouteHandler({
+          buildPageCacheTags(pathname, extraTags) {
+            return [pathname, ...extraTags];
+          },
+          cleanPathname: "/api/body-fails",
+          clearRequestContext() {
+            cdnCallsAtClear = [...cdnCalls];
+          },
+          consumeDynamicUsage: dynamicUsage.consumeDynamicUsage,
+          executionContext: null,
+          getAndClearPendingCookies() {
+            return [];
+          },
+          getCollectedFetchTags() {
+            return [];
+          },
+          getDraftModeCookieHeader() {
+            return null;
+          },
+          handler: { dynamic: "auto", revalidate: 60 },
+          handlerFn() {
+            return new Response(
+              new ReadableStream<Uint8Array>({
+                async pull(controller) {
+                  // Run after the handler's eager drain, while completion reads.
+                  await new Promise((resolve) => setTimeout(resolve, 0));
+                  revalidateTag("from-failed-body");
+                  controller.error(new Error("body failed"));
+                },
+              }),
+            );
+          },
+          isAutoHead: false,
+          isProduction: true,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          async isrSet() {},
+          markDynamicUsage: dynamicUsage.markDynamicUsage,
+          method: "GET",
+          middlewareContext: { headers: null, status: null },
+          params: {},
+          reportRequestError() {},
+          request: new Request("https://example.com/api/body-fails"),
+          revalidateSeconds: 60,
+          routePattern: "/api/body-fails",
+          setHeadersAccessPhase,
+        }),
+      );
+
+      expect(response.status).toBe(500);
+      expect(cdnCallsAtClear).toEqual([["from-failed-body"]]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("skips cache writes and marks the route dynamic when a revalidating handler fetches with no-store", async () => {
     // Regression test for the patched fetch's explicit no-store branch
     // calling markDynamicUsage() (upstream patch-fetch parity, where

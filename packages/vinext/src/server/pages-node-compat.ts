@@ -5,6 +5,7 @@ import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   clearPagesPreviewData,
   getPagesPreviewState,
@@ -38,28 +39,67 @@ export type PagesReqResRequest = Readable & {
   previewData: PagesPreviewData | false;
 };
 
+// Like @types/node's OutgoingHttpHeader, arrays are typed as string[] even
+// though appending to a number or boolean keeps that scalar in the list.
+type PagesReqResHeaderValue = string | number | boolean | string[];
+
 type PagesReqResHeaders = {
-  [key: string]: string | number | boolean | string[];
+  [key: string]: PagesReqResHeaderValue;
 };
+
+// Node's http validateHeaderName/validateHeaderValue rules.
+const HTTP_TOKEN_PATTERN = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+const INVALID_HEADER_VALUE_CHAR_PATTERN = /[^\t\x20-\x7e\x80-\xff]/;
+
+function createNodeTypeError(code: string, message: string): TypeError {
+  return Object.assign(new TypeError(message), { code });
+}
+
+function validateAppendedHeader(name: string, value: string | readonly string[]): void {
+  if (typeof name !== "string" || !name || !HTTP_TOKEN_PATTERN.test(name)) {
+    throw createNodeTypeError(
+      "ERR_INVALID_HTTP_TOKEN",
+      `Header name must be a valid HTTP token ["${String(name)}"]`,
+    );
+  }
+  for (const item of Array.isArray(value) ? value : [value]) {
+    if (item === undefined) {
+      throw createNodeTypeError(
+        "ERR_HTTP_INVALID_HEADER_VALUE",
+        `Invalid value "undefined" for header "${name}"`,
+      );
+    }
+    if (INVALID_HEADER_VALUE_CHAR_PATTERN.test(String(item))) {
+      throw createNodeTypeError(
+        "ERR_INVALID_CHAR",
+        `Invalid character in header content ["${name}"]`,
+      );
+    }
+  }
+}
 
 export type PagesReqResResponse = Writable & {
   statusCode: number;
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
-  setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
-  getHeader: (name: string) => string | number | boolean | string[] | undefined;
+  setHeader: (name: string, value: PagesReqResHeaderValue) => PagesReqResResponse;
+  appendHeader: (name: string, value: string | readonly string[]) => PagesReqResResponse;
+  getHeader: (name: string) => PagesReqResHeaderValue | undefined;
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
   redirect: (statusOrUrl: number | string, url?: string) => PagesReqResResponse;
   getHeaders: () => PagesReqResHeaders;
-  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
   setPreviewData: (
     data: object | string,
     options?: { maxAge?: number; path?: string },
   ) => PagesReqResResponse;
   clearPreviewData: (options?: { path?: string }) => PagesReqResResponse;
   setDraftMode: (options?: { enable?: boolean }) => PagesReqResResponse;
+};
+
+export type PagesApiReqResResponse = PagesReqResResponse & {
+  revalidate: (urlPath: string, opts?: RevalidateOptions) => Promise<void>;
 };
 
 type PagesRequestCookiesCarrier = {
@@ -70,18 +110,21 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
-  allowedRevalidateHeaderKeys?: readonly string[];
   body: unknown;
   initialResponseHeaders?: Headers;
   query: PagesRequestQuery;
   request: Request;
-  trustedRevalidateOrigin?: string;
   url: string;
 };
 
-type CreatePagesReqResResult = {
+type CreatePagesApiReqResOptions = CreatePagesReqResOptions & {
+  allowedRevalidateHeaderKeys?: readonly string[];
+  trustedRevalidateOrigin?: string;
+};
+
+type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResResponse> = {
   req: PagesReqResRequest;
-  res: PagesReqResResponse;
+  res: Res;
   responsePromise: Promise<Response>;
 };
 
@@ -238,9 +281,13 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
 
 class PagesResponseStream extends Writable {
   private resStatusCode = 200;
-  private readonly resHeaders: Record<string, string | number | boolean> = {};
-  private readonly setCookieHeaders: string[] = [];
+  // Null-prototype like Node's header map, so names such as `constructor` or
+  // `__proto__` are ordinary headers.
+  private readonly resHeaders: PagesReqResHeaders = Object.create(null);
   private resolved = false;
+  // Node's ServerResponse commits its head on writeHead(), not only on the
+  // first body write.
+  private headWritten = false;
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
@@ -250,9 +297,6 @@ class PagesResponseStream extends Writable {
   constructor(
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
-    private readonly requestHeaders: Headers,
-    private readonly trustedRevalidateOrigin?: string,
-    private readonly allowedRevalidateHeaderKeys: readonly string[] = [],
   ) {
     super();
     this.once("error", (err) => {
@@ -279,21 +323,35 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: true });
+        this.setHeaderValue(key, value, { append: false });
       }
     }
+    this.headWritten = true;
     return this as PagesReqResResponse;
   }
 
-  setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
-    this.setHeaderValue(name, value, { replaceSetCookie: true });
+  setHeader(name: string, value: PagesReqResHeaderValue): PagesReqResResponse {
+    this.setHeaderValue(name, value, { append: false });
     return this as PagesReqResResponse;
   }
 
-  getHeader(name: string): string | number | boolean | string[] | undefined {
-    if (name.toLowerCase() === "set-cookie") {
-      return this.setCookieHeaders.length > 0 ? this.setCookieHeaders : undefined;
+  // Node's ServerResponse.appendHeader (Node 18.3+): adds to any existing
+  // value instead of replacing it.
+  appendHeader(name: string, value: string | readonly string[]): PagesReqResResponse {
+    if (this.headWritten || this.headersSent) {
+      // The Response headers were snapshotted on the first write, so a late
+      // append would be silently dropped. Node throws here.
+      throw Object.assign(new Error("Cannot append headers after they are sent to the client"), {
+        code: "ERR_HTTP_HEADERS_SENT",
+      });
     }
+    // Node validates at the call site, so handlers can catch the error.
+    validateAppendedHeader(name, value);
+    this.setHeaderValue(name, value, { append: true });
+    return this as PagesReqResResponse;
+  }
+
+  getHeader(name: string): PagesReqResHeaderValue | undefined {
     return this.resHeaders[name.toLowerCase()];
   }
 
@@ -346,21 +404,7 @@ class PagesResponseStream extends Writable {
   }
 
   getHeaders(): PagesReqResHeaders {
-    const headers: PagesReqResHeaders = { ...this.resHeaders };
-    if (this.setCookieHeaders.length > 0) {
-      headers["set-cookie"] = this.setCookieHeaders;
-    }
-    return headers;
-  }
-
-  async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
-    await performOnDemandRevalidate(
-      this.requestHeaders,
-      urlPath,
-      opts,
-      this.trustedRevalidateOrigin,
-      this.allowedRevalidateHeaderKeys,
-    );
+    return { ...this.resHeaders };
   }
 
   setPreviewData(
@@ -462,21 +506,22 @@ class PagesResponseStream extends Writable {
 
   private setHeaderValue(
     name: string,
-    value: string | number | boolean | string[],
-    options: { replaceSetCookie: boolean },
+    value: PagesReqResHeaderValue | readonly string[],
+    options: { append: boolean },
   ): void {
-    if (name.toLowerCase() === "set-cookie") {
-      // getHeader() exposes this array like Node's ServerResponse. Snapshot it
-      // before replacement so passing that live value back does not clear it.
-      const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (options.replaceSetCookie) {
-        this.setCookieHeaders.length = 0;
-      }
-      this.setCookieHeaders.push(...values);
+    const key = name.toLowerCase();
+    // Like Node, keep header arrays (and appended values) as a list of the
+    // original values so getHeader() returns every value in its own type.
+    const existing = this.resHeaders[key];
+    if (!options.append || existing === undefined) {
+      // Node keeps the caller's array itself, so later pushes to it (and later
+      // appends) are emitted too.
+      this.resHeaders[key] = value as PagesReqResHeaderValue;
       return;
     }
-
-    this.resHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+    const values = (Array.isArray(existing) ? existing : [existing]) as string[];
+    values.push(...((Array.isArray(value) ? value : [value]) as string[]));
+    this.resHeaders[key] = values;
   }
 
   private releasePendingWrite(error?: Error | null): void {
@@ -493,10 +538,11 @@ class PagesResponseStream extends Writable {
 
     const headers = new Headers();
     for (const [key, value] of Object.entries(this.resHeaders)) {
-      headers.set(key, String(value));
-    }
-    for (const cookie of this.setCookieHeaders) {
-      headers.append("set-cookie", cookie);
+      if (Array.isArray(value)) {
+        for (const item of value) headers.append(key, String(item));
+      } else {
+        headers.set(key, String(value));
+      }
     }
 
     // Fetch rejects a Response that pairs 204/205/304 with any body, including
@@ -593,12 +639,6 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   const res: PagesReqResResponse = new PagesResponseStream(
     resolveResponse,
     rejectResponse,
-    options.request.headers,
-    // Fetch runtimes do not expose a listening socket origin. Fall back to the
-    // platform-provided Request URL origin and deliberately ignore any raw Host
-    // header carried in request.headers.
-    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin,
-    options.allowedRevalidateHeaderKeys,
   ) as PagesReqResResponse;
   for (const [name, value] of options.initialResponseHeaders ?? []) {
     if (name.toLowerCase() === "set-cookie") continue;
@@ -609,4 +649,37 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };
+}
+
+/**
+ * Create the req/res pair for a Pages API route. Only API responses get
+ * `res.revalidate()`: Next.js attaches it in apiResolver
+ * (`packages/next/src/server/api-utils/node/api-resolver.ts`), so a page's
+ * getServerSideProps `res` never carries the revalidation secret.
+ */
+export function createPagesApiReqRes(
+  options: CreatePagesApiReqResOptions,
+): CreatePagesReqResResult<PagesApiReqResResponse> {
+  const { req, res, responsePromise } = createPagesReqRes(options);
+  const apiRes = Object.assign(res, {
+    async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
+      // Fetch runtimes do not expose a listening socket origin. An in-process
+      // dispatcher addresses its internal request with the Request URL origin,
+      // but that origin must never receive the credential over the network:
+      // Node fetch hosts such as srvx derive it from the client Host header.
+      const trustedRevalidateOrigin =
+        options.trustedRevalidateOrigin ??
+        (getRequestExecutionContext()?.dispatchPagesRevalidate
+          ? new URL(options.request.url).origin
+          : undefined);
+      await performOnDemandRevalidate(
+        options.request.headers,
+        urlPath,
+        opts,
+        trustedRevalidateOrigin,
+        options.allowedRevalidateHeaderKeys,
+      );
+    },
+  });
+  return { req, res: apiRes, responsePromise };
 }

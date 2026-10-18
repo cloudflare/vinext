@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { test } from "vitest";
+import { liveFetch } from "./live-fetch";
 
 const base =
   process.env.LIVE_RESPONSE_STORE_SERVICE_BASE ??
@@ -18,7 +19,7 @@ function key(label: string): string {
 }
 
 async function put(path: string, body: BodyInit, options: PutOptions = {}) {
-  const response = await fetch(`${base}/admin/put${path}`, {
+  const response = await liveFetch(`${base}/admin/put${path}`, {
     method: "PUT",
     headers: {
       "Content-Type": "text/plain; charset=utf-8",
@@ -35,7 +36,7 @@ async function put(path: string, body: BodyInit, options: PutOptions = {}) {
 }
 
 function read(path: string) {
-  return fetch(`${base}/cache${path}`);
+  return liveFetch(`${base}/cache${path}`);
 }
 
 async function eventually(check: () => Promise<any>, timeoutMs = 30_000): Promise<any> {
@@ -77,7 +78,7 @@ test("manual refresh loops back into the user Worker without a reverse binding",
   });
   await (await read(path)).arrayBuffer();
 
-  const refresh = await fetch(`${base}/admin/refresh`, {
+  const refresh = await liveFetch(`${base}/admin/refresh`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ pathPrefixes: [path] }),

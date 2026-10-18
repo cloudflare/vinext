@@ -1,5 +1,70 @@
 # @vinext/cloudflare
 
+## 1.1.1
+
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
+### Bug Fixes
+
+#### Cloudflare
+
+- don't share an in-flight static assets cache index fetch across requests (#3965)
+- never warm through an http-only Worker route (#3931)
+- make --warm-cache-include-fallbacks a no-op (#3906)
+- answer a stored page's conditional request as Next.js does (#3832)
+- never store a conditional request's 304 in the Response Store (#3827)
+- keep Workers Cache off Worker-wide in every generated config (#3820)
+
+#### Misc
+
+- **Cache:** treat x-api-key as a credential for shared response caches (#3879)
+- **PPR:** key fallback shells apart from the pages of their literal paths (#3891)
+- **Cache:** key oversized cache identities by a SHA-256 digest (#3876)
+
+### Performance
+
+- **Cloudflare:** share the pending static assets cache index fetch across requests (#3972)
+- **Cloudflare:** skip getStaticPaths when Workers Cache revalidates a stored Pages entry (#3960)
+- **Pages Router:** skip getStaticPaths when Response Store regenerates a stored entry (#3959)
+
+### Contributors
+
+- @james-elicx
+
+## 1.1.0
+
+### Features
+
+- **Prerender:** write a page's special error that escapes the shell with its status (#3716)
+- **Response Store:** mark tag invalidations stale instead of regenerating them (#3712)
+- **Cloudflare:** soft-invalidate Workers Cache for stale-while-revalidate invalidations (#3707)
+
+### Bug Fixes
+
+#### App Router
+
+- stream a special error a Suspense boundary caught as a 200, as Next.js does (#3711)
+- store an RSC-first ISR render with its real status, and never cache unmatched 404s (#3710)
+- store a page's special-error render in the ISR cache (#3702)
+- let only the render decide whether a page is dynamic (#3698)
+
+#### Cloudflare
+
+- keep KV entries until their expire (#3735)
+- render Response Store and Workers Cache regenerations and warm-ups whole (#3737)
+- send no-store while Response Store admission is pending (#3708)
+- store the other entries a Response Store page replay recomputes (#3704)
+- store Response Store data entries without expire as stale indefinitely (#3675)
+
+#### Misc
+
+- **Cache:** use Flight arguments for cache identity and replay (#3600)
+- **Response Store:** let writers opt hard-expired reads into a miss (#3696)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.1
 
 ### Bug Fixes

@@ -223,6 +223,18 @@ describe("Pages i18n domain routing (production)", () => {
     expect(res.body).toContain('href="http://example.fr/about" id="switch-locale"');
   });
 
+  it("resolves the middleware domain locale from the Host header", async () => {
+    // Middleware's URL carries the server's own origin on Node, so the domain
+    // locale must come from the host the client asked for.
+    for (const [host, domain] of [
+      ["example.fr", "example.fr"],
+      ["example.com", "example.com"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, "/about", host);
+      expect(res.headers["x-mw-domain-locale"]).toBe(domain);
+    }
+  });
+
   it("uses the matched domain default locale for request context", async () => {
     const res = await requestNodeServerWithHost(prodPort, "/about", "example.fr");
 
@@ -385,6 +397,24 @@ describe("Pages i18n domain routing with basePath (production)", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toContain('href="http://example.fr/app/about" id="switch-locale"');
+  });
+
+  // Next.js renders the shared getStaticProps /404 for "/404", keeping the
+  // request's trailing slash even when a locale prefix is stripped.
+  it("renders the shared /404 for its own path under a locale prefix", async () => {
+    // Each case renders a cold /404 in its own locale/domain cache variant:
+    // a locale-prefixed miss, a direct status request and a rewritten miss.
+    for (const [path, host, requestToken] of [
+      ["/app/en/missing-share-token/", "example.fr", "missing-share-token"],
+      ["/app/fr/404/", "example.com", "/fr/404"],
+      ["/app/missing-alias/", "example.com", "missing-alias"],
+    ]) {
+      const res = await requestNodeServerWithHost(prodPort, path, host);
+
+      expect({ path, status: res.status }).toEqual({ path, status: 404 });
+      expect(res.body).not.toContain(requestToken);
+      expect(res.body).toContain('<p id="as-path">/404/</p>');
+    }
   });
 
   testLocaleIsrIsolation(() => prodPort, "/app", "/");

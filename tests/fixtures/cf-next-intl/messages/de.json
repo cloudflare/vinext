@@ -1,0 +1,64 @@
+{
+  "ApiRoute": {
+    "hello": "Hallo {name}!"
+  },
+  "AsyncComponent": {
+    "basic": "AsyncComponent",
+    "markup": "Markup with <important>bold content</important>",
+    "rich": "This is a <important>rich</important> text."
+  },
+  "Client": {
+    "description": "Dise Seite wird auf der Client-Seite initialisiert.",
+    "title": "Client"
+  },
+  "ClientCounter": {
+    "count": "Aktuell: {count}",
+    "increment": "Erhöhen"
+  },
+  "Counter": {
+    "count": "Aktuell:",
+    "increment": "Erhöhen"
+  },
+  "Index": {
+    "description": "Das ist die Startseite.",
+    "rich": "Das ist <b>formatierter</b> Test.",
+    "title": "Start"
+  },
+  "JustIn": {
+    "title": "Gerade eingetroffen"
+  },
+  "LocaleLayout": {
+    "description": "Das ist ein Beispiel, wie next-intl im `app`-Verzeichnis verwendet werden kann.",
+    "title": "next-intl Beispiel"
+  },
+  "LocaleSwitcher": {
+    "switchLocale": "Zu {locale, select, de {Deutsch} en {Englisch} es {Spanisch} ja {Japanisch} nl {Niederländisch} other {Unbekannt}} wechseln"
+  },
+  "Navigation": {
+    "about": "Über (MDX)",
+    "client": "Client-Seite",
+    "home": "Start",
+    "nested": "Verschachtelte Seite",
+    "newsArticle": "News-Artikel #{articleId}"
+  },
+  "Nested": {
+    "description": "Das ist eine verschachtelte Seite.",
+    "title": "Verschachtelt"
+  },
+  "NewsArticle": {
+    "title": "News-Artikel #{articleId}"
+  },
+  "NotFound": {
+    "title": "Diese Seite wurde nicht gefunden (404)"
+  },
+  "OpenGraph": {
+    "title": "next-intl Beispiel"
+  },
+  "ServerActions": {
+    "item": "Element #{id}"
+  },
+  "ZodFormExample": {
+    "task": "Geben Sie eine Aufgabe ein",
+    "taskEmpty": "Bitte geben sie eine Aufgabe ein."
+  }
+}

@@ -15,7 +15,9 @@ import type {
 import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "vinext/internal/server/headers";
+import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
@@ -24,7 +26,7 @@ import {
   SHARED_RESPONSE_STAGE_HEADER,
   type SharedResponseStage,
 } from "./browser-cache-policy.js";
-import { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import { hasSharedCacheCredentials, isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -113,7 +115,7 @@ function replayHeaders(request: Request): [string, string][] {
 function isReplayableInvocation(request: Request, props: unknown): boolean {
   const method = request.method.toUpperCase();
   if (method !== "GET" && method !== "HEAD") return false;
-  if (request.headers.has("authorization") || request.headers.has("cookie")) return false;
+  if (hasSharedCacheCredentials(request.headers)) return false;
   return !(
     props &&
     typeof props === "object" &&
@@ -171,7 +173,7 @@ async function invokeRequestStage(
     StageContext
   >();
   return handleRequestStage(request, env, stageContext(ctx, env), (request, props, options) =>
-    invokeResponseStage(request, props, env, ctx, options.cache),
+    invokeResponseStage(request, props, env, ctx, { cache: options.cache }),
   );
 }
 
@@ -180,7 +182,10 @@ async function invokeResponseStage(
   props: unknown,
   env: VinextResponseStoreEnv,
   ctx: WorkerExecutionContext,
-  cache: VinextResponseStageDispatchOptions["cache"],
+  stageOptions: Pick<
+    VinextResponseStageDispatchOptions,
+    "cache" | "regeneratesStoredEntry" | "renderWholeDocument"
+  >,
   capture?: ResponseStoreInvocationCapture,
   invocation?: SerializedInvocation,
 ): Promise<Response> {
@@ -198,7 +203,7 @@ async function invokeResponseStage(
   return runWithResponseStoreInvocation(
     storedInvocation.serialized,
     storedInvocation.replayable,
-    () => handleResponseStage(request, env, context, props, dispatchRequestStage, { cache }),
+    () => handleResponseStage(request, env, context, props, dispatchRequestStage, stageOptions),
     capture,
   );
 }
@@ -222,12 +227,16 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));
+        // No client waits on a regeneration, so it renders the document
+        // whole, as Next.js renders a static page. Only the store invokes
+        // this callback, and only for an entry it holds, so the render may
+        // skip request-time admission such as getStaticPaths().
         const response = await invokeResponseStage(
           restoreRequest(invocation),
           invocation.props,
           env,
           ctx,
-          "shared",
+          { cache: "shared", regeneratesStoredEntry: true, renderWholeDocument: true },
         );
         if (!isCacheable(response)) {
           await response.body?.cancel().catch(() => {});
@@ -275,7 +284,7 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
             invocation.props,
             env,
             ctx,
-            "bypass",
+            { cache: "bypass" },
           );
           await response.body?.pipeTo(new WritableStream());
         });
@@ -332,6 +341,12 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
   });
 }
 
+// A page's notFound(), forbidden() and unauthorized() are stored with their
+// status, as in Next.js.
+function isStoredErrorStatus(status: number): boolean {
+  return status === 401 || status === 403 || status === 404;
+}
+
 function isCacheable(response: Response): boolean {
   const policy =
     response.headers.get("Cloudflare-CDN-Cache-Control") ??
@@ -339,10 +354,78 @@ function isCacheable(response: Response): boolean {
     response.headers.get("Cache-Control");
   return (
     response.status >= 200 &&
-    (response.status < 400 || response.status === 404) &&
+    // A 304 answers one request's precondition; it is not the page.
+    response.status !== 304 &&
+    (response.status < 400 || isStoredErrorStatus(response.status)) &&
     policy !== null &&
     !isNonCacheableCacheControl(policy)
   );
+}
+
+/**
+ * A page's 304 headers. Next.js sends the 304 before it sets the payload's
+ * headers, so it carries no representation or body framing headers.
+ */
+function notModifiedHeaders(source: Headers): Headers {
+  const headers = new Headers(source);
+  for (const name of ["Content-Encoding", "Content-Length", "Content-Type", "Transfer-Encoding"]) {
+    headers.delete(name);
+  }
+  return headers;
+}
+
+/** Send the 304 for a page whose ETag matched the request's If-None-Match. */
+function notModifiedResponse(response: Response): Response {
+  void response.body?.cancel().catch(() => {});
+  return new Response(null, { headers: notModifiedHeaders(response.headers), status: 304 });
+}
+
+/**
+ * Whether Next.js sends this stored response through `sendRenderResult`, which
+ * answers a conditional request by the page's ETag. It sends every App page
+ * that way. A Pages redirect, and a Pages data request's notFound, are sent
+ * without an ETag, as is a route handler's response. A Pages API response is
+ * never stored.
+ */
+function answersConditionalRequest(responseStageProps: unknown, status: number): boolean {
+  if (responseStageProps === null || typeof responseStageProps !== "object") return false;
+  const kind = Reflect.get(responseStageProps, "kind");
+  if (kind === "app-page" || kind === "app-not-found") return true;
+  let isDataRequest: boolean;
+  if (kind === "hybrid-pages") {
+    if (Reflect.get(responseStageProps, "resourceKind") !== "page") return false;
+    isDataRequest = Reflect.get(responseStageProps, "isDataRequest") === true;
+  } else if (kind === "pages-page") {
+    const renderOptions: unknown = Reflect.get(responseStageProps, "renderOptions");
+    isDataRequest =
+      renderOptions !== null &&
+      typeof renderOptions === "object" &&
+      Reflect.get(renderOptions, "isDataReq") === true;
+  } else {
+    return false;
+  }
+  return (status >= 200 && status < 300) || (status === 404 && !isDataRequest);
+}
+
+/** Answer a stored page's conditional request as Next.js does for a cached page. */
+function storedForRequest(
+  stored: Response,
+  request: Request,
+  responseStageProps: unknown,
+): Response {
+  const etag = stored.headers.get("ETag");
+  return etag &&
+    answersConditionalRequest(responseStageProps, stored.status) &&
+    isPageNotModified(
+      {
+        cacheControl: request.headers.get("Cache-Control") ?? undefined,
+        ifModifiedSince: request.headers.get("If-Modified-Since") ?? undefined,
+        ifNoneMatch: request.headers.get("If-None-Match") ?? undefined,
+      },
+      etag,
+    )
+    ? notModifiedResponse(stored)
+    : stored;
 }
 
 async function readStoredResponse(key: Request): Promise<Response | null> {
@@ -352,7 +435,8 @@ async function readStoredResponse(key: Request): Promise<Response | null> {
     const storeStatus = response.headers.get("X-Workers-Response-Store");
     if (
       (response.status >= 200 && response.status < 400) ||
-      (response.status === 404 && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
+      (isStoredErrorStatus(response.status) &&
+        (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE"))
     )
       return response;
     void response.body?.cancel().catch(() => {});
@@ -404,8 +488,11 @@ function publicResponse(
     headers.set("X-Vinext-Cache", publicCacheStatus);
   }
   const cacheControl = headers.get("Cache-Control");
+  // Admission can still find a late dynamic API, so the browser must not keep
+  // this response: a dynamic render is no-store in Next.js. This is the same
+  // pending policy the framework sends when it caches the response itself.
   if (pendingAdmission && (!cacheControl || !isNonCacheableCacheControl(cacheControl, "browser"))) {
-    headers.set("Cache-Control", "private, max-age=0, must-revalidate");
+    headers.set("Cache-Control", "no-store, must-revalidate");
   }
   return traceCachedResponseStart(
     new Response(response.body, {
@@ -443,7 +530,7 @@ const handler = {
         (stageRequest.method !== "GET" && stageRequest.method !== "HEAD")
       ) {
         return publicResponse(
-          await invokeResponseStage(stageRequest, props, env, ctx, "bypass"),
+          await invokeResponseStage(stageRequest, props, env, ctx, { cache: "bypass" }),
           "BYPASS",
           props,
         );
@@ -485,12 +572,14 @@ const handler = {
       const key = await cacheRequest(invocation);
       const stored = await readStoredResponse(key);
       if (stored) {
-        if (!rscKey) return publicResponse(stored, "HIT", props);
+        if (!rscKey) {
+          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
+        }
 
         const storedRsc = await readStoredResponse(rscKey);
         if (storedRsc) {
           void storedRsc.body?.cancel().catch(() => {});
-          return publicResponse(stored, "HIT", props);
+          return publicResponse(storedForRequest(stored, stageRequest, props), "HIT", props);
         }
         void stored.body?.cancel().catch(() => {});
       }
@@ -503,12 +592,26 @@ const handler = {
       const serializedInvocation = JSON.stringify(invocation);
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
-      const rendered = await invokeResponseStage(stageRequest, props, env, ctx, "shared", capture, {
-        replayable: isReplayableInvocation(stageRequest, props),
-        serialized: options.cacheIdentity
-          ? serializeInvocation(stageRequest, props)
-          : serializedInvocation,
-      });
+      // No client waits on a warm-up either, so it renders the document whole.
+      const rendered = await invokeResponseStage(
+        stageRequest,
+        props,
+        env,
+        ctx,
+        isWarmup ? { cache: "shared", renderWholeDocument: true } : { cache: "shared" },
+        capture,
+        {
+          replayable: isReplayableInvocation(stageRequest, props),
+          serialized: options.cacheIdentity
+            ? serializeInvocation(stageRequest, props)
+            : serializedInvocation,
+        },
+      );
+      // Next.js stores the page before it evaluates the ETag, so a render that
+      // matched the request's If-None-Match returns the page and its 304 is
+      // sent here. Admission keeps its own branch of a deferred body.
+      const foreground = (response: Response) =>
+        capture.notModified ? notModifiedResponse(response) : response;
       if (capture.admittedResponse) {
         ctx.waitUntil(
           capture.admittedResponse
@@ -533,18 +636,29 @@ const handler = {
         );
         // The foreground can precede admission. Retain browser revalidation
         // until the completed response has a proven policy.
-        return publicResponse(rendered, "MISS", props, true);
+        if (!capture.notModified) return publicResponse(rendered, "MISS", props, true);
+        // A 304 has no body to send ahead of admission, and it updates the
+        // client's stored headers, so it carries the admitted page's policy.
+        const notModified = notModifiedResponse(rendered);
+        const admitted = await capture.admittedResponse.catch(() => null);
+        return admitted
+          ? publicResponse(
+              new Response(null, { headers: notModifiedHeaders(admitted.headers), status: 304 }),
+              "MISS",
+              props,
+            )
+          : publicResponse(notModified, "MISS", props, true);
       }
       if (!isCacheable(rendered)) {
         void capture?.rscData?.catch(() => {});
-        return publicResponse(rendered, "BYPASS", props);
+        return publicResponse(foreground(rendered), "BYPASS", props);
       }
       if (rscSeed && !capture?.rscData) {
         await rendered.body?.cancel();
         throw new Error("Vinext response-store warmup did not capture the App page RSC payload");
       }
 
-      const [foreground, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
+      const [foregroundBody, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
         await responseStore.put(key, cacheResponse, {
@@ -575,12 +689,18 @@ const handler = {
         rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
         applyRscCompatibilityIdHeader(rscHeaders);
         applyRscDeploymentIdHeader(rscHeaders);
+        // The request stage sends it to a Link's segment prefetch as a 200.
+        if (isStoredErrorStatus(rendered.status)) {
+          rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(rendered.status));
+        }
         const serializedRscInvocation = JSON.stringify(rscInvocation);
         await responseStore.put(
           rscKey,
           new Response(rscData, {
             headers: rscHeaders,
-            status: 200,
+            // As in Next.js, the page's RSC payload takes its document's
+            // status, except that it carries a redirect as a 200.
+            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
           }),
           {
             coalesce: true,
@@ -588,7 +708,7 @@ const handler = {
           },
         );
       }
-      return publicResponse(new Response(foreground, rendered), "MISS", props);
+      return publicResponse(foreground(new Response(foregroundBody, rendered)), "MISS", props);
     };
 
     const { handleRequestStage } = await loadVinextRequestStage<

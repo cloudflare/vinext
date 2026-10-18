@@ -7,11 +7,13 @@ import {
   _mayContainRequireContextCall,
   createRequireContextPlugin,
 } from "../packages/vinext/src/plugins/require-context.js";
+import { parseProgram } from "../packages/vinext/src/plugins/ast-utils.js";
 
 // Spy on the plugin's parser so the prescan tests can assert the parse is skipped.
-vi.mock("vite", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("vite")>();
-  return { ...actual, parseAst: vi.fn(actual.parseAst) };
+vi.mock("../packages/vinext/src/plugins/ast-utils.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../packages/vinext/src/plugins/ast-utils.js")>();
+  return { ...actual, parseProgram: vi.fn(actual.parseProgram) };
 });
 
 const importerId = path.resolve(
@@ -120,9 +122,9 @@ describe("vinext:require-context", () => {
       ["an HTML comment after the dot", `require.\n--> c\ncontext("./filtered")`],
     ])("still transforms a call with %s", async (_name, call) => {
       expect(_mayContainRequireContextCall(call)).toBe(true);
-      vi.mocked(parseAst).mockClear();
+      vi.mocked(parseProgram).mockClear();
       const result = await createTransform()(`const ctx = ${call};`, importerId);
-      expect(parseAst).toHaveBeenCalled();
+      expect(parseProgram).toHaveBeenCalled();
       expect(result?.code).toContain('from "./filtered/included.safe.js"');
     });
 
@@ -136,9 +138,9 @@ describe("vinext:require-context", () => {
       ["a property read", `const context = require("x").context;`],
     ])("skips parsing a module with %s", async (_name, code) => {
       expect(_mayContainRequireContextCall(code)).toBe(false);
-      vi.mocked(parseAst).mockClear();
+      vi.mocked(parseProgram).mockClear();
       expect(await createTransform()(code, importerId)).toBeNull();
-      expect(parseAst).not.toHaveBeenCalled();
+      expect(parseProgram).not.toHaveBeenCalled();
     });
 
     it("rejects long non-matching input in linear time", () => {

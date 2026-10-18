@@ -1,5 +1,6 @@
 import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
 import { test, expect, type APIRequestContext, type APIResponse } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 function baseUrl(): string {
   const url = test.info().project.use.baseURL;
@@ -36,6 +37,10 @@ async function waitForCacheHit(request: APIRequestContext, path: string): Promis
     throw new Error(`No response received while waiting for an ISR cache HIT for ${path}`);
   }
   return response;
+}
+
+function testIdText(html: string, testId: string): string | undefined {
+  return html.match(new RegExp(`data-testid="${testId}"[^>]*>(?:<!--[^>]*-->)*([^<]*)<`))?.[1];
 }
 
 test.describe("App Router ISR", () => {
@@ -157,6 +162,77 @@ test.describe("App Router ISR", () => {
     expect(Number(tsText)).toBeGreaterThan(0);
   });
 
+  // Next.js never puts the request's query into a static page's HTML: the
+  // browser reads it from its own URL. One stored document serves every query,
+  // so a query-bearing miss must store nothing of its query, even in the
+  // navigation payload of a page that never reads it.
+  // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
+  test("a query-bearing miss stores a document without the visitor's query", async ({
+    request,
+  }) => {
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}/revalidate-test?token=${secret}`);
+    expect(first.status()).toBe(200);
+    expect(first.headers()["x-vinext-cache"]).toBe("MISS");
+    const firstHtml = await first.text();
+    expect(firstHtml).not.toContain(secret);
+    const renderedAt = testIdText(firstHtml, "timestamp");
+    expect(renderedAt).toBeTruthy();
+
+    // The query-free visitor gets the first visitor's stored render.
+    const cached = await waitForCacheHit(request, "/revalidate-test");
+    const cachedHtml = await cached.text();
+    expect(testIdText(cachedHtml, "timestamp")).toBe(renderedAt);
+    expect(cachedHtml).not.toContain(secret);
+  });
+
+  test("a query-bearing miss keeps useSearchParams() values out of the stored document", async ({
+    page,
+    request,
+  }) => {
+    const path = "/isr-search-params-suspense";
+    await resetIsrPath(request, path);
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}${path}?value=${secret}`);
+    expect(first.status()).toBe(200);
+    expect(first.headers()["x-vinext-cache"]).toBe("MISS");
+    const firstHtml = await first.text();
+    // The server renders the Suspense fallback, as in Next.js's static HTML.
+    expect(firstHtml).toContain('data-testid="search-value-fallback"');
+    expect(firstHtml).not.toContain(secret);
+    const renderedAt = testIdText(firstHtml, "timestamp");
+    expect(renderedAt).toBeTruthy();
+
+    const cached = await waitForCacheHit(request, path);
+    const cachedHtml = await cached.text();
+    expect(testIdText(cachedHtml, "timestamp")).toBe(renderedAt);
+    expect(cachedHtml).not.toContain(secret);
+
+    // A later visitor's browser reads its own query from the stored document.
+    const response = await page.goto(`${baseUrl()}${path}?value=mine`);
+    expect(response?.headers()["x-vinext-cache"]).toBe("HIT");
+    const visitorHtml = (await response?.text()) ?? "";
+    expect(testIdText(visitorHtml, "timestamp")).toBe(renderedAt);
+    expect(visitorHtml).not.toContain(secret);
+    await expect(page.getByTestId("search-value")).toHaveText("mine");
+  });
+
+  test("a page that reads searchParams renders each query and stores none", async ({ request }) => {
+    const secret = `secret-${crypto.randomUUID()}`;
+    const first = await request.get(`${baseUrl()}/isr-dynamic-search?filter=${secret}`);
+    expect(first.status()).toBe(200);
+    expect(testIdText(await first.text(), "filter")).toBe(secret);
+    expect(first.headers()["x-vinext-cache"]).toBeUndefined();
+
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const next = await request.get(`${baseUrl()}/isr-dynamic-search`);
+      const html = await next.text();
+      expect(next.headers()["x-vinext-cache"]).toBeUndefined();
+      expect(testIdText(html, "filter")).toBe("none");
+      expect(html).not.toContain(secret);
+    }
+  });
+
   test("existing revalidate-test page exposes its 60s policy after population", async ({
     request,
   }) => {
@@ -173,29 +249,33 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
+  // An encoded spelling of a static sibling answers with that prerendered
+  // page, as Next.js serves it from the entry cached under the decoded path.
+  test("answers an encoded static route spelling with the static route", async ({ request }) => {
+    await resetIsrPath(request, "/route-cache-identity/about");
+
+    const encoded = await request.get(`${baseUrl()}/route-cache-identity/%61bout`);
+    expect(encoded.status()).toBe(200);
+    expect(await encoded.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+
+    const literal = await waitForCacheHit(request, "/route-cache-identity/about");
+    expect(await literal.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+  });
+
   // A request spelling that selects a catch-all route must not publish that
   // artifact under a static sibling's ISR key. Encoded delimiters and /index
   // remain distinct cache identities.
-  for (const { attackPath, expectedVictim, label, mustBypassCache, victimPath } of [
-    {
-      attackPath: "/route-cache-identity/%61bout",
-      expectedVictim: "CACHE_IDENTITY_STATIC_PAGE",
-      label: "encoded literal route divergence",
-      mustBypassCache: true,
-      victimPath: "/route-cache-identity/about",
-    },
+  for (const { attackPath, expectedVictim, label, victimPath } of [
     {
       attackPath: "/route-cache-identity/nested%2Fabout",
       expectedVictim: "CACHE_IDENTITY_NESTED_STATIC_PAGE",
       label: "encoded separator",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity/nested/about",
     },
     {
       attackPath: "/route-cache-identity/index",
       expectedVictim: "CACHE_IDENTITY_ROOT_STATIC_PAGE",
       label: "/index alias",
-      mustBypassCache: false,
       victimPath: "/route-cache-identity",
     },
   ]) {
@@ -205,14 +285,33 @@ test.describe("App Router ISR", () => {
       const attacker = await request.get(`${baseUrl()}${attackPath}`);
       expect(attacker.status()).toBe(200);
       expect(await attacker.text()).toContain("CACHE_IDENTITY_CATCH_ALL:");
-      if (mustBypassCache) {
-        expect(attacker.headers()["cache-control"]).toContain("no-store");
-      }
 
       const victim = await waitForCacheHit(request, victimPath);
       expect(await victim.text()).toContain(expectedVictim);
     });
   }
+
+  // Next.js keys each ISR entry by its full pathname. These two segments leave
+  // the fnv1a64 digest that once shortened long ISR keys in the same state, so
+  // a request could plant its render in the other path's entry.
+  test("keeps long ISR paths with colliding fnv1a64 digests apart", async ({ request }) => {
+    // A fresh tail per run, so neither path has an entry from an earlier attempt.
+    const tail = `-${Date.now().toString(36)}${"x".repeat(200)}`;
+    const attacker = await waitForCacheHit(
+      request,
+      `/route-cache-identity/211eb618a29231c0${tail}`,
+    );
+    expect(await attacker.text()).toMatch(
+      /CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?211eb618a29231c0-/,
+    );
+
+    const victim = await request.get(`${baseUrl()}/route-cache-identity/213912085a2b1a20${tail}`);
+    expect(victim.status()).toBe(200);
+    expect(victim.headers()["x-vinext-cache"]).toBe("MISS");
+    const html = await victim.text();
+    expect(html).toMatch(/CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?213912085a2b1a20-/);
+    expect(html).not.toContain("211eb618a29231c0");
+  });
 
   test("does not let an encoded catch-all request poison a static route handler", async ({
     request,
@@ -288,6 +387,36 @@ test.describe("App Router ISR", () => {
     expect(await cachedAbout.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
   });
 
+  test("keeps a hostname-selected route handler response off other hosts", async ({ request }) => {
+    const path = "/api/host-tenant";
+    await resetIsrPath(request, path);
+    const port = new URL(baseUrl()).port;
+
+    // One server answers several hostnames through a single path-keyed cache,
+    // as a multi-domain Worker does. Prime from each host before reading from
+    // the other so neither direction can replay a stored response.
+    const tenants = ["tenant-a", "tenant-b", "tenant-a", "tenant-b"];
+    const responses = [];
+    for (const tenant of tenants) {
+      const response = await request.get(`${baseUrl()}${path}`, {
+        headers: { host: `${tenant}.localhost:${port}` },
+      });
+      expect(response.status()).toBe(200);
+      responses.push({
+        body: await response.json(),
+        cache: response.headers()["x-vinext-cache"],
+        cdnPolicy: response.headers()["cache-control"]?.includes("s-maxage") ?? false,
+      });
+    }
+    expect(responses).toEqual(
+      tenants.map((tenant) => ({
+        body: { tenant: `${tenant}.localhost` },
+        cache: undefined,
+        cdnPolicy: false,
+      })),
+    );
+  });
+
   test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
     const plainPath = "/api/route-cache-identity/trailing";
     const trailingPath = `${plainPath}/`;
@@ -357,6 +486,111 @@ test.describe("App Router ISR", () => {
     );
     expect(privateImage.status()).toBe(404);
     expect(await privateImage.text()).not.toContain("UNLISTED_METADATA");
+  });
+
+  test("cached dynamicParams=false metadata images skip generateStaticParams", async ({
+    request,
+  }) => {
+    const imagePath = "/metadata-static-params/public-post/opengraph-image";
+    const takeCalls = async () =>
+      (await (await request.get(`${baseUrl()}/metadata-static-params-calls`)).json()).calls;
+
+    await waitForCacheHit(request, imagePath);
+    await takeCalls();
+
+    // Next answers the generated-param gate from its build manifest, so a
+    // cache hit runs no generateStaticParams.
+    const cached = await request.get(`${baseUrl()}${imagePath}`);
+    expect(cached.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await cached.text()).toBe("PUBLIC");
+    expect(await takeCalls()).toBe(0);
+
+    const unlisted = await request.get(
+      `${baseUrl()}/metadata-static-params/unlisted-draft/opengraph-image`,
+    );
+    expect(unlisted.status()).toBe(404);
+    expect(await takeCalls()).toBe(1);
+  });
+
+  test("dynamicParams=false runs nested generateStaticParams only for matching parents", async ({
+    request,
+  }) => {
+    const basePath = "/layout-segment-config/nested-gsp";
+    const takeCalls = async () =>
+      (await request.get(`${baseUrl()}/layout-segment-config/nested-gsp-calls`)).json();
+    await takeCalls();
+
+    const unlistedSlug = await request.get(`${baseUrl()}${basePath}/guides/missing`);
+    expect(unlistedSlug.status()).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    // One generator still runs when no parent matches, so a child that rewrites
+    // parent params is observed.
+    const unlistedCategory = await request.get(`${baseUrl()}${basePath}/missing/x`);
+    expect(unlistedCategory.status()).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["docs"] });
+  });
+});
+
+// A background regeneration renders the document whole, so the title that its
+// generateMetadata() streams is in <head>, as in Next.js. A miss streams the
+// document to its request, so the title streams into <body>.
+test.describe("ISR generated metadata placement", () => {
+  function titleIndex(html: string, title: string): number {
+    const index = html.indexOf(`<title>${title}</title>`);
+    expect(index).toBeGreaterThan(-1);
+    return index;
+  }
+
+  function expectTitleInHead(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeLessThan(html.indexOf("</head>"));
+  }
+
+  function expectTitleInBody(html: string, title: string): void {
+    expect(titleIndex(html, title)).toBeGreaterThan(html.indexOf("</head>"));
+  }
+
+  function readTimestamp(html: string): string | undefined {
+    return html.match(/data-testid="timestamp">(\d+)</)?.[1];
+  }
+
+  test("streams the generated title on a miss and puts it in <head> on a regeneration", async ({
+    request,
+  }) => {
+    const id = crypto.randomUUID();
+    const path = `/isr-metadata-head/${id}`;
+    const title = `ISR metadata head ${id}`;
+
+    const miss = await request.get(`${baseUrl()}${path}`);
+    expect(miss.headers()["x-vinext-cache"]).toBe("MISS");
+    expectTitleInBody(await miss.text(), title);
+
+    const hit = await waitForCacheHit(request, path);
+    const hitHtml = await hit.text();
+    expectTitleInBody(hitHtml, title);
+    const storedTimestamp = readTimestamp(hitHtml);
+    expect(storedTimestamp).toBeDefined();
+
+    // The entry goes stale after a second, and the next request regenerates it.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const stale = await request.get(`${baseUrl()}${path}`);
+    expect(stale.headers()["x-vinext-cache"]).toBe("STALE");
+    await stale.text();
+
+    // A complete regenerated document has the page's new timestamp.
+    let regeneratedHtml = "";
+    await expect
+      .poll(async () => {
+        const response = await request.get(`${baseUrl()}${path}`);
+        regeneratedHtml = await response.text();
+        const timestamp = readTimestamp(regeneratedHtml);
+        return [
+          response.headers()["x-vinext-cache"],
+          timestamp !== undefined && timestamp !== storedTimestamp,
+        ];
+      })
+      .toEqual(["HIT", true]);
+    expectTitleInHead(regeneratedHtml, title);
   });
 });
 
@@ -448,7 +682,6 @@ test.describe("ISR dynamicParams cache headers", () => {
  * OpenNext Compat: revalidateTag / revalidatePath E2E lifecycle tests.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/revalidateTag.test.ts
- * Tests: ON-2 in TRACKING.md
  *
  * OpenNext verifies the full tag-based cache invalidation lifecycle:
  * 1. Load tagged ISR page -> cached (HIT)
@@ -567,7 +800,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
   });
 
   // Ref: opennextjs-cloudflare revalidateTag.test.ts — "nested page shares tag"
-  // Tests: ON-2 #2 in TRACKING.md
   test("nested page sharing same tag is also invalidated", async ({ request }) => {
     test.setTimeout(30_000);
 
@@ -595,7 +827,6 @@ test.describe("revalidateTag / revalidatePath lifecycle (OpenNext compat)", () =
  * OpenNext Compat: ISR data cache (unstable_cache) separation from page cache.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/isr.test.ts
- * Tests: ON-1 #8 in TRACKING.md
  *
  * Verifies that unstable_cache (data cache) works alongside ISR page caching.
  */
@@ -615,6 +846,105 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     const value2 = html2.match(/CachedValue:\s*(?:<!--[^>]*-->)*\s*([a-z0-9]{4,})/)?.[1];
 
     expect(value2).toBe(value1);
+  });
+
+  // Next.js keys unstable_cache by the callback source as well as keyParts:
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  test("callbacks sharing keyParts and arguments keep separate entries", async ({ request }) => {
+    const id = `order-${Date.now()}`;
+
+    const receipt1 = await readSharedKeyPartsRoute(request, "receipt", id);
+    expect(receipt1).toMatchObject({ kind: "receipt", orderId: id });
+    expect(receipt1.customerEmail).toBe(`customer-${id}@example.com`);
+
+    const summary1 = await readSharedKeyPartsRoute(request, "summary", id);
+    expect(summary1).toMatchObject({ kind: "summary", orderId: id });
+    expect(summary1).not.toHaveProperty("customerEmail");
+
+    // Each callback still serves its own cached entry.
+    expect(await readSharedKeyPartsRoute(request, "summary", id)).toEqual(summary1);
+    expect(await readSharedKeyPartsRoute(request, "receipt", id)).toEqual(receipt1);
+  });
+
+  // Next.js joins keyParts with "," before hashing, a known TODO, so tuples
+  // whose parts join alike share an entry there. vinext keeps them apart.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  for (const order of ["first", "second"] as const) {
+    test(`keyParts tuples that join alike keep separate entries (${order} tuple primed)`, async ({
+      request,
+    }) => {
+      const id = `record-${order}-${Date.now()}`;
+      const first = { tenant: "tenant:team", scope: "reports", id };
+      const second = { tenant: "tenant", scope: "team:reports", id };
+      const [primed, other] = order === "first" ? [first, second] : [second, first];
+
+      const primedRecord = await readKeyPartsTupleRoute(request, primed);
+      expect(primedRecord).toMatchObject(primed);
+
+      const otherRecord = await readKeyPartsTupleRoute(request, other);
+      expect(otherRecord).toMatchObject(other);
+      expect(otherRecord.nonce).not.toBe(primedRecord.nonce);
+
+      // Each tuple still serves its own cached entry.
+      expect(await readKeyPartsTupleRoute(request, primed)).toEqual(primedRecord);
+      expect(await readKeyPartsTupleRoute(request, other)).toEqual(otherRecord);
+    });
+  }
+
+  // Next.js lets Client Components import unstable_cache, where its browser
+  // build of next/cache only calls the callback.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/cache.js
+  test("Client Components can import and call unstable_cache", async ({ page }) => {
+    const pageErrors: string[] = [];
+    page.on("pageerror", (error) => pageErrors.push(error.message));
+
+    await page.goto(`${baseUrl()}/nextjs-compat/unstable-cache-client`);
+
+    await expect(page.getByTestId("client-greeting")).toHaveText("hello client");
+    expect(pageErrors).toEqual([]);
+  });
+
+  // Next.js skips the read for an unstable_cache called inside another's
+  // callback, so revalidating the outer entry's tag reruns the inner one too.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  test("revalidating an unstable_cache reruns a nested unstable_cache", async ({ request }) => {
+    const id = `nested-${Date.now()}`;
+
+    const first = await readNestedCacheRoute(request, id);
+    expect(await readNestedCacheRoute(request, id)).toEqual(first);
+
+    const revalidate = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${id}&revalidate=1`,
+    );
+    expect(revalidate.status()).toBe(200);
+
+    expect((await readNestedCacheRoute(request, id)).nonce).not.toBe(first.nonce);
+  });
+
+  test("a Server Action reruns a nested unstable_cache after the outer entry revalidates", async ({
+    page,
+    request,
+  }) => {
+    const id = `nested-action-${Date.now()}`;
+    await page.goto(`${baseUrl()}/nextjs-compat/action-nested-unstable-cache?id=${id}`);
+    await waitForAppRouterHydration(page);
+
+    const reads = page.locator("#nested-reads li");
+    const read = async (count: number) => {
+      await page.click("#read-nested");
+      await expect(reads).toHaveCount(count);
+      return reads.nth(count - 1).textContent();
+    };
+
+    const first = await read(1);
+    expect(await read(2)).toBe(first);
+
+    const revalidate = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${id}&revalidate=1`,
+    );
+    expect(revalidate.status()).toBe(200);
+
+    expect(await read(3)).not.toBe(first);
   });
 
   // Ported from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
@@ -708,6 +1038,37 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect((await readDraftCacheRoute(request)).data).toBe(normal.data);
   });
 });
+
+async function readSharedKeyPartsRoute(
+  request: APIRequestContext,
+  route: "receipt" | "summary",
+  id: string,
+) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-shared-key-parts/${route}?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+async function readKeyPartsTupleRoute(
+  request: APIRequestContext,
+  tuple: { tenant: string; scope: string; id: string },
+) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-key-parts-tuple?${new URLSearchParams(tuple)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
+
+async function readNestedCacheRoute(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-nested?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  return (await response.json()) as Record<string, unknown>;
+}
 
 async function readDraftCachePage(request: APIRequestContext, key: string) {
   const response = await request.get(

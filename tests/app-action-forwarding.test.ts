@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   areServerActionsOwnedByRoute,
+  createForwardedActionContext,
   forwardServerActionIfNeeded,
 } from "../packages/vinext/src/server/app-action-forwarding.js";
 import {
@@ -43,6 +44,21 @@ function options(overrides: Record<string, unknown> = {}) {
 }
 
 describe("server action forwarding", () => {
+  it("re-enters the app handler with the server-owned middleware origin", () => {
+    // Middleware runs again on the forwarded request. Without this origin it
+    // would fall back to the Host-derived request URL.
+    const waitUntil = vi.fn();
+    const ctx = createForwardedActionContext({
+      middlewareOrigin: "http://localhost:3000",
+      waitUntil,
+    });
+    expect(ctx).toMatchObject({ actionForwarded: true, middlewareOrigin: "http://localhost:3000" });
+    const promise = Promise.resolve();
+    ctx.waitUntil?.(promise);
+    expect(waitUntil).toHaveBeenCalledWith(promise);
+    expect(createForwardedActionContext(null)).toEqual({ actionForwarded: true });
+  });
+
   it("validates decoded references against the current owner route", () => {
     const owners = {
       "module-a#selected": ["/selected"],

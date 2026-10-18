@@ -31,8 +31,8 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
 import MagicString from "magic-string";
-import { parseAst, type ESTree, type Plugin } from "vite";
-import { forEachAstChild, getAstName, staticStringValue } from "./ast-utils.js";
+import type { ESTree, Plugin } from "vite";
+import { forEachAstChild, getAstName, parseProgram, staticStringValue } from "./ast-utils.js";
 import { isFunctionNode } from "./ast-scope.js";
 import { createTransformCache } from "./transform-cache.js";
 import {
@@ -267,7 +267,7 @@ function patchHarfbuzzBundle(
         "vinext must be updated to support this @vercel/og version.",
     );
 
-  const sites = findHarfbuzzPatchSites(parseAst(code, { lang: "js" }));
+  const sites = findHarfbuzzPatchSites(parseProgram(code, { lang: "js" }));
   if (typeof sites === "string") return fail(sites);
 
   const output = new MagicString(code);

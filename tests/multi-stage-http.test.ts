@@ -401,6 +401,55 @@ describe("generic HTTP multi-stage transport", () => {
     }
   });
 
+  // Next.js writes middleware response headers before the handler runs and
+  // appends the handler's Set-Cookie afterwards, so the browser keeps the
+  // handler's cookie when middleware refreshes the same one.
+  it.each([
+    { action: "logout", status: 200, session: /^session=; / },
+    { action: "rotate", status: 200, session: /^session=rotated; / },
+    { action: "redirect", status: 307, session: /^session=; / },
+  ])(
+    "orders a response-stage route handler's $action cookie after middleware's refresh of it",
+    async ({ action, status, session }) => {
+      const res = await fetch(`${requestServer.origin}/api/session-refresh?action=${action}`, {
+        headers: { cookie: "session=old" },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(status);
+      const sessionCookies = res.headers
+        .getSetCookie()
+        .filter((cookie) => cookie.startsWith("session="));
+      expect(sessionCookies).toHaveLength(2);
+      expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
+      expect(sessionCookies[1]).toMatch(session);
+    },
+  );
+
+  it("orders a hybrid Pages API route's cookie after middleware's refresh of it", async () => {
+    const res = await fetch(`${requestServer.origin}/api/session-logout`, {
+      headers: { cookie: "session=old" },
+    });
+    expect(res.status).toBe(200);
+    const sessionCookies = res.headers
+      .getSetCookie()
+      .filter((cookie) => cookie.startsWith("session="));
+    expect(sessionCookies).toHaveLength(2);
+    expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
+    expect(sessionCookies[1]).toMatch(/^session=; /);
+  });
+
+  it("keeps a response-stage route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${requestServer.origin}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
+  });
+
   it("clears stale shared-cache policy when an admitted response becomes private", () => {
     expect(
       createHttpStageCacheAdapter().buildResponseHeaders({

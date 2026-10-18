@@ -7,6 +7,7 @@ import {
   getPendingAppRouterScrollIntent,
   markAppRouterScrollIntentHeadHoisted,
 } from "./app-router-scroll-state.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
 import { decodeHashFragment } from "./hash-scroll.js";
 
 const AppRouterScrollCommitContext = React.createContext<number | null>(null);
@@ -176,7 +177,9 @@ export class AppRouterScrollTargetInner extends React.Component<{
     const consumed = consumeAppRouterScrollIntent(intent, this.props.commitId);
     if (consumed === null) return;
 
-    scrollToElement(target, consumed.hash);
+    disableSmoothScrollDuringRouteTransition(() => {
+      scrollToElement(target, consumed.hash);
+    });
     target.focus();
   };
 

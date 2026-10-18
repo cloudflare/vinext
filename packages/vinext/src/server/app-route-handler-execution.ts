@@ -104,6 +104,7 @@ type RunAppRouteHandlerOptions = {
   i18n?: NextI18nConfig | null;
   isDraftMode?: boolean;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   markDynamicUsage: MarkAppRouteDynamicUsageFn;
   middlewareRequestHeaders?: Headers | null;
   /**
@@ -112,6 +113,8 @@ type RunAppRouteHandlerOptions = {
    */
   params: AppRouteParams | null;
   request: Request;
+  /** Host signal for the client connection; only the foreground request has one. */
+  requestSignal?: AbortSignal;
   routePattern?: string;
   setHeadersAccessPhase?: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
@@ -282,6 +285,7 @@ export async function runAppRouteHandler(
     basePath: options.basePath,
     i18n: options.i18n,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
     middlewareHeaders: options.middlewareRequestHeaders,
     onDynamicAccess() {
       options.markDynamicUsage();
@@ -290,6 +294,7 @@ export async function runAppRouteHandler(
       options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
+    signal: options.requestSignal,
     staticGenerationErrorMessage(expression) {
       return getAppRouteStaticGenerationErrorMessage(options.routePattern, expression);
     },
@@ -418,10 +423,22 @@ async function executeAppRouteHandlerImpl(
         requiresCompletedResponseAdmission: isRouteCacheabilityEvaluation(),
       })
     ) {
-      const completed = await completeAppRouteHandlerResponse(response);
+      const completed = await completeAppRouteHandlerResponse(response).catch(
+        async (error: unknown) => {
+          // Drain what the body queued before it failed. The body error stays
+          // the response error, as the eager drain above does for handlers.
+          await _drainPendingRevalidations().catch(() => {});
+          throw error;
+        },
+      );
       response = completed.response;
       cleanupDeferredToBody = !completed.completed;
-      if (completed.completed) markRouteCacheabilityResponseBodyComplete();
+      if (completed.completed) {
+        markRouteCacheabilityResponseBodyComplete();
+        // The body's producer ran after the eager drain above, so it owns any
+        // next/cache invalidations it queued (incomplete bodies drain at cleanup).
+        await _drainPendingRevalidations();
+      }
       const dynamicUsedDuringCompletion = options.consumeDynamicUsage();
       dynamicUsedInHandler =
         handlerResult.didAccessDynamicRequest() ||

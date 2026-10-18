@@ -54,7 +54,7 @@ type DocumentLike = {
  * Callers use this to decide whether the render pipeline owes `_document` the
  * full `getInitialProps` contract, since only an override can observe it.
  */
-export function hasUserDocumentGetInitialProps(
+function hasUserDocumentGetInitialProps(
   DocumentComponent: React.ComponentType | null | undefined,
 ): boolean {
   if (!DocumentComponent) return false;

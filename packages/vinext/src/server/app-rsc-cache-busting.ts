@@ -437,14 +437,38 @@ export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boo
   return true;
 }
 
-function toRscRequestPath(href: string): string {
+const RSC_REQUEST_URL_BASE = "http://vinext.local";
+
+/**
+ * Callers pass a path (usually a parsed URL's pathname + search) or an
+ * absolute URL. A pathname can begin with "//", and resolving that as a
+ * relative reference would read its first segment as a host, so a path is
+ * appended to the base instead of resolved against it.
+ */
+export function parseRscRequestPath(href: string): URL {
   const hashIndex = href.indexOf("#");
   const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  return beforeHash;
+  if (beforeHash.startsWith("/") || beforeHash.startsWith("\\")) {
+    return new URL(`${RSC_REQUEST_URL_BASE}${beforeHash}`);
+  }
+  return new URL(beforeHash, RSC_REQUEST_URL_BASE);
+}
+
+/**
+ * Serialize the path-absolute reference callers fetch against the app origin.
+ * A pathname that begins with "//" would serialize as a protocol-relative URL
+ * and send the request to another host, so it keeps a "/." prefix, as the
+ * WHATWG URL serializer does. URL resolution drops the dot segment, so the
+ * request still targets the same pathname on the app origin, as Next.js's
+ * full-URL fetch does.
+ */
+export function formatRscRequestPath(url: URL): string {
+  const pathname = url.pathname.startsWith("//") ? `/.${url.pathname}` : url.pathname;
+  return `${pathname}${url.search}`;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
-  const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  const url = parseRscRequestPath(href);
   if (
     typeof window !== "undefined" &&
     process.env.NODE_ENV === "production" &&
@@ -462,25 +486,22 @@ export async function createRscRequestUrl(href: string, headers: Headers): Promi
     } else {
       url.pathname += isBasePathRoot ? "/index.txt" : ".txt";
     }
-    return `${url.pathname}${url.search}`;
+    return formatRscRequestPath(url);
   }
   const hash = await computeRscCacheBustingSearchParam(headers);
   setRscCacheBustingSearchParam(url, hash);
-  return `${url.pathname}${url.search}`;
+  return formatRscRequestPath(url);
 }
 
 /** Build the definitive full-route RSC URL shared by prefetch and navigation. */
 export function createCanonicalRscRequestUrl(href: string): string {
-  const url = new URL(toRscRequestPath(href), "http://vinext.local");
+  const url = parseRscRequestPath(href);
   setRscCacheBustingSearchParam(url, "");
-  return `${url.pathname}${url.search}`;
+  return formatRscRequestPath(url);
 }
 
 export function createServerActionRequestUrl(href: string): string {
-  const hashIndex = href.indexOf("#");
-  const beforeHash = hashIndex === -1 ? href : href.slice(0, hashIndex);
-  const url = new URL(beforeHash, "http://vinext.local");
-  return `${url.pathname}${url.search}`;
+  return formatRscRequestPath(parseRscRequestPath(href));
 }
 
 export async function createRscRedirectLocation(

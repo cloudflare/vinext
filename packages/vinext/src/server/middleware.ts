@@ -140,6 +140,8 @@ export async function runMiddleware(
   trailingSlash?: boolean,
   isDataRequest?: boolean,
   normalizedPathname?: string,
+  isStaleDataRequest?: boolean,
+  skipTrailingSlashRedirect?: boolean,
 ): Promise<MiddlewareResult> {
   // Load the middleware module via the direct-call ModuleRunner.
   // This bypasses the hot channel entirely and is safe with all Vite plugin
@@ -160,10 +162,12 @@ export async function runMiddleware(
     i18nConfig,
     includeErrorDetails: process.env.NODE_ENV !== "production",
     isDataRequest,
+    isStaleDataRequest,
     isProxy: isProxyFile(middlewarePath),
     module: mod,
     normalizedPathname,
     request,
+    skipTrailingSlashRedirect,
     trailingSlash,
   });
 }

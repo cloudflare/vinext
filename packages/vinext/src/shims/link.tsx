@@ -724,8 +724,10 @@ function prefetchUrl(
 async function promotePrefetchEntriesForNavigation(href: string): Promise<void> {
   if (typeof window === "undefined") return;
   if (!hasAppNavigationRuntime()) return;
-  const [{ getPrefetchCache }, { stripRscCacheBustingSearchParam, stripRscSuffix }] =
-    await Promise.all([loadNavigationModule(), import("../server/app-rsc-cache-busting.js")]);
+  const [
+    { getPrefetchCache },
+    { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
+  ] = await Promise.all([loadNavigationModule(), import("../server/app-rsc-cache-busting.js")]);
 
   let target: URL;
   try {
@@ -744,7 +746,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
     const [rscUrl] = cacheKey.split("\0", 1);
     let cached: URL;
     try {
-      cached = new URL(rscUrl, window.location.href);
+      cached = parseRscRequestPath(rscUrl);
     } catch {
       continue;
     }

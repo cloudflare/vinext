@@ -1168,6 +1168,35 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="http://example.fr/about"');
   });
 
+  it("keeps relative hrefs on the configured locale domain", () => {
+    (globalThis as any).window = {
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: {
+        domainLocales: [
+          { domain: "example.com", defaultLocale: "en" },
+          { domain: "example.fr", defaultLocale: "fr", http: true },
+        ],
+        locale: "en",
+        defaultLocale: "en",
+      },
+      location: {
+        protocol: "https:",
+        hostname: "example.com",
+        host: "example.com",
+      },
+    };
+
+    for (const [href, expected] of [
+      ["@evil.com", "http://example.fr/@evil.com"],
+      [".evil.com/x", "http://example.fr/.evil.com/x"],
+    ]) {
+      const html = ReactDOMServer.renderToString(
+        React.createElement(Link, { href, locale: "fr" } as any, "x"),
+      );
+      expect(html).toContain(`href="${expected}"`);
+    }
+  });
+
   it("uses configured locale domains during SSR output", () => {
     delete (globalThis as any).window;
     setI18nContext({
@@ -1504,6 +1533,17 @@ describe("toSameOriginPath", () => {
     it("returns null for same host but different scheme (different origin)", () => {
       expect(toSameOriginPath("https://localhost:3000/about")).toBe(null);
     });
+
+    it("never returns a protocol-relative path for a same-origin // pathname", () => {
+      // The pathname "//evil.com/x" as a local path would point at evil.com.
+      expect(toSameOriginPath("http://localhost:3000//evil.com/x?q=1#h")).toBe("/evil.com/x?q=1#h");
+      expect(toSameOriginPath("http://localhost:3000///evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("http://localhost:3000/\\evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("http://localhost:3000/.//evil.com/x")).toBe("/evil.com/x");
+      expect(toSameOriginPath("//localhost:3000//evil.com/x")).toBe("/evil.com/x");
+      // Repeated slashes after the first segment are not a host reference.
+      expect(toSameOriginPath("http://localhost:3000/a//b")).toBe("/a//b");
+    });
   });
 });
 
@@ -1703,6 +1743,38 @@ describe("toSameOriginAppPath", () => {
     }
   });
 
+  it("never returns a protocol-relative app path", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        origin: "http://localhost:3000",
+        href: "http://localhost:3000/base/posts/1",
+      },
+    };
+
+    try {
+      expect(toSameOriginAppPath("http://localhost:3000//evil.com/x", "")).toBe("/evil.com/x");
+      // "/base//evil.com/x" has a single leading slash, but stripping the
+      // basePath leaves "//evil.com/x".
+      expect(toSameOriginAppPath("http://localhost:3000/base//evil.com/x?q=1", "/base")).toBe(
+        "/evil.com/x?q=1",
+      );
+      // Collapsing comes first, so "//base/x" is inside basePath, as it is
+      // after Next.js's repeated-slash 308.
+      expect(toSameOriginAppPath("http://localhost:3000//base/x", "/base")).toBe("/x");
+      // Encoded slashes are not path separators and stay encoded.
+      expect(toSameOriginAppPath("http://localhost:3000/base/%2F%2Fevil.com/x", "/base")).toBe(
+        "/%2F%2Fevil.com/x",
+      );
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
   it("treats same-origin URLs outside the configured basePath as external", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
@@ -1806,6 +1878,44 @@ describe("normalizePathTrailingSlash", () => {
       expect(normalizePathTrailingSlash("https://nextjs.org/", false)).toBe("https://nextjs.org/");
       expect(normalizePathTrailingSlash("https://nextjs.org", false)).toBe("https://nextjs.org");
     });
+  });
+});
+
+// `skipTrailingSlashRedirect` defines __NEXT_MANUAL_TRAILING_SLASH in Next.js,
+// which makes `normalizePathTrailingSlash` return every path as written.
+// Ported from Next.js: test/e2e/skip-trailing-slash-redirect/index.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/skip-trailing-slash-redirect/index.test.ts
+describe("normalizePathTrailingSlash with skipTrailingSlashRedirect", () => {
+  beforeEach(() => {
+    vi.stubEnv("__VINEXT_MANUAL_TRAILING_SLASH", "true");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it.each([true, false])("keeps paths as written with trailingSlash: %s", (trailingSlash) => {
+    for (const path of [
+      "/another",
+      "/another/",
+      "/another/?x=1#y",
+      "/another?x=1#y",
+      "/file.txt/",
+      "/",
+    ]) {
+      expect(normalizePathTrailingSlash(path, trailingSlash)).toBe(path);
+    }
+  });
+
+  it("renders Link hrefs with their original trailing slash", () => {
+    const withoutSlash = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/another" }, "x"),
+    );
+    const withSlash = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/another/" }, "x"),
+    );
+    expect(withoutSlash).toContain('href="/another"');
+    expect(withSlash).toContain('href="/another/"');
   });
 });
 

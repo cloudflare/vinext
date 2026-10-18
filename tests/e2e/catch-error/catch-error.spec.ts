@@ -6,7 +6,7 @@ import { disableDevErrorOverlay, waitForAppRouterHydration, waitForHydration } f
 
 const BASE = "http://localhost:4185";
 const SERVER_COMPONENT_PROD_ERROR_MESSAGE =
-  "An error occurred in the Server Components render. The specific message is omitted in production builds to avoid leaking sensitive details. A digest property is included on this error instance which may provide additional details about the nature of the error.";
+  "Minified React error #441; visit https://react.dev/errors/441 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
 
 test.describe("app-dir - catchError", () => {
   test("should recover Client Component error after reset", async ({ page }) => {

@@ -1,14 +1,8 @@
 import { redirect } from "next/navigation";
 
-// Async page that throws redirect() at the top of the body. The page
-// returns a rejected promise which propagates through React's onError
-// during shell render. Without the fix, the route-level Suspense
-// boundary (loading.tsx) absorbs the throw and React serializes a
-// "Switched to client rendering" error in the body instead of a 307.
-//
-// With the fix (skip probe + post-shell digest swap), the rscErrorTracker
-// captures the digest from React's onError before the SSR shell promise
-// resolves, and the lifecycle swaps the response to a clean 307.
+// Async page wrapped by route-level loading.tsx that throws redirect(). The
+// loading boundary catches it, so, as in Next.js, the document streams as a
+// 200 with the digest and a meta refresh, which the client follows.
 export default async function ProtectedLoadingPage() {
   redirect("/");
 }

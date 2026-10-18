@@ -66,7 +66,6 @@ type ResolveAppPageGenerateStaticParamsSourcesOptions = {
 
 type BuildAppPageElementOptions<TElement> = {
   buildPageElement: () => Promise<TElement>;
-  probePageSpecialError?: () => Promise<AppPageSpecialError | null>;
   renderErrorBoundaryPage: (error: unknown) => Promise<Response | null>;
   renderSpecialError: (specialError: AppPageSpecialError) => Promise<Response>;
   resolveSpecialError: (error: unknown) => AppPageSpecialError | null;
@@ -523,37 +522,101 @@ async function generateIndependentStaticParams(
   return { staticParams: rows.map((row) => row.params), validated };
 }
 
+function isStaticParamsRowConsistentWithRequest(
+  row: Record<string, unknown>,
+  requestParams: AppPageParams,
+): boolean {
+  const sharedKeys = Object.keys(row).filter((key) => requestParams[key] !== undefined);
+  return areStaticParamsAllowed(requestParams, [row], false, sharedKeys);
+}
+
+function rewritesParentParams(
+  parentParams: Record<string, unknown>,
+  item: Record<string, unknown>,
+): boolean {
+  return Object.keys(item).some(
+    (key) =>
+      Object.hasOwn(parentParams, key) &&
+      JSON.stringify(item[key]) !== JSON.stringify(parentParams[key]),
+  );
+}
+
+type GeneratedStaticParamsRow = {
+  params: Record<string, unknown>;
+  // Identifies the row by its position in the generation tree, so a rerun
+  // finds the results its first pass returned even when rows share params.
+  lineage: string;
+};
+
 async function generateChainedStaticParams(
   sources: readonly GenerateStaticParamsSource[],
+  requestParams: AppPageParams | null,
+  // A rerun over every combination reuses the results each generator already
+  // returned, so it calls generators only for the parents it skipped.
+  results = new Map<GenerateStaticParamsSource, Map<string, unknown>>(),
 ): Promise<Record<string, unknown>[]> {
-  let generatedParams: Record<string, unknown>[] = [];
+  let generatedRows: GeneratedStaticParamsRow[] = [];
+  let skippedParents = false;
+  let needsEveryCombination = false;
 
   for (const source of sources) {
-    const hasParentParams = generatedParams.length > 0;
-    const parents = hasParentParams ? generatedParams : [{}];
-    const nextParams: Record<string, unknown>[] = [];
+    let sourceResults = results.get(source);
+    if (!sourceResults) {
+      sourceResults = new Map();
+      results.set(source, sourceResults);
+    }
+    const hasParentParams = generatedRows.length > 0;
+    let parents = hasParentParams ? generatedRows : [{ params: {}, lineage: "" }];
+    const nextRows: GeneratedStaticParamsRow[] = [];
 
-    for (const parentParams of parents) {
-      const result = await runWithFetchDedupe(() =>
-        source.generateStaticParams({ params: parentParams as AppPageParams }),
+    // Every child row inherits its parent's params, so a parent combination
+    // that already disagrees with the request cannot produce it, and its
+    // generator call is skipped. When none agrees, one still runs so a
+    // generator that rewrites parent params is observed.
+    if (requestParams) {
+      const consistent = parents.filter((row) =>
+        isStaticParamsRowConsistentWithRequest(row.params, requestParams),
       );
+      parents = consistent.length > 0 ? consistent : parents.slice(0, 1);
+    }
+    if (hasParentParams && parents.length < generatedRows.length) skippedParents = true;
+
+    for (const parent of parents) {
+      let result = sourceResults.get(parent.lineage);
+      if (!sourceResults.has(parent.lineage)) {
+        result = await runWithFetchDedupe(() =>
+          source.generateStaticParams({ params: parent.params as AppPageParams }),
+        );
+        sourceResults.set(parent.lineage, result);
+      }
       if (Array.isArray(result) && result.length > 0) {
-        for (const item of result) {
-          if (item !== null && typeof item === "object" && !Array.isArray(item)) {
-            nextParams.push({ ...parentParams, ...(item as Record<string, unknown>) });
+        result.forEach((item, index) => {
+          if (item === null || typeof item !== "object" || Array.isArray(item)) return;
+          const row = item as Record<string, unknown>;
+          if (skippedParents && rewritesParentParams(parent.params, row)) {
+            needsEveryCombination = true;
           }
-        }
+          nextRows.push({
+            params: { ...parent.params, ...row },
+            lineage: `${parent.lineage}/${index}`,
+          });
+        });
       } else if (hasParentParams) {
         // Match Next's non-PPR generation: an empty child result preserves
         // each already-generated parent combination.
-        nextParams.push(parentParams);
+        nextRows.push({ params: parent.params, lineage: `${parent.lineage}/-` });
       }
     }
 
-    generatedParams = nextParams;
+    if (skippedParents && nextRows.length === 0) needsEveryCombination = true;
+    generatedRows = nextRows;
   }
 
-  return generatedParams;
+  // Next merges each result over its parent combination, so a generator that
+  // rewrites a parent param can produce the request from a skipped parent.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+  if (needsEveryCombination) return generateChainedStaticParams(sources, null, results);
+  return generatedRows.map((row) => row.params);
 }
 
 function normalizeGenerateStaticParams(
@@ -596,7 +659,14 @@ export async function validateAppPageDynamicParams(
     // generateStaticParams exported by a grouped layout receives everything
     // generated by its parent layouts.
     // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
-    chainedStaticParams = await generateChainedStaticParams(chainedSources);
+    //
+    // Parallel generators merge their results over each primary combination
+    // and may rewrite primary params, so they receive every combination.
+    const hasIndependentSources = generateStaticParamsSources.some((source) => !source.chained);
+    chainedStaticParams = await generateChainedStaticParams(
+      chainedSources,
+      hasIndependentSources ? null : options.params,
+    );
   }
 
   const independentChains = new Map<unknown, GenerateStaticParamsSource[]>();
@@ -797,9 +867,7 @@ export async function buildAppPageElement<TElement>(
       response: null,
     };
   } catch (error) {
-    const buildSpecialError = options.resolveSpecialError(error);
-    const pageSpecialError = buildSpecialError ? await options.probePageSpecialError?.() : null;
-    const specialError = pageSpecialError ?? buildSpecialError;
+    const specialError = options.resolveSpecialError(error);
     if (specialError) {
       return {
         element: null,

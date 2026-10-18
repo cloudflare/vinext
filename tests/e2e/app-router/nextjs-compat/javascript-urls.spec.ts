@@ -23,6 +23,7 @@ async function expectJavascriptUrlBlocked(
   page: Page,
   initialUrl: string,
   getNavigationRequests: () => Request[],
+  expectedUrl = initialUrl,
 ) {
   await expect
     .poll(async () => {
@@ -40,7 +41,7 @@ async function expectJavascriptUrlBlocked(
     (request) => !request.url().includes(new URL(initialUrl).pathname),
   );
   expect(postLoadNavigations).toHaveLength(0);
-  expect(page.url()).toBe(initialUrl);
+  expect(page.url()).toBe(expectedUrl);
 }
 
 test.describe("javascript-urls", () => {
@@ -97,7 +98,9 @@ test.describe("javascript-urls", () => {
   });
 
   // Next.js blocks javascript: URLs consumed from redirect errors during
-  // client-side App Router navigation.
+  // client-side App Router navigation. The redirect arrives in the page's RSC
+  // payload, so the navigation to the page commits first and the URL stays on
+  // it, as in Next.js 16.
   // Reference implementation: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/segment-cache/navigation.ts
   test("should prevent javascript URLs in RSC redirects", async ({ page }) => {
     const { beforePageLoad, getNavigationRequests } = createNavigationInterceptor();
@@ -109,8 +112,15 @@ test.describe("javascript-urls", () => {
 
     await page.locator("#rsc-redirect-link").click();
 
-    await expectJavascriptUrlBlocked(page, initialUrl, getNavigationRequests);
+    await expectJavascriptUrlBlocked(
+      page,
+      initialUrl,
+      getNavigationRequests,
+      `${BASE}/nextjs-compat/javascript-urls/rsc-redirect`,
+    );
 
+    await page.goBack();
+    await expect(page).toHaveURL(initialUrl);
     await page.locator('a[href="/nextjs-compat/javascript-urls/safe"]').click();
     await expect(page).toHaveURL(`${BASE}/nextjs-compat/javascript-urls/safe`);
   });

@@ -1,4 +1,5 @@
 import type { RenderObservation } from "../server/cache-proof.js";
+import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
 import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
@@ -131,7 +132,6 @@ type MemoryEntry = {
 };
 
 const DEFAULT_MEMORY_CACHE_MAX_SIZE = 50 * 1024 * 1024;
-const MAX_REVALIDATED_TAG_ENTRIES = 10_000;
 
 type MemoryCacheHandlerOptions = Pick<CacheHandlerContext, "maxMemoryCacheSize"> & {
   cacheMaxMemorySize?: number;
@@ -366,13 +366,11 @@ export class MemoryCacheHandler implements CacheHandler {
   async revalidateTag(tags: string | string[]): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
+    // Invalidation is lazy, so a marker is the only thing keeping older
+    // entries from being served. Like Next.js's tags manifest, markers are
+    // never evicted: dropping one would revive every older entry it covers.
     for (const tag of tagList) {
       this.tagRevalidatedAt.set(tag, now);
-      while (this.tagRevalidatedAt.size > MAX_REVALIDATED_TAG_ENTRIES) {
-        const oldest = this.tagRevalidatedAt.keys().next().value;
-        if (oldest === undefined) break;
-        this.tagRevalidatedAt.delete(oldest);
-      }
     }
   }
 
@@ -392,20 +390,22 @@ class LazyDataCacheHandler implements CacheHandler {
   constructor(private readonly load: () => Promise<void>) {}
 
   private resolve(): Promise<CacheHandler> {
-    return (this.resolved ??= this.load().then(() => {
-      const registered = globalHandlers[HANDLER_KEY];
-      if (registered && registered !== this) {
-        this.loadedHandler = registered;
-        return registered;
-      }
+    return (this.resolved ??= shareIsolatePromise(
+      this.load().then(() => {
+        const registered = globalHandlers[HANDLER_KEY];
+        if (registered && registered !== this) {
+          this.loadedHandler = registered;
+          return registered;
+        }
 
-      const fallback = new MemoryCacheHandler();
-      globalHandlers[HANDLER_KEY] = fallback;
-      globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
-      delete globalHandlers[LAZY_HANDLER_KEY];
-      this.loadedHandler = fallback;
-      return fallback;
-    }));
+        const fallback = new MemoryCacheHandler();
+        globalHandlers[HANDLER_KEY] = fallback;
+        globalHandlers[CONFIGURED_HANDLER_KEY] = fallback;
+        delete globalHandlers[LAZY_HANDLER_KEY];
+        this.loadedHandler = fallback;
+        return fallback;
+      }),
+    ));
   }
 
   async get(key: string, ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {

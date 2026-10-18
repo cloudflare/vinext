@@ -4,7 +4,8 @@
  * Covers the edge-managed adapter backed by the Workers Cache (ctx.cache):
  *  - get null / set no-op / ownsBackgroundRevalidation false
  *  - buildResponseHeaders emits a cacheable Cache-Control + Cache-Tag
- *  - revalidateTag purges via ctx.cache.purge({ tags })
+ *  - revalidateTag purges via ctx.cache.purge({ tags }), or invalidates via
+ *    ctx.cache.invalidate({ tags }) for stale-while-revalidate profiles
  *  - getCdnCacheAdapter() only selects the Cloudflare adapter when it is
  *    explicitly configured.
  */
@@ -788,6 +789,54 @@ describe("CloudflareCdnCacheAdapter", () => {
     expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("")] });
   });
 
+  it("revalidateTag invalidates stale-while-revalidate tags instead of purging them", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 31_536_000 });
+      await adapter.revalidateTag("drafts", {});
+    });
+    expect(invalidate.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag purges immediately expired tags even when invalidation is available", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    const invalidate = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge, invalidate } }, async () => {
+      await adapter.revalidateTag("posts");
+      await adapter.revalidateTag("drafts", { expire: 0 });
+    });
+    expect(purge.mock.calls).toEqual([
+      [{ tags: [encodeCloudflareCacheTag("posts")] }],
+      [{ tags: [encodeCloudflareCacheTag("drafts")] }],
+    ]);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag falls back to purge when the runtime cannot invalidate", async () => {
+    const purge = vi.fn(async () => ({ errors: [], success: true }));
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag("posts", { expire: 60 });
+    });
+    expect(purge).toHaveBeenCalledWith({ tags: [encodeCloudflareCacheTag("posts")] });
+  });
+
+  it("surfaces a resolved Workers Cache invalidation failure", async () => {
+    const invalidate = vi.fn(async () => ({
+      errors: [{ code: 10000, message: "rate limited" }],
+      success: false,
+    }));
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge: vi.fn(), invalidate } }, () =>
+        adapter.revalidateTag("posts", { expire: 60 }),
+      ),
+    ).rejects.toThrow("Workers Cache invalidate failed: 10000: rate limited");
+  });
+
   it("revalidateTag is a no-op when the Workers Cache is absent (e.g. Node dev)", async () => {
     // No runWithExecutionContext scope → getRequestExecutionContext() is null.
     await expect(adapter.revalidateTag("posts")).resolves.toBeUndefined();
@@ -799,6 +848,66 @@ describe("CloudflareCdnCacheAdapter", () => {
       await adapter.revalidateTag([]);
     });
     expect(purge).not.toHaveBeenCalled();
+  });
+
+  it("revalidateTag splits batches into 100-tag purges and dedupes tags", async () => {
+    const purge = vi.fn(async (_options: { tags: string[] }) => ({ errors: [], success: true }));
+    const tags = Array.from({ length: 150 }, (_, i) => `tag-${i}`);
+    await runWithExecutionContext({ waitUntil() {}, cache: { purge } }, async () => {
+      await adapter.revalidateTag([...tags, "tag-0"]);
+    });
+    expect(purge.mock.calls.map(([options]) => options.tags)).toEqual([
+      tags.slice(0, 100).map(encodeCloudflareCacheTag),
+      tags.slice(100).map(encodeCloudflareCacheTag),
+    ]);
+  });
+
+  it("surfaces a failure from any chunk of a batched purge", async () => {
+    let call = 0;
+    const purge = vi.fn(async () =>
+      call++ === 1
+        ? {
+            errors: [{ code: 1134, message: "Unable to purge, rate limit reached" }],
+            success: false,
+          }
+        : { errors: [], success: true },
+    );
+    const tags = Array.from({ length: 101 }, (_, i) => `tag-${i}`);
+    await expect(
+      runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+        adapter.revalidateTag(tags),
+      ),
+    ).rejects.toThrow("Workers Cache purge failed: 1134: Unable to purge, rate limit reached");
+    expect(purge).toHaveBeenCalledTimes(2);
+  });
+
+  it("settles every chunk before surfacing a rejected chunk purge", async () => {
+    let releaseSecond!: () => void;
+    let secondSettled = false;
+    const failure = new Error("network");
+    let call = 0;
+    const purge = vi.fn(async () => {
+      if (call++ === 0) throw failure;
+      await new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      secondSettled = true;
+      return { errors: [], success: true };
+    });
+    const tags = Array.from({ length: 101 }, (_, i) => `tag-${i}`);
+    const result = runWithExecutionContext({ waitUntil() {}, cache: { purge } }, () =>
+      adapter.revalidateTag(tags),
+    );
+    let rejected = false;
+    void result.catch(() => {
+      rejected = true;
+    });
+    await expect.poll(() => purge.mock.calls.length).toBe(2);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(rejected).toBe(false);
+    releaseSecond();
+    await expect(result).rejects.toBe(failure);
+    expect(secondSettled).toBe(true);
   });
 
   it("surfaces a resolved Workers Cache purge failure", async () => {

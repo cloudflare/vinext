@@ -12,6 +12,7 @@ import type {
   CdnResponseHeaders,
 } from "vinext/shims/cdn-cache";
 import { DefaultCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import type { StaticAssetsAdapterOptions } from "./static-assets-adapter.js";
 import {
   STATIC_ASSET_CACHE_PATH,
@@ -47,17 +48,43 @@ function isMetadata(value: unknown): value is StaticAssetCacheMetadata {
 export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
   readonly hasPrerenderedPages = true;
   readonly ownsBackgroundRevalidation = false;
-  private indexPromise: Promise<StaticAssetCacheIndex | null> | undefined;
+  private index: StaticAssetCacheIndex | null | undefined;
+  // A pending fetch belongs to the request that started it, and Workers never
+  // settles it once that request is cancelled (for example, when its client
+  // disconnects). It is only shared when the starting request's waitUntil()
+  // keeps it running, which Workers allows for up to 30 seconds after the
+  // request ends.
+  private pendingIndex: Promise<StaticAssetCacheIndex | null> | undefined;
 
   constructor(readonly assets: AssetFetcher) {}
 
   private loadIndex(): Promise<StaticAssetCacheIndex | null> {
-    return (this.indexPromise ??= this.assets
-      .fetch(`https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`)
-      .then(async (response) => (response.ok ? ((await response.json()) as unknown) : null))
-      .then((value) =>
-        value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null,
-      ));
+    if (this.index !== undefined) return Promise.resolve(this.index);
+    if (this.pendingIndex) return this.pendingIndex;
+    const ctx = getRequestExecutionContext();
+    if (!ctx) return this.fetchIndex();
+    const pending = this.fetchIndex().finally(() => {
+      if (this.pendingIndex === pending) this.pendingIndex = undefined;
+    });
+    this.pendingIndex = pending;
+    ctx.waitUntil(pending.catch(() => {}));
+    return pending;
+  }
+
+  private async fetchIndex(): Promise<StaticAssetCacheIndex | null> {
+    const response = await this.assets.fetch(
+      `https://vinext.invalid${STATIC_ASSET_CACHE_PATH}/index.json`,
+    );
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => {});
+      // The build writes no index when it packages no entries; any other
+      // failure is retried by the next request.
+      if (response.status === 404) this.index = null;
+      return null;
+    }
+    const value: unknown = await response.json();
+    return (this.index =
+      value !== null && typeof value === "object" ? (value as StaticAssetCacheIndex) : null);
   }
 
   async get(key: string): Promise<CacheHandlerValue | null> {
@@ -110,10 +137,10 @@ export class StaticAssetsCacheAdapter implements CdnCacheAdapter {
         kind: "APP_PAGE",
         html: "",
         rscData: await bodyResponse.arrayBuffer(),
-        headers: undefined,
+        headers: metadata.headers,
         postponed: undefined,
         prerendered: true,
-        status: undefined,
+        status: metadata.status,
       };
     } else {
       value = {

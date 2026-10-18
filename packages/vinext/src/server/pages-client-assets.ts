@@ -11,6 +11,8 @@ export type PagesClientAssets = {
   dynamicPreloads?: Record<string, string[]>;
   /** next.config crossOrigin, defaulting to anonymous for Vite's CORS-fetched assets. */
   crossOrigin?: AssetCrossOrigin;
+  /** Client bundle files outside `_next/static`, as URL pathnames. */
+  clientBuildFiles?: string[];
 };
 
 let pagesClientAssets: PagesClientAssets = {};

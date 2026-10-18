@@ -38,6 +38,7 @@ type ReadAppRouteHandlerCacheOptions = {
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   isAutoHead: boolean;
   appendResponseLink?: boolean;
   isrDebug?: AppRouteDebugLogger;
@@ -131,6 +132,7 @@ export async function readAppRouteHandlerCacheResponse(
                     handlerFn: options.handlerFn,
                     i18n: options.i18n,
                     trailingSlash: options.trailingSlash,
+                    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
                     markDynamicUsage: options.markDynamicUsage,
                     params: options.params === null ? null : makeThenableParams(options.params),
                     request: new Request(options.requestUrl, { method: "GET" }),

@@ -162,4 +162,33 @@ test.describe("Next.js compat: metadata (browser)", () => {
       expect(title).toBe("this is the page title");
     }).toPass({ timeout: 10_000 });
   });
+
+  // Next.js resolves metadata inside the page's Flight render, so a React
+  // cache() loader that generateMetadata() and the page both call runs once.
+  // The fetch() half of these tests is omitted: the fixture runs offline.
+  test.describe("react cache", () => {
+    // Next.js: 'should have same title and page value on initial load'
+    // Source: https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts#L815-L829
+    test("should have same title and page value on initial load", async ({ page }) => {
+      await page.goto(`${BASE}/nextjs-compat/metadata-cache-deduping`);
+      const value = await page.locator("#value").textContent();
+      // Value in the title should match what's shown on the page component
+      const title = JSON.parse(await page.title()) as { val: string };
+      expect(title.val).toBe(value);
+    });
+
+    // Next.js: 'should have same title and page value when navigating'
+    // Source: https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata/metadata.test.ts#L831-L855
+    test("should have same title and page value when navigating", async ({ page }) => {
+      await page.goto(`${BASE}/nextjs-compat/metadata-cache-deduping/navigating`);
+      await waitForAppRouterHydration(page);
+      await page.click("#link-to-deduping-page");
+      const value = await page.locator("#value").textContent();
+      // Dynamic metadata streams in async
+      await expect(page).toHaveTitle(/"page":"cache-deduping"/);
+      // Value in the title should match what's shown on the page component
+      const title = JSON.parse(await page.title()) as { val: string };
+      expect(title.val).toBe(value);
+    });
+  });
 });

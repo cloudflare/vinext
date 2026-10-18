@@ -265,7 +265,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
         fallback: [],
       },
     });
-    expect(code).toContain("const __routeMatcher = __createAppRscRouteMatcher(routes);");
+    expect(code).toContain("const __routeMatcher = __createAppRscRouteMatcher(routes, ");
     expect(code).toContain("matchRoute,");
     expect(code).toContain("configRewrites: __configRewrites");
   });

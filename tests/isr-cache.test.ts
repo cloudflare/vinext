@@ -12,6 +12,7 @@ import {
   isrCacheKey,
   pagesIsrCacheKey,
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   appIsrHtmlKey,
   appIsrRscKey,
   appIsrRouteKey,
@@ -21,6 +22,7 @@ import {
   buildAppPageCacheValue,
   normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration,
+  coalesceOnDemandRevalidation,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
@@ -95,9 +97,19 @@ describe("revalidation secret", () => {
 
 // Cache keys
 describe("isrCacheKey", () => {
-  it("fnv1a64 uses fixed-width unambiguous output", () => {
-    const hash = fnv1a64("/" + "a".repeat(250));
-    expect(hash).toMatch(/^[0-9a-f]{16}$/);
+  it("keeps long pathnames whose fnv1a64 digests collide in separate entries", () => {
+    // Found by a collision search: the two segments leave fnv1a64 in the same
+    // state, so any shared tail collides too. A crafted request path must not
+    // share another long path's entry.
+    const tail = `-${"x".repeat(200)}`;
+    const first = `/articles/801726145630c3c4${tail}`;
+    const second = `/articles/fb1316807b9cbf78${tail}`;
+    expect(fnv1a64(first)).toBe(fnv1a64(second));
+
+    const key = isrCacheKey("pages", first);
+    expect(key).toMatch(/^pages:__hash:[0-9a-f]{64}$/);
+    expect(key).not.toBe(isrCacheKey("pages", second));
+    expect(appIsrHtmlKey(first)).not.toBe(appIsrHtmlKey(second));
   });
 
   it("generates pages: prefix for Pages Router", () => {
@@ -207,6 +219,32 @@ describe("App Router ISR cache key primitives", () => {
     );
   });
 
+  it("keeps fallback shell keys apart from the page keys of the same pathname", () => {
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).toBe(
+      "app-fallback-shell:v1:build-42:/en/[slug]:html",
+    );
+    // No build ID can spell a shell key as a page key.
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "release")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "release:fallback-shell"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "html")).toMatch(/^app-fallback-shell:/);
+    expect(appIsrFallbackShellKey("/en/[slug]", "html", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "html", "build-42"),
+    );
+    expect(appIsrFallbackShellKey("/en/[slug]", "rsc", "build-42")).not.toBe(
+      appIsrCacheKey("/en/[slug]", "rsc", "build-42"),
+    );
+
+    const longPathname = `/en/${"x".repeat(220)}/[slug]`;
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).toMatch(
+      /^app-fallback-shell:v1:build-42:__hash:[a-f0-9]{64}:html$/,
+    );
+    expect(appIsrFallbackShellKey(longPathname, "html", "build-42")).not.toBe(
+      appIsrCacheKey(longPathname, "html", "build-42"),
+    );
+  });
+
   it("does not read pre-v2 App entries when the build id stays stable", async () => {
     process.env.__VINEXT_BUILD_ID = "stable-build";
     setCacheHandler(new MemoryCacheHandler());
@@ -231,7 +269,7 @@ describe("App Router ISR cache key primitives", () => {
 
     const key = appIsrRscKey("/" + "a".repeat(250));
 
-    expect(key).toMatch(/^app:v2:__hash:[a-z0-9]+:rsc$/);
+    expect(key).toMatch(/^app:v2:__hash:[0-9a-f]{64}:rsc$/);
   });
 
   it("keys mounted-slot RSC variants by normalized mounted-slot header", () => {
@@ -241,7 +279,7 @@ describe("App Router ISR cache key primitives", () => {
     const second = appIsrRscKey("/feed", "slot:sidebar:/ slot:modal:/");
 
     expect(first).toBe(second);
-    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+$/);
+    expect(first).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}$/);
   });
 
   it("bounds RSC cache-key cardinality against attacker-supplied mounted-slot values", () => {
@@ -286,7 +324,7 @@ describe("App Router ISR cache key primitives", () => {
 
     expect(fromFeed).not.toBe(fromGallery);
     expect(fromFeed).not.toBe(direct);
-    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:slots:[a-z0-9]+$/);
+    expect(fromFeed).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:slots:[0-9a-f]{64}$/);
   });
 
   it("keys supplemental RSC variants by their verified interception id", () => {
@@ -308,18 +346,19 @@ describe("App Router ISR cache key primitives", () => {
     );
 
     expect(modal).not.toBe(drawer);
-    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[a-z0-9]+:selector:[a-z0-9]+$/);
+    expect(modal).toMatch(/^app:v2:\/photos\/42:rsc:source:[0-9a-f]{64}:selector:[0-9a-f]{64}$/);
   });
 
-  it("normalizes source context before keying intercepted RSC variants", () => {
+  // The source is matched on its raw segments, so `/%66eed` does not reach a
+  // static `/feed` source and the two can render different source trees.
+  it("keys intercepted RSC variants by the raw source context", () => {
     delete process.env.__VINEXT_BUILD_ID;
 
-    const encoded = appIsrRscKey("/photos/café", "modal", undefined, "/caf%C3%A9");
-    const decoded = appIsrRscKey("/photos/café", "modal", undefined, "/café");
-    const duplicateSlash = appIsrRscKey("/photos/café", "modal", undefined, "/café//");
+    const encoded = appIsrRscKey("/photos/1", "modal", undefined, "/%66eed");
+    const plain = appIsrRscKey("/photos/1", "modal", undefined, "/feed");
 
-    expect(encoded).toBe(decoded);
-    expect(duplicateSlash).toBe(decoded);
+    expect(encoded).not.toBe(plain);
+    expect(appIsrRscKey("/photos/1", "modal", undefined, "/feed")).toBe(plain);
   });
 
   it("ignores invalid source context before keying intercepted RSC variants", () => {
@@ -339,7 +378,7 @@ describe("App Router ISR cache key primitives", () => {
     );
     expect(
       appIsrRscKey("/feed", "slot:modal:/", APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL),
-    ).toMatch(/^app:v2:\/feed:rsc:slots:[a-z0-9]+:prefetch-loading-shell$/);
+    ).toMatch(/^app:v2:\/feed:rsc:slots:[0-9a-f]{64}:prefetch-loading-shell$/);
   });
 });
 
@@ -495,7 +534,85 @@ describe("ISR expire ceiling", () => {
   });
 });
 
+// ─── Tag invalidation durability ────────────────────────────────────────
+
+describe("MemoryCacheHandler tag invalidation durability", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // Next.js keeps every tag invalidation in an unbounded map, so an entry
+  // stored before an invalidation is never served again, however many other
+  // tags are revalidated later.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/tags-manifest.external.ts
+  it("keeps unread entries invalidated after many later revalidations", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000);
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+
+    const pathname = "/posts/secret";
+    const tags = buildPageCacheTags(pathname, [], ["posts", "[slug]"], "page");
+    const policy = { cacheControl: { revalidate: false as const }, tags };
+    await isrSet(appIsrHtmlKey(pathname), buildAppPageCacheValue("<p>draft</p>"), policy);
+    await isrSet(
+      appIsrRscKey(pathname),
+      buildAppPageCacheValue("", new TextEncoder().encode("<p>draft (rsc)</p>").buffer),
+      policy,
+    );
+    // A fetch made by the page carries only its own tags; the page's implicit
+    // tags reach it as read-time soft tags.
+    const fetchValue: CachedFetchValue = {
+      kind: "FETCH",
+      data: { headers: {}, body: "draft", url: "https://api.example/posts/secret" },
+      tags: [],
+      revalidate: false,
+    };
+    await handler.set("fetch:secret", fetchValue, { tags: [] });
+
+    vi.setSystemTime(2_000);
+    await Promise.resolve(revalidatePath(pathname));
+    expect(await isrGet(appIsrHtmlKey(pathname))).toBeNull();
+    expect(await handler.get("fetch:secret", { softTags: tags })).toBeNull();
+
+    // Revalidate more distinct paths than the old 10,000-marker cap held.
+    vi.setSystemTime(3_000);
+    for (let i = 0; i <= 10_000; i++) {
+      await Promise.resolve(revalidatePath(`/posts/other-${i}`));
+    }
+
+    expect(await isrGet(appIsrRscKey(pathname))).toBeNull();
+    expect(await handler.get("fetch:secret", { softTags: tags })).toBeNull();
+  });
+});
+
 // ─── triggerBackgroundRegeneration ───────────────────────────────────────
+
+describe("coalesceOnDemandRevalidation", () => {
+  it("keeps the request that starts a shared revalidation alive until it settles", async () => {
+    // Concurrent res.revalidate() calls for the page await the same render,
+    // and workerd drops a canceled request's pending I/O.
+    let finish: () => void = () => {};
+    const rendered = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () =>
+      coalesceOnDemandRevalidation("coalesce-lifetime", () => rendered),
+    );
+    const second = runWithExecutionContext(joiner, () =>
+      coalesceOnDemandRevalidation("coalesce-lifetime", () => rendered),
+    );
+
+    expect(second).toBe(first);
+    expect(creator.waitUntil).toHaveBeenCalledOnce();
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
+    finish();
+    await first;
+  });
+});
 
 describe("triggerBackgroundRegeneration", () => {
   it("calls the render function", async () => {

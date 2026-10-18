@@ -99,6 +99,22 @@ test("honors encoded middleware rewrites behind basePath and i18n", async () => 
   expect(response.body).toContain("Protected admin content");
 });
 
+// Next.js' resolve-routes matches routes and files only for a pathname under
+// basePath, so a middleware rewrite to an unprefixed URL resolves nothing.
+test("resolves nothing for middleware rewrites outside basePath", async () => {
+  const page = await getRawPath("/docs/middleware-rewrite-unprefixed/page");
+  expect(page.status).toBe(404);
+  expect(page.body).not.toContain("About");
+
+  const file = await getRawPath("/docs/middleware-rewrite-unprefixed/file");
+  expect(file.status).toBe(404);
+  expect(file.headers["content-type"] ?? "").not.toContain("image/png");
+
+  const control = await getRawPath("/docs/middleware-rewrite-unprefixed/control");
+  expect(control.status).toBe(200);
+  expect(control.body).toContain("About");
+});
+
 test("keeps config source literals distinct behind basePath and i18n", async () => {
   const literalRewrite = await getRawPath("/docs/rewrite-about");
   expect(literalRewrite.status).toBe(200);
@@ -153,4 +169,75 @@ test("runs an action redirect rewrite through the full pipeline behind basePath"
   expect(
     await page.evaluate(() => Reflect.get(window, "__ACTION_REDIRECT_BASEPATH_DOCUMENT__")),
   ).toBe("preserved");
+});
+
+// Next.js reads the Pages locale from the raw pathname, so `/%66r/...` names no
+// locale: it 404s instead of reaching the `fr` page that middleware never ran
+// for. Static Pages segments keep the same raw identity.
+test("keeps encoded locale and static Pages aliases out of hybrid Pages routing", async () => {
+  const literal = await getRawPath("/docs/fr/pages-script-manual-nonce");
+  expect(literal.status).toBe(200);
+  expect(literal.headers["x-mw-ran"]).toBe("true");
+  expect(literal.body).toContain("<p>script-nonce</p>");
+
+  for (const pathname of [
+    "/docs/%66r/pages-script-manual-nonce",
+    "/docs/%2566r/pages-script-manual-nonce",
+    "/docs/%70ages-script-manual-nonce",
+    "/docs/fr/%70ages-script-manual-nonce",
+  ]) {
+    const alias = await getRawPath(pathname);
+    expect(alias.status, pathname).toBe(404);
+    expect(alias.body, pathname).not.toContain("<p>script-nonce</p>");
+  }
+});
+
+test("decodes hybrid Pages params once behind basePath and i18n", async () => {
+  for (const pathname of ["/docs/pages-to-app/a%2561", "/docs/fr/pages-to-app/a%2561"]) {
+    const response = await getRawPath(pathname);
+    expect(response.status, pathname).toBe(200);
+    expect(response.body, pathname).toContain('"slug":"a%61"');
+  }
+});
+
+// Next.js parses every rewrite destination as a URL, so a literal `é` reaches
+// the Pages router as `%C3%A9`: the static `encoded-parity-café` page 404s in
+// every phase, while a dynamic capture decodes once back to `café`.
+test("serializes hybrid Pages rewrite destinations in every rewrite phase", async () => {
+  for (const phase of ["before", "after", "fallback"]) {
+    const staticPage = await getRawPath(`/docs/encoded-parity-pages/${phase}`);
+    expect(staticPage.status, phase).toBe(404);
+    expect(staticPage.body, phase).not.toContain("encoded-parity-cafe");
+
+    const dynamicPage = await getRawPath(`/docs/encoded-parity-pages/${phase}-dynamic`);
+    expect(dynamicPage.status, phase).toBe(200);
+    expect(dynamicPage.body, phase).toContain('"slug":"café"');
+
+    // Only the destination template is URL-parsed, so a captured `..` is not
+    // resolved into a route the middleware matcher never saw.
+    const capture = (n: string) =>
+      getRawPath(`/docs/encoded-parity-pages/${phase}-capture?n=${encodeURIComponent(n)}`);
+    const dotCapture = await capture("../pages-script-manual-nonce");
+    expect(dotCapture.status, phase).toBe(404);
+    expect(dotCapture.body, phase).not.toContain("<p>script-nonce</p>");
+    const valueCapture = await capture("café");
+    expect(valueCapture.status, phase).toBe(200);
+    expect(valueCapture.body, phase).toContain('"slug":"café"');
+  }
+});
+
+test("does not report URL-parser encoding as a hybrid Pages data rewrite", async () => {
+  const html = (await getRawPath("/docs/pages-to-app/x")).body;
+  const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+
+  for (const [slug, expected] of [
+    ["caf%C3%A9", "café"],
+    ["a%20b", "a b"],
+  ]) {
+    const response = await getRawPath(`/docs/_next/data/${buildId}/pages-to-app/${slug}.json`);
+    expect(response.status, slug).toBe(200);
+    expect(JSON.parse(response.body).pageProps, slug).toEqual({ params: { slug: expected } });
+    expect(response.headers["x-nextjs-rewrite"], slug).toBeUndefined();
+  }
 });

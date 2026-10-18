@@ -8,8 +8,8 @@
 import { detectPackageManager, findDir, findViteConfigPath } from "./utils/project.js";
 import { normalizePageExtensions } from "./routing/file-matcher.js";
 import { POSTCSS_CONFIG_FILES } from "./plugins/postcss.js";
-import { unwrapExpression } from "./plugins/ast-utils.js";
-import { parseAst, type ESTree } from "vite";
+import { parseProgram, unwrapExpression } from "./plugins/ast-utils.js";
+import type { ESTree } from "vite";
 import fs from "node:fs";
 import ignore, { type Ignore } from "ignore";
 import path from "pathslash";
@@ -226,7 +226,8 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   },
   transpilePackages: {
     status: "supported",
-    detail: "listed packages are bundled instead of externalized on the server",
+    detail:
+      "listed packages are bundled instead of externalized on the server, and their next/dynamic() calls get SSR preload links",
   },
   serverExternalPackages: {
     status: "supported",
@@ -270,9 +271,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
   },
-  skipTrailingSlashRedirect: {
-    status: "unsupported",
-    detail: "ignored; trailing-slash redirects are always applied",
+  skipTrailingSlashRedirect: { status: "supported" },
+  "experimental.skipTrailingSlashRedirect": {
+    status: "supported",
+    detail: "legacy alias of skipTrailingSlashRedirect",
   },
   reactCompiler: {
     status: "partial",
@@ -463,9 +465,9 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     detail: "renders client-side; by default events are only collected when deployed on Vercel",
   },
   "next-intl": {
-    status: "partial",
+    status: "supported",
     detail:
-      'auto-detected from (src/)i18n/request.{ts,tsx,js,jsx}, so createNextIntlPlugin isn\'t needed; client components can fail with "No intl context found" (cloudflare/vinext#177)',
+      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental messages, precompile and extract options don't work (they need webpack/Turbopack loaders)",
   },
   "@clerk/nextjs": {
     status: "supported",
@@ -924,7 +926,7 @@ function propertyKeyName(prop: ESTree.ObjectExpression["properties"][number]): s
  * object — top-level keys plus, for each object-valued property, its child keys
  * (used for dot-notation options like `experimental.ppr`).
  *
- * Uses Vite's `parseAst` (the bundled oxc parser) instead of scanning text, so
+ * Uses Vite's bundled oxc parser instead of scanning text, so
  * comments, string values, and other non-key mentions of an option name are
  * never mistaken for a real config option. Returns empty sets if the file cannot
  * be parsed — the check is advisory, so a parse failure simply reports nothing.
@@ -938,7 +940,7 @@ function collectConfigKeys(source: string): ConfigKeys {
   try {
     // Parse as TS (a superset of JS) so `.ts` configs with type annotations,
     // `as`, and `satisfies` parse the same as `.js`/`.mjs`.
-    program = parseAst(source, { lang: "ts" });
+    program = parseProgram(source, { lang: "ts" });
   } catch {
     return { top, nested };
   }
@@ -1181,7 +1183,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
   if (/^next\.config\.(?:ts|mts|cjs)$/.test(rel)) return true;
   if (rel !== "next.config.js") return false;
   try {
-    return !parseAst(content).body.some(
+    return !parseProgram(content).body.some(
       (node) => node.type === "ImportDeclaration" || node.type.startsWith("Export"),
     );
   } catch {
@@ -1197,7 +1199,7 @@ function isNextConfigWithCjsGlobals(rel: string, content: string): boolean {
 function exportsPostcssPluginsOnlyObject(content: string): boolean {
   let program: ESTree.Program;
   try {
-    program = parseAst(content, { lang: "ts" });
+    program = parseProgram(content, { lang: "ts" });
   } catch {
     return false;
   }

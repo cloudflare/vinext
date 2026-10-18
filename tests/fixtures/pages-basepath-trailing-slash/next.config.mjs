@@ -3,4 +3,13 @@
 export default {
   basePath: "/docs",
   trailingSlash: true,
+  async headers() {
+    return [
+      {
+        source: "/open.txt",
+        basePath: false,
+        headers: [{ key: "x-outside-basepath", value: "1" }],
+      },
+    ];
+  },
 };

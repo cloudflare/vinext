@@ -5,6 +5,7 @@ import {
   type RouteCacheabilityOutcome,
   type RouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
+import { hasSharedCacheCredentials } from "vinext/shims/cdn-cache";
 import {
   applyCdnResponseBuildIdentityHeaders,
   applyCdnResponseHeaders,
@@ -19,6 +20,7 @@ import {
   VINEXT_CACHEABILITY_PROBE_HEADER,
   VINEXT_CACHEABILITY_PROBE_ROUTE_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "./headers.js";
 import { isVinextRscVaryField } from "./app-rsc-vary.js";
 import { workerCapabilityMatches } from "./worker-prerender-discovery.js";
@@ -195,10 +197,7 @@ export function createWorkerCacheabilityAdmissionContext(
   options?: { applyCompletedResponsePolicy?: boolean },
 ): ExecutionContextLike {
   const identity = cacheabilityRequestIdentity(request, trustedRepresentation);
-  const credentialedRequest =
-    request.headers.has("authorization") ||
-    request.headers.has("cookie") ||
-    request.headers.has("proxy-authorization");
+  const credentialedRequest = hasSharedCacheCredentials(request.headers);
   const routePathname = identity
     ? cacheabilityRoutePathname(
         resolvedRoutePathname ?? new URL(request.url).pathname,
@@ -605,19 +604,33 @@ function responseWithCachePolicy(
   body: BodyInit | null,
   outcome: RouteCacheabilityOutcome | null,
   browserCacheControl?: string,
+  completedStatus?: Pick<RouteCacheabilityOutcome, "headers" | "status">,
 ): Response {
   const headers = new Headers(response.headers);
   if (typeof body === "string") headers.delete("Content-Length");
+  // The response already carries middleware's headers, which win over the
+  // render's, as on a fresh render or an ISR replay.
+  for (const [name, value] of Object.entries(completedStatus?.headers ?? {})) {
+    if (!headers.has(name)) headers.set(name, value);
+  }
   applyCdnResponseHeaders(
     headers,
     outcome?.cacheable === true && outcome.cacheControl
       ? { cacheControl: outcome.cacheControl, tags: outcome.tags, browserCacheControl }
       : { cacheControl: NO_STORE_CACHE_CONTROL, browserCacheControl },
   );
+  const status = completedStatus?.status ?? response.status;
+  // A completed status replaces a streamed 200 only for a page's special
+  // error, and the request stage sends its 401, 403 or 404 to a Link's
+  // segment prefetch as a 200.
+  const completed = completedStatus?.status;
+  if (completed === 401 || completed === 403 || completed === 404) {
+    headers.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(completed));
+  }
   return new Response(body, {
     headers,
-    status: response.status,
-    statusText: response.statusText,
+    status,
+    statusText: status === response.status ? response.statusText : "",
   });
 }
 
@@ -916,6 +929,9 @@ async function finalizeWorkerCacheabilityAdmission(
       : captured.body,
     outcome,
     browserCacheControl,
+    // The body is complete, so the response can take the status its render
+    // resolved, as Next.js sends a buffered cache entry.
+    rendererOutcome ?? undefined,
   );
 }
 

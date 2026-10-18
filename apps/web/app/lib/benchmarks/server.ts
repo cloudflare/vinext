@@ -396,34 +396,52 @@ type PerformanceComparisonMeasurementData = Omit<
   profileUrl: string | null;
 };
 
-export async function getPerformanceRuns(limit = 100): Promise<PerformanceRunData[]> {
-  const boundedLimit = Math.max(1, Math.min(limit, 100));
-  const db = getD1();
-  const { results } = await db
-    .prepare(`
-      SELECT id, commit_sha, measured_at
-      FROM performance_runs
-      WHERE kind = 'main'
-      ORDER BY measured_at DESC
-      LIMIT ?
-    `)
-    .bind(boundedLimit)
-    .all<Record<string, string>>();
+const MAX_PERFORMANCE_RUNS = 200;
 
+export async function getPerformanceRuns(
+  limit = MAX_PERFORMANCE_RUNS,
+): Promise<PerformanceRunData[]> {
+  const boundedLimit = Math.max(1, Math.min(limit, MAX_PERFORMANCE_RUNS));
+  const db = getD1();
+  // One batch so both statements see the same run set. The subquery keeps
+  // the measurement lookup under D1's bound-parameter limit at any history
+  // size. Explicit columns: SELECT * would also return legacy
+  // flame_graph_json blobs, which the run list never uses.
+  const [runs, measurements] = await db.batch([
+    db
+      .prepare(`
+        SELECT id, commit_sha, measured_at
+        FROM performance_runs
+        WHERE kind = 'main'
+        ORDER BY measured_at DESC
+        LIMIT ?
+      `)
+      .bind(boundedLimit),
+    db
+      .prepare(`
+        SELECT
+          run_id, benchmark_id, scenario_id, suite, label, description,
+          implementation_id, implementation_label, unit, lower_is_better,
+          median_value, mean_value, standard_deviation_value, rounds,
+          min_value, max_value
+        FROM performance_measurements
+        WHERE run_id IN (
+          SELECT id
+          FROM performance_runs
+          WHERE kind = 'main'
+          ORDER BY measured_at DESC
+          LIMIT ?
+        )
+        ORDER BY run_id, suite, label, implementation_label
+      `)
+      .bind(boundedLimit),
+  ]);
+  const results = runs.results as Record<string, string>[];
   if (results.length === 0) return [];
 
-  const placeholders = results.map(() => "?").join(", ");
-  const measurements = await db
-    .prepare(`
-      SELECT * FROM performance_measurements
-      WHERE run_id IN (${placeholders})
-      ORDER BY run_id, suite, label, implementation_label
-    `)
-    .bind(...results.map((row) => row.id))
-    .all<Record<string, unknown>>();
   const measurementsByRun = new Map<string, PerformanceMeasurementData[]>();
 
-  for (const measurement of measurements.results) {
+  for (const measurement of measurements.results as Record<string, unknown>[]) {
     const runId = String(measurement.run_id);
     const runMeasurements = measurementsByRun.get(runId) ?? [];
     runMeasurements.push(serializeMeasurement(measurement));
@@ -512,12 +530,14 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
 
   const db = getD1();
   const normalizedSha = sha.toLowerCase();
+  // Listing both kinds lets SQLite seek the (kind, commit_sha) index instead
+  // of scanning every run.
   const currentRun =
     normalizedSha.length === 40
       ? await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE commit_sha = ?
+            WHERE kind IN ('main', 'pull_request') AND commit_sha = ?
             ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
             LIMIT 1
           `)
@@ -526,7 +546,7 @@ export async function getCommitComparison(sha: string): Promise<PerformanceCompa
       : await db
           .prepare(`
             SELECT * FROM performance_runs
-            WHERE commit_sha >= ? AND commit_sha < ?
+            WHERE kind IN ('main', 'pull_request') AND commit_sha >= ? AND commit_sha < ?
             ORDER BY CASE WHEN kind = 'main' THEN 0 ELSE 1 END, measured_at DESC
             LIMIT 1
           `)

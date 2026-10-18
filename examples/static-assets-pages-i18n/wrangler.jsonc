@@ -8,8 +8,9 @@
   "assets": {
     "directory": "dist/client",
     "binding": "STATIC",
+    "html_handling": "none",
     "not_found_handling": "none",
-    "run_worker_first": ["/_vinext/static-cache/*"],
+    "run_worker_first": ["/*", "!/_next/static/*", "!/*/_next/static/*"],
   },
   "observability": { "enabled": true },
 }

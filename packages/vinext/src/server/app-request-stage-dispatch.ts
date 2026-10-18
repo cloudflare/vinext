@@ -9,6 +9,8 @@ import { getScriptNonceFromHeaderSources } from "./csp.js";
 import { VINEXT_PRERENDER_ROUTE_PARAMS_HEADER } from "./headers.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import type { TrustedPrerenderState } from "./prerender-route-params.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
+import { restoreImageOptimizationSignalFromTransport } from "./image-optimization.js";
 import { restoreStaticFileSignalFromTransport } from "./static-file-signal.js";
 
 export type AppRequestStageDispatchOptions = {
@@ -76,8 +78,13 @@ export async function dispatchAppRequestStage(
   }
   if (appRequestUsesFullResponseGraph(request, options)) {
     const staticFileSignalToken = crypto.randomUUID();
+    // A static-file signal carries its request headers in the body, which a
+    // HEAD transport may drop. The response stage restores the HEAD method.
+    const headRequest = request.method === "HEAD";
     const response = await dispatchResponseStage(
-      request,
+      headRequest
+        ? attachRequestCfMetadata(new Request(request, { method: "GET" }), request)
+        : request,
       {
         kind: "app-full-request",
         buildId: options.buildId,
@@ -87,6 +94,7 @@ export async function dispatchAppRequestStage(
           resolvedRoutePathname: new URL(request.url).pathname,
         },
         draftModeCookie: null,
+        headRequest,
         middlewareCookieOverlay: null,
         prerenderDiscovery: options.prerenderDiscovery,
         protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
@@ -97,7 +105,10 @@ export async function dispatchAppRequestStage(
       },
       { cache: "bypass" },
     );
-    return restoreStaticFileSignalFromTransport(response, staticFileSignalToken);
+    return await restoreImageOptimizationSignalFromTransport(
+      await restoreStaticFileSignalFromTransport(response, staticFileSignalToken),
+      staticFileSignalToken,
+    );
   }
   return options.handleRequest(request, ctx, false, dispatchResponseStage, options.probeMode);
 }

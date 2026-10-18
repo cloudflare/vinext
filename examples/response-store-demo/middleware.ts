@@ -7,7 +7,9 @@ export function middleware(request: NextRequest) {
       ? new NextResponse(null, { status: 403 })
       : NextResponse.next();
   }
-  const response = NextResponse.next();
+  const response = request.headers.has("x-test-middleware-status")
+    ? NextResponse.next({ status: 202 })
+    : NextResponse.next();
   if (pathname === "/api/browser-cache-policy/proxy") {
     response.headers.set("Cache-Control", "public, max-age=10");
     return response;

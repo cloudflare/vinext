@@ -96,6 +96,12 @@ vi.mock("virtual:vinext-pages-request-entry", () => ({
   __ensureInstrumentation: mocks.ensureInstrumentation,
   authorizeOnDemandRevalidate: mocks.authorizeOnDemandRevalidate,
   buildId: "request-build",
+  clientBuildFiles: new Set([
+    "/remoteEntry.js",
+    "/plugin file.js",
+    "/literal%name.js",
+    "/literal%2Fname.js",
+  ]),
   hasMiddleware: false,
   hasRequestAwareDocument: false,
   matchApiRoute: mocks.matchApiRoute,
@@ -312,6 +318,7 @@ describe("Pages Worker request stage", () => {
           headers: { "Cache-Control": "no-store", "X-Vinext-Prerender-Readiness": "1" },
         }),
     );
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleRequestStage(
       new Request("https://example.com/__vinext/prerender/readiness?attempt=one", {
         headers: {
@@ -320,12 +327,14 @@ describe("Pages Worker request stage", () => {
         },
       }),
       undefined,
-      undefined,
+      ctx,
       dispatch,
     );
 
     expect(response.status).toBe(204);
-    expect(mocks.ensureInstrumentation).toHaveBeenCalledOnce();
+    // Initialization starts before the request's execution-context scope, so
+    // it needs the platform ctx to keep the request alive.
+    expect(mocks.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(
       expect.any(Request),
       {
@@ -809,6 +818,38 @@ describe("Pages Worker request stage", () => {
     expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
   });
 
+  // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
+  // ("should have original req.url for /_next/data request")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
+  it("transports the pre-normalization URL as req.url for data requests", async () => {
+    mocks.normalizeDataRequest.mockImplementation((request: Request) => {
+      const url = new URL(request.url);
+      url.pathname = "/page";
+      return {
+        isDataReq: true,
+        normalizedPathname: "/page",
+        notFoundResponse: null,
+        request: new Request(url, request),
+      };
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("data"));
+
+    await handleRequestStage(
+      new Request("https://example.com/_next/data/request-build/page.json?from=data"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[1]).toMatchObject({
+      renderOptions: {
+        isDataReq: true,
+        originalUrl: "/_next/data/request-build/page.json?from=data",
+      },
+      resolvedUrl: "/page?from=data",
+    });
+  });
+
   it("dispatches a GET API with the same deployment envelope", async () => {
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("api"));
 
@@ -928,5 +969,72 @@ describe("Pages Worker request stage", () => {
 
     await expect(response.text()).resolves.toBe("local");
     expect(mocks.renderResponse).toHaveBeenCalledOnce();
+  });
+
+  it("serves client build files from ASSETS before middleware", async () => {
+    const fetchAsset = vi.fn(
+      async (request: Request) => new Response(new URL(request.url).pathname),
+    );
+
+    const response = await worker.fetch(new Request("https://example.com/remoteEntry.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+
+    await expect(response.text()).resolves.toBe("/remoteEntry.js");
+    expect(fetchAsset).toHaveBeenCalledOnce();
+    expect(mocks.runMiddleware).not.toHaveBeenCalled();
+    expect(mocks.renderResponse).not.toHaveBeenCalled();
+  });
+
+  it("matches percent-encoded client build file names", async () => {
+    const fetchAsset = vi.fn(
+      async (request: Request) => new Response(new URL(request.url).pathname),
+    );
+
+    const response = await worker.fetch(new Request("https://example.com/plugin%20file.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+
+    await expect(response.text()).resolves.toBe("/plugin%20file.js");
+
+    // A literal `%` in the file name reaches ASSETS encoded exactly once.
+    const literal = await worker.fetch(new Request("https://example.com/literal%25name.js"), {
+      ASSETS: { fetch: fetchAsset },
+    });
+    await expect(literal.text()).resolves.toBe("/literal%25name.js");
+    const encodedDelimiter = await worker.fetch(
+      new Request("https://example.com/literal%252Fname.js"),
+      { ASSETS: { fetch: fetchAsset } },
+    );
+    await expect(encodedDelimiter.text()).resolves.toBe("/literal%252Fname.js");
+    expect(mocks.runMiddleware).not.toHaveBeenCalled();
+  });
+
+  it("keeps the ASSETS cache policy of client build files under completed admission", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    const fetchAsset = vi.fn(
+      async () =>
+        new Response("export {};", {
+          headers: { "Cache-Control": "public, max-age=0, must-revalidate" },
+        }),
+    );
+
+    const response = await worker.fetch(
+      new Request("https://example.com/remoteEntry.js"),
+      { ASSETS: { fetch: fetchAsset } },
+      { waitUntil() {} },
+    );
+
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+    await expect(response.text()).resolves.toBe("export {};");
   });
 });

@@ -1,3 +1,5 @@
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
+
 type ClientReferenceRequire = (id: string) => Promise<unknown>;
 
 type ClientReferenceMap = Readonly<Record<string, unknown>>;
@@ -32,16 +34,18 @@ export function createClientReferencePreloader(
       return existing;
     }
 
-    const preloadPromise = clientRequire(id)
-      .catch((error) => {
-        options.onPreloadError?.(id, error);
-      })
-      .then(() => {
-        preloadedReferences.add(id);
-      })
-      .finally(() => {
-        referencePreloadPromises.delete(id);
-      });
+    const preloadPromise = shareIsolatePromise(
+      clientRequire(id)
+        .catch((error) => {
+          options.onPreloadError?.(id, error);
+        })
+        .then(() => {
+          preloadedReferences.add(id);
+        })
+        .finally(() => {
+          referencePreloadPromises.delete(id);
+        }),
+    );
 
     referencePreloadPromises.set(id, preloadPromise);
     return preloadPromise;
@@ -86,13 +90,15 @@ export function createClientReferencePreloader(
         return allReferencesPreloadPromise;
       }
 
-      allReferencesPreloadPromise = preloadReferenceSet(Object.keys(refs), refs, clientRequire)
-        .then(() => {
-          allReferencesPreloaded = true;
-        })
-        .finally(() => {
-          allReferencesPreloadPromise = null;
-        });
+      allReferencesPreloadPromise = shareIsolatePromise(
+        preloadReferenceSet(Object.keys(refs), refs, clientRequire)
+          .then(() => {
+            allReferencesPreloaded = true;
+          })
+          .finally(() => {
+            allReferencesPreloadPromise = null;
+          }),
+      );
 
       return allReferencesPreloadPromise;
     },

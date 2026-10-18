@@ -4,7 +4,6 @@
  * Ported from:
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/config.redirect.test.ts
  *   https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
- * Tests: ON-12, ON-15 in TRACKING.md
  */
 import { test, expect } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
@@ -105,6 +104,23 @@ test.describe("Config Redirects (OpenNext compat)", () => {
     expect(noRedirect.status()).not.toBe(307);
     expect(noRedirect.status()).not.toBe(308);
   });
+
+  // Browsers strip ASCII tab/newline from a Location before parsing it, so a
+  // decoded query capture of "\t/evil.test" substituted into "/:to" must not
+  // reach the browser as "/\t/evil.test" (resolved as //evil.test).
+  test("query capture at the start of a destination stays same-origin", async ({ request }) => {
+    for (const to of ["%09%2Fevil.test", "%09%5Cevil.test", "%2F%09%2Fevil.test", "%2Fevil.test"]) {
+      const res = await request.get(`${BASE}/query-capture-redirect?to=${to}`, {
+        maxRedirects: 0,
+      });
+      expect(res.status()).toBe(307);
+      const location = res.headers()["location"];
+      expect(location).toBe(`/evil.test?to=${to}`);
+      const resolved = new URL(location, BASE);
+      expect(resolved.origin).toBe(BASE);
+      expect(resolved.pathname).toBe("/evil.test");
+    }
+  });
 });
 
 test.describe("Config Rewrites (OpenNext compat)", () => {
@@ -172,6 +188,42 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     expect(res.headers()["x-page-header"]).toBe("about-page");
   });
 
+  test("header sources with path-to-regexp modifiers match like Next.js", async ({ request }) => {
+    const headersFor = async (path: string, status = 200) => {
+      const res = await request.get(`${BASE}${path}`);
+      expect(res.status()).toBe(status);
+      const headers = res.headers();
+      return {
+        star: headers["x-dashboard-path-star"],
+        plus: headers["x-dashboard-path-plus"],
+        optional: headers["x-dashboard-optional"],
+        lookahead: headers["x-dashboard-lookahead"],
+      };
+    };
+
+    // `:path*` and `:section?` also cover the base path.
+    expect(await headersFor("/dashboard")).toEqual({
+      star: "1",
+      plus: undefined,
+      optional: "1",
+      lookahead: undefined,
+    });
+    expect(await headersFor("/dashboard/settings")).toEqual({
+      star: "1",
+      plus: "1",
+      optional: "1",
+      lookahead: "1",
+    });
+    // `(?!missing)` excludes this notFound() page; config headers still apply
+    // to the 404 response.
+    expect(await headersFor("/dashboard/missing", 404)).toEqual({
+      star: "1",
+      plus: "1",
+      optional: "1",
+      lookahead: undefined,
+    });
+  });
+
   test("custom header applied to API routes", async ({ request }) => {
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);
@@ -183,7 +235,6 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
 
   // Ref: opennextjs-cloudflare headers.test.ts — "x-powered-by should be absent"
   // vinext never sends X-Powered-By (matching Next.js poweredByHeader: false behavior).
-  // Tests: ON-6 #7, ON-8 #3 in TRACKING.md
   test("x-powered-by header is absent from responses", async ({ request }) => {
     const pageRes = await request.get(`${BASE}/about`);
     expect(pageRes.headers()["x-powered-by"]).toBeUndefined();
@@ -197,7 +248,6 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
   // the same key, matching Next.js behavior.
   // Fixture: middleware sets e2e-headers=middleware for /headers/override-from-middleware;
   //          next.config.ts sets e2e-headers=next.config.js on /(.*)
-  // Tests: ON-8 #2 in TRACKING.md
   // Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
   test("middleware headers override config headers for same key", async ({ request }) => {
     const res = await request.get(`${BASE}/headers/override-from-middleware`);
@@ -239,5 +289,52 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     const withoutPreviewQuery = await request.get(`${BASE}/about?preview=0`);
     expect(withoutPreviewQuery.status()).toBe(200);
     expect(withoutPreviewQuery.headers()["x-preview-header"]).toBeUndefined();
+  });
+});
+
+// Config destination params substituted into a destination query. Expected
+// values match Next.js 16.2.7 for the same rules.
+test.describe("Config destination query params", () => {
+  test("redirect inserts source captures verbatim into the Location query", async ({ request }) => {
+    for (const [pathname, location] of [
+      [
+        "/query-param-redirect/foo%26next%3Dhttps%3A%2F%2Fevil.example",
+        "/about?next=/foo%26next%3Dhttps%3A%2F%2Fevil.example&safe=1",
+      ],
+      ["/query-param-redirect/foo&next=evil.example", "/about?next=/foo&next=evil.example&safe=1"],
+      ["/query-param-redirect/caf%C3%A9", "/about?next=/caf%C3%A9&safe=1"],
+      [
+        "/query-param-redirect/foo%26next%3Devil?utm=a%20b&next=x",
+        "/about?utm=a%20b&next=/foo%26next%3Devil&safe=1",
+      ],
+      [
+        "/query-param-redirect/foo&utm=evil?utm=good&next=x",
+        "/about?utm=good&next=/foo&utm=evil&safe=1",
+      ],
+    ]) {
+      const res = await request.get(`${BASE}${pathname}`, { maxRedirects: 0 });
+      expect(res.status()).toBe(307);
+      expect(res.headers()["location"]).toBe(location);
+    }
+  });
+
+  test("redirect query value reaches the destination page as one param", async ({ page }) => {
+    await page.goto(`${BASE}/query-param-redirect/foo%26next%3Devil.example`);
+    await page.waitForURL(/\/about\?/);
+
+    const params = new URL(page.url()).searchParams;
+    expect(params.getAll("next")).toEqual(["/foo&next=evil.example"]);
+    expect(params.get("safe")).toBe("1");
+  });
+
+  test("rewrite keeps an encoded or literal & inside one searchParams value", async ({ page }) => {
+    for (const [pathname, q] of [
+      ["/query-param-rewrite/foo%26admin=true", "foo%26admin=true"],
+      ["/query-param-rewrite/foo&admin=true", "foo&admin=true"],
+    ]) {
+      await page.goto(`${BASE}${pathname}`);
+      const searchParams = JSON.parse((await page.locator("#search-params").textContent()) ?? "");
+      expect(searchParams).toEqual({ q, fixed: "1", term: q });
+    }
   });
 });

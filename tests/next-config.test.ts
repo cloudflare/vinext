@@ -199,6 +199,60 @@ describe("deprecated config warnings", () => {
     }
   });
 
+  it("resolves skipTrailingSlashRedirect", async () => {
+    await expect(resolveNextConfig({})).resolves.toMatchObject({
+      skipTrailingSlashRedirect: false,
+    });
+    await expect(resolveNextConfig(null)).resolves.toMatchObject({
+      skipTrailingSlashRedirect: false,
+    });
+    await expect(resolveNextConfig({ skipTrailingSlashRedirect: true })).resolves.toMatchObject({
+      skipTrailingSlashRedirect: true,
+    });
+  });
+
+  it("moves the legacy experimental.skipTrailingSlashRedirect over the top-level key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      resolveNextConfig({
+        skipTrailingSlashRedirect: false,
+        experimental: { skipTrailingSlashRedirect: true },
+      }),
+    ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.skipTrailingSlashRedirect` has been moved to `skipTrailingSlashRedirect`. Please update your next.config.js file accordingly.",
+    ]);
+  });
+
+  it("keeps the top-level skipTrailingSlashRedirect when the legacy key is nullish", async () => {
+    // A config file name no other test warns for, so warn-once cannot hide a warning.
+    const root = makeTempDir();
+    fs.writeFileSync(path.join(root, "next.config.ts"), "export default {}\n");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      // Next.js drops undefined/null nested config values before moving the
+      // legacy key (assignDefaults in packages/next/src/server/config.ts).
+      for (const legacy of [undefined, null]) {
+        await expect(
+          resolveNextConfig(
+            {
+              skipTrailingSlashRedirect: true,
+              experimental: { skipTrailingSlashRedirect: legacy } as never,
+            },
+            root,
+          ),
+        ).resolves.toMatchObject({ skipTrailingSlashRedirect: true });
+      }
+
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,
@@ -391,6 +445,59 @@ describe("loadNextConfig phase argument", () => {
 
     const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
     expect(config?.env?.STATIC).toBe("yes");
+  });
+});
+
+describe("loadNextConfig function-form defaultConfig argument", () => {
+  // Ported from Next.js: test/e2e/custom-page-extension/next.config.js
+  //   https://github.com/vercel/next.js/blob/canary/test/e2e/custom-page-extension/next.config.js
+  let tmpDir: string;
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (tmpDir) {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes the real pageExtensions default, not an empty object, to a CJS function-form config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = (phase, { defaultConfig }) => ({\n` +
+        `  pageExtensions: [...defaultConfig.pageExtensions, "page.js"],\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.pageExtensions).toEqual(["tsx", "ts", "jsx", "js", "page.js"]);
+  });
+
+  it("passes the real pageExtensions default to a function-form next.config.ts", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.ts"),
+      `export default (phase: string, { defaultConfig }: { defaultConfig: { pageExtensions?: string[] } }) => ({\n` +
+        `  pageExtensions: [...(defaultConfig.pageExtensions ?? []), "page.ts"],\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.pageExtensions).toEqual(["tsx", "ts", "jsx", "js", "page.ts"]);
+  });
+
+  it("passes the real compress default to a function-form config", async () => {
+    tmpDir = makeTempDir();
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.js"),
+      `module.exports = (phase, { defaultConfig }) => ({\n` +
+        `  compress: defaultConfig.compress && false,\n` +
+        `});\n`,
+    );
+
+    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
+    expect(config?.compress).toBe(false);
+    expect((await resolveNextConfig(config)).compress).toBe(false);
   });
 });
 
@@ -2085,6 +2192,17 @@ describe("resolveNextConfig serverActionsBodySizeLimit", () => {
   });
 });
 
+describe("resolveNextConfig compress", () => {
+  // Next.js installs its compression middleware unless `compress` is exactly
+  // false (packages/next/src/server/lib/router-server.ts).
+  it("defaults to true and is disabled only by compress: false", async () => {
+    expect((await resolveNextConfig(null)).compress).toBe(true);
+    expect((await resolveNextConfig({})).compress).toBe(true);
+    expect((await resolveNextConfig({ compress: true })).compress).toBe(true);
+    expect((await resolveNextConfig({ compress: false })).compress).toBe(false);
+  });
+});
+
 describe("resolveNextConfig disableOptimizedLoading", () => {
   // Regression for #1519: `experimental.disableOptimizedLoading` defaults to
   // `false` and is read into the resolved config. The default drives the
@@ -2561,6 +2679,8 @@ describe("detectNextIntlConfig", () => {
       assetPrefix: "",
       basePath: "",
       trailingSlash: false,
+      skipTrailingSlashRedirect: false,
+      compress: true,
       skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
@@ -2988,6 +3108,61 @@ describe("resolveNextConfig external rewrite warning", () => {
       (call) => typeof call[0] === "string" && call[0].includes("external rewrite"),
     );
     expect(externalWarning).toBeUndefined();
+  });
+});
+
+// Ported from Next.js' checkCustomRoutes in packages/next/src/lib/load-custom-routes.ts.
+describe("resolveNextConfig basePath: false rewrite validation", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  const outsideBasePathError = (source: string) =>
+    `The route ${source} rewrites urls outside of the basePath. Please use a destination that starts with \`http://\` or \`https://\` https://nextjs.org/docs/messages/invalid-external-rewrite`;
+
+  it("rejects basePath: false rewrites to internal destinations in every phase", async () => {
+    await expect(
+      resolveNextConfig({
+        basePath: "/docs",
+        rewrites: async () => ({
+          beforeFiles: [{ source: "/before", destination: "/open.txt", basePath: false }],
+          afterFiles: [{ source: "/after", destination: "/docs/page", basePath: false }],
+          fallback: [{ source: "/fallback", destination: "//cdn.example.com", basePath: false }],
+        }),
+      }),
+    ).rejects.toThrow(
+      [
+        outsideBasePathError("/before"),
+        outsideBasePathError("/after"),
+        outsideBasePathError("/fallback"),
+        "Invalid rewrites found",
+      ].join("\n"),
+    );
+  });
+
+  it("rejects an internal basePath: false rewrite without a configured basePath", async () => {
+    await expect(
+      resolveNextConfig({
+        rewrites: async () => [{ source: "/old", destination: "/new", basePath: false }],
+      }),
+    ).rejects.toThrow(`${outsideBasePathError("/old")}\nInvalid rewrite found`);
+  });
+
+  it("accepts basePath: false rewrites to http(s) destinations", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const config = await resolveNextConfig({
+      basePath: "/docs",
+      rewrites: async () => [
+        { source: "/http", destination: "http://example.com/a", basePath: false },
+        { source: "/https", destination: "https://example.com/b", basePath: false },
+        { source: "/internal", destination: "/new" },
+      ],
+    });
+    expect(config.rewrites.afterFiles.map((rewrite) => rewrite.source)).toEqual([
+      "/http",
+      "/https",
+      "/internal",
+    ]);
   });
 });
 

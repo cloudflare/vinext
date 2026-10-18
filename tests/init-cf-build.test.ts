@@ -30,6 +30,25 @@ function typecheckProject(root: string): void {
   expect(types.status, `${types.stdout}\n${types.stderr}`).toBe(0);
 }
 
+type WorkerCacheConfig = {
+  cache?: { enabled?: boolean };
+  exports?: Record<string, { type?: string; cache?: { enabled?: boolean } }>;
+};
+
+// Entrypoints that may be served from Workers Cache before the Worker runs. A
+// per-export policy overrides the Worker-wide one, which unlisted exports inherit.
+// https://developers.cloudflare.com/workers/cache/configuration/
+function cachedEntrypoints(config: WorkerCacheConfig): string[] {
+  const exports: NonNullable<WorkerCacheConfig["exports"]> = {
+    default: { type: "worker" },
+    ...config.exports,
+  };
+  return Object.entries(exports)
+    .filter(([, entry]) => entry.type === "worker")
+    .filter(([, entry]) => entry.cache?.enabled ?? config.cache?.enabled ?? false)
+    .map(([name]) => name);
+}
+
 describe("default cf init build", () => {
   it("builds and type-checks a default create-vinext-app Cloudflare project", () => {
     const root = path.join(tempRoot, "created-cf-app");
@@ -231,6 +250,27 @@ describe("default cf init build", () => {
       expect(fs.existsSync(path.join(root, "worker-configuration.d.ts"))).toBe(false);
       if (responseStoreMode === "service-binding") typecheckProject(root);
       const workersDir = path.join(root, ".cloudflare", "output", "v0", "workers");
+      const workerConfigs: WorkerCacheConfig[] = legacyWrangler
+        ? [JSON.parse(fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"))]
+        : fs
+            .readdirSync(workersDir)
+            .map((worker) =>
+              JSON.parse(
+                fs.readFileSync(path.join(workersDir, worker, "worker.config.json"), "utf8"),
+              ),
+            );
+      // Only the cache's internal entrypoint may be cached; the application's
+      // responses must never be served from Workers Cache before the Worker runs.
+      for (const workerConfig of workerConfigs) {
+        expect(workerConfig.cache?.enabled ?? false).toBe(false);
+      }
+      expect(workerConfigs.flatMap(cachedEntrypoints)).toEqual(
+        cdnCache === "response-store"
+          ? ["ResponseStoreBinding"]
+          : cdnCache === "workers-cache"
+            ? ["VinextCachedResponse"]
+            : [],
+      );
       if (legacyWrangler) {
         const workerConfig = JSON.parse(
           fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
@@ -331,4 +371,83 @@ describe("default cf init build", () => {
     },
     130_000,
   );
+});
+
+describe("legacy Wrangler cache migration", () => {
+  it("does not keep the default Worker entrypoint cached after switching from Workers Cache to Static Assets", async () => {
+    const fixture = path.resolve(import.meta.dirname, "fixtures/cf-app-basic");
+    const root = path.join(tempRoot, "cf-app-basic-cache-migration");
+    fs.cpSync(fixture, root, {
+      recursive: true,
+      filter: (source) => source !== path.join(fixture, "node_modules"),
+    });
+    fs.symlinkSync(path.join(fixture, "node_modules"), path.join(root, "node_modules"), "junction");
+
+    async function runInit(cdnCache: "workers-cache" | "static-assets") {
+      const log = vi.spyOn(console, "log").mockImplementation(() => {});
+      try {
+        await init({
+          root,
+          platform: "cloudflare",
+          skipCheck: true,
+          install: false,
+          _today: "2026-09-23",
+          cloudflare: {
+            dataCache: "none",
+            cdnCache,
+            legacyWrangler: true,
+            imageOptimization: "none",
+          },
+        });
+      } finally {
+        log.mockRestore();
+      }
+    }
+
+    async function initAndBuild(cdnCache: "workers-cache" | "static-assets") {
+      // Removing the Vite config lets init regenerate it for the new adapter.
+      fs.rmSync(path.join(root, "vite.config.ts"));
+      await runInit(cdnCache);
+      const build = spawnSync(path.join(webRoot, "node_modules/.bin/vinext"), ["build"], {
+        cwd: root,
+        encoding: "utf-8",
+        timeout: 120_000,
+        env: { ...process.env, CI: "true" },
+      });
+      expect(build.status, `${build.stdout}\n${build.stderr}`).toBe(0);
+      const config = JSON.parse(
+        fs.readFileSync(path.join(root, "dist/server/wrangler.json"), "utf8"),
+      );
+      return { config, defaultEntrypointCached: cachedEntrypoints(config).includes("default") };
+    }
+
+    const workersCache = await initAndBuild("workers-cache");
+    expect(workersCache.config.cache).toBeUndefined();
+    expect(cachedEntrypoints(workersCache.config)).toEqual(["VinextCachedResponse"]);
+
+    // Earlier releases enabled Workers Cache for the whole Worker in this setup.
+    const wranglerPath = path.join(root, "wrangler.jsonc");
+    fs.writeFileSync(
+      wranglerPath,
+      fs.readFileSync(wranglerPath, "utf8").replace(/^\{/, '{\n  "cache": { "enabled": true },'),
+    );
+
+    // Init leaves the user's Vite config alone: a kept Workers Cache adapter
+    // is rejected before any file is written, so no half-migrated config remains.
+    const workersCacheWrangler = fs.readFileSync(wranglerPath, "utf8");
+    await expect(runInit("static-assets")).rejects.toThrow(
+      "does not match the selected Static Assets cache",
+    );
+    expect(fs.readFileSync(wranglerPath, "utf8")).toBe(workersCacheWrangler);
+
+    const staticAssets = await initAndBuild("static-assets");
+    expect(fs.readFileSync(path.join(root, "vite.config.ts"), "utf8")).toContain(
+      "staticAssetsAdapter()",
+    );
+    expect(staticAssets.config.exports?.default).toBeUndefined();
+    // Cloudflare caches a response without Cache-Control heuristically, so a
+    // cached default entrypoint would serve one visitor's cookie-dependent
+    // response to another before the Worker runs.
+    expect(staticAssets.defaultEntrypointCached).toBe(false);
+  }, 280_000);
 });

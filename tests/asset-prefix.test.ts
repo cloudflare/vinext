@@ -213,6 +213,9 @@ describe("renderVinextBuiltUrl", () => {
       const names = workerConfig.plugins.map((plugin) => plugin.name);
       expect(names.filter((name) => name === "user-worker-plugin")).toHaveLength(1);
       expect(names.filter((name) => name === "vinext:worker-image-imports")).toHaveLength(1);
+      expect(
+        names.filter((name) => name === "vinext:worker-validate-server-only-imports"),
+      ).toHaveLength(1);
     },
     30_000,
   );
@@ -461,6 +464,36 @@ function directoryContainsFileWithExtension(dir: string, extension: string): boo
     if (entry.isFile() && entry.name.endsWith(extension)) return true;
   }
   return false;
+}
+
+// Pages Router build pipeline — server then client. Matches the pattern
+// in tests/pages-router.test.ts for the SSR-manifest basePath test.
+async function buildInlinePagesApp(root: string): Promise<string> {
+  const outDir = path.join(root, "dist");
+  await build({
+    root,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: path.join(outDir, "server"),
+      ssr: "virtual:vinext-server-entry",
+      rolldownOptions: { output: { entryFileNames: "entry.js" } },
+    },
+  });
+  await build({
+    root,
+    configFile: false,
+    plugins: [vinext({ disableAppRouter: true })],
+    logLevel: "silent",
+    build: {
+      outDir: path.join(outDir, "client"),
+      manifest: true,
+      ssrManifest: true,
+      rolldownOptions: { input: "virtual:vinext-client-entry" },
+    },
+  });
+  return outDir;
 }
 
 describe("assetPrefix end-to-end build", () => {
@@ -823,33 +856,7 @@ export default function middleware(request: Request) {
 `,
     );
 
-    const outDir = path.join(tmpDir, "dist");
-
-    // Pages Router build pipeline — server then client. Matches the pattern
-    // in tests/pages-router.test.ts for the SSR-manifest basePath test.
-    await build({
-      root: tmpDir,
-      configFile: false,
-      plugins: [vinext({ disableAppRouter: true })],
-      logLevel: "silent",
-      build: {
-        outDir: path.join(outDir, "server"),
-        ssr: "virtual:vinext-server-entry",
-        rolldownOptions: { output: { entryFileNames: "entry.js" } },
-      },
-    });
-    await build({
-      root: tmpDir,
-      configFile: false,
-      plugins: [vinext({ disableAppRouter: true })],
-      logLevel: "silent",
-      build: {
-        outDir: path.join(outDir, "client"),
-        manifest: true,
-        ssrManifest: true,
-        rolldownOptions: { input: "virtual:vinext-client-entry" },
-      },
-    });
+    const outDir = await buildInlinePagesApp(tmpDir);
 
     const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
     const { server } = await startProdServer({
@@ -905,6 +912,69 @@ export default function middleware(request: Request) {
       expect(unhandledMissingAsset.status).toBe(404);
       expect(unhandledMissingAsset.headers.get("content-type")).toBe("text/plain; charset=utf-8");
       expect(await unhandledMissingAsset.text()).toBe("Not Found");
+    } finally {
+      server.close();
+    }
+  }, 180_000);
+  // Next.js' built-in rewrite maps `${assetPrefix}/_next/:path+` into the
+  // basePath (loadRewrites in packages/next/src/lib/load-custom-routes.ts), so
+  // a middleware rewrite to a build asset under a path assetPrefix outside the
+  // basePath serves it, while an unprefixed `/_next` destination resolves nothing.
+  it("Pages Router serves middleware rewrites to assets under an assetPrefix outside basePath", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-asset-prefix-rewrite-"));
+    register(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+    fs.symlinkSync(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { basePath: "/docs", assetPrefix: "/cdn" };\n`,
+    );
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function HomePage() {\n  return <p>home</p>;\n}\n`,
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "middleware.ts"),
+      `import { NextResponse, type NextRequest } from "next/server";
+
+export default function middleware(request: NextRequest) {
+  const asset = request.nextUrl.searchParams.get("asset") ?? "";
+  const prefix = request.nextUrl.pathname.endsWith("/prefixed") ? "/cdn" : "";
+  return NextResponse.rewrite(new URL(prefix + asset, request.url));
+}
+
+export const config = { matcher: ["/prefixed", "/unprefixed"] };
+`,
+    );
+
+    const outDir = await buildInlinePagesApp(tmpDir);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir,
+      noCompression: true,
+    });
+    try {
+      const addr = server.address();
+      const port = typeof addr === "object" && addr ? addr.port : 0;
+      const baseUrl = `http://127.0.0.1:${port}`;
+
+      const html = await (await fetch(`${baseUrl}/docs/`)).text();
+      const script = html.match(/<script[^>]+src="\/cdn(\/_next\/static\/[^"]+\.js)"/)?.[1];
+      expect(script, "expected a script under the assetPrefix").toBeTruthy();
+      const asset = encodeURIComponent(script!);
+
+      const prefixed = await fetch(`${baseUrl}/docs/prefixed?asset=${asset}`);
+      expect(prefixed.status).toBe(200);
+      expect(prefixed.headers.get("content-type")).toContain("javascript");
+
+      const unprefixed = await fetch(`${baseUrl}/docs/unprefixed?asset=${asset}`);
+      expect(unprefixed.status).toBe(404);
+      expect(unprefixed.headers.get("content-type") ?? "").not.toContain("javascript");
     } finally {
       server.close();
     }

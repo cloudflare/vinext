@@ -124,6 +124,24 @@ export function isNonCacheableCacheControl(
 }
 
 /**
+ * Request headers that identify the caller. A shared response cache never
+ * admits a Route Handler or API response's own policy for a request carrying
+ * them, and never replays such a render to refill its data entries.
+ * `x-api-key` matches the fetch cache's credential headers.
+ */
+const SHARED_CACHE_CREDENTIAL_HEADERS = [
+  "authorization",
+  "cookie",
+  "proxy-authorization",
+  "x-api-key",
+] as const;
+
+/** Whether a request carries credentials a shared response cache must not capture. */
+export function hasSharedCacheCredentials(headers: Headers): boolean {
+  return SHARED_CACHE_CREDENTIAL_HEADERS.some((name) => headers.has(name));
+}
+
+/**
  * The serving strategy for page-level ISR. Implement this to delegate
  * page/route/image caching to a CDN edge instead of the origin store.
  */
@@ -169,6 +187,13 @@ export type CdnCacheAdapter = {
 
   /** Capture the full-route RSC side stream while admitting a completed HTML response. */
   captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
+  /**
+   * Whether this adapter sends the 304 for a Pages render whose If-None-Match
+   * matches. When it does, the render returns the page, so an adapter that
+   * stores completed responses stores the page rather than the 304.
+   */
+  deferNotModifiedResponse?(): boolean;
 
   /**
    * Validate provider-specific request routing before the application handles

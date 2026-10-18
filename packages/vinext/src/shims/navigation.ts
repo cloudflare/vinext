@@ -33,6 +33,8 @@ import {
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
+  formatRscRequestPath,
+  parseRscRequestPath,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
@@ -47,6 +49,8 @@ import {
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
@@ -80,7 +84,8 @@ import {
   resolveDirectHybridClientRouteOwner,
   type HybridClientOwner,
 } from "./internal/hybrid-client-route-owner-direct.js";
-import { retryScrollTo, scrollToHashTarget, scrollToHashTargetOnNextFrame } from "./hash-scroll.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
+import { retryScrollTo, scrollToHashTarget } from "./hash-scroll.js";
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
@@ -325,6 +330,13 @@ export type CachedRscResponse = {
   mountedSlotsHeader?: string | null;
   paramsHeader: string | null;
   preparedElements?: AppElements;
+  /**
+   * Streamed `redirect()` side-channel headers. A replayed snapshot must keep
+   * them so the navigation follows the redirect instead of decoding the
+   * redirect payload as a page.
+   */
+  redirectHeader?: string;
+  redirectTypeHeader?: string;
   renderedPathAndSearch: string | null;
   serverStaleTime?: ServerStaleTime;
   url: string;
@@ -575,7 +587,7 @@ export function resolvePrefetchCacheEntryMountedSlotsHeader(
 
 function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     stripRscCacheBustingSearchParam(url);
     return `${url.pathname}${url.search}`;
   } catch {
@@ -585,7 +597,7 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
 
 function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     return stripRscSuffix(url.pathname);
   } catch {
     return null;
@@ -908,8 +920,10 @@ function toAppPrefetchDestination(href: string): string | null {
     __trailingSlash,
   );
   try {
-    const url = new URL(browserHref, window.location.href);
-    return `${url.pathname}${url.search}`;
+    // A pathname that starts with "//" must not come back as a
+    // protocol-relative reference: the prefetch path resolves this value
+    // against the current URL again and would read its first segment as a host.
+    return formatRscRequestPath(new URL(browserHref, window.location.href));
   } catch {
     return browserHref.split("#", 1)[0];
   }
@@ -1276,6 +1290,8 @@ export function createCachedRscResponseSnapshot(
       ? undefined
       : { kind: "resolved" as const, seconds: extracted.metadata!.serverStaleTimeSeconds! }
     : parsedServerStaleTime;
+  const redirectHeader = response.headers.get(VINEXT_RSC_REDIRECT_HEADER);
+  const redirectTypeHeader = response.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER);
   return {
     compatibilityIdHeader: response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER),
     buffer: extracted.buffer,
@@ -1284,6 +1300,8 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    ...(redirectHeader === null ? {} : { redirectHeader }),
+    ...(redirectTypeHeader === null ? {} : { redirectTypeHeader }),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
       response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER),
     ),
@@ -1366,6 +1384,12 @@ export function restoreRscResponse(cached: CachedRscResponse, copy = true): Resp
   }
   if (cached.paramsHeader != null) {
     headers.set(VINEXT_PARAMS_HEADER, cached.paramsHeader);
+  }
+  if (cached.redirectHeader !== undefined) {
+    headers.set(VINEXT_RSC_REDIRECT_HEADER, cached.redirectHeader);
+  }
+  if (cached.redirectTypeHeader !== undefined) {
+    headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, cached.redirectTypeHeader);
   }
   if (cached.renderedPathAndSearch != null) {
     headers.set(
@@ -1462,6 +1486,28 @@ export async function fetchRouteTreeGatedPrefetch(options: {
 }
 
 /**
+ * Whether a prefetch response may be decoded as Flight. A successful response
+ * that is not Flight (e.g. a Route Handler's text download) is a miss: decoding
+ * its bytes would let text shaped like Flight resource hints insert scripts.
+ * Navigation then fetches it and falls back to a document navigation.
+ *
+ * Ported from Next.js: fetchPrefetchResponse in
+ * packages/next/src/client/components/segment-cache/cache.ts, which skips the
+ * check in `output: "export"` because a static host, not Next.js, chooses the
+ * MIME type of the exported `.txt` payloads.
+ */
+function isFlightPrefetchResponse(response: Response): boolean {
+  if (!response.ok) return false;
+  if (process.env.NODE_ENV === "production" && process.env.__NEXT_CONFIG_OUTPUT === "export") {
+    return true;
+  }
+  // MIME types are case-insensitive (RFC 9110 §8.3.1).
+  return (
+    response.headers.get("content-type")?.toLowerCase().startsWith(VINEXT_RSC_CONTENT_TYPE) === true
+  );
+}
+
+/**
  * Prefetch an RSC response and snapshot it for later consumption.
  * Stores the in-flight promise so immediate clicks can await it instead
  * of firing a duplicate fetch.
@@ -1511,7 +1557,7 @@ export function prefetchRscResponse(
 
   entry.pending = fetchPromise
     .then(async (response) => {
-      if (response.ok) {
+      if (isFlightPrefetchResponse(response)) {
         const snapshot = await snapshotRscResponse(response);
         if (cache.get(cacheKey) !== entry) return;
         const previousSize = getPrefetchCacheEntrySize(entry);
@@ -1531,7 +1577,9 @@ export function prefetchRscResponse(
             : (behavior.dynamicStaleTime ??
                 (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
         );
-        if (behavior.prepareSnapshot) {
+        // A redirect payload never decodes into elements; navigation follows
+        // its redirect headers instead.
+        if (behavior.prepareSnapshot && snapshot.redirectHeader === undefined) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);
             if (cache.get(cacheKey) !== entry) return;
@@ -1545,6 +1593,8 @@ export function prefetchRscResponse(
         evictPrefetchCacheIfNeeded();
       } else {
         releaseAppPrefetchFetchSlot(response);
+        // An unread body keeps the request, and its connection, open.
+        void response.body?.cancel().catch(() => {});
         deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
       }
     })
@@ -2451,7 +2501,13 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     // Browsers can apply their own scroll restoration after the navigation's
     // commit microtasks. Defer the fallback to the next frame so that native
     // work cannot immediately reset the requested fragment scroll.
-    scrollToHashTargetOnNextFrame(intent.hash, () => isLatestAppRouterScrollIntent(intent));
+    const hash = intent.hash;
+    requestAnimationFrame(() => {
+      if (!isLatestAppRouterScrollIntent(intent)) return;
+      disableSmoothScrollDuringRouteTransition(() => {
+        scrollToHashTarget(hash);
+      });
+    });
     return;
   }
 
@@ -2466,7 +2522,9 @@ export function applyAppRouterScrollFallback(intent: AppRouterScrollIntent): voi
     return;
   }
 
-  document.documentElement.scrollTop = 0;
+  disableSmoothScrollDuringRouteTransition(() => {
+    document.documentElement.scrollTop = 0;
+  });
 }
 
 function scheduleAppRouterScrollFallback(intent: AppRouterScrollIntent): void {
@@ -2623,6 +2681,13 @@ export async function navigateClientSide(
     notifyAppRouterTransitionStart(fullHref, mode);
     if (mode === "push") {
       saveScrollPosition();
+    }
+    // Suspend the tree like Next.js's MPA navigation, so a RedirectBoundary
+    // that started this navigation can't reset and follow its redirect again.
+    const mpaNavigate = getNavigationRuntime()?.functions.navigateExternal;
+    if (mpaNavigate) {
+      await mpaNavigate(fullHref, mode);
+      return;
     }
     hardNavigateTo(fullHref, mode);
     await new Promise<void>(() => {});
@@ -3286,6 +3351,9 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      // A write from a layout effect of a committing navigation must land on
+      // top of the destination entry, as it does in Next.js.
+      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
       // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
       // history entry must remain a real traversal target so back/forward can
       // fetch it (and follow redirects) instead of treating it as a copied
@@ -3315,6 +3383,10 @@ if (!isServer) {
         // but changes browser state only — it issues no RSC request, so it must
         // not cancel prefetch setup for the URL it moves to.
         resetStaleLinkStatus();
+        // Like Next.js' ACTION_RESTORE, the shallow URL keeps the visible tree,
+        // so a navigation still rendering must not commit over it later. Next
+        // only restores when a URL is given; a state-only write keeps it.
+        if (url) getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };
@@ -3324,6 +3396,7 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
       if (isAppOwnedHistoryState(data)) {
         const previousHistoryState = window.history.state;
         state.originalReplaceState.call(window.history, data, unused, url);
@@ -3346,6 +3419,7 @@ if (!isServer) {
       );
       if (state.suppressUrlNotifyCount === 0) {
         resetStaleLinkStatus();
+        if (url) getNavigationRuntime()?.functions.discardPendingNavigation?.();
         commitClientNavigationState();
       }
     };

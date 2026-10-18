@@ -8,6 +8,7 @@ import {
   type SerializedBoundaryError,
 } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
+import { withUseCacheLayoutMarker } from "vinext/shims/internal/app-page-props-cache-key";
 import { MetadataHead, ViewportHead } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
@@ -129,6 +130,11 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
   getFontStyles: () => string[];
   getNavigationContext: () => NavigationContext | null;
   globalErrorModule?: TModule | null;
+  /**
+   * The document may be stored under a query-free key, so its SSR
+   * `useSearchParams()` waits as a cache candidate's does.
+   */
+  isCacheCandidate?: boolean;
   isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
@@ -275,11 +281,14 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
       });
     },
     renderLayout(LayoutComponent, children, asyncParams) {
-      return createElement(LayoutComponent as AppPageComponent, {
-        // oxlint-disable-next-line react/no-children-prop
-        children,
-        params: asyncParams,
-      });
+      return createElement(
+        LayoutComponent as AppPageComponent,
+        withUseCacheLayoutMarker(LayoutComponent, {
+          // oxlint-disable-next-line react/no-children-prop
+          children,
+          params: asyncParams,
+        }),
+      );
     },
     renderLayoutSegmentProvider(segmentMap, children) {
       return createElement(
@@ -452,6 +461,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           clearRequestContext: options.clearRequestContext,
           fontData,
           fontLinkHeader: options.buildFontLinkHeader(fontData.preloads),
+          isCacheCandidate: options.isCacheCandidate,
           isEdgeRuntime: options.isEdgeRuntime,
           middlewareHeaders: options.middlewareContext.headers,
           navigationContext: options.getNavigationContext() ?? {

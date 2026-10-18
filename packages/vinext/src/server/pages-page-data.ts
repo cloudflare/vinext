@@ -1,6 +1,5 @@
 import { recordRouteCacheability } from "vinext/shims/cacheability-classification";
 import type { ReactNode } from "react";
-import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { Route } from "../routing/pages-router.js";
 import { normalizeStaticPathname } from "../routing/route-pattern.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
@@ -14,23 +13,17 @@ import type {
 import { applyCdnResponseHeaders } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
-import {
-  buildPagesCacheValue,
-  isrCacheControl,
-  type ISRCacheEntry,
-  type IsrWritePolicy,
-} from "./isr-cache.js";
+import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
-  buildPagesNextDataScript,
   generatePagesETag,
   isPagesStreamingBot,
-  requestsNoCache,
+  rendersPagesNotModified,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
-import { matchesIfNoneMatch } from "./http-conditional.js";
+import { isPageNotModified } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,
@@ -44,7 +37,7 @@ import { isSerializableProps } from "./pages-serializable-props.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { isDangerousScheme } from "vinext/shims/url-safety";
-import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { tracePagesData, tracePagesDocument } from "./pages-execution-tracing.js";
 
 export type PagesRedirectResult = {
@@ -115,6 +108,21 @@ export function assertPages404DoesNotReturnNotFound(
  * - packages/next/src/server/render.tsx (`metadata.cacheControl`)
  * - packages/next/src/server/route-modules/pages/pages-handler.ts
  */
+/**
+ * Next.js renders a shared getStaticProps status page (/404, /500) for its own
+ * pathname, never for the request that reached it. Only the original
+ * request's trailing slash carries over under `trailingSlash`, read before
+ * rewrites and locale stripping.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+ */
+export function resolvePagesStatusPageRenderPath(
+  statusPathname: string,
+  trailingSlash: boolean,
+  requestPathname: string,
+): string {
+  return trailingSlash && requestPathname.endsWith("/") ? statusPathname + "/" : statusPathname;
+}
+
 export function resolvePagesRevalidateSeconds(
   result: PagesPagePropsResult,
   routeUrl = "",
@@ -230,29 +238,9 @@ export type PagesPageModule = {
   }) => Promise<PagesPagePropsResult> | PagesPagePropsResult;
 };
 
-type RenderPagesIsrHtmlOptions = {
-  buildId: string | null;
-  cachedHtml: string;
-  collectIsrHeadHTML?: (() => string) | undefined;
-  createPageElement: (props: Record<string, unknown>) => ReactNode;
-  i18n: PagesI18nRenderContext;
-  pageProps: Record<string, unknown>;
-  props?: Record<string, unknown>;
-  params: Record<string, unknown>;
-  renderIsrPassToStringAsync: (
-    element: ReactNode,
-    onHeadReady?: () => Promise<void>,
-  ) => Promise<string>;
-  routePattern: string;
-  safeJsonStringify: (value: unknown) => string;
-  vinext?: VinextNextData["__vinext"];
-  nextData?: PagesNextDataExtras;
-};
-
 export type ResolvePagesPageDataOptions = {
   applyRequestContexts: () => void;
   basePath?: string;
-  buildId: string | null;
   /**
    * When true, this is a `/_next/data/<buildId>/<page>.json` request. Callers
    * that respond with a JSON envelope (`{ pageProps }`) instead of HTML must
@@ -264,6 +252,8 @@ export type ResolvePagesPageDataOptions = {
   isDataReq?: boolean;
   err?: unknown;
   createGsspReqRes: () => PagesGsspContextResponse;
+  /** The req/res for a stale regeneration's render; defaults to `createGsspReqRes`. */
+  createRegenerationReqRes?: () => PagesGsspContextResponse;
   createAppTree?: (props: Record<string, unknown>) => ReactNode;
   createPageElement: (props: Record<string, unknown>) => ReactNode;
   fontLinkHeader: string;
@@ -311,6 +301,12 @@ export type ResolvePagesPageDataOptions = {
    * fallback path. Mirrors Next.js `unstable_onlyGenerated`.
    */
   revalidateOnlyGenerated?: boolean;
+  /**
+   * Set when a cache adapter regenerates an entry it stores for this build.
+   * The stored entry proves the path was admitted, so `getStaticPaths()` is
+   * skipped as it is for an entry read through `isrGet`.
+   */
+  regeneratesStoredEntry?: boolean;
   previewData?: PagesPreviewData | false;
   /**
    * The deployment ID used for deployment-skew protection. When set, it is
@@ -349,17 +345,19 @@ export type ResolvePagesPageDataOptions = {
     renderFn: () => Promise<void>,
     errorContext?: { routerKind: "Pages Router"; routePath: string; routeType: "render" },
   ) => void;
-  renderIsrPassToStringAsync: (
-    element: ReactNode,
-    onHeadReady?: () => Promise<void>,
-  ) => Promise<string>;
   /**
-   * Serializes the `<head>` collected by an ISR regeneration render. Called
-   * inside that render's head scope so the regenerated shell can pick up
-   * `next/head` output derived from the refreshed `getStaticProps` data.
+   * Render the whole document for regenerated props and store it as the ISR
+   * entry, through the same pipeline (and with the same cache write) as a
+   * foreground MISS. Next.js re-runs its full render on regeneration too;
+   * resolves once the entry is written.
    */
-  collectIsrHeadHTML?: (() => string) | undefined;
-  vinext?: VinextNextData["__vinext"];
+  renderIsrDocument: (input: {
+    documentReqRes: PagesGsspContextResponse;
+    expireSeconds: number | undefined;
+    pageProps: Record<string, unknown>;
+    props: Record<string, unknown>;
+    revalidateSeconds: number | false;
+  }) => Promise<void>;
   nextData?: PagesNextDataExtras;
   /**
    * The request's User-Agent string. When this matches a known crawler/bot
@@ -376,6 +374,11 @@ export type ResolvePagesPageDataOptions = {
    * response is a `304 Not Modified` with no body.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `If-Modified-Since` header value. As in Next.js,
+   * which gives a page no Last-Modified, a request with it gets the page.
+   */
+  ifModifiedSince?: string;
   /**
    * The incoming request's `Cache-Control` header value. When it contains
    * `no-cache`, the 304 short-circuit is skipped and a full response is
@@ -496,14 +499,13 @@ function applyPagesTerminalMissHeaders(
   isrCachePathname: string,
   expireSeconds?: number,
 ): Response {
-  const stem = isrCachePathname.endsWith("/") ? isrCachePathname.slice(0, -1) : isrCachePathname;
   recordRouteCacheability({
     cacheable: revalidateSeconds !== 0,
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
   });
   applyCdnResponseHeaders(response.headers, {
     cacheControl: buildMissIsrCacheControl(revalidateSeconds, expireSeconds),
-    tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+    tags: [pagesPathCacheTag(isrCachePathname)],
   });
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);
@@ -712,7 +714,9 @@ async function loadPagesAppInitialRenderProps(
     },
   });
 
-  if (isResponseSent(res)) {
+  // Next.js keeps resolving a getStaticProps page whose `_app` sent the
+  // response, so its entry is still stored.
+  if (isResponseSent(res) && typeof options.pageModule.getStaticProps !== "function") {
     return { kind: "response", response: responsePromise };
   }
 
@@ -992,7 +996,15 @@ export function matchesPagesStaticPath(
       if (optional && value.length === 0 && actual === undefined) {
         return true;
       }
-      return Array.isArray(actual) && value.join("/") === actual.join("/");
+      // Compare element-wise: Next.js escapes each element's `/` when building
+      // the prerendered pathname, so `["a", "b"]` (`/a/b`) and `["a/b"]`
+      // (`/a%2Fb`) are distinct paths and must not admit each other. Iterate
+      // the dense request array so holes in a sparse entry never match.
+      return (
+        Array.isArray(actual) &&
+        value.length === actual.length &&
+        actual.every((part, index) => part === value[index])
+      );
     }
     return String(value) === String(actual);
   });
@@ -1059,7 +1071,11 @@ function finalizeCachedPagesResponse(
   response: Response,
   options: Pick<
     ResolvePagesPageDataOptions,
-    "userAgent" | "ifNoneMatch" | "requestCacheControl" | "notFoundSourceHeaders"
+    | "userAgent"
+    | "ifModifiedSince"
+    | "ifNoneMatch"
+    | "requestCacheControl"
+    | "notFoundSourceHeaders"
   >,
   html?: string,
 ): ResolvePagesPageDataResponseResult {
@@ -1069,148 +1085,21 @@ function finalizeCachedPagesResponse(
   if (html !== undefined && options.userAgent && isPagesStreamingBot(options.userAgent)) {
     const etag = generatePagesETag(html);
     response.headers.set("ETag", etag);
-    const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
+    if (
+      isPageNotModified(
+        {
+          cacheControl: options.requestCacheControl,
+          ifModifiedSince: options.ifModifiedSince,
+          ifNoneMatch: options.ifNoneMatch,
+        },
+        etag,
+      ) &&
+      rendersPagesNotModified(response.status)
+    ) {
       response = new Response(null, { status: 304, headers: response.headers });
     }
   }
   return { kind: "response", response };
-}
-
-/**
- * Matches one serialized `next/head` tag. `getSSRHeadHTML()` stamps every tag
- * it emits with `data-next-head=""` (see `shims/head.ts`), which is the same
- * marker Next.js uses to reconcile the head on the client — so it is a stable
- * anchor for finding the collector's output inside an already-rendered shell.
- *
- * Raw-content tags are safe to match non-greedily: `headChildToHTML()` escapes
- * closing-tag sequences in `<style>`/`<script>` bodies, so the first `</style>`
- * encountered is always the real terminator.
- */
-const SSR_HEAD_TAG_PATTERN =
-  /<(title|meta|link|style|script|base|noscript)\b[^>]*?\sdata-next-head=""[^>]*?(?:\/>|>[\s\S]*?<\/\1>)/g;
-
-/**
- * Matches a whole head element whose body may contain markup-looking text.
- * Script/style are raw-text elements, title is RCDATA, and noscript is raw
- * text while scripting is enabled. In all four, a literal `</head>` does not
- * close the document head. `headChildToHTML()` only escapes the element's own
- * closing sequence for script/style, while `dangerouslySetInnerHTML` may leave
- * `</head>` intact in any of them.
- */
-const HEAD_TEXT_ELEMENT_PATTERN = /<(script|style|title|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi;
-
-/**
- * Replace the `next/head` region of a cached shell with a freshly collected
- * one.
- *
- * ISR regeneration re-renders the page body but reuses the cached shell, so
- * without this the `<head>` stays frozen at whatever the first cache-filling
- * render produced — a page whose `<title>`/meta derive from `getStaticProps`
- * data would serve an updated body under permanently stale metadata.
- *
- * The collector emits its tags as one contiguous run (`ssrHeadHTML` is
- * concatenated ahead of trace meta and `_document` styles in
- * `buildPagesShellHtml`), so replacing first-match-start through
- * last-match-end swaps exactly that run and leaves `_document`-owned head
- * markup either side of it untouched.
- *
- * Only the `next/head` run refreshes. `_document`-rendered head children and
- * CSS-in-JS `styles` still come from the cached shell, because regeneration
- * never re-renders `_document` — refreshing those means running the full
- * document pipeline on regeneration the way Next.js does.
- */
-function refreshCachedHeadTags(cachedHtml: string, freshHead: string): string {
-  // An empty collection means the render produced no head at all; leave the
-  // cached head alone rather than deleting the tags we do have.
-  if (!freshHead) return cachedHtml;
-
-  // Blank out raw-text/RCDATA elements before locating the boundary so a
-  // `</head>` string inside one is not mistaken for the closing tag — that
-  // would truncate the scan and leave stale tags behind the fresh head. The
-  // replacement is length-preserving, so the index still maps onto
-  // `cachedHtml`.
-  const headEnd = cachedHtml
-    .replace(HEAD_TEXT_ELEMENT_PATTERN, (element) => " ".repeat(element.length))
-    .indexOf("</head>");
-  if (headEnd < 0) return cachedHtml;
-
-  const matches = [...cachedHtml.slice(0, headEnd).matchAll(SSR_HEAD_TAG_PATTERN)];
-  const first = matches[0];
-  const last = matches[matches.length - 1];
-  if (!first || !last || first.index === undefined || last.index === undefined) {
-    return cachedHtml;
-  }
-
-  return (
-    cachedHtml.slice(0, first.index) + freshHead + cachedHtml.slice(last.index + last[0].length)
-  );
-}
-
-function rewritePagesCachedHtml(
-  cachedHtml: string,
-  freshBody: string,
-  nextDataScript: string,
-): string {
-  const bodyMarker = '<div id="__next">';
-  const bodyStart = cachedHtml.indexOf(bodyMarker);
-  const contentStart = bodyStart >= 0 ? bodyStart + bodyMarker.length : -1;
-  const canonicalNextDataStart = cachedHtml.search(
-    /<script\b(?=[^>]*\bid=["']__NEXT_DATA__["'])(?=[^>]*\btype=["']application\/json["'])[^>]*>/,
-  );
-  const legacyNextDataStart = cachedHtml.indexOf("<script>window.__NEXT_DATA__");
-  const nextDataStart = canonicalNextDataStart >= 0 ? canonicalNextDataStart : legacyNextDataStart;
-
-  if (contentStart >= 0 && nextDataStart >= 0) {
-    const region = cachedHtml.slice(contentStart, nextDataStart);
-    const lastCloseDiv = region.lastIndexOf("</div>");
-    const gap = lastCloseDiv >= 0 ? region.slice(lastCloseDiv + 6) : "";
-    const nextDataEnd = cachedHtml.indexOf("</script>", nextDataStart) + 9;
-    const tail = cachedHtml.slice(nextDataEnd);
-
-    return cachedHtml.slice(0, contentStart) + freshBody + "</div>" + gap + nextDataScript + tail;
-  }
-
-  return (
-    '<!DOCTYPE html>\n<html>\n<head>\n</head>\n<body>\n  <div id="__next">' +
-    freshBody +
-    "</div>\n  " +
-    nextDataScript +
-    "\n</body>\n</html>"
-  );
-}
-
-export async function renderPagesIsrHtml(options: RenderPagesIsrHtmlOptions): Promise<string> {
-  const renderProps = options.props ?? { pageProps: options.pageProps };
-  const collectHead = options.collectIsrHeadHTML;
-  let freshHead = "";
-  const freshBody = await options.renderIsrPassToStringAsync(
-    options.createPageElement(renderProps),
-    collectHead &&
-      (async () => {
-        freshHead = collectHead();
-      }),
-  );
-  const nextDataScript = buildPagesNextDataScript({
-    buildId: options.buildId,
-    i18n: options.i18n,
-    pageProps: options.pageProps,
-    props: renderProps,
-    params: options.params,
-    routePattern: options.routePattern,
-    safeJsonStringify: options.safeJsonStringify,
-    // Serialize the same readiness flags (gssp/gsp/autoExport/…) the initial
-    // render emits, so the regenerated HTML hydrates with the identical initial
-    // `router.isReady` the server computed instead of a flag-less fallback.
-    nextData: options.nextData,
-    vinext: options.vinext,
-  });
-
-  return rewritePagesCachedHtml(
-    refreshCachedHeadTags(options.cachedHtml, freshHead),
-    freshBody,
-    nextDataScript,
-  );
 }
 
 export async function resolvePagesPageData(
@@ -1282,17 +1171,24 @@ export async function resolvePagesPageData(
     }
   }
 
-  // A packaged dynamic entry proves this path was generated at build time.
-  // getStaticPaths may depend on build-only data; reuse the existing cache
-  // response branches below before letting a runtime path list exclude it.
+  // Next.js never calls getStaticPaths for a production request: path
+  // membership and the fallback mode come from its build-time prerender
+  // manifest. vinext resolves them at request time instead, so read the entry
+  // first. A stored entry for this build proves the path was admitted (listed,
+  // or generated through a fallback), so a hit or stale hit is served by the
+  // cache branches below without re-running the user's path enumeration.
+  // A packaged prerendered entry gets the same admission even when a runtime
+  // getStaticPaths (which may depend on build-only data) would not list it.
   // Nonce requests still need this admission; the HTML replay branches below
-  // keep their own nonce guard and render fresh instead.
-  let hasFreshPrerenderedEntry = false;
+  // keep their own nonce guard and render fresh instead. An adapter that
+  // stores entries outside `isrGet` passes the same proof when it regenerates
+  // one.
+  let hasStoredEntry = options.regeneratesStoredEntry === true;
   if (
-    options.hasPrerenderedPages &&
     options.route.isDynamic &&
     typeof options.pageModule.getStaticProps === "function" &&
     typeof options.pageModule.getServerSideProps !== "function" &&
+    !hasStoredEntry &&
     !options.isOnDemandRevalidate &&
     previewData === false
   ) {
@@ -1300,15 +1196,17 @@ export async function resolvePagesPageData(
       options.isrCacheKey("pages", options.isrCachePathname ?? options.routeUrl.split("?")[0]),
     );
     const value = previousCacheEntry?.value.value;
-    hasFreshPrerenderedEntry =
+    hasStoredEntry =
       !!previousCacheEntry &&
-      !previousCacheEntry.isStale &&
       !previousCacheEntry.isExpired &&
       (value === null || value?.kind === "PAGES" || value?.kind === "REDIRECT");
   }
 
+  // Draft mode bypasses the fallback gate entirely, as Next.js does
+  // (`hasStaticPaths && !isDraftMode` in pages-handler.ts).
   if (
-    !hasFreshPrerenderedEntry &&
+    !hasStoredEntry &&
+    previewData === false &&
     typeof options.pageModule.getStaticPaths === "function" &&
     options.route.isDynamic
   ) {
@@ -1333,7 +1231,7 @@ export async function resolvePagesPageData(
       ),
     );
 
-    if (fallback === false && !isValidPath && previewData === false) {
+    if (fallback === false && !isValidPath) {
       if (options.isOnDemandRevalidate && !options.revalidateOnlyGenerated) {
         return {
           kind: "response",
@@ -1352,13 +1250,7 @@ export async function resolvePagesPageData(
     // the loading shell ships (`fallback: 'blocking'` keeps SSRing as before).
     const isBotRequest =
       !!options.userAgent && isBotUserAgent(options.userAgent, options.htmlLimitedBots);
-    if (
-      fallback === true &&
-      !isValidPath &&
-      !options.isDataReq &&
-      !isBotRequest &&
-      previewData === false
-    ) {
+    if (fallback === true && !isValidPath && !options.isDataReq && !isBotRequest) {
       isFallback = true;
     }
     shouldPersistFallbackData = fallback === true && !isValidPath && options.isDataReq === true;
@@ -1402,6 +1294,16 @@ export async function resolvePagesPageData(
   let renderProps: PagesRenderProps = { pageProps };
   if (previewData !== false) renderProps.__N_PREVIEW = true;
 
+  // A getStaticProps page whose `_app` or `_document` sent the response is
+  // still resolved and stored, but the visitor gets the sent response. An
+  // on-demand revalidation reports the regenerated entry instead.
+  async function takeSentResponse(): Promise<ResolvePagesPageDataResponseResult | null> {
+    if (options.isOnDemandRevalidate || !sharedReqRes || !isResponseSent(sharedReqRes.res)) {
+      return null;
+    }
+    return { kind: "response", response: await sharedReqRes.responsePromise };
+  }
+
   async function loadForegroundAppInitialRenderProps(): Promise<ResolvePagesPageDataResult | null> {
     const result = await loadPagesAppInitialRenderProps(options, getSharedReqRes);
     if (result.kind === "response") {
@@ -1417,7 +1319,10 @@ export async function resolvePagesPageData(
 
   if (isFallback) {
     const pathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    const cached = await options.isrGet(options.isrCacheKey("pages", pathname));
+    const cached =
+      previousCacheEntry !== undefined
+        ? previousCacheEntry
+        : await options.isrGet(options.isrCacheKey("pages", pathname));
     if (cached?.value.value?.kind !== "PAGES") {
       const appShortCircuit = await loadForegroundAppInitialRenderProps();
       if (appShortCircuit) return appShortCircuit;
@@ -1533,9 +1438,10 @@ export async function resolvePagesPageData(
         async function () {
           return options.runInFreshUnifiedContext(async () => {
             options.applyRequestContexts();
-            const freshAppResult = await loadPagesAppInitialRenderProps(options, () =>
-              options.createGsspReqRes(),
-            );
+            // `_app.getInitialProps` and `_document` share one req/res, as in the
+            // foreground render.
+            const reqRes = (options.createRegenerationReqRes ?? options.createGsspReqRes)();
+            const freshAppResult = await loadPagesAppInitialRenderProps(options, () => reqRes);
             if (freshAppResult.kind === "response") return;
 
             let freshPageProps = freshAppResult.pageProps;
@@ -1588,34 +1494,23 @@ export async function resolvePagesPageData(
             }
 
             if (cachedValue?.kind === "PAGES" && !cachedValue.generatedFromDataRequest) {
-              const freshHtml = await tracePagesDocument(options.routePattern, () =>
-                renderPagesIsrHtml({
-                  buildId: options.buildId,
-                  cachedHtml: cachedValue.html,
-                  createPageElement: options.createPageElement,
-                  i18n: options.i18n,
+              // The render pipeline owns the entry write, so this span covers
+              // it too.
+              await tracePagesDocument(options.routePattern, () =>
+                options.renderIsrDocument({
+                  documentReqRes: reqRes,
+                  expireSeconds,
                   pageProps: freshPageProps,
                   props: freshRenderProps,
-                  params: options.params,
-                  renderIsrPassToStringAsync: options.renderIsrPassToStringAsync,
-                  collectIsrHeadHTML: options.collectIsrHeadHTML,
-                  routePattern: options.routePattern,
-                  safeJsonStringify: options.safeJsonStringify,
-                  nextData: options.nextData,
-                  vinext: options.vinext,
+                  revalidateSeconds,
                 }),
-              );
-              await options.isrSet(
-                cacheKey,
-                buildPagesCacheValue(freshHtml, freshRenderProps, options.statusCode),
-                { cacheControl: isrCacheControl(revalidateSeconds, { expireSeconds }) },
               );
               return;
             }
 
-            // A cached redirect/not-found has no reusable HTML shell. Persist
-            // the resolved props and let the next foreground request render
-            // the canonical PAGES representation without re-running user code.
+            // A cached redirect/not-found or data-first entry regenerates as
+            // props only. Let the next foreground request render the canonical
+            // PAGES representation without re-running user code.
             await options.isrSet(
               cacheKey,
               {
@@ -1840,10 +1735,12 @@ export async function resolvePagesPageData(
         );
         applyPagesTerminalMissHeaders(response, revalidateSeconds, pathname, expireSeconds);
       }
-      return {
-        kind: "response",
-        response,
-      };
+      return (
+        (await takeSentResponse()) ?? {
+          kind: "response",
+          response,
+        }
+      );
     }
 
     if (result?.notFound) {
@@ -1868,7 +1765,7 @@ export async function resolvePagesPageData(
           expireSeconds,
         );
       }
-      return notFoundResult;
+      return (await takeSentResponse()) ?? notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getStaticProps", data.props)`
@@ -1958,6 +1855,12 @@ export async function resolvePagesPageData(
       pageProps = { ...pageProps, ...initialProps };
       renderProps = { ...renderProps, pageProps };
     }
+  }
+
+  // The HTML render stores the entry and returns the sent response itself.
+  if (options.isDataReq) {
+    const sentResponse = await takeSentResponse();
+    if (sentResponse) return sentResponse;
   }
 
   return {

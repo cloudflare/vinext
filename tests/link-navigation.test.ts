@@ -81,6 +81,11 @@ const linkPrefetchRoutes = [
   },
 ] satisfies VinextLinkPrefetchRoute[];
 
+/** A successful App Router prefetch response; prefetches drop non-Flight responses. */
+function createFlightResponse(body: BodyInit, headers: Record<string, string> = {}): Response {
+  return new Response(body, { headers: { "content-type": "text/x-component", ...headers } });
+}
+
 function createTestNavigationRuntime(
   navigate: unknown,
   routeManifest: RouteManifest | null = null,
@@ -399,6 +404,33 @@ describe("Link prefetch pure decisions", () => {
           currentOrigin: "https://example.com",
         },
         expected: "/path?tab=1#section",
+      },
+      {
+        name: "same-origin URL with a // pathname",
+        input: {
+          href: "https://example.com//evil.com/path?q=1",
+          basePath: "",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path?q=1",
+      },
+      {
+        name: "same-origin URL with a // pathname after basePath",
+        input: {
+          href: "https://example.com/docs//evil.com/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/evil.com/path",
+      },
+      {
+        name: "same-origin URL with a // pathname before basePath",
+        input: {
+          href: "https://example.com//docs/path",
+          basePath: "/docs",
+          currentOrigin: "https://example.com",
+        },
+        expected: "/path",
       },
       {
         name: "same-origin without required basePath",
@@ -1482,7 +1514,7 @@ async function renderIsolatedLink(options: {
   });
 
   const fetch = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) =>
-    Promise.resolve(new Response("")),
+    Promise.resolve(createFlightResponse("")),
   );
   const navigate = vi.fn();
   const pagePrefetchLinks: CapturedPrefetchLinkElement[] = [];
@@ -2161,7 +2193,7 @@ describe("Link prefetch scheduling", () => {
         await import("../packages/vinext/src/shims/navigation.js");
       prefetchRscResponse(
         "/viewport-prefetch-target?searchParam=a_PPR&_rsc=first",
-        Promise.resolve(new Response("target-page-with-search-param")),
+        Promise.resolve(createFlightResponse("target-page-with-search-param")),
         null,
         null,
         undefined,
@@ -2365,7 +2397,7 @@ describe("Link prefetch scheduling", () => {
       nodeEnv: "production",
     });
     result.fetch.mockResolvedValueOnce(
-      new Response("", { headers: { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" } }),
+      createFlightResponse("", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" }),
     );
 
     try {
@@ -2749,7 +2781,7 @@ describe("Link prefetch scheduling", () => {
 
     result.fetch
       .mockImplementationOnce(() => shellPromise)
-      .mockImplementationOnce(() => Promise.resolve(new Response("full")));
+      .mockImplementationOnce(() => Promise.resolve(createFlightResponse("full")));
 
     try {
       observer.dispatchIntersectingEntry(result.anchor);
@@ -2771,7 +2803,7 @@ describe("Link prefetch scheduling", () => {
       if (resolveShell === undefined) {
         throw new Error("Expected shell prefetch resolver");
       }
-      resolveShell(new Response(shellBody));
+      resolveShell(createFlightResponse(shellBody));
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
@@ -2921,7 +2953,7 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("")));
+        .mockImplementation(() => Promise.resolve(createFlightResponse("")));
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2942,7 +2974,7 @@ describe("Link prefetch scheduling", () => {
       await flushPrefetchTasks();
       expect(result.fetch).toHaveBeenCalledTimes(1);
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expect(result.fetch).toHaveBeenCalledTimes(2);
@@ -2985,7 +3017,9 @@ describe("Link prefetch scheduling", () => {
       });
       result.fetch
         .mockImplementationOnce(() => routeTreeResponse)
-        .mockImplementation(() => Promise.resolve(new Response("concrete root-param page")));
+        .mockImplementation(() =>
+          Promise.resolve(createFlightResponse("concrete root-param page")),
+        );
 
       observer.dispatchIntersectingEntry(result.anchor);
       await waitForFetchCalls(result.fetch, 1);
@@ -2995,7 +3029,7 @@ describe("Link prefetch scheduling", () => {
       expect(routeTreeHeaders?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe("1");
       expect(routeTreeHeaders?.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER)).toBe("/_tree");
 
-      releaseRouteTree?.(new Response(""));
+      releaseRouteTree?.(createFlightResponse(""));
       await waitForFetchCalls(result.fetch, 2);
 
       expectCanonicalRscFetchCall(
@@ -3073,6 +3107,52 @@ describe("Link prefetch scheduling", () => {
           priority: "low",
         }),
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("promotes only prefetch entries for the hovered // pathname on the app origin", async () => {
+    stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/.//attacker.example/z",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const targetRscUrl = await createRscRequestUrl(
+      "/.//attacker.example/z",
+      createRscRequestHeaders(),
+    );
+    // A rendered-path alias key for a different page whose path starts with
+    // "//". Resolved against the page URL it would read as pathname
+    // "//attacker.example/z" on host "a".
+    const otherPageKey = "//a//attacker.example/z";
+    const createEntry = () => ({
+      cacheForNavigation: false,
+      outcome: "cache-seeded" as const,
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader: null,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: targetRscUrl,
+      },
+      timestamp: Date.now(),
+    });
+
+    try {
+      getPrefetchCache().set(targetRscUrl, createEntry());
+      getPrefetchCache().set(otherPageKey, createEntry());
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(getPrefetchCache().get(targetRscUrl)?.cacheForNavigation).toBe(true);
+      expect(getPrefetchCache().get(otherPageKey)?.cacheForNavigation).toBe(false);
     } finally {
       result.restoreNodeEnv();
     }

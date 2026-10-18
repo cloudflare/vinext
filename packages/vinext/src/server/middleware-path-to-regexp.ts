@@ -120,11 +120,24 @@ function lexer(value: string): LexerToken[] {
   return tokens;
 }
 
-export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
+export type PathToRegexpOptions = {
+  /** Characters a default parameter pattern cannot match. Defaults to `/#?`. */
+  delimiter?: string;
+  /** Omit the optional trailing delimiter before `$`. Defaults to false. */
+  strict?: boolean;
+};
+
+const DEFAULT_DELIMITER = "/#?";
+
+export function parseMiddlewarePath(
+  value: string,
+  options: PathToRegexpOptions = {},
+): MiddlewarePathToken[] {
   const tokens = lexer(value);
   const result: MiddlewarePathToken[] = [];
   const prefixes = "./";
-  const delimiter = "/#?";
+  const delimiter = options.delimiter ?? DEFAULT_DELIMITER;
+  const delimiterClass = `[^${escapeRegex(delimiter)}]`;
   let key = 0;
   let index = 0;
   let path = "";
@@ -166,8 +179,8 @@ export function parseMiddlewarePath(value: string): MiddlewarePathToken[] {
       const name = typeof previous === "string" ? previous : previous.name;
       throw new TypeError(`Must have text between two parameters, missing text after "${name}"`);
     }
-    if (!previousText || containsDelimiter(previousText)) return "[^\\/#\\?]+?";
-    return `(?:(?!${escapeRegex(previousText)})[^\\/#\\?])+?`;
+    if (!previousText || containsDelimiter(previousText)) return `${delimiterClass}+?`;
+    return `(?:(?!${escapeRegex(previousText)})${delimiterClass})+?`;
   };
 
   while (index < tokens.length) {
@@ -244,8 +257,20 @@ export function normalizeMiddlewarePathTokens(
   });
 }
 
-export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): RegExp {
-  const delimiter = "/#?";
+/**
+ * Build the regex source path-to-regexp's `tokensToRegexp` would produce
+ * (with the default `start`/`end` options). Returned as a string so callers
+ * can apply their own flags and post-processing.
+ *
+ * `unrollRepeats` emits at most one extra repetition for `*`/`+` tokens. The
+ * result is only for regex safety analysis: it keeps neighbouring tokens
+ * adjacent without the generated nested repetition analyzers reject.
+ */
+export function pathTokensToRegExpSource(
+  tokens: MiddlewarePathToken[],
+  options: PathToRegexpOptions & { unrollRepeats?: boolean } = {},
+): string {
+  const delimiter = options.delimiter ?? DEFAULT_DELIMITER;
   const delimiterRegex = `[${escapeRegex(delimiter)}]`;
   let route = "^";
 
@@ -261,7 +286,8 @@ export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): Reg
       if (prefix || suffix) {
         if (token.modifier === "+" || token.modifier === "*") {
           const optional = token.modifier === "*" ? "?" : "";
-          route += `(?:${prefix}((?:${token.pattern})(?:${suffix}${prefix}(?:${token.pattern}))*)${suffix})${optional}`;
+          const repeat = options.unrollRepeats ? "?" : "*";
+          route += `(?:${prefix}((?:${token.pattern})(?:${suffix}${prefix}(?:${token.pattern}))${repeat})${suffix})${optional}`;
         } else {
           route += `(?:${prefix}(${token.pattern})${suffix})${token.modifier}`;
         }
@@ -276,6 +302,14 @@ export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): Reg
     }
   }
 
-  route += `${delimiterRegex}?$`;
-  return new RegExp(route, "i");
+  if (!options.strict) route += `${delimiterRegex}?`;
+  return `${route}$`;
+}
+
+export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): RegExp {
+  // Next.js keeps only path-to-regexp's `.source` and recompiles it without
+  // flags, so matchers are case-sensitive. A case-insensitive negative
+  // lookahead would skip middleware for case variants like `/API/x`.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  return new RegExp(pathTokensToRegExpSource(tokens));
 }

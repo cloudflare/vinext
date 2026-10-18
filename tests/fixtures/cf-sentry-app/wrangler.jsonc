@@ -7,7 +7,7 @@
     "not_found_handling": "none",
     "binding": "ASSETS",
   },
-  "cache": { "enabled": true },
+  "cache": { "enabled": false },
   "exports": {
     "default": { "type": "worker", "cache": { "enabled": false } },
     "ResponseStoreBinding": { "type": "worker", "cache": { "enabled": true } },

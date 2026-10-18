@@ -155,8 +155,9 @@ export type AppPageSsrHandler = {
       initialDevServerError?: unknown;
       /** Report an SSR/Fizz render failure through instrumentation. */
       onSsrError?: (error: unknown) => unknown;
-      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-      mirrorNextFlight?: boolean;
+      /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+       *  mirroring once a function returns true. */
+      mirrorNextFlight?: boolean | (() => boolean);
       /** When true, an SSR-phase-only shell render error resolves to the
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
@@ -213,8 +214,9 @@ type RenderAppPageHtmlStreamOptions = {
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */
   onSsrError?: (error: unknown) => unknown;
-  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport. */
-  mirrorNextFlight?: boolean;
+  /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
+   *  mirroring once a function returns true. */
+  mirrorNextFlight?: boolean | (() => boolean);
   /** True when the app supplies a custom global-error.tsx. Disables the
    *  default error-document shell fallback so SSR shell errors keep driving
    *  the server-rendered global-error boundary re-render. */
@@ -251,12 +253,17 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
 type AppPageRscErrorTracker = {
   getCapturedError: () => unknown;
   /**
-   * Returns a NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured during
-   * the RSC render. Read after the SSR shell promise resolves to swap a
-   * 307/404 in place of the streamed body when redirect()/notFound() throws
-   * synchronously inside a route-level Suspense boundary (loading.tsx).
+   * Returns the first NEXT_REDIRECT or NEXT_HTTP_ERROR_FALLBACK error captured
+   * during the RSC render, if any. Whether it set the render's status depends
+   * on whether it rejected the document's shell.
    */
   getCapturedSpecialError: () => unknown;
+  /**
+   * The special errors the RSC render threw with the digest of `error`. The
+   * SSR shell rejects with its own copy, decoded from the Flight digest, which
+   * loses server-side markers such as generateMetadata()'s.
+   */
+  getCapturedSpecialErrors: (error: unknown) => readonly unknown[];
   isCapturedError: (error: unknown) => boolean;
   onRenderError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown;
 };
@@ -417,6 +424,7 @@ export function createAppPageRscErrorTracker(
   let capturedSpecialError: unknown = null;
   const capturedErrors = new Set<unknown>();
   const capturedDigests = new Set<string>();
+  const specialErrorsByDigest = new Map<string, unknown[]>();
 
   return {
     getCapturedError() {
@@ -424,6 +432,10 @@ export function createAppPageRscErrorTracker(
     },
     getCapturedSpecialError() {
       return capturedSpecialError;
+    },
+    getCapturedSpecialErrors(error) {
+      const digest = getNextErrorDigest(error);
+      return (digest !== null && specialErrorsByDigest.get(digest)) || [];
     },
     isCapturedError(error) {
       if (capturedErrors.has(error)) return true;
@@ -433,12 +445,10 @@ export function createAppPageRscErrorTracker(
     onRenderError(error, requestInfo, errorContext) {
       if (isNavigationSignalError(error)) {
         // Navigation signal throws (NEXT_REDIRECT, NEXT_NOT_FOUND,
-        // NEXT_HTTP_ERROR_FALLBACK) are not real failures — keep the first one
-        // so the lifecycle can swap a 307/404 in place of a streamed "Switched
-        // to client rendering" body for routes with a route-level Suspense
-        // boundary. A bare `digest` field is NOT enough: a genuine error that
-        // happens to carry a (e.g. hashed) digest is a real failure and must
-        // reach the error boundary, not masquerade as a special response.
+        // NEXT_HTTP_ERROR_FALLBACK) are not real failures, so keep the first
+        // one apart from them. A bare `digest` field is NOT enough: a genuine
+        // error that happens to carry a (e.g. hashed) digest is a real failure
+        // and must reach the error boundary, not masquerade as a special one.
         if (capturedSpecialError === null) {
           capturedSpecialError = error;
         }
@@ -450,6 +460,8 @@ export function createAppPageRscErrorTracker(
       const digest = typeof result === "string" ? result : getNextErrorDigest(error);
       if (digest !== null && !isNavigationSignalError(error)) {
         capturedDigests.add(digest);
+      } else if (digest !== null) {
+        specialErrorsByDigest.set(digest, [...(specialErrorsByDigest.get(digest) ?? []), error]);
       }
       return result;
     },

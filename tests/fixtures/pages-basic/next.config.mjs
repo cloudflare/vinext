@@ -1,3 +1,11 @@
+// Used by Vitest: pages-router.test.ts. Proxies
+// /external-headers/<phase>/* to the local upstream whose port the test sends.
+const externalHeadersRewrite = (phase) => ({
+  source: `/external-headers/${phase}/:path*`,
+  has: [{ type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" }],
+  destination: "http://127.0.0.1::upstreamPort/:path*",
+});
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   pageExtensions: ["js", "jsx", "ts", "tsx", "mdx"],
@@ -30,11 +38,72 @@ const nextConfig = {
         destination: "/about",
         permanent: false,
       },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — source
+      // params substituted into a redirect destination query.
+      {
+        source: "/query-param-redirect/:next",
+        destination: "/about?next=/:next&safe=1",
+        permanent: false,
+      },
+      // Used by E2E: pages-router-prod/config-query-params.spec.ts — a decoded
+      // query capture at the start of a local destination must not become
+      // protocol-relative.
+      {
+        source: "/query-capture-redirect",
+        destination: "/:to",
+        permanent: false,
+        has: [{ type: "query", key: "to", value: "(?<to>.*)" }],
+      },
+      // Used by E2E: pages-router-prod/redirect-conditions.spec.ts — header and
+      // cookie condition values are server-only and must stay out of the
+      // public client bundle.
+      {
+        source: "/server-condition-redirect/header",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "header",
+            key: "x-redirect-capability",
+            value: "header-capability-5f0c2e",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
+      {
+        source: "/server-condition-redirect/shadowed",
+        destination: "/nav-test",
+        permanent: false,
+      },
+      {
+        source: "/server-condition-redirect/component-only",
+        destination: "/about",
+        permanent: false,
+        has: [
+          {
+            type: "cookie",
+            key: "redirect-capability",
+            value: "cookie-capability-9a41d7",
+          },
+        ],
+      },
     ];
   },
   async rewrites() {
     return {
       beforeFiles: [
+        externalHeadersRewrite("before-files"),
         {
           source: "/before-rewrite",
           destination: "/about",
@@ -42,6 +111,20 @@ const nextConfig = {
         {
           source: "/repeat-rewrite/:id",
           destination: "/docs/:id/:id",
+        },
+        // Used by E2E: pages-router-prod/config-query-params.spec.ts — a source
+        // param substituted into a destination query value must stay one value
+        // on the server and in the client router's beforeFiles rewrite resolution.
+        {
+          source: "/query-param-rewrite/:term",
+          destination: "/ssr-query?q=:term&fixed=1",
+        },
+        // The `api` prefix keeps this source outside the fixture middleware
+        // matcher, so a soft navigation takes its query from the client
+        // router's own rewrite resolution instead of a middleware data probe.
+        {
+          source: "/api-query-param-rewrite/:term",
+          destination: "/rewrite-navigation/0/destination?q=:term&fixed=1",
         },
         {
           source: "/rewrite-navigation/:id",
@@ -62,6 +145,14 @@ const nextConfig = {
           source: "/rewrite-navigation-same/3",
           destination: "/rewrite-navigation-same/003",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination host must not be able to
+        // retarget the proxy.
+        {
+          source: "/proxy-external-host-capture",
+          has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
+          destination: "http://:proxyHost.invalid/host-capture",
+        },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1
         // when ?mw-auth is present. The beforeFiles rewrite should see this
@@ -73,6 +164,7 @@ const nextConfig = {
         },
       ],
       afterFiles: [
+        externalHeadersRewrite("after-files"),
         {
           source: "/after-rewrite",
           destination: "/about",
@@ -92,6 +184,7 @@ const nextConfig = {
         },
       ],
       fallback: [
+        externalHeadersRewrite("fallback"),
         {
           source: "/fallback-rewrite",
           destination: "/about",
@@ -101,6 +194,21 @@ const nextConfig = {
   },
   async headers() {
     return [
+      // Used by Vitest: pages-router.test.ts
+      {
+        source: "/external-headers/:path*",
+        headers: [
+          { key: "Set-Cookie", value: "config-cookie=1; Path=/" },
+          { key: "x-config-header", value: "1" },
+        ],
+      },
+      // Used by Vitest: pages-router.test.ts
+      ...["/config-cookie-page", "/config-cookie-redirect", "/config-cookie-response"].map(
+        (source) => ({
+          source,
+          headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+        }),
+      ),
       {
         source: "/storage-policy/short-browser",
         headers: [{ key: "Cache-Control", value: "public, max-age=1" }],

@@ -16,6 +16,8 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
@@ -65,6 +67,8 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { hasDigest } from "./app-rsc-errors.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -222,6 +226,34 @@ type DecodeServerActionReplyOptions<TTemporaryReferences> = {
   temporaryReferences: TTemporaryReferences;
 };
 
+/**
+ * Run a server-reference load or decode outside every request scope.
+ *
+ * Server reference modules are imported on the first request that names them
+ * — `loadServerAction()` imports the action's module, and the decoders import
+ * any reference the body carries — and a dynamic `import()` carries
+ * AsyncLocalStorage into the module's top-level evaluation. Module-scope
+ * `cookies()`/`headers()` would then capture that first caller's request for
+ * every later caller in the isolate. Next.js evaluates action modules outside
+ * the request store, where those calls throw.
+ *
+ * The result is awaited inside the callback because `decodeReply()` returns a
+ * lazy thenable that only resolves (and imports) its references once awaited.
+ *
+ * The imports are shared with every later request that names the same modules,
+ * and the server-reference loader cannot see this request's execution context
+ * once it has been left, so the request is kept alive here until they settle.
+ * From here a request that starts a load cannot be told apart from one that
+ * joins it, so each keeps its own decode alive; it awaits that decode anyway.
+ */
+function loadOutsideRequestScopes<T>(load: () => T | PromiseLike<T>): Promise<T> {
+  const ctx = getRequestExecutionContext();
+  return shareIsolatePromise(
+    runOutsideRequestScopes(async () => await load()),
+    ctx,
+  );
+}
+
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
   allowedOrigins: string[];
@@ -241,8 +273,8 @@ export type HandleProgressiveServerActionRequestOptions = {
    * a route handler or no match). Multipart form POSTs to a page are always
    * server-action attempts in Next.js, so a body that decodes to no action must
    * surface as 404 action-not-found rather than rendering the page. Route
-   * handlers (which run *after* this dispatch in vinext) legitimately receive
-   * raw multipart POSTs, so they must still fall through. See issue #1340.
+   * handlers and Pages routes never reach this dispatch (#3886); unmatched
+   * routes fall through. See issue #1340.
    */
   hasPageRoute: boolean;
   maxActionBodySize: number;
@@ -1100,6 +1132,30 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   return currentRuntime !== targetRuntime;
 }
 
+/**
+ * A failed fetch action's result, as Next.js sends it: a rejected promise.
+ * React's Flight error channel reports the rejection through the render's
+ * onError and gives the client error its digest, where an Error value would
+ * reach the client without one.
+ */
+function createRejectedActionResult(error: unknown): Promise<never> {
+  const result = Promise.reject(error);
+  // The Flight render reads the rejection later; mark it handled now.
+  result.catch(() => {});
+  return result;
+}
+
+/**
+ * In development the render's onError logs a rejected action result unless it
+ * already has a digest; log those here, so each failure is logged once. As in
+ * Next.js, a thrown string is not logged in development.
+ */
+function logRejectedActionResult(error: unknown): void {
+  if (process.env.NODE_ENV === "production" || hasDigest(error)) {
+    console.error("[vinext] Server action error:", error);
+  }
+}
+
 function getActionHttpFallbackStatus(error: unknown): number | null {
   const digest = getNextErrorDigest(error);
   if (!digest) return null;
@@ -1258,14 +1314,13 @@ export async function handleProgressiveServerActionRequest(
       });
     }
 
-    const action = await options.decodeAction(body);
+    const action = await loadOutsideRequestScopes(() => options.decodeAction(body));
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
       // that decodes to no action means the referenced action doesn't exist
       // (e.g. the build has no server actions). Mirror Next.js' 404 +
-      // action-not-found rather than rendering the page. Route handlers run
-      // after this dispatch and legitimately receive raw multipart POSTs, so
-      // fall through for them (and for unmatched routes). See issue #1340.
+      // action-not-found rather than rendering the page. Unmatched routes
+      // fall through. See issue #1340.
       if (options.hasPageRoute) {
         return createActionNotFoundResponse(null, {
           clearRequestContext: options.clearRequestContext,
@@ -1299,6 +1354,7 @@ export async function handleProgressiveServerActionRequest(
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionError: unknown = undefined;
     let actionFailed = false;
+    let actionFailedWithError = false;
     let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
@@ -1315,9 +1371,9 @@ export async function handleProgressiveServerActionRequest(
       if (!actionRedirect) {
         actionError = error;
         actionFailed = true;
-        const isControlFlow =
-          getActionHttpFallbackStatus(error) !== null || isServerActionNotFoundError(error, null);
-        if (!isControlFlow) {
+        actionFailedWithError =
+          getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
+        if (actionFailedWithError) {
           console.error("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
@@ -1366,6 +1422,25 @@ export async function handleProgressiveServerActionRequest(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
       );
 
+      if (actionFailedWithError) {
+        // Next.js rethrows the error of an action submitted without
+        // JavaScript, so the server answers a plain 500 instead of rendering
+        // an error boundary. Middleware headers and the action's cookies still
+        // reach the response.
+        options.clearRequestContext();
+        const headers = new Headers();
+        mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
+        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
+        if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
+        return internalServerErrorResponse(
+          process.env.NODE_ENV === "production"
+            ? undefined
+            : "Server action failed: " + getServerActionFailureMessage(actionError),
+          { headers },
+        );
+      }
+
       if (actionFailed) {
         return {
           kind: "form-state",
@@ -1378,7 +1453,9 @@ export async function handleProgressiveServerActionRequest(
         };
       }
 
-      const formState = await options.decodeFormState(actionResult, body);
+      const formState = await loadOutsideRequestScopes(() =>
+        options.decodeFormState(actionResult, body),
+      );
       return {
         kind: "form-state",
         formState: formState ?? null,
@@ -1461,7 +1538,7 @@ export async function handleProgressiveServerActionRequest(
  * with status 500 carrying the rejected action result, so the nearest client
  * error boundary catches it (see action-handler.ts, the `isFetchAction` branch
  * of the generic error path). vinext mirrors that by rendering a Flight stream
- * with `returnValue: { ok: false }` and no page root (the action never ran, so
+ * with a rejected `returnValue: { ok: false }` and no page root (the action never ran, so
  * nothing was revalidated and the page render is skipped). A bare 413 plain
  * response would bypass the boundary and surface the wrong status/content-type.
  */
@@ -1481,29 +1558,14 @@ async function renderFetchActionBodyExceededResponse<
   >,
 ): Promise<Response> {
   const error = createBodyExceededError(options.maxActionBodySizeLabel);
-  console.error("[vinext] Server action error:", error);
-  options.reportRequestError(
-    error,
-    {
-      path: options.cleanPathname,
-      method: options.request.method,
-      headers: Object.fromEntries(options.request.headers.entries()),
-    },
-    {
-      routerKind: "App Router",
-      routePath: options.currentRouteMatch?.route.pattern ?? options.cleanPathname,
-      routeType: "action",
-      renderSource: "react-server-components-payload",
-      revalidateReason: undefined,
-    },
-  );
+  logRejectedActionResult(error);
   // Discard any side effects accumulated before the limit was hit.
   getAndClearActionRevalidationKind();
   options.getAndClearPendingCookies();
 
   const returnValue: AppServerActionReturnValue = {
     ok: false,
-    data: options.sanitizeErrorForClient(error),
+    data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
   };
   const temporaryReferences = options.createTemporaryReferenceSet();
   const onRenderError = options.createRscOnErrorHandler(
@@ -1550,6 +1612,8 @@ export async function handleServerActionRscRequest<
   if (options.request.method.toUpperCase() !== "POST" || !options.actionId) {
     return null;
   }
+  // Narrowed copy for the loader closures below.
+  const actionId = options.actionId;
 
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
   if (csrfResponse) return csrfResponse;
@@ -1567,7 +1631,7 @@ export async function handleServerActionRscRequest<
     if (options.contentType.startsWith("multipart/form-data")) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1614,7 +1678,7 @@ export async function handleServerActionRscRequest<
     if (action === undefined) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1640,7 +1704,9 @@ export async function handleServerActionRscRequest<
     }
 
     const temporaryReferences = options.createTemporaryReferenceSet();
-    const args = await options.decodeReply(body, { temporaryReferences });
+    const args = await loadOutsideRequestScopes(() =>
+      options.decodeReply(body, { temporaryReferences }),
+    );
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;
@@ -1669,8 +1735,11 @@ export async function handleServerActionRscRequest<
             returnValue = { ok: false, data: error };
           } else {
             actionStatus = 500;
-            console.error("[vinext] Server action error:", error);
-            returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
+            logRejectedActionResult(error);
+            returnValue = {
+              ok: false,
+              data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
+            };
           }
         }
       }

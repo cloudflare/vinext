@@ -17,6 +17,7 @@ import {
   markFullyBufferedBody,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import {
   buildAppRouteCacheValue,
@@ -426,19 +427,21 @@ async function runMetadataRouteRegeneration(
 ): Promise<void> {
   const requestContext = createRequestContext({ executionContext });
   try {
-    await runWithRequestContext(requestContext, async () => {
-      ensureFetchPatch();
-      beginMetadataRouteCacheability(route);
-      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-      const rendered = await render();
-      if (rendered) {
-        try {
-          await writeRenderedMetadataRoute(options, route, routeKey, rendered, previousEntry);
-        } finally {
-          void rendered.response.body?.cancel().catch(() => {});
+    await runWithRequestContext(requestContext, () =>
+      runInWorkStoreScope(async () => {
+        ensureFetchPatch();
+        beginMetadataRouteCacheability(route);
+        setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+        const rendered = await render();
+        if (rendered) {
+          try {
+            await writeRenderedMetadataRoute(options, route, routeKey, rendered, previousEntry);
+          } finally {
+            void rendered.response.body?.cancel().catch(() => {});
+          }
         }
-      }
-    });
+      }),
+    );
   } finally {
     await closeAfterResponse(requestContext);
   }
@@ -919,6 +922,19 @@ export async function handleMetadataRouteRequest(
       match.params = runtimeParams;
     }
 
+    const render = async (): Promise<RenderedMetadataRoute> => {
+      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
+      const response = route.isDynamic
+        ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
+        : serveStaticMetadataRoute(route);
+      return captureRenderedMetadataRoute(response, route, options.cleanPathname);
+    };
+    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+    if (cached.response) return cached.response;
+
+    // A deployment stores only the params it allows, so a cached response
+    // needs no generateStaticParams call, as for App Router pages. Next
+    // decides this from its build manifest.
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
@@ -935,16 +951,6 @@ export async function handleMetadataRouteRequest(
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
-
-    const render = async (): Promise<RenderedMetadataRoute> => {
-      setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
-      const response = route.isDynamic
-        ? await callDynamicMetadataRoute(route, match, options.makeThenableParams, functions)
-        : serveStaticMetadataRoute(route);
-      return captureRenderedMetadataRoute(response, route, options.cleanPathname);
-    };
-    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
-    if (cached.response) return cached.response;
 
     const rendered = await render();
     await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);

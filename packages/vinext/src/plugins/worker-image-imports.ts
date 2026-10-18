@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import MagicString from "magic-string";
 import path, { toSlash } from "pathslash";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { Plugin } from "vite";
 import { appendDeploymentIdQuery } from "../utils/deployment-id.js";
 import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
-import { staticStringValue, walkAst } from "./ast-utils.js";
+import { parseModuleRecord, quotedStringAt } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 const WORKER_IMAGE_METADATA_PREFIX = "\0vinext-worker-image-meta:";
@@ -72,12 +72,8 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
       },
       async handler(code, id) {
         const sourceId = toSlash(stripViteModuleQuery(id));
-        let ast: ReturnType<typeof parseAst>;
-        try {
-          ast = parseAst(code, { lang: /\.(?:[cm]?ts)$/.test(sourceId) ? "ts" : "tsx" });
-        } catch {
-          return null;
-        }
+        const record = parseModuleRecord(code, /\.(?:[cm]?ts)$/.test(sourceId) ? "ts" : "tsx");
+        if (!record) return null;
 
         const output = new MagicString(code);
         const imageImports: Array<{
@@ -86,21 +82,11 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
           start: number;
         }> = [];
 
-        walkAst(ast, (node) => {
-          if (
-            node.type === "ImportExpression" &&
-            node.source.type === "Literal" &&
-            typeof node.source.value === "string" &&
-            WORKER_IMAGE_EXTENSION_RE.test(node.source.value)
-          ) {
-            imageImports.push({
-              end: node.end,
-              importPath: node.source.value,
-              start: node.start,
-            });
-            return false;
-          }
-        });
+        for (const dynamicImport of record.dynamicImports) {
+          const importPath = quotedStringAt(code, dynamicImport.moduleRequest);
+          if (importPath === null || !WORKER_IMAGE_EXTENSION_RE.test(importPath)) continue;
+          imageImports.push({ end: dynamicImport.end, importPath, start: dynamicImport.start });
+        }
         let changed = false;
         for (const imageImport of imageImports) {
           const resolved = await this.resolve(imageImport.importPath, sourceId, { skipSelf: true });
@@ -137,34 +123,29 @@ export function createWorkerImageImportsPlugin(options: { deploymentId?: string 
         );
         if (chunkSpecifiers.size === 0) return null;
 
-        let ast: ReturnType<typeof parseAst>;
-        try {
-          ast = parseAst(code);
-        } catch {
-          return null;
-        }
+        const record = parseModuleRecord(code, "js");
+        if (!record) return null;
+
+        const sources = [
+          ...record.staticImports.map((statement) => statement.moduleRequest),
+          ...record.staticExports.flatMap((statement) => statement.entries[0]?.moduleRequest ?? []),
+          ...record.dynamicImports.map((dynamicImport) => {
+            const value = quotedStringAt(code, dynamicImport.moduleRequest);
+            return value === null ? [] : { ...dynamicImport.moduleRequest, value };
+          }),
+        ].flat();
 
         const output = new MagicString(code);
         let changed = false;
-        walkAst(ast, (node) => {
-          const source: ESTree.Node | null =
-            node.type === "ImportExpression" ||
-            node.type === "ImportDeclaration" ||
-            node.type === "ExportNamedDeclaration" ||
-            node.type === "ExportAllDeclaration"
-              ? node.source
-              : null;
-          const specifier = staticStringValue(source);
-          if (specifier !== null && chunkSpecifiers.has(specifier) && source) {
-            output.overwrite(
-              source.start,
-              source.end,
-              JSON.stringify(appendDeploymentIdQuery(specifier, options.deploymentId)),
-            );
-            changed = true;
-            return false;
-          }
-        });
+        for (const source of sources) {
+          if (!chunkSpecifiers.has(source.value)) continue;
+          output.overwrite(
+            source.start,
+            source.end,
+            JSON.stringify(appendDeploymentIdQuery(source.value, options.deploymentId)),
+          );
+          changed = true;
+        }
         if (!changed) return null;
         return magicStringTransformResult(output);
       },

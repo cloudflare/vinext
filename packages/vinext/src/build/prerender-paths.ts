@@ -11,7 +11,6 @@ import {
   appRouteHasMainTreeLoadingBoundary,
   appRouter,
   matchAppRoute,
-  type AppRoute,
 } from "../routing/app-router.js";
 import { apiRouter, matchRoute, pagesRouter } from "../routing/pages-router.js";
 import {
@@ -24,11 +23,10 @@ import {
   classifyAppRoute,
   classifyAppRouteHandler,
   classifyPagesRoute,
-  extractExportConstNumber,
   extractExportConstString,
   extractMiddlewareMatcherConfig,
-  hasRuntimeExportedName,
 } from "./report.js";
+import { classifyAppPageRouteStaticEligibility } from "./app-page-static-eligibility.js";
 import {
   buildUrlFromParams,
   localizePagesPath,
@@ -49,15 +47,7 @@ import { enterPrerenderPhase } from "./prerender-phase.js";
 import type { CdnCacheAdapterCapabilities } from "../cache/cache-adapters-virtual.js";
 import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/config-matchers.js";
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
-import {
-  collectAppPageStaticGenerationRuntimes,
-  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
-  isAppPageStaticEligible,
-  isEdgeRuntime,
-  resolveAppPageDynamicConfig,
-  resolveAppPageSegmentConfig,
-  resolveAppPageStaticGenerationRuntime,
-} from "../server/app-segment-config.js";
+import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import { extractLocaleFromUrl, normalizeDefaultLocalePathname } from "../server/pages-i18n.js";
 import { normalizePathTrailingSlash } from "vinext/shims/url-utils";
 import { buildPagesDataHref } from "vinext/shims/internal/pages-data-url";
@@ -366,6 +356,9 @@ async function fetchDiscoveryEndpoint(
       const request = (async () => {
         const res = await fetch(url, {
           headers,
+          // Following a redirect would re-send the prerender secret and version
+          // headers to the Location origin, and trust its body as discovery data.
+          redirect: "manual",
           signal: controller.signal,
         });
         return { res, text: await res.text() };
@@ -382,20 +375,26 @@ async function fetchDiscoveryEndpoint(
         return text;
       }
 
-      const userFailure = readDiscoveryUserFailure(res, text);
+      const redirected = res.status >= 300 && res.status < 400;
+      const userFailure = redirected ? null : readDiscoveryUserFailure(res, text);
       const detail =
         userFailure ??
         (/cloudflare:|ERR_UNSUPPORTED_ESM_URL_SCHEME/i.test(text) ? text.trim() : "");
-      lastError = new Error(
-        `path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`,
-      );
-      // A newly applied route can briefly reach the previous Worker (404), and
+      lastError = redirected
+        ? new Error(
+            `path discovery returned a redirect (HTTP ${res.status}); refusing to follow it with the prerender secret`,
+          )
+        : new Error(`path discovery returned HTTP ${res.status}${detail ? `: ${detail}` : ""}`);
+      // A newly applied route can briefly reach the previous Worker (404, or a
+      // Pages redirect when its capability doesn't match this build), and
       // version-metadata validation rejects that mismatch with 503. Cloudflare
       // can also return an unshaped 5xx while the uploaded version propagates.
       // The authenticated endpoint's JSON { error } envelope is instead a real
       // generateStaticParams/getStaticPaths failure and must surface once.
       const transient =
-        res.status === 404 || (res.status >= 500 && res.status <= 599 && userFailure === null);
+        redirected ||
+        res.status === 404 ||
+        (res.status >= 500 && res.status <= 599 && userFailure === null);
       if (!transient) {
         shouldRetry = false;
         throw lastError;
@@ -691,95 +690,6 @@ function extractPagesStaticPathLocale(
   if (!locale) return extractLocaleFromUrl(url, i18n);
   const rest = `/${parts.slice(1).join("/")}`;
   return { explicitLocalePrefix: parts[0], locale, url: `${rest || "/"}${query}` };
-}
-
-/**
- * Whether Next.js classifies an App page route as static or SSG, read from its
- * layout, page and parallel-slot sources with the helpers dispatch applies to
- * the loaded modules. Only such a route has listed paths.
- *
- * An MDX source read without the MDX parser has unknown exports, so its route
- * is "unreadable". Its paths are still listed: the built runtime reads the real
- * exports and never stores a route that isn't static, while an unlisted path's
- * render failure would be dropped instead of failing. But no probe renders an
- * unreadable route's fallback, so it never certifies one.
- */
-function classifyAppPageRouteStaticEligibility(
-  route: AppRoute,
-  readMdxEsm: ((source: string) => string) | null,
-): "eligible" | "ineligible" | "unreadable" {
-  let unreadable = false;
-  const readSegmentConfig = (filePath: string | null | undefined) => {
-    if (!filePath) return null;
-    let code = fs.readFileSync(filePath, "utf8");
-    if (filePath.toLowerCase().endsWith(".mdx")) {
-      let esm: string | null = null;
-      try {
-        esm = readMdxEsm?.(code) ?? null;
-      } catch {
-        // A source MDX can't parse can't build either.
-      }
-      unreadable ||= esm === null;
-      code = esm ?? "";
-    }
-    const dynamic = extractExportConstString(code, "dynamic");
-    const revalidate = extractExportConstNumber(code, "revalidate");
-    const runtime = extractExportConstString(code, "runtime");
-    return {
-      ...(dynamic === null ? {} : { dynamic }),
-      ...(hasRuntimeExportedName(code, "generateStaticParams")
-        ? { generateStaticParams() {} }
-        : {}),
-      ...(revalidate === null ? {} : { revalidate }),
-      ...(runtime === null ? {} : { runtime }),
-    };
-  };
-  const layouts = route.layouts.map(readSegmentConfig);
-  const page = readSegmentConfig(route.pagePath);
-  const parallelBranches = route.parallelSlots.map((slot) => ({
-    configLayouts: (slot.configLayoutPaths ?? []).map(readSegmentConfig),
-    configLayoutTreePositions: slot.configLayoutTreePositions ?? [],
-    isDefault: !slot.pagePath,
-    layout: readSegmentConfig(slot.layoutPath),
-    name: slot.name,
-    ownerTreePosition: slot.ownerTreePosition ?? null,
-    page: readSegmentConfig(slot.pagePath ?? slot.defaultPath),
-    routeSegments: slot.routeSegments,
-  }));
-  if (unreadable) return "unreadable";
-  const segmentConfig = resolveAppPageSegmentConfig({
-    layouts,
-    layoutTreePositions: route.layoutTreePositions,
-    page,
-    parallelBranches,
-    routeSegments: route.routeSegments,
-  });
-  const eligible = isAppPageStaticEligible({
-    dynamicConfig: segmentConfig.dynamicConfig,
-    hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment({
-      childrenSlot: route.childrenSlot ?? null,
-      layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      page,
-      parallelBranches,
-      routeSegments: route.routeSegments,
-    }),
-    isDynamicRoute: route.isDynamic,
-    isStaticGenerationEdgeRuntime: isEdgeRuntime(
-      resolveAppPageStaticGenerationRuntime(
-        collectAppPageStaticGenerationRuntimes({
-          childrenSlot: route.childrenSlot ?? null,
-          layouts,
-          layoutTreePositions: route.layoutTreePositions,
-          page,
-          parallelBranches,
-          routeSegments: route.routeSegments,
-        }),
-      ),
-    ),
-    revalidateSeconds: segmentConfig.revalidateSeconds,
-  });
-  return eligible ? "eligible" : "ineligible";
 }
 
 /** Keys a path an App page route lists by the route and the pathname together. */

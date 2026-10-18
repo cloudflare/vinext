@@ -521,7 +521,15 @@ export class KVCacheHandler implements CacheHandler {
     // 30 days of zero traffic, or when explicitly deleted via tag invalidation.
     // Every entry gets it, including `revalidate = false` and entries with no
     // policy.
-    const expirationTtl = this.ttlSeconds;
+    //
+    // An entry stays servable as stale until its `expire`, which can outlast
+    // the TTL (cacheLife("max") expires after a year), so KV keeps it that long.
+    const expirationTtl =
+      typeof effectiveExpire === "number" &&
+      Number.isFinite(effectiveExpire) &&
+      effectiveExpire > this.ttlSeconds
+        ? resolveKvExpirationTtlSeconds(Math.ceil(effectiveExpire))
+        : this.ttlSeconds;
 
     // Store tags in KV metadata so revalidateByPathPrefix can discover them
     // via kv.list() without fetching entry values. Cloudflare KV limits

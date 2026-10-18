@@ -8,6 +8,7 @@ import rscHandler, {
 import { ensureFetchPatch } from "vinext/shims/fetch-cache";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { createRequestContext, runWithRequestContext } from "vinext/shims/unified-request-context";
+import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 // @ts-expect-error -- virtual module resolved by vinext
 import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 // @ts-expect-error -- virtual module resolved by vinext
@@ -16,6 +17,7 @@ import {
   isAppWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
 } from "./app-worker-stages.js";
+import { serializeImageOptimizationSignalForTransport } from "./image-optimization.js";
 import { serializeStaticFileSignalForTransport } from "./static-file-signal.js";
 import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
 import { validateCdnRequest } from "./cache-control.js";
@@ -26,6 +28,7 @@ import type {
   VinextResponseStageDispatchOptions,
 } from "./multi-stage.js";
 import { withResponseStageCacheability } from "./response-stage-cacheability.js";
+import { attachRequestCfMetadata } from "./request-pipeline.js";
 import { serializeResponseStageLinkProvenance } from "./app-response-header-provenance.js";
 import {
   attachFrameworkRequestError,
@@ -43,7 +46,7 @@ export async function invokeCacheFunction(
   platformCtx: ExecutionContextLike | undefined,
   dispatchRequestStage: VinextRequestStageTransport,
 ): Promise<void> {
-  await __ensureInstrumentation();
+  await __ensureInstrumentation(platformCtx);
   const [{ loadServerAction }, { invokeCacheFunction: invokeRegisteredCacheFunction }] =
     await Promise.all([
       import("@vitejs/plugin-rsc/core/rsc"),
@@ -61,8 +64,10 @@ export async function invokeCacheFunction(
     executionContext,
     rootParams: invocation.rootParams,
   });
+  // Like Next.js, which restores the work store before regenerating a cache
+  // entry, the replay runs in the work store scope.
   await runWithRequestContext(context, () =>
-    invokeRegisteredCacheFunction(invocation, loadServerAction),
+    runInWorkStoreScope(() => invokeRegisteredCacheFunction(invocation, loadServerAction)),
   );
 }
 
@@ -77,6 +82,9 @@ export async function handleResponseStage(
   if (!isAppWorkerResponseStageProps(props)) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
+  if (props.kind === "app-full-request" && props.headRequest) {
+    request = attachRequestCfMetadata(new Request(request, { method: "HEAD" }), request);
+  }
   if (props.requestOrigin !== new URL(request.url).origin) {
     return new Response("Invalid vinext App response stage", { status: 400 });
   }
@@ -84,9 +92,9 @@ export async function handleResponseStage(
   if (props.buildId !== currentBuildId) {
     return new Response("Incompatible vinext App response stage", { status: 409 });
   }
-  await __ensureInstrumentation();
+  await __ensureInstrumentation(platformCtx);
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
-    await __ensureHybridPagesApplication();
+    await __ensureHybridPagesApplication(platformCtx);
   }
   registerConfiguredImageOptimizer(env);
   let ctx = createWorkerRevalidationContext(
@@ -96,6 +104,8 @@ export async function handleResponseStage(
   );
   if (props.kind === "app-full-request" && props.prerenderDiscovery) {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  } else if (props.kind === "hybrid-pages" && options.regeneratesStoredEntry === true) {
+    ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
   return withResponseStageCacheability(
     {
@@ -152,8 +162,9 @@ export async function handleResponseStage(
           failure = error;
           result = new Response("Internal Server Error", { status: 500 });
         }
-        const serialized = serializeStaticFileSignalForTransport(
-          result,
+        // The image signal shares the static-file signal's token.
+        const serialized = serializeImageOptimizationSignalForTransport(
+          serializeStaticFileSignalForTransport(result, props.staticFileSignalToken),
           props.staticFileSignalToken,
         );
         return attachFrameworkRequestRoute(

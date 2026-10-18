@@ -324,7 +324,7 @@ describe("Next.js compat: global-error (production preview)", () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
     expect(res.status).toBe(500);
     expect(html).toContain("global-error");
-    expect(html).toContain("The specific message is omitted in production builds");
+    expect(html).toContain("Minified React error #441");
     expect(html).not.toContain("server page error");
     expect(html).toMatch(/data-testid="global-error-digest"[^>]*>\w+</);
   });
@@ -334,7 +334,7 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(res.status).toBe(500);
     expect(html).toContain("global-error");
     expect(html).toContain("client page error");
-    expect(html).not.toContain("The specific message is omitted in production builds");
+    expect(html).not.toContain("Minified React error #441");
     expect(html).not.toContain('data-testid="global-error-digest"');
   });
 

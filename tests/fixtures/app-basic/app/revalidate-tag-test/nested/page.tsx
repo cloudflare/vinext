@@ -1,7 +1,8 @@
 /**
  * Nested page under revalidate-tag-test that shares the same tag.
  *
- * Tests: ON-2 in TRACKING.md — verifies tag invalidation propagates to nested pages.
+ * Verifies tag invalidation propagates to nested pages (OpenNext
+ * revalidateTag.test.ts: "nested page shares tag").
  */
 
 export const revalidate = 3600;

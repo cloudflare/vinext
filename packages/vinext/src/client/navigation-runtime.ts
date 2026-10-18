@@ -92,6 +92,17 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
   ) => void;
+  /**
+   * Called after a raw (non-app-owned) history.pushState/replaceState with a
+   * URL so an App Router navigation that has not committed yet is discarded,
+   * matching Next.js' ACTION_RESTORE.
+   */
+  discardPendingNavigation?: () => void;
+  /**
+   * Called before any history.pushState/replaceState so a navigation React is
+   * committing writes its URL first, as Next.js does from an insertion effect.
+   */
+  flushCommittingNavigationUrl?: () => void;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -148,7 +159,9 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite"))
+    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "flushCommittingNavigationUrl"))
   );
 }
 

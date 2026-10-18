@@ -17,7 +17,11 @@ type ResponseStoreStorageOptions = {
 async function createResponseStoreWorkerConfig(options: ResponseStoreStorageOptions) {
   const { bindings, exports } = await import("cf/config");
   return {
-    cache: { enabled: true as const },
+    // Cache only the store's own entrypoint. The default entrypoint inherits the
+    // disabled Worker-wide setting, so no Worker response is served from the
+    // cache before the Worker runs. It is not listed because the Vite plugin's
+    // dev server cannot wrap an export named "default".
+    cache: { enabled: false as const },
     exports: {
       [CACHE_METADATA_CLASS]: {
         ...exports.durableObject({ storage: "sqlite" }),

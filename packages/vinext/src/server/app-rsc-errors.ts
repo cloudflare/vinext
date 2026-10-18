@@ -1,6 +1,7 @@
 import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
+import { getProperError } from "./proper-error.js";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -65,12 +66,14 @@ export function getDigestForWellKnownError(error: unknown): string | undefined {
   return undefined;
 }
 
-function getThrownValueMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function getThrownValueStack(error: unknown): string {
-  return error instanceof Error ? error.stack || "" : "";
+/**
+ * Next.js hashes a thrown string as is, and other values once they are an
+ * Error (packages/next/src/server/app-render/create-error-handler.tsx).
+ */
+function getThrownValueDigest(error: unknown): string {
+  if (typeof error === "string") return errorDigest(error);
+  const properError = getProperError(error);
+  return errorDigest(properError.message + (properError.stack || ""));
 }
 
 /**
@@ -84,6 +87,15 @@ export function errorDigest(input: string): string {
   return (hash >>> 0).toString();
 }
 
+/**
+ * The message React 19.3's production Flight client gives a Server Components
+ * error in the browser (minified error #441). Sanitized errors that vinext
+ * serializes itself, such as the error passed to app/global-error, use the
+ * same text so they read the same as errors React reconstructs.
+ */
+export const PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE =
+  "Minified React error #441; visit https://react.dev/errors/441 for the full message or use the non-minified dev environment for full errors and additional helpful warnings.";
+
 export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NODE_ENV): unknown {
   if (resolveAppPageSpecialError(error)) {
     return error;
@@ -93,14 +105,8 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
     return error;
   }
 
-  const sanitized: DigestError = new Error(
-    "An error occurred in the Server Components render. " +
-      "The specific message is omitted in production builds to avoid leaking sensitive details. " +
-      "A digest property is included on this error instance which may provide additional details about the nature of the error.",
-  );
-  sanitized.digest = hasDigest(error)
-    ? String(error.digest)
-    : errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
+  const sanitized: DigestError = new Error(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
+  sanitized.digest = hasDigest(error) ? String(error.digest) : getThrownValueDigest(error);
   Object.defineProperty(sanitized, ORIGINAL_SERVER_ERROR, {
     configurable: false,
     enumerable: false,
@@ -122,6 +128,11 @@ export function createRscOnErrorHandler(
         : error;
 
     // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+    // A thrown string is only hashed: not reported and not logged.
+    if (typeof reportableError === "string") {
+      return hasDigest(error) ? String(error.digest) : errorDigest(reportableError);
+    }
+
     // Expected response/HMR cancellations are not render failures, including
     // originals wrapped by production error sanitization.
     if (isAppRenderAbortError(error) || isAppRenderAbortError(reportableError)) {
@@ -164,8 +175,28 @@ export function createRscOnErrorHandler(
       return undefined;
     }
 
-    if (options.requestInfo && options.errorContext && error) {
-      options.reportRequestError(reportableError, options.requestInfo, options.errorContext);
+    // Like Next.js, report a thrown value that is not an Error as one, carrying
+    // the digest the client receives. A non-signal error that already carries
+    // a digest keeps it as-is rather than being re-hashed.
+    const thrownHasDigest = hasDigest(error);
+    const properError: DigestError = getProperError(reportableError);
+    const digest = thrownHasDigest
+      ? String(error.digest)
+      : errorDigest(properError.message + (properError.stack || ""));
+    if (
+      !hasDigest(properError) &&
+      (properError !== reportableError || options.attachDigest !== false)
+    ) {
+      try {
+        Object.assign(properError, { digest });
+      } catch {
+        // Digest attachment is best-effort. User code can throw frozen or
+        // otherwise non-extensible Error instances, and the onError handler
+        // must not replace the original failure with a mutation TypeError.
+      }
+    }
+    if (options.requestInfo && options.errorContext) {
+      options.reportRequestError(properError, options.requestInfo, options.errorContext);
     }
 
     // Prerender uses production bundles, but failures must reach the build
@@ -181,32 +212,11 @@ export function createRscOnErrorHandler(
           reportableError,
         );
       }
-    } else if (nodeEnv !== "production" && error && !hasDigest(error)) {
+    } else if (nodeEnv !== "production" && !thrownHasDigest) {
       // Preserve dev logging, where a digest suppresses repeat RSC/SSR callbacks.
-      console.error("[vinext] Server render error:", reportableError);
+      console.error("[vinext] Server render error:", properError);
     }
 
-    // A non-signal error that already carries a digest keeps it as-is (matching
-    // Next.js's err.digest branch) rather than being re-hashed — but only after
-    // it has been reported above.
-    if (hasDigest(error)) {
-      return String(error.digest);
-    }
-
-    if (error) {
-      const digest = errorDigest(getThrownValueMessage(error) + getThrownValueStack(error));
-      if (options.attachDigest !== false && error instanceof Error) {
-        try {
-          Object.assign(error, { digest });
-        } catch {
-          // Digest attachment is best-effort. User code can throw frozen or
-          // otherwise non-extensible Error instances, and the onError handler
-          // must not replace the original failure with a mutation TypeError.
-        }
-      }
-      return digest;
-    }
-
-    return undefined;
+    return digest;
   };
 }

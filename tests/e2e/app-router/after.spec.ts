@@ -2,7 +2,6 @@
  * OpenNext Compat: next/after deferred work timing tests.
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/after.test.ts
- * Tests: ON-7 in TRACKING.md
  *
  * OpenNext verifies that after() schedules deferred work that executes AFTER
  * the response is sent. The test confirms:

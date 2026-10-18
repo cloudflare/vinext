@@ -3,12 +3,13 @@ import {
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
-  probeAppPageComponent,
   probeAppPageLayouts,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import {
   hasFrameworkLinkHeaders,
@@ -44,6 +45,51 @@ function createMiddlewareContext() {
 }
 
 describe("app page execution helpers", () => {
+  it("resolves a shell's special error as generateMetadata()'s only when the render threw it there alone", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    const fromPage = Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      fromMetadata: true,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata, fromPage])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
+  it("resolves a special error a client component threw during SSR as the page's", () => {
+    // generateMetadata() threw the same digest in the RSC render, but runs
+    // only there, so an error SSR threw itself is never generateMetadata()'s.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    let thrownDuringSsr: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      thrownDuringSsr = error;
+    }
+
+    expect(resolveAppPageShellSpecialError(thrownDuringSsr, [fromMetadata])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
   it("parses redirect and access-fallback digests", () => {
     expect(
       resolveAppPageSpecialError({
@@ -914,24 +960,6 @@ describe("app page execution helpers", () => {
     expect(probedLayouts).toEqual([2, 1]);
     expect(result.response?.status).toBe(404);
     await expect(result.response?.text()).resolves.toBe("layout-fallback");
-  });
-
-  it("does not await async page probes when a loading boundary is present", async () => {
-    const onError = vi.fn();
-
-    const response = await probeAppPageComponent({
-      awaitAsyncResult: false,
-      onError,
-      probePage() {
-        return new Promise<void>(() => {});
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-    });
-
-    expect(response).toBeNull();
-    expect(onError).not.toHaveBeenCalled();
   });
 
   it("produces fused ssrStream + sideStream when capturing (#981)", async () => {

@@ -1,6 +1,7 @@
 import { testPagesStoragePolicies } from "../pages-storage-policy";
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
+import { waitForHydration } from "../helpers";
 
 /**
  * Production build E2E tests for Pages Router.
@@ -80,6 +81,7 @@ test.describe("Pages Router Production Build", () => {
       // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
       // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/getserversideprops/test/index.test.ts
       await page.goto(`${BASE}/`);
+      await waitForHydration(page);
       await page.evaluate((target) => (window as any).next.router.push(target), href);
       await expect(page.getByTestId("error-title")).toBeVisible();
       expect(page.url()).toContain(href);
@@ -90,6 +92,7 @@ test.describe("Pages Router Production Build", () => {
     page,
   }) => {
     await page.goto(`${BASE}/`);
+    await waitForHydration(page);
     await page.evaluate(() =>
       (window as any).next.router.push("/gssp-not-found/first?hiding=true"),
     );

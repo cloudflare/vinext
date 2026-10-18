@@ -22,6 +22,9 @@
  *   `Cloudflare-CDN-Cache-Control` is already CDN-scoped so `max-age` is the correct knob
  *   for the edge to honor max-age + stale-while-revalidate.
  * - `revalidateTag` purges the edge via the request context's `cache.purge({ tags })`.
+ *   A stale-while-revalidate invalidation (`revalidateTag` with durations
+ *   other than `expire: 0`) uses `cache.invalidate({ tags })` instead, so the
+ *   edge keeps serving the stale response while it refetches in the background.
  *
  * Tags use fixed-size lowercase digests before emission and purge because
  * Workers Cache tags are case-insensitive printable ASCII, while Next.js tags
@@ -45,6 +48,7 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { fnv1a64 } from "vinext/internal/utils/hash";
 import { getVinextCdnBuildIdentity, VINEXT_CDN_BUILD_ID_HEADER } from "./cdn-build-id.js";
 import { VINEXT_EXPECTED_WORKER_VERSION_HEADER } from "../version-headers.js";
+import { invalidateOrPurge, isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
 type WorkersCachePurgeError = {
   code: number;
@@ -208,6 +212,10 @@ function toEdgeCacheControl(cacheControl: string): string {
 const MAX_CACHE_TAG_BYTES = 16 * 1024;
 const CACHE_TAG_PREFIX = "vinext-";
 
+// Cloudflare caps a tag purge or invalidation request at 100 tags.
+// https://developers.cloudflare.com/cache/how-to/purge-cache/#availability-and-limits
+const MAX_TAGS_PER_PURGE = 100;
+
 /** Encode a case-sensitive Next.js tag into a fixed Workers Cache tag. */
 export function encodeCloudflareCacheTag(tag: string): string {
   // Two domain-separated 64-bit rounds keep accidental collisions negligible
@@ -355,8 +363,12 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     };
   }
 
-  /** Purge edge-cached responses by tag via the request context's `cache.purge`. */
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  /**
+   * Invalidate edge-cached responses by tag via the request context's cache.
+   * Stale tags map to `cache.invalidate`, so the edge serves the stale response
+   * while it refetches; expired tags map to `cache.purge`.
+   */
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const cache = getWorkersCache();
     if (!cache) return; // no host cache in the request context (e.g. Node dev)
 
@@ -365,10 +377,33 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     );
     if (tagList.length === 0) return;
 
-    const result = await cache.purge({ tags: tagList.map(encodeCloudflareCacheTag) });
-    if (result?.success === false) {
-      const errors = result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ");
-      throw new Error(`[vinext] Workers Cache purge failed${errors ? `: ${errors}` : ""}`);
+    const encodedTags = [...new Set(tagList.map(encodeCloudflareCacheTag))];
+    const operation = isStaleTagInvalidation(durations) ? "invalidate" : "purge";
+    const chunks: string[][] = [];
+    for (let i = 0; i < encodedTags.length; i += MAX_TAGS_PER_PURGE) {
+      chunks.push(encodedTags.slice(i, i + MAX_TAGS_PER_PURGE));
+    }
+    // Settle every chunk before reporting, so no started purge is left
+    // un-awaited (Workers can cancel it).
+    const settled = await Promise.allSettled(
+      chunks.map(
+        async (chunk) =>
+          (await (operation === "invalidate"
+            ? invalidateOrPurge(cache, { tags: chunk })
+            : cache.purge({ tags: chunk }))) as WorkersCachePurgeResult | undefined,
+      ),
+    );
+    const rejection = settled.find((result) => result.status === "rejected");
+    if (rejection) throw rejection.reason;
+    const failures = settled.flatMap((result) =>
+      result.status === "fulfilled" && result.value?.success === false ? [result.value] : [],
+    );
+    if (failures.length > 0) {
+      const errors = failures
+        .flatMap((result) => result.errors)
+        .map(({ code, message }) => `${code}: ${message}`)
+        .join(", ");
+      throw new Error(`[vinext] Workers Cache ${operation} failed${errors ? `: ${errors}` : ""}`);
     }
   }
 }

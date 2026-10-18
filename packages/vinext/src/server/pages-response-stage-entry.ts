@@ -88,7 +88,7 @@ export async function renderPagesResponse(
     return new Response("Invalid vinext Pages response stage", { status: 400 });
   }
 
-  await pagesEntry.__ensureInstrumentation?.();
+  await pagesEntry.__ensureInstrumentation?.(platformCtx);
   registerConfiguredImageOptimizer(env);
   const renderHeaders = new Headers(stagedHeaders ?? props.stagedHeaders ?? []);
   // A request-stage Content-Length describes neither the page nor API body.
@@ -114,6 +114,8 @@ export async function renderPagesResponse(
   );
   if (props.kind === "pages-prerender-discovery") {
     ctx = { ...ctx, isPrerenderPathDiscovery: true };
+  } else if (props.kind === "pages-page" && dispatchOptions.regeneratesStoredEntry === true) {
+    ctx = { ...ctx, isStoredEntryRegeneration: true };
   }
   const render = async (cacheabilityContext: ExecutionContextLike): Promise<Response> => {
     if (props.kind === "pages-prerender-discovery") {

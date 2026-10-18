@@ -103,7 +103,7 @@ test("a service-bound cache Worker stores and returns responses", async () => {
     await Promise.all(
       Array.from({ length: 4 }, async (_, index) => {
         const metadata = namespace.getByName(
-          `user-worker-v1:r2-v1:metadata-shard:${index}-of-4`,
+          `user-worker-v1:r2-v2:metadata-shard:${index}-of-4`,
         ) as any;
         return metadata.inspect() as Promise<unknown[]>;
       }),

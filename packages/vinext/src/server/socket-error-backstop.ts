@@ -1,8 +1,9 @@
 /**
- * Process-level backstop for peer-disconnect errors that escape
- * per-connection / per-request error guards.
+ * Process-level backstop for errors that escape per-connection /
+ * per-request error guards.
  *
- * Three real call sites in vinext that hit this:
+ * Three real call sites in vinext that hit this with peer-disconnect
+ * errors:
  *   - `fromWeb(fetch().body).pipe(res)` in proxyExternalRewriteNode.
  *   - Streaming surfaces inside `@vitejs/plugin-rsc` with their own
  *     pipe topology (destinations aren't inbound connection sockets).
@@ -13,13 +14,25 @@
  * inside a `nextTick` callback. The throw escapes to
  * `uncaughtException`, where this listener filters it.
  *
- * Filters strictly on peer-disconnect codes (ECONNRESET / EPIPE /
- * ECONNABORTED) plus benign static-asset `import()` rejections (see
- * `isBenignAssetImportError`), and synchronously re-throws everything
- * else, preserving Node's default crash semantics for genuine bugs.
- * This is more conservative than Next.js's equivalent
- * (`router-server.ts`'s log-only handler), which silently swallows
- * every uncaught — vinext keeps real bugs surfacing.
+ * Always absorbs benign static-asset `import()` rejections (see
+ * `isBenignAssetImportError`). Outside prerender it also silently
+ * absorbs peer-disconnect codes (ECONNRESET / EPIPE / ECONNABORTED) and
+ * Node's cancelled-request-body enqueue race (see
+ * `isCancelledRequestBodyEnqueueError`). Everything else depends on the
+ * phase:
+ *
+ *   - **Running server** (`vite dev`, `vinext start`, standalone
+ *     `server.js`): logged and absorbed, matching the log-only
+ *     `uncaughtException` / `unhandledRejection` handlers that Next.js's
+ *     `router-server.ts` installs for both `next dev` and `next start`.
+ *     App code may legitimately leave a rejection unhandled for a few
+ *     ticks (Next.js's documented "Preloading data" pattern,
+ *     fire-and-forget calls), and request input can often choose whether
+ *     it rejects, so crashing would let one anonymous request take down
+ *     the whole process. The dev server's `configureServer` hook and
+ *     `startProdServer()` opt in via `{ runningServer: true }`.
+ *   - **Build and prerender**: synchronously re-thrown, preserving
+ *     Node's default crash semantics.
  *
  * **Installed at module load.** Earlier iterations tried to gate
  * install via Vite's `config()` hook (`command === "serve"`) so it
@@ -65,11 +78,12 @@
  * top of every user's `vite.config.ts`, so vinext's listener registers
  * before most user / tooling listeners (Sentry, OpenTelemetry,
  * structured logging). For peer-disconnect codes the early-return is
- * fine. For non-peer-disconnect errors the synchronous re-throw still
- * crashes the process with the original stack, but listeners
- * registered after vinext don't observe the event. Users who need
- * crash-reporter visibility for non-peer-disconnect errors must
- * register their handler before importing vinext.
+ * fine, and on a running production server every other error is
+ * logged without throwing, so later listeners still observe it. In
+ * the re-throw phases the synchronous re-throw still crashes the
+ * process with the original stack, but listeners registered after
+ * vinext don't observe the event. Users who need crash-reporter
+ * visibility there must register their handler before importing vinext.
  *
  * **Symbol.for caveat.** `Symbol.for("vinext.socketErrorBackstop")`
  * is process-global, so if two different vinext versions are loaded
@@ -80,6 +94,12 @@
  * time the listener absorbs an error.
  */
 const SOCKET_BACKSTOP_FLAG = Symbol.for("vinext.socketErrorBackstop");
+const RUNNING_SERVER_FLAG = Symbol.for("vinext.socketErrorBackstop.runningServer");
+
+type BackstopProcess = typeof process & {
+  [SOCKET_BACKSTOP_FLAG]?: true;
+  [RUNNING_SERVER_FLAG]?: true;
+};
 
 /**
  * Pure predicate: returns the peer-disconnect code when `err` carries
@@ -170,18 +190,48 @@ export function isBenignAssetImportError(err: unknown): boolean {
 }
 
 /**
+ * Pure predicate: returns `true` when `err` is Node's
+ * `Readable.toWeb()` adapter enqueueing into a request body stream that was
+ * already cancelled. `pull()` calls `req.resume()`, which schedules `flow()`
+ * on `nextTick`; if the body is cancelled before that tick runs, `flow()`
+ * still emits the chunks already buffered in `req` and the adapter's
+ * `onData` throws inside the `nextTick` callback. srvx (used by
+ * `@vitejs/plugin-rsc` in dev) builds `request.body` this way, so any
+ * cancelled request body, e.g. an oversized Server Action, can crash the
+ * dev server. Node main drops that data instead (`if (wasCanceled) return;`
+ * in `onData`), so absorbing it matches upstream behaviour. Exported for
+ * unit testing in isolation.
+ */
+export function isCancelledRequestBodyEnqueueError(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const { code, message, stack } = err as { code?: string; message?: string; stack?: string };
+  return (
+    code === "ERR_INVALID_STATE" &&
+    typeof message === "string" &&
+    message.includes("Controller is already closed") &&
+    typeof stack === "string" &&
+    /\.onData \(node:internal\/webstreams\/adapters:\d+/.test(stack)
+  );
+}
+
+/**
  * Test-only: returns whether the backstop has been installed in this
  * process. Used by the unit test to assert idempotent install via the
  * Symbol.for guard. Not part of the public API.
  */
 export function isSocketErrorBackstopInstalled(): boolean {
-  return Boolean(
-    (process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true })[SOCKET_BACKSTOP_FLAG],
-  );
+  return Boolean((process as BackstopProcess)[SOCKET_BACKSTOP_FLAG]);
 }
 
-export function installSocketErrorBackstop(): void {
-  const proc = process as typeof process & { [SOCKET_BACKSTOP_FLAG]?: true };
+/**
+ * Installs the backstop once per process. Pass `{ runningServer: true }`
+ * from a long-lived production server to log, rather than re-throw,
+ * errors outside the absorbed set. The flag is process-global and sticky,
+ * so it also applies when `index.ts` installed the listeners first.
+ */
+export function installSocketErrorBackstop(options: { runningServer?: boolean } = {}): void {
+  const proc = process as BackstopProcess;
+  if (options.runningServer) proc[RUNNING_SERVER_FLAG] = true;
   if (proc[SOCKET_BACKSTOP_FLAG]) return;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return;
   proc[SOCKET_BACKSTOP_FLAG] = true;
@@ -214,6 +264,17 @@ export function installSocketErrorBackstop(): void {
       if (debug) console.warn(`[vinext] absorbed uncaughtException ${code}`);
       return;
     }
+    if (isCancelledRequestBodyEnqueueError(err)) {
+      if (debug)
+        console.warn(
+          "[vinext] absorbed uncaughtException ERR_INVALID_STATE (cancelled request body)",
+        );
+      return;
+    }
+    if (proc[RUNNING_SERVER_FLAG]) {
+      console.error("[vinext] uncaughtException:", err);
+      return;
+    }
     throw err;
   });
   process.on("unhandledRejection", (reason: unknown) => {
@@ -222,6 +283,10 @@ export function installSocketErrorBackstop(): void {
     const code = peerDisconnectCode(reason);
     if (code) {
       if (debug) console.warn(`[vinext] absorbed unhandledRejection ${code}`);
+      return;
+    }
+    if (proc[RUNNING_SERVER_FLAG]) {
+      console.error("[vinext] unhandledRejection:", reason);
       return;
     }
     throw reason;

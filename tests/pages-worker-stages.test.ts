@@ -131,10 +131,11 @@ describe("Pages Worker response stage", () => {
       { headers: { [VINEXT_EXPECTED_WORKER_VERSION_HEADER]: "version-a" } },
     );
 
+    const ctx = { waitUntil: vi.fn() };
     const response = await handleResponseStage(
       request,
       { binding: "value" },
-      undefined,
+      ctx,
       {
         buildId: "test-build",
         cacheability: {
@@ -154,7 +155,7 @@ describe("Pages Worker response stage", () => {
     expect(response.status).toBe(204);
     expect(response.headers.get("Cache-Control")).toBe("no-store");
     expect(response.headers.get(VINEXT_PRERENDER_READINESS_HEADER)).toBe("1");
-    expect(stages.ensureInstrumentation).toHaveBeenCalledOnce();
+    expect(stages.ensureInstrumentation).toHaveBeenCalledExactlyOnceWith(ctx);
     expect(stages.registerCacheAdapters).toHaveBeenCalledWith({ binding: "value" });
     expect(validateRequest).toHaveBeenCalledWith(request);
     expect(stages.renderPage).not.toHaveBeenCalled();
@@ -206,6 +207,38 @@ describe("Pages Worker response stage", () => {
     const stagedHeaders = stages.renderPage.mock.calls[0]?.[4] as Headers;
     expect([...stagedHeaders]).toEqual([]);
   });
+
+  it.each([undefined, true])(
+    "marks a page render as a stored-entry regeneration only when the adapter says so (%s)",
+    async (regeneratesStoredEntry) => {
+      stages.renderPage.mockResolvedValue(new Response("page"));
+      await handleResponseStage(
+        new Request("https://example.com/posts/one"),
+        {},
+        undefined,
+        {
+          buildId: "test-build",
+          cacheability: {
+            policyHeaders: null,
+            probeMode: null,
+            resolvedRoutePathname: "/posts/one",
+          },
+          kind: "pages-page",
+          protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+          requestHost: "example.com",
+          renderOptions: null,
+          resolvedUrl: "/posts/one",
+          stagedHeaders: null,
+        },
+        dispatchRequestStage,
+        { cache: "shared", regeneratesStoredEntry },
+      );
+      const context = stages.renderPage.mock.calls[0]?.[3] as {
+        isStoredEntryRegeneration?: boolean;
+      };
+      expect(context.isStoredEntryRegeneration).toBe(regeneratesStoredEntry);
+    },
+  );
 
   it("strips stale Content-Length before a streamed page crosses the stage transport", async () => {
     const streamed = new Response("streamed page", {

@@ -49,12 +49,37 @@ export type ExecutionContextLike = {
   cache?: unknown;
   /** Server-owned origin for credential-bearing Pages revalidation loopbacks. */
   trustedRevalidateOrigin?: string;
+  /**
+   * Node production server signal that aborts when the client disconnects
+   * before the response finishes. Its Request only follows this signal, so the
+   * App RSC handler takes it from here (UnifiedRequestContext.requestSignal).
+   */
+  requestSignal?: AbortSignal;
+  /**
+   * Server-owned origin middleware runs against. Set by the Node production
+   * server, whose request URL comes from the client's Host header. Without it
+   * middleware uses the request URL's origin, which Workers can trust because
+   * the platform routes by hostname.
+   */
+  middlewareOrigin?: string;
   /** Worker-owned in-process dispatcher for authenticated Pages revalidation. */
   dispatchPagesRevalidate?: (request: Request) => Promise<Response>;
   /** Marks a request currently executing through the internal revalidation dispatcher. */
   isInternalPagesRevalidation?: boolean;
   /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
   isPrerenderPathDiscovery?: boolean;
+  /** Marks an adapter-invoked regeneration of an entry stored for this build. */
+  isStoredEntryRegeneration?: boolean;
+  /**
+   * Installed only by the prerender server: records the page's special error
+   * that escaped the shell, with the headers to store, for the build.
+   */
+  recordPrerenderSpecialError?: (marker: PrerenderSpecialErrorMarker) => void;
+};
+
+export type PrerenderSpecialErrorMarker = {
+  headers: Record<string, string>;
+  status: number;
 };
 
 // ---------------------------------------------------------------------------

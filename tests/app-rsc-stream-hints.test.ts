@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
 import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
-import { normalizeReactFlightPreloadHints } from "../packages/vinext/src/server/rsc-stream-hints.js";
+import {
+  createRscRenderer,
+  normalizeReactFlightPreloadHints,
+} from "../packages/vinext/src/server/rsc-stream-hints.js";
+import { loadCacheFlightCodec } from "./helpers/cache-flight-codec.js";
 
 const STYLE_JSON_PADDING = " ".repeat("stylesheet".length - "style".length);
 
@@ -216,6 +220,102 @@ describe("RSC stream hint helpers", () => {
     ]);
   });
 
+  it("forwards a long non-hint row chunk by chunk instead of carrying it to its newline", async () => {
+    // Carrying the row would concatenate and rescan it on every chunk:
+    // quadratic in its length. A page's client props arrive as one such row.
+    const encoder = new TextEncoder();
+    const inputs = [
+      encoder.encode('0:D{"name":"page"}\n1:{"items":["'),
+      ...Array.from({ length: 2000 }, () => encoder.encode("x".repeat(1024))),
+      encoder.encode('"]}\n2:"after"\n'),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const chunks: Uint8Array[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(result.value);
+    }
+
+    expect(chunks).toHaveLength(inputs.length);
+    for (const [index, input] of inputs.entries()) expect(chunks[index]).toBe(input);
+  });
+
+  it("still carries a row that may be a stylesheet hint when a chunk ends at its tag", async () => {
+    const stream = normalizeReactFlightPreloadHints(
+      streamFromChunks(['0:D{"name":"page"}\n:H', 'L["/assets/app.css","stylesheet"]\n']),
+    );
+
+    await expect(readStream(stream)).resolves.toBe(
+      '0:D{"name":"page"}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n'),
+    );
+  });
+
+  it("rewrites a hint that follows a forwarded row's newline in the same chunk", async () => {
+    const inputs = [
+      '0:D{"name":"page"}\n1:{"items":["',
+      "x".repeat(64),
+      '"]}\n:HL["/assets/app.css","stylesheet"]\n2:"after"\n',
+    ];
+    const reader = normalizeReactFlightPreloadHints(streamFromChunks(inputs)).getReader();
+    const decoder = new TextDecoder();
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      inputs[0],
+      inputs[1],
+      '"]}\n' + normalizedStyleHint(':HL["/assets/app.css","stylesheet"]\n') + '2:"after"\n',
+    ]);
+  });
+
+  it("forwards a plain row only up to its last complete UTF-8 character", async () => {
+    // The inline RSC embed decodes each chunk on its own, so a chunk ending
+    // mid-character would be embedded as base64 instead of text.
+    const encoder = new TextEncoder();
+    const row = encoder.encode('0:D{"name":"page"}\n1:{"t":"あい😀"}\n');
+    const hint = ':HL["/assets/app.css","stylesheet"]\n';
+    const firstSplit = row.indexOf(0x81) + 1; // inside あ
+    const secondSplit = row.indexOf(0x9f) + 1; // inside 😀
+    const inputs = [
+      row.slice(0, firstSplit),
+      row.slice(firstSplit, secondSplit),
+      new Uint8Array([...row.slice(secondSplit), ...encoder.encode(hint)]),
+    ];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const input of inputs) controller.enqueue(input);
+        controller.close();
+      },
+    });
+
+    const reader = normalizeReactFlightPreloadHints(source).getReader();
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    const chunks: string[] = [];
+    for (;;) {
+      const result = await reader.read();
+      if (result.done) break;
+      chunks.push(decoder.decode(result.value));
+    }
+
+    expect(chunks).toEqual([
+      '0:D{"name":"page"}\n1:{"t":"',
+      "あい",
+      '😀"}\n' + normalizedStyleHint(hint),
+    ]);
+  });
+
   it("keeps binary Flight bodies separate from adjacent text when embedding", async () => {
     const encoder = new TextEncoder();
     const prefix = encoder.encode(`0:D{"data":"${"x".repeat(1024)}"}\n1:A1,`);
@@ -236,5 +336,111 @@ describe("RSC stream hint helpers", () => {
 
     expect(scripts).toContain('.rsc.push([3,"/w=="])');
     expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
+  });
+});
+
+describe("createRscRenderer", () => {
+  const { renderToReadableStream } = loadCacheFlightCodec();
+
+  // Renders a model with a promise that stays pending, so cancelling the
+  // stream aborts the render.
+  function renderPendingModel(settled?: Promise<unknown>) {
+    const reported: unknown[] = [];
+    let markCancelled = () => {};
+    const cancelled = new Promise<void>((resolve) => {
+      markCancelled = resolve;
+    });
+    const render = createRscRenderer((model, options) => {
+      // React's stream, passed through so tests can wait until React has seen
+      // the cancellation.
+      const reader = renderToReadableStream(model, options as object).getReader();
+      return new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const { done, value } = await reader.read();
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+          async cancel(reason) {
+            await reader.cancel(reason);
+            markCancelled();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    });
+    const stream = render(
+      { pending: new Promise(() => {}), settled },
+      {
+        onError(error: unknown) {
+          reported.push(error);
+          return "digest";
+        },
+      },
+    );
+    return { cancelled, reported, stream };
+  }
+
+  // React reads `then` once to decide whether the reason is a thenable.
+  function thenableOnFirstRead(later: "undefined" | "throw") {
+    let reads = 0;
+    return {
+      // oxlint-disable-next-line unicorn/no-thenable
+      get then() {
+        if (reads++ === 0) return () => {};
+        if (later === "throw") throw new Error("then read again");
+        return undefined;
+      },
+    };
+  }
+
+  it("does not report a cancellation with a platform's own reason", async () => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    const reader = stream.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel(new Error("Network connection lost."));
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it.each([
+    ["without a reason", undefined],
+    ["with a promise as its reason", Promise.resolve()],
+    ["with NaN as its reason", NaN],
+    ["with a thenable that stops being one when read again", thenableOnFirstRead("undefined")],
+    ["with a thenable that throws when read again", thenableOnFirstRead("throw")],
+  ])("does not report a cancellation %s", async (_name, reason) => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    await stream.cancel(reason);
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it("does not report a cancellation through a tee", async () => {
+    const { cancelled, reported, stream } = renderPendingModel();
+    const [first, second] = stream.tee();
+    await Promise.all([first.cancel(new Error("first")), second.cancel(new Error("second"))]);
+    await cancelled;
+    expect(reported).toEqual([]);
+  });
+
+  it("still reports an error thrown before the cancellation", async () => {
+    const failure = new Error("render failed");
+    const { cancelled, reported, stream } = renderPendingModel(Promise.reject(failure));
+    await expect.poll(() => reported).toEqual([failure]);
+    await stream.cancel(new Error("Network connection lost."));
+    await cancelled;
+    expect(reported).toEqual([failure]);
+  });
+
+  it("React reports a cancel reason to onError (control)", async () => {
+    const reported: unknown[] = [];
+    const reason = new Error("Network connection lost.");
+    const stream = renderToReadableStream(
+      { pending: new Promise(() => {}) },
+      { onError: (error: unknown) => void reported.push(error) },
+    );
+    await stream.cancel(reason);
+    expect(reported).toEqual([reason]);
   });
 });

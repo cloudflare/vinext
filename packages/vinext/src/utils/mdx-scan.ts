@@ -48,6 +48,14 @@ type MdxProcessorModule = {
 };
 
 /**
+ * Whether page extensions discover MDX sources, including compound extensions
+ * such as `page.mdx`.
+ */
+export function pageExtensionsIncludeMdx(pageExtensions: readonly string[]): boolean {
+  return pageExtensions.some((extension) => extension.toLowerCase().split(".").at(-1) === "mdx");
+}
+
+/**
  * Load a reader that keeps only the ESM of an MDX module, so the JavaScript
  * export helpers can read it. It takes the ESM nodes from the MDX parser that
  * `@mdx-js/rollup` compiles with, resolved beside the plugin vinext

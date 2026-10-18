@@ -17,3 +17,15 @@ test("renders an unknown root-param route safely without serving a partial artif
   await expect(page.getByText("This page couldn’t load")).toHaveCount(0);
   await expect(page.getByText("This page couldn't load")).toHaveCount(0);
 });
+
+test("includes cached root-param content in an unknown route's shell", async ({ request }) => {
+  for (const locale of ["en", "fr"]) {
+    const response = await request.get(`/${locale}/blog/new-post`);
+    const html = await response.text();
+
+    expect(html).toContain(`Home (${locale})`);
+    // The Suspense fallback must not be part of the shell. The RSC payload
+    // still names it, but never as a rendered element.
+    expect(html).not.toContain('<div id="locale-loading"');
+  }
+});

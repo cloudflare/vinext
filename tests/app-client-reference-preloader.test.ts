@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { createClientReferencePreloader } from "../packages/vinext/src/server/app-client-reference-preloader.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function createDeferred(): { promise: Promise<void>; resolve: () => void } {
   let resolveDeferred: () => void = () => {
@@ -12,6 +13,26 @@ function createDeferred(): { promise: Promise<void>; resolve: () => void } {
 }
 
 describe("app client reference preloader", () => {
+  it("keeps the request that starts a shared preload alive until it settles", async () => {
+    const preloadGate = createDeferred();
+    const preloader = createClientReferencePreloader({
+      getReferences: () => ({ "comp-a": true }),
+      getClientRequire: () => () => preloadGate.promise,
+    });
+    const creator = { waitUntil: vi.fn() };
+    const joiner = { waitUntil: vi.fn() };
+
+    const first = runWithExecutionContext(creator, () => preloader.preload());
+    const second = runWithExecutionContext(joiner, () => preloader.preload());
+    const scoped = runWithExecutionContext(joiner, () => preloader.preload(["comp-a"]));
+
+    // One registration for the per-reference import, one for the full set.
+    expect(creator.waitUntil).toHaveBeenCalledTimes(2);
+    expect(joiner.waitUntil).not.toHaveBeenCalled();
+    preloadGate.resolve();
+    await Promise.all([first, second, scoped]);
+  });
+
   it("shares one in-flight preload across concurrent cold SSR calls", async () => {
     const refs = { "comp-a": true, "comp-b": true, "comp-c": true };
     const calls: string[] = [];

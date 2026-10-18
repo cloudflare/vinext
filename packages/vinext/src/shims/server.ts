@@ -27,6 +27,7 @@ import {
 } from "./unified-request-context.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
+import { trustProxy } from "../server/proxy-trust.js";
 
 /** @deprecated Import ImageResponse from `next/og` instead. */
 export function ImageResponse(): never {
@@ -109,7 +110,13 @@ export type RequestInit = globalThis.RequestInit & {
       }>;
     } | null;
     trailingSlash?: boolean;
+    skipTrailingSlashRedirect?: boolean;
   };
+  /**
+   * vinext-internal: the host the request was made to, when the URL carries
+   * the server's own origin instead. It picks the i18n domain locale.
+   */
+  requestHost?: string;
   signal?: AbortSignal;
   duplex?: "half";
 };
@@ -172,6 +179,21 @@ function initWithoutInputBody(input: Request, init: RequestInit): RequestInit {
   return { ...init, body: null };
 }
 
+/**
+ * workerd's `request.cf` metadata. Only the Workers runtime sets it, so its
+ * presence means the request came through Cloudflare's edge rather than
+ * straight from a client.
+ */
+function readCloudflareMetadata(request: Request): object | undefined {
+  const cf: unknown = Reflect.get(request, "cf");
+  return cf !== null && typeof cf === "object" ? cf : undefined;
+}
+
+function readStringField(source: object, key: string): string | undefined {
+  const value: unknown = Reflect.get(source, key);
+  return typeof value === "string" && value !== "" ? value : undefined;
+}
+
 export class NextRequest extends Request {
   private _nextUrl: NextURL;
   private _url: string;
@@ -186,9 +208,9 @@ export class NextRequest extends Request {
     // with NextResponse, and so `javascript:` / `data:` URIs are blocked too.
     const rawUrl = typeof input !== "string" && "url" in input ? input.url : String(input);
     validateURL(rawUrl);
-    // Strip nextConfig before passing to super() — it's vinext-internal,
-    // not a valid RequestInit property.
-    const { nextConfig: _nextConfig, ...plainInit } = init ?? {};
+    // Strip nextConfig and requestHost before passing to super() — they're
+    // vinext-internal, not valid RequestInit properties.
+    const { nextConfig: _nextConfig, requestHost, ...plainInit } = init ?? {};
     // A Request passed as init (e.g. `new NextRequest(url, request)`) keeps its
     // method, headers and body on Request.prototype, so the spread above copies
     // none of them. Hand it to super() as-is, like Next.js does.
@@ -236,7 +258,12 @@ export class NextRequest extends Request {
     const urlConfig: NextURLConfig | undefined = _nextConfig
       ? {
           basePath: _nextConfig.basePath,
-          nextConfig: { i18n, trailingSlash: _nextConfig.trailingSlash },
+          headers: requestHost === undefined ? undefined : { host: requestHost },
+          nextConfig: {
+            i18n,
+            trailingSlash: _nextConfig.trailingSlash,
+            skipTrailingSlashRedirect: _nextConfig.skipTrailingSlashRedirect,
+          },
         }
       : undefined;
     this._nextUrl = new NextURL(url, undefined, urlConfig);
@@ -267,10 +294,19 @@ export class NextRequest extends Request {
   }
 
   /**
-   * Client IP address. Prefers Cloudflare's trusted CF-Connecting-IP header
-   * over the spoofable X-Forwarded-For. Returns undefined if unavailable.
+   * Client IP address. Next.js removed `ip` in v15; vinext keeps it as an
+   * extension. Returns undefined unless the value comes from a trusted source.
+   *
+   * On Cloudflare Workers (the request carries `cf` metadata), Cloudflare's
+   * edge sets `CF-Connecting-IP`. Elsewhere these headers are client-supplied
+   * and are only honored behind a trusted proxy (`VINEXT_TRUST_PROXY` /
+   * `VINEXT_TRUSTED_HOSTS`), matching the `X-Forwarded-*` policy.
    */
   get ip(): string | undefined {
+    if (readCloudflareMetadata(this)) {
+      return this.headers.get("cf-connecting-ip") ?? undefined;
+    }
+    if (!trustProxy) return undefined;
     return (
       this.headers.get("cf-connecting-ip") ??
       this.headers.get("x-real-ip") ??
@@ -280,13 +316,28 @@ export class NextRequest extends Request {
   }
 
   /**
-   * Geolocation data. Platform-dependent (e.g., Cloudflare, Vercel).
-   * Returns undefined if not available.
+   * Geolocation data. Next.js removed `geo` in v15; vinext keeps it as an
+   * extension. Read from Cloudflare's `request.cf` metadata on Workers, or
+   * from platform geo headers behind a trusted proxy. Returns undefined
+   * otherwise, because any client can send these headers.
    */
   get geo():
     | { city?: string; country?: string; region?: string; latitude?: string; longitude?: string }
     | undefined {
-    // Check Cloudflare-style headers, Vercel-style headers
+    const cf = readCloudflareMetadata(this);
+    if (cf) {
+      const country = readStringField(cf, "country");
+      if (!country) return undefined;
+      return {
+        country,
+        city: readStringField(cf, "city"),
+        region: readStringField(cf, "region"),
+        latitude: readStringField(cf, "latitude"),
+        longitude: readStringField(cf, "longitude"),
+      };
+    }
+    if (!trustProxy) return undefined;
+    // Cloudflare-style headers, then Vercel-style headers
     const country =
       this.headers.get("cf-ipcountry") ?? this.headers.get("x-vercel-ip-country") ?? undefined;
     if (!country) return undefined;
@@ -409,6 +460,11 @@ export class NextResponse<_Body = unknown> extends Response {
 
 export type NextURLConfig = {
   basePath?: string;
+  /**
+   * Request headers. As in Next.js's `getHostname`, a Host header decides the
+   * domain locale before the URL's own hostname.
+   */
+  headers?: Record<string, string | string[] | undefined>;
   nextConfig?: {
     i18n?: {
       locales: string[];
@@ -426,6 +482,14 @@ export type NextURLConfig = {
      * honour the user's `trailingSlash` config.
      */
     trailingSlash?: boolean;
+    /**
+     * When true, the trailing slash follows the parsed URL instead, and
+     * `trailingSlash` only decides the root, like Next.js's
+     * getNextPathnameInfo. Without the trailing-slash redirect, requests
+     * arrive in either form, so the config can no longer be applied as a
+     * policy.
+     */
+    skipTrailingSlashRedirect?: boolean;
   };
 };
 
@@ -439,6 +503,8 @@ export class NextURL {
    */
   private _configBasePath: string;
   private _basePath: string;
+  private _configTrailingSlash: boolean;
+  private _manualTrailingSlash: boolean;
   private _trailingSlash: boolean;
   private _locale: string | undefined;
   private _configDefaultLocale: string | undefined;
@@ -448,12 +514,17 @@ export class NextURL {
   private _domainLocale:
     | NonNullable<NonNullable<NonNullable<NextURLConfig["nextConfig"]>["i18n"]>["domains"]>[number]
     | undefined;
+  private _headers: NextURLConfig["headers"];
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
+    this._headers = config?.headers;
     this._configBasePath = config?.basePath ?? "";
     this._basePath = this._configBasePath;
-    this._trailingSlash = config?.nextConfig?.trailingSlash ?? false;
+    this._configTrailingSlash = config?.nextConfig?.trailingSlash ?? false;
+    this._manualTrailingSlash = config?.nextConfig?.skipTrailingSlashRedirect === true;
+    this._trailingSlash = this._configTrailingSlash;
+    this._analyzeTrailingSlash();
     this._stripBasePath();
     const i18n = config?.nextConfig?.i18n;
     if (i18n) {
@@ -465,6 +536,16 @@ export class NextURL {
       this._configDefaultLocale = i18n.defaultLocale;
       this._analyzeI18n();
     }
+  }
+
+  /**
+   * With `skipTrailingSlashRedirect`, take the slash from the parsed pathname
+   * (before basePath and locale are stripped), as getNextPathnameInfo does.
+   */
+  private _analyzeTrailingSlash(): void {
+    if (!this._manualTrailingSlash) return;
+    const { pathname } = this._url;
+    this._trailingSlash = pathname !== "/" ? pathname.endsWith("/") : this._configTrailingSlash;
   }
 
   /** Strip basePath prefix from the internal pathname.
@@ -503,7 +584,12 @@ export class NextURL {
     if (!this._locales || !this._configDefaultLocale) return;
     const detectedLocale = this._detectPathnameLocale(this._locales);
     const detectedLocaleLower = detectedLocale?.toLowerCase();
-    const hostname = this._url.hostname.toLowerCase();
+    const hostHeader = this._headers?.host;
+    const hostname = (
+      typeof hostHeader === "string" && hostHeader
+        ? hostHeader.split(":", 1)[0]
+        : this._url.hostname
+    ).toLowerCase();
     this._domainLocale = this._domains?.find(
       (domain) =>
         domain.domain.split(":", 1)[0].toLowerCase() === hostname ||
@@ -546,8 +632,11 @@ export class NextURL {
       : pathname;
     // Internal Next.js assets retain their request shape. In particular,
     // missing build manifests still run middleware without acquiring a slash
-    // from `trailingSlash: true`.
-    if (pathnameWithoutBasePath.startsWith("/_next/")) return removeTrailingSlash(pathname);
+    // from `trailingSlash: true`. With `skipTrailingSlashRedirect` the slash
+    // already comes from the request itself.
+    if (!this._manualTrailingSlash && pathnameWithoutBasePath.startsWith("/_next/")) {
+      return removeTrailingSlash(pathname);
+    }
     if (this._trailingSlash) {
       return pathname.endsWith("/") ? pathname : pathname + "/";
     }
@@ -565,6 +654,7 @@ export class NextURL {
   }
   set href(value: string) {
     this._url.href = value;
+    this._analyzeTrailingSlash();
     this._stripBasePath();
     this._analyzeI18n();
   }
@@ -694,7 +784,12 @@ export class NextURL {
         })),
       };
     }
-    if (this._trailingSlash) {
+    if (this._manualTrailingSlash) {
+      // The constructor re-reads the slash from href; keep the config value
+      // for the root.
+      nextConfig.skipTrailingSlashRedirect = true;
+      if (this._configTrailingSlash) nextConfig.trailingSlash = true;
+    } else if (this._trailingSlash) {
       nextConfig.trailingSlash = true;
     }
     const config: NextURLConfig = {
@@ -702,6 +797,7 @@ export class NextURL {
       // current pathname. Next.js retains the original constructor options in
       // clone(), allowing a later href assignment to re-activate the prefix.
       basePath: this._configBasePath,
+      headers: this._headers,
       nextConfig: Object.keys(nextConfig).length > 0 ? nextConfig : undefined,
     };
     // Pass the full href (with locale/basePath re-added) so the constructor

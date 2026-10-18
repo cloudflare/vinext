@@ -1,6 +1,6 @@
 {
   "name": "vinext",
-  "version": "1.0.1",
+  "version": "1.2.1",
   "description": "Run Next.js apps on Vite. Drop-in replacement for the next CLI.",
   "homepage": "https://vinext.dev/",
   "license": "MIT",
@@ -97,6 +97,10 @@
     "./internal/server/headers": {
       "types": "./dist/server/headers.d.ts",
       "import": "./dist/server/headers.js"
+    },
+    "./internal/server/http-conditional": {
+      "types": "./dist/server/http-conditional.d.ts",
+      "import": "./dist/server/http-conditional.js"
     },
     "./internal/server/isr-cache": {
       "types": "./dist/server/isr-cache.d.ts",
@@ -252,10 +256,10 @@
   "peerDependencies": {
     "@mdx-js/rollup": "^3.0.0",
     "@vitejs/plugin-react": "^5.1.4 || ^6.0.0",
-    "@vitejs/plugin-rsc": "^0.5.34",
-    "react": "^19.2.6",
-    "react-dom": "^19.2.6",
-    "react-server-dom-webpack": "^19.2.6",
+    "@vitejs/plugin-rsc": "^0.5.37",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-server-dom-webpack": "^19.3.1",
     "vite": "^8.0.0"
   },
   "peerDependenciesMeta": {

@@ -24,6 +24,8 @@ import {
   VINEXT_STALE_TIME_PENDING_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+  VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
@@ -344,7 +346,7 @@ describe("prefetch cache eviction", () => {
 
     prefetchRscResponse(
       fullUrl,
-      Promise.resolve(new Response("full")),
+      Promise.resolve(new Response("full", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: fullInvalidate },
@@ -352,7 +354,7 @@ describe("prefetch cache eviction", () => {
     );
     prefetchRscResponse(
       loadingUrl,
-      Promise.resolve(new Response("loading")),
+      Promise.resolve(new Response("loading", { headers: { "content-type": "text/x-component" } })),
       null,
       null,
       { onInvalidate: loadingInvalidate },
@@ -640,6 +642,29 @@ describe("prefetch cache eviction", () => {
     expect(restored.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("60");
     expect(restored.headers.get("x-vinext-params")).toBe(encodeURIComponent('{"id":"2"}'));
     await expect(restored.text()).resolves.toBe("flight");
+  });
+
+  it("carries streamed redirect headers through snapshot and replay (#3745)", async () => {
+    const response = new Response('0:E{"digest":"NEXT_REDIRECT;push;/about;307;"}', {
+      headers: {
+        "content-type": "text/x-component",
+        [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+        [VINEXT_RSC_REDIRECT_TYPE_HEADER]: "push",
+      },
+    });
+
+    const snapshot = await snapshotRscResponse(response);
+    const restored = restoreRscResponse(snapshot, false);
+
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/about");
+    expect(restored.headers.get(VINEXT_RSC_REDIRECT_TYPE_HEADER)).toBe("push");
+
+    const plain = await snapshotRscResponse(
+      new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    expect(plain).not.toHaveProperty("redirectHeader");
+    expect(plain).not.toHaveProperty("redirectTypeHeader");
+    expect(restoreRscResponse(plain).headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBeNull();
   });
 
   it("carries the server-resolved cacheLife stale time through snapshot and replay", async () => {
@@ -1312,6 +1337,76 @@ describe("prefetch cache eviction", () => {
     const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
     await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
     expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+  });
+
+  it("resolves router.prefetch policy for a // pathname on the app origin", async () => {
+    // "/.//a//attacker.example/p" is a local href whose pathname is
+    // "//a//attacker.example/p". Next.js prefetches that pathname on the app
+    // origin, so the route policy must see it too, not a URL on host "a".
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        patternParts: ["a", "attacker.example", "p"],
+        isDynamic: false,
+      },
+    ];
+    let fetchedUrl: string | undefined;
+    let fetchedHeaders: Headers | undefined;
+    const fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      fetchedUrl = toRscUrlString(input);
+      fetchedHeaders = new Headers(init?.headers);
+      return new Response("flight", { headers: { "content-type": "text/x-component" } });
+    });
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/.//a//attacker.example/p");
+
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    if (fetchedUrl === undefined) throw new Error("Expected router.prefetch to fetch");
+    const resolved = new URL(fetchedUrl, "http://localhost/");
+    expect(resolved.origin).toBe("http://localhost");
+    expect(resolved.pathname).toBe("//a//attacker.example/p");
+    // The manifest route matched, so this is a navigation-reusable prefetch,
+    // not the learning-only loading-shell fallback for unmatched hrefs.
+    expect(fetchedHeaders?.get("x-vinext-rsc-render-mode")).toBeNull();
+    const cacheKey = AppElementsWire.encodeCacheKey(fetchedUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+    expect(consumePrefetchResponse(fetchedUrl, null, null)).not.toBeNull();
+  });
+
+  it("matches prefetch entries for // pathnames by their pathname on the app origin", async () => {
+    // A pathname can begin with "//". Its first segment is a path segment, not
+    // a host. The server reports the rendered path raw, so its alias key is
+    // "//a//attacker.example/z" and must not answer for the different page
+    // "//attacker.example/z", which the request builder spells with "/.".
+    const renderedPathAndSearch = "//a//attacker.example/z";
+    const originalRscUrl = "/.//a//attacker.example/z?_rsc=one";
+
+    prefetchRscResponse(
+      originalRscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RENDERED_PATH_AND_SEARCH_HEADER]: encodeURIComponent(renderedPathAndSearch),
+          },
+        }),
+      ),
+      null,
+      null,
+    );
+    await getPrefetchCache().get(originalRscUrl)?.pending;
+    expect(getPrefetchCache().has(renderedPathAndSearch)).toBe(true);
+
+    expect(hasPrefetchCacheEntryForNavigation("/.//attacker.example/z?_rsc=two", null, null)).toBe(
+      false,
+    );
+    expect(peekPrefetchResponseForNavigation("/.//attacker.example/z?_rsc=two", null, null)).toBe(
+      null,
+    );
+    expect(
+      hasPrefetchCacheEntryForNavigation("/.//a//attacker.example/z?_rsc=two", null, null),
+    ).toBe(true);
   });
 
   it("does not repopulate the prefetch cache across an invalidation (#2707)", async () => {
@@ -2680,6 +2775,100 @@ describe("prefetch cache eviction", () => {
       preparedElements,
     );
   });
+
+  it("does not prepare elements from a prefetched redirect (#3745)", async () => {
+    const rscUrl = "/redirecting?_rsc=redirect";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_RSC_REDIRECT_HEADER]: "/about",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    const consumed = consumePrefetchResponse("/redirecting", null, null);
+    expect(consumed?.redirectHeader).toBe("/about");
+    expect(consumed?.preparedElements).toBeUndefined();
+  });
+
+  // Ported from Next.js: fetchPrefetchResponse in
+  // packages/next/src/client/components/segment-cache/cache.ts treats a
+  // successful non-Flight response as a miss outside `output: "export"`.
+  it("never decodes or caches a successful non-Flight prefetch response", async () => {
+    const rscUrl = "/download?doc=note&_rsc=download";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+    const response = new Response(':HX"data:text/javascript,0"\n0:null\n', {
+      headers: {
+        "content-disposition": "attachment",
+        "content-type": "text/plain; charset=utf-8",
+      },
+    });
+    const cancelBody = vi.spyOn(response.body!, "cancel");
+    getPrefetchedUrls().add(rscUrl);
+
+    prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+      prepareSnapshot,
+    });
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).not.toHaveBeenCalled();
+    // The unread body would otherwise keep the request open.
+    expect(cancelBody).toHaveBeenCalledOnce();
+    expect(getPrefetchCache().has(rscUrl)).toBe(false);
+    expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
+    expect(consumePrefetchResponse("/download?doc=note", null, null)).toBeNull();
+  });
+
+  it("accepts a Flight content-type regardless of case", async () => {
+    const rscUrl = "/mixed-case?_rsc=mixed";
+    const prepareSnapshot = vi.fn(async () => ({}) as never);
+
+    prefetchRscResponse(
+      rscUrl,
+      Promise.resolve(new Response("flight", { headers: { "content-type": "Text/X-Component" } })),
+      null,
+      null,
+      undefined,
+      { prepareSnapshot },
+    );
+    await getPrefetchCache().get(rscUrl)?.pending;
+
+    expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+    expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+  });
+
+  it.each([["text/plain; charset=utf-8"], ["application/octet-stream"], [null]])(
+    "accepts any successful static export prefetch response (content-type %s)",
+    async (contentType) => {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("__NEXT_CONFIG_OUTPUT", "export");
+      const rscUrl = "/exported.txt";
+      const prepareSnapshot = vi.fn(async () => ({}) as never);
+      const response = new Response(new TextEncoder().encode("flight"));
+      if (contentType === null) response.headers.delete("content-type");
+      else response.headers.set("content-type", contentType);
+
+      prefetchRscResponse(rscUrl, Promise.resolve(response), null, null, undefined, {
+        prepareSnapshot,
+      });
+      await getPrefetchCache().get(rscUrl)?.pending;
+
+      expect(prepareSnapshot).toHaveBeenCalledTimes(1);
+      expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("cache-seeded");
+    },
+  );
 
   it("preserves the original expiry when consuming a prefetched response", () => {
     const cache = getPrefetchCache();

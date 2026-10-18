@@ -48,6 +48,11 @@ export type UnifiedRequestContext = {
   // ── request-context.ts ─────────────────────────────────────────────
   /** Cloudflare Workers ExecutionContext, or null on Node.js dev. */
   executionContext: ExecutionContextLike | null;
+  /**
+   * The host's client-connection signal for the incoming request, before any
+   * clone follows it. Null for requests vinext creates itself (regeneration).
+   */
+  requestSignal: AbortSignal | null;
 
   // ── cache-for-request.ts ──────────────────────────────────────────
   /** Per-request cache for cacheForRequest(). Keyed by factory function reference. */
@@ -107,6 +112,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
+    cacheLifeSink: null,
+    pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
@@ -138,6 +145,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchDedupeEntries: new Map(),
     nextFetchId: 1,
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
+    requestSignal: null,
     requestCache: new WeakMap(),
     afterContext: {
       callbacks: [],
@@ -381,13 +389,14 @@ export function runWithUnifiedStateMutation<T>(
   ensureRenderDynamicLatch(parentCtx);
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
-  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
+  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren,
+  // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
   // cacheableFetchUrls, dynamicFetchUrls),
   // Map fields (unstableCacheObservations, _privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
-  // requestScopedCacheLife, renderDynamicLatch) still share references with
+  // requestScopedCacheLife, renderDynamicLatch, cacheLifeSink) still share references with
   // the parent until replaced. requestCache is intentionally shared — nested
   // scopes within the same request should see the same cached values.
   // renderDynamicLatch must stay shared: dynamic usage in an isolated child

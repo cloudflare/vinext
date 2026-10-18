@@ -22,6 +22,7 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
+import { toClientRedirects } from "../client/client-redirects.js";
 import { toClientRewrites } from "../client/client-rewrites.js";
 import { findFileWithExts } from "./pages-entry-helpers.js";
 import { toSlash } from "pathslash";
@@ -112,6 +113,7 @@ export async function generateClientEntry(
     )
   ).filter((pattern): pattern is string => pattern !== null);
   const instrumentationClientPath = options.instrumentationClientPath ?? null;
+  const clientRedirects = toClientRedirects(nextConfig.redirects);
   const clientRewrites = toClientRewrites(nextConfig.rewrites);
   const clientMiddlewareMatchers = compileClientMiddlewareMatchers(options.middlewareMatcher);
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
@@ -230,7 +232,7 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(appPrefetchRoutes)};
 // instead of issuing an RSC request). Set here AND in app-browser-entry.ts
 // so whichever entry runs first emits the Pages manifest.
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
-window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(nextConfig.redirects)};
+window.__VINEXT_CLIENT_REDIRECTS__ = ${JSON.stringify(clientRedirects)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
 
 const nextDataElement = document.getElementById("__NEXT_DATA__");

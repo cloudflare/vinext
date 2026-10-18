@@ -9,6 +9,7 @@ import {
 } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
 import {
   appIsrCacheKey,
+  appIsrFallbackShellKey,
   pagesIsrCacheKey,
   isrGet,
 } from "../packages/vinext/src/server/isr-cache.js";
@@ -17,6 +18,7 @@ import { staticAssetsAdapter } from "../packages/cloudflare/src/cache/static-ass
 import createStaticAssetsCacheAdapter, {
   StaticAssetsCacheAdapter,
 } from "../packages/cloudflare/src/cache/static-assets-adapter.runtime.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 describe("staticAssetsAdapter", () => {
   const roots: string[] = [];
@@ -118,6 +120,104 @@ describe("staticAssetsAdapter", () => {
       await expect(adapter.get("missing")).resolves.toBeNull();
     },
   );
+
+  // As in Next.js, a page's special error that escaped the shell is packaged
+  // with its status on both entries, and a redirect with its location.
+  it.each([
+    { status: 404, headers: undefined },
+    { status: 307, headers: { location: "/target" } },
+  ])(
+    "packages a prerendered $status special error on both entries",
+    async ({ status, headers }) => {
+      const root = createRoot();
+      write(
+        root,
+        "dist/server/vinext-prerender.json",
+        JSON.stringify({
+          buildId: "build-a",
+          routes: [
+            {
+              route: "/special-error",
+              status: "rendered",
+              revalidate: 60,
+              router: "app",
+              responseStatus: status,
+              ...(headers ? { headers } : {}),
+            },
+          ],
+        }),
+      );
+      write(
+        root,
+        "dist/server/prerendered-routes/special-error.html",
+        headers ? "" : "<h1>404</h1>",
+      );
+      write(root, "dist/server/prerendered-routes/special-error.rsc", "rsc payload with digest");
+
+      await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+      const adapter = createStaticAssetsCacheAdapter({
+        env: {
+          ASSETS: {
+            async fetch(input: string) {
+              const file = path.join(root, "dist/client", new URL(input).pathname);
+              return fs.existsSync(file)
+                ? new Response(fs.readFileSync(file))
+                : new Response(null, { status: 404 });
+            },
+          },
+        },
+      });
+
+      for (const kind of ["html", "rsc"] as const) {
+        const cached = await adapter.get(appIsrCacheKey("/special-error", kind, "build-a"));
+        expect(cached?.value).toMatchObject({ kind: "APP_PAGE", status, headers });
+      }
+    },
+  );
+
+  it("packages a PPR fallback shell apart from the page of its literal path", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/:lang/:slug",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            path: "/en/[slug]",
+            fallback: true,
+          },
+        ],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/en/[slug].html", "<h1>shell</h1>");
+    write(root, "dist/server/prerendered-routes/en/[slug].rsc", "shell payload");
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+
+    // A request for `/en/%5Bslug%5D` decodes to the shell's own pathname.
+    for (const kind of ["html", "rsc"] as const) {
+      const shell = await adapter.get(appIsrFallbackShellKey("/en/[slug]", kind, "build-a"));
+      expect(shell?.value).toMatchObject({ kind: "APP_PAGE" });
+      await expect(adapter.get(appIsrCacheKey("/en/[slug]", kind, "build-a"))).resolves.toBeNull();
+    }
+  });
 
   it.each(
     [false, true].flatMap((trailingSlash) =>
@@ -262,6 +362,102 @@ describe("staticAssetsAdapter", () => {
     expect(cached?.value).toEqual(expected);
     await adapter.set(key, null);
     expect(await adapter.get(key)).toEqual(cached);
+  });
+
+  it("retries a cache index fetch that failed", async () => {
+    const indexResponses: Array<() => Promise<Response>> = [
+      () => Promise.reject(new Error("network")),
+      async () => new Response(null, { status: 503 }),
+      async () => Response.json({}),
+    ];
+    const fetch = vi.fn(async (input: string) => {
+      expect(new URL(input).pathname).toBe("/_vinext/static-cache/index.json");
+      return indexResponses.shift()!();
+    });
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    await expect(adapter.get("missing")).rejects.toThrow("network");
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("shares a pending cache index fetch kept alive by the starting request", async () => {
+    let releaseIndex!: (response: Response) => void;
+    const fetch = vi.fn(
+      (_input: string) => new Promise<Response>((resolve) => (releaseIndex = resolve)),
+    );
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    const firstRequest = { waitUntil: vi.fn() };
+    const laterRequest = { waitUntil: vi.fn() };
+    const first = runWithExecutionContext(firstRequest, () => adapter["loadIndex"]());
+    const later = runWithExecutionContext(laterRequest, () => adapter["loadIndex"]());
+    expect(fetch).toHaveBeenCalledOnce();
+    expect(firstRequest.waitUntil).toHaveBeenCalledOnce();
+    expect(laterRequest.waitUntil).not.toHaveBeenCalled();
+    releaseIndex(Response.json({ entry: {} }));
+    expect(await first).toEqual({ entry: {} });
+    expect(await later).toEqual({ entry: {} });
+  });
+
+  it("retries after a shared cache index fetch fails", async () => {
+    const fetch = vi
+      .fn<(input: string) => Promise<Response>>()
+      .mockRejectedValueOnce(new Error("network"))
+      .mockResolvedValueOnce(Response.json({}));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    const request = { waitUntil: vi.fn() };
+    const first = runWithExecutionContext(request, () => adapter["loadIndex"]());
+    const later = runWithExecutionContext(request, () => adapter["loadIndex"]());
+    await expect(first).rejects.toThrow("network");
+    await expect(later).rejects.toThrow("network");
+    await expect(request.waitUntil.mock.calls[0]![0]).resolves.toBeUndefined();
+    expect(await runWithExecutionContext(request, () => adapter["loadIndex"]())).toEqual({});
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not share a pending cache index fetch started outside a request", async () => {
+    let indexFetchStarted!: () => void;
+    const started = new Promise<void>((resolve) => (indexFetchStarted = resolve));
+    const fetch = vi.fn((_input: string) => {
+      if (fetch.mock.calls.length > 1) return Promise.resolve(Response.json({}));
+      indexFetchStarted();
+      return new Promise<Response>(() => {});
+    });
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    void adapter.get("cancelled");
+    await started;
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("remembers that the build packaged no cache index", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 404 }));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an unavailable cache index as a miss when releasing its body fails", async () => {
+    const failingBody = (status: number) =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            throw new Error("cancel failed");
+          },
+        }),
+        { status },
+      );
+    const fetch = vi
+      .fn<(input: RequestInfo | URL) => Promise<Response>>()
+      .mockResolvedValueOnce(failingBody(503))
+      .mockResolvedValueOnce(failingBody(404));
+    const adapter = new StaticAssetsCacheAdapter({ fetch });
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(await adapter.get("missing")).toBeNull();
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it("fails clearly when the configured Assets binding is missing", () => {

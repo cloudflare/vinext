@@ -46,6 +46,22 @@ describe("visited response cache freshness", () => {
     ]);
   });
 
+  it("matches entries for // pathnames by their pathname on the app origin", () => {
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      params: {},
+      response: createCachedResponse(),
+    });
+    const cache = new Map([["//a//attacker.example/z?_rsc=one", entry]]);
+
+    expect(findVisitedResponseCacheEntry(cache, "//b//attacker.example/z?_rsc=two", null)).toBe(
+      null,
+    );
+    expect(
+      findVisitedResponseCacheEntry(cache, "/.//a//attacker.example/z?_rsc=two", null)?.entry,
+    ).toBe(entry);
+  });
+
   it("recognizes positive server and dynamic history lifetimes", () => {
     expect(hasNavigationResponseHistoryLifetime(createCachedResponse())).toBe(false);
     expect(

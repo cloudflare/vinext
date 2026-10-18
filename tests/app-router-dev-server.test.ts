@@ -2,10 +2,18 @@ import http from "node:http";
 import fsp from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import { stripVTControlCharacters } from "node:util";
 import { createLogger, createServer, type ViteDevServer } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import {
+  APP_FIXTURE_DIR,
+  EXTERNAL_REWRITE_HEADER_CASES,
+  expectRepeatedSlashRedirects,
+  fetchHtml,
+  requestExternalRewriteHeaders,
+  startFixtureServer,
+} from "./helpers.js";
 import { createExternalStoreFixture } from "./use-sync-external-store-fixture.js";
 import vinext from "../packages/vinext/src/index.js";
 
@@ -88,6 +96,73 @@ describe("App Router integration", () => {
     await server?.close();
   });
 
+  it.each(["file", "blob", "bytes", "captured-file", "captured-rich"])(
+    "uses the Flight cache codec for %s arguments in dev",
+    async (kind) => {
+      const response = await fetch(
+        `${baseUrl}/api/use-cache-arguments?${new URLSearchParams({ kind, text: "private", time: "111" })}`,
+      );
+      expect(response.status).toBe(200);
+      const result = await response.json();
+      if (kind === "bytes") {
+        expect(result.value).toEqual({
+          type: "Uint8Array",
+          offset: 0,
+          bytes: [...new TextEncoder().encode("private")],
+        });
+      } else if (kind === "captured-rich") {
+        expect(result.value).toMatchObject({
+          file: { name: "private.txt", lastModified: 111, text: "private" },
+          child: "captured child",
+          token: "Symbol(vinext:captured-token)",
+        });
+      } else {
+        expect(result.value).toMatchObject({
+          name: kind === "blob" ? "blob" : "private.txt",
+          // Native FormData gives a Blob's File wrapper the current time.
+          lastModified: kind === "blob" ? expect.any(Number) : 111,
+          text: "private",
+        });
+      }
+    },
+  );
+
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl, { dev: true });
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/middleware-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The App Router's trailingSlash: false rule strips the redirect target
+    // to the root; it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
+  it("never redirects the image endpoint off-site for a source that resolves to //", async () => {
+    for (const source of [
+      "/a/..//evil.com",
+      "/..//evil.com",
+      "/a/%2e%2e//evil.com",
+      "/a/..\\/evil.com",
+    ]) {
+      const res = await fetch(
+        `${baseUrl}/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`,
+        { redirect: "manual" },
+      );
+      expect(res.status, source).toBe(400);
+      expect(res.headers.get("location"), source).toBeNull();
+    }
+    // A dot segment that stays on a single-slash path is still served.
+    const res = await fetch(`${baseUrl}/_next/image?url=%2Fa%2F..%2Fheart.png&w=640&q=75`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe("/heart.png");
+  });
+
   it("renders the home page with root layout", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/");
     expect(res.status).toBe(200);
@@ -95,6 +170,13 @@ describe("App Router integration", () => {
     expect(html).toContain("<html");
     expect(html).toContain("Welcome to App Router");
     expect(html).toContain("Server Component");
+  });
+
+  it("preserves a parallel slot named like the page cache marker in a cached layout", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/use-cache-slot-markers");
+    expect(res.status).toBe(200);
+    expect(html).toContain("<p>page marker slot content</p>");
+    expect(html).toContain("<p>cached layout with marker-named slots</p>");
   });
 
   it("loads the current source App Router request handler in source-checkout tests", async () => {
@@ -1041,6 +1123,100 @@ describe("App Router integration", () => {
     expect(deleteCookie).toContain("Expires=");
   });
 
+  // Next.js writes middleware response headers before the handler runs and
+  // appends the handler's Set-Cookie afterwards, so the browser keeps the
+  // handler's cookie when middleware refreshes the same one.
+  it.each([
+    { method: "POST", status: 200, session: /^session=; / },
+    { method: "PUT", status: 200, session: /^session=rotated; / },
+    { method: "DELETE", status: 307, session: /^session=; / },
+  ])(
+    "orders a route handler's $method cookie after middleware's refresh of it",
+    async ({ method, status, session }) => {
+      const res = await fetch(`${baseUrl}/api/session-refresh`, {
+        method,
+        headers: { cookie: "session=old" },
+        redirect: "manual",
+      });
+      expect(res.status).toBe(status);
+      const sessionCookies = res.headers
+        .getSetCookie()
+        .filter((cookie: string) => cookie.startsWith("session="));
+      expect(sessionCookies).toHaveLength(2);
+      expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
+      expect(sessionCookies[1]).toMatch(session);
+    },
+  );
+
+  // Next.js's send-response keeps a route handler's WWW-Authenticate and
+  // Proxy-Authenticate values after middleware's; singular headers stay
+  // middleware-owned.
+  it("keeps a route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware: a config Set-Cookie
+  // precedes the response's own cookies, and middleware's cookie replaces it.
+  it.each([
+    {
+      path: "/api/config-cookie",
+      cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    {
+      path: "/api/config-cookie?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    {
+      path: "/api/config-cookie?middleware-cookie",
+      cookies: ["middleware-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      http
+        .get(`${baseUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        })
+        .on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
+  });
+
   it("renders custom not-found.tsx for unmatched routes", async () => {
     const res = await fetch(`${baseUrl}/does-not-exist`);
     expect(res.status).toBe(404);
@@ -1099,40 +1275,24 @@ describe("App Router integration", () => {
     expect(html).toContain('content="noindex"');
   });
 
-  it("notFound() from async page with loading.tsx returns 404 (NEXT_NOT_FOUND digest)", async () => {
-    // Same regression path as redirect-with-loading.tsx, but for notFound().
-    // Distinct from forbidden/unauthorized: notFound() throws the bare
-    // "NEXT_NOT_FOUND" digest (not "NEXT_HTTP_ERROR_FALLBACK;404"), which
-    // takes a separate branch in resolveAppPageSpecialError. This is the
-    // most common loading-boundary special-error case in real apps —
-    // a dynamic detail page with a loading state that calls notFound()
-    // when the record is missing.
-    const res = await fetch(`${baseUrl}/notfound-loading`);
-    expect(res.status).toBe(404);
-    const html = await res.text();
-    expect(html).toContain("404 - Page Not Found");
-  });
-
-  it("forbidden() from async page with loading.tsx returns 403 (digest status preserved)", async () => {
-    // Same regression path as the redirect()-with-loading.tsx tests, but
-    // for forbidden() — verifies the post-shell digest swap reads the
-    // status code from NEXT_HTTP_ERROR_FALLBACK;403 rather than coercing
-    // to 404, and renders the root forbidden.tsx boundary.
-    const res = await fetch(`${baseUrl}/forbidden-loading`);
-    expect(res.status).toBe(403);
-    const html = await res.text();
-    expect(html).toContain("403 - Forbidden");
-  });
-
-  it("unauthorized() from async page with loading.tsx returns 401 (digest status preserved)", async () => {
-    // Same regression path as forbidden-loading but for unauthorized() —
-    // verifies the post-shell digest swap honors NEXT_HTTP_ERROR_FALLBACK;401
-    // and renders the root unauthorized.tsx boundary.
-    const res = await fetch(`${baseUrl}/unauthorized-loading`);
-    expect(res.status).toBe(401);
-    const html = await res.text();
-    expect(html).toContain("401 - Unauthorized");
-  });
+  // A special error that the route's loading.tsx boundary catches doesn't
+  // reject the shell. Next.js streams the document as a 200 with the digest,
+  // which the client's boundary renders, and the server-inserted HTML adds
+  // the noindex robots tag for HTTP access fallbacks.
+  it.each([
+    ["notFound()", "/notfound-loading", "NEXT_HTTP_ERROR_FALLBACK;404"],
+    ["forbidden()", "/forbidden-loading", "NEXT_HTTP_ERROR_FALLBACK;403"],
+    ["unauthorized()", "/unauthorized-loading", "NEXT_HTTP_ERROR_FALLBACK;401"],
+  ])(
+    "%s from an async page with loading.tsx streams a 200 with the digest",
+    async (_name, pathname, digest) => {
+      const res = await fetch(`${baseUrl}${pathname}`);
+      expect(res.status).toBe(200);
+      const html = await res.text();
+      expect(html).toContain(`<template data-dgst="${digest}"`);
+      expect(html).toContain('<meta name="robots" content="noindex"/>');
+    },
+  );
 
   it("forbidden() thrown from a layout uses the forbidden boundary", async () => {
     // Ported from Next.js: test/e2e/app-dir/forbidden/basic/forbidden-basic.test.ts
@@ -1340,16 +1500,12 @@ describe("App Router integration", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
-  // ── probePage() with Next.js 15+ async params/searchParams ──
-  // Regression tests: probePage() passed raw null-prototype params instead of
-  // thenable params, so pages using `await params` threw TypeError during probe,
-  // silently defeating early notFound()/redirect() detection.
+  // ── Next.js 15+ async params/searchParams ──
+  // Pages that `await params` or `await searchParams` before calling
+  // notFound()/redirect() must still get the 404/redirect response.
 
   it("notFound() detected via probe when page uses async params pattern", async () => {
     // Page does `const { id } = await params` then calls notFound() for invalid IDs.
-    // Without thenable params, `await params` throws TypeError → probe silently fails
-    // → notFound() is caught during RSC render instead of the probe → still returns
-    // 404 but only by luck of error boundary handling, not the probe path.
     const res = await fetch(`${baseUrl}/probe-async-params/invalid-id`);
     expect(res.status).toBe(404);
     const html = await res.text();
@@ -1365,8 +1521,6 @@ describe("App Router integration", () => {
 
   it("redirect() detected via probe when page uses async searchParams pattern", async () => {
     // Page does `const { dest } = await searchParams` then calls redirect(dest).
-    // Without searchParams in the probe, `await searchParams` throws TypeError →
-    // probe silently fails → redirect() goes through RSC render path instead.
     const res = await fetch(`${baseUrl}/probe-async-search?dest=/about`, { redirect: "manual" });
     expect(res.status).toBeGreaterThanOrEqual(300);
     expect(res.status).toBeLessThan(400);
@@ -1379,34 +1533,25 @@ describe("App Router integration", () => {
     expect(html).toContain("probe-async-search-page");
   });
 
-  it("redirect() from async page with loading.tsx returns 307 (digest captured during shell render)", async () => {
-    // Regression: when a page has a loading.tsx sibling and the page
-    // function is async, the probe used to fire-and-forget the page
-    // promise (to preserve loading.tsx streaming for non-redirecting
-    // pages). The route-level Suspense boundary would absorb the
-    // redirect throw, and React would serialize a "Switched to client
-    // rendering" error into a 200 body instead of returning a clean 307.
-    //
-    // Fix: the probe is skipped entirely for hasLoadingBoundary routes;
-    // the rscErrorTracker captures the NEXT_REDIRECT digest from React's
-    // onError during shell render; the lifecycle inspects the tracker
-    // after the shell promise resolves and swaps the response to a 307.
-    const res = await fetch(`${baseUrl}/protected-loading`, { redirect: "manual" });
-    expect(res.status).toBe(307);
-    expect(res.headers.get("location")).toMatch(/\/$/);
-  });
-
-  it("permanentRedirect() from async page with loading.tsx returns 308 (digest status preserved)", async () => {
-    // Same regression path as the redirect()-with-loading.tsx test above,
-    // but verifies the post-shell digest swap honors the status code from
-    // the NEXT_REDIRECT digest (308) rather than coercing to the 307
-    // default.
-    const res = await fetch(`${baseUrl}/permanent-protected-loading`, {
-      redirect: "manual",
-    });
-    expect(res.status).toBe(308);
-    expect(res.headers.get("location")).toMatch(/\/$/);
-  });
+  // A redirect that the route's loading.tsx boundary catches doesn't reject
+  // the shell. Next.js streams the document as a 200 with the digest and a
+  // meta refresh, rather than a 307/308 with a Location header.
+  it.each([
+    ["redirect()", "/protected-loading", 1],
+    ["permanentRedirect()", "/permanent-protected-loading", 0],
+  ])(
+    "%s from an async page with loading.tsx streams a 200 with the digest and a meta refresh",
+    async (_name, pathname, refreshDelay) => {
+      const res = await fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+      expect(res.status).toBe(200);
+      expect(res.headers.get("location")).toBeNull();
+      const html = await res.text();
+      expect(html).toContain('<template data-dgst="NEXT_REDIRECT;');
+      expect(html).toContain(
+        `<meta id="__next-page-redirect" http-equiv="refresh" content="${refreshDelay};url=/"/>`,
+      );
+    },
+  );
 
   it("permanentRedirect() returns 308 status code", async () => {
     const res = await fetch(`${baseUrl}/permanent-redirect-test`, { redirect: "manual" });
@@ -1537,17 +1682,25 @@ describe("App Router integration", () => {
 
   // Ported from Next.js: test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/metadata-navigation/metadata-navigation.test.ts
-  it("renders the local not-found boundary when generateMetadata() calls notFound()", async () => {
+  // As in Next.js, the HTML keeps the page's content followed by the digest,
+  // and the local boundary arrives only in the Flight data, which the client
+  // renders after hydration.
+  it("streams the local not-found boundary in Flight when generateMetadata() calls notFound()", async () => {
     const res = await fetch(`${baseUrl}/nextjs-compat/generate-metadata-not-found`, {
       headers: { "User-Agent": "Mozilla/5.0" },
     });
 
     expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toContain("Local found boundary");
-    expect(html).not.toContain("not-found-text");
+    // The page's content, then the digest that the client's boundary renders.
+    const contentIndex = html.indexOf("not-found-text");
+    expect(contentIndex).toBeGreaterThan(-1);
+    expect(html.indexOf('<template data-dgst="NEXT_HTTP_ERROR_FALLBACK;404"')).toBeGreaterThan(
+      contentIndex,
+    );
+    expect(html).not.toContain("<h2>Local found boundary</h2>");
     const flightText = [
-      ...html.matchAll(/<script[^>]*>self\.__next_f\.push\(\[1,"([\s\S]*?)"\]\)<\/script>/g),
+      ...html.matchAll(/<script[^>]*>[^<]*\.rsc\.push\("([\s\S]*?)"\)<\/script>/g),
     ]
       .map((match) => match[1])
       .join("");
@@ -1911,6 +2064,28 @@ describe("App Router integration", () => {
     expect(unknown.status).toBe(404);
   });
 
+  it("does not enumerate nested generateStaticParams under parent params the request rules out", async () => {
+    const takeCalls = async () =>
+      (await fetch(`${baseUrl}/layout-segment-config/nested-gsp-calls`)).json();
+    await takeCalls();
+
+    // The layout lists three categories. A child listing runs only for the
+    // one that matches the request, not once per listed category.
+    const known = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/guides/start`);
+    expect(known.status).toBe(200);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    const unknownChild = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/guides/missing`);
+    expect(unknownChild.status).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["guides"] });
+
+    // With no matching category, a single child listing still runs, so a
+    // generator that rewrites its parent's params keeps Next's merge result.
+    const unknownParent = await fetch(`${baseUrl}/layout-segment-config/nested-gsp/missing/x`);
+    expect(unknownParent.status).toBe(404);
+    expect(await takeCalls()).toEqual({ layout: 1, page: ["docs"] });
+  });
+
   it("keeps implicit dynamicParams enabled under a dynamic = 'error' layout", async () => {
     const known = await fetch(`${baseUrl}/layout-segment-config/dynamic-error/known`);
     expect(known.status).toBe(200);
@@ -1936,6 +2111,30 @@ describe("App Router integration", () => {
 
     const unknown = await fetch(`${baseUrl}/layout-segment-config/dynamic-error-false/unknown`);
     expect(unknown.status).toBe(404);
+  });
+
+  // https://github.com/cloudflare/vinext/issues/3919
+  it("completes a dynamic = 'error' page whose server component imports CSS", async () => {
+    // The RSC plugin wraps a CSS-importing page so its props, searchParams
+    // included, go through React's dev-only debug serialization. The headers
+    // arrive either way; only the body hung, so time the body alone.
+    const readBody = (res: Response) =>
+      Promise.race([
+        res.text(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("response body did not finish")), 15_000),
+        ),
+      ]);
+    const pathname = "/nextjs-compat/dynamic-error-css-module";
+    const res = await fetch(`${baseUrl}${pathname}`);
+    expect(res.status).toBe(200);
+    const html = await readBody(res);
+    expect(html).toContain('data-testid="dynamic-error-css-module"');
+    expect(html).toContain("</html>");
+
+    const rsc = await fetch(`${baseUrl}${pathname}.rsc`, { headers: { RSC: "1" } });
+    expect(rsc.status).toBe(200);
+    expect(await readBody(rsc)).toContain('"data-testid":"dynamic-error-css-module"');
   });
 
   it("applies dynamic = 'error' as only-cache fetch policy", async () => {
@@ -2206,22 +2405,63 @@ describe("App Router integration", () => {
     expect(defaultVictim.status).toBe(200);
     expect(await defaultVictim.text()).toContain("VICTIM_DEFAULT_PRIVATE_RECORD");
 
-    for (const [exportName, secret] of [
-      ["readRecord", "VICTIM_PRIVATE_RECORD"],
-      ["default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+    const inlineVictim = await fetch(
+      `${baseUrl}/use-cache-hidden-reference?record=victim&source=inline`,
+      { headers: { Authorization: "Bearer fixture-victim-session" } },
+    );
+    expect(inlineVictim.status).toBe(200);
+    expect(await inlineVictim.text()).toContain("VICTIM_INLINE_PRIVATE_RECORD");
+
+    // Dev ids are module paths, so the source export names and the hoisted
+    // name plugin-rsc gives an inline helper are all derivable.
+    for (const [actionId, secret] of [
+      ["/app/use-cache-hidden-reference/records.ts#readRecord", "VICTIM_PRIVATE_RECORD"],
+      ["/app/use-cache-hidden-reference/records.ts#default", "VICTIM_DEFAULT_PRIVATE_RECORD"],
+      [
+        "/app/use-cache-hidden-reference/inline-records.ts#readInlineRecord",
+        "VICTIM_INLINE_PRIVATE_RECORD",
+      ],
+      [
+        "/app/use-cache-hidden-reference/inline-records.ts#$$hoist_0_readInlineRecord",
+        "VICTIM_INLINE_PRIVATE_RECORD",
+      ],
     ] as const) {
-      const exploit = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+      const fetchAction = await fetch(`${baseUrl}/use-cache-hidden-reference`, {
         method: "POST",
-        headers: {
-          "Content-Type": "text/plain",
-          "x-rsc-action": `/app/use-cache-hidden-reference/records.ts#${exportName}`,
-        },
+        headers: { "Content-Type": "text/plain;charset=UTF-8", "Next-Action": actionId },
         body: JSON.stringify(["victim"]),
       });
+      expect(fetchAction.status).toBe(404);
+      expect(fetchAction.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await fetchAction.text()).not.toContain(secret);
 
-      expect(exploit.status).toBe(404);
-      expect(exploit.headers.get("x-nextjs-action-not-found")).toBe("1");
-      expect(await exploit.text()).not.toContain(secret);
+      const rscAction = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+        body: JSON.stringify(["victim"]),
+      });
+      expect(rscAction.status).toBe(404);
+      expect(rscAction.headers.get("x-nextjs-action-not-found")).toBe("1");
+      expect(await rscAction.text()).not.toContain(secret);
+
+      const form = new FormData();
+      form.append(`$ACTION_ID_${actionId}`, "");
+      form.append("id", "victim");
+      const formAction = await fetch(`${baseUrl}/use-cache-hidden-reference`, {
+        method: "POST",
+        headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+        body: form,
+      });
+      // The hoisted name is no longer exported, so React's decodeAction fails
+      // to resolve it. Like Next.js for an unknown progressive action, that
+      // surfaces as a 500 rather than running anything.
+      if (actionId.endsWith("#$$hoist_0_readInlineRecord")) {
+        expect(formAction.status).toBe(500);
+      } else {
+        expect(formAction.status).toBe(404);
+        expect(formAction.headers.get("x-nextjs-action-not-found")).toBe("1");
+      }
+      expect(await formAction.text()).not.toContain(secret);
     }
   });
 
@@ -2244,6 +2484,60 @@ describe("App Router integration", () => {
     expect(res.status).toBe(404);
     expect(res.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(await res.text()).toBe("Server action not found.");
+  });
+
+  // Next.js only runs Server Action handling for App pages, so a Route
+  // Handler receives multipart POSTs without the action body limit (#3886).
+  it("delivers multipart POSTs larger than the Server Action body limit to a route handler", async () => {
+    const name = "x".repeat(1024 * 1024 + 1);
+    const textBody = new FormData();
+    textBody.append("name", name);
+    const textRes = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body: textBody,
+    });
+    expect(textRes.status).toBe(202);
+    expect(await textRes.json()).toEqual({ message: "ok", name, email: null });
+
+    // The handler ignores `image`; this case guards the body limit only.
+    const fileBody = new FormData();
+    fileBody.append("name", "upload");
+    fileBody.append("image", new Blob([name], { type: "image/bmp" }), "image.bmp");
+    const fileRes = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body: fileBody,
+    });
+    expect(fileRes.status).toBe(202);
+    expect(await fileRes.json()).toEqual({ message: "ok", name: "upload", email: null });
+  });
+
+  it("delivers multipart POSTs with Server Action fields to a route handler", async () => {
+    const body = new FormData();
+    body.append("$ACTION_ID_deadbeef", "");
+    body.append("name", "not-an-action");
+    const res = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      headers: { Origin: baseUrl, Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ message: "ok", name: "not-an-action", email: null });
+  });
+
+  it("does not apply the Server Action origin check to multipart route handler POSTs", async () => {
+    const body = new FormData();
+    body.append("name", "cross-origin");
+    const res = await fetch(`${baseUrl}/api/methods`, {
+      method: "POST",
+      // The dev origin guard admits any *.localhost origin; the Server Action
+      // check would reject it as cross-origin.
+      headers: { Origin: "http://other.localhost", Host: new URL(baseUrl).host },
+      body,
+    });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ message: "ok", name: "cross-origin", email: null });
   });
 
   it("returns action-not-found before reading cyclic multipart payloads for stale ids", async () => {
@@ -2466,16 +2760,12 @@ describe("App Router route-miss root layout redirects", () => {
     expect(body).toContain("/result");
   });
 
-  // The RSC drain applies to every HTTP-access fallback, not only route misses.
-  // `/gated` is a *matched* route that calls notFound(); its route-level
-  // not-found boundary (app/gated/not-found.tsx) redirects on its own header.
-  // That boundary renders only during the not-found fallback — not the
-  // matched-route layout probe — so the async redirect is caught by the
-  // renderAppPageBoundaryElementResponse drain, the new code path, rather than
-  // the layout special-error path. (The layout-redirect header is intentionally
-  // NOT sent here, so the root layout renders normally and we actually reach
-  // the fallback.)
-  it("encodes a matched-route not-found boundary's async redirect into the RSC flight", async () => {
+  // `/gated` is a matched route whose page calls notFound(). As in Next.js,
+  // an RSC request renders the page, so the notFound() digest and the route's
+  // not-found boundary (app/gated/not-found.tsx) travel in the Flight payload
+  // and the client router shows the boundary. A redirect() in that boundary
+  // travels the same way.
+  it("streams a matched-route not-found boundary's redirect in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: {
@@ -2486,25 +2776,22 @@ describe("App Router route-miss root layout redirects", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/result");
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("NEXT_REDIRECT");
-    expect(body).toContain("/result");
+    expect(body).toContain("result");
   });
 
-  // Guards the drain's cost side: a matched-route not-found with no redirect
-  // must still produce a normal 404 flight. The stream is now buffered before
-  // responding, so this proves buffering does not corrupt or drop the payload.
-  it("still returns a normal 404 flight for a matched-route not-found without a redirect", async () => {
+  it("streams a matched-route not-found boundary in the RSC flight", async () => {
     const res = await fetch(`${baseUrl}/gated.rsc`, {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
 
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
-    expect(res.headers.get("x-vinext-rsc-redirect")).toBeNull();
     const body = await res.text();
+    expect(body).toContain("NEXT_HTTP_ERROR_FALLBACK;404");
     expect(body).toContain("Gated Not Found");
   });
 
@@ -2563,6 +2850,46 @@ describe("App Router custom publicDir in dev", () => {
   });
 });
 
+describe("App Router class-based cache.data adapter in dev", () => {
+  // The fixture adapter answers the `/unstable-cache-test` page's
+  // `unstable_cache` lookup with a value taken from its constructor options, so
+  // the rendered page proves vinext constructed the class with
+  // `{ env, options }` and registered the instance as the data cache handler.
+  const label = "served-by-class-adapter";
+  let warn: ReturnType<typeof vi.spyOn>;
+  let server: ViteDevServer;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    warn = vi.spyOn(console, "warn");
+    ({ server, baseUrl } = await startFixtureServer(APP_FIXTURE_DIR, {
+      cache: {
+        data: {
+          adapter: toSlash(path.join(APP_FIXTURE_DIR, "lib/class-data-cache-adapter.ts")),
+          options: { label },
+        },
+      },
+    }));
+  }, 60_000);
+
+  afterAll(async () => {
+    warn?.mockRestore();
+    await server?.close();
+  });
+
+  it("constructs the class and serves unstable_cache from the instance", async () => {
+    const response = await fetch(`${baseUrl}/unstable-cache-test`);
+    const html = await response.text();
+
+    const adapterWarnings = warn.mock.calls
+      .map((call: unknown[]) => call.map(String).join(" "))
+      .filter((message: string) => message.includes("cache adapter"));
+    expect(adapterWarnings).toEqual([]);
+    expect(response.status).toBe(200);
+    expect(html).toMatch(new RegExp(`CachedValue: (?:<!-- -->)?${label}`));
+  });
+});
+
 describe("App Router public files whose route starts with basePath in dev", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -2586,6 +2913,54 @@ describe("App Router public files whose route starts with basePath in dev", () =
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("GET, HEAD");
     expect(await res.text()).toBe("Method Not Allowed");
+  });
+
+  // Next.js routes `_next/data` by the raw page path, like the page request:
+  // an encoded locale names no locale and dynamic params decode once.
+  it("routes Pages data requests by the raw page path behind basePath and i18n", async () => {
+    const html = await (await fetch(`${baseUrl}/docs/pages-to-app/x`)).text();
+    const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+    expect(buildId).toBeTruthy();
+    const dataUrl = (page: string) => `${baseUrl}/docs/_next/data/${buildId}/${page}.json`;
+
+    for (const page of ["pages-to-app/a%2561", "fr/pages-to-app/a%2561"]) {
+      const res = await fetch(dataUrl(page));
+      expect(res.status, page).toBe(200);
+      expect((await res.json()).pageProps, page).toEqual({ params: { slug: "a%61" } });
+    }
+
+    for (const page of ["%66r/pages-to-app/a", "%70ages-to-app/a"]) {
+      const res = await fetch(dataUrl(page));
+      expect(res.status, page).toBeLessThan(500);
+      expect(await res.text(), page).not.toContain("pageProps");
+    }
+
+    // An encoded `_next/data` prefix is an ordinary page path, as in production.
+    const encodedPrefix = await fetch(
+      `${baseUrl}/docs/_next/%64ata/${buildId}/pages-to-app/a.json`,
+    );
+    expect(encodedPrefix.status).toBe(404);
+    expect(await encodedPrefix.text()).not.toContain("pageProps");
+  });
+
+  // Next.js parses every rewrite destination as a URL, so the static
+  // `encoded-parity-café` page 404s in every phase and a capture decodes once.
+  it("serializes Pages rewrite destinations in every rewrite phase", async () => {
+    for (const phase of ["before", "after", "fallback"]) {
+      const staticPage = await fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}`);
+      expect(staticPage.status, phase).toBe(404);
+      expect(await staticPage.text(), phase).not.toContain("encoded-parity-cafe");
+
+      const dynamicPage = await fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}-dynamic`);
+      expect(dynamicPage.status, phase).toBe(200);
+      expect(await dynamicPage.text(), phase).toContain('"slug":"café"');
+
+      const capture = (n: string) =>
+        fetch(`${baseUrl}/docs/encoded-parity-pages/${phase}-capture?n=${encodeURIComponent(n)}`);
+      const dotCapture = await capture("../pages-script-manual-nonce");
+      expect(dotCapture.status, phase).toBe(404);
+      expect(await dotCapture.text(), phase).not.toContain("<p>script-nonce</p>");
+    }
   });
 });
 

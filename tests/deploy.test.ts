@@ -697,9 +697,21 @@ describe("parseWorkerDeploymentUrl", () => {
   it.each([
     ["app.example.com/*", "https://app.example.com"],
     ["https://app.example.com/*", "https://app.example.com"],
-    ["http://app.example.com/*", "http://app.example.com"],
   ])("uses a concrete catch-all Worker route for CDN warmup: %s", (route, expected) => {
     expect(parseCdnWarmupDeploymentUrl(`Deployed app triggers\n  ${route}\n`)).toBe(expected);
+  });
+
+  it("never selects an http-only Worker route as the secret-bearing warmup target", () => {
+    // Cloudflare only matches `http://` route patterns for HTTP requests, so
+    // the route has no HTTPS origin to warm through. Fall back to workers.dev.
+    expect(
+      parseCdnWarmupDeploymentUrl(
+        "Deployed my-app triggers (0.41 sec)\n  http://app.example.com/* (zone name: example.com)\n  https://my-app.acct.workers.dev\n",
+      ),
+    ).toBe("https://my-app.acct.workers.dev");
+    expect(
+      parseCdnWarmupDeploymentUrl("Deployed app triggers\n  http://app.example.com/*\n"),
+    ).toBeNull();
   });
 
   it("prefers a concrete Worker route over a workers.dev fallback", () => {
@@ -990,7 +1002,6 @@ describe("parseDeployArgs", () => {
       "--dangerously-promote-on-warm-cache-error",
       "--warm-cache-no-promote",
       "--warm-cache-promotion-delay=2500",
-      "--warm-cache-include-fallbacks",
     ];
     const parsed = parseDeployArgs(
       spelling === "legacy"
@@ -1024,8 +1035,24 @@ describe("parseDeployArgs", () => {
     expect(parsed.dangerouslyPromoteOnCdnWarmError).toBe(true);
     expect(parsed.warmCdnPromote).toBe(false);
     expect(parsed.warmCdnPromotionDelay).toBe(2500);
-    expect(parsed.warmCdnIncludeFallbacks).toBe(true);
   });
+
+  it.each(["--warm-cache-include-fallbacks", "--warm-cdn-include-fallbacks"])(
+    "accepts the removed %s flag as a no-op",
+    (flag) => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        expect(parseDeployArgs(["--warm-cache", flag])).toEqual(parseDeployArgs(["--warm-cache"]));
+        expect(warn).toHaveBeenCalledOnce();
+        expect(warn).toHaveBeenCalledWith(
+          "[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.",
+        );
+        expect(formatDeployHelp()).not.toContain("include-fallbacks");
+      } finally {
+        warn.mockRestore();
+      }
+    },
+  );
 
   it.each([
     "http://app.example.com",
@@ -1331,8 +1358,10 @@ describe("generateWranglerConfig", () => {
     expect(parsed.main).toBe("vinext/server/fetch-handler");
     expect(parsed.assets).toEqual({
       directory: "dist/client",
+      html_handling: "none",
       not_found_handling: "none",
       binding: "ASSETS",
+      run_worker_first: ["/*", "!/_next/static/*", "!/*/_next/static/*"],
     });
     expect(parsed.$schema).toBe("node_modules/wrangler/config-schema.json");
   });
@@ -1606,18 +1635,30 @@ describe("scanPublicFileRoutes", () => {
     expect(scanPublicFileRoutes(tmpDir, "")).toEqual([]);
   });
 
+  it("lists the files under every symlink to a directory without following a loop", () => {
+    writeFile(tmpDir, "shared/logo.svg", "<svg />");
+    mkdir(tmpDir, "public");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/a"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "shared"), path.join(tmpDir, "public/b"), "junction");
+    fs.symlinkSync(path.join(tmpDir, "public"), path.join(tmpDir, "public/loop"), "junction");
+
+    expect(scanPublicFileRoutes(tmpDir)).toEqual(["/a/logo.svg", "/b/logo.svg"]);
+  });
+
   // Ported from Next.js: test/e2e/dynamic-routing/shared.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/shared.ts
-  it("stores public-file routes with URL-encoded path segments", () => {
+  it("stores public-file routes as normalized request pathnames", () => {
     writeFile(tmpDir, "public/hello copy.txt", "space");
     writeFile(tmpDir, "public/hello+copy.txt", "plus");
     writeFile(tmpDir, "public/hello%20copy.txt", "percent");
+    writeFile(tmpDir, "public/C#-notes.txt", "hash");
 
+    // One key per file: an encoded variant such as /hello%20copy.txt for
+    // public/hello copy.txt would let the double-encoded alias match.
     expect(scanPublicFileRoutes(tmpDir)).toEqual([
+      "/C%23-notes.txt",
       "/hello copy.txt",
       "/hello%20copy.txt",
-      "/hello%2520copy.txt",
-      "/hello%2Bcopy.txt",
       "/hello+copy.txt",
     ]);
   });
@@ -1808,9 +1849,9 @@ describe("readPagesRouterEntrySource", () => {
 
   it("includes an open-redirect guard that rejects encoded backslash and slash", () => {
     const content = readPagesRouterEntrySource();
-    expect(content).toContain("isOpenRedirectShaped");
+    expect(content).toContain("guardProtocolRelativeUrl");
     expect(content).toContain('from "./request-pipeline.js"');
-    expect(content).toContain("isOpenRedirectShaped(pathname)");
+    expect(content).toContain("guardProtocolRelativeUrl(pathname, url.search)");
   });
 
   it("delegates image transforms to the configured adapter", () => {
@@ -2150,6 +2191,38 @@ describe("readPagesRouterEntrySource", () => {
     expect(Object.fromEntries(assetRequest.headers)).toEqual(Object.fromEntries(source.headers));
   });
 
+  it("keeps a ? or # in a public file's name in the asset path", () => {
+    const source = new Request("https://example.com/a%23b.txt?x=1");
+
+    expect(createStaticAssetRequest("/a#b.txt", source).url).toBe("https://example.com/a%23b.txt");
+    expect(createStaticAssetRequest("/a?b.txt", source).url).toBe("https://example.com/a%3Fb.txt");
+  });
+
+  it("retargets Worker assets with middleware's request header overrides", () => {
+    const source = new Request("https://example.com/video.mp4", {
+      method: "HEAD",
+      headers: { range: "bytes=0-2", "if-none-match": '"original"' },
+    });
+
+    const assetRequest = createStaticAssetRequest(
+      "/video.mp4",
+      source,
+      new Headers({ "if-none-match": '"replaced"' }),
+    );
+    expect(assetRequest.method).toBe("HEAD");
+    expect(Object.fromEntries(assetRequest.headers)).toEqual({ "if-none-match": '"replaced"' });
+  });
+
+  it("passes a signal's request headers to the asset fetch", async () => {
+    const requestHeaders = new Headers({ accept: "video/*" });
+    const fetchAsset = vi.fn(async () => new Response("asset"));
+    await resolveStaticAssetSignal(
+      createStaticFileSignal("/video.mp4", { headers: null, status: null }, requestHeaders),
+      { fetchAsset },
+    );
+    expect(fetchAsset).toHaveBeenCalledWith("/video.mp4", requestHeaders);
+  });
+
   it("preserves x-middleware-request-* headers for prod request override handling", () => {
     const content = readPagesRouterEntrySource();
     // applyMiddlewareRequestHeaders is now called inside runPagesRequest.
@@ -2309,6 +2382,54 @@ describe("fetchWorkerFilesystemRoute", () => {
     },
   );
 
+  // Like Next.js' filesystem getItem, nothing resolves outside the basePath,
+  // whether the request's own pathname or a rewrite destination.
+  it.each(["direct", "beforeFiles", "afterFiles", "fallback"] as const)(
+    "resolves nothing outside the basePath during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("asset"));
+      for (const pathname of ["/file.txt", "/_next/static/app.js"]) {
+        expect(
+          await fetchWorkerFilesystemRoute(
+            new Request("https://example.com/docs/source"),
+            pathname,
+            phase,
+            fetchAsset,
+            new Set(["/file.txt"]),
+            "/docs",
+            "",
+            false,
+          ),
+        ).toBe(false);
+      }
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  // Next.js' built-in assetPrefix rewrite maps `${assetPrefix}/_next/*` into
+  // the basePath, so a path assetPrefix outside it still reaches build assets.
+  it("still resolves build assets under an assetPrefix outside the basePath", async () => {
+    const fetchAsset = vi.fn(async () => new Response("asset"));
+    const lookup = (pathname: string) =>
+      fetchWorkerFilesystemRoute(
+        new Request("https://example.com/cdn/source", { method: "POST" }),
+        pathname,
+        "direct",
+        fetchAsset,
+        new Set(["/cdn/file.txt"]),
+        "/docs",
+        "/cdn",
+        false,
+      );
+
+    const result = await lookup("/cdn/_next/static/app.js");
+    expect(result).not.toBe(false);
+    expect((result as Response).status).toBe(405);
+    expect(await lookup("/cdn/file.txt")).toBe(false);
+    expect(await lookup("/_next/static/app.js")).toBe(false);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
   it("falls through on asset misses and preserves HEAD", async () => {
     const fetchAsset = vi.fn(async (request: Request) => {
       expect(request.method).toBe("HEAD");
@@ -2391,7 +2512,7 @@ describe("fetchWorkerFilesystemRoute", () => {
   });
 
   it.each(["/hello%20copy.txt", "/hello copy.txt"])(
-    "matches encoded public-file inventory for %s",
+    "matches the decoded public-file inventory for %s",
     async (requestPathname) => {
       const fetchAsset = vi.fn(async () => new Response(null, { status: 200 }));
 
@@ -2400,7 +2521,7 @@ describe("fetchWorkerFilesystemRoute", () => {
         requestPathname,
         "direct",
         fetchAsset,
-        new Set(["/hello copy.txt", "/hello%20copy.txt"]),
+        new Set(["/hello copy.txt"]),
       );
 
       expect(result).toBeInstanceOf(Response);
@@ -2423,13 +2544,90 @@ describe("fetchWorkerFilesystemRoute", () => {
     expect(fetchAsset).toHaveBeenCalledOnce();
   });
 
-  it("skips direct and API filesystem probes", async () => {
+  // run_worker_first sends direct public-file requests to the Worker, which
+  // serves them after middleware has run.
+  it.each(["GET", "HEAD"])("serves a direct %s for a public file", async (method) => {
+    const fetchAsset = vi.fn(async (request: Request) => {
+      expect(request.method).toBe(method);
+      return new Response(method === "GET" ? "public" : null);
+    });
+
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/file.txt", { method }),
+      "/file.txt",
+      "direct",
+      fetchAsset,
+      new Set(["/file.txt"]),
+    );
+
+    expect(result).toBeInstanceOf(Response);
+    expect(fetchAsset).toHaveBeenCalledOnce();
+  });
+
+  it.each(["GET", "POST"])(
+    "does not serve a direct %s for a public file outside basePath",
+    async (method) => {
+      const fetchAsset = vi.fn(async () => new Response("public"));
+
+      const result = await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/file.txt", { method }),
+        "/file.txt",
+        "direct",
+        fetchAsset,
+        new Set(["/file.txt"]),
+        "/docs",
+        "",
+        false,
+      );
+
+      expect(result).toBe(false);
+      expect(fetchAsset).not.toHaveBeenCalled();
+    },
+  );
+
+  it("serves a public file a rewrite brings into basePath from outside it", async () => {
+    const fetchAsset = vi.fn(async () => new Response("public"));
+
+    // The destination's basePath decides, not the request's.
+    const result = await fetchWorkerFilesystemRoute(
+      new Request("https://example.com/source"),
+      "/file.txt",
+      "beforeFiles",
+      fetchAsset,
+      new Set(["/file.txt"]),
+      "/docs",
+      "",
+      true,
+    );
+
+    expect(result).toBeInstanceOf(Response);
+  });
+
+  it.each(["direct", "afterFiles"] as const)(
+    "serves a public file under /api during %s",
+    async (phase) => {
+      const fetchAsset = vi.fn(async () => new Response("{}"));
+
+      const result = await fetchWorkerFilesystemRoute(
+        new Request("https://example.com/api/schema.json"),
+        "/api/schema.json",
+        phase,
+        fetchAsset,
+        new Set(["/api/schema.json"]),
+      );
+
+      expect(result).toBeInstanceOf(Response);
+      expect(fetchAsset).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("skips direct build-asset reads and API filesystem probes", async () => {
     const fetchAsset = vi.fn(async () => new Response("unexpected"));
 
     expect(
       await fetchWorkerFilesystemRoute(
-        new Request("https://example.com/file.txt"),
-        "/file.txt",
+        new Request("https://example.com/_next/static/chunks/app.js"),
+        "/_next/static/chunks/app.js",
         "direct",
         fetchAsset,
         new Set(["/file.txt"]),

@@ -2,8 +2,13 @@ import React, { type ComponentType, type ReactNode } from "react";
 import type { VinextNextData } from "../client/vinext-next-data.js";
 import type { CachedPagesValue } from "vinext/shims/cache-handler";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import {
+  createDocumentPlaceholderToken,
+  withDocumentPlaceholders,
+} from "vinext/shims/document-placeholders";
 import {
   applyCdnResponseHeaders,
   hasCdnResponsePolicy,
@@ -16,7 +21,7 @@ import {
   ISR_NO_STORE_CACHE_CONTROL,
 } from "./isr-decision.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
-import { encodeCacheTag } from "../utils/encode-cache-tag.js";
+import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -34,9 +39,15 @@ import {
   applyDocumentAssetProps,
   extractDocumentAssetProps,
 } from "./pages-document-asset-props.js";
+import {
+  spliceDocumentHeadClose,
+  spliceDocumentHeadOpen,
+  spliceDocumentScripts,
+  splitDocumentAtMain,
+} from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
-import { matchesIfNoneMatch } from "./http-conditional.js";
+import { isPageNotModified } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -65,14 +76,18 @@ export function generatePagesETag(payload: string): string {
 }
 
 /**
- * Returns true when a request `Cache-Control` header asks to bypass the 304
- * short-circuit. Mirrors the `fresh` package's check used by Next.js's
- * `sendEtagResponse` (`/(?:^|,)\s*?no-cache\s*?(?:,|$)/`). Shared by the
- * fresh-MISS bot path here and the ISR HIT/STALE paths in
- * `pages-page-data.ts` so the two cannot drift.
+ * Whether a render answers a matching If-None-Match with a 304. Next.js stores
+ * the page before it evaluates the ETag, so when the CDN adapter stores the
+ * completed response, the render returns the page and the adapter sends the 304.
+ * A page whose status carries no body has nothing to store.
  */
-export function requestsNoCache(cacheControl: string | undefined): boolean {
-  return /(?:^|,)\s*no-cache\s*(?:,|$)/.test(cacheControl ?? "");
+export function rendersPagesNotModified(status: number): boolean {
+  return (
+    status === 204 ||
+    status === 205 ||
+    status === 304 ||
+    getCdnCacheAdapter().deferNotModifiedResponse?.() !== true
+  );
 }
 
 type PagesFontPreload = {
@@ -163,6 +178,8 @@ type RenderPagesPageResponseOptions = {
   isrRevalidateSeconds: number | false | null;
   /** Synchronous `res.revalidate()` render; cache persistence must finish before returning. */
   isOnDemandRevalidate?: boolean;
+  /** Background ISR regeneration; the cache write must finish before returning. */
+  isStaleRegeneration?: boolean;
   isStaticPropsRoute?: boolean;
   isrSet: (key: string, data: CachedPagesValue, policy: IsrWritePolicy) => Promise<void>;
   i18n: PagesI18nRenderContext;
@@ -213,6 +230,11 @@ type RenderPagesPageResponseOptions = {
    * Only evaluated on bot/buffered responses that carry an ETag.
    */
   ifNoneMatch?: string;
+  /**
+   * The incoming request's `If-Modified-Since` header value. As in Next.js,
+   * which gives a page no Last-Modified, a request with it gets the page.
+   */
+  ifModifiedSince?: string;
   /**
    * The incoming request's `Cache-Control` header value. When the value
    * contains `no-cache`, the 304 short-circuit is skipped and a full 200
@@ -302,7 +324,6 @@ export function buildPagesNextDataScript(
 }
 
 async function buildPagesShellHtml(
-  bodyMarker: string,
   fontHeadHTML: string,
   nextDataScript: string,
   options: Pick<
@@ -321,15 +342,17 @@ async function buildPagesShellHtml(
     resolvedDocProps?: Record<string, unknown> | null;
     crossOrigin?: string;
   },
-): Promise<string> {
+): Promise<{ prefix: string; suffix: string }> {
   if (options.DocumentComponent) {
     const docProps =
       options.resolvedDocProps ?? (await loadUserDocumentInitialProps(options.DocumentComponent));
     const docElement = docProps
       ? React.createElement(options.DocumentComponent, docProps)
       : React.createElement(options.DocumentComponent);
+    const token = createDocumentPlaceholderToken();
     const renderedDocument = extractDocumentAssetProps(
-      await options.renderDocumentToString(docElement),
+      await options.renderDocumentToString(withDocumentPlaceholders(docElement, token)),
+      token,
     );
     let html = renderedDocument.html;
     const generatedAssetTags = applyDocumentAssetProps(options.assetTags, renderedDocument.props, {
@@ -343,27 +366,19 @@ async function buildPagesShellHtml(
       renderedDocument.props,
       { configuredCrossOrigin: options.crossOrigin },
     );
-    html = html.replace("__NEXT_MAIN__", bodyMarker);
     // Next.js renders the collected `next/head` array before children declared
     // inside a custom Document's <Head>. Insert it after the opening tag so the
     // default charset remains the first element even when <Head> has props.
-    if (options.ssrHeadHTML) {
-      html = html.replace(
-        /<head(?:\s[^>]*)?>/i,
-        (openingHead) => `${openingHead}${options.ssrHeadHTML}`,
-      );
-    }
-    if (generatedAssetTags || fontHeadHTML || options.tailHeadHTML) {
-      html = html.replace(
-        "</head>",
-        `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n</head>`,
-      );
-    }
-    html = html.replace("<!-- __NEXT_SCRIPTS__ -->", generatedNextDataScript);
-    if (!html.includes("__NEXT_DATA__")) {
-      html = html.replace("</body>", `  ${generatedNextDataScript}\n</body>`);
-    }
-    return html;
+    html = spliceDocumentHeadOpen(html, token, options.ssrHeadHTML);
+    html = spliceDocumentHeadClose(
+      html,
+      token,
+      generatedAssetTags || fontHeadHTML || options.tailHeadHTML
+        ? `  ${fontHeadHTML}\n  ${generatedAssetTags}\n  ${options.tailHeadHTML}\n`
+        : "",
+    );
+    html = spliceDocumentScripts(html, token, generatedNextDataScript);
+    return splitDocumentAtMain(html, token);
   }
 
   // charset + viewport are emitted via getSSRHeadHTML() (next/head's
@@ -383,16 +398,16 @@ async function buildPagesShellHtml(
       configuredCrossOrigin: options.crossOrigin,
     },
   );
-  return (
-    "<!DOCTYPE html>\n<html>\n<head>\n" +
-    `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
-    `  ${generatedAssetTags}\n` +
-    `  ${options.tailHeadHTML}\n` +
-    "</head>\n<body>\n" +
-    `  <div id="__next">${bodyMarker}</div>\n` +
-    `  ${generatedNextDataScript}\n` +
-    "</body>\n</html>"
-  );
+  return {
+    prefix:
+      "<!DOCTYPE html>\n<html>\n<head>\n" +
+      `  ${options.ssrHeadHTML}${fontHeadHTML}\n` +
+      `  ${generatedAssetTags}\n` +
+      `  ${options.tailHeadHTML}\n` +
+      "</head>\n<body>\n" +
+      '  <div id="__next">',
+    suffix: `</div>\n  ${generatedNextDataScript}\n</body>\n</html>`,
+  };
 }
 
 async function buildPagesCompositeStream(
@@ -541,7 +556,6 @@ export async function renderPagesPageResponse(
     nextData: options.nextData,
     vinext: options.vinext,
   });
-  const bodyMarker = "<!--VINEXT_STREAM_BODY-->";
 
   // Custom `_document.getInitialProps()` may opt in to wrapping the page tree
   // via `ctx.renderPage({ enhanceApp, enhanceComponent })` (e.g. for
@@ -574,7 +588,13 @@ export async function renderPagesPageResponse(
         asPath: options.routeUrl,
       },
     });
-    if (options.documentReqRes?.res.headersSent && options.documentReqRes.responsePromise) {
+    if (
+      // Next.js still renders and stores a getStaticProps page whose response
+      // was sent; it returns the sent response after the ISR write below.
+      !options.isStaticPropsRoute &&
+      options.documentReqRes?.res.headersSent &&
+      options.documentReqRes.responsePromise
+    ) {
       return { documentRenderPage, responseSent: true };
     }
 
@@ -631,25 +651,27 @@ export async function renderPagesPageResponse(
     if (tailHeadHTML) tailHeadHTML += "\n  ";
     tailHeadHTML += documentRenderPage.stylesHTML;
   }
-  const shellHtml = await buildPagesShellHtml(bodyMarker, fontHeadHTML, nextDataScript, {
-    assetTags: options.assetTags,
-    disableOptimizedLoading: options.disableOptimizedLoading,
-    DocumentComponent: options.DocumentComponent,
-    renderDocumentToString: options.renderDocumentToString,
-    ssrHeadHTML,
-    tailHeadHTML,
-    // When the renderPage path already invoked getInitialProps, reuse its
-    // resolved props instead of calling it a second time.
-    // `skipped` means it was never invoked → fall through to the fast path.
-    resolvedDocProps: documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
-    crossOrigin: options.crossOrigin,
-  });
+  const { prefix: shellPrefix, suffix: shellSuffix } = await buildPagesShellHtml(
+    fontHeadHTML,
+    nextDataScript,
+    {
+      assetTags: options.assetTags,
+      disableOptimizedLoading: options.disableOptimizedLoading,
+      DocumentComponent: options.DocumentComponent,
+      renderDocumentToString: options.renderDocumentToString,
+      ssrHeadHTML,
+      tailHeadHTML,
+      // When the renderPage path already invoked getInitialProps, reuse its
+      // resolved props instead of calling it a second time.
+      // `skipped` means it was never invoked → fall through to the fast path.
+      resolvedDocProps:
+        documentRenderPage.status === "skipped" ? null : documentRenderPage.docProps,
+      crossOrigin: options.crossOrigin,
+    },
+  );
 
   options.clearSsrContext();
 
-  const markerIndex = shellHtml.indexOf(bodyMarker);
-  const shellPrefix = shellHtml.slice(0, markerIndex);
-  const shellSuffix = shellHtml.slice(markerIndex + bodyMarker.length);
   const responseHeaders = new Headers({ "Content-Type": "text/html; charset=utf-8" });
   const finalStatus = applyGsspHeaders(
     responseHeaders,
@@ -659,8 +681,8 @@ export async function renderPagesPageResponse(
 
   let responseBodyStream = bodyStream;
   if (
-    // Keep nonce-bearing pages out of ISR writes: rewritePagesCachedHtml()
-    // later matches the cached __NEXT_DATA__ block via a bare <script> marker.
+    // Keep nonce-bearing pages out of ISR writes so one request's nonce is
+    // never replayed to other visitors from the shared cache.
     !options.scriptNonce &&
     options.isrRevalidateSeconds !== null &&
     (options.isrRevalidateSeconds === false || options.isrRevalidateSeconds > 0)
@@ -683,17 +705,34 @@ export async function renderPagesPageResponse(
       setCache: options.isrSet,
       shellPrefix,
       shellSuffix,
-      status: finalStatus,
+      // Next.js stores no status for a Pages entry, so one that `_app` or
+      // `_document` set on its res never replays from the cache.
+      status: options.isStaticPropsRoute ? (options.statusCode ?? 200) : finalStatus,
       stream: cacheBodyStream,
     };
-    if (options.isOnDemandRevalidate) {
+    if (options.isOnDemandRevalidate || options.isStaleRegeneration) {
       // Next.js's internal revalidate path waits for `mocked.res.hasStreamed`.
       // Do the equivalent here so `await res.revalidate()` cannot resolve
-      // before the regenerated HTML is fully rendered and persisted.
+      // before the regenerated HTML is fully rendered and persisted. Stale
+      // regeneration likewise has no response for the write to outlive.
       await writePagesIsrCache(cacheWriteOptions);
     } else {
       schedulePagesIsrCacheWrite(cacheWriteOptions);
     }
+  }
+
+  // `_app` or `_document` sent the response of a getStaticProps page. The
+  // entry above is still stored, but the visitor gets the sent response. An
+  // on-demand revalidation reports the regenerated entry instead.
+  if (
+    !options.isOnDemandRevalidate &&
+    options.documentReqRes?.res.headersSent &&
+    options.documentReqRes.responsePromise
+  ) {
+    // Cancelling one tee branch settles only once the cache branch finishes,
+    // so don't hold the sent response for the rest of the render.
+    responseBodyStream.cancel().catch(() => {});
+    return options.documentReqRes.responsePromise;
   }
 
   const compositeStream = await buildPagesCompositeStream(
@@ -718,17 +757,14 @@ export async function renderPagesPageResponse(
     // Fresh ISR (MISS) response: route through the CDN adapter with the path tag
     // used by Pages Router invalidation while the default emits Cache-Control.
     const isrPathname = options.isrCachePathname ?? options.routeUrl.split("?")[0];
-    const stem = isrPathname.endsWith("/") ? isrPathname.slice(0, -1) : isrPathname;
+    const pathTag = pagesPathCacheTag(isrPathname);
     applyCdnResponseHeaders(responseHeaders, {
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
-      tags: [encodeCacheTag(`_N_T_${stem || "/"}`)],
+      tags: [pathTag],
     });
     if (options.isOnDemandRevalidate) {
       responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
-      responseHeaders.set(
-        VINEXT_REVALIDATED_CACHE_TAG_HEADER,
-        encodeCacheTag(`_N_T_${stem || "/"}`),
-      );
+      responseHeaders.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeURIComponent(pathTag));
     } else {
       setCacheStateHeaders(responseHeaders, "MISS");
     }
@@ -777,8 +813,17 @@ export async function renderPagesPageResponse(
     const fullHtml = await readStreamAsText(compositeStream);
     const etag = generatePagesETag(fullHtml);
     responseHeaders.set("ETag", etag);
-    const noCacheRequested = requestsNoCache(options.requestCacheControl);
-    if (!noCacheRequested && options.ifNoneMatch && matchesIfNoneMatch(options.ifNoneMatch, etag)) {
+    if (
+      isPageNotModified(
+        {
+          cacheControl: options.requestCacheControl,
+          ifModifiedSince: options.ifModifiedSince,
+          ifNoneMatch: options.ifNoneMatch,
+        },
+        etag,
+      ) &&
+      rendersPagesNotModified(finalStatus)
+    ) {
       return new Response(null, {
         status: 304,
         headers: responseHeaders,

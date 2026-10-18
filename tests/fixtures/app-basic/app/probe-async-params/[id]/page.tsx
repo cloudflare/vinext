@@ -4,10 +4,8 @@ export const dynamic = "force-dynamic";
 
 const VALID_IDS = ["valid-1", "valid-2"];
 
-// Uses the Next.js 15+ async params pattern: destructures after await.
-// If probePage() passes raw null-prototype params instead of thenable params,
-// `await params` throws TypeError and the probe silently fails, meaning
-// notFound() is never detected early.
+// Uses the Next.js 15+ async params pattern: destructures after await, then
+// calls notFound().
 export default async function ProbeAsyncParamsPage({
   params,
 }: {

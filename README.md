@@ -147,6 +147,9 @@ Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 Cloudflare init uses `cf` and `cloudflare.config.ts` by default. Both `vinext init`
 and `create-vinext-app` accept `--legacy-wrangler-cloudflare-init` to retain the
 legacy Wrangler setup. Existing Wrangler configs are not automatically migrated.
+`vinext init --name <name>` sets the Worker name in the generated config instead of
+deriving it from `package.json`. An existing config keeps its own Worker name, and init
+prints a warning.
 
 If your `next.config.*` sets `output: "standalone"`, `vite build` emits a self-hosting bundle at `dist/standalone/`. Start it with:
 
@@ -157,6 +160,42 @@ node dist/standalone/server.js
 Environment variables: `PORT` (default `3000`), `HOST` (default `0.0.0.0`).
 
 > **Note:** Next.js standalone uses `HOSTNAME` for the bind address, but vinext uses `HOST` to avoid collision with the system-set `HOSTNAME` variable on Linux. Update your deployment config accordingly.
+
+#### Custom standalone entries
+
+The generated `server.js` is a small wrapper around `startProdServer` from `vinext/server/prod-server`. To control where the server loads the build output from, write your own entry and call `startProdServer` directly. All options are optional:
+
+| Option            | Default                                        | Description                                                                                                                                                            |
+| ----------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `port`            | `PORT` env var, otherwise `3000`               | Port to listen on.                                                                                                                                                     |
+| `host`            | `"0.0.0.0"`                                    | Address to bind to. Unlike the generated `server.js`, `startProdServer` doesn't read `HOST`, so pass `process.env.HOST` yourself if you need it.                       |
+| `outDir`          | `dist`, resolved against the current directory | Build output directory containing `client/` and `server/`. Relative paths resolve against the current directory. In standalone output, this is `dist/standalone/dist`. |
+| `serverDir`       | `<outDir>/server`                              | Directory containing the server bundles, manifests, and prerendered output.                                                                                            |
+| `rscEntryPath`    | `<serverDir>/index.js`                         | App Router server entry. If this file exists, the server runs in App Router mode.                                                                                      |
+| `serverEntryPath` | `<serverDir>/entry.js`                         | Pages Router server entry. Used when there's no App Router entry.                                                                                                      |
+| `noCompression`   | `false`                                        | Disable response compression.                                                                                                                                          |
+
+`ProdServerOptions` also has `purpose` and `silent`, which vinext uses for its own build-time servers. Leave them unset. The returned promise resolves to `{ server, port }` once the server is listening.
+
+**Compiled single-file binaries.** A `bun build --compile` binary can't use the generated `server.js`. Bun fixes `import.meta.dirname` when it compiles the binary, so `join(import.meta.dirname, "dist")` doesn't point at the directory the binary runs from. Depending on the Bun version, it points at the build machine's path or at Bun's embedded `/$bunfs/root`. Resolve `outDir` from the executable's location instead:
+
+```js
+// server-bin.mjs, in your project root
+import path from "node:path";
+import { startProdServer } from "vinext/server/prod-server";
+
+await startProdServer({
+  port: Number.parseInt(process.env.PORT ?? "3000", 10),
+  host: process.env.HOST ?? "0.0.0.0",
+  outDir: path.join(path.dirname(process.execPath), "dist"),
+});
+```
+
+```bash
+bun build --compile --compile-autoload-package-json server-bin.mjs --outfile dist/standalone/server
+```
+
+Keep the entry outside `dist/standalone`: each build deletes and recreates that directory. Compile after `vite build`, then ship the whole `dist/standalone` directory, because the `server` binary needs the `dist/` and `node_modules/` directories next to it. The server bundles in `dist/server` still import their dependencies from `node_modules` at runtime. `--compile-autoload-package-json` lets the binary read package `exports` and `main` fields when it resolves them. Under plain Node, `process.execPath` is the Node binary, so use this entry only for compiled builds.
 
 ### Starting a new vinext project
 
@@ -246,7 +285,7 @@ You can, with caution. vinext has known compatibility gaps and has not yet been 
 Yes. Next.js supports [self-hosting](https://nextjs.org/docs/app/building-your-application/deploying#self-hosting) on Node.js servers, Docker containers, and static exports. If you're happy with the Next.js toolchain and just want to run it somewhere other than Vercel, self-hosting is the simplest path.
 
 **How are you verifying this works?**
-The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This includes tests ported directly from the [Next.js test suite](https://github.com/vercel/next.js/tree/canary/test) and [OpenNext's Cloudflare conformance suite](https://github.com/opennextjs/opennextjs-cloudflare), covering routing, SSR, RSC, server actions, caching, metadata, middleware, streaming, and more. Vercel's [App Router Playground](https://github.com/vercel/next-app-router-playground) also runs on vinext as an integration test. See the [Tests](#tests) section and `tests/nextjs-compat/TRACKING.md` for details.
+The test suite has over 1,700 Vitest tests and 380 Playwright E2E tests. This includes tests ported directly from the [Next.js test suite](https://github.com/vercel/next.js/tree/canary/test) and [OpenNext's Cloudflare conformance suite](https://github.com/opennextjs/opennextjs-cloudflare), covering routing, SSR, RSC, server actions, caching, metadata, middleware, streaming, and more. Vercel's [App Router Playground](https://github.com/vercel/next-app-router-playground) also runs on vinext as an integration test. See the [Tests](#tests) section for details.
 
 **Who is reviewing this code?**
 A mix of humans and AI agents. Humans review PRs before they merge, focused on behavior, structure, and long-term direction. We lean heavily on agent-driven code review to catch issues at PR time and across the codebase. The test suite is the primary quality gate. Outside contributions and deeper human code review are very welcome.
@@ -401,10 +440,14 @@ export default defineConfig({
 
 #### Module Federation (client-side)
 
-For client-side Module Federation, configure React and React DOM as singleton shared modules in both the host and remotes:
+Use [`@module-federation/vinext`](https://github.com/module-federation/vinext), a thin wrapper around `@module-federation/vite` with vinext defaults. Register `federation()` before `vinext()`:
+
+```bash
+npm install @module-federation/vinext
+```
 
 ```ts
-import { federation } from "@module-federation/vite";
+import { federation } from "@module-federation/vinext";
 import { defineConfig } from "vite";
 import vinext from "vinext";
 
@@ -412,17 +455,22 @@ export default defineConfig({
   plugins: [
     federation({
       name: "host",
-      shared: {
-        react: { singleton: true },
-        "react/": { singleton: true },
-        "react-dom": { singleton: true },
-        "react-dom/": { singleton: true },
+      remotes: {
+        catalog: {
+          type: "module",
+          name: "catalog",
+          entry: "https://catalog.example.com/remoteEntry.js",
+          entryGlobalName: "catalog",
+          shareScope: "default",
+        },
       },
     }),
     vinext(),
   ],
 });
 ```
+
+The wrapper shares `react` and `react-dom` as singletons, defaults `filename` to `remoteEntry.js`, and injects the host's federation startup into the entry, because vinext has no conventional HTML entry. Explicit options override these defaults, and every `@module-federation/vite` option remains available. Passing your own `shared` replaces the default map, so keep `react`, `react/`, `react-dom`, and `react-dom/` as singletons in it, in both the host and remotes.
 
 In a remote client component, use `getVinextReact()` before reading React hooks. vinext registers the host's browser React instance before application modules execute, and the first registration remains stable across remote evaluation and HMR:
 
@@ -442,7 +490,7 @@ export function RemoteCounter() {
 
 This bridge is browser-only. It does not provide App Router Module Federation SSR or transparently replace React imports inside third-party packages; compatible React versions remain the responsibility of the Module Federation `shared` configuration.
 
-See the [examples](#live-examples) for complete working configurations.
+See the [Module Federation guide](https://vinext.dev/docs/guides/module-federation) for loading remote components in the host.
 
 ### Other platforms (via Nitro)
 
@@ -792,7 +840,7 @@ their `env` binding lookups) are instantiated lazily on the first request.
 
 Registration is wired into **every router and runtime** — App Router and Pages Router, on Cloudflare Workers as well as the Node.js server (`vinext start`) and dev. It self-guards (instantiated once per isolate) and is resilient: if an adapter can't initialize on a given runtime (e.g. a KV binding doesn't exist on the Node server), vinext logs a warning and falls back to the default handler instead of failing requests.
 
-To write your own adapter, point a slot at any module by path and default-export a factory that receives `{ env, options }` at runtime and returns a data-cache `CacheHandler` (or a CDN adapter):
+To write your own adapter, point a slot at any module by path. Its default export receives one `{ env, options }` argument at runtime and produces a data-cache `CacheHandler` (or a CDN adapter):
 
 ```ts
 vinext({
@@ -804,6 +852,41 @@ vinext({
   },
 });
 ```
+
+The default export can be a factory or a class:
+
+```ts
+// my-adapter.js: a factory
+export default ({ env, options }) => ({
+  async get(key) {
+    /* … */
+  },
+  async set(key, data) {
+    /* … */
+  },
+  async revalidateTag(tags) {
+    /* … */
+  },
+});
+
+// my-adapter.js: or a class
+export default class MyAdapter {
+  constructor({ env, options }) {
+    /* … */
+  }
+  async get(key) {
+    /* … */
+  }
+  async set(key, data) {
+    /* … */
+  }
+  async revalidateTag(tags) {
+    /* … */
+  }
+}
+```
+
+vinext invokes class syntax with `new` and calls any other function, so existing factories keep plain-call semantics. A constructor that isn't class syntax (an ES5-compiled, bound, or Proxy-wrapped class) can't be told apart from a factory, so export a factory that constructs it: `export default (args) => new MyAdapter(args)`. The result must be the adapter itself, not a Promise. A data adapter implements `get`, `set`, and `revalidateTag`; a CDN adapter also implements `buildResponseHeaders` and sets `ownsBackgroundRevalidation` to a boolean. If the export isn't a function or the result is missing a member, vinext logs a warning naming the slot and what's wrong, then keeps the default handler.
 
 ## What's NOT supported (and won't be)
 
@@ -965,7 +1048,7 @@ Or add it to your `package.json` as a file dependency:
 }
 ```
 
-vinext has peer dependencies on `react ^19.2.6`, `react-dom ^19.2.6`, `react-server-dom-webpack ^19.2.6`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
+vinext has peer dependencies on `react ^19.3.1`, `react-dom ^19.3.1`, `react-server-dom-webpack ^19.3.1`, and `vite ^8.0.0`. Then replace `next` with `vinext` in your scripts and run as normal.
 
 ## Contributing
 

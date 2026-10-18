@@ -3,9 +3,10 @@ import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 
 function getRawPath(
   path: string,
+  headers?: Record<string, string>,
 ): Promise<{ body: string; headers: IncomingHttpHeaders; location?: string; status: number }> {
   return new Promise((resolve, reject) => {
-    const req = httpRequest({ host: "localhost", path, port: 4197 }, (res) => {
+    const req = httpRequest({ host: "localhost", path, port: 4197, headers }, (res) => {
       let body = "";
       res.setEncoding("utf8");
       res.on("data", (chunk) => (body += chunk));
@@ -52,6 +53,18 @@ test("does not treat a route handler's reflected static-file header as a Worker 
   expect(await reflected.text()).toBe("route handler body");
 });
 
+// run_worker_first sends public files through middleware, which sees the raw
+// and once-decoded pathname. A double-encoded alias must not reach the file.
+test("does not serve a middleware-protected public file through a double-encoded alias", async () => {
+  const direct = await getRawPath("/members%20only/confidential.txt");
+  expect(direct.status).toBe(403);
+  expect(direct.body).toBe("blocked by middleware");
+
+  const alias = await getRawPath("/members%2520only/confidential.txt");
+  expect(alias.status).toBe(404);
+  expect(alias.body).not.toContain("members-only public file");
+});
+
 test("keeps direct and middleware-rewritten Worker App Page params canonical", async ({
   request,
 }) => {
@@ -63,6 +76,34 @@ test("keeps direct and middleware-rewritten Worker App Page params canonical", a
     expect(response.status()).toBe(200);
     expect(await response.text()).toContain('["a%2561","b%2Fc"]');
   }
+});
+
+test("routes hybrid Pages by the raw Worker pathname", async () => {
+  const response = await getRawPath("/pages-encoded-parity/a%2561");
+  expect(response.status).toBe(200);
+  expect(response.body).toContain('data-slug="a%61"');
+
+  // Static Pages segments keep their encoded identity, as in Next.js.
+  const alias = await getRawPath("/%70ages-encoded-parity/a");
+  expect(alias.status).toBe(404);
+  expect(alias.body).not.toContain("Pages encoded parity");
+});
+
+// Middleware matches the raw path and one decode of it. Next.js decodes at most
+// once, so a double-encoded static segment must not reach the Pages page or
+// API route that its decoded-twice spelling names.
+test("keeps double-encoded static aliases out of hybrid Pages routing", async () => {
+  const api = await getRawPath("/api/ping");
+  expect(api.status).toBe(200);
+  expect(api.body).toContain('"ok":true');
+
+  const apiAlias = await getRawPath("/api/%2570ing");
+  expect(apiAlias.status).toBe(404);
+  expect(apiAlias.body).not.toContain('"ok":true');
+
+  const pageAlias = await getRawPath("/%2570ages-encoded-parity/a");
+  expect(pageAlias.status).toBe(404);
+  expect(pageAlias.body).not.toContain("Pages encoded parity");
 });
 
 test("enforces canonical dynamicParams=false values on Workers", async () => {
@@ -139,4 +180,97 @@ test("preserves raw redirect captures on Workers", async () => {
 
   expect(response.status).toBe(307);
   expect(response.location).toBe("/blog/a%252Fb/a%252Fb");
+});
+
+// Next.js 308s any raw path containing a backslash or a repeated slash to the
+// collapsed path (base-server.ts / resolve-routes.ts); encoded leading
+// delimiters stay a 404.
+test("redirects repeated slashes and backslashes like Next.js on Workers", async () => {
+  for (const [path, location] of [
+    ["//", "/"],
+    ["//?a=1", "/?a=1"],
+    ["//evil.com", "/evil.com"],
+    ["///evil.com", "/evil.com"],
+    ["/\\evil.com", "/evil.com"],
+    ["/about//", "/about/"],
+  ] as const) {
+    const response = await getRawPath(path);
+    expect({ path, status: response.status, location: response.location }).toEqual({
+      path,
+      status: 308,
+      location,
+    });
+  }
+  for (const path of ["/%2F", "/%5C", "/%2F/evil.com", "/.//%2Fevil.com"]) {
+    expect({ path, status: (await getRawPath(path)).status }).toEqual({ path, status: 404 });
+  }
+});
+
+// Next.js 16.2.7 answers an encoded static page pathname beside a dynamic
+// sibling with the static page it prerendered, under the decoded pathname.
+test("renders an encoded static page beside its dynamic sibling on Workers", async () => {
+  for (const [pathname, headers] of [
+    ["/encoded-parity/sibling/%6Eew", undefined],
+    ["/encoded-parity/sibling/%6Eew?_rsc", { RSC: "1" }],
+  ] as const) {
+    const encoded = await getRawPath(pathname, headers);
+    expect(encoded.status).toBe(200);
+    expect(encoded.body).toContain("static sibling new");
+    expect(encoded.body).not.toContain("dynamic sibling");
+  }
+
+  // The encoded request shares the static page's cache entry, never replaces it.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-parity/sibling/new");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("static sibling new");
+    expect(literal.body).not.toContain("dynamic sibling");
+  }
+});
+
+test("renders an encoded draft-mode request with its raw-matched page on Workers", async () => {
+  // Draft mode skips the cache Next.js answers from, so `[slug]` renders.
+  const enabled = await getRawPath("/api/draft-enable");
+  expect(enabled.status).toBe(200);
+  const setCookie = enabled.headers["set-cookie"] ?? [];
+  const cookie = setCookie.map((value) => value.split(";")[0]).join("; ");
+  expect(cookie).toContain("__prerender_bypass=");
+
+  const encoded = await getRawPath("/encoded-parity/sibling/%6Eew", { cookie });
+  expect(encoded.status).toBe(200);
+  expect(encoded.body).toContain("dynamic sibling new");
+});
+
+test("reaches a non-ASCII static page beside its dynamic sibling on Workers", async () => {
+  for (const pathname of [
+    "/encoded-parity/sibling/caf%C3%A9",
+    "/encoded-parity/sibling/caf%c3%a9",
+  ]) {
+    const response = await getRawPath(pathname);
+    expect(response.status).toBe(200);
+    expect(response.body).toContain("static sibling café");
+    expect(response.body).not.toContain("dynamic sibling");
+  }
+});
+
+test("keeps raw routing where Next.js has no prerendered page to answer on Workers", async () => {
+  // A force-dynamic page has no prerender, so its dynamic sibling renders.
+  const forceDynamic = await getRawPath("/encoded-parity/sibling/%6Cive");
+  expect(forceDynamic.status).toBe(200);
+  expect(forceDynamic.body).toContain("dynamic sibling live");
+  expect(forceDynamic.body).not.toContain("forced dynamic page");
+  const forceDynamicLiteral = await getRawPath("/encoded-parity/sibling/live");
+  expect(forceDynamicLiteral.body).toContain("forced dynamic page live");
+
+  // Static segments below a dynamic parent compare against the raw path. The
+  // dynamic render must stay out of the static route's cache entry.
+  const encodedMember = await getRawPath("/encoded-parity/member/bob/%73ettings");
+  expect(encodedMember.status).toBe(200);
+  expect(encodedMember.body).toContain("tab settings for bob");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const literal = await getRawPath("/encoded-parity/member/bob/settings");
+    expect(literal.status).toBe(200);
+    expect(literal.body).toContain("settings for bob");
+    expect(literal.body).not.toContain("tab settings");
+  }
 });

@@ -127,6 +127,44 @@ test("browser caches private responses without putting them in the backing store
   expect((await direct.json()).renderId).not.toBe(first.body.renderId);
 });
 
+test("a public Pages API response is never shared across x-api-key callers", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL || !hasResponseCache, "requires a configured response cache backend");
+  test.skip(
+    backend === "workers-cache" && !baseURL?.startsWith("https://"),
+    "Workers Cache storage requires the deployed edge",
+  );
+  // A keyless entry would serve credentialed callers too, so isolate the URL.
+  const url = `${baseURL}/api/credential-echo?run=${randomUUID()}`;
+  const read = async (apiKey: string) => {
+    const response = await request.get(url, { headers: { "x-api-key": apiKey } });
+    expect(response.status()).toBe(200);
+    expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect((await response.json()).credentials["x-api-key"]).toBe(apiKey);
+  };
+  await read(`first-${randomUUID()}`);
+  // A stored first response would reach a later caller once its write lands.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await read(`second-${randomUUID()}`);
+  }
+  // The same URL is stored without credentials, so the reads above prove the
+  // credential guardrail rather than a route the backend never stores.
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(url);
+        const status = response.headers()[cacheStatusHeader];
+        expect((await response.json()).credentials["x-api-key"]).toBeNull();
+        return status;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe("HIT");
+});
+
 test("backing store freshness follows its own policy in both directions", async ({
   baseURL,
   request,
@@ -301,6 +339,48 @@ test("a dynamic-segment route without generateStaticParams is never cached", asy
   expect(renderIds[1]).not.toBe(renderIds[0]);
 });
 
+// The request stage applies a next.config `Vary` above the shared response
+// entry, so a page that reads cookies() under a public config policy must not
+// be stored: one session's page would otherwise reach every other session.
+test("a next.config public policy with Vary: Cookie keeps each session's page private", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  test.setTimeout(90_000);
+
+  const url = `${baseURL}/vary-cookie?case=${randomUUID()}`;
+  const renderIds = new Set<string>();
+  const expectPrivateRender = async (session?: string) => {
+    const response = await request.get(url, {
+      headers: { accept: "text/html", ...(session ? { cookie: `session=${session}` } : {}) },
+    });
+    const headers = response.headers();
+    const trace = JSON.stringify({ backend, session, headers });
+    expect(response.ok(), trace).toBe(true);
+    expect(headers["x-vinext-cache"], trace).not.toBe("HIT");
+    expect(headers["cf-cache-status"], trace).not.toBe("HIT");
+    expect(headers.vary?.toLowerCase().split(/,\s*/), trace).toContain("cookie");
+    const body = await response.text();
+    expect(/data-vary-cookie-viewer="([^"]*)"/.exec(body)?.[1], trace).toBe(session ?? "anonymous");
+    const renderId = /data-render-id="([^"]*)"/.exec(body)?.[1];
+    expect(renderId, trace).toBeTruthy();
+    expect(renderIds.has(renderId!), trace).toBe(false);
+    renderIds.add(renderId!);
+  };
+
+  for (const session of ["alice", "alice", "bob", undefined]) await expectPrivateRender(session);
+  // Backends publish a completed response in waitUntil, which may run up to
+  // 30 seconds after the response returns, so keep probing other sessions
+  // past that window, in which a wrongly stored entry would appear.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await expectPrivateRender(attempt % 2 === 0 ? `visitor-${attempt}` : undefined);
+  }
+});
+
 test("a static page with no revalidate source is served from the configured cache", async ({
   baseURL,
   request,
@@ -376,6 +456,52 @@ test("useSearchParams() server-renders the real query once the page is dynamic",
   expect(headers["cf-cache-status"]).not.toBe("HIT");
 });
 
+test("a query-bearing miss stores nothing of its query for a query-free visitor", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(
+    backend === "workers-cache",
+    "the edge admits Workers Cache entries; its cross-query test covers what it stores",
+  );
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(90_000);
+
+  // Next.js keeps the request's query out of a static page's HTML, including
+  // its navigation payload, so the one stored entry serves every query. The
+  // on-demand path starts cold and every request carries a token no earlier
+  // request used, so only a query-bearing render can be the HIT.
+  const path = `/cached/${randomUUID()}`;
+  const secrets: string[] = [];
+  const expectNoSecrets = (body: string, trace: string) => {
+    for (const secret of secrets) expect(body, trace).not.toContain(secret);
+  };
+  await expect
+    .poll(
+      async () => {
+        const secret = randomUUID();
+        secrets.push(secret);
+        const response = await request.get(`${baseURL}${path}?token=${secret}`);
+        const headers = response.headers();
+        const trace = JSON.stringify({ backend, headers });
+        expect(response.ok(), trace).toBe(true);
+        expectNoSecrets(await response.text(), trace);
+        return headers[cacheStatusHeader];
+      },
+      // KV caches the miss's "not found" read in its location for up to 60s.
+      { intervals: [1_000], timeout: 75_000 },
+    )
+    .toBe("HIT");
+
+  // A query-free visitor gets that entry.
+  const visitor = await request.get(`${baseURL}${path}`);
+  const headers = visitor.headers();
+  const trace = JSON.stringify({ backend, headers });
+  expect(headers[cacheStatusHeader], trace).toBe("HIT");
+  expectNoSecrets(await visitor.text(), trace);
+});
+
 test("Workers Cache serves every query of a static page from one entry", async ({
   baseURL,
   request,
@@ -447,6 +573,65 @@ test("Workers Cache serves every query of a static page from one entry", async (
     'data-testid="search-fallback"',
     (body) => /search-suspense-render-id[^>]*>([^<]+)</.exec(body)?.[1],
   );
+});
+
+test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(backend !== "workers-cache", "the edge path-tag purge is specific to Workers Cache");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(120_000);
+
+  // `%40` and `@` share one ISR entry but are separate edge objects. The
+  // alias copy must carry the tag that res.revalidate() purges for `@`.
+  const handle = randomUUID();
+  const aliasUrl = `${baseURL}/encoded-revalidate/%40${handle}`;
+  const readAlias = async () => {
+    const response = await request.get(aliasUrl, { headers: { accept: "text/html" } });
+    const trace = JSON.stringify(response.headers());
+    expect(response.ok(), trace).toBe(true);
+    const renderId = /encoded-revalidate-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
+    expect(renderId, trace).toBeTruthy();
+    return { cache: response.headers()["cf-cache-status"], renderId };
+  };
+
+  let cached = {
+    cache: undefined as string | undefined,
+    renderId: undefined as string | undefined,
+  };
+  await expect
+    .poll(
+      async () => {
+        cached = await readAlias();
+        return cached.cache;
+      },
+      { intervals: [1_000], timeout: 45_000 },
+    )
+    .toBe("HIT");
+
+  const revalidate = await request.post(`${baseURL}/api/pages-revalidate`, {
+    data: { path: `/encoded-revalidate/@${handle}` },
+  });
+  const revalidateBody = await revalidate.json();
+  expect(revalidate.ok(), JSON.stringify(revalidateBody)).toBe(true);
+  expect(revalidateBody).toEqual({
+    revalidated: true,
+    target: `/encoded-revalidate/@${handle}`,
+  });
+
+  // Once purged, the alias is no longer an edge HIT of the old render. Without
+  // the decoded tag it stays one for the full year-long edge lifetime.
+  await expect
+    .poll(
+      async () => {
+        const current = await readAlias();
+        return current.cache === "HIT" && current.renderId === cached.renderId;
+      },
+      { intervals: [1_000], timeout: 45_000 },
+    )
+    .toBe(false);
 });
 
 if (backend) {
