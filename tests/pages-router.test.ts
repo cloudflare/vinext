@@ -8204,6 +8204,23 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.headers.get("x-custom-middleware")).toBeNull();
   });
 
+  // Next.js writes middleware response headers onto the Node response before a
+  // Pages API handler runs, so the handler's setHeader() replaces them while
+  // headers it leaves alone, and middleware's cookie, are kept.
+  it("lets a Pages-only Node Pages API route's own headers replace middleware's", async () => {
+    const res = await fetch(`${prodUrl}/api/middleware-header-precedence`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("www-authenticate")).toBe('Bearer realm="handler"');
+    expect(res.headers.get("x-header-precedence")).toBe("handler");
+    expect(res.headers.get("proxy-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.getSetCookie()).toEqual([
+      "middleware-cookie=1; Path=/",
+      "handler-cookie=1; Path=/",
+    ]);
+    await expect(res.text()).resolves.toBe("unauthorized");
+  });
+
   it("serves dotted dynamic API route segments in production", async () => {
     const res = await fetch(`${prodUrl}/api/users/alpha.beta`);
     expect(res.status).toBe(200);

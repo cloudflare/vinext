@@ -8,6 +8,7 @@ import {
 } from "../utils/query.js";
 import {
   createPagesApiReqRes,
+  hasUserSetPagesResponseHeader,
   markVinextStreamedApiResponse,
   parsePagesApiBody,
   type PagesRequestQuery,
@@ -30,7 +31,8 @@ import {
 } from "vinext/shims/request-context";
 import { NextRequest } from "vinext/shims/server";
 import { markRouteCacheabilityExplicitResponsePolicy } from "vinext/shims/cacheability-classification";
-import { hasCdnResponsePolicy } from "./cache-control.js";
+import { hasCdnResponsePolicy, isCdnResponsePolicyHeader } from "./cache-control.js";
+import { applyRouteHandlerMiddlewareContext } from "./app-route-handler-middleware-context.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
 
 type PagesApiRouteConfig = {
@@ -107,6 +109,12 @@ type HandlePagesApiRouteOptions = {
   edgeRuntime?: EdgeApiExecutionRuntime;
   /** Headers installed before user code, matching Next.js custom-route ordering. */
   initialResponseHeaders?: Headers;
+  /**
+   * Middleware response headers. Node handlers receive them on `res` before
+   * they run, as in Next.js, so the handler's own `setHeader()` wins. Edge
+   * handlers keep vinext's middleware-wins merge onto the returned Response.
+   */
+  middlewareResponseHeaders?: Headers | null;
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -149,15 +157,57 @@ function isNodeApiRouteModule(
 export async function handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
   const run = async () => {
     const response = await _handlePagesApiRoute(options);
-    if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+    if (hasHandlerCdnResponsePolicy(response.headers, options.middlewareResponseHeaders)) {
+      markRouteCacheabilityExplicitResponsePolicy();
+    }
     return response;
   };
   return options.ctx ? runWithExecutionContext(options.ctx, run) : run();
 }
 
+/**
+ * Whether the response carries a CDN policy other than middleware's. Node
+ * handler writes of middleware's own value are recorded on `res` instead.
+ */
+function hasHandlerCdnResponsePolicy(
+  headers: Headers,
+  middlewareHeaders: Headers | null | undefined,
+): boolean {
+  if (!middlewareHeaders) return hasCdnResponsePolicy(headers);
+  for (const [name, value] of headers) {
+    if (isCdnResponsePolicyHeader(name) && middlewareHeaders.get(name) !== value) return true;
+  }
+  return false;
+}
+
+function applyEdgeMiddlewareResponseHeaders(
+  response: Response,
+  middlewareHeaders: Headers | null | undefined,
+): Response {
+  if (!middlewareHeaders) return response;
+  // Record the handler's own policy before middleware can replace its value.
+  if (hasCdnResponsePolicy(response.headers)) markRouteCacheabilityExplicitResponsePolicy();
+  // Next.js's send-response only appends Set-Cookie for Pages API routes, so a
+  // handler's challenge never joins middleware's.
+  return applyRouteHandlerMiddlewareContext(
+    response,
+    { headers: middlewareHeaders, status: null },
+    { appendResponseChallenges: false },
+  );
+}
+
 async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promise<Response> {
+  // Next.js writes middleware headers onto `res` before apiResolver runs, and
+  // its error responses reuse that `res`, so they keep middleware's headers.
+  const frameworkResponse = (response: Response) =>
+    applyRouteHandlerMiddlewareContext(
+      response,
+      { headers: options.middlewareResponseHeaders ?? null, status: null },
+      { appendResponseChallenges: false },
+    );
+
   if (!options.match) {
-    return new Response("404 - API route not found", { status: 404 });
+    return frameworkResponse(new Response("404 - API route not found", { status: 404 }));
   }
 
   const { route, params } = options.match;
@@ -183,7 +233,10 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
       const response = await tracePagesApiHandler(route.pattern, () => handler(nextRequest));
       if (response instanceof Response) {
-        const finalized = finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker");
+        const finalized = applyEdgeMiddlewareResponseHeaders(
+          finalizeEdgeApiResponse(response, options.edgeRuntime ?? "worker"),
+          options.middlewareResponseHeaders,
+        );
         if (
           !options.initialResponseHeaders ||
           !options.initialResponseHeaders.keys().next().value
@@ -209,7 +262,9 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // This is redundant at runtime after the edge branch for function exports, but it
     // keeps the Node handler ABI narrowed without a production type assertion.
     if (!isNodeApiRouteModule(route.module)) {
-      return new Response("API route does not export a default function", { status: 500 });
+      return frameworkResponse(
+        new Response("API route does not export a default function", { status: 500 }),
+      );
     }
     const handler = route.module.default;
 
@@ -232,6 +287,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       allowedRevalidateHeaderKeys: options.nextConfig?.allowedRevalidateHeaderKeys,
       body,
       initialResponseHeaders: options.initialResponseHeaders,
+      middlewareResponseHeaders: options.middlewareResponseHeaders,
       query,
       request: options.request,
       trustedRevalidateOrigin: options.trustedRevalidateOrigin,
@@ -264,6 +320,11 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       }
     };
     const finalizeResponse = (response: Response) => {
+      // A middleware value installed on `res` is not the handler's policy, but
+      // the handler re-setting that same value is.
+      if (hasUserSetPagesResponseHeader(res, isCdnResponsePolicyHeader)) {
+        markRouteCacheabilityExplicitResponsePolicy();
+      }
       // The response resolves on the first write; if `end()` still has not
       // been called by the time it settles, the body is a live stream (e.g. a
       // piped proxy upstream). Mark it so buffering adapters forward it as a
@@ -323,16 +384,18 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     return finalizeResponse(await responsePromise);
   } catch (error) {
     if (error instanceof PagesApiBodyParseError) {
-      return new Response(error.message, {
-        status: error.statusCode,
-        statusText: error.message,
-      });
+      return frameworkResponse(
+        new Response(error.message, {
+          status: error.statusCode,
+          statusText: error.message,
+        }),
+      );
     }
 
     await options.reportRequestError?.(
       error instanceof Error ? error : new Error(String(error)),
       route.pattern,
     );
-    return internalServerErrorResponse();
+    return frameworkResponse(internalServerErrorResponse());
   }
 }

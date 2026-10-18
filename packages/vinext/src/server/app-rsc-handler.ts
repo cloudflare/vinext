@@ -1558,9 +1558,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       }),
     );
   };
-  let preHandlerResponseHeadersPromise: Promise<Headers> | undefined;
-  const loadPreHandlerResponseHeaders = () =>
-    (preHandlerResponseHeadersPromise ??= (async () => {
+  let preHandlerConfigHeadersPromise: Promise<Headers> | undefined;
+  const loadPreHandlerConfigHeaders = () =>
+    (preHandlerConfigHeadersPromise ??= (async () => {
       const headers = new Headers();
       await applyAppRscConfigHeaders(headers, request, {
         basePath: options.basePath,
@@ -1571,9 +1571,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         recordCacheability: false,
         requestContext: preMiddlewareRequestContext,
       });
-      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
       return headers;
     })());
+  let preHandlerResponseHeadersPromise: Promise<Headers> | undefined;
+  const loadPreHandlerResponseHeaders = () =>
+    (preHandlerResponseHeadersPromise ??= loadPreHandlerConfigHeaders().then((configHeaders) => {
+      const headers = new Headers(configHeaders);
+      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+      return headers;
+    }));
   let outerResponsePolicyPromise: Promise<Headers> | undefined;
   const loadOuterResponsePolicy = () =>
     (outerResponsePolicyPromise ??= Promise.all([
@@ -2325,10 +2331,22 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               isRscRequest,
               matchKind,
               middlewareCookieOverlay,
+              // An API route applies middleware headers itself: before a Node
+              // handler runs (its own values win) or over an edge handler's.
               preHandlerHeaders:
                 cache === "shared" && resourceKind === "page" && dataKind === "static"
                   ? null
-                  : [...(await loadPreHandlerResponseHeaders())],
+                  : resourceKind === "api"
+                    ? [...(await loadPreHandlerConfigHeaders())]
+                    : [...(await loadPreHandlerResponseHeaders())],
+              middlewareResponseHeaders:
+                resourceKind === "api" && middlewareContext.headers
+                  ? (() => {
+                      const headers = new Headers();
+                      mergeMiddlewareResponseHeaders(headers, middlewareContext.headers);
+                      return [...headers];
+                    })()
+                  : null,
               protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
               requestOrigin: url.origin,
               resourceKind,
