@@ -1159,11 +1159,12 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
   // Header matching re-adds the root's trailing slash exactly where Next.js
-  // does, so a root rule's `/:nextInternalLocale(...)/` source matches.
-  const restoreLocaleRootTrailingSlash = shouldRestoreLocaleRootTrailingSlash(
-    stripRscSuffix(url.pathname),
-    options,
-  );
+  // does, so a root rule's `/:nextInternalLocale(...)/` source matches. A
+  // `/_next/data` request was already rewritten to its page path, but its raw
+  // pathname ends in `.json`, so its slash is never restored.
+  const restoreLocaleRootTrailingSlash =
+    !pagesDataRequest &&
+    shouldRestoreLocaleRootTrailingSlash(stripRscSuffix(url.pathname), options);
   const headerMatchPathname = normalizeDefaultLocalePathname(
     requestCleanPathname,
     options.i18nConfig,
@@ -3213,8 +3214,10 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            // Read the raw URL: `request` already has a `/_next/data`
+            // pathname rewritten to its page path.
             restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
-              stripRscSuffix(new URL(request.url).pathname),
+              stripRscSuffix(new URL(rawRequest.url).pathname),
               options,
             ),
             middlewareHeaders: middlewareContext.headers,
