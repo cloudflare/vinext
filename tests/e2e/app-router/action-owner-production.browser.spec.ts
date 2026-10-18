@@ -590,6 +590,9 @@ test.describe("production server action ownership", () => {
     for (const parts of [
       reference(app.actionIds.protected),
       reference(pageComponentId),
+      // React retries a missing id without its last `#name`, keeping `name`
+      // as the export, which would reach this owned module's `default`.
+      reference(`${app.actionIds.inlineArgument}#default`),
       [
         ["0", JSON.stringify(["$h1"])],
         ["1", metadata(app.actionIds.describeArgument, "$@2")],

@@ -1719,10 +1719,14 @@ export async function handleServerActionRscRequest<
     // Scope the manifest React resolves argument references through to this
     // route's Server Actions, as Next.js scopes its server module map to the
     // current page. React then fails to resolve any other id wherever the
-    // payload carries it, so that module never loads.
+    // payload carries it, so that module never loads. A denied lookup throws
+    // because React retries a missing `module#a#b` as module `module#a` with
+    // export `b`, which would reach a non-action export of an owned module.
     const serverManifest = new Proxy(options.createServerManifest(), {
       get(target, id, receiver) {
-        if (typeof id === "string" && !options.validateActionReferences([id])) return undefined;
+        if (typeof id === "string" && !options.validateActionReferences([id])) {
+          throw new Error(`Server reference "${id}" is not a Server Action of this route.`);
+        }
         return Reflect.get(target, id, receiver);
       },
     });
