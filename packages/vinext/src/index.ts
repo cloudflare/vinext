@@ -2708,18 +2708,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           earlyDotenv = undefined;
         }
         if (envDir) loadDotenv({ root: envDir, mode });
-        if (rscPluginPromise) {
-          // Like Next.js, closure arguments of Server Actions and "use cache"
-          // functions are encrypted with this key, and a runtime
-          // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY overrides it
-          // (getActionEncryptionKey in server/app-render/encryption-utils.ts).
-          // A stable key keeps them decryptable across identical rebuilds.
-          serverActionsEncryptionKey = loadOrGenerateServerActionsEncryptionKey({
-            root,
-            isBuild: env.command === "build",
-          });
-          rscPluginOptions.defineEncryptionKey = `process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY || ${JSON.stringify(serverActionsEncryptionKey)}`;
-        }
         // Build output always receives production defines. Preserve the
         // explicit NODE_ENV=test config-time behavior supported by the previous
         // vinext CLI, independently of Vite's mode.
@@ -2836,6 +2824,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
+        }
+        if (rscPluginPromise) {
+          // Like Next.js, closure arguments of Server Actions and "use cache"
+          // functions are encrypted with this key, and a runtime
+          // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY overrides it
+          // (getActionEncryptionKey in server/app-render/encryption-utils.ts).
+          // A stable key keeps them decryptable across identical rebuilds.
+          // Chosen after next.config is evaluated, as Next does, since the
+          // config may set the variable.
+          serverActionsEncryptionKey = loadOrGenerateServerActionsEncryptionKey({
+            root,
+            isBuild: env.command === "build",
+          });
+          rscPluginOptions.defineEncryptionKey = `process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY || ${JSON.stringify(serverActionsEncryptionKey)}`;
         }
         // Preserve an explicit test environment while Vite and Next config are
         // evaluated, then keep the actual CLI build on production semantics.

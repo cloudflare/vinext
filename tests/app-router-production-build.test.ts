@@ -257,7 +257,7 @@ describe("App Router Production build", () => {
     // dropping long-lived tabs' chunks (vinext#3626).
     const keyCacheDir = () => path.join(fixtureDir, ".vinext", "cache");
 
-    async function buildClient() {
+    async function buildClient(onNextConfigLoad?: () => void) {
       fs.rmSync(outDir, { recursive: true, force: true });
       const builder = await createBuilder({
         root: fixtureDir,
@@ -266,7 +266,10 @@ describe("App Router Production build", () => {
         plugins: [
           vinext({
             appDir: fixtureDir,
-            nextConfig: { deploymentId: "pinned-test", generateBuildId: () => "pinned-build" },
+            nextConfig: () => {
+              onNextConfigLoad?.();
+              return { deploymentId: "pinned-test", generateBuildId: () => "pinned-build" };
+            },
           }),
         ],
         logLevel: "silent",
@@ -353,6 +356,21 @@ describe("App Router Production build", () => {
       expect(await loadEncryptionKey()).toBe(buildKey);
       vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", runtimeKey);
       expect(await loadEncryptionKey()).toBe(runtimeKey);
+    }, 60000);
+
+    // Next evaluates next.config before generateEncryptionKeyBase64, so a
+    // config that sets the variable chooses the key.
+    it("uses a NEXT_SERVER_ACTIONS_ENCRYPTION_KEY that next.config sets", async () => {
+      const configKey = Buffer.alloc(32, 3).toString("base64");
+      const { cacheReferenceNames } = await buildClient(() => {
+        process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY = configKey;
+      });
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+      expect(await loadEncryptionKey()).toBe(configKey);
+      // Reference names derive from the same key as a build with it preset.
+      fs.rmSync(keyCacheDir(), { recursive: true, force: true });
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", configKey);
+      expect((await buildClient()).cacheReferenceNames).toEqual(cacheReferenceNames);
     }, 60000);
 
     it("renames cache references once the generated key cache is removed", async () => {
