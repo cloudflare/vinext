@@ -224,6 +224,23 @@ test.describe("Config Custom Headers (OpenNext compat)", () => {
     });
   });
 
+  test("matched params are substituted into header keys and values", async ({ request }) => {
+    const prerendered = await request.get(`${BASE}/blog/hello-world`);
+    expect(prerendered.status()).toBe(200);
+    expect(prerendered.headers()["x-blog-slug"]).toBe("slug=hello-world");
+    expect(prerendered.headers()["x-blog-hello-world"]).toBe("1");
+
+    // Like Next.js, captures are the raw percent-encoded path text.
+    const encoded = await request.get(`${BASE}/blog/a%20b`);
+    expect(encoded.status()).toBe(200);
+    expect(encoded.headers()["x-blog-slug"]).toBe("slug=a%20b");
+
+    // `*` params join with their template prefix; `has` named groups are params too.
+    const dashboard = await request.get(`${BASE}/dashboard/settings?ref=docs`);
+    expect(dashboard.status()).toBe(200);
+    expect(dashboard.headers()["x-dashboard-params"]).toBe("settings via docs");
+  });
+
   test("custom header applied to API routes", async ({ request }) => {
     const res = await request.get(`${BASE}/api/hello`);
     expect(res.status()).toBe(200);

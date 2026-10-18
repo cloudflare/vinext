@@ -34,6 +34,7 @@ import { attachRequestCfMetadata } from "../server/request-pipeline.js";
 import {
   parseMiddlewarePath,
   pathTokensToRegExpSource,
+  type MiddlewarePathKey,
 } from "../server/middleware-path-to-regexp.js";
 import { validatePathTokens } from "../server/middleware-matcher-pattern.js";
 import {
@@ -41,6 +42,11 @@ import {
   substituteRedirectDestinationQuery,
   type RedirectDestinationQueryPart,
 } from "./destination-params.js";
+import {
+  compileHeaderParamTemplate,
+  isValidHeaderPair,
+  type HeaderParams,
+} from "./header-params.js";
 
 export {
   normalizeHost,
@@ -76,7 +82,13 @@ const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[]
  *
  * Value is `null` when the source is invalid or unsafe (ReDoS risk).
  */
-const _compiledHeaderSourceCache = new Map<string, RegExp | null>();
+const _compiledHeaderSourceCache = new Map<string, CompiledHeaderSource | null>();
+
+type CompiledHeaderSource = {
+  re: RegExp;
+  /** path-to-regexp keys, one per capture group of `re`. */
+  keys: MiddlewarePathKey[];
+};
 
 /**
  * Cache for compiled has/missing condition value regexes in checkSingleCondition.
@@ -326,7 +338,7 @@ export function safeRegExp(pattern: string, flags?: string): RegExp | null {
  * @see https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/filesystem.ts
  * @see https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/lib/redirect-status.ts
  */
-function compileHeaderSource(source: string): RegExp | null {
+function compileHeaderSource(source: string): CompiledHeaderSource | null {
   const options = { delimiter: "/", strict: true };
   try {
     const tokens = parseMiddlewarePath(source, options);
@@ -344,7 +356,13 @@ function compileHeaderSource(source: string): RegExp | null {
       return null;
     }
     const route = pathTokensToRegExpSource(tokens, options);
-    return new RegExp(route.replace(/\$$/, "(?:\\/)?$"), "i");
+    return {
+      re: new RegExp(route.replace(/\$$/, "(?:\\/)?$"), "i"),
+      // tokensToRegexp only captures tokens with a pattern.
+      keys: tokens.filter(
+        (token): token is MiddlewarePathKey => typeof token === "object" && !!token.pattern,
+      ),
+    };
   } catch (error) {
     // Next.js rejects these sources at build time.
     const reason = error instanceof Error ? error.message : String(error);
@@ -1395,20 +1413,152 @@ export function matchHeaders(
     if (!shouldEvaluateRule(rule.basePath, basePathState)) continue;
     // Cache the compiled source regex — compiling is a pure function of
     // rule.source and the result never changes between requests.
-    const sourceRegex = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
+    const compiledSource = getCachedRegex(_compiledHeaderSourceCache, rule.source, () =>
       compileHeaderSource(rule.source),
     );
-    if (sourceRegex && sourceRegex.test(pathname)) {
+    const sourceMatch = compiledSource?.re.exec(pathname);
+    if (compiledSource && sourceMatch) {
       onRuleSourceMatch?.(rule);
       if (rule.has || rule.missing) {
         if (!checkHasConditions(rule.has, rule.missing, ctx)) {
           continue;
         }
       }
-      result.push(...rule.headers);
+      // compileNonPath leaves keys and values without `:` untouched, so
+      // only collect params when a template can reference one.
+      if (!rule.headers.some((header) => header.key.includes(":") || header.value.includes(":"))) {
+        result.push(...rule.headers);
+        continue;
+      }
+      const params = collectHeaderSourceParams(sourceMatch, compiledSource.keys);
+      if (rule.has) collectHeaderHasParams(rule.has, ctx, params);
+      result.push(...substituteHeaderParams(rule.headers, params));
     }
   }
   return result;
+}
+
+/**
+ * Collect source params like Next.js's `getPathMatch` with
+ * `removeUnnamedParams`: path-to-regexp's `regexpToFunction` keeps captures
+ * raw, splits `*`/`+` captures on the key's prefix and suffix, and omits
+ * groups that did not participate.
+ */
+function collectHeaderSourceParams(
+  match: RegExpExecArray,
+  keys: MiddlewarePathKey[],
+): HeaderParams {
+  const params: HeaderParams = _emptyParams();
+  for (let index = 1; index < match.length; index++) {
+    const capture = match[index];
+    const key = keys[index - 1];
+    if (capture === undefined || !key || typeof key.name === "number") continue;
+    params[key.name] =
+      key.modifier === "*" || key.modifier === "+"
+        ? capture.split(key.prefix + key.suffix)
+        : capture;
+  }
+  return params;
+}
+
+/**
+ * Add `has` captures like Next.js's `matchHas`, after checkHasConditions has
+ * accepted the rule: a condition without a value exposes the matched value
+ * under its key (letters only), a value regex exposes its named groups, and a
+ * host regex without named groups exposes the matched host as `host`.
+ *
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ */
+function collectHeaderHasParams(
+  has: HasCondition[],
+  ctx: RequestContext,
+  params: HeaderParams,
+): void {
+  for (const condition of has) {
+    let value: string | string[] | undefined;
+    switch (condition.type) {
+      case "header":
+        value = ctx.headers.get(condition.key) ?? undefined;
+        break;
+      case "cookie":
+        value = Object.hasOwn(ctx.cookies, condition.key) ? ctx.cookies[condition.key] : undefined;
+        break;
+      case "query": {
+        // Node parses a duplicate query key as an array.
+        const values = ctx.query.getAll(condition.key);
+        value = values.length > 1 ? values : values[0];
+        break;
+      }
+      case "host":
+        value = ctx.host;
+        break;
+    }
+    if (!value) continue;
+    if (!condition.value) {
+      // Next.js requires a value for host conditions.
+      if (condition.type !== "host") params[condition.key.replace(/[^A-Za-z]/g, "")] = value;
+      continue;
+    }
+    const match = _cachedConditionRegex(condition.value)?.exec(
+      Array.isArray(value) ? value[value.length - 1] : value,
+    );
+    if (!match) continue;
+    if (match.groups) {
+      Object.assign(params, match.groups);
+    } else if (condition.type === "host" && match[0]) {
+      params.host = match[0];
+    }
+  }
+}
+
+type NextHeaderEntry = NextHeader["headers"][number];
+
+const _warnedHeaderParamTemplates = new WeakSet<NextHeaderEntry>();
+
+/**
+ * Substitute params into header keys and values like Next.js's
+ * `compileNonPath`, with params inserted verbatim. Source captures are the raw
+ * percent-encoded path text, as in Next.js, but `has` captures from decoded
+ * cookies or query values can carry characters a header cannot.
+ *
+ * Next.js fails the whole request when compiling throws (a repeated param
+ * used without `*`/`+`, or a has group that did not participate) or when the
+ * result is not a valid header. Requests can trigger both, so vinext instead
+ * omits only the affected header and logs once per header template.
+ */
+function substituteHeaderParams(
+  headers: NextHeaderEntry[],
+  params: HeaderParams,
+): NextHeaderEntry[] {
+  if (Object.keys(params).length === 0) return headers;
+  const result: NextHeaderEntry[] = [];
+  for (const header of headers) {
+    let key: string;
+    let value: string;
+    try {
+      key = compileHeaderParamTemplate(header.key, params);
+      value = compileHeaderParamTemplate(header.value, params);
+    } catch (error) {
+      warnHeaderParamTemplate(header, error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    if (key === header.key && value === header.value) {
+      result.push(header);
+    } else if (isValidHeaderPair(key, value)) {
+      result.push({ key, value });
+    } else {
+      warnHeaderParamTemplate(header, "the substituted header is not a valid HTTP header");
+    }
+  }
+  return result;
+}
+
+function warnHeaderParamTemplate(header: NextHeaderEntry, reason: string): void {
+  if (_warnedHeaderParamTemplates.has(header)) return;
+  _warnedHeaderParamTemplates.add(header);
+  console.warn(
+    `[vinext] Omitting headers() header "${header.key}: ${header.value}" from a response: ${reason}.`,
+  );
 }
 
 /**

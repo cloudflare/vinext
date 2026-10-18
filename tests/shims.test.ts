@@ -14901,6 +14901,181 @@ describe("matchHeaders source matching parity with Next.js", () => {
   });
 });
 
+describe("matchHeaders param substitution parity with Next.js", () => {
+  type HasItem = { type: "header" | "cookie" | "query" | "host"; key: string; value?: string };
+  type Case = {
+    source: string;
+    pathname: string;
+    has?: HasItem[];
+    request?: { headers?: Record<string, string>; search?: string };
+  };
+  const headerTemplates = [
+    { key: "x-slug", value: ":slug" },
+    { key: "x-:slug", value: "pre-:slug-post" },
+    { key: "x-path", value: ":path*" },
+    { key: "x-path-plus", value: "list=:path+" },
+    { key: "x-path-single", value: ":path" },
+    { key: "x-optional", value: ":a-:id?" },
+    { key: "x-unnamed", value: ":0 :id" },
+    {
+      key: "x-literal",
+      value: "https://example.com/:slug?x=1 (a) {b} * + max-age=60 :unknown a\\b",
+    },
+    { key: "x-locale", value: ":nextInternalLocale" },
+    { key: "x-adjacent", value: ":a:id" },
+    { key: "x-has", value: "tenant=:tenant page=:page host=:host token=:token" },
+    { key: "x-static", value: "no params" },
+  ];
+  const cases: Case[] = [
+    { source: "/docs/:slug", pathname: "/docs/hello" },
+    // Next.js matches the raw pathname, so captures stay percent-encoded.
+    { source: "/docs/:slug", pathname: "/docs/hello%20world%3A" },
+    { source: "/files/:path*", pathname: "/files/a/b" },
+    { source: "/files/:path*", pathname: "/files" },
+    { source: "/files/:path+", pathname: "/files/a/b/c" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x/7" },
+    { source: "/opt/:id?", pathname: "/opt" },
+    { source: "/api/(.*)", pathname: "/api/x" },
+    { source: "/u/:id(\\d+)/(.*)", pathname: "/u/12/z" },
+    { source: "/:nextInternalLocale(en|fr)/about", pathname: "/fr/about" },
+    { source: "/:slug.md", pathname: "/readme.md" },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "header", key: "x-tenant", value: "(?<tenant>[a-z]+)" },
+        { type: "query", key: "page" },
+        { type: "host", key: "", value: "example\\.com" },
+        { type: "cookie", key: "token" },
+      ],
+      request: {
+        headers: { "x-tenant": "acme", host: "example.com:3000", cookie: "token=abc" },
+        search: "?page=2",
+      },
+    },
+    // A duplicate query key is an array param; a has group that did not
+    // participate is undefined. Next.js throws compiling either.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "query", key: "page" },
+        { type: "header", key: "x-tenant", value: "(?<tenant>a)?.*" },
+      ],
+      request: { headers: { "x-tenant": "zzz" }, search: "?page=1&page=2" },
+    },
+    // Decoded has captures can carry characters a header value cannot.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "query", key: "page" }],
+      request: { search: "?page=a%0D%0Aset-cookie:%20x=1" },
+    },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "cookie", key: "token" }],
+      request: { headers: { cookie: "token=%E2%9C%93" } },
+    },
+  ];
+
+  it.each(cases)("substitutes params like Next.js for $source at $pathname", async (testCase) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { parseCookies } = await import("../packages/vinext/src/config/request-context.js");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { modifyRouteRegex } = await import("next/dist/lib/redirect-status.js");
+    const { compileNonPath, matchHas } =
+      await import("next/dist/shared/lib/router/utils/prepare-destination.js");
+    const { validateHeaderName, validateHeaderValue } = await import("node:http");
+
+    const requestHeaders = testCase.request?.headers ?? {};
+    const searchParams = new URLSearchParams(testCase.request?.search ?? "");
+    const query: Record<string, string | string[]> = {};
+    for (const key of new Set(searchParams.keys())) {
+      const values = searchParams.getAll(key);
+      query[key] = values.length > 1 ? values : values[0];
+    }
+
+    // Next.js resolve-routes: route.match, then matchHas, then compileNonPath.
+    const nextMatch = getPathMatch(testCase.source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+    const params = nextMatch(testCase.pathname) as Record<string, any> | false;
+    expect(params).not.toBe(false);
+    if (testCase.has) {
+      const hasParams = matchHas({ headers: requestHeaders } as any, query, testCase.has as any);
+      expect(hasParams).not.toBe(false);
+      Object.assign(params as object, hasParams);
+    }
+    const hasParams = Object.keys(params as object).length > 0;
+    const expected: Array<{ key: string; value: string }> = [];
+    for (const header of headerTemplates) {
+      try {
+        const key = hasParams ? compileNonPath(header.key, params as any) : header.key;
+        const value = hasParams ? compileNonPath(header.value, params as any) : header.value;
+        // Next.js fails the request when a substituted header is invalid;
+        // vinext omits only that header. Templates without substitutions
+        // pass through unchanged, as before param support.
+        if (key !== header.key || value !== header.value) {
+          validateHeaderName(key);
+          validateHeaderValue(key, value);
+        }
+        expected.push({ key, value });
+      } catch {}
+    }
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const actual = matchHeaders(
+        testCase.pathname,
+        [{ source: testCase.source, has: testCase.has, headers: headerTemplates }],
+        {
+          headers: new Headers(requestHeaders),
+          cookies: parseCookies(requestHeaders.cookie ?? null),
+          query: searchParams,
+          host: (requestHeaders.host ?? "localhost").split(":", 1)[0],
+        },
+      );
+      expect(actual).toEqual(expected);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("omits a header Next.js cannot compile without throwing, and warns once", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [
+        {
+          source: "/files/:path*",
+          headers: [
+            { key: "x-path", value: ":path" },
+            { key: "x-ok", value: ":path*" },
+          ],
+        },
+      ];
+      const ctx = {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "localhost",
+      };
+      expect(matchHeaders("/files/a/b", rules, ctx)).toEqual([{ key: "x-ok", value: "a/b" }]);
+      expect(matchHeaders("/files/c", rules, ctx)).toEqual([{ key: "x-ok", value: "c" }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Omitting headers() header "x-path: :path"'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("matchHeaders compiled source cache", () => {
   // Regression test: header source compilation + safety checks were re-run on every
   // request for every header rule. The result is now cached in _compiledHeaderSourceCache
