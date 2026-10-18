@@ -2841,10 +2841,13 @@ describe("createAppRscHandler", () => {
       renderPagesFallback: async () => new Response("page"),
     });
 
-    const root = await handler(new Request("https://example.test/"));
+    const root = await handler(new Request("https://example.test/"), null);
     expect(root.headers.get("x-locale-root")).toBe("1");
 
-    const data = await handler(new Request("https://example.test/_next/data/build-id/index.json"));
+    const data = await handler(
+      new Request("https://example.test/_next/data/build-id/index.json"),
+      null,
+    );
     expect(await data.text()).toBe("page");
     expect(data.headers.get("x-locale-root")).toBeNull();
   });
