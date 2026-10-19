@@ -268,6 +268,64 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
+  it("groups client references that import URLs without measuring them", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-url-import-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "a.tsx"),
+        `"use client";
+import confetti from "https://esm.sh/canvas-confetti@1.9.3";
+export function A() { return <p onClick={() => confetti()}>a</p>; }
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "b.tsx"),
+        `"use client";\nexport function B() { return <p>b</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { A } from "./a";
+import { B } from "./b";
+export default function Page() {
+  return <main><A /><B /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      // Loading the external URL module never settles, which hung the build.
+      await builder.buildApp();
+
+      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      expect(group).toBeDefined();
+      expect(fs.readFileSync(path.join(chunksDir, group!), "utf-8")).toContain(
+        "https://esm.sh/canvas-confetti@1.9.3",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
 

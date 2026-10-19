@@ -5,7 +5,6 @@ import {
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
   readClientModuleBindings,
-  readDeclaredExportNames,
 } from "../packages/vinext/src/build/client-reference-groups.js";
 
 function route(pattern: string, pagePath: string, layouts: string[] = []) {
@@ -271,12 +270,22 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
       "/more.js": { code: `export * from "./polyfill.js";`, sideEffectFree: true },
       "/polyfill.js": { code: `globalThis.x = 1;` },
     };
+    const loaded: string[] = [];
+    const load = bindingLoader(modules);
     const costs = await measureClientReferenceGroupCosts({
       references: new Map([["a", "/a.js"]]),
-      loadModule: bindingLoader(modules),
+      loadModule: (id) => {
+        loaded.push(id);
+        return load(id);
+      },
       isExcluded: () => false,
+      isSideEffectFree: (id) =>
+        (modules as Record<string, { sideEffectFree?: boolean }>)[id]?.sideEffectFree === true,
     });
 
+    // Side-effect-free modules nothing uses are not even loaded.
+    expect(loaded).not.toContain("/bell.js");
+    expect(loaded).not.toContain("/icons.js");
     const bytes = (code: string) => Buffer.byteLength(code, "utf8");
     // The barrel's statements emit no code, leaving only its newlines. Bell and
     // the namespace re-export are tree-shaken, but the side-effectful module
@@ -361,25 +370,6 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
   });
 });
 
-describe("readDeclaredExportNames", () => {
-  it("lists declared ES exports, including default and re-exported names", () => {
-    expect(
-      readDeclaredExportNames(
-        `export function Foo() {}\nexport default 1;\nexport { x as Bar } from "./x";\nexport * as ns from "./y";\nexport * from "./z";`,
-      ),
-    ).toEqual(new Set(["Foo", "default", "Bar", "ns"]));
-  });
-
-  it("returns undefined for CommonJS modules", () => {
-    expect(readDeclaredExportNames(`module.exports = { Foo() {} };`)).toBeUndefined();
-    expect(readDeclaredExportNames(`"use client";\nexports.Foo = () => null;`)).toBeUndefined();
-  });
-
-  it("declares no exports for a module without module syntax or CommonJS exports", () => {
-    expect(readDeclaredExportNames(`"use client";\n`)).toEqual(new Set());
-  });
-});
-
 describe("planClientReferenceGroups", () => {
   const signatures = new Map([
     ["/b.tsx", "/"],
@@ -399,10 +389,14 @@ describe("planClientReferenceGroups", () => {
     ["/x.tsx", 10],
     ["/y.tsx", 10],
   ]);
+  const referenceKeys = new Map(
+    [...signatures.keys(), "/unsigned.tsx"].map((id) => [id, `key${id}`]),
+  );
 
   it("groups references that share a signature and stay under the cost cap", () => {
     const groups = planClientReferenceGroups({
       referenceIds: new Set([...signatures.keys(), "/unsigned.tsx"]),
+      referenceKeys,
       signatures,
       costs,
       maxCostBytes: 100,
@@ -416,17 +410,25 @@ describe("planClientReferenceGroups", () => {
     for (const group of groups) expect(group.key).toMatch(/^[0-9a-f]{10}$/);
   });
 
-  it("derives stable keys from the signature", () => {
-    const plan = () =>
+  it("derives stable keys from the members, not the routes that reach them", () => {
+    const plan = (routeSignatures: ReadonlyMap<string, string>) =>
       planClientReferenceGroups({
         referenceIds: new Set([...signatures.keys()].reverse()),
-        signatures,
+        referenceKeys,
+        signatures: routeSignatures,
         costs,
         maxCostBytes: 100,
-      }).map((group) => group.key);
+      })
+        .map((group) => group.key)
+        .sort();
 
-    expect(plan()).toEqual(plan());
-    expect(new Set(plan()).size).toBe(2);
+    expect(plan(signatures)).toEqual(plan(signatures));
+    expect(new Set(plan(signatures)).size).toBe(2);
+    // A new route reaching the same members keeps their group's key.
+    const withNewRoute = new Map(
+      [...signatures].map(([id, signature]) => [id, signature === "/" ? "/|/new" : signature]),
+    );
+    expect(plan(withNewRoute)).toEqual(plan(signatures));
   });
 });
 

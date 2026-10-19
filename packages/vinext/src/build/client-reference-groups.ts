@@ -188,30 +188,6 @@ function importedName(kind: string, name: string | null): string {
 }
 
 /**
- * The export names an ES module declares, not counting names that only come
- * through `export * from`. Undefined for CommonJS, whose named exports always
- * resolve through rolldown's interop. Code without module syntax only counts
- * as CommonJS when it refers to `module` or `exports`; an ES module stub with
- * no exports declares none.
- */
-export function readDeclaredExportNames(code: string): ReadonlySet<string> | undefined {
-  const record = parseModuleRecord(code, "js");
-  if (!record) return new Set();
-  if (!record.hasModuleSyntax) {
-    return /(?<![\w$.])(?:module|exports)(?![\w$])/.test(code) ? undefined : new Set();
-  }
-  return new Set(
-    record.staticExports.flatMap((statement) =>
-      statement.entries.flatMap((entry) =>
-        entry.exportName.kind === "None"
-          ? []
-          : [importedName(entry.exportName.kind, entry.exportName.name)],
-      ),
-    ),
-  );
-}
-
-/**
  * Read a module's static imports and re-exports for
  * {@link measureClientReferenceGroupCosts}. Returns undefined when the code does
  * not parse or a specifier does not resolve to one of `importedIds`.
@@ -344,6 +320,11 @@ export async function measureClientReferenceGroupCosts(options: {
   references: ReadonlyMap<string, string>;
   loadModule: (id: string) => Promise<LoadedModule>;
   isExcluded: (id: string) => boolean;
+  /**
+   * Whether a module is known to be side-effect-free before it loads. Such a
+   * module is not loaded until a reference uses one of its exports.
+   */
+  isSideEffectFree?: (id: string) => boolean;
 }): Promise<Map<string, number | null>> {
   const loaded = new Map<string, Promise<LoadedModule | null>>();
   const load = (id: string) => {
@@ -381,6 +362,7 @@ export async function measureClientReferenceGroupCosts(options: {
         }
         const current = used.get(id);
         if (current === "*") return;
+        if (!current && names !== "*" && names.size === 0 && options.isSideEffectFree?.(id)) return;
         if (names === "*" || !current) {
           used.set(id, names === "*" ? "*" : new Set(names));
           next.push(id);
@@ -488,10 +470,14 @@ export type ClientReferenceGroup = {
 /**
  * Group client references that share a route signature. References without a
  * signature, references whose cost is unknown or above `maxCostBytes`, and
- * signatures with a single member stay ungrouped.
+ * signatures with a single member stay ungrouped. Group keys derive from the
+ * members' `referenceKeys`, so a group keeps its chunk name when routes change
+ * but its members do not.
  */
 export function planClientReferenceGroups(options: {
   referenceIds: ReadonlySet<string>;
+  /** Stable, machine-independent key of each client reference. */
+  referenceKeys: ReadonlyMap<string, string>;
   signatures: ReadonlyMap<string, string>;
   costs: ReadonlyMap<string, number | null>;
   maxCostBytes: number;
@@ -514,7 +500,8 @@ export function planClientReferenceGroups(options: {
   for (const signature of [...membersBySignature.keys()].sort()) {
     const members = membersBySignature.get(signature)!;
     if (members.length < 2) continue;
-    const hash = createHash("sha256").update(signature).digest("hex");
+    const memberKeys = members.map((referenceId) => options.referenceKeys.get(referenceId)!);
+    const hash = createHash("sha256").update(memberKeys.sort().join("\0")).digest("hex");
     let length = 10;
     while (usedKeys.has(hash.slice(0, length))) length++;
     const key = hash.slice(0, length);

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "pathslash";
 import { isCSSRequest, type Plugin, type Rollup } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import {
@@ -6,7 +8,6 @@ import {
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
   readClientModuleBindings,
-  readDeclaredExportNames,
 } from "../build/client-reference-groups.js";
 import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
@@ -34,6 +35,45 @@ export type RscClientReferenceGroupingOptions = {
   /** vinext's own client chunk groups. Any other chunk group disables grouping. */
   ownClientChunkGroups: ReadonlySet<unknown>;
 };
+
+/**
+ * Whether the cost estimate loads a module. Rolldown keeps externals and
+ * unresolved `require()`s in `importedIds` under their specifier (a bare name
+ * or URL), and never settles a load of one, so only files and `\0` virtual
+ * modules are measured.
+ */
+function isMeasured(id: string): boolean {
+  return id.startsWith("\0") || path.isAbsolute(id);
+}
+
+type PackageMetadata = Pick<Rollup.ResolvedId, "moduleSideEffects" | "packageJsonPath">;
+
+/**
+ * Whether `id` shares the package `sideEffects` flag of `owner`: it is in the
+ * same package, and the package's `sideEffects` field is not a list of files.
+ * `uniformSideEffects` caches that last check per package.json path.
+ */
+function isInPackage(
+  id: string,
+  owner: PackageMetadata,
+  uniformSideEffects: Map<string, boolean>,
+): boolean {
+  const packageJsonPath = owner.packageJsonPath;
+  if (!packageJsonPath) return false;
+  const relative = path.relative(path.dirname(packageJsonPath), id);
+  if (relative.startsWith("..") || relative.split("/").includes("node_modules")) return false;
+  let uniform = uniformSideEffects.get(packageJsonPath);
+  if (uniform === undefined) {
+    try {
+      const { sideEffects } = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+      uniform = sideEffects === undefined || typeof sideEffects === "boolean";
+    } catch {
+      uniform = false;
+    }
+    uniformSideEffects.set(packageJsonPath, uniform);
+  }
+  return uniform;
+}
 
 function withResolvedIdProxy(resolvedId: string): string {
   return resolvedId.startsWith("\0")
@@ -205,6 +245,9 @@ export function createRscClientReferenceLoadersPlugin(
 
       const slots = new Map<RscClientReferenceMeta, ClientReferenceGroupSlot>();
       const referenceIds = new Set(metaEntries.map(([referenceId]) => referenceId));
+      const referenceKeys = new Map(
+        metaEntries.map(([referenceId, meta]) => [referenceId, meta.referenceKey]),
+      );
       if (
         grouping &&
         groupingEnabled &&
@@ -213,6 +256,7 @@ export function createRscClientReferenceLoadersPlugin(
         // Skip measuring when no two references share a signature.
         planClientReferenceGroups({
           referenceIds,
+          referenceKeys,
           signatures: routeSignatures,
           costs: new Map([...referenceIds].map((referenceId) => [referenceId, 0])),
           maxCostBytes: 0,
@@ -221,7 +265,17 @@ export function createRscClientReferenceLoadersPlugin(
         // Reference ids come from the RSC graph; resolve each import id in this
         // environment so packages are measured through their browser entry.
         const references = new Map<string, string>();
-        const resolvedIds = new Map<string, Rollup.ResolvedId>();
+        const resolutions = new Map<string, Rollup.ResolvedId>();
+        // Package metadata for the cost estimate: from resolutions, and for
+        // relative imports matched without resolving, from their importer.
+        const packages = new Map<string, PackageMetadata>();
+        const externalIds = new Set<string>();
+        const uniformSideEffects = new Map<string, boolean>();
+        const resolveCache = new Map<string, Promise<string | null>>();
+        const addResolution = (resolved: Rollup.ResolvedId) => {
+          resolutions.set(resolved.id, resolved);
+          packages.set(resolved.id, resolved);
+        };
         await Promise.all(
           metaEntries.map(async ([referenceId, meta]) => {
             if (meta.importId.startsWith("\0")) {
@@ -231,41 +285,75 @@ export function createRscClientReferenceLoadersPlugin(
             const resolved = await this.resolve(meta.importId);
             if (!resolved || resolved.external) return;
             references.set(referenceId, resolved.id);
-            resolvedIds.set(resolved.id, resolved);
+            addResolution(resolved);
           }),
         );
-        const referenceModuleIds = new Set(references.values());
-        const declaredExports = new Map<string, ReadonlySet<string> | undefined>();
+        const { external } = this.environment.config.build.rolldownOptions;
+        const moduleInfos = new Map<string, Rollup.ModuleInfo>();
         // Measure every reference, not just grouping candidates, so code shared
         // with an ungroupable reference still counts as shared.
         const costs = await measureClientReferenceGroupCosts({
           references,
           loadModule: async (moduleId) => {
+            // Rolldown never settles a load of an external id. Without an
+            // `external` option, externals (URLs, unresolved requires) are
+            // never absolute paths, which isMeasured already skips.
+            if (external && !resolutions.has(moduleId) && !moduleId.startsWith("\0")) {
+              const resolved = await this.resolve(moduleId);
+              if (!resolved || resolved.external) return { code: "", importedIds: [] };
+            }
             // Pass the full resolution so package metadata such as
             // `sideEffects` is kept for modules this loads first.
-            const info = await this.load(resolvedIds.get(moduleId) ?? { id: moduleId });
+            const info = await this.load(resolutions.get(moduleId) ?? { id: moduleId });
+            moduleInfos.set(moduleId, info);
             const { code, importedIds } = info;
             if (code === null) return { code, importedIds };
-            if (referenceModuleIds.has(moduleId)) {
-              declaredExports.set(moduleId, readDeclaredExportNames(code));
-            }
+            const importedIdSet = new Set(importedIds);
             const bindings = await readClientModuleBindings({
               code,
               importedIds,
-              // Loaded module info can lack the package `sideEffects` flag
-              // that the resolved id carries.
+              // Loaded module info lacks the package `sideEffects` flag that
+              // the resolved id carries.
               sideEffectFree:
-                (info.moduleSideEffects ?? resolvedIds.get(moduleId)?.moduleSideEffects) === false,
+                (info.moduleSideEffects ?? packages.get(moduleId)?.moduleSideEffects) === false,
               resolve: async (specifier) => {
-                const resolved = await this.resolve(specifier, moduleId);
-                if (!resolved || resolved.external) return null;
-                resolvedIds.set(resolved.id, resolved);
-                return resolved.id;
+                // Almost every relative import names the file it resolves to,
+                // so match it against the imported ids instead of resolving.
+                if (
+                  path.isAbsolute(moduleId) &&
+                  (specifier.startsWith("./") || specifier.startsWith("../"))
+                ) {
+                  const candidate = path.resolve(path.dirname(moduleId), specifier);
+                  if (importedIdSet.has(candidate)) {
+                    const owner = packages.get(moduleId);
+                    if (owner && isInPackage(candidate, owner, uniformSideEffects)) {
+                      packages.set(candidate, owner);
+                    }
+                    return candidate;
+                  }
+                }
+                // Resolution depends on the importer's directory, and many
+                // modules of a package share a directory and its imports.
+                const key = `${path.dirname(moduleId)}\0${specifier}`;
+                let resolving = resolveCache.get(key);
+                if (!resolving) {
+                  resolving = this.resolve(specifier, moduleId).then((resolved) => {
+                    if (!resolved) return null;
+                    if (resolved.external) externalIds.add(resolved.id);
+                    else addResolution(resolved);
+                    return resolved.id;
+                  });
+                  resolveCache.set(key, resolving);
+                }
+                return resolving;
               },
             });
             return { code, importedIds, bindings };
           },
+          isSideEffectFree: (moduleId) => packages.get(moduleId)?.moduleSideEffects === false,
           isExcluded: (moduleId) =>
+            !isMeasured(moduleId) ||
+            externalIds.has(moduleId) ||
             moduleId === CLIENT_REFERENCES_ID ||
             moduleId.startsWith(RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX) ||
             isCSSRequest(moduleId) ||
@@ -275,15 +363,18 @@ export function createRscClientReferenceLoadersPlugin(
         // fails the build when the browser module lacks one, for example when
         // a package's `react-server` entry exports more than its browser
         // entry. The direct loader reads exports lazily, so keep those there.
+        // CommonJS exports always resolve through rolldown's interop.
         for (const [referenceId, meta] of metaEntries) {
           const moduleId = references.get(referenceId);
-          const declared = moduleId === undefined ? undefined : declaredExports.get(moduleId);
-          if (declared && meta.renderedExports.some((name) => !declared.has(name))) {
+          const info = moduleId === undefined ? undefined : moduleInfos.get(moduleId);
+          if (!info || info.inputFormat === "cjs") continue;
+          if (meta.renderedExports.some((name) => !info.exports.includes(name))) {
             costs.set(referenceId, null);
           }
         }
         const groups = planClientReferenceGroups({
           referenceIds,
+          referenceKeys,
           signatures: routeSignatures,
           costs,
           maxCostBytes: CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,
