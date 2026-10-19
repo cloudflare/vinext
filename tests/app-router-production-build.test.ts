@@ -549,6 +549,68 @@ describe("App Router Production build", () => {
     }
   }, 30000);
 
+  it("keeps the build ID out of a client chunk that reads NextURL.buildId", async () => {
+    // As in Next.js, NextURL.buildId is undefined in the browser. Inlining the
+    // build ID, a random UUID unless generateBuildId is pinned, would rename
+    // this chunk and its importers on every build.
+    const buildId = "vinext-build-id-marker-3f9c";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-next-url-"));
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { LogBuildId } from "./log-build-id";
+
+export default function Page() {
+  return <LogBuildId />;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "log-build-id.tsx"),
+        `"use client";
+import { NextURL } from "next/server";
+
+export function LogBuildId() {
+  return (
+    <button onClick={() => console.log("client-next-url", new NextURL(location.href).buildId)}>
+      log
+    </button>
+  );
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir, nextConfig: { generateBuildId: () => buildId } })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientJs = readAllJs(path.join(tmpDir, "dist", "client"));
+      expect(clientJs).toContain("client-next-url");
+      expect(clientJs).not.toContain(buildId);
+      expect(readAllJs(path.join(tmpDir, "dist", "server"))).toContain(buildId);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+
   it("builds proxy.ts that reads __filename before redirecting", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/proxy-nfc-traced/proxy-nfc-traced.test.ts
