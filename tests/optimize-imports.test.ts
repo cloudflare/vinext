@@ -13,7 +13,7 @@ import {
   createOptimizedImportSourceMatcher,
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
-  SUBPATH_OPTIMIZE_PACKAGES,
+  OPTIMIZED_SUBPATH_EXPORTS,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
@@ -90,24 +90,6 @@ describe("vinext:optimize-imports plugin", () => {
     expect(hasOptimizedImport(`import "lucide-react";`)).toBe(false);
     expect(hasOptimizedImport(`import { Sun /*; */ } from "lucide-react";`)).toBe(true);
     expect(hasOptimizedImport(`function f(){}import { Sun } from "lucide-react";`)).toBe(true);
-  });
-
-  it("matches subpath imports only for subpath packages", () => {
-    const hasOptimizedImport = createOptimizedImportSourceMatcher(
-      ["radix-ui"],
-      ["react-aria-components"],
-    );
-
-    expect(hasOptimizedImport(`import { X } from "react-aria-components/Toast";`)).toBe(true);
-    expect(hasOptimizedImport(`import { X } from "react-aria-components";`)).toBe(false);
-    expect(hasOptimizedImport(`import { X } from "react-aria-components-x/Toast";`)).toBe(false);
-    expect(hasOptimizedImport(`import { X } from "radix-ui/Slot";`)).toBe(false);
-    expect(hasOptimizedImport(`import { X } from "radix-ui";`)).toBe(true);
-    expect(
-      createOptimizedImportSourceMatcher(["radix-ui"])(
-        `import { X } from "react-aria-components/Toast";`,
-      ),
-    ).toBe(false);
   });
 
   it("rejects unquoted, partial or non-import mentions of optimized packages", () => {
@@ -1107,7 +1089,7 @@ describe("vinext:optimize-imports subpath imports", () => {
    * imports "client-only", and re-exports ToastQueue from a react-stately copy
    * nested under react-aria-components.
    */
-  async function setup(toastEntry?: string) {
+  async function setup(toastEntry?: string, { externalEntry = false } = {}) {
     const tmpDir = toSlash(
       fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-subpath-"))),
     );
@@ -1134,12 +1116,14 @@ describe("vinext:optimize-imports subpath imports", () => {
     const resolveCalls: Array<[string, string]> = [];
     const resolve = async (source: string, importer: string) => {
       resolveCalls.push([source, importer]);
-      if (source === "react-aria-components/Toast") return { id: `${toastEntryPath}?v=abc` };
+      if (source === "react-aria-components/Toast") {
+        return externalEntry
+          ? { id: "react-aria-components/Toast", external: true }
+          : { id: `${toastEntryPath}?v=abc` };
+      }
       if (source === "react-stately/useToastState" && importer === toastEntryPath) {
         return { id: nestedStately };
       }
-      if (source === "react-aria-components/External")
-        return { id: "rac-external", external: true };
       return null;
     };
 
@@ -1160,8 +1144,10 @@ describe("vinext:optimize-imports subpath imports", () => {
 
   const heroToastQueue = `${"/app"}/node_modules/@heroui/react/dist/components/toast/toast-queue.js?v=abc`;
 
-  it("optimizes react-aria-components subpaths by default", () => {
-    expect(SUBPATH_OPTIMIZE_PACKAGES).toContain("react-aria-components");
+  it("optimizes only the server-safe Toast queue export by default", () => {
+    expect([...OPTIMIZED_SUBPATH_EXPORTS]).toEqual([
+      ["react-aria-components/Toast", new Set(["UNSTABLE_ToastQueue"])],
+    ]);
   });
 
   it("accepts dev ids with a ?v= query", () => {
@@ -1194,16 +1180,17 @@ describe("vinext:optimize-imports subpath imports", () => {
     ]);
   });
 
-  it("rewrites names defined in a private module to its file", async () => {
-    const { call, racDir } = await setup();
-    const result = await call(
-      "rsc",
+  it("keeps the client-only guard for other exports and subpaths", async () => {
+    const { call, resolveCalls } = await setup();
+    for (const code of [
       `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
-      "/app/page.tsx",
-    );
-    expect(result!.code).toContain(
-      `import { UNSTABLE_Toast } from ${JSON.stringify(`${racDir}/dist/private/Toast.mjs`)};`,
-    );
+      `import { UNSTABLE_ToastQueue, UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      `import * as Toast from "react-aria-components/Toast";`,
+      `import { Collection } from "react-aria-components/Collection";`,
+    ]) {
+      expect(await call("rsc", code, "/app/page.tsx")).toBeNull();
+    }
+    expect(resolveCalls).toEqual([]);
   });
 
   it("leaves subpath imports alone outside RSC", async () => {
@@ -1225,36 +1212,25 @@ describe("vinext:optimize-imports subpath imports", () => {
 
   it("does not follow re-exports out of a boundary subpath entry", async () => {
     const { call } = await setup(
-      `"use client";\nexport { UNSTABLE_Toast } from "../private/Toast.mjs";`,
+      `"use client";\nexport { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/useToastState";`,
     );
     const result = await call(
       "rsc",
-      `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
       "/app/page.tsx",
     );
     expect(result).toBeNull();
   });
 
   it("leaves the import unchanged when a source cannot be resolved", async () => {
-    const { call } = await setup();
+    const code = `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`;
     // External subpath entry.
-    expect(
-      await call("rsc", `import { X } from "react-aria-components/External";`, "/app/page.tsx"),
-    ).toBeNull();
-    // Unknown name in the entry.
-    expect(
-      await call("rsc", `import { Missing } from "react-aria-components/Toast";`, "/app/page.tsx"),
-    ).toBeNull();
+    const { call } = await setup(undefined, { externalEntry: true });
+    expect(await call("rsc", code, "/app/page.tsx")).toBeNull();
     // Package source that does not resolve from the entry.
     const { call: call2 } = await setup(
       `export { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/missing";`,
     );
-    expect(
-      await call2(
-        "rsc",
-        `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
-        "/app/page.tsx",
-      ),
-    ).toBeNull();
+    expect(await call2("rsc", code, "/app/page.tsx")).toBeNull();
   });
 });

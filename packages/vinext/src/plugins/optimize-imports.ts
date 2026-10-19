@@ -163,22 +163,18 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
 ];
 
 /**
- * Packages whose subpath imports (`pkg/Sub`) are also optimized, in the RSC
- * environment only. Their subpath entries are themselves barrels: heroui's
- * Toast imports `UNSTABLE_ToastQueue` from "react-aria-components/Toast", whose
- * other exports call createContext() at module scope and import "client-only"
- * (https://github.com/cloudflare/vinext/issues/4007). SSR and the client keep
- * the package's own module graph, so context modules are never instantiated
- * twice there.
+ * Server-safe exports of package subpath entries that are optimized in the RSC
+ * environment only. heroui's Toast imports `UNSTABLE_ToastQueue` (a plain class
+ * re-exported from react-stately) from "react-aria-components/Toast", whose
+ * other exports call createContext() at module scope
+ * (https://github.com/cloudflare/vinext/issues/4007). The entry also imports
+ * "client-only" on purpose, so importing any other export from a Server
+ * Component keeps failing. SSR and the client keep the package's own module
+ * graph, so context modules are never instantiated twice there.
  */
-export const SUBPATH_OPTIMIZE_PACKAGES: string[] = ["react-aria-components"];
-
-function isOptimizedSubpath(source: string, subpathPackages: Iterable<string>): boolean {
-  for (const pkg of subpathPackages) {
-    if (source.length > pkg.length + 1 && source.startsWith(`${pkg}/`)) return true;
-  }
-  return false;
-}
+export const OPTIMIZED_SUBPATH_EXPORTS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["react-aria-components/Toast", new Set(["UNSTABLE_ToastQueue"])],
+]);
 
 /**
  * Return the directive that marks a module as an RSC boundary, if any.
@@ -204,12 +200,8 @@ function findBoundaryDirective(ast: ESTree.Program): string | null {
 
 export function createOptimizedImportSourceMatcher(
   packages: Iterable<string>,
-  subpathPackages: Iterable<string> = [],
 ): (code: string) => boolean {
-  const pattern = [
-    ...[...packages].map(escapeRegExp),
-    ...[...subpathPackages].map((pkg) => String.raw`${escapeRegExp(pkg)}/[^"'\s]+`),
-  ].join("|");
+  const pattern = [...packages].map(escapeRegExp).join("|");
   if (!pattern) return () => false;
 
   const importFromPattern = new RegExp(
@@ -736,10 +728,10 @@ export function createOptimizeImportsPlugin(
         ...(nextConfig?.optimizePackageImports ?? []),
       ]);
       hasOptimizedImportSource = createOptimizedImportSourceMatcher(optimizedPackages);
-      hasOptimizedRscImportSource = createOptimizedImportSourceMatcher(
-        optimizedPackages,
-        SUBPATH_OPTIMIZE_PACKAGES,
-      );
+      hasOptimizedRscImportSource = createOptimizedImportSourceMatcher([
+        ...optimizedPackages,
+        ...OPTIMIZED_SUBPATH_EXPORTS.keys(),
+      ]);
       // Clear all caches across rebuilds so stale data doesn't linger.
       // exportMapCache and subpkgOrigin hold barrel AST analysis and sub-package
       // origin mappings which may change if a dependency is updated mid-dev.
@@ -818,11 +810,22 @@ export function createOptimizeImportsPlugin(
 
           const importSource = typeof node.source?.value === "string" ? node.source.value : null;
           if (!importSource) continue;
-          const isSubpath =
-            !packages.has(importSource) &&
-            preferReactServer &&
-            isOptimizedSubpath(importSource, SUBPATH_OPTIMIZE_PACKAGES);
+          const subpathExports =
+            preferReactServer && !packages.has(importSource)
+              ? OPTIMIZED_SUBPATH_EXPORTS.get(importSource)
+              : undefined;
+          const isSubpath = subpathExports !== undefined;
           if (!isSubpath && !packages.has(importSource)) continue;
+          if (
+            subpathExports &&
+            !node.specifiers.every((spec) => {
+              if (spec.type !== "ImportSpecifier") return false;
+              const imported = getAstName(spec.imported);
+              return imported !== null && subpathExports.has(imported);
+            })
+          ) {
+            continue;
+          }
 
           // Build or retrieve the barrel export map for this package.
           // Cache the resolved entry path to avoid repeated FS work.
