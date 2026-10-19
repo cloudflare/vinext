@@ -575,6 +575,28 @@ jobs:
           WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
         run: vp exec wrangler delete "$WORKER_NAME" --force
 
+      # Worker Previews outlive their PR. The pinned Wrangler and cf cannot delete them
+      # yet, so call the Workers API behind `wrangler preview delete`. Keep the Worker
+      # list in sync with the `worker_preview` examples; 404 means already deleted.
+      - name: Delete Worker Previews
+        if: github.event.action == 'closed'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+        run: |
+          for worker in static-assets-cache; do
+            response="$(mktemp)"
+            status="$(curl -sS -o "$response" -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers/$worker/previews/$PREVIEW_NAME")"
+            if [[ "$status" != 2* && "$status" != 404 ]]; then
+              echo "Failed to delete Worker Preview $PREVIEW_NAME for $worker (HTTP $status):"
+              cat "$response"
+              exit 1
+            fi
+          done
+
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest
