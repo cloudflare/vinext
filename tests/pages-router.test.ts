@@ -5184,7 +5184,8 @@ describe("Plugin config", () => {
         { command: "build", mode: "production" },
       );
 
-      expect(result.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
+      expect(readServerDefine(plugins, "__VINEXT_BUILD_ID")).toBe(JSON.stringify(buildId));
+      expect(result.define["process.env.__VINEXT_BUILD_ID"]).toBe("undefined");
       expect(rscCompatibilityId).not.toBe(JSON.stringify(buildId));
       expect(JSON.parse(rscCompatibilityId)).toMatch(/^[0-9a-f-]{36}$/);
       expect(readServerDefine(plugins, "__VINEXT_RSC_COMPATIBILITY_ID")).toBe(rscCompatibilityId);
@@ -5199,11 +5200,11 @@ describe("Plugin config", () => {
         nextConfig: { generateBuildId: () => buildId },
       }) as any[];
       const nextBuildConfigPlugin = nextBuildPlugins.find((p) => p.name === "vinext:config");
-      const nextBuildResult = await nextBuildConfigPlugin.config(
+      await nextBuildConfigPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
-      expect(nextBuildResult.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
+      expect(readServerDefine(nextBuildPlugins, "__VINEXT_BUILD_ID")).toBe(JSON.stringify(buildId));
       expect(readServerRscBuildIdentity(nextBuildPlugins)).not.toBe(rscBuildIdentity);
     } finally {
       if (previousSharedRscBuildIdentity === undefined) {
