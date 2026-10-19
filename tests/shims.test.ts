@@ -12518,11 +12518,9 @@ describe("NextRequest API", () => {
     expect(withBasePath.buildId).toBeUndefined();
   });
 
-  it("nextUrl.buildId is assignable and NextRequest.buildId delegates to it", async () => {
+  it("NextRequest.buildId delegates to nextUrl.buildId", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-    const req = new NextRequest("http://localhost/");
-    req.nextUrl.buildId = "test-build-456";
-    expect(req.nextUrl.buildId).toBe("test-build-456");
+    const req = new NextRequest("http://localhost/_next/data/test-build-456/index.json");
     expect(req.buildId).toBe("test-build-456");
   });
 });

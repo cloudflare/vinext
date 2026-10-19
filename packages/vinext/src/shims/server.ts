@@ -838,9 +838,6 @@ export class NextURL {
   get buildId(): string | undefined {
     return this._buildId;
   }
-  set buildId(value: string | undefined) {
-    this._buildId = value;
-  }
 }
 
 // ---------------------------------------------------------------------------
