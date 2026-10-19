@@ -236,8 +236,10 @@ export function createRscClientReferenceLoadersPlugin(
         // This post-transform runs after @vitejs/plugin-rsc has loaded the
         // client-reference virtual module and populated the manager metadata. The
         // clientChunks option can change facade grouping, but it still emits
-        // facades; this replaces the generated facade with direct loaders while
-        // preserving the manifest fields the RSC plugin writes later in the build.
+        // facades; this replaces the generated facade with per-reference loaders,
+        // which import each reference directly or through its route group module,
+        // while preserving the manifest fields the RSC plugin writes later in the
+        // build.
         const metaEntries = Object.entries(manager.clientReferenceMetaMap).filter(
           ([, meta]) => meta.serverChunk,
         );

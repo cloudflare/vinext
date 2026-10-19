@@ -268,6 +268,69 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
+  // Route grouping with another chunk group broke hydration in a prototype
+  // (out-of-order evaluation), so either kind of foreign group turns it off.
+  it("loads each client reference from its own chunk when the client build has user chunk groups", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir })],
+      environments: {
+        client: {
+          build: {
+            rolldownOptions: {
+              output: {
+                codeSplitting: { groups: [{ name: "user-react-dom", test: /react-dom/ }] },
+              },
+            },
+          },
+        },
+      },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.includes("user-react-dom"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
+  it("loads each client reference from its own chunk when a plugin adds a chunk group in outputOptions", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [
+        {
+          name: "test:add-client-chunk-group",
+          outputOptions(output) {
+            if (this.environment?.name !== "client") return;
+            const codeSplitting =
+              typeof output.codeSplitting === "object" ? output.codeSplitting : {};
+            return {
+              ...output,
+              codeSplitting: {
+                ...codeSplitting,
+                groups: [
+                  { name: "plugin-react-dom", test: /react-dom/ },
+                  ...(codeSplitting.groups ?? []),
+                ],
+              },
+            };
+          },
+        },
+        vinext({ appDir: fixtureDir }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.includes("plugin-react-dom"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
   it("groups client references that import URLs without measuring them", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-url-import-"));
 
