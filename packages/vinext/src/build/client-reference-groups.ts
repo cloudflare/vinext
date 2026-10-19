@@ -159,8 +159,6 @@ type UsedNames = ReadonlySet<string> | "*";
 type ModuleBindings = {
   /** Transformed source bytes, not counting import and export-list statements. */
   bytes: number;
-  /** Whether the module has no side effects (`sideEffects: false`). */
-  sideEffectFree: boolean;
   /** Static imports, with the names each one uses. */
   imports: ReadonlyArray<{ id: string; names: UsedNames }>;
   /**
@@ -195,7 +193,6 @@ function importedName(kind: string, name: string | null): string {
 export async function readClientModuleBindings(options: {
   code: string;
   importedIds: readonly string[];
-  sideEffectFree: boolean;
   resolve: (specifier: string) => Promise<string | null>;
 }): Promise<ModuleBindings | undefined> {
   const { code } = options;
@@ -294,7 +291,6 @@ export async function readClientModuleBindings(options: {
 
   return {
     bytes: Buffer.byteLength(body, "utf8"),
-    sideEffectFree: options.sideEffectFree,
     imports,
     reexports,
   };
@@ -311,20 +307,21 @@ export async function readClientModuleBindings(options: {
  * from a barrel is not charged for the whole library.
  *
  * `references` maps each client reference id to its module id in the client
- * graph. Traversal stops at modules for which `isExcluded` returns true (CSS,
- * always-loaded framework chunks, virtual modules that must not be loaded
- * re-entrantly). A reference whose import graph cannot be fully loaded is
- * reported as `null` so callers keep it out of groups.
+ * graph. `isSideEffectFree` reports a module's package `sideEffects` flag as
+ * the bundler resolved it. Traversal stops at modules for which `isExcluded`
+ * returns true (CSS, always-loaded framework chunks, virtual modules that must
+ * not be loaded re-entrantly). A reference whose import graph cannot be fully
+ * loaded is reported as `null` so callers keep it out of groups.
  */
 export async function measureClientReferenceGroupCosts(options: {
   references: ReadonlyMap<string, string>;
   loadModule: (id: string) => Promise<LoadedModule>;
   isExcluded: (id: string) => boolean;
   /**
-   * Whether a module is known to be side-effect-free before it loads. Such a
-   * module is not loaded until a reference uses one of its exports.
+   * Whether a module has no side effects. A side-effect-free module is not
+   * loaded until a reference uses one of its exports.
    */
-  isSideEffectFree?: (id: string) => boolean;
+  isSideEffectFree: (id: string) => boolean;
 }): Promise<Map<string, number | null>> {
   const loaded = new Map<string, Promise<LoadedModule | null>>();
   const load = (id: string) => {
@@ -362,7 +359,7 @@ export async function measureClientReferenceGroupCosts(options: {
         }
         const current = used.get(id);
         if (current === "*") return;
-        if (!current && names !== "*" && names.size === 0 && options.isSideEffectFree?.(id)) return;
+        if (!current && names !== "*" && names.size === 0 && options.isSideEffectFree(id)) return;
         if (names === "*" || !current) {
           used.set(id, names === "*" ? "*" : new Set(names));
           next.push(id);
@@ -386,7 +383,7 @@ export async function measureClientReferenceGroupCosts(options: {
           const id = frontier[index]!;
           const names = used.get(id)!;
           const { bindings } = module;
-          const treeShaken = bindings?.sideEffectFree === true && names !== "*";
+          const treeShaken = names !== "*" && options.isSideEffectFree(id);
           // Tree-shaking drops a side-effect-free module nothing uses.
           if (treeShaken && names.size === 0) continue;
           own.add(id);

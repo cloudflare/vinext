@@ -180,6 +180,7 @@ describe("measureClientReferenceGroupCosts", () => {
         "/shared.ts": { bytes: 1000 },
       }),
       isExcluded: () => false,
+      isSideEffectFree: () => false,
     });
 
     expect(Object.fromEntries(costs)).toEqual({ a: 110, b: 20 });
@@ -197,6 +198,7 @@ describe("measureClientReferenceGroupCosts", () => {
         "/highlighter.ts": { bytes: 5000 },
       }),
       isExcluded: () => false,
+      isSideEffectFree: () => false,
     });
 
     expect(Object.fromEntries(costs)).toEqual({ box: 5060, code: 5050 });
@@ -207,6 +209,7 @@ describe("measureClientReferenceGroupCosts", () => {
       references: new Map([["a", "/a.tsx"]]),
       loadModule: async () => ({ code: "é".repeat(10), importedIds: [] }),
       isExcluded: () => false,
+      isSideEffectFree: () => false,
     });
 
     expect(costs.get("a")).toBe(20);
@@ -223,6 +226,7 @@ describe("measureClientReferenceGroupCosts", () => {
         "/broken.tsx": { bytes: 10, imports: ["/missing.ts"] },
       }),
       isExcluded: (id) => id.endsWith(".css") || id === "/react.js",
+      isSideEffectFree: () => false,
     });
 
     expect(Object.fromEntries(costs)).toEqual({ a: 10, broken: null });
@@ -230,8 +234,10 @@ describe("measureClientReferenceGroupCosts", () => {
 });
 
 describe("measureClientReferenceGroupCosts with module bindings", () => {
+  type TestModules = Record<string, { code: string; sideEffectFree?: boolean }>;
+
   // Builds each module's bindings from its code, resolving "./x.js" to "/x.js".
-  function bindingLoader(modules: Record<string, { code: string; sideEffectFree?: boolean }>) {
+  function bindingLoader(modules: TestModules) {
     return async (id: string) => {
       const module = modules[id];
       if (!module) throw new Error(`missing ${id}`);
@@ -241,12 +247,14 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
       const bindings = await readClientModuleBindings({
         code: module.code,
         importedIds,
-        sideEffectFree: module.sideEffectFree ?? false,
         resolve: async (specifier) => specifier.slice(1),
       });
       return { code: module.code, importedIds, bindings };
     };
   }
+
+  const sideEffectFreeIn = (modules: TestModules) => (id: string) =>
+    modules[id]?.sideEffectFree === true;
 
   const icon = (name: string) =>
     `export default function ${name}() { return "${name.repeat(50)}"; }`;
@@ -279,8 +287,7 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
         return load(id);
       },
       isExcluded: () => false,
-      isSideEffectFree: (id) =>
-        (modules as Record<string, { sideEffectFree?: boolean }>)[id]?.sideEffectFree === true,
+      isSideEffectFree: sideEffectFreeIn(modules),
     });
 
     // Side-effect-free modules nothing uses are not even loaded.
@@ -299,27 +306,29 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
   });
 
   it("charges every re-export of a barrel imported as a namespace or with side effects", async () => {
+    const modules: TestModules = {
+      "/ns.js": { code: `import * as all from "./barrel.js";\nexport const N = all;` },
+      "/effects.js": { code: `import { One } from "./effectful.js";\nexport const E = One;` },
+      "/barrel.js": {
+        code: `export { default as One } from "./one.js";\nexport { default as Two } from "./two.js";`,
+        sideEffectFree: true,
+      },
+      "/effectful.js": {
+        code: `export { default as One } from "./three.js";\nexport { default as Two } from "./four.js";`,
+      },
+      "/one.js": { code: icon("One"), sideEffectFree: true },
+      "/two.js": { code: icon("Two"), sideEffectFree: true },
+      "/three.js": { code: icon("Three"), sideEffectFree: true },
+      "/four.js": { code: icon("Four"), sideEffectFree: true },
+    };
     const costs = await measureClientReferenceGroupCosts({
       references: new Map([
         ["ns", "/ns.js"],
         ["effects", "/effects.js"],
       ]),
-      loadModule: bindingLoader({
-        "/ns.js": { code: `import * as all from "./barrel.js";\nexport const N = all;` },
-        "/effects.js": { code: `import { One } from "./effectful.js";\nexport const E = One;` },
-        "/barrel.js": {
-          code: `export { default as One } from "./one.js";\nexport { default as Two } from "./two.js";`,
-          sideEffectFree: true,
-        },
-        "/effectful.js": {
-          code: `export { default as One } from "./three.js";\nexport { default as Two } from "./four.js";`,
-        },
-        "/one.js": { code: icon("One"), sideEffectFree: true },
-        "/two.js": { code: icon("Two"), sideEffectFree: true },
-        "/three.js": { code: icon("Three"), sideEffectFree: true },
-        "/four.js": { code: icon("Four"), sideEffectFree: true },
-      }),
+      loadModule: bindingLoader(modules),
       isExcluded: () => false,
+      isSideEffectFree: sideEffectFreeIn(modules),
     });
 
     const bytes = (code: string) => Buffer.byteLength(code, "utf8");
@@ -336,7 +345,6 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
       readClientModuleBindings({
         code: `export { a } from "./a.js";`,
         importedIds: ["/elsewhere.js"],
-        sideEffectFree: true,
         resolve: async () => "/a.js",
       }),
     ).resolves.toBeUndefined();
@@ -346,7 +354,6 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     const bindings = await readClientModuleBindings({
       code: `import a, { b as c } from "./a.js";\nexport { a as A, c };\nexport const d = 1;`,
       importedIds: ["/a.js"],
-      sideEffectFree: true,
       resolve: async (specifier) => specifier.slice(1),
     });
 
@@ -361,7 +368,6 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     const bindings = await readClientModuleBindings({
       code: `import { a } from "./a.js";\nexport { a };\nexport const b = () => a();`,
       importedIds: ["/a.js"],
-      sideEffectFree: true,
       resolve: async (specifier) => specifier.slice(1),
     });
 

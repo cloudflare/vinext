@@ -267,7 +267,8 @@ export function createRscClientReferenceLoadersPlugin(
         const references = new Map<string, string>();
         const resolutions = new Map<string, Rollup.ResolvedId>();
         // Package metadata for the cost estimate: from resolutions, and for
-        // relative imports matched without resolving, from their importer.
+        // relative imports matched without resolving, from their importer in
+        // the same package when its `sideEffects` flag covers every file.
         const packages = new Map<string, PackageMetadata>();
         const externalIds = new Set<string>();
         const uniformSideEffects = new Map<string, boolean>();
@@ -309,26 +310,26 @@ export function createRscClientReferenceLoadersPlugin(
             const { code, importedIds } = info;
             if (code === null) return { code, importedIds };
             const importedIdSet = new Set(importedIds);
+            const owner = packages.get(moduleId);
             const bindings = await readClientModuleBindings({
               code,
               importedIds,
-              // Loaded module info lacks the package `sideEffects` flag that
-              // the resolved id carries.
-              sideEffectFree:
-                (info.moduleSideEffects ?? packages.get(moduleId)?.moduleSideEffects) === false,
               resolve: async (specifier) => {
-                // Almost every relative import names the file it resolves to,
-                // so match it against the imported ids instead of resolving.
+                // Almost every relative import names the file it resolves to.
+                // When that file provably shares its importer's package
+                // metadata, match it against the imported ids instead of
+                // resolving it.
                 if (
+                  owner &&
                   path.isAbsolute(moduleId) &&
                   (specifier.startsWith("./") || specifier.startsWith("../"))
                 ) {
                   const candidate = path.resolve(path.dirname(moduleId), specifier);
-                  if (importedIdSet.has(candidate)) {
-                    const owner = packages.get(moduleId);
-                    if (owner && isInPackage(candidate, owner, uniformSideEffects)) {
-                      packages.set(candidate, owner);
-                    }
+                  if (
+                    importedIdSet.has(candidate) &&
+                    isInPackage(candidate, owner, uniformSideEffects)
+                  ) {
+                    packages.set(candidate, owner);
                     return candidate;
                   }
                 }
@@ -350,6 +351,8 @@ export function createRscClientReferenceLoadersPlugin(
             });
             return { code, importedIds, bindings };
           },
+          // Rolldown's module info never reports `moduleSideEffects: false`,
+          // so this reads the flag from the resolution.
           isSideEffectFree: (moduleId) => packages.get(moduleId)?.moduleSideEffects === false,
           isExcluded: (moduleId) =>
             !isMeasured(moduleId) ||

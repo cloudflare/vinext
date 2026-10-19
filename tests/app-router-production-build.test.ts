@@ -326,6 +326,100 @@ export default function Page() {
     }
   }, 30000);
 
+  it("charges only the barrel re-exports a client reference imports when sideEffects lists files", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-barrel-side-effects-"));
+
+    try {
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      // Library builds commonly mark only CSS as side-effectful and import
+      // files with explicit extensions.
+      const pkgDir = path.join(tmpDir, "node_modules", "barrel-pkg");
+      fs.mkdirSync(path.join(pkgDir, "parts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "barrel-pkg",
+          type: "module",
+          sideEffects: ["**/*.css"],
+          exports: "./index.js",
+        }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "index.js"),
+        `export { Small } from "./small.js";\nexport * from "./parts/index.js";\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "small.js"),
+        `export function Small() { return "SMALL_MARKER"; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "parts", "index.js"),
+        `export { Big } from "./big.js";\nexport { Big2 } from "./big2.js";\n`,
+      );
+      for (const name of ["Big", "Big2"]) {
+        fs.writeFileSync(
+          path.join(pkgDir, "parts", `${name.toLowerCase()}.js`),
+          `export function ${name}() { return "BIG_MARKER${"x".repeat(150_000)}"; }\n`,
+        );
+      }
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "uses-small.tsx"),
+        `"use client";
+import { Small } from "barrel-pkg";
+export function UsesSmall() { return <p>{Small()}</p>; }
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "local.tsx"),
+        `"use client";\nexport function Local() { return <p>LOCAL_MARKER</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Local } from "./local";
+import { UsesSmall } from "./uses-small";
+export default function Page() {
+  return <main><UsesSmall /><Local /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const chunksDir = path.join(clientDir, "_next", "static", "chunks");
+      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      expect(group).toBeDefined();
+      const groupSource = fs.readFileSync(path.join(chunksDir, group!), "utf-8");
+      expect(groupSource).toContain("SMALL_MARKER");
+      expect(groupSource).toContain("LOCAL_MARKER");
+      expect(readAllJs(clientDir)).not.toContain("BIG_MARKER");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
 
