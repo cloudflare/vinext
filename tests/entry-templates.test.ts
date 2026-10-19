@@ -382,6 +382,79 @@ describe("App Router generated manifest construction", () => {
     );
   });
 
+  describe("route handlers in the Link prefetch manifest (issue #3624)", () => {
+    const handler = (patternParts: string[]): AppRoute => ({
+      ...minimalAppRoutes[0],
+      pattern: `/${patternParts.join("/")}`,
+      patternParts,
+      pagePath: null,
+      routePath: `/tmp/test/app/${patternParts.join("/")}/route.ts`,
+      layouts: [],
+      layoutErrorPaths: [],
+      notFoundPaths: [],
+      forbiddenPaths: [],
+      unauthorizedPaths: [],
+      layoutTreePositions: [],
+      routeSegments: patternParts,
+      isDynamic: patternParts.some((part) => part.startsWith(":")),
+    });
+    const page = (patternParts: string[]): AppRoute => ({
+      ...minimalAppRoutes[0],
+      pattern: `/${patternParts.join("/")}`,
+      patternParts,
+      routeSegments: patternParts,
+      isDynamic: patternParts.some((part) => part.startsWith(":")),
+    });
+    const documentOnlyEntry = (patternParts: string[]) =>
+      JSON.stringify({
+        canPrefetchLoadingShell: false,
+        documentOnly: true,
+        patternParts,
+        isDynamic: patternParts.some((part) => part.startsWith(":")),
+      });
+
+    it("omits route handlers that no page route can match", () => {
+      const code = generateBrowserEntry([
+        ...minimalAppRoutes,
+        handler(["api", "platform", "users"]),
+        handler(["api", "items", ":id"]),
+        handler(["about", "feed.xml"]),
+      ]);
+
+      expect(code).not.toContain('"api"');
+      expect(code).not.toContain("feed.xml");
+      expect(code).toContain('"patternParts":["about"]');
+    });
+
+    it("keeps route handlers that shadow an overlapping page route", () => {
+      const code = generateBrowserEntry([
+        ...minimalAppRoutes,
+        page(["docs", ":path+"]),
+        page(["shop", ":path*"]),
+        handler(["blog", "rss"]),
+        handler(["docs", "search"]),
+        handler(["shop"]),
+        handler(["docs"]),
+      ]);
+
+      expect(code).toContain(documentOnlyEntry(["blog", "rss"]));
+      expect(code).toContain(documentOnlyEntry(["docs", "search"]));
+      expect(code).toContain(documentOnlyEntry(["shop"]));
+      // `[...path]` needs at least one segment, so `/docs` never reaches it.
+      expect(code).not.toContain(documentOnlyEntry(["docs"]));
+    });
+
+    it("keeps every route handler in hybrid App and Pages builds", () => {
+      const code = generateBrowserEntry(
+        [...minimalAppRoutes, handler(["api", "platform", "users"])],
+        null,
+        [{ canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["legacy"] }],
+      );
+
+      expect(code).toContain(documentOnlyEntry(["api", "platform", "users"]));
+    });
+  });
+
   it("advertises loading-shell prefetch for intercept-only loading boundaries", () => {
     const route = {
       ...minimalAppRoutes[0],
