@@ -15016,6 +15016,19 @@ describe("checkHasConditions condition value cache", () => {
     );
   });
 
+  it("compiles nested repetition in has and missing values as written, like Next.js", async () => {
+    const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
+    // Next.js compiles `new RegExp(`^${value}$`)` with no backtracking check.
+    // Built from parts so static ReDoS scanners do not flag the fixture.
+    const repeated = "(?:a+)";
+    const conditions = [{ type: "header" as const, key: "x-run", value: `${repeated}+` }];
+    const run = (value: string) => makeCtx({ headers: { "x-run": value } });
+    expect(checkHasConditions(conditions, undefined, run("aaa"))).toBe(true);
+    expect(checkHasConditions(conditions, undefined, run("aab"))).toBe(false);
+    expect(checkHasConditions(undefined, conditions, run("aaa"))).toBe(false);
+    expect(checkHasConditions(undefined, conditions, run("aab"))).toBe(true);
+  });
+
   it("caches condition values across all condition types (header, cookie, query, host)", async () => {
     const { checkHasConditions } = await import("../packages/vinext/src/config/config-matchers.js");
     const sharedPattern = "^v\\d+$"; // a pattern that will be cached once and reused
