@@ -49,6 +49,17 @@ type BarrelExportEntry = {
   source: string;
   isNamespace: boolean;
   originalName?: string;
+  /**
+   * The outermost module on the way to `source` that RSC replaces with
+   * references or wrappers because of its directive. RSC must import the name
+   * from it instead.
+   */
+  rscBoundary?: string;
+  /**
+   * The same for SSR, where only "use server" and "use cache" modules are
+   * replaced with references.
+   */
+  ssrBoundary?: string;
 };
 
 type BarrelExportMap = Map<string, BarrelExportEntry>;
@@ -398,7 +409,7 @@ async function buildExportMapFromFile(
   }
 
   const exportMap: BarrelExportMap = new Map();
-  const isBoundary = findBoundaryDirective(ast) !== null;
+  const boundaryDirective = findBoundaryDirective(ast);
 
   // Track import bindings: local name → { source, isNamespace, originalName }
   const importBindings = new Map<
@@ -614,11 +625,17 @@ async function buildExportMapFromFile(
     }
   }
 
-  if (isBoundary) {
-    // Every name a boundary module exports must be imported from the module
-    // itself, including names reached through `export *` into or out of it.
-    for (const name of exportMap.keys()) {
-      exportMap.set(name, { source: filePath, isNamespace: false, originalName: name });
+  if (boundaryDirective) {
+    // Record this module as the boundary for every name it exports, including
+    // names reached through `export *` into or out of it. Outer modules
+    // override inner ones, since an importer reaches them first.
+    const isSsrBoundary = boundaryDirective !== "use client";
+    for (const [name, entry] of exportMap) {
+      exportMap.set(name, {
+        ...entry,
+        rscBoundary: filePath,
+        ssrBoundary: isSsrBoundary ? filePath : entry.ssrBoundary,
+      });
     }
   }
 
@@ -852,6 +869,13 @@ export function createOptimizeImportsPlugin(
             barrelCaches.exportMapCache,
           );
           if (!exportMap || !barrelEntry) continue;
+          // The module to import a name from in this environment, stopping at
+          // the module that this environment replaces with references.
+          const getEntry = (name: string): BarrelExportEntry | undefined => {
+            const entry = exportMap.get(name);
+            const boundary = preferReactServer ? entry?.rscBoundary : entry?.ssrBoundary;
+            return boundary ? { source: boundary, isNamespace: false, originalName: name } : entry;
+          };
 
           // Register sub-package sources so resolveId can find them from
           // the barrel's context (needed for pnpm strict hoisting).
@@ -948,12 +972,9 @@ export function createOptimizeImportsPlugin(
             continue;
           }
 
-          // A subpath entry that defines (or is the boundary for) every imported
-          // name gains nothing from a rewrite.
-          if (
-            isSubpath &&
-            specifiers.every(({ imported }) => exportMap.get(imported)?.source === barrelEntry)
-          ) {
+          // An entry that defines (or is the boundary for) every imported name
+          // gains nothing from a rewrite.
+          if (specifiers.every(({ imported }) => getEntry(imported)?.source === barrelEntry)) {
             continue;
           }
 
@@ -962,7 +983,7 @@ export function createOptimizeImportsPlugin(
           const resolvedPackageSources = new Map<string, string>();
           if (isSubpath) {
             for (const { imported } of specifiers) {
-              const source = exportMap.get(imported)?.source;
+              const source = getEntry(imported)?.source;
               if (!source || path.isAbsolute(source) || resolvedPackageSources.has(source))
                 continue;
               const resolvedId = await resolveFileId(this, source, barrelEntry);
@@ -985,7 +1006,7 @@ export function createOptimizeImportsPlugin(
             }
           >();
           for (const { local, imported } of specifiers) {
-            const entry = exportMap.get(imported);
+            const entry = getEntry(imported);
             if (!entry) continue;
             // Sources in the export map are already absolute paths (for file references)
             // or bare package specifiers — no further resolution needed.

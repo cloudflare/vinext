@@ -391,28 +391,47 @@ export { Mo as Listbox };`;
     expect(map!.get("parse")).toBeDefined();
   });
 
-  it("does not follow re-exports through a directive boundary", async () => {
+  it("records the directive boundaries that re-exports pass through", async () => {
     const entryPath = "/fake/wildcard-boundary/index.js";
     const files: Record<string, string> = {
-      [entryPath]: `export * from "./client.js";\nexport { Button } from "./button.js";`,
-      "/fake/wildcard-boundary/client.js": `"use client";\nexport { Dialog } from "./dialog.js";\nexport * as Icons from "./icons.js";`,
+      [entryPath]: `export * from "./client.js";\nexport * from "./actions.js";\nexport { Button } from "./button.js";`,
+      "/fake/wildcard-boundary/client.js": `"use client";\nexport { Dialog } from "./dialog.js";\nexport * as Icons from "./icons.js";\nexport * from "./client-actions.js";`,
+      "/fake/wildcard-boundary/client-actions.js": `"use server";\nexport { save } from "./save.js";`,
+      "/fake/wildcard-boundary/actions.js": `"use server";\nexport { submit } from "./submit.js";`,
     };
 
     const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
 
-    // Names exported by the "use client" module are imported from it, so the
-    // client reference boundary is kept.
+    // RSC stops at any directive; SSR only at "use server" and "use cache".
     expect(map!.get("Dialog")).toEqual({
-      source: "/fake/wildcard-boundary/client.js",
+      source: "/fake/wildcard-boundary/dialog.js",
       isNamespace: false,
       originalName: "Dialog",
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: undefined,
     });
     expect(map!.get("Icons")).toEqual({
-      source: "/fake/wildcard-boundary/client.js",
-      isNamespace: false,
-      originalName: "Icons",
+      source: "/fake/wildcard-boundary/icons.js",
+      isNamespace: true,
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: undefined,
     });
-    expect(map!.get("Button")!.source).toBe("/fake/wildcard-boundary/button.js");
+    // The outermost boundary wins for each environment.
+    expect(map!.get("save")).toMatchObject({
+      source: "/fake/wildcard-boundary/save.js",
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: "/fake/wildcard-boundary/client-actions.js",
+    });
+    expect(map!.get("submit")).toMatchObject({
+      source: "/fake/wildcard-boundary/submit.js",
+      rscBoundary: "/fake/wildcard-boundary/actions.js",
+      ssrBoundary: "/fake/wildcard-boundary/actions.js",
+    });
+    expect(map!.get("Button")).toEqual({
+      source: "/fake/wildcard-boundary/button.js",
+      isNamespace: false,
+      originalName: "Button",
+    });
   });
 
   it("does not overwrite existing exports when wildcard sub-module has same name", async () => {
@@ -632,7 +651,9 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
-  ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
+  ): Promise<
+    (code: string, id: string, envName?: string) => Promise<ReturnType<(...args: any[]) => any>>
+  > {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
@@ -662,9 +683,9 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
 
     const transform = unwrapHook(plugin.transform)!;
-    // Return a caller that fakes the environment context as RSC (server)
-    return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+    // Return a caller that fakes the environment context, RSC by default
+    return async (code: string, id: string, envName = "rsc") =>
+      await (transform as any).call({ ...plugin, environment: { name: envName } }, code, id);
   }
 
   afterEach(() => {
@@ -804,6 +825,33 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./button"`);
     const expected = path.posix.join(tmpDir, "node_modules", "ramda", "button");
     expect(importLines[0]).toContain(expected);
+  });
+
+  it('leaves imports from a "use client" entry alone in RSC but rewrites them in SSR', async () => {
+    // antd is in DEFAULT_OPTIMIZE_PACKAGES, and its entry starts with "use client".
+    const call = await setupTransform("antd", `"use client";\nexport { Button } from "./button";`);
+    const code = `import { Button } from "antd";`;
+    expect(await call(code, "/app/page.tsx", "rsc")).toBeNull();
+
+    const result = await call(code, "/app/page.tsx", "ssr");
+    const button = path.posix.join(tmpDir, "node_modules", "antd", "button");
+    expect(result!.code).toContain(`import { Button } from ${JSON.stringify(button)}`);
+  });
+
+  it('stops at "use server" modules in SSR', async () => {
+    const call = await setupTransform("antd", `export * from "./actions.js";`);
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "antd");
+    fs.writeFileSync(
+      path.join(pkgDir, "actions.js"),
+      `"use server";\nexport { submit } from "./submit.js";`,
+    );
+    const code = `import { submit } from "antd";`;
+    for (const envName of ["rsc", "ssr"]) {
+      const result = await call(code, "/app/page.tsx", envName);
+      expect(result!.code).toContain(
+        `import { submit } from ${JSON.stringify(path.posix.join(pkgDir, "actions.js"))}`,
+      );
+    }
   });
 
   it("produces separate statements for namespace and named imports from the same source", async () => {
@@ -1158,7 +1206,8 @@ describe("vinext:optimize-imports subpath imports", () => {
     return { call, racDir, nestedStately, resolveCalls };
   }
 
-  const heroToastQueue = `${"/app"}/node_modules/@heroui/react/dist/components/toast/toast-queue.js?v=abc`;
+  const heroToastQueue =
+    "/app/node_modules/@heroui/react/dist/components/toast/toast-queue.js?v=abc";
 
   it("optimizes react-aria-components subpaths by default", () => {
     expect(SUBPATH_OPTIMIZE_PACKAGES).toContain("react-aria-components");
