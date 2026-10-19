@@ -9750,9 +9750,8 @@ describe("middleware matcher patterns", () => {
   it("matches Next.js 16.2.7 path-to-regexp tokens and compiled regexes", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const { parseMiddlewarePath } =
-      await import("../packages/vinext/src/server/middleware-path-to-regexp.js");
-    type Token = ReturnType<typeof parseMiddlewarePath>[number];
+    const { parsePathPattern } = await import("../packages/vinext/src/utils/path-to-regexp.js");
+    type Token = ReturnType<typeof parsePathPattern>[number];
     const nextPathToRegexp = createRequire(import.meta.url)(
       "next/dist/compiled/path-to-regexp",
     ) as {
@@ -9776,7 +9775,7 @@ describe("middleware matcher patterns", () => {
 
     for (const pattern of patterns) {
       const nextTokens = nextPathToRegexp.parse(pattern);
-      expect(parseMiddlewarePath(pattern), pattern).toEqual(nextTokens);
+      expect(parsePathPattern(pattern), pattern).toEqual(nextTokens);
 
       let nextRegexp: RegExp;
       try {
@@ -13806,9 +13805,8 @@ describe("matchConfigPattern", () => {
 
   // Regression for #1331: a trailing slash on the request pathname must not
   // hide a config rewrite/redirect/header source written without one. This
-  // mirrors Next.js's conditional `source + '(/)?'` suffix under
-  // `trailingSlash: true` — see `stripTrailingSlashForConfigMatch`.
-  it("strips a trailing slash on the incoming pathname before matching", async () => {
+  // mirrors the optional `(?:\/)?$` ending Next.js's modifyRouteRegex appends.
+  it("accepts a trailing slash on the incoming pathname", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
     // Exact match: trailing slash on the pathname is ignored.
     expect(matchConfigPattern("/about/", "/about")).toEqual({});
@@ -14917,8 +14915,8 @@ describe("matchHeaders param substitution parity with Next.js", () => {
 
 describe("matchHeaders compiled source cache", () => {
   // Regression test: header source compilation was re-run on every request for
-  // every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser.
+  // every header rule. The result is now cached by rule.source so subsequent
+  // calls skip the tokeniser.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),
@@ -14937,7 +14935,7 @@ describe("matchHeaders compiled source cache", () => {
       },
     ];
 
-    // First call — populates _compiledHeaderSourceCache.
+    // First call — populates the compiled source cache.
     const first = matchHeaders("/blog/hello-world", rules, makeCtx());
     expect(first).toEqual([{ key: "x-content-type", value: "article" }]);
 
@@ -15573,11 +15571,12 @@ describe("matchRewrite with external URLs", () => {
     expect(result).toBe("/archive/2024-06");
   });
 
-  it("replaces hyphenated param names without truncating them", async () => {
+  it("reads a hyphen after a param name as literal text, like path-to-regexp", async () => {
     const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    // `:auth-method` is the `auth` param followed by the literal `-method`.
     const rewrites = [{ source: "/auth/:auth-method", destination: "/signin/:auth-method" }];
-    const result = matchRewrite("/auth/google", rewrites, emptyCtx);
-    expect(result).toBe("/signin/google");
+    expect(matchRewrite("/auth/google", rewrites, emptyCtx)).toBeNull();
+    expect(matchRewrite("/auth/google-method", rewrites, emptyCtx)).toBe("/signin/google-method");
   });
 
   it("treats hyphen as a literal delimiter when only the shorter param key exists", async () => {
@@ -16026,7 +16025,8 @@ describe("open redirect prevention in catch-all redirects", () => {
 
   it("matchRedirect sanitizes double-slash in already-decoded paths", async () => {
     const { matchRedirect } = await import("../packages/vinext/src/config/config-matchers.js");
-    const redirects = [{ source: "/old/:path*", destination: "/:path*", permanent: false }];
+    // `:path*` never matches an empty segment, but `(.*)` captures `/evil.com`.
+    const redirects = [{ source: "/old/:path(.*)", destination: "/:path", permanent: false }];
     // Even if an already-decoded path somehow contains //, the sanitizer should handle it
     const result = matchRedirect("/old//evil.com", redirects, emptyCtx);
     expect(result).not.toBeNull();
@@ -26134,6 +26134,105 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("appends unused source params to the rewrite query like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // The case-insensitive sync match must not skip the `?id=123` that
+    // Next.js appends when the destination uses none of the params.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/123")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "123" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("resolves dot segments in a rewrite destination before substituting params", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // Like the server, `/target/:id/..` is parsed to `/target/` first, so `id`
+    // goes unused and is appended to the query.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "/target/:id/.." }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/x")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target", query: { id: "x" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("collapses a leading double slash in a rewrite destination like the server", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win } = createDataNavWindow({
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/target/[id]": destinationLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `//target/1` would read as protocol-relative; the server's
+    // sanitizeDestination makes it the local `/target/1`.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = {
+      beforeFiles: [{ source: "/From/:id", destination: "//target/:id" }],
+      afterFiles: [],
+      fallback: [],
+    };
+    (globalThis as any).window = win;
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+    try {
+      vi.resetModules();
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/from/1")).toBe(true);
+      expect(destinationLoader).toHaveBeenCalledTimes(1);
+      expect(win.__NEXT_DATA__).toMatchObject({ page: "/target/[id]", query: { id: "1" } });
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it.each([
     [
       "an HttpOnly cookie",
@@ -26177,6 +26276,50 @@ describe("Pages Router _next/data client navigation", () => {
       expect(hrefAssignments).toContain("/conditional");
       expect(fetchMock).not.toHaveBeenCalled();
       expect(destinationLoader).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
+  it("skips a conditional rewrite whose source cannot match before reusing the mounted page", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      page: "/target",
+      pathname: "/foobar",
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // `/foo` shares a prefix with `/foobar` but never matches it, so its
+    // condition needs no server evaluation.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [
+        { source: "/foo", destination: "/private", has: [{ type: "query", key: "secret" }] },
+        { source: "/foobar", destination: "/target" },
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const pushPromise = Router.push({ query: { param: 1 } });
+      // The mounted page is reused, so history updates in the same turn.
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ as: "/foobar?param=1" }),
+        "",
+        "/foobar?param=1",
+      );
+      await expect(pushPromise).resolves.toBe(true);
     } finally {
       if (previousWindow === undefined) delete (globalThis as any).window;
       else (globalThis as any).window = previousWindow;

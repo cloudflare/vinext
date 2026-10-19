@@ -62,6 +62,44 @@ test.describe("i18n config rules with mixed-case locale prefixes", () => {
     }
   });
 
+  test("redirects() with params after the locale segment fire for every locale", async ({
+    request,
+  }) => {
+    for (const [pathname, location] of [
+      ["/locale-param-gated/settings", "/about"],
+      ["/en/locale-param-gated/settings", "/about"],
+      ["/EN/locale-param-gated/settings", "/about"],
+      ["/sv/locale-param-gated/settings", "/sv/about"],
+      ["/SV/locale-param-gated/a/b", "/SV/about"],
+      ["/nl/locale-param-gated/settings", "/nl/about"],
+      ["/locale-param-gated", "/about"],
+      ["/sv/locale-param-gated", "/sv/about"],
+      ["/SV/locale-param-gated", "/SV/about"],
+      // `locale: false` keeps the user-written `/:locale(en|sv)?` param as is.
+      ["/locale-param-raw/x", "/about"],
+      ["/en/locale-param-raw/x", "/about"],
+      ["/sv/locale-param-raw/x", "/about"],
+      ["/SV/locale-param-raw/x", "/about"],
+      ["/sv/locale-param-raw", "/about"],
+    ]) {
+      const response = await request.get(`${BASE_URL}${pathname}`, { maxRedirects: 0 });
+      expect(response.status(), pathname).toBe(307);
+      expect(response.headers()["location"], pathname).toBe(location);
+      expect(await response.text(), pathname).not.toContain("locale param");
+
+      const authed = await request.get(`${BASE_URL}${pathname}`, {
+        headers: { cookie: "session=1" },
+        maxRedirects: 0,
+      });
+      expect(authed.status(), pathname).toBe(200);
+    }
+
+    // `nl` is outside the user-written alternation.
+    const unmatched = await request.get(`${BASE_URL}/nl/locale-param-raw/x`, { maxRedirects: 0 });
+    expect(unmatched.status()).toBe(200);
+    expect(await unmatched.text()).toContain("locale param raw content");
+  });
+
   test("headers() applies to mixed-case locale prefixes", async ({ request }) => {
     for (const pathname of ["/about", "/en/about", "/EN/about", "/SV/about", "/NL/about"]) {
       const response = await request.get(`${BASE_URL}${pathname}`, { maxRedirects: 0 });

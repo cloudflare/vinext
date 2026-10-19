@@ -1,10 +1,10 @@
 import type { HasCondition } from "../config/next-config.js";
 import {
-  middlewarePathTokensToRegExp,
-  normalizeMiddlewarePathTokens,
-  parseMiddlewarePath,
-  type MiddlewarePathToken,
-} from "./middleware-path-to-regexp.js";
+  normalizePathTokens,
+  parsePathPattern,
+  pathTokensToRegExpSource,
+  type PathToken,
+} from "../utils/path-to-regexp.js";
 
 export type CompiledMiddlewareMatcherPattern =
   | { regexp: RegExp; error?: never }
@@ -94,6 +94,15 @@ export function isValidMiddlewareMatcherObjectConfig(
   return matcherObjectSource(value).error === undefined;
 }
 
+function middlewareRegExp(tokens: PathToken[]): RegExp {
+  // path-to-regexp's non-strict ending for the `/#?` delimiter. Next.js keeps
+  // only the `.source` and recompiles it without flags, so matchers are
+  // case-sensitive. A case-insensitive negative lookahead would skip
+  // middleware for case variants like `/API/x`.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  return new RegExp(`${pathTokensToRegExpSource(tokens)}[\\/#\\?]?$`);
+}
+
 export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
   if (!source.startsWith("/")) {
     return { error: "source must start with /" };
@@ -102,9 +111,9 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
     return { error: "source exceeds max built length of 4096" };
   }
 
-  let tokens: MiddlewarePathToken[];
+  let tokens: PathToken[];
   try {
-    tokens = parseMiddlewarePath(source);
+    tokens = parsePathPattern(source);
   } catch (error) {
     return {
       error: error instanceof Error ? error.message : "matcher could not be parsed",
@@ -112,13 +121,13 @@ export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlew
   }
 
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens) };
+    return { regexp: middlewareRegExp(tokens) };
   } catch {
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
-    const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
+    const normalizedTokens = normalizePathTokens(tokens);
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };
+      return { regexp: middlewareRegExp(normalizedTokens) };
     } catch (error) {
       return {
         error: error instanceof Error ? error.message : "matcher could not be compiled",

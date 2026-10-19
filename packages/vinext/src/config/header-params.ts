@@ -11,7 +11,7 @@
  * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/route-match-utils.ts
  */
 
-import { parseMiddlewarePath } from "../server/middleware-path-to-regexp.js";
+import { parsePathPattern } from "../utils/path-to-regexp.js";
 
 /**
  * Params captured by a header rule: path-to-regexp source params (`*`/`+`
@@ -111,7 +111,7 @@ function stripNormalizedSeparators(pathname: string): string {
 // path-to-regexp 6.3.0 `compile` with `validate: false` and the default
 // identity `encode`.
 function compile(route: string): (params: HeaderParams) => string {
-  const tokens = parseMiddlewarePath(route);
+  const tokens = parsePathPattern(route);
   return (params) => {
     let path = "";
     for (const token of tokens) {

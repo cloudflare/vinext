@@ -22,9 +22,9 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 // THE SOFTWARE.
 
-export type MiddlewarePathToken = string | MiddlewarePathKey;
+export type PathToken = string | PathKey;
 
-export type MiddlewarePathKey = {
+export type PathKey = {
   name: string | number;
   prefix: string;
   suffix: string;
@@ -120,23 +120,19 @@ function lexer(value: string): LexerToken[] {
   return tokens;
 }
 
-export type PathToRegexpOptions = {
-  /** Characters a default parameter pattern cannot match. Defaults to `/#?`. */
+export type ParsePathPatternOptions = {
+  /** Characters a default param cannot contain. path-to-regexp defaults to `/#?`. */
   delimiter?: string;
-  /** Omit the optional trailing delimiter before `$`. Defaults to false. */
-  strict?: boolean;
 };
 
-const DEFAULT_DELIMITER = "/#?";
-
-export function parseMiddlewarePath(
+export function parsePathPattern(
   value: string,
-  options: PathToRegexpOptions = {},
-): MiddlewarePathToken[] {
+  options: ParsePathPatternOptions = {},
+): PathToken[] {
   const tokens = lexer(value);
-  const result: MiddlewarePathToken[] = [];
+  const result: PathToken[] = [];
   const prefixes = "./";
-  const delimiter = options.delimiter ?? DEFAULT_DELIMITER;
+  const delimiter = options.delimiter ?? "/#?";
   const delimiterClass = `[^${escapeRegex(delimiter)}]`;
   let key = 0;
   let index = 0;
@@ -241,9 +237,7 @@ function escapeRegex(value: string): string {
   return value.replace(/([.+*?=^!:${}()[\]|/\\])/g, "\\$1");
 }
 
-export function normalizeMiddlewarePathTokens(
-  tokens: MiddlewarePathToken[],
-): MiddlewarePathToken[] {
+export function normalizePathTokens(tokens: PathToken[]): PathToken[] {
   return tokens.map((token) => {
     if (
       typeof token === "object" &&
@@ -258,16 +252,10 @@ export function normalizeMiddlewarePathTokens(
 }
 
 /**
- * Build the regex source path-to-regexp's `tokensToRegexp` would produce
- * (with the default `start`/`end` options). Returned as a string so callers
- * can apply their own flags and post-processing.
+ * path-to-regexp's `tokensToRegexp` with `strict: true`, without the closing
+ * `$`. Callers append the ending their Next.js matcher uses.
  */
-export function pathTokensToRegExpSource(
-  tokens: MiddlewarePathToken[],
-  options: PathToRegexpOptions = {},
-): string {
-  const delimiter = options.delimiter ?? DEFAULT_DELIMITER;
-  const delimiterRegex = `[${escapeRegex(delimiter)}]`;
+export function pathTokensToRegExpSource(tokens: PathToken[]): string {
   let route = "^";
 
   for (const token of tokens) {
@@ -297,14 +285,5 @@ export function pathTokensToRegExpSource(
     }
   }
 
-  if (!options.strict) route += `${delimiterRegex}?`;
-  return `${route}$`;
-}
-
-export function middlewarePathTokensToRegExp(tokens: MiddlewarePathToken[]): RegExp {
-  // Next.js keeps only path-to-regexp's `.source` and recompiles it without
-  // flags, so matchers are case-sensitive. A case-insensitive negative
-  // lookahead would skip middleware for case variants like `/API/x`.
-  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
-  return new RegExp(pathTokensToRegExpSource(tokens));
+  return route;
 }
