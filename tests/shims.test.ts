@@ -15074,6 +15074,20 @@ describe("matchHeaders param substitution parity with Next.js", () => {
       warn.mockRestore();
     }
   });
+
+  it("compiles each template once per set of param names", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    // The same template compiles differently for different param names, so
+    // the compiled form is keyed by both.
+    expect(compileHeaderParamTemplate("v=:a", { a: "x" })).toBe("v=x");
+    expect(compileHeaderParamTemplate("v=:a", { b: "y" })).toBe("v=:a");
+    expect(compileHeaderParamTemplate("v=:a", { a: "z" })).toBe("v=z");
+    // Params are still read per call; a compile error is rethrown each time.
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+    expect(compileHeaderParamTemplate(":a", { a: "3" })).toBe("3");
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+  });
 });
 
 describe("matchHeaders compiled source cache", () => {

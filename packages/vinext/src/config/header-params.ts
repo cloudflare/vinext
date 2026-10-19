@@ -29,7 +29,29 @@ export type HeaderParams = Record<string, string | string[] | undefined>;
 export function compileHeaderParamTemplate(value: string, params: HeaderParams): string {
   if (!value.includes(":")) return value;
 
-  for (const key of Object.keys(params)) {
+  // The escaped and parsed template depends only on the template and the
+  // param names, so build it once per pair rather than on every request.
+  const keys = Object.keys(params);
+  const cacheKey = `${value}\0${keys.join("\0")}`;
+  let compiled = _compiledTemplateCache.get(cacheKey);
+  if (!compiled) {
+    try {
+      compiled = { compile: compileTemplate(value, keys) };
+    } catch (error) {
+      compiled = { error };
+    }
+    _compiledTemplateCache.set(cacheKey, compiled);
+  }
+  if ("error" in compiled) throw compiled.error;
+  return compiled.compile(params);
+}
+
+type CompiledTemplate = { compile: (params: HeaderParams) => string } | { error: unknown };
+
+const _compiledTemplateCache = new Map<string, CompiledTemplate>();
+
+function compileTemplate(value: string, keys: string[]): (params: HeaderParams) => string {
+  for (const key of keys) {
     if (value.includes(`:${key}`)) {
       value = value
         .replace(new RegExp(`:${key}\\*`, "g"), `:${key}--ESCAPED_PARAM_ASTERISKS`)
@@ -46,7 +68,8 @@ export function compileHeaderParamTemplate(value: string, params: HeaderParams):
     .replace(/--ESCAPED_PARAM_ASTERISKS/g, "*");
 
   // The value needs to start with a forward slash to be compiled correctly.
-  return safeCompile(`/${value}`)(params).slice(1);
+  const compiler = safeCompile(`/${value}`);
+  return (params) => compiler(params).slice(1);
 }
 
 const PARAM_SEPARATOR = "_NEXTSEP_";
