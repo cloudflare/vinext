@@ -10,6 +10,14 @@ test.describe("App Router on Nitro (node server)", () => {
     await expect(page.locator("h1")).toHaveText("App Router on Nitro");
   });
 
+  // Vite's build manifests map source files to chunks; the Node server and
+  // Cloudflare keep them private too.
+  test("doesn't serve Vite's build manifest", async ({ request }) => {
+    const response = await request.get("/.vite/manifest.json");
+    expect(response.status()).toBe(404);
+    expect(await response.text()).not.toContain('"isEntry"');
+  });
+
   test("runs middleware before serving a public file", async ({ request }) => {
     const response = await request.get("/hello.txt");
     expect(response.status()).toBe(200);

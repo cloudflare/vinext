@@ -1451,6 +1451,9 @@ importers:
       '@vitejs/plugin-rsc':
         specifier: 'catalog:'
         version: 0.5.38(@voidzero-dev/vite-plus-core@1.1.0(@types/node@25.9.2)(esbuild@0.28.1)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      fake-client-barrel:
+        specifier: file:./__test_packages__/fake-client-barrel
+        version: file:tests/fixtures/app-basic/__test_packages__/fake-client-barrel
       fake-context-lib:
         specifier: file:./__test_packages__/fake-context-lib
         version: file:tests/fixtures/app-basic/__test_packages__/fake-context-lib
@@ -8457,6 +8460,9 @@ packages:
 
   extendable-error@0.1.7:
     resolution: {integrity: sha512-UOiS2in6/Q0FK0R0q6UY9vYpQ21mr/Qn1KOnte7vsACuNJf514WvCCUHSRCPcgjPT2bAhNIJdlE6bVap1GKmeg==}
+
+  fake-client-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-client-barrel:
+    resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-client-barrel, type: directory}
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib:
     resolution: {directory: tests/fixtures/app-basic/__test_packages__/fake-context-lib, type: directory}
@@ -16932,6 +16938,8 @@ snapshots:
   extend@3.0.2: {}
 
   extendable-error@0.1.7: {}
+
+  fake-client-barrel@file:tests/fixtures/app-basic/__test_packages__/fake-client-barrel: {}
 
   fake-context-lib@file:tests/fixtures/app-basic/__test_packages__/fake-context-lib: {}
 

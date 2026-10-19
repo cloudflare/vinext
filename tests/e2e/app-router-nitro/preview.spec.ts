@@ -21,6 +21,14 @@ function getWithHost(url: string, host: string): Promise<{ status: number; body:
 test.describe("App Router on Nitro (vite preview)", () => {
   defineNitroAppTests();
 
+  // `vite preview` serves Nitro's output directory first, so the manifest must
+  // not be in it.
+  test("doesn't serve Vite's build manifest", async ({ request }) => {
+    const response = await request.get("/.vite/manifest.json");
+    expect(response.status()).toBe(404);
+    expect(await response.text()).not.toContain('"isEntry"');
+  });
+
   test("serves a public file that a rewrite resolves to", async ({ request }) => {
     const response = await request.get("/rewrite-to-public");
     expect(response.status()).toBe(200);

@@ -17,7 +17,7 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
+import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
@@ -1711,6 +1711,132 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 }
 
 /**
+ * Fail config loading on an invalid source, as Next.js fails the build
+ * (load-custom-routes.ts checkCustomRoutes), instead of silently skipping a
+ * redirect or security header per request.
+ */
+function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unknown }>): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    const error = configSourceError(route?.source);
+    if (!error) continue;
+    invalid.push(`  ${describeSource(route?.source)}: ${error}`);
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} source${invalid.length === 1 ? "" : "s"}:\n${invalid.join("\n")}`,
+    );
+  }
+}
+
+/**
+ * A route source for an error message. Only a string is shown as is; any
+ * other value, such as a BigInt, may not serialize.
+ */
+function describeSource(source: unknown): string {
+  return typeof source === "string"
+    ? JSON.stringify(source)
+    : `(${source === null ? "null" : typeof source})`;
+}
+
+const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
+
+/**
+ * Fail config loading on a malformed has/missing list or item, with the rules
+ * of Next.js's checkCustomRoutes (load-custom-routes.ts). The matchers rely on
+ * these shapes.
+ */
+function validateConfigConditions(
+  type: string,
+  routes: ReadonlyArray<{ source: unknown; has?: unknown; missing?: unknown }>,
+): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    const source = describeSource(route?.source);
+    for (const field of ["has", "missing"] as const) {
+      const items = route?.[field];
+      if (items === undefined) continue;
+      if (!Array.isArray(items)) {
+        invalid.push(`  ${source}: \`${field}\` must be undefined or an array`);
+        continue;
+      }
+      for (const item of items as unknown[]) {
+        const condition = (item ?? {}) as { type?: unknown; key?: unknown; value?: unknown };
+        const parts: string[] = [];
+        if (!CONDITION_TYPES.has(condition.type as string)) parts.push("invalid type");
+        if (typeof condition.key !== "string" && condition.type !== "host") {
+          parts.push("invalid key");
+        }
+        if (condition.value !== undefined && typeof condition.value !== "string") {
+          parts.push("invalid value");
+        }
+        if (condition.value === undefined && condition.type === "host") {
+          parts.push('value is required for "host" type');
+        }
+        if (parts.length > 0) {
+          invalid.push(
+            `  ${source}: \`${field}\` item: ${parts.join(", ")} for ${describeConfigValue(item)}`,
+          );
+        }
+      }
+    }
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} has/missing condition${invalid.length === 1 ? "" : "s"}:\n` +
+        `${invalid.join("\n")}\n` +
+        "Each item must be { type: header, cookie, query or host, key: string, value?: string }, " +
+        "with a value and no key required for host.",
+    );
+  }
+}
+
+/** JSON for a config value, or its type when JSON cannot serialize it. */
+function describeConfigValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? `(${typeof value})`;
+  } catch {
+    return `(${typeof value})`;
+  }
+}
+
+/**
+ * The sources Next.js's processRoutes builds from `routes` by adding the
+ * basePath and locale prefixes, which checkCustomRoutes then checks again
+ * (load-custom-routes.ts). vinext adds basePath at match time instead, so
+ * these exist only for that check.
+ */
+function processedRouteSources(
+  routes: ReadonlyArray<NextRedirect | NextRewrite | NextHeader>,
+  type: "redirect" | "rewrite" | "header",
+  options: { basePath: string; i18n: NextI18nConfig | null; trailingSlash: boolean },
+): Array<{ source: string }> {
+  const { basePath, i18n, trailingSlash } = options;
+  // escapeStringRegexp, which also escapes "-".
+  const escape = (value: string) => value.replace(/[|\\{}()[\]^$+*?.-]/g, "\\$&");
+  const suffixFor = (source: string) => (source === "/" && !trailingSlash ? "" : source);
+  const defaultLocales =
+    i18n && type === "redirect"
+      ? [...(i18n.domains ?? []).map((domain) => domain.defaultLocale), i18n.defaultLocale]
+      : [];
+  const sources: Array<{ source: string }> = [];
+  for (const route of routes) {
+    const sourceBasePath = basePath && route.basePath !== false ? basePath : "";
+    let source = route.source;
+    if (i18n && route.locale !== false) {
+      if ("destination" in route && route.destination?.startsWith("/")) {
+        for (const locale of defaultLocales) {
+          sources.push({ source: `${sourceBasePath}/${locale}${suffixFor(source)}` });
+        }
+      }
+      source = `/:nextInternalLocale(${i18n.locales.map(escape).join("|")})${suffixFor(source)}`;
+    }
+    sources.push({ source: `${sourceBasePath}${source === "/" && sourceBasePath ? "" : source}` });
+  }
+  return sources;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -1844,6 +1970,12 @@ export async function resolveNextConfig(
 
   {
     const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    // Before the checks below read their fields, so a missing entry is
+    // reported rather than crashing them.
+    validateConfigSources("redirect", redirects);
+    validateConfigSources("rewrite", allRewrites);
+    validateConfigConditions("redirect", redirects);
+    validateConfigConditions("rewrite", allRewrites);
 
     // Like Next.js' checkCustomRoutes (packages/next/src/lib/load-custom-routes.ts),
     // reject a `basePath: false` rewrite to an internal destination: nothing
@@ -1887,6 +2019,28 @@ export async function resolveNextConfig(
   let headers: NextHeader[] = [];
   if (config.headers) {
     headers = await config.headers();
+  }
+
+  validateConfigSources("header", headers);
+  validateConfigConditions("header", headers);
+  // Next.js checks the routes again after adding the basePath and locale
+  // prefixes.
+  if (config.basePath || i18n) {
+    const processOptions = {
+      basePath: config.basePath ?? "",
+      i18n,
+      trailingSlash: config.trailingSlash ?? false,
+    };
+    validateConfigSources("redirect", processedRouteSources(redirects, "redirect", processOptions));
+    validateConfigSources(
+      "rewrite",
+      processedRouteSources(
+        [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback],
+        "rewrite",
+        processOptions,
+      ),
+    );
+    validateConfigSources("header", processedRouteSources(headers, "header", processOptions));
   }
 
   // Probe wrapped webpack config for client and server resolution. Alias and

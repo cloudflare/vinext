@@ -8292,6 +8292,22 @@ export const loadServerActionClient = ${
       configResolved(config) {
         nitroPublicDir = config.publicDir;
       },
+      // Nitro points the client build at its static output, so Vite's build
+      // metadata (`.vite/`) lands there, and vinext reads it during the build.
+      // Remove it before Nitro bundles its server, which lists every file in
+      // that directory as a static asset, so the source-file → chunk mapping
+      // and unlinked route paths aren't served. The Node server and
+      // `.assetsignore` on Cloudflare keep it private the same way.
+      buildStart() {
+        if (this.environment?.name !== "nitro" || this.environment.mode !== "build") return;
+        const config = this.environment.getTopLevelConfig();
+        const clientOutDir = config.environments.client?.build.outDir;
+        if (!clientOutDir) return;
+        fs.rmSync(path.resolve(config.root, clientOutDir, ".vite"), {
+          recursive: true,
+          force: true,
+        });
+      },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
           nitroBuildDir = nitro.options.buildDir
@@ -8943,10 +8959,9 @@ function getNextPublicEnvDefines(): Record<string, string> {
 
 // matchConfigPattern is imported from config-matchers.ts and re-exported
 // for tests and other consumers that import it from vinext's main entry.
-// The duplicate local implementation and its extractConstraint helper
-// have been removed in favor of the canonical config-matchers.ts version
-// which uses a single-pass tokenizer (fixing the chained .replace()
-// divergence that CodeQL flagged as incomplete sanitization).
+// The duplicate local implementation has been removed in favor of the
+// canonical config-matchers.ts version, which compiles sources with
+// path-to-regexp like Next.js.
 
 /**
  * Write a Web API Response to a Node.js ServerResponse.

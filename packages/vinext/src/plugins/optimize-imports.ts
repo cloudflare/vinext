@@ -49,6 +49,17 @@ type BarrelExportEntry = {
   source: string;
   isNamespace: boolean;
   originalName?: string;
+  /**
+   * The outermost module on the way to `source` that RSC replaces with
+   * references or wrappers because of its directive. RSC must import the name
+   * from it instead.
+   */
+  rscBoundary?: string;
+  /**
+   * The same for SSR, where only "use server" and "use cache" modules are
+   * replaced with references.
+   */
+  ssrBoundary?: string;
 };
 
 type BarrelExportMap = Map<string, BarrelExportEntry>;
@@ -398,7 +409,7 @@ async function buildExportMapFromFile(
   }
 
   const exportMap: BarrelExportMap = new Map();
-  const isBoundary = findBoundaryDirective(ast) !== null;
+  const boundaryDirective = findBoundaryDirective(ast);
 
   // Track import bindings: local name → { source, isNamespace, originalName }
   const importBindings = new Map<
@@ -614,11 +625,17 @@ async function buildExportMapFromFile(
     }
   }
 
-  if (isBoundary) {
-    // Every name a boundary module exports must be imported from the module
-    // itself, including names reached through `export *` into or out of it.
-    for (const name of exportMap.keys()) {
-      exportMap.set(name, { source: filePath, isNamespace: false, originalName: name });
+  if (boundaryDirective) {
+    // Record this module as the boundary for every name it exports, including
+    // names reached through `export *` into or out of it. Outer modules
+    // override inner ones, since an importer reaches them first.
+    const isSsrBoundary = boundaryDirective !== "use client";
+    for (const [name, entry] of exportMap) {
+      exportMap.set(name, {
+        ...entry,
+        rscBoundary: filePath,
+        ssrBoundary: isSsrBoundary ? filePath : entry.ssrBoundary,
+      });
     }
   }
 
@@ -759,14 +776,12 @@ export function createOptimizeImportsPlugin(
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-      // subpkgOrigin is keyed by environment; prefer the current env's map but
-      // fall back to the other env's map for the case where only one environment
-      // has transformed files that import from a given barrel (e.g. a barrel
-      // only reachable from the RSC graph may still need resolving from SSR).
-      const envName = (this as PluginCtx).environment?.name ?? "ssr";
-      const barrelEntry =
-        barrelCaches.subpkgOrigin.get(envName)?.get(source) ??
-        barrelCaches.subpkgOrigin.get(envName === "rsc" ? "ssr" : "rsc")?.get(source);
+      // subpkgOrigin is keyed like the transform below, which registers every
+      // specifier it emits in its own environment's map. The other environment's
+      // map may hold specifiers this one never emits, such as packages behind a
+      // "use client" boundary in RSC.
+      const envKey = (this as PluginCtx).environment?.name === "rsc" ? "rsc" : "ssr";
+      const barrelEntry = barrelCaches.subpkgOrigin.get(envKey)?.get(source);
       if (!barrelEntry) return;
       const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
       return resolved ?? undefined;
@@ -852,6 +867,13 @@ export function createOptimizeImportsPlugin(
             barrelCaches.exportMapCache,
           );
           if (!exportMap || !barrelEntry) continue;
+          // The module to import a name from in this environment, stopping at
+          // the module that this environment replaces with references.
+          const getEntry = (name: string): BarrelExportEntry | undefined => {
+            const entry = exportMap.get(name);
+            const boundary = preferReactServer ? entry?.rscBoundary : entry?.ssrBoundary;
+            return boundary ? { source: boundary, isNamespace: false, originalName: name } : entry;
+          };
 
           // Register sub-package sources so resolveId can find them from
           // the barrel's context (needed for pnpm strict hoisting).
@@ -876,16 +898,15 @@ export function createOptimizeImportsPlugin(
               envOriginMap = new Map<string, string>();
               barrelCaches.subpkgOrigin.set(envKey, envOriginMap);
             }
-            for (const entry of exportMap.values()) {
-              if (
-                !entry.source.startsWith("/") &&
-                !entry.source.startsWith(".") &&
-                !envOriginMap.has(entry.source)
-              ) {
+            for (const name of exportMap.keys()) {
+              // Only the sources this environment can emit, so a package behind
+              // a boundary isn't registered.
+              const source = getEntry(name)!.source;
+              if (!source.startsWith("/") && !source.startsWith(".") && !envOriginMap.has(source)) {
                 // First barrel to register this specifier (within this environment) wins.
                 // Sub-package specifiers are keyed per environment so that RSC and SSR
                 // barrel entries don't cross-contaminate each other's resolution context.
-                envOriginMap.set(entry.source, barrelEntry);
+                envOriginMap.set(source, barrelEntry);
               }
             }
           }
@@ -952,7 +973,7 @@ export function createOptimizeImportsPlugin(
           // name gains nothing from a rewrite.
           if (
             isSubpath &&
-            specifiers.every(({ imported }) => exportMap.get(imported)?.source === barrelEntry)
+            specifiers.every(({ imported }) => getEntry(imported)?.source === barrelEntry)
           ) {
             continue;
           }
@@ -962,7 +983,7 @@ export function createOptimizeImportsPlugin(
           const resolvedPackageSources = new Map<string, string>();
           if (isSubpath) {
             for (const { imported } of specifiers) {
-              const source = exportMap.get(imported)?.source;
+              const source = getEntry(imported)?.source;
               if (!source || path.isAbsolute(source) || resolvedPackageSources.has(source))
                 continue;
               const resolvedId = await resolveFileId(this, source, barrelEntry);
@@ -985,7 +1006,7 @@ export function createOptimizeImportsPlugin(
             }
           >();
           for (const { local, imported } of specifiers) {
-            const entry = exportMap.get(imported);
+            const entry = getEntry(imported);
             if (!entry) continue;
             // Sources in the export map are already absolute paths (for file references)
             // or bare package specifiers — no further resolution needed.

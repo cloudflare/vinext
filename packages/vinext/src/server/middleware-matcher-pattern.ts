@@ -1,21 +1,14 @@
 import type { HasCondition } from "../config/next-config.js";
 import {
-  analyzeRegexSafety,
-  mayHaveNamedGroups,
-  regexAtomsMayOverlap,
-  repeatSeparatorIsUnambiguous,
-} from "../utils/regex-safety.js";
-import {
-  middlewarePathTokensToRegExp,
-  normalizeMiddlewarePathTokens,
-  parseMiddlewarePath,
-  type MiddlewarePathKey,
-  type MiddlewarePathToken,
-} from "./middleware-path-to-regexp.js";
+  normalizePathTokens,
+  parsePathPattern,
+  pathTokensToRegExpSource,
+  type PathToken,
+} from "../utils/path-to-regexp.js";
 
 export type CompiledMiddlewareMatcherPattern =
   | { regexp: RegExp; error?: never }
-  | { regexp?: never; error: string; kind: "invalid" | "unsafe" };
+  | { regexp?: never; error: string };
 
 export type MiddlewareMatcherObject = {
   source: string;
@@ -101,211 +94,42 @@ export function isValidMiddlewareMatcherObjectConfig(
   return matcherObjectSource(value).error === undefined;
 }
 
-function patternMatches(pattern: string, value: string): boolean {
-  try {
-    return new RegExp(`^(?:${pattern})$`).test(value);
-  } catch {
-    return false;
-  }
-}
-
-function atomsOverlap(left: string, right: string): boolean {
-  return regexAtomsMayOverlap(left, right, true);
-}
-
-function groupCanMatchEmpty(group: string): boolean {
-  if (/^\?(?:[=!]|<[=!])/.test(group)) return true;
-  const body = group.startsWith("?:") ? group.slice(2) : group;
-  return patternMatches(body, "");
-}
-
-function hasOverlappingSequentialRepetition(pattern: string): boolean {
-  const repeatedAtDepth: string[][] = [[]];
-  const groupStarts: number[] = [];
-  let depth = 0;
-
-  for (let index = 0; index < pattern.length; index++) {
-    const character = pattern[index];
-    if (character === "(") {
-      groupStarts.push(index);
-      depth++;
-      repeatedAtDepth[depth] = [];
-      if (pattern[index + 1] === "?") {
-        // Skip the non-capturing/lookaround marker. Its punctuation is not a
-        // consuming atom, and the existing validator handles quantified
-        // lookaround groups conservatively.
-        index++;
-        if (pattern[index + 1] === "<" && /[=!]/.test(pattern[index + 2] ?? "")) index += 2;
-        else if (/[=:!]/.test(pattern[index + 1] ?? "")) index++;
-      }
-      continue;
-    }
-    if (character === ")") {
-      const groupStart = groupStarts.pop();
-      repeatedAtDepth[depth] = [];
-      depth = Math.max(0, depth - 1);
-      if (groupStart !== undefined) {
-        const modifier = pattern[index + 1];
-        const optionalModifier =
-          modifier === "*" ||
-          modifier === "?" ||
-          (modifier === "{" && /^\{0(?:,\d*)?\}/.test(pattern.slice(index + 1)));
-        if (!optionalModifier && !groupCanMatchEmpty(pattern.slice(groupStart + 1, index))) {
-          repeatedAtDepth[depth] = [];
-        }
-      }
-      continue;
-    }
-    if (character === "|") {
-      repeatedAtDepth[depth] = [];
-      continue;
-    }
-    if (character === "^" || character === "$") continue;
-    if (character === "*" || character === "+" || character === "?" || character === "{") {
-      continue;
-    }
-
-    let atom = character;
-    if (character === "\\") {
-      if (index + 1 >= pattern.length) return true;
-      atom += pattern[++index];
-    } else if (character === "[") {
-      let classEnd = index + 1;
-      if (pattern[classEnd] === "^") classEnd++;
-      while (classEnd < pattern.length && pattern[classEnd] !== "]") {
-        if (pattern[classEnd] === "\\") classEnd++;
-        classEnd++;
-      }
-      if (classEnd >= pattern.length) return true;
-      atom = pattern.slice(index, classEnd + 1);
-      index = classEnd;
-    } else if (character === ".") {
-      atom = ".";
-    }
-
-    const quantifierStart = index + 1;
-    const quantifier = pattern[quantifierStart];
-    let unbounded = quantifier === "*" || quantifier === "+";
-    let canBeEmpty = quantifier === "*";
-    let quantifierEnd = quantifierStart;
-    if (quantifier === "{") {
-      const match = /^\{(\d+),\}/.exec(pattern.slice(quantifierStart));
-      if (match) {
-        unbounded = true;
-        canBeEmpty = Number(match[1]) === 0;
-        quantifierEnd += match[0].length - 1;
-      }
-    }
-
-    if (!unbounded) {
-      // An optional atom does not separate the repetitions on either side;
-      // every other non-repeated atom is a mandatory separator.
-      if (quantifier !== "?") repeatedAtDepth[depth] = [];
-      if (quantifier === "?") index = quantifierStart;
-      continue;
-    }
-
-    if (repeatedAtDepth[depth].some((previous) => atomsOverlap(previous, atom))) {
-      return true;
-    }
-    repeatedAtDepth[depth] = canBeEmpty ? [...repeatedAtDepth[depth], atom] : [atom];
-    index = quantifierEnd;
-  }
-
-  return false;
-}
-
-function unsafeTokenReason(token: MiddlewarePathKey, namedGroups: boolean): string | null {
-  const regexSafetyIssue = analyzeRegexSafety(token.pattern, { ignoreCase: true, namedGroups });
-  if (regexSafetyIssue) {
-    if (regexSafetyIssue === "analysis budget exceeded") {
-      return `parameter "${token.name}" exceeds the regex analysis budget`;
-    }
-    return `parameter "${token.name}" contains ${regexSafetyIssue}`;
-  }
-  if (hasOverlappingSequentialRepetition(token.pattern)) {
-    return `parameter "${token.name}" contains overlapping sequential repetition`;
-  }
-
-  if (token.modifier !== "*" && token.modifier !== "+") return null;
-
-  // Repeating parameters are joined by the token prefix/suffix. If their own
-  // constraint can also consume a slash (or the empty string), the same input
-  // has many equivalent partitions. Patterns such as `/:path(.*)*/end` then
-  // backtrack exponentially on a near miss. Ordinary repeats use a constraint
-  // that cannot cross the path delimiter, so each segment has one owner.
-  if (patternMatches(token.pattern, "") || patternMatches(token.pattern, "/")) {
-    return `repeated parameter "${token.name}" may match an empty value or path delimiter`;
-  }
-  // The token's own suffix + prefix joins the repetitions (the `.` in
-  // `/x.:ext([^/]+)+`). If the constraint can consume that separator, each
-  // occurrence can end one repetition or stay inside it; if it can match one
-  // chunk in two ways (`a|A`), every repetition doubles the backtracking.
-  // (path-to-regexp refuses to compile a repeat without a separator.)
-  const separator = token.suffix + token.prefix;
-  if (
-    separator &&
-    !repeatSeparatorIsUnambiguous(token.pattern, separator, { ignoreCase: true, namedGroups })
-  ) {
-    return `repeated parameter "${token.name}" can match its repetitions in more than one way`;
-  }
-
-  return null;
-}
-
-/**
- * Check the user-supplied parameter patterns in parsed path-to-regexp tokens.
- * The structure path-to-regexp wraps around them is generated and safe; only
- * the patterns need checking. Returns the reason when a pattern is unsafe.
- */
-export function validatePathTokens(tokens: MiddlewarePathToken[]): string | null {
-  // Every token pattern is compiled into one RegExp, so a named group in any
-  // of them turns `\k<name>` in another into a backreference.
-  const namedGroups = tokens.some(
-    (token) => typeof token !== "string" && mayHaveNamedGroups(token.pattern),
-  );
-  for (const token of tokens) {
-    if (typeof token === "string") continue;
-    const reason = unsafeTokenReason(token, namedGroups);
-    if (reason) return reason;
-  }
-  return null;
+function middlewareRegExp(tokens: PathToken[]): RegExp {
+  // path-to-regexp's non-strict ending for the `/#?` delimiter. Next.js keeps
+  // only the `.source` and recompiles it without flags, so matchers are
+  // case-sensitive. A case-insensitive negative lookahead would skip
+  // middleware for case variants like `/API/x`.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/middleware-route-matcher.ts
+  return new RegExp(`${pathTokensToRegExpSource(tokens)}[\\/#\\?]?$`);
 }
 
 export function compileMiddlewareMatcherPattern(source: string): CompiledMiddlewareMatcherPattern {
   if (!source.startsWith("/")) {
-    return { kind: "invalid", error: "source must start with /" };
+    return { error: "source must start with /" };
   }
   if (source.length > 4096) {
-    return { kind: "invalid", error: "source exceeds max built length of 4096" };
+    return { error: "source exceeds max built length of 4096" };
   }
 
-  let tokens: MiddlewarePathToken[];
+  let tokens: PathToken[];
   try {
-    tokens = parseMiddlewarePath(source);
+    tokens = parsePathPattern(source);
   } catch (error) {
     return {
-      kind: "invalid",
       error: error instanceof Error ? error.message : "matcher could not be parsed",
     };
   }
 
-  const unsafeReason = validatePathTokens(tokens);
-  if (unsafeReason) return { kind: "unsafe", error: unsafeReason };
-
   try {
-    return { regexp: middlewarePathTokensToRegExp(tokens) };
+    return { regexp: middlewareRegExp(tokens) };
   } catch {
     // Match Next.js 16.2.7's path-to-regexp 6.3 normalization: repeating
     // tokens without a prefix/suffix receive a slash prefix and are retried.
-    const normalizedTokens = normalizeMiddlewarePathTokens(tokens);
-    const normalizedUnsafeReason = validatePathTokens(normalizedTokens);
-    if (normalizedUnsafeReason) return { kind: "unsafe", error: normalizedUnsafeReason };
+    const normalizedTokens = normalizePathTokens(tokens);
     try {
-      return { regexp: middlewarePathTokensToRegExp(normalizedTokens) };
+      return { regexp: middlewareRegExp(normalizedTokens) };
     } catch (error) {
       return {
-        kind: "invalid",
         error: error instanceof Error ? error.message : "matcher could not be compiled",
       };
     }
