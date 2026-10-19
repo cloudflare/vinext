@@ -4226,10 +4226,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // https://github.com/cloudflare/vinext/issues/1103.
                 //
                 // `ipaddr.js` is imported by the next/image client shim for
-                // server-side private-IP validation. We externalize it on Node
-                // SSR via resolve.external above; excluding it from the dep
-                // optimizer prevents Vite from pre-bundling it on first request
-                // (and the resulting "new dependencies optimized" full reload).
+                // server-side private-IP validation. Node dev externalizes it via
+                // resolve.external above (production builds bundle it); excluding
+                // it from the dep optimizer prevents Vite from pre-bundling it on
+                // first request (and the resulting "new dependencies optimized"
+                // full reload).
                 // On bundled runtimes (Cloudflare/Nitro) the runtime build
                 // bundles it anyway, so excluding it from the dev optimizer
                 // is still correct — it just defers handling to the runtime
@@ -4388,11 +4389,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               },
               optimizeDeps: {
                 // `ipaddr.js` is imported by the next/image shim for
-                // private-IP validation and is externalized via
-                // resolve.external above. Excluding it from the SSR dep
-                // optimizer avoids the "new dependencies optimized" full
-                // reload the first time a Pages Router page renders an
-                // <Image>.
+                // private-IP validation and is externalized in dev via
+                // resolve.external above (production builds bundle it).
+                // Excluding it from the SSR dep optimizer avoids the "new
+                // dependencies optimized" full reload the first time a Pages
+                // Router page renders an <Image>.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
