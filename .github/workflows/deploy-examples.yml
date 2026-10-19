@@ -581,7 +581,8 @@ jobs:
       # yet, so call the Workers API behind `wrangler preview delete`. Keep the Worker
       # list in sync with the `worker_preview` examples; 404 means already deleted.
       - name: Delete Worker Previews
-        if: github.event.action == 'closed'
+        # Run even if an earlier cleanup step failed, e.g. a PR closed before its kv Worker existed.
+        if: ${{ !cancelled() && github.event.action == 'closed' }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
