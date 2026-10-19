@@ -153,6 +153,37 @@ describe("collectClientReferenceRouteSignatures", () => {
     expect([...signatures.keys()]).toEqual(["/b.tsx", "/c.tsx", "/a.tsx"]);
   });
 
+  it("orders a route's references outer segment first", () => {
+    const signatures = collectClientReferenceRouteSignatures({
+      clientReferenceIds: new Set([
+        "/page-ref.tsx",
+        "/root-ref.tsx",
+        "/shop-ref.tsx",
+        "/tpl-ref.tsx",
+      ]),
+      getModuleInfo: moduleInfo({
+        "/app/shop/page.tsx": ["/page-ref.tsx", "/shop-ref.tsx"],
+        "/app/shop/layout.tsx": ["/shop-ref.tsx"],
+        "/app/shop/template.tsx": ["/tpl-ref.tsx"],
+        "/app/layout.tsx": ["/root-ref.tsx"],
+      }),
+      root: "/",
+      routes: [
+        {
+          ...route("/shop", "/app/shop/page.tsx", ["/app/layout.tsx", "/app/shop/layout.tsx"]),
+          templates: ["/app/shop/template.tsx"],
+        },
+      ],
+    });
+
+    expect([...signatures.keys()]).toEqual([
+      "/root-ref.tsx",
+      "/shop-ref.tsx",
+      "/tpl-ref.tsx",
+      "/page-ref.tsx",
+    ]);
+  });
+
   it("canonicalizes route files before walking the module graph", () => {
     const signatures = collectClientReferenceRouteSignatures({
       canonicalizeModuleId: (id) => id.replace("/var/", "/private/var/"),

@@ -20,6 +20,37 @@ type ClientReferenceGroupIntercept = ClientReferenceGroupRoute["siblingIntercept
 
 type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "importedIds">;
 
+// The files of one route segment, outermost first, as Next.js nests them.
+const SEGMENT_FILE_ORDER = [
+  "layout",
+  "template",
+  "error",
+  "loading",
+  "not-found",
+  "forbidden",
+  "unauthorized",
+  "default",
+  "page",
+];
+
+/**
+ * Order route files as they render: outer segments first and, within a
+ * segment, each file before the ones it wraps. A group evaluates its members in
+ * the order the walk reaches them, so this keeps an outer layout's top-level
+ * side effects and CSS ahead of its page's, as Next.js evaluates client
+ * references in render order.
+ */
+function inRenderOrder(files: readonly string[]): string[] {
+  const rank = (file: string) => {
+    const index = SEGMENT_FILE_ORDER.indexOf(path.basename(file).split(".")[0]!);
+    return index === -1 ? SEGMENT_FILE_ORDER.length : index;
+  };
+  return files
+    .map((file) => ({ file, depth: path.dirname(file).split("/").length, rank: rank(file) }))
+    .sort((a, b) => a.depth - b.depth || a.rank - b.rank)
+    .map(({ file }) => file);
+}
+
 function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
   return [
     intercept.pagePath,
@@ -37,8 +68,8 @@ function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
  * global-not-found render on their own, so each is owned by its file, named by
  * its path relative to `root`. References with the same signature are needed
  * together, mirroring Next.js' per-route client entries. The map is in the
- * order a depth-first walk in import order first reaches each reference, which
- * follows ES module evaluation order.
+ * order a depth-first walk in import order first reaches each reference from
+ * the route files in render order, which follows ES module evaluation order.
  *
  * References reachable from no route file (for example vinext's internal
  * runtime references) are omitted and keep their own lazy chunk. So are
@@ -129,18 +160,20 @@ export function collectClientReferenceRouteSignatures(options: {
   for (const route of options.routes) {
     addOwner(
       route.pattern,
-      actionOwnerRouteEntryIds({
-        ...route,
-        parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
-        siblingIntercepts: [],
-      }),
+      inRenderOrder(
+        actionOwnerRouteEntryIds({
+          ...route,
+          parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+          siblingIntercepts: [],
+        }),
+      ),
     );
     const intercepts = [
       ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
       ...route.siblingIntercepts,
     ];
     for (const intercept of intercepts) {
-      addOwner(fileOwner(intercept.pagePath), interceptEntryIds(intercept));
+      addOwner(fileOwner(intercept.pagePath), inRenderOrder(interceptEntryIds(intercept)));
     }
   }
   for (const file of options.sharedRoots ?? []) addOwner(fileOwner(file), [file]);
