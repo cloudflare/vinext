@@ -827,15 +827,55 @@ describe("vinext:optimize-imports transform", () => {
     expect(importLines[0]).toContain(expected);
   });
 
-  it('leaves imports from a "use client" entry alone in RSC but rewrites them in SSR', async () => {
+  it('stops at a "use client" entry in RSC but not in SSR', async () => {
     // antd is in DEFAULT_OPTIMIZE_PACKAGES, and its entry starts with "use client".
     const call = await setupTransform("antd", `"use client";\nexport { Button } from "./button";`);
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "antd");
     const code = `import { Button } from "antd";`;
-    expect(await call(code, "/app/page.tsx", "rsc")).toBeNull();
+    const rscResult = await call(code, "/app/page.tsx", "rsc");
+    expect(rscResult!.code).toContain(
+      `import { Button } from ${JSON.stringify(path.posix.join(pkgDir, "index.js"))}`,
+    );
 
-    const result = await call(code, "/app/page.tsx", "ssr");
-    const button = path.posix.join(tmpDir, "node_modules", "antd", "button");
-    expect(result!.code).toContain(`import { Button } from ${JSON.stringify(button)}`);
+    const ssrResult = await call(code, "/app/page.tsx", "ssr");
+    expect(ssrResult!.code).toContain(
+      `import { Button } from ${JSON.stringify(path.posix.join(pkgDir, "button"))}`,
+    );
+  });
+
+  it("only registers the packages this environment imports for resolveId", async () => {
+    tmpDir = toSlash(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `"use client";\nexport { Slot } from "@radix-ui/react-slot";`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const resolveId = unwrapHook(plugin.resolveId)!;
+    const context = { ...plugin, environment: { name: "rsc" }, resolve: vi.fn() };
+
+    // RSC imports Slot from the "use client" entry, never from @radix-ui/react-slot.
+    await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
+    await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
+    expect(context.resolve).not.toHaveBeenCalled();
   });
 
   it('stops at "use server" modules in SSR', async () => {

@@ -900,16 +900,15 @@ export function createOptimizeImportsPlugin(
               envOriginMap = new Map<string, string>();
               barrelCaches.subpkgOrigin.set(envKey, envOriginMap);
             }
-            for (const entry of exportMap.values()) {
-              if (
-                !entry.source.startsWith("/") &&
-                !entry.source.startsWith(".") &&
-                !envOriginMap.has(entry.source)
-              ) {
+            for (const name of exportMap.keys()) {
+              // Only the sources this environment can emit, so a package behind
+              // a boundary isn't registered.
+              const source = getEntry(name)!.source;
+              if (!source.startsWith("/") && !source.startsWith(".") && !envOriginMap.has(source)) {
                 // First barrel to register this specifier (within this environment) wins.
                 // Sub-package specifiers are keyed per environment so that RSC and SSR
                 // barrel entries don't cross-contaminate each other's resolution context.
-                envOriginMap.set(entry.source, barrelEntry);
+                envOriginMap.set(source, barrelEntry);
               }
             }
           }
@@ -972,9 +971,12 @@ export function createOptimizeImportsPlugin(
             continue;
           }
 
-          // An entry that defines (or is the boundary for) every imported name
-          // gains nothing from a rewrite.
-          if (specifiers.every(({ imported }) => getEntry(imported)?.source === barrelEntry)) {
+          // A subpath entry that defines (or is the boundary for) every imported
+          // name gains nothing from a rewrite.
+          if (
+            isSubpath &&
+            specifiers.every(({ imported }) => getEntry(imported)?.source === barrelEntry)
+          ) {
             continue;
           }
 
