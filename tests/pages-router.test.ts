@@ -11,6 +11,7 @@ import { toSlash } from "pathslash";
 import zlib from "node:zlib";
 import vinext from "../packages/vinext/src/index.js";
 import { createModuleDependencyCache } from "../packages/vinext/src/build/module-dependency-cache.js";
+import { generateRouteTypes } from "../packages/vinext/src/typegen.js";
 import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
@@ -4663,6 +4664,199 @@ describe("Virtual server entry generation", () => {
         "styles/app.module.css",
         "styles/transitive.module.css",
         "styles/late-transitive.module.css",
+      ]);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets only re-read modules whose source changed", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const reexportPath = path.join(tmpDir, "lib", "reexport.ts");
+    const transitivePath = path.join(tmpDir, "lib", "transitive.ts");
+    // Written up front so the dev server's own next-env.d.ts write does not
+    // reach the watcher as a created file mid-test.
+    await generateRouteTypes({ root: tmpDir, appDir: null });
+    const readFileSync = vi.spyOn(fs, "readFileSync");
+    const readPaths = () => readFileSync.mock.calls.map(([file]) => String(file));
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.listen();
+      const addr = testServer.httpServer?.address();
+      if (!addr || typeof addr !== "object") throw new Error("Expected dev server address");
+      const baseUrl = `http://localhost:${addr.port}`;
+
+      await (await fetch(`${baseUrl}/`)).text();
+      expect(readPaths()).toContain(transitivePath);
+
+      readFileSync.mockClear();
+      // Editor safe-write files come and go around every save.
+      for (const scratch of ["4913", "reexport.ts~", ".reexport.ts.swp"]) {
+        testServer.watcher.emit("add", path.join(tmpDir, "lib", scratch));
+        testServer.watcher.emit("unlink", path.join(tmpDir, "lib", scratch));
+      }
+      fs.writeFileSync(fixture.appPath, fs.readFileSync(fixture.appPath, "utf-8") + "\n");
+      testServer.watcher.emit("change", fixture.appPath);
+      const secondHtml = await (await fetch(`${baseUrl}/`)).text();
+
+      expect(getStylesheetHrefs(secondHtml)).toContain("/styles/transitive.module.css");
+      const reads = readPaths();
+      expect(reads).toContain(fixture.appPath);
+      expect(reads).not.toContain(reexportPath);
+      expect(reads).not.toContain(transitivePath);
+    } finally {
+      readFileSync.mockRestore();
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets refresh a module edited through a symlinked project root", async () => {
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-real-"));
+    const linkDir = `${realDir}-link`;
+    const fixture = writePagesAppGlobalCssFixture(realDir);
+    fs.symlinkSync(realDir, linkDir);
+    await generateRouteTypes({ root: linkDir, appDir: null });
+    const transitivePath = path.join(linkDir, "lib", "transitive.ts");
+    const appPath = fixture.appPath.replace(realDir, linkDir);
+    const testServer = await createServer({
+      root: linkDir,
+      configFile: false,
+      plugins: [vinext({ appDir: linkDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        appPath
+      ];
+    };
+
+    try {
+      expect(await readManifest()).not.toContain("styles/late.css");
+
+      fs.writeFileSync(path.join(linkDir, "styles", "late.css"), ".late-css { color: green; }\n");
+      fs.writeFileSync(
+        transitivePath,
+        'import "../styles/late.css";\n' +
+          'import transitiveStyles from "../styles/transitive.module.css";\n' +
+          "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+      );
+      testServer.watcher.emit("change", transitivePath);
+
+      expect(await readManifest()).toContain("styles/late.css");
+    } finally {
+      await testServer.close();
+      fs.rmSync(linkDir);
+      fs.rmSync(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets re-resolve imports after package.json changes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-imports-map-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const packageJsonPath = path.join(tmpDir, "package.json");
+    fs.writeFileSync(packageJsonPath, JSON.stringify({ name: "fixture", type: "module" }));
+    fs.writeFileSync(path.join(tmpDir, "styles", "late.css"), ".late-css { color: green; }\n");
+    fs.writeFileSync(
+      path.join(tmpDir, "lib", "transitive.ts"),
+      'import "#late";\n' +
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+        "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+    );
+    await generateRouteTypes({ root: tmpDir, appDir: null });
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+
+    try {
+      expect(await readManifest()).not.toContain("styles/late.css");
+
+      fs.writeFileSync(
+        packageJsonPath,
+        JSON.stringify({
+          name: "fixture",
+          type: "module",
+          imports: { "#late": "./styles/late.css" },
+        }),
+      );
+      testServer.watcher.emit("change", packageJsonPath);
+      fs.writeFileSync(fixture.appPath, fs.readFileSync(fixture.appPath, "utf-8") + "\n");
+      testServer.watcher.emit("change", fixture.appPath);
+
+      expect(await readManifest()).toContain("styles/late.css");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets pick up an imported stylesheet created after the first load", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-created-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const latePath = path.join(tmpDir, "styles", "late.css");
+    fs.writeFileSync(
+      path.join(tmpDir, "lib", "transitive.ts"),
+      'import "../styles/late.css";\n' +
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+        "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+
+    try {
+      expect(await readManifest()).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/transitive.module.css",
+      ]);
+
+      fs.writeFileSync(latePath, ".late-css { color: green; }\n");
+      testServer.watcher.emit("add", latePath);
+      expect(await readManifest()).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/late.css",
+        "styles/transitive.module.css",
+      ]);
+
+      fs.rmSync(latePath);
+      testServer.watcher.emit("unlink", latePath);
+      expect(await readManifest()).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/transitive.module.css",
       ]);
     } finally {
       await testServer.close();

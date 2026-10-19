@@ -849,8 +849,14 @@ type DevPagesModuleDependency =
   | { type: "stylesheet"; asset: string }
   | { type: "script"; id: string };
 
-function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFromImporter) {
-  return createModuleDependencyCache(collectModuleDependencies);
+type DevPagesModuleDependencyStore = Map<string, Promise<DevPagesModuleDependency[]>>;
+
+function createDevPagesModuleDependencyReader(
+  root: string,
+  resolve: ResolveFromImporter,
+  store: DevPagesModuleDependencyStore,
+) {
+  return createModuleDependencyCache(collectModuleDependencies, store);
 
   async function collectModuleDependencies(
     modulePath: string,
@@ -896,6 +902,13 @@ function createDevPagesModuleDependencyReader(root: string, resolve: ResolveFrom
 }
 
 const TSCONFIG_FILES = ["tsconfig.json", "jsconfig.json"];
+
+// Edits to these files change how imports resolve, not only the file's own source.
+const PAGES_RESOLUTION_CONFIG_FILE_RE = /(?:^|[\\/])(?:[jt]sconfig[^\\/]*|package)\.json$/;
+
+// Safe-write scratch files from editors (vim, Emacs, JetBrains). They are created
+// and removed around every save and no import can resolve to them.
+const EDITOR_SCRATCH_FILE_RE = /(?:~|\.(?:sw[a-p]|tmp))$|(?:^|[\\/])(?:4913|\.#[^\\/]*)$|___jb_/;
 
 function resolveTsconfigPathCandidate(candidate: string): string | null {
   const candidates = candidate.endsWith(".json")
@@ -1821,6 +1834,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const pagesClientAssetsOutputDirs = new Set<string>();
   // Output-root-relative path of each build environment's client assets module.
   const pagesClientAssetsExternalTargets = new Map<string, ReadonlyMap<string, string>>();
+  // Dev dependency lists of the modules behind the Pages client assets, per
+  // environment so each keeps the resolution results of its own conditions.
+  const devPagesModuleDependencyStores = new Map<string, DevPagesModuleDependencyStore>();
   // Workers must keep this module inside their deployable output directory.
   const resolvePagesClientAssetsOutputDir = (environmentName: string, outputDir: string): string =>
     !selectedMultiStageOutput && !hasAppDir && !hasCloudflarePlugin && environmentName === "ssr"
@@ -5057,9 +5073,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ...(appFilePath ? [appFilePath] : []),
               ...pagesRoutes.map((route) => route.filePath),
             ];
+            const environmentName = this.environment?.name ?? "";
+            let dependencyStore = devPagesModuleDependencyStores.get(environmentName);
+            if (!dependencyStore) {
+              dependencyStore = new Map();
+              devPagesModuleDependencyStores.set(environmentName, dependencyStore);
+            }
             const getModuleDependencies = createDevPagesModuleDependencyReader(
               root,
               this.resolve.bind(this),
+              dependencyStore,
             );
             for (const moduleFilePath of moduleFilePaths) {
               const stylesheetAssets = await collectDevPagesAppStylesheetAssets(
@@ -5995,6 +6018,23 @@ export const loadServerActionClient = ${
           pagesRunner?.clearCache();
         }
 
+        // Created and removed files, and edits to resolver config, can change what
+        // an import resolves to, so they drop every cached dependency list. Any
+        // other edit only drops its own.
+        function invalidatePagesModuleDependencies(filePath: string, resolutionChanged: boolean) {
+          for (const store of devPagesModuleDependencyStores.values()) {
+            if (resolutionChanged) {
+              store.clear();
+            } else {
+              for (const key of [filePath, tryRealpathSync(filePath)]) {
+                if (!key) continue;
+                store.delete(key);
+                store.delete(toSlash(key));
+              }
+            }
+          }
+        }
+
         function invalidatePagesClientAssetsModule() {
           for (const env of Object.values(server.environments)) {
             const mod = env.moduleGraph.getModuleById(RESOLVED_PAGES_CLIENT_ASSETS);
@@ -6191,6 +6231,7 @@ export const loadServerActionClient = ${
         }
 
         server.watcher.on("add", (filePath: string) => {
+          invalidatePagesModuleDependencies(filePath, !EDITOR_SCRATCH_FILE_RE.test(filePath));
           invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, true);
           let routeChanged = false;
@@ -6226,6 +6267,10 @@ export const loadServerActionClient = ${
           }
         });
         server.watcher.on("change", (filePath: string) => {
+          invalidatePagesModuleDependencies(
+            filePath,
+            PAGES_RESOLUTION_CONFIG_FILE_RE.test(filePath),
+          );
           invalidatePagesMiddlewareMatcher(filePath);
           if (
             hasPagesDir &&
@@ -6253,6 +6298,7 @@ export const loadServerActionClient = ${
           }
         });
         server.watcher.on("unlink", (filePath: string) => {
+          invalidatePagesModuleDependencies(filePath, !EDITOR_SCRATCH_FILE_RE.test(filePath));
           invalidatePagesMiddlewareMatcher(filePath);
           updatePublicFileRoute(filePath, false);
           let routeChanged = false;
