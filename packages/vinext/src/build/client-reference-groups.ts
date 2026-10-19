@@ -20,15 +20,16 @@ type ClientReferenceGroupIntercept = ClientReferenceGroupRoute["siblingIntercept
 
 type ModuleGraphInfo = Pick<Rollup.ModuleInfo, "dynamicallyImportedIds" | "importedIds">;
 
-// The files of one route segment, outermost first, as Next.js nests them.
+// The files of one route segment, outermost first, as the App Router nests
+// them (see `app-page-route-wiring.tsx`).
 const SEGMENT_FILE_ORDER = [
   "layout",
   "template",
   "error",
-  "loading",
-  "not-found",
-  "forbidden",
   "unauthorized",
+  "forbidden",
+  "not-found",
+  "loading",
   "default",
   "page",
 ];

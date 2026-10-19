@@ -160,6 +160,8 @@ describe("collectClientReferenceRouteSignatures", () => {
         "/root-ref.tsx",
         "/shop-ref.tsx",
         "/tpl-ref.tsx",
+        "/app/shop/loading.tsx",
+        "/app/shop/not-found.tsx",
       ]),
       getModuleInfo: moduleInfo({
         "/app/shop/page.tsx": ["/page-ref.tsx", "/shop-ref.tsx"],
@@ -171,6 +173,8 @@ describe("collectClientReferenceRouteSignatures", () => {
       routes: [
         {
           ...route("/shop", "/app/shop/page.tsx", ["/app/layout.tsx", "/app/shop/layout.tsx"]),
+          loadingPath: "/app/shop/loading.tsx",
+          notFoundPath: "/app/shop/not-found.tsx",
           templates: ["/app/shop/template.tsx"],
         },
       ],
@@ -180,6 +184,8 @@ describe("collectClientReferenceRouteSignatures", () => {
       "/root-ref.tsx",
       "/shop-ref.tsx",
       "/tpl-ref.tsx",
+      "/app/shop/not-found.tsx",
+      "/app/shop/loading.tsx",
       "/page-ref.tsx",
     ]);
   });
