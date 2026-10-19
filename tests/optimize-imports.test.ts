@@ -422,6 +422,7 @@ export { Button } from "./button";`;
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("lucide-react");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("radix-ui");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("@heroui/react");
   });
 
   it("resolves nested subdirectory wildcard re-exports to the correct absolute path", async () => {

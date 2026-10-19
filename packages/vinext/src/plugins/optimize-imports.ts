@@ -75,7 +75,7 @@ type PluginCtx = { environment?: { name?: string } };
 /**
  * Packages whose barrel imports are automatically optimized.
  * Matches Next.js's built-in optimizePackageImports defaults plus vinext-specific
- * compatibility entries for radix-ui and @chakra-ui/react.
+ * compatibility entries for radix-ui, @chakra-ui/react, and @heroui/react.
  * @see https://github.com/vercel/next.js/blob/9c31bbdaa/packages/next/src/server/config.ts#L1301
  */
 export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
@@ -156,6 +156,10 @@ export const DEFAULT_OPTIMIZE_PACKAGES: string[] = [
   "react-icons/vsc",
   "react-icons/wi",
   "radix-ui",
+  // Unused leaves of the barrel reach react-aria code that calls createContext()
+  // at module scope or imports "client-only", which fails a Server Component's
+  // import in dev and the RSC build (https://github.com/cloudflare/vinext/issues/4007).
+  "@heroui/react",
 ];
 
 export function createOptimizedImportSourceMatcher(
