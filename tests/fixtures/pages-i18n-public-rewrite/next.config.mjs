@@ -11,6 +11,19 @@ export default {
         source: "/about",
         headers: [{ key: "x-locale-case-header", value: "about" }],
       },
+      // Used by E2E: pages-router/i18n-locale-case-config.spec.ts — the
+      // lookahead must not see the locale prefix (/sv/api/hello stays
+      // excluded) and additive headers apply once to default-locale paths.
+      // Query-gated so the cookie leaves the fixture's ISR and public file
+      // responses alone.
+      {
+        source: "/((?!api).*)",
+        has: [{ type: "query", key: "locale-lookahead" }],
+        headers: [
+          { key: "x-locale-lookahead-header", value: "page" },
+          { key: "Set-Cookie", value: "locale-lookahead=1" },
+        ],
+      },
     ];
   },
   async redirects() {

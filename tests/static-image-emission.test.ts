@@ -69,12 +69,8 @@ async function createFixture(
 ): Promise<string> {
   const root = await mkdtemp(path.join(import.meta.dirname, `.tmp-${router}-static-image-`));
   tempDirs.push(root);
-  fs.mkdirSync(path.join(root, "node_modules"));
-  fs.symlinkSync(
-    path.resolve(import.meta.dirname, "../packages/vinext/node_modules/ipaddr.js"),
-    path.join(root, "node_modules/ipaddr.js"),
-    "junction",
-  );
+  // Deliberately no node_modules: ipaddr.js is vinext's own dependency and is
+  // not resolvable from here, so production SSR must not leave a bare import.
   writeFixtureFile(
     root,
     "package.json",

@@ -13,6 +13,7 @@ import {
   createOptimizedImportSourceMatcher,
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
+  SUBPATH_OPTIMIZE_PACKAGES,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
@@ -89,6 +90,24 @@ describe("vinext:optimize-imports plugin", () => {
     expect(hasOptimizedImport(`import "lucide-react";`)).toBe(false);
     expect(hasOptimizedImport(`import { Sun /*; */ } from "lucide-react";`)).toBe(true);
     expect(hasOptimizedImport(`function f(){}import { Sun } from "lucide-react";`)).toBe(true);
+  });
+
+  it("matches subpath imports only for subpath packages", () => {
+    const hasOptimizedImport = createOptimizedImportSourceMatcher(
+      ["radix-ui"],
+      ["react-aria-components"],
+    );
+
+    expect(hasOptimizedImport(`import { X } from "react-aria-components/Toast";`)).toBe(true);
+    expect(hasOptimizedImport(`import { X } from "react-aria-components";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "react-aria-components-x/Toast";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "radix-ui/Slot";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "radix-ui";`)).toBe(true);
+    expect(
+      createOptimizedImportSourceMatcher(["radix-ui"])(
+        `import { X } from "react-aria-components/Toast";`,
+      ),
+    ).toBe(false);
   });
 
   it("rejects unquoted, partial or non-import mentions of optimized packages", () => {
@@ -372,6 +391,30 @@ export { Mo as Listbox };`;
     expect(map!.get("parse")).toBeDefined();
   });
 
+  it("does not follow re-exports through a directive boundary", async () => {
+    const entryPath = "/fake/wildcard-boundary/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./client.js";\nexport { Button } from "./button.js";`,
+      "/fake/wildcard-boundary/client.js": `"use client";\nexport { Dialog } from "./dialog.js";\nexport * as Icons from "./icons.js";`,
+    };
+
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
+
+    // Names exported by the "use client" module are imported from it, so the
+    // client reference boundary is kept.
+    expect(map!.get("Dialog")).toEqual({
+      source: "/fake/wildcard-boundary/client.js",
+      isNamespace: false,
+      originalName: "Dialog",
+    });
+    expect(map!.get("Icons")).toEqual({
+      source: "/fake/wildcard-boundary/client.js",
+      isNamespace: false,
+      originalName: "Icons",
+    });
+    expect(map!.get("Button")!.source).toBe("/fake/wildcard-boundary/button.js");
+  });
+
   it("does not overwrite existing exports when wildcard sub-module has same name", async () => {
     // If the barrel already defines `format` explicitly, the wildcard should not overwrite it
     const entryPath = "/fake/wildcard-nooverwrite/index.js";
@@ -422,6 +465,7 @@ export { Button } from "./button";`;
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("lucide-react");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("radix-ui");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("@heroui/react");
   });
 
   it("resolves nested subdirectory wildcard re-exports to the correct absolute path", async () => {
@@ -1047,5 +1091,170 @@ describe("vinext:optimize-imports transform", () => {
     expect(ssrResultKnown).not.toBeNull();
     expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
     expect(ssrResultKnown!.code).toContain("btn");
+  });
+});
+
+describe("vinext:optimize-imports subpath imports", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Lay out react-aria-components the way heroui reaches it: the "./Toast"
+   * subpath entry re-exports a private module (module-scope createContext),
+   * imports "client-only", and re-exports ToastQueue from a react-stately copy
+   * nested under react-aria-components.
+   */
+  async function setup(toastEntry?: string) {
+    const tmpDir = toSlash(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-subpath-"))),
+    );
+    tmpDirs.push(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const racDir = `${tmpDir}/node_modules/react-aria-components`;
+    fs.mkdirSync(`${racDir}/dist/exports`, { recursive: true });
+    fs.mkdirSync(`${racDir}/dist/private`, { recursive: true });
+    const toastEntryPath = `${racDir}/dist/exports/Toast.mjs`;
+    fs.writeFileSync(
+      toastEntryPath,
+      toastEntry ??
+        [
+          `import {UNSTABLE_Toast as $t, UNSTABLE_ToastRegion as $r} from "../private/Toast.mjs";`,
+          `import "client-only";`,
+          `import {ToastQueue as $q$re_export$UNSTABLE_ToastQueue} from "react-stately/useToastState";`,
+          `export {$t as UNSTABLE_Toast, $r as UNSTABLE_ToastRegion, $q$re_export$UNSTABLE_ToastQueue as UNSTABLE_ToastQueue};`,
+        ].join("\n"),
+    );
+    const nestedStately = `${racDir}/node_modules/react-stately/dist/exports/useToastState.mjs?v=abc`;
+    const resolveCalls: Array<[string, string]> = [];
+    const resolve = async (source: string, importer: string) => {
+      resolveCalls.push([source, importer]);
+      if (source === "react-aria-components/Toast") return { id: `${toastEntryPath}?v=abc` };
+      if (source === "react-stately/useToastState" && importer === toastEntryPath) {
+        return { id: nestedStately };
+      }
+      if (source === "react-aria-components/External")
+        return { id: "rac-external", external: true };
+      return null;
+    };
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    await unwrapHook((plugin as any).buildStart)!.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const call = async (envName: string, code: string, id: string) =>
+      await (transform as any).call(
+        { ...plugin, environment: { name: envName }, resolve },
+        code,
+        id,
+      );
+    return { call, racDir, nestedStately, resolveCalls };
+  }
+
+  const heroToastQueue = `${"/app"}/node_modules/@heroui/react/dist/components/toast/toast-queue.js?v=abc`;
+
+  it("optimizes react-aria-components subpaths by default", () => {
+    expect(SUBPATH_OPTIMIZE_PACKAGES).toContain("react-aria-components");
+  });
+
+  it("accepts dev ids with a ?v= query", () => {
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
+    const include = (plugin.transform as any).filter.id.include as RegExp;
+    expect(include.test("/app/node_modules/pkg/dist/index.js?v=1a2b3c")).toBe(true);
+    expect(include.test("/app/page.tsx")).toBe(true);
+    expect(include.test("/app/style.css?v=1a2b3c")).toBe(false);
+  });
+
+  it("rewrites a subpath import in RSC to the nested package the entry resolves", async () => {
+    const { call, nestedStately, resolveCalls, racDir } = await setup();
+    const result = await call(
+      "rsc",
+      `"use strict";\nimport { UNSTABLE_ToastQueue } from 'react-aria-components/Toast';\nnew UNSTABLE_ToastQueue();`,
+      heroToastQueue,
+    );
+
+    expect(result!.code).toContain(
+      `import { ToastQueue as UNSTABLE_ToastQueue } from ${JSON.stringify(nestedStately)};`,
+    );
+    expect(result!.code).not.toContain("react-aria-components/Toast");
+    // The subpath resolves from the importer; its package sources from the entry.
+    expect(resolveCalls).toEqual([
+      ["react-aria-components/Toast", heroToastQueue],
+      ["react-stately/useToastState", `${racDir}/dist/exports/Toast.mjs`],
+    ]);
+  });
+
+  it("rewrites names defined in a private module to its file", async () => {
+    const { call, racDir } = await setup();
+    const result = await call(
+      "rsc",
+      `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      "/app/page.tsx",
+    );
+    expect(result!.code).toContain(
+      `import { UNSTABLE_Toast } from ${JSON.stringify(`${racDir}/dist/private/Toast.mjs`)};`,
+    );
+  });
+
+  it("leaves subpath imports alone outside RSC", async () => {
+    const { call } = await setup();
+    const code = `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`;
+    expect(await call("ssr", code, heroToastQueue)).toBeNull();
+    expect(await call("client", code, heroToastQueue)).toBeNull();
+  });
+
+  it('skips "use client" importers in RSC', async () => {
+    const { call } = await setup();
+    const result = await call(
+      "rsc",
+      `"use client";\nimport { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+      "/app/node_modules/@heroui/react/dist/components/toast/toast.js?v=abc",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("does not follow re-exports out of a boundary subpath entry", async () => {
+    const { call } = await setup(
+      `"use client";\nexport { UNSTABLE_Toast } from "../private/Toast.mjs";`,
+    );
+    const result = await call(
+      "rsc",
+      `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      "/app/page.tsx",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("leaves the import unchanged when a source cannot be resolved", async () => {
+    const { call } = await setup();
+    // External subpath entry.
+    expect(
+      await call("rsc", `import { X } from "react-aria-components/External";`, "/app/page.tsx"),
+    ).toBeNull();
+    // Unknown name in the entry.
+    expect(
+      await call("rsc", `import { Missing } from "react-aria-components/Toast";`, "/app/page.tsx"),
+    ).toBeNull();
+    // Package source that does not resolve from the entry.
+    const { call: call2 } = await setup(
+      `export { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/missing";`,
+    );
+    expect(
+      await call2(
+        "rsc",
+        `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
   });
 });

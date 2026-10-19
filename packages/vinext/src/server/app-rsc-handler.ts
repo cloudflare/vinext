@@ -98,7 +98,10 @@ import {
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
-import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import {
+  normalizeDefaultLocalePathname,
+  shouldRestoreLocaleRootTrailingSlash,
+} from "./pages-i18n.js";
 import {
   badRequestResponse,
   notFoundResponse,
@@ -692,6 +695,8 @@ export type CreateAppRscHandlerOptions<TRoute extends AppRscHandlerRoute> = {
   renderPagesFallback?: (options: RenderPagesFallbackOptions) => Promise<Response | null>;
   rootParamNamesByPattern?: RootParamNamesMap;
   setNavigationContext: (context: NavigationContextValue) => void;
+  /** next.config `skipProxyUrlNormalize`. */
+  skipProxyUrlNormalize?: boolean;
   /** next.config `skipTrailingSlashRedirect`: serve both slash forms without a 308. */
   skipTrailingSlashRedirect?: boolean;
   staticParamsMap: StaticParamsMap;
@@ -1153,6 +1158,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // request-scoped constants from this point on.
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
+  // Header matching re-adds the root's trailing slash exactly where Next.js
+  // does, so a root rule's `/:nextInternalLocale(...)/` source matches. A
+  // `/_next/data` request was already rewritten to its page path, but its raw
+  // pathname ends in `.json`, so its slash is never restored.
+  const restoreLocaleRootTrailingSlash =
+    !pagesDataRequest &&
+    shouldRestoreLocaleRootTrailingSlash(stripRscSuffix(url.pathname), options);
+  const headerMatchPathname = normalizeDefaultLocalePathname(
+    requestCleanPathname,
+    options.i18nConfig,
+    { hostname: url.hostname, restoreRootTrailingSlash: restoreLocaleRootTrailingSlash },
+  );
 
   // Config sources match the request's raw encoded identity. Internal route
   // matching uses the normalized pathname separately, but decoding literal
@@ -1274,6 +1291,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           basePath: options.basePath,
           configHeaders: options.configHeaders,
           i18nConfig: options.i18nConfig,
+          restoreLocaleRootTrailingSlash,
           middlewareHeaders: middlewareContext.headers,
           recordCacheability: dispatchResponseStage === undefined,
           requestContext: preMiddlewareRequestContext,
@@ -1288,7 +1306,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
-        pathname: matchPathname(requestCleanPathname),
+        pathname: headerMatchPathname,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       });
@@ -1333,7 +1351,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolveResponseStageCachePolicy({
               basePathState,
               configHeaders: options.configHeaders,
-              pathname: matchPathname(requestCleanPathname),
+              pathname: headerMatchPathname,
               requestContext: preMiddlewareRequestContext,
             }),
           ),
@@ -1544,6 +1562,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       basePath: options.basePath,
       configHeaders: options.configHeaders,
       i18nConfig: options.i18nConfig,
+      restoreLocaleRootTrailingSlash,
       middlewareHeaders: middlewareContext.headers,
       overwriteExisting: preserveExistingPolicy ? new Set<string>() : isCdnResponsePolicyHeader,
       recordCacheability: dispatchResponseStage === undefined,
@@ -1566,6 +1585,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        restoreLocaleRootTrailingSlash,
         middlewareHeaders: middlewareContext.headers,
         overwriteExisting: isCdnResponsePolicyHeader,
         recordCacheability: false,
@@ -2194,6 +2214,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         basePath: options.basePath,
         configHeaders: options.configHeaders,
         i18nConfig: options.i18nConfig,
+        restoreLocaleRootTrailingSlash,
         middlewareHeaders: middlewareContext.headers,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
@@ -3193,6 +3214,12 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             basePath: options.basePath,
             configHeaders: options.configHeaders,
             i18nConfig: options.i18nConfig,
+            // Read the raw URL: `request` already has a `/_next/data`
+            // pathname rewritten to its page path.
+            restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+              stripRscSuffix(new URL(rawRequest.url).pathname),
+              options,
+            ),
             middlewareHeaders: middlewareContext.headers,
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,

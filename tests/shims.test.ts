@@ -12477,13 +12477,16 @@ describe("NextRequest API", () => {
     expect(req.nextUrl.port).toBe("8080");
   });
 
-  it("nextUrl.buildId returns process.env.__VINEXT_BUILD_ID when set", async () => {
+  it("nextUrl.buildId ignores the deployment build ID", async () => {
+    // Next.js derives NextURL.buildId from the URL, never the deployment, so a
+    // Client Component reading it renders the same value during SSR and
+    // hydration (where the build ID is not defined).
     const original = process.env.__VINEXT_BUILD_ID;
     try {
       process.env.__VINEXT_BUILD_ID = "test-build-123";
-      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/");
-      expect(req.nextUrl.buildId).toBe("test-build-123");
+      const { NextRequest, NextURL } = await import("../packages/vinext/src/shims/server.js");
+      expect(new NextRequest("http://localhost/").nextUrl.buildId).toBeUndefined();
+      expect(new NextURL("https://example.com/").buildId).toBeUndefined();
     } finally {
       if (original === undefined) {
         delete process.env.__VINEXT_BUILD_ID;
@@ -12493,34 +12496,93 @@ describe("NextRequest API", () => {
     }
   });
 
-  it("nextUrl.buildId returns undefined when __VINEXT_BUILD_ID is not set", async () => {
-    const original = process.env.__VINEXT_BUILD_ID;
-    try {
-      delete process.env.__VINEXT_BUILD_ID;
-      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/");
-      expect(req.nextUrl.buildId).toBeUndefined();
-    } finally {
-      if (original !== undefined) {
-        process.env.__VINEXT_BUILD_ID = original;
-      }
-    }
+  it("nextUrl.buildId is parsed from a raw _next/data URL", async () => {
+    // With skipProxyUrlNormalize, middleware receives the raw data URL;
+    // getNextPathnameInfo still reads its build ID.
+    const { NextRequest, NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/_next/data/abc123/blog/post.json");
+    expect(req.nextUrl.buildId).toBe("abc123");
+    expect(req.nextUrl.pathname).toBe("/_next/data/abc123/blog/post.json");
+    expect(req.nextUrl.href).toBe("http://localhost/_next/data/abc123/blog/post.json");
+
+    const withBasePath = new NextURL(
+      "http://localhost/docs/_next/data/abc123/index.json",
+      undefined,
+      {
+        basePath: "/docs",
+      },
+    );
+    expect(withBasePath.buildId).toBe("abc123");
+
+    withBasePath.href = "http://localhost/docs/about";
+    expect(withBasePath.buildId).toBeUndefined();
   });
 
-  it("buildId pass-through on NextRequest delegates to nextUrl.buildId", async () => {
-    const original = process.env.__VINEXT_BUILD_ID;
-    try {
-      process.env.__VINEXT_BUILD_ID = "test-build-456";
-      const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
-      const req = new NextRequest("http://localhost/");
-      expect(req.buildId).toBe(req.nextUrl.buildId);
-    } finally {
-      if (original === undefined) {
-        delete process.env.__VINEXT_BUILD_ID;
-      } else {
-        process.env.__VINEXT_BUILD_ID = original;
-      }
-    }
+  it("nextUrl.locale is detected after the build ID of a raw _next/data URL", async () => {
+    // With skipProxyUrlNormalize, middleware receives the raw data URL;
+    // getNextPathnameInfo retries locale detection on the page path.
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const config = {
+      nextConfig: { i18n: { locales: ["en", "fr"], defaultLocale: "en" } },
+    };
+    const localized = new NextURL(
+      "http://localhost/_next/data/abc123/fr/blog.json",
+      undefined,
+      config,
+    );
+    expect(localized.locale).toBe("fr");
+    expect(localized.pathname).toBe("/_next/data/abc123/fr/blog.json");
+    expect(localized.href).toBe("http://localhost/_next/data/abc123/fr/blog.json");
+
+    const index = new NextURL("http://localhost/_next/data/abc123/index.json", undefined, config);
+    expect(index.locale).toBe("en");
+    expect(index.href).toBe("http://localhost/_next/data/abc123/index.json");
+  });
+
+  it("the locale of a raw _next/data URL does not select the domain", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("https://example.com/_next/data/abc123/fr/about.json", undefined, {
+      nextConfig: {
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "example.com", defaultLocale: "en" },
+          ],
+        },
+      },
+    });
+    expect(url.locale).toBe("fr");
+    expect(url.domainLocale?.domain).toBe("example.com");
+    expect(url.defaultLocale).toBe("en");
+  });
+
+  it("a changed locale replaces the locale segment of a raw _next/data URL", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const config = {
+      nextConfig: { i18n: { locales: ["en", "fr", "de"], defaultLocale: "en" } },
+    };
+    const url = new NextURL("http://localhost/_next/data/abc123/fr/blog.json", undefined, config);
+    const cloned = url.clone();
+    cloned.locale = "de";
+    expect(cloned.href).toBe("http://localhost/_next/data/abc123/de/blog.json");
+    expect(cloned.clone().locale).toBe("de");
+    expect(url.href).toBe("http://localhost/_next/data/abc123/fr/blog.json");
+
+    const localeIndex = new NextURL(
+      "http://localhost/_next/data/abc123/fr.json",
+      undefined,
+      config,
+    );
+    localeIndex.locale = "en";
+    expect(localeIndex.href).toBe("http://localhost/_next/data/abc123/en.json");
+  });
+
+  it("NextRequest.buildId delegates to nextUrl.buildId", async () => {
+    const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/_next/data/test-build-456/index.json");
+    expect(req.buildId).toBe("test-build-456");
   });
 });
 
@@ -14898,6 +14960,202 @@ describe("matchHeaders source matching parity with Next.js", () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe("matchHeaders param substitution parity with Next.js", () => {
+  type HasItem = { type: "header" | "cookie" | "query" | "host"; key: string; value?: string };
+  type Case = {
+    source: string;
+    pathname: string;
+    has?: HasItem[];
+    request?: { headers?: Record<string, string>; search?: string };
+  };
+  const headerTemplates = [
+    { key: "x-slug", value: ":slug" },
+    { key: "x-:slug", value: "pre-:slug-post" },
+    { key: "x-path", value: ":path*" },
+    { key: "x-path-plus", value: "list=:path+" },
+    { key: "x-path-single", value: ":path" },
+    { key: "x-optional", value: ":a-:id?" },
+    { key: "x-unnamed", value: ":0 :id" },
+    {
+      key: "x-literal",
+      value: "https://example.com/:slug?x=1 (a) {b} * + max-age=60 :unknown a\\b",
+    },
+    { key: "x-locale", value: ":nextInternalLocale" },
+    { key: "x-adjacent", value: ":a:id" },
+    { key: "x-has", value: "tenant=:tenant page=:page host=:host token=:token" },
+    { key: "x-static", value: "no params" },
+  ];
+  const cases: Case[] = [
+    { source: "/docs/:slug", pathname: "/docs/hello" },
+    // Next.js matches the raw pathname, so captures stay percent-encoded.
+    { source: "/docs/:slug", pathname: "/docs/hello%20world%3A" },
+    { source: "/files/:path*", pathname: "/files/a/b" },
+    { source: "/files/:path*", pathname: "/files" },
+    { source: "/files/:path+", pathname: "/files/a/b/c" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x" },
+    { source: "/opt/:a/:id?", pathname: "/opt/x/7" },
+    { source: "/opt/:id?", pathname: "/opt" },
+    { source: "/api/(.*)", pathname: "/api/x" },
+    { source: "/u/:id(\\d+)/(.*)", pathname: "/u/12/z" },
+    { source: "/:nextInternalLocale(en|fr)/about", pathname: "/fr/about" },
+    { source: "/:slug.md", pathname: "/readme.md" },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "header", key: "x-tenant", value: "(?<tenant>[a-z]+)" },
+        { type: "query", key: "page" },
+        { type: "host", key: "", value: "example\\.com" },
+        { type: "cookie", key: "token" },
+      ],
+      request: {
+        headers: { "x-tenant": "acme", host: "example.com:3000", cookie: "token=abc" },
+        search: "?page=2",
+      },
+    },
+    // A duplicate query key is an array param; a has group that did not
+    // participate is undefined. Next.js throws compiling either.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [
+        { type: "query", key: "page" },
+        { type: "header", key: "x-tenant", value: "(?<tenant>a)?.*" },
+      ],
+      request: { headers: { "x-tenant": "zzz" }, search: "?page=1&page=2" },
+    },
+    // Decoded has captures can carry characters a header value cannot.
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "query", key: "page" }],
+      request: { search: "?page=a%0D%0Aset-cookie:%20x=1" },
+    },
+    {
+      source: "/t/:slug",
+      pathname: "/t/x",
+      has: [{ type: "cookie", key: "token" }],
+      request: { headers: { cookie: "token=%E2%9C%93" } },
+    },
+  ];
+
+  it.each(cases)("substitutes params like Next.js for $source at $pathname", async (testCase) => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const { parseCookies } = await import("../packages/vinext/src/config/request-context.js");
+    const { getPathMatch } = await import("next/dist/shared/lib/router/utils/path-match.js");
+    const { modifyRouteRegex } = await import("next/dist/lib/redirect-status.js");
+    const { compileNonPath, matchHas } =
+      await import("next/dist/shared/lib/router/utils/prepare-destination.js");
+    const { validateHeaderName, validateHeaderValue } = await import("node:http");
+
+    const requestHeaders = testCase.request?.headers ?? {};
+    const searchParams = new URLSearchParams(testCase.request?.search ?? "");
+    const query: Record<string, string | string[]> = {};
+    for (const key of new Set(searchParams.keys())) {
+      const values = searchParams.getAll(key);
+      query[key] = values.length > 1 ? values : values[0];
+    }
+
+    // Next.js resolve-routes: route.match, then matchHas, then compileNonPath.
+    const nextMatch = getPathMatch(testCase.source, {
+      strict: true,
+      removeUnnamedParams: true,
+      regexModifier: (regex: string) => modifyRouteRegex(regex),
+    });
+    const params = nextMatch(testCase.pathname) as Record<string, any> | false;
+    expect(params).not.toBe(false);
+    if (testCase.has) {
+      const hasParams = matchHas({ headers: requestHeaders } as any, query, testCase.has as any);
+      expect(hasParams).not.toBe(false);
+      Object.assign(params as object, hasParams);
+    }
+    const hasParams = Object.keys(params as object).length > 0;
+    const expected: Array<{ key: string; value: string }> = [];
+    for (const header of headerTemplates) {
+      try {
+        const key = hasParams ? compileNonPath(header.key, params as any) : header.key;
+        const value = hasParams ? compileNonPath(header.value, params as any) : header.value;
+        // Next.js fails the request when a substituted header is invalid;
+        // vinext omits only that header. Templates without substitutions
+        // pass through unchanged, as before param support.
+        if (key !== header.key || value !== header.value) {
+          validateHeaderName(key);
+          validateHeaderValue(key, value);
+        }
+        expected.push({ key, value });
+      } catch {}
+    }
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const actual = matchHeaders(
+        testCase.pathname,
+        [{ source: testCase.source, has: testCase.has, headers: headerTemplates }],
+        {
+          headers: new Headers(requestHeaders),
+          cookies: parseCookies(requestHeaders.cookie ?? null),
+          query: searchParams,
+          host: (requestHeaders.host ?? "localhost").split(":", 1)[0],
+        },
+      );
+      expect(actual).toEqual(expected);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("omits a header Next.js cannot compile without throwing, and warns once", async () => {
+    const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const rules = [
+        {
+          source: "/files/:path*",
+          headers: [
+            { key: "x-path", value: ":path" },
+            { key: "x-ok", value: ":path*" },
+          ],
+        },
+      ];
+      const ctx = {
+        headers: new Headers(),
+        cookies: {},
+        query: new URLSearchParams(),
+        host: "localhost",
+      };
+      expect(matchHeaders("/files/a/b", rules, ctx)).toEqual([{ key: "x-ok", value: "a/b" }]);
+      expect(matchHeaders("/files/c", rules, ctx)).toEqual([{ key: "x-ok", value: "c" }]);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Omitting headers() header "x-path: :path"'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("compiles each template once per set of param names", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    // The same template compiles differently for different param names, so
+    // the compiled form is keyed by both.
+    expect(compileHeaderParamTemplate("v=:a", { a: "x" })).toBe("v=x");
+    expect(compileHeaderParamTemplate("v=:a", { b: "y" })).toBe("v=:a");
+    expect(compileHeaderParamTemplate("v=:a", { a: "z" })).toBe("v=z");
+    // Params are still read per call; a compile error is rethrown each time.
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+    expect(compileHeaderParamTemplate(":a", { a: "3" })).toBe("3");
+    expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
+  });
+
+  it("does not let a template containing NUL share another template's cache entry", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    expect(compileHeaderParamTemplate("v=:a/:b\0a", { b: "B", c: "C" })).toBe("v=:a/B\0a");
+    expect(compileHeaderParamTemplate("v=:a/:b", { a: "A", b: "B", c: "C" })).toBe("v=A/B");
   });
 });
 
@@ -32464,6 +32722,134 @@ describe("default-locale path normalisation (issue #1336, item 4)", () => {
     expect(
       matchRedirect(normalizeDefaultLocalePathname("/sv/old", i18n), rules, emptyCtx)?.destination,
     ).toBe("/sv/new");
+  });
+
+  it("applyLocaleToRoutes emits only the locale-capture variant for headers", async () => {
+    // Next.js processRoutes (load-custom-routes.ts) gives header rules only the
+    // `/:nextInternalLocale(...)` source. An unprefixed copy would let
+    // `/((?!api).*)` match `/fr/api/x` (the lookahead sees `fr/api/x`).
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const headers = [{ key: "x-test", value: "1" }];
+    const out = applyLocaleToRoutes(
+      [
+        { source: "/((?!api).*)", headers },
+        { source: "/en", headers, locale: false as const },
+      ],
+      i18n,
+      "header",
+    );
+    expect(out.map((rule) => rule.source)).toEqual([
+      "/:nextInternalLocale(en|fr)/((?!api).*)",
+      "/en",
+    ]);
+  });
+
+  it("matchHeaders matches i18n header rules like Next.js after normalisation", async () => {
+    // Ported from Next.js resolve-routes.ts: unprefixed requests get the
+    // (domain-aware) default locale spliced in before headers are matched,
+    // except `/_next/*`, which stays unprefixed.
+    const { matchHeaders, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+    };
+    const rules = applyLocaleToRoutes(
+      [
+        {
+          source: "/((?!api).*)",
+          headers: [
+            { key: "Set-Cookie", value: "seen=1" },
+            { key: "x-page", value: "1" },
+          ],
+        },
+        { source: "/en", headers: [{ key: "x-en-root", value: "1" }], locale: false as const },
+      ],
+      i18n,
+      "header",
+    );
+    const match = (pathname: string, hostname?: string) =>
+      matchHeaders(normalizeDefaultLocalePathname(pathname, i18n, { hostname }), rules, emptyCtx);
+    const pageHeaders = [
+      { key: "Set-Cookie", value: "seen=1" },
+      { key: "x-page", value: "1" },
+    ];
+
+    // Negative lookahead excludes API routes under every locale.
+    expect(match("/fr/api/x")).toEqual([]);
+    expect(match("/en/api/x")).toEqual([]);
+    expect(match("/api/x")).toEqual([]);
+    // Prefixed and default-locale paths match exactly once (no duplicate
+    // additive Set-Cookie from a second, unprefixed variant).
+    expect(match("/fr/about")).toEqual(pageHeaders);
+    expect(match("/about")).toEqual(pageHeaders);
+    expect(match("/about", "example.fr")).toEqual(pageHeaders);
+    // `/` is matched as `/en`, which `/:nextInternalLocale(en|fr)/((?!api).*)`
+    // does not match (verified against next@16.2.7). A `locale: false` `/en`
+    // source does, but not on a domain whose default locale is fr.
+    expect(match("/")).toEqual([{ key: "x-en-root", value: "1" }]);
+    expect(match("/", "example.fr")).toEqual([]);
+    // `/_next/*` is not locale-normalised, so locale-default rules skip it.
+    expect(match("/_next/static/chunks/main.js")).toEqual([]);
+  });
+
+  it("matchHeaders keeps the root trailing slash where Next.js restores it", async () => {
+    // Next.js re-adds the root's trailing slash after splicing in the default
+    // locale only when the raw request pathname (basePath included) ended
+    // with `/`, trailingSlash is on, and skipProxyUrlNormalize is off
+    // (resolve-routes.ts `hadTrailingSlash` + `maybeAddTrailingSlash`).
+    const { matchHeaders, applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const { normalizeDefaultLocalePathname, shouldRestoreLocaleRootTrailingSlash } =
+      await import("../packages/vinext/src/server/pages-i18n.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const trailing = { trailingSlash: true };
+    const rootPathname = (
+      rawPathname: string,
+      config: { trailingSlash: boolean; skipProxyUrlNormalize?: boolean } = trailing,
+    ) =>
+      normalizeDefaultLocalePathname("/", i18n, {
+        restoreRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(rawPathname, config),
+      });
+
+    expect(rootPathname("/")).toBe("/en/");
+    // basePath "/docs": `/docs` becomes `/docs/en`, `/docs/` becomes `/docs/en/`.
+    expect(rootPathname("/docs")).toBe("/en");
+    expect(rootPathname("/docs/")).toBe("/en/");
+    expect(rootPathname("/", { ...trailing, skipProxyUrlNormalize: true })).toBe("/en");
+    expect(rootPathname("/", { trailingSlash: false })).toBe("/en");
+    expect(
+      normalizeDefaultLocalePathname("/about/", i18n, { restoreRootTrailingSlash: true }),
+    ).toBe("/en/about/");
+
+    const rules = applyLocaleToRoutes(
+      [
+        { source: "/", headers: [{ key: "x-root", value: "1" }] },
+        { source: "/((?!api).*)", headers: [{ key: "x-page", value: "1" }] },
+      ],
+      i18n,
+      "header",
+      trailing,
+    );
+    const rootHeaders = [
+      { key: "x-root", value: "1" },
+      { key: "x-page", value: "1" },
+    ];
+    expect(matchHeaders(rootPathname("/docs/"), rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders("/fr/", rules, emptyCtx)).toEqual(rootHeaders);
+    expect(matchHeaders(rootPathname("/docs"), rules, emptyCtx)).toEqual([]);
+    expect(
+      matchHeaders(
+        rootPathname("/", { ...trailing, skipProxyUrlNormalize: true }),
+        rules,
+        emptyCtx,
+      ),
+    ).toEqual([]);
   });
 });
 

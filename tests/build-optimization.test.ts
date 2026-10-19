@@ -855,7 +855,7 @@ describe("optimizeDeps.exclude for vinext", () => {
   }, 15000);
 
   // Regression: `ipaddr.js` is imported by the next/image client shim for
-  // server-side private-IP validation. It's already in ssr.resolve.external,
+  // server-side private-IP validation. Dev keeps it in ssr.resolve.external,
   // but the SSR dep optimizer would still pre-bundle it on first request,
   // producing a `(ssr) ✨ new dependencies optimized: ipaddr.js` log and the
   // accompanying full reload. Excluding it from the SSR optimizer avoids the
@@ -906,6 +906,21 @@ describe("optimizeDeps.exclude for vinext", () => {
       // optimizer alone — ipaddr.js shouldn't appear in either direction.
       const rscExclude = result.environments.rsc.optimizeDeps?.exclude ?? [];
       expect(rscExclude).not.toContain("ipaddr.js");
+
+      // Dev loads the UMD module natively, but production builds must bundle
+      // it: a bare import in dist/server is not resolvable from the app under
+      // pnpm's strict layout.
+      expect(result.ssr.external).toContain("ipaddr.js");
+      expect(result.environments.ssr.resolve.external).toContain("ipaddr.js");
+      const buildPlugin = vinext().find(
+        (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+      );
+      const buildResult = await (buildPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "build" },
+      );
+      expect(buildResult.ssr.external).not.toContain("ipaddr.js");
+      expect(buildResult.environments.ssr.resolve.external).not.toContain("ipaddr.js");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
@@ -948,6 +963,16 @@ describe("optimizeDeps.exclude for vinext", () => {
           "process.env.NODE_ENV"
         ],
       ).toBe(JSON.stringify("development"));
+
+      expect(result.environments.ssr.resolve.external).toContain("ipaddr.js");
+      const buildPlugin = vinext().find(
+        (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+      );
+      const buildResult = await (buildPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [] },
+        { command: "build" },
+      );
+      expect(buildResult.environments.ssr.resolve.external).not.toContain("ipaddr.js");
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

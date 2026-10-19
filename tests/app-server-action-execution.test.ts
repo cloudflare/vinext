@@ -155,6 +155,9 @@ function createOptions(
     cleanPathname: "/action-source",
     clearRequestContext() {},
     contentType: "multipart/form-data; boundary=vinext",
+    createServerManifest() {
+      return {};
+    },
     async decodeAction() {
       return null;
     },
@@ -177,11 +180,17 @@ function createOptions(
     request: createMultipartRequest(),
     routePattern: "/action-source",
     setHeadersAccessPhase,
+    validateActionReferences() {
+      return true;
+    },
     ...overrides,
   };
   const decodeAction = options.decodeAction;
-  options.decodeAction = async (body) =>
-    registerTestServerReference(await decodeAction(body), getDirectTestActionId(body));
+  options.decodeAction = async (body, serverManifest) =>
+    registerTestServerReference(
+      await decodeAction(body, serverManifest),
+      getDirectTestActionId(body),
+    );
   return options;
 }
 
@@ -296,6 +305,9 @@ function createRscOptions(
     createRscOnErrorHandler(_request, pathname, pattern) {
       return () => `${pathname}:${pattern}`;
     },
+    createServerManifest() {
+      return {};
+    },
     createTemporaryReferenceSet() {
       return { marker: "refs" };
     },
@@ -376,6 +388,9 @@ function createRscOptions(
     setNavigationContext() {},
     toInterceptOpts(intercept) {
       return { slot: intercept.slotKey };
+    },
+    validateActionReferences() {
+      return true;
     },
     ...overrides,
     cleanPathname,
@@ -611,14 +626,10 @@ describe("app server action execution helpers", () => {
     }
   });
 
-  it("validates nested bound server references before decoding modules", async () => {
+  it("rejects an empty progressive action id before decoding", async () => {
     const body = new FormData();
-    body.set("$ACTION_REF_1", "");
-    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
-    body.set("$ACTION_1:1", JSON.stringify(["$ha"]));
-    body.set("$ACTION_1:10", JSON.stringify({ id: "nested-action", bound: null }));
+    body.set("$ACTION_ID_", "");
     const decodeAction = vi.fn();
-    const validateActionReferences = vi.fn(() => false);
     const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
@@ -628,16 +639,53 @@ describe("app server action execution helpers", () => {
             decodeAction,
             forwardAction: async () => null,
             readFormDataWithLimit: async () => body,
-            validateActionReferences,
+            validateActionReferences: (actionIds) => !actionIds.includes(""),
           }),
         ),
       );
 
       expect(response.status).toBe(404);
-      expect(validateActionReferences).toHaveBeenCalledWith(["selected-action", "nested-action"]);
       expect(decodeAction).not.toHaveBeenCalled();
     } finally {
       warning.mockRestore();
+    }
+  });
+
+  it("resolves bound server references through the route-scoped manifest", async () => {
+    const body = new FormData();
+    body.set("$ACTION_REF_1", "");
+    body.set("$ACTION_1:0", JSON.stringify({ id: "selected-action", bound: "$@1" }));
+    const action = vi.fn();
+    const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
+      actionIds.every((actionId) => actionId === "selected-action"),
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = requireProgressiveActionResponse(
+        await handleProgressiveServerActionRequest(
+          createOptions({
+            createServerManifest: () =>
+              new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
+            // React resolves the action and each bound `$h` reference with
+            // `serverManifest[id]`.
+            async decodeAction(_body, serverManifest) {
+              Reflect.get(serverManifest, "selected-action");
+              Reflect.get(serverManifest, "nested-action");
+              return action;
+            },
+            forwardAction: async () => null,
+            readFormDataWithLimit: async () => body,
+            validateActionReferences,
+          }),
+        ),
+      );
+
+      expect(response.status).toBe(500);
+      expect(validateActionReferences).toHaveBeenCalledWith(["nested-action"]);
+      expect(action).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
     }
   });
 
@@ -1051,26 +1099,32 @@ describe("app server action execution helpers", () => {
     const request = createMultipartBodyRequest(formData);
     const formState = ["action-result", "key-path", "reference-id", 1] as never;
     let actionRan = false;
+    let actionManifest: object | undefined;
 
     const result = await handleProgressiveServerActionRequest(
       createOptions({
         contentType: request.headers.get("content-type") ?? "",
-        async decodeAction() {
+        async decodeAction(_body, serverManifest) {
+          actionManifest = serverManifest;
           return () => {
             actionRan = true;
             return { count: 1 };
           };
         },
-        async decodeFormState(actionResult, body) {
+        async decodeFormState(actionResult, body, serverManifest) {
           expect(actionResult).toEqual({ count: 1 });
           expect(body.get("$ACTION_ID_test")).toBe("");
           expect(body.get("field")).toBe("value");
+          // Form state decodes the bound references again, through the same scope.
+          expect(serverManifest).toBe(actionManifest);
+          expect(() => Reflect.get(serverManifest, "foreign-action")).toThrow();
           return formState;
         },
         readFormDataWithLimit(readRequest) {
           return readRequest.formData();
         },
         request,
+        validateActionReferences: (actionIds) => !actionIds.includes("foreign-action"),
       }),
     );
 
@@ -1348,7 +1402,7 @@ describe("app server action execution helpers", () => {
         createTemporaryReferenceSet() {
           return temporaryReferences;
         },
-        decodeReply(body, options) {
+        decodeReply(body, _serverManifest, options) {
           expect(body).toBe("encoded-flight-body");
           expect(options.temporaryReferences).toBe(temporaryReferences);
           return Promise.resolve(["first", "second"]);
@@ -3056,6 +3110,59 @@ describe("app server action execution helpers", () => {
     expect(response?.status).toBe(404);
     expect(response?.headers.get("x-nextjs-action-not-found")).toBe("1");
     expect(hidden).not.toHaveBeenCalled();
+  });
+
+  // React resolves each argument reference with `serverManifest[id]` and throws
+  // when the entry is missing; this decoder stands in for that lookup.
+  function createArgumentReferenceOptions(referenceIds: readonly string[], ownedIds: string[]) {
+    const action = vi.fn(() => "saved");
+    const validateActionReferences = vi.fn((actionIds: readonly string[]) =>
+      actionIds.every((actionId) => ownedIds.includes(actionId)),
+    );
+    const options = createRscOptions({
+      createServerManifest: () =>
+        new Proxy({}, { get: (_target, id) => ({ id, name: "", chunks: [] }) }),
+      decodeReply(_body, serverManifest) {
+        return referenceIds.map((referenceId) => {
+          const entry: unknown = Reflect.get(serverManifest, referenceId);
+          if (!entry) throw new Error(`Could not find the module "${referenceId}"`);
+          return () => entry;
+        });
+      },
+      loadServerAction: () => Promise.resolve(action),
+      validateActionReferences,
+    });
+    return { action, options, validateActionReferences };
+  }
+
+  it("decodes argument references to Server Actions of the current route", async () => {
+    const { action, options, validateActionReferences } = createArgumentReferenceOptions(
+      ["a#owned"],
+      ["a#owned"],
+    );
+
+    const response = await handleServerActionRscRequest(options);
+
+    expect(response?.status).toBe(200);
+    expect(validateActionReferences).toHaveBeenCalledWith(["a#owned"]);
+    expect(action).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it("does not resolve argument references to Server Actions of another route", async () => {
+    const { action, options } = createArgumentReferenceOptions(
+      ["a#owned", "b#foreign"],
+      ["a#owned"],
+    );
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const response = await handleServerActionRscRequest(options);
+
+      expect(response?.status).toBe(500);
+      expect(action).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+    }
   });
 
   // Reproduces the prod-build error path where the @vitejs/plugin-rsc server

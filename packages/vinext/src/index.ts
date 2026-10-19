@@ -123,6 +123,8 @@ import {
   type ResolvedNextConfig,
 } from "./config/next-config.js";
 import { loadDotenv } from "./config/dotenv.js";
+import type { RscPluginOptions } from "@vitejs/plugin-rsc";
+import { loadOrGenerateServerActionsEncryptionKey } from "./build/server-actions-encryption-key.js";
 import {
   findOpenTelemetryPackages,
   mergeServerExternalPackages,
@@ -138,7 +140,11 @@ import {
   shouldAddTrailingSlashToPagesDataPath,
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
-import { resolvePagesI18nRequest, stripI18nLocaleForApiRoute } from "./server/pages-i18n.js";
+import {
+  resolvePagesI18nRequest,
+  shouldRestoreLocaleRootTrailingSlash,
+  stripI18nLocaleForApiRoute,
+} from "./server/pages-i18n.js";
 import {
   MIDDLEWARE_NEXT_HEADER,
   MIDDLEWARE_REWRITE_HEADER,
@@ -487,6 +493,9 @@ function scopeRscPlugin(plugin: Plugin): Plugin {
 // previous CLI contract that project dotenv values are available while that
 // config is evaluated. The plugin hook loads again later for custom envDir.
 const earlyViteCliInvocation = getViteCliInvocation();
+// The values the early pass loaded, so the config hook can replace them when
+// Vite's resolved envDir is another directory.
+let earlyDotenv: { dir: string; env: Record<string, string> } | undefined;
 const viteCliBuildConfigNodeEnv =
   earlyViteCliInvocation?.command === "build" && process.env.NODE_ENV === "test"
     ? "test"
@@ -503,7 +512,11 @@ if (earlyViteCliInvocation) {
           : "development",
     );
   }
-  loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode });
+  earlyDotenv = {
+    dir: path.resolve(earlyViteCliInvocation.root),
+    env: loadDotenv({ root: earlyViteCliInvocation.root, mode: earlyViteCliInvocation.mode })
+      .loadedEnv,
+  };
 }
 
 // Install the process-level error backstop at module load.
@@ -2038,6 +2051,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
   let manualUseCachePluginPromise: Promise<Plugin> | null = null;
+  // Set by the config hook once `.env` files are loaded. @vitejs/plugin-rsc
+  // reads `defineEncryptionKey` in its configEnvironment hook, which runs
+  // after every config hook.
+  const rscPluginOptions: RscPluginOptions = {
+    entries: {
+      rsc: VIRTUAL_RSC_ENTRY,
+      ssr: VIRTUAL_APP_SSR_ENTRY,
+      client: VIRTUAL_APP_BROWSER_ENTRY,
+    },
+  };
+  let serverActionsEncryptionKey: string | undefined;
   if (earlyAppDirExists && autoRsc) {
     if (!resolvedRscPath) {
       throw new Error(
@@ -2052,17 +2076,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     rscPluginPromise = rscImport
       .then(async (mod) => {
         const rsc = mod.default;
-        const plugins: Plugin[] = rsc({
-          entries: {
-            rsc: VIRTUAL_RSC_ENTRY,
-            ssr: VIRTUAL_APP_SSR_ENTRY,
-            client: VIRTUAL_APP_BROWSER_ENTRY,
-          },
-        });
+        const plugins: Plugin[] = rsc(rscPluginOptions);
         const useCachePlugin = await createUseCacheCallablePlugin({
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
+          getEncryptionKey: () => serverActionsEncryptionKey,
         });
         const useServerIndex = plugins.findIndex((plugin) => plugin.name === "rsc:use-server");
         if (useServerIndex === -1) {
@@ -2663,6 +2682,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         buildEmptyOutDir =
           typeof config.build?.emptyOutDir === "boolean" ? config.build.emptyOutDir : undefined;
         isServeCommand = env.command === "serve";
+        // ipaddr.js (next/image private-IP guard) is a UMD CommonJS module that
+        // crashes the dev module runner when transformed as ESM, so dev loads
+        // it natively. Production builds must bundle it: it is vinext's own
+        // dependency, so a bare `import "ipaddr.js"` left in dist/server cannot
+        // be resolved from the app under strict layouts such as pnpm's.
+        const ipaddrSsrExternal = env.command === "serve" ? ["ipaddr.js"] : [];
         root = path.resolve(toSlash(process.cwd()), config.root ?? ".");
         if (env.command === "build") assertClientOutDirIsSeparate(root, options);
         const devCliLifecycleEnabled =
@@ -2689,10 +2714,22 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // env vars are available in config, server-side code, and as
         // NEXT_PUBLIC_* defines for the client bundle.
         const mode = env?.mode ?? "development";
-        if (config.envDir !== false) {
-          const envDir = config.envDir ?? root;
-          loadDotenv({ root: envDir, mode });
+        // Like Vite, resolve a relative envDir from the project root.
+        const envDir =
+          config.envDir === false
+            ? undefined
+            : config.envDir
+              ? path.resolve(root, config.envDir)
+              : root;
+        if (earlyDotenv && envDir !== earlyDotenv.dir) {
+          // Values the early pass read from another directory must not shadow
+          // this envDir's. Variables set before vinext loaded stay.
+          for (const [key, value] of Object.entries(earlyDotenv.env)) {
+            if (process.env[key] === value) Reflect.deleteProperty(process.env, key);
+          }
+          earlyDotenv = undefined;
         }
+        if (envDir) loadDotenv({ root: envDir, mode });
         // Build output always receives production defines. Preserve the
         // explicit NODE_ENV=test config-time behavior supported by the previous
         // vinext CLI, independently of Vite's mode.
@@ -2809,6 +2846,20 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (sharedBuildId && sharedBuildId.length > 0) {
             nextConfig = { ...nextConfig, buildId: sharedBuildId };
           }
+        }
+        if (rscPluginPromise) {
+          // Like Next.js, closure arguments of Server Actions and "use cache"
+          // functions are encrypted with this key, and a runtime
+          // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY overrides it
+          // (getActionEncryptionKey in server/app-render/encryption-utils.ts).
+          // A stable key keeps them decryptable across identical rebuilds.
+          // Chosen after next.config is evaluated, as Next does, since the
+          // config may set the variable.
+          serverActionsEncryptionKey = loadOrGenerateServerActionsEncryptionKey({
+            root,
+            isBuild: env.command === "build",
+          });
+          rscPluginOptions.defineEncryptionKey = `process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY || ${JSON.stringify(serverActionsEncryptionKey)}`;
         }
         // Preserve an explicit test environment while Vite and Next config are
         // evaluated, then keep the actual CLI build on production semantics.
@@ -3022,16 +3073,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           String(nextConfig.images?.unoptimized === true),
         );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
-        // Exposed so server entries and the next/server shim can inject it.
-        // Also used to namespace ISR cache keys so old cached entries from a
-        // previous deploy are never served by the new one.
-        defines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
-        // Public browser-facing identity for App Router RSC compatibility
-        // checks. Prefer Next.js-style deploymentId when configured; otherwise
-        // generate a separate token so RSC headers do not expose
-        // generateBuildId() verbatim.
-        defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify(rscCompatibilityId);
-        defines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] = JSON.stringify(rscBuildIdentity ?? "");
+        // Server entries read it, and it namespaces ISR cache keys so a
+        // previous deploy's entries are never served. The real value is a
+        // server-only define (see vinext:compiler-define-server): a random
+        // per-build value in the browser would rename client chunks on every
+        // build.
+        defines["process.env.__VINEXT_BUILD_ID"] = "undefined";
+        // Public identity for App Router RSC compatibility checks. Prefer
+        // Next.js-style deploymentId when configured; otherwise generate a
+        // separate token so RSC headers do not expose generateBuildId()
+        // verbatim. Like the build identity below, the real value is a
+        // server-only define: the server writes it into the page bootstrap and
+        // the browser reads it from there, so it never renames client chunks.
+        defines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] = JSON.stringify("");
+        // Per-build server identity. Only server responses carry it, so the
+        // real value is a server-only define (see vinext:compiler-define-server).
+        // Baking it into the browser would rename every client chunk that
+        // reaches its module on each build, even when nothing changed.
+        defines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] = JSON.stringify("");
         // Deployment ID — mirrors Next.js' configured NEXT_DEPLOYMENT_ID.
         // This remains empty when deploymentId is not configured; the separate
         // "use cache" key builder falls back to __VINEXT_BUILD_ID when needed.
@@ -3657,7 +3716,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                       "react",
                       "react-dom",
                       "react-dom/server",
-                      "ipaddr.js",
+                      ...ipaddrSsrExternal,
                       ...(Array.isArray(config.ssr?.external) ? config.ssr.external : []),
                       ...nextServerExternal,
                     ],
@@ -4157,7 +4216,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                           ? true
                           : [
                               ...userSsrExternal,
-                              "ipaddr.js",
+                              ...ipaddrSsrExternal,
                               // Node can load the SSR React runtime natively.
                               // Keeping it out of Vite's transform graph avoids
                               // reparsing the large Flight client decoder.
@@ -4181,10 +4240,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // https://github.com/cloudflare/vinext/issues/1103.
                 //
                 // `ipaddr.js` is imported by the next/image client shim for
-                // server-side private-IP validation. We externalize it on Node
-                // SSR via resolve.external above; excluding it from the dep
-                // optimizer prevents Vite from pre-bundling it on first request
-                // (and the resulting "new dependencies optimized" full reload).
+                // server-side private-IP validation. Node dev externalizes it via
+                // resolve.external above (production builds bundle it); excluding
+                // it from the dep optimizer prevents Vite from pre-bundling it on
+                // first request (and the resulting "new dependencies optimized"
+                // full reload).
                 // On bundled runtimes (Cloudflare/Nitro) the runtime build
                 // bundles it anyway, so excluding it from the dev optimizer
                 // is still correct — it just defers handling to the runtime
@@ -4336,18 +4396,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   "react",
                   "react-dom",
                   "react-dom/server",
-                  "ipaddr.js",
+                  ...ipaddrSsrExternal,
                   ...nextServerExternal,
                 ],
                 noExternal: true as const,
               },
               optimizeDeps: {
                 // `ipaddr.js` is imported by the next/image shim for
-                // private-IP validation and is externalized via
-                // resolve.external above. Excluding it from the SSR dep
-                // optimizer avoids the "new dependencies optimized" full
-                // reload the first time a Pages Router page renders an
-                // <Image>.
+                // private-IP validation and is externalized in dev via
+                // resolve.external above (production builds bundle it).
+                // Excluding it from the SSR dep optimizer avoids the "new
+                // dependencies optimized" full reload the first time a Pages
+                // Router page renders an <Image>.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
@@ -5099,6 +5159,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 nodeOpenTelemetryLoader: registerNodeOpenTelemetryLoader,
                 assetPrefix: nextConfig?.assetPrefix,
                 crossOrigin: nextConfig?.crossOrigin,
+                skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize,
                 skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
                 expireTime: nextConfig?.expireTime,
                 reactMaxHeadersLength: nextConfig?.reactMaxHeadersLength,
@@ -7055,6 +7116,11 @@ export const loadServerActionClient = ${
                 // Raw query so redirect Locations aren't re-encoded by URL parsing.
                 rawSearch: url.includes("?") ? url.slice(url.indexOf("?")) : "",
                 configMatchPathname,
+                // The pre-Vite URL still carries the basePath.
+                restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+                  canonicalOriginalUrl.split("?")[0],
+                  nextConfig ?? {},
+                ),
                 runMiddleware: devRunMiddlewareAdapter,
                 // Treat App route handlers as an API filesystem match too. The
                 // pipeline may then emit an API intent instead of continuing
@@ -7728,8 +7794,8 @@ export const loadServerActionClient = ${
     // serialized define environments, never to `client`.
     {
       name: "vinext:compiler-define-server",
-      configEnvironment(name) {
-        if (name === "client") return null;
+      configEnvironment(name, config) {
+        if (name === "client" || config.consumer === "client") return null;
 
         const serverDefines: Record<string, string> = { ...nextConfig.compilerDefineServer };
 
@@ -7768,6 +7834,15 @@ export const loadServerActionClient = ${
         if (revalidateSecret) {
           serverDefines["process.env.__VINEXT_REVALIDATE_SECRET"] =
             JSON.stringify(revalidateSecret);
+        }
+        serverDefines["process.env.__VINEXT_BUILD_ID"] = JSON.stringify(nextConfig.buildId);
+        if (rscCompatibilityId) {
+          serverDefines["process.env.__VINEXT_RSC_COMPATIBILITY_ID"] =
+            JSON.stringify(rscCompatibilityId);
+        }
+        if (rscBuildIdentity) {
+          serverDefines["process.env.__VINEXT_RSC_BUILD_IDENTITY"] =
+            JSON.stringify(rscBuildIdentity);
         }
         if (previewBuildCredentials) {
           serverDefines["process.env.__VINEXT_PREVIEW_MODE_ID"] = JSON.stringify(

@@ -226,6 +226,11 @@ export type PagesPipelineDeps = {
   // matching and capture substitution. Filesystem routing keeps using the
   // normalized pathname from request.url.
   configMatchPathname?: string;
+  /**
+   * `shouldRestoreLocaleRootTrailingSlash` for the raw request pathname
+   * (basePath included), which the basePath-stripped request no longer shows.
+   */
+  restoreLocaleRootTrailingSlash?: boolean;
 
   /**
    * Validate an on-demand revalidation credential using the runtime's
@@ -441,6 +446,14 @@ export async function runPagesRequest(
         hostname: requestHostname,
       })
     : requestConfigPathname;
+  // Header matching re-adds the root's trailing slash exactly where Next.js
+  // does, so a root rule's `/:nextInternalLocale(...)/` source matches.
+  const requestHeaderMatchPathname = i18nConfig
+    ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
+        hostname: requestHostname,
+        restoreRootTrailingSlash: deps.restoreLocaleRootTrailingSlash,
+      })
+    : requestConfigPathname;
 
   // Step 4: Config redirects (before middleware)
   if (configRedirects.length) {
@@ -500,7 +513,7 @@ export async function runPagesRequest(
     const matchedConfigHeaders: HeaderRecord = {};
     applyConfigHeadersToHeaderRecord(matchedConfigHeaders, {
       configHeaders,
-      pathname: requestConfigMatchPathname,
+      pathname: requestHeaderMatchPathname,
       requestContext: reqCtx,
       basePathState,
       middlewareHeaders: response.headers,
@@ -712,7 +725,7 @@ export async function runPagesRequest(
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
-      pathname: requestConfigMatchPathname,
+      pathname: requestHeaderMatchPathname,
       requestContext: reqCtx,
       basePathState,
       recordCacheability: deps.recordCacheability,

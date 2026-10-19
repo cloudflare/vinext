@@ -1,9 +1,19 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { createBuilder } from "vite";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
 import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
@@ -19,6 +29,17 @@ type ClientManifestEntry = {
 
 function isBuiltAppHandler(value: unknown): value is BuiltAppHandler {
   return typeof value === "function";
+}
+
+/** List every file under `dir` (recursively) as sorted `/`-joined relative paths. */
+function listFiles(dir: string, prefix = ""): string[] {
+  const out: string[] = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...listFiles(path.join(dir, entry.name), relative));
+    else out.push(relative);
+  }
+  return out.sort();
 }
 
 /** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
@@ -53,6 +74,7 @@ describe("App Router Production build", () => {
       "app/blog",
       "app/components",
       "app/dashboard",
+      "app/use-cache-client-import",
     ].map((entry) => path.join(APP_FIXTURE_DIR, entry));
     fixtureDir = await createIsolatedFixture(
       APP_FIXTURE_DIR,
@@ -175,6 +197,14 @@ describe("App Router Production build", () => {
     expect(buildId.length).toBeGreaterThan(0);
     const rscBuildId = fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8").trim();
     expect(rscBuildId).toMatch(/^[0-9a-f]{32}$/);
+    // The per-build RSC identity stamps server responses only. If it reaches a
+    // client chunk, every build renames that chunk and all of its importers.
+    expect(readAllJs(path.join(outDir, "server"))).toContain(rscBuildId);
+    expect(clientJs).not.toContain(rscBuildId);
+    // Nor may the random default build ID (generateBuildId is not pinned
+    // here). Next.js keeps it out of client chunks, so pinning only
+    // deploymentId keeps chunk names stable.
+    expect(clientJs).not.toContain(buildId);
 
     const warmupManifestPath = path.join(outDir, "server", "vinext-prerender-paths.json");
     expect(fs.existsSync(warmupManifestPath)).toBe(false);
@@ -312,6 +342,157 @@ export default function Page() {
     }
   }, 30000);
 
+  describe("client output across rebuilds", () => {
+    // With generateBuildId pinned, nothing that reaches the browser may vary
+    // between builds of identical source, even without a deploymentId.
+    // Otherwise every deploy renames unchanged chunks, defeating CDN/browser
+    // cache reuse and dropping long-lived tabs' chunks (vinext#3626).
+    const keyCacheDir = () => path.join(fixtureDir, ".vinext", "cache");
+
+    async function buildClient(onNextConfigLoad?: () => void) {
+      fs.rmSync(outDir, { recursive: true, force: true });
+      const builder = await createBuilder({
+        root: fixtureDir,
+        cacheDir: testCacheDir(fixtureDir),
+        configFile: false,
+        plugins: [
+          vinext({
+            appDir: fixtureDir,
+            nextConfig: () => {
+              onNextConfigLoad?.();
+              return { generateBuildId: () => "pinned-build" };
+            },
+          }),
+        ],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const clientDir = path.join(outDir, "client");
+      // The fixture's client component imports a "use cache" module, whose
+      // reference names land in a client chunk.
+      const cacheReferenceNames = [
+        ...new Set(readAllJs(clientDir).match(/\$\$vinext_cache_[0-9a-f]{64}/g) ?? []),
+      ].sort();
+      expect(cacheReferenceNames.length).toBeGreaterThan(0);
+      return {
+        cacheReferenceNames,
+        // Compare contents too: some client files (build manifests,
+        // .vite/manifest.json) carry no content hash in their name.
+        files: listFiles(clientDir).map(
+          (file) =>
+            `${file}:${createHash("sha256")
+              .update(fs.readFileSync(path.join(clientDir, file)))
+              .digest("hex")}`,
+        ),
+        rscBuildId: fs.readFileSync(path.join(outDir, "server", "RSC_BUILD_ID"), "utf-8"),
+        // @vitejs/plugin-rsc encrypts Server Action and "use cache" closure
+        // arguments with the key this module exports.
+        encryptionKeyModule: fs.readFileSync(
+          path.join(outDir, "server", "__vite_rsc_encryption_key.js"),
+          "utf-8",
+        ),
+      };
+    }
+
+    let encryptionKeyLoads = 0;
+    // Evaluate the module afresh each time, since it reads process.env when
+    // it is evaluated.
+    async function loadEncryptionKey(): Promise<string> {
+      const copy = path.join(outDir, "server", `encryption-key-${++encryptionKeyLoads}.mjs`);
+      fs.copyFileSync(path.join(outDir, "server", "__vite_rsc_encryption_key.js"), copy);
+      const mod = await import(pathToFileURL(copy).href);
+      return mod.default;
+    }
+
+    function readCachedKey(): string {
+      const info = JSON.parse(fs.readFileSync(path.join(keyCacheDir(), ".rscinfo"), "utf-8"));
+      return info["encryption.key"];
+    }
+
+    beforeEach(() => {
+      vi.stubEnv("__VINEXT_SHARED_RSC_BUILD_IDENTITY", "");
+      vi.stubEnv("__VINEXT_SHARED_RSC_COMPATIBILITY_ID", "");
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+      fs.rmSync(keyCacheDir(), { recursive: true, force: true });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // Ported from Next.js:
+    // test/production/app-dir/server-action-period-hash/server-action-period-hash.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/server-action-period-hash/server-action-period-hash.test.ts
+    it("emits identical client files when identical source is rebuilt", async () => {
+      const first = await buildClient();
+      // Without NEXT_SERVER_ACTIONS_ENCRYPTION_KEY, the generated key is
+      // cached outside dist/, which every build wipes.
+      expect(fs.existsSync(path.join(keyCacheDir(), ".rscinfo"))).toBe(true);
+      const second = await buildClient();
+      // The server-side build identity still changes per build.
+      expect(second.rscBuildId).not.toBe(first.rscBuildId);
+      expect(second.files).toEqual(first.files);
+      // Closure arguments encrypted by the first build still decrypt.
+      expect(second.encryptionKeyModule).toBe(first.encryptionKeyModule);
+      expect(await loadEncryptionKey()).toBe(readCachedKey());
+    }, 60000);
+
+    // Ported from Next.js: getActionEncryptionKey in
+    // packages/next/src/server/app-render/encryption-utils.ts reads
+    // NEXT_SERVER_ACTIONS_ENCRYPTION_KEY at runtime before the build's key.
+    it("encrypts closure arguments with NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", async () => {
+      const buildKey = Buffer.alloc(32, 1).toString("base64");
+      const runtimeKey = Buffer.alloc(32, 2).toString("base64");
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", buildKey);
+      await buildClient();
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+      expect(await loadEncryptionKey()).toBe(buildKey);
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", runtimeKey);
+      expect(await loadEncryptionKey()).toBe(runtimeKey);
+    }, 60000);
+
+    // Next evaluates next.config before generateEncryptionKeyBase64, so a
+    // config that sets the variable chooses the key.
+    it("uses a NEXT_SERVER_ACTIONS_ENCRYPTION_KEY that next.config sets", async () => {
+      const configKey = Buffer.alloc(32, 3).toString("base64");
+      const { cacheReferenceNames } = await buildClient(() => {
+        process.env.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY = configKey;
+      });
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "");
+      expect(await loadEncryptionKey()).toBe(configKey);
+      // Reference names derive from the same key as a build with it preset.
+      fs.rmSync(keyCacheDir(), { recursive: true, force: true });
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", configKey);
+      expect((await buildClient()).cacheReferenceNames).toEqual(cacheReferenceNames);
+    }, 60000);
+
+    it("renames cache references once the generated key cache is removed", async () => {
+      const first = await buildClient();
+      fs.rmSync(keyCacheDir(), { recursive: true, force: true });
+      const second = await buildClient();
+      expect(second.cacheReferenceNames).not.toEqual(first.cacheReferenceNames);
+    }, 60000);
+
+    // Ported from Next.js:
+    // test/production/app-dir/server-action-period-hash/server-action-period-hash-custom-key.test.ts
+    // https://github.com/vercel/next.js/blob/canary/test/production/app-dir/server-action-period-hash/server-action-period-hash-custom-key.test.ts
+    it("renames cache references when NEXT_SERVER_ACTIONS_ENCRYPTION_KEY changes", async () => {
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "my-secret-key1");
+      const first = await buildClient();
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "my-secret-key2");
+      const second = await buildClient();
+      expect(second.cacheReferenceNames).not.toEqual(first.cacheReferenceNames);
+    }, 60000);
+
+    it("keeps cache references for the same NEXT_SERVER_ACTIONS_ENCRYPTION_KEY without a key cache", async () => {
+      vi.stubEnv("NEXT_SERVER_ACTIONS_ENCRYPTION_KEY", "my-secret-key");
+      const first = await buildClient();
+      fs.rmSync(keyCacheDir(), { recursive: true, force: true });
+      const second = await buildClient();
+      expect(second.files).toEqual(first.files);
+    }, 60000);
+  });
+
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vite build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App
@@ -407,14 +588,36 @@ export default function Page() {
     }
   }, 30000);
 
+  it("keeps the build ID out of static export client JS", async () => {
+    // Static export compares each payload's deployment version against the
+    // initial page's, like Next.js' navigation build ID from the initial RSC
+    // payload. Inlining it would rename client chunks on every export build.
+    const buildId = "static-export-build-marker";
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [
+        vinext({
+          appDir: fixtureDir,
+          nextConfig: { output: "export", generateBuildId: () => buildId },
+        }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    expect(readAllJs(path.join(outDir, "server"))).toContain(buildId);
+    expect(readAllJs(path.join(outDir, "client"))).not.toContain(buildId);
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_RSC_COMPATIBILITY_ID across the App Router build", async () => {
     // Companion to the build-ID coordination: createRscCompatibilityId() mints a
     // random UUID per plugin instance when no deploymentId is pinned, so a hybrid
     // app+pages build would otherwise bake two different RSC-compat tokens. The
     // CLI resolves it once and shares it via __VINEXT_SHARED_RSC_COMPATIBILITY_ID;
-    // the plugin always adopts it when set. Both the App Router server bundle and
-    // the client bundle (which compares its baked token against the server's
-    // X-Vinext-RSC-Compatibility-Id header) must carry the shared value.
+    // the plugin always adopts it when set. The server bundles carry it; the
+    // browser reads it from the server-rendered page instead of its bundle.
     const sharedCompatId = "shared-rsc-compat-id-9012";
     const previous = process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
     process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = sharedCompatId;
@@ -428,18 +631,77 @@ export default function Page() {
       });
       await builder.buildApp();
 
-      // The compat token is baked via Vite `define`; depending on chunking it
-      // can land in the RSC entry or a shared server/client chunk, so scan the
-      // whole server and client output trees. Both sides must carry the same
-      // adopted token — that is what lets the client reject mismatched RSC
-      // payloads (the X-Vinext-RSC-Compatibility-Id header check).
+      // Depending on chunking the token can land in the RSC entry or a shared
+      // server chunk, so scan the whole server output tree.
       expect(readAllJs(path.join(outDir, "server"))).toContain(sharedCompatId);
-      expect(readAllJs(path.join(outDir, "client"))).toContain(sharedCompatId);
+      expect(readAllJs(path.join(outDir, "client"))).not.toContain(sharedCompatId);
     } finally {
       if (previous === undefined) delete process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID;
       else process.env.__VINEXT_SHARED_RSC_COMPATIBILITY_ID = previous;
     }
   }, 30000);
+
+  it("keeps the build ID out of a client chunk that reads NextURL.buildId", async () => {
+    // As in Next.js, NextURL.buildId is undefined in the browser. Inlining the
+    // build ID, a random UUID unless generateBuildId is pinned, would rename
+    // this chunk and its importers on every build.
+    const buildId = "vinext-build-id-marker-3f9c";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-client-next-url-"));
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { LogBuildId } from "./log-build-id";
+
+export default function Page() {
+  return <LogBuildId />;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "log-build-id.tsx"),
+        `"use client";
+import { NextURL } from "next/server";
+
+export function LogBuildId() {
+  return (
+    <button onClick={() => console.log("client-next-url", new NextURL(location.href).buildId)}>
+      log
+    </button>
+  );
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir, nextConfig: { generateBuildId: () => buildId } })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientJs = readAllJs(path.join(tmpDir, "dist", "client"));
+      expect(clientJs).toContain("client-next-url");
+      expect(clientJs).not.toContain(buildId);
+      expect(readAllJs(path.join(tmpDir, "dist", "server"))).toContain(buildId);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
 
   it("builds proxy.ts that reads __filename before redirecting", async () => {
     // Ported from Next.js:

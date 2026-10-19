@@ -463,6 +463,20 @@ const nextConfig: NextConfig = {
         source: "/dashboard/((?!missing).*)",
         headers: [{ key: "X-Dashboard-Lookahead", value: "1" }],
       },
+      // Used by E2E: config-redirect.spec.ts — matched params are substituted
+      // into header keys and values like Next.js.
+      {
+        source: "/blog/:slug",
+        headers: [
+          { key: "X-Blog-Slug", value: "slug=:slug" },
+          { key: "X-Blog-:slug", value: "1" },
+        ],
+      },
+      {
+        source: "/dashboard/:path*",
+        has: [{ type: "query", key: "ref", value: "(?<ref>[a-z]+)" }],
+        headers: [{ key: "X-Dashboard-Params", value: ":path* via :ref" }],
+      },
       // Used by E2E: config-redirect.spec.ts (catch-all for e2e header test)
       {
         source: "/(.*)",

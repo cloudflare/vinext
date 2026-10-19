@@ -174,7 +174,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
 
   return createAppRscHandler<TestRoute>({
     assetPrefix: overrides.assetPrefix,
-    basePath: "/docs",
+    basePath: overrides.basePath ?? "/docs",
     buildId: overrides.buildId ?? "build-id",
     cacheabilityRequestProjection: overrides.cacheabilityRequestProjection,
     clearRequestContext: overrides.clearRequestContext ?? (() => {}),
@@ -2814,6 +2814,42 @@ describe("createAppRscHandler", () => {
     );
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ resourceKind: "api" });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+  });
+
+  // Next.js re-adds the root's trailing slash after splicing in the default
+  // locale only when the raw request pathname ended in `/`. Without
+  // middleware a `/_next/data` index request is matched raw, so the
+  // locale-prefixed root rule must not apply to it even though the handler
+  // rewrites it to `/` before header matching.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  it("restores the locale root trailing slash for header matching only from the raw URL", async () => {
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const handler = createHandler({
+      configHeaders: applyLocaleToRoutes(
+        [{ source: "/", headers: [{ key: "x-locale-root", value: "1" }] }],
+        i18nConfig,
+        "header",
+        { trailingSlash: true },
+      ),
+      basePath: "",
+      i18nConfig,
+      trailingSlash: true,
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async () => new Response("page"),
+    });
+
+    const root = await handler(new Request("https://example.test/"), null);
+    expect(root.headers.get("x-locale-root")).toBe("1");
+
+    const data = await handler(
+      new Request("https://example.test/_next/data/build-id/index.json"),
+      null,
+    );
+    expect(await data.text()).toBe("page");
+    expect(data.headers.get("x-locale-root")).toBeNull();
   });
 
   // Ported from Next.js cross-router res.revalidate() coverage:
