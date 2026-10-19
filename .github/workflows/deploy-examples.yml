@@ -579,7 +579,7 @@ jobs:
 
       # Worker Previews outlive their PR. The pinned Wrangler and cf cannot delete them
       # yet, so call the Workers API behind `wrangler preview delete`. Keep the Worker
-      # list in sync with the `worker_preview` examples; 404 means already deleted.
+      # list in sync with the `worker_preview` examples; error 10025 means already deleted.
       - name: Delete Worker Previews
         # Run even if an earlier cleanup step failed, e.g. a PR closed before its kv Worker existed.
         if: ${{ !cancelled() && github.event.action == 'closed' }}
@@ -593,7 +593,8 @@ jobs:
             status="$(curl -sS -o "$response" -w '%{http_code}' -X DELETE \
               -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
               "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers/$worker/previews/$PREVIEW_NAME")"
-            if [[ "$status" != 2* && "$status" != 404 ]]; then
+            # A 404 for any other reason (wrong path or Worker name) must still fail.
+            if [[ "$status" != 2* ]] && ! jq -e '.errors[]? | select(.code == 10025)' "$response" >/dev/null; then
               echo "Failed to delete Worker Preview $PREVIEW_NAME for $worker (HTTP $status):"
               cat "$response"
               exit 1
