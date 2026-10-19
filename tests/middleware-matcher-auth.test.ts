@@ -1,25 +1,17 @@
-import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import type http from "node:http";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { createBuilder, type ViteDevServer } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture, startFixtureServer } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "./fixtures/middleware-matcher-auth");
-const REDOS_CHILD = path.resolve(
-  import.meta.dirname,
-  "./fixtures/middleware-matcher-redos-child.ts",
-);
-const WORKSPACE_ROOT = path.resolve(import.meta.dirname, "..");
 const CLOUDFLARE_NODE_MODULES = path.resolve(
   import.meta.dirname,
   "./fixtures/cf-app-basic/node_modules",
 );
-const execFileAsync = promisify(execFile);
 
 const PROTECTED_PATHS = [
   "/",
@@ -324,22 +316,6 @@ async function closeHttpServer(server: http.Server | undefined): Promise<void> {
   });
 }
 
-async function writeMatcherFixture(root: string, matcher: string): Promise<void> {
-  await fs.writeFile(
-    path.join(root, "middleware.ts"),
-    `export function middleware() { return new Response("blocked", { status: 403 }) }
-export const config = { matcher: ${JSON.stringify(matcher)} }
-`,
-  );
-}
-
-async function findTsxCli(): Promise<string> {
-  const pnpmStore = path.join(WORKSPACE_ROOT, "node_modules/.pnpm");
-  const entry = (await fs.readdir(pnpmStore)).find((name) => name.startsWith("tsx@"));
-  if (!entry) throw new Error("tsx is not installed in the workspace dependency store");
-  return path.join(pnpmStore, entry, "node_modules/tsx/dist/cli.mjs");
-}
-
 describe("valid middleware matcher auth guards", () => {
   describe("development server", () => {
     let root = "";
@@ -535,97 +511,6 @@ describe("valid middleware matcher auth guards", () => {
 
     it("matches middleware paths case-sensitively", async () => {
       await assertCaseSensitiveMatcherAuthGuard(baseUrl);
-    });
-  });
-});
-
-describe("unsafe middleware matcher rejection", () => {
-  it.each([
-    ["/:path(.*)*/end", /may match an empty value or path delimiter/],
-    ["/:path(.*)+/end", /may match an empty value or path delimiter/],
-    ["/x.:ext([^/]+)+/end", /can match its repetitions in more than one way/],
-    ["/x{-:part([^/]+)}+", /can match its repetitions in more than one way/],
-    ["/:x(a(?:/a)?)+/end", /can match its repetitions in more than one way/],
-    ["/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end", /can match its repetitions in more than one way/],
-    ["/:x(a|A)+/end", /can match its repetitions in more than one way/],
-    ["/:x(ab?|a)+/end", /can match its repetitions in more than one way/],
-    ["/:path((?:a+)+)", /contains nested repetition/],
-    ["/:path((?:a|aa)+)", /contains ambiguous alternatives under repetition/],
-    ["/:path((?:a|A)+)", /contains ambiguous alternatives under repetition/],
-    ["/:path((?:a+){10})", /contains nested repetition/],
-    [`/:path(${"(?:a+)".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(7)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(7)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+(?:))".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1}".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+){1,1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:(?:a+){1}){1,1}".repeat(6)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(8)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(9)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a+)".repeat(10)})`, /contains overlapping sequential repetition/],
-    [`/:path(${"(?:a|aa)".repeat(26)})`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a|aa?)".repeat(26)})`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a?|b)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:a*|b)".repeat(8)}c)`, /contains ambiguous sequence expansion/],
-    ["/:path((?:\\.x|.y|ay)+)", /contains ambiguous alternatives under repetition/],
-    [`/:path(${"(?:\\.x|.y|ay|b?z)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    [`/:path(${"(?:\\cA?x|\\x01x)".repeat(26)}c)`, /contains ambiguous sequence expansion/],
-    ["/:path((?:\\c|\\\\c)+)", /contains ambiguous alternatives under repetition/],
-    ["/:a((?<z>a))/:b((?:\\k<z>x|ax)+c)", /contains ambiguous alternatives under repetition/],
-    ["/:path(a+.*a+)", /contains overlapping sequential repetition/],
-    ["/:path(a+(?:b*)a+)", /contains overlapping sequential repetition/],
-  ] as const)(
-    "rejects unsafe matcher %s during the build config phase",
-    async (matcher, reason) => {
-      const root = await createIsolatedFixture(
-        FIXTURE_DIR,
-        "vinext-middleware-matcher-unsafe-build-",
-        (source) => path.basename(source) !== "wrangler.jsonc",
-      );
-      try {
-        await writeMatcherFixture(root, matcher);
-        await expect(
-          createBuilder({
-            root,
-            configFile: false,
-            plugins: [vinext({ appDir: root })],
-            logLevel: "silent",
-          }),
-        ).rejects.toThrow(reason);
-      } finally {
-        await fs.rm(root, { recursive: true, force: true });
-      }
-    },
-  );
-
-  it("rejects an ambiguous constrained repeat during dev config processing", async () => {
-    const root = await createIsolatedFixture(
-      FIXTURE_DIR,
-      "vinext-middleware-matcher-unsafe-dev-",
-      (source) => path.basename(source) !== "wrangler.jsonc",
-    );
-    try {
-      await writeMatcherFixture(root, "/:path(.*)*/end");
-      await expect(startFixtureServer(root)).rejects.toThrow(
-        /Invalid middleware matcher.*may match an empty value or path delimiter/,
-      );
-    } finally {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-  });
-
-  it("fails closed on ambiguous repeats without catastrophic backtracking", async () => {
-    const tsxCli = await findTsxCli();
-    await expect(
-      execFileAsync(process.execPath, [tsxCli, REDOS_CHILD], {
-        cwd: WORKSPACE_ROOT,
-        timeout: 5_000,
-      }),
-    ).resolves.toMatchObject({
-      stderr: expect.stringContaining("Middleware will run for all paths"),
-      stdout: "",
     });
   });
 });

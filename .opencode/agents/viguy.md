@@ -131,7 +131,7 @@ App Router prod delegates to the built RSC entry, so it inherits fixes from `ent
 Several files generate JavaScript as template strings (`deploy.ts`, `entries/app-rsc-entry.ts`, parts of `index.ts`). These are the highest-risk code for logic drift.
 
 - **Worker entry templates in `deploy.ts`** generate two nearly-identical entry points (App Router and Pages Router). When you modify one, check the other. Functions like `handleImageOptimization()` are copy-pasted between them.
-- **`entries/app-rsc-entry.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `isSafeRegex`, `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
+- **`entries/app-rsc-entry.ts` generates the RSC entry** as a string. Functions inlined there (e.g., `matchConfigPattern`, `proxyExternalRequest`) must exactly match their counterparts in shared modules (`config-matchers.ts`, `image-optimization.ts`, etc.). When the shared module gets a fix, update the template too.
 - **Escaping differs between contexts.** Template literals inside template literals need different escaping than regular code. After modifying generated code, verify the output is syntactically valid by reading the generated file or checking the build output.
 - **Prefer imports over duplication.** When a template can import a shared module at runtime, do that. When it cannot (generated string context), extract the function body into a const string and interpolate it into both templates.
 
@@ -192,7 +192,7 @@ Treat all server-side code and the Workers entry as security-critical. For each 
 
 - **XSS in HTML serialization** — escape all dynamic content. Exception: `<script>` and `<style>` children must not be entity-escaped (they use different escaping rules).
 - **CSRF on server actions** — validate the `Origin` header against allowed origins.
-- **ReDoS from user-provided regex** — reject or sanitize patterns before compiling. Use the `isSafeRegex` utility.
+- **ReDoS from request-controlled regex** — never compile a regex from request input. Regexes from next.config and middleware matchers run as written, like Next.js.
 - **Host header poisoning** — do not trust `Host` or `X-Forwarded-Host` without validation.
 - **Open redirects** — validate redirect URLs against an allowlist. Reject protocol-relative URLs (`//evil.com`).
 - **SSRF from image/fetch sources** — validate URLs against configured `remotePatterns` before fetching.

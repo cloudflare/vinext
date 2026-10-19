@@ -9417,7 +9417,7 @@ describe("middleware runner", () => {
     }
   });
 
-  it("runs middleware when its matcher is rejected as unsafe", async () => {
+  it("runs middleware when its matcher is rejected as invalid", async () => {
     const { runMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     let middlewareCalled = false;
     const mockRunner = {
@@ -9426,7 +9426,7 @@ describe("middleware runner", () => {
           middlewareCalled = true;
           return new Response("Forbidden", { status: 403 });
         },
-        // lgtm[js/redos] — deliberate pathological regex to exercise fail-closed behavior
+        // path-to-regexp rejects groups that start with `?`.
         config: { matcher: "/(?:[a-z]+/)*admin" },
       }),
     };
@@ -9848,106 +9848,31 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/archive/2024-07-10-11", matcher)).toBe(false);
   });
 
-  it("rejects prefix-ambiguous alternatives under repetition", async () => {
+  it("compiles nested and ambiguous repetition as written, like Next.js", async () => {
     const { compileMiddlewareMatcherPattern } =
       await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
+    // Next.js does not check matcher regexes for catastrophic backtracking;
+    // path-to-regexp passes custom parameter patterns through unchanged.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+    for (const [matcher, source] of [
+      ["/:path((?:a+)+)", "^(?:\\/((?:a+)+))[\\/#\\?]?$"],
+      ["/:path((?:a|aa)+)", "^(?:\\/((?:a|aa)+))[\\/#\\?]?$"],
+      ["/:path(.*)*/end", "^(?:\\/((?:.*)(?:\\/(?:.*))*))?\\/end[\\/#\\?]?$"],
+      ["/x{-:part([^/]+)}+", "^\\/x(?:-((?:[^/]+)(?:-(?:[^/]+))*))[\\/#\\?]?$"],
+    ] as const) {
+      expect(compileMiddlewareMatcherPattern(matcher).regexp?.source, matcher).toBe(source);
+    }
 
     for (const matcher of [
-      "/:path((?:a|aa)+)",
-      "/:path((?:aa|a)*)",
-      "/:path((?:[a]|aa){1,})",
-      "/:path((?:a|aa){2})",
       "/:path((?:a|A)+)",
-      "/:path((?:é|É)+)",
-    ]) {
-      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
-      });
-    }
-
-    expect(compileMiddlewareMatcherPattern("/:path((?:foo|bar)+)").regexp).toBeInstanceOf(RegExp);
-    expect(compileMiddlewareMatcherPattern("/:path((?:ab|ac)+)").regexp).toBeInstanceOf(RegExp);
-    expect(compileMiddlewareMatcherPattern("/:path((?:ab|ac){10})").regexp).toBeInstanceOf(RegExp);
-    // Non-Unicode ECMAScript ignore-case canonicalization deliberately does
-    // not fold a non-ASCII character to ASCII.
-    expect(compileMiddlewareMatcherPattern("/:path((?:k|K)+)").regexp).toBeInstanceOf(RegExp);
-  });
-
-  it("handles fixed-width nested repeats and simple class intersections", async () => {
-    const { compileMiddlewareMatcherPattern } =
-      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-
-    for (const matcher of ["/codes/:value((?:[A-Z]{2})+)", "/mixed/:value((?:[a-z]|[0-9])+)"]) {
-      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
-    }
-
-    for (const matcher of [
-      "/shorthand/:value((?:\\d|[a-z])+)",
-      "/bracket-shorthand/:value((?:[\\d]|[a-z])+)",
-      "/space-or-word/:value((?:\\s|[a-z])+)",
-      "/digit-or-not/:value((?:\\d|\\D)+)",
-      "/two-repeats/:value((?:a+)(?:a+))",
-      "/wrapped-two-repeats/:value((?:a+(?:))(?:a+(?:)))",
-      "/exact-one-two-repeats/:value((?:a+){1}(?:a+){1,1})",
-      "/disjoint-repeats/:value((?:a+)(?:b+)(?:a+))",
-      "/wrapped-disjoint-repeats/:value((?:a+(?:))(?:b+(?:))(?:a+(?:)))",
-      "/exact-one-disjoint-repeats/:value((?:(?:a+){1}){1,1}(?:b+){1}(?:(?:a+){1,1}){1})",
-    ]) {
-      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
-    }
-
-    for (const matcher of [
       "/:path((?:[a-z]|[A-Z])+)",
-      "/:path((?:[a-f]|[d-z])+)",
-      "/:path((?:[a-z]|m)+)",
-      "/:path((?:\\w|[a-z])+)",
-      "/:path((?:[\\w]|[A-Z])+)",
-      "/:path((?:\\D|[a-z])+)",
+      "/:path((?:a+){10})",
+      "/:path(a+.*a+)",
+      `/:path(${"(?:a+)".repeat(6)})`,
+      `/:path(${"(?:a|aa)".repeat(26)})`,
     ]) {
-      expect(compileMiddlewareMatcherPattern(matcher), matcher).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("ambiguous alternatives"),
-      });
+      expect(compileMiddlewareMatcherPattern(matcher).regexp, matcher).toBeInstanceOf(RegExp);
     }
-  });
-
-  it("rejects bounded sequence-level ambiguity within the analysis budget", async () => {
-    const { compileMiddlewareMatcherPattern } =
-      await import("../packages/vinext/src/server/middleware-matcher-pattern.js");
-    const expandingChoices = `/:path(${"(?:a|aa)".repeat(26)})`;
-
-    for (const count of [3, 6, 7, 8, 9, 10]) {
-      const adjacentRepetitions = `/:path(${"(?:a+)".repeat(count)})`;
-      expect(
-        compileMiddlewareMatcherPattern(adjacentRepetitions),
-        `${count} repeats`,
-      ).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("overlapping sequential repetition"),
-      });
-    }
-    for (const count of [3, 6, 7, 8]) {
-      const wrappedRepetitions = `/:path(${"(?:a+(?:))".repeat(count)})`;
-      expect(
-        compileMiddlewareMatcherPattern(wrappedRepetitions),
-        `${count} wrapped repeats`,
-      ).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("overlapping sequential repetition"),
-      });
-    }
-    for (const wrapper of ["(?:a+){1}", "(?:a+){1,1}", "(?:a+){1}?", "(?:(?:a+){1}){1,1}"]) {
-      const exactOneRepetitions = `/:path(${wrapper.repeat(6)})`;
-      expect(compileMiddlewareMatcherPattern(exactOneRepetitions), wrapper).toMatchObject({
-        kind: "unsafe",
-        error: expect.stringContaining("overlapping sequential repetition"),
-      });
-    }
-    expect(compileMiddlewareMatcherPattern(expandingChoices)).toMatchObject({
-      kind: "unsafe",
-      error: expect.stringContaining("ambiguous sequence expansion"),
-    });
   });
 
   // Ported from Next.js path-to-regexp matcher semantics:
@@ -10050,27 +9975,27 @@ describe("middleware matcher patterns", () => {
     expect(matchPattern("/_next/static/chunk.js", "/((?!api|_next|favicon\\.ico).*)")).toBe(false);
   });
 
-  it("fails closed when a middleware matcher is rejected as unsafe", async () => {
+  it("fails closed when a middleware matcher is rejected as invalid", async () => {
     const { matchPattern, matchesMiddleware } =
       await import("../packages/vinext/src/server/middleware.js");
     // Next.js rejects invalid matcher sources during config analysis rather than
-    // silently treating them as non-matches. Vinext additionally rejects unsafe
-    // regexes at runtime, where failing closed avoids bypassing request guards.
+    // silently treating them as non-matches. At runtime, failing closed avoids
+    // bypassing request guards.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/segment-config/middleware/middleware-config.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/invalid-middleware-matchers/invalid-middleware-matchers.test.ts
-    // lgtm[js/redos] — deliberate pathological regex to exercise the safety fallback
-    const unsafePattern = "/(?:[A-Z]+/)*private";
+    // path-to-regexp rejects groups that start with `?`.
+    const invalidPattern = "/(?:[A-Z]+/)*private";
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     try {
-      expect(matchPattern("/private", unsafePattern)).toBe(true);
-      expect(matchesMiddleware("/private", unsafePattern)).toBe(true);
-      expect(matchesMiddleware("/public", [unsafePattern])).toBe(true);
-      expect(matchesMiddleware("/public", [{ source: unsafePattern }])).toBe(true);
+      expect(matchPattern("/private", invalidPattern)).toBe(true);
+      expect(matchesMiddleware("/private", invalidPattern)).toBe(true);
+      expect(matchesMiddleware("/public", [invalidPattern])).toBe(true);
+      expect(matchesMiddleware("/public", [{ source: invalidPattern }])).toBe(true);
 
       // Repeated calls use the cached rejection, remain fail-closed, and do not
       // repeatedly warn for the same matcher.
-      expect(matchPattern("/public", unsafePattern)).toBe(true);
+      expect(matchPattern("/public", invalidPattern)).toBe(true);
       expect(warnSpy).toHaveBeenCalledTimes(1);
       expect(warnSpy).toHaveBeenCalledWith(
         expect.stringContaining("Middleware will run for all paths"),
@@ -10290,13 +10215,10 @@ describe("middleware matcher patterns", () => {
     expect(matchesMiddleware("/other", matcher)).toBe(false);
   });
 
-  it("matchPattern: fails closed for pathological ReDoS patterns", async () => {
+  it("matchPattern: runs nested repetition as written, like Next.js", async () => {
     const { matchPattern } = await import("../packages/vinext/src/server/middleware.js");
-    // Pathological constraint: (?:a+)+ causes catastrophic backtracking.
-    // matchPattern must avoid evaluating it and run middleware instead of
-    // silently bypassing a potentially security-sensitive request guard.
-    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    expect(matchPattern("/aaaaaaaaaaaaaaaaaaaac", "/:path((?:a+)+)")).toBe(true);
+    expect(matchPattern("/aaaa", "/:path((?:a+)+)")).toBe(true);
+    expect(matchPattern("/aaaac", "/:path((?:a+)+)")).toBe(false);
   });
 
   it("matchPattern: fails closed for malformed matcher syntax", async () => {
@@ -13921,165 +13843,12 @@ describe("matchConfigPattern", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// isSafeRegex / safeRegExp unit tests (ReDoS prevention)
-
-describe("isSafeRegex", () => {
-  it("accepts simple patterns", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("^/about$")).toBe(true);
-    expect(isSafeRegex("^/blog/[^/]+$")).toBe(true);
-    expect(isSafeRegex("^/docs/(.*)$")).toBe(true);
-    expect(isSafeRegex("^/api/(.+)$")).toBe(true);
-    expect(isSafeRegex("\\d+")).toBe(true);
-    expect(isSafeRegex("^/feed\\.xml$")).toBe(true);
-  });
-
-  it("accepts non-nested quantifiers inside groups", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // A single quantifier inside a group without a quantifier on the group itself
-    expect(isSafeRegex("(a+)")).toBe(true);
-    expect(isSafeRegex("([^/]+)")).toBe(true);
-    expect(isSafeRegex("(\\d{2,4})")).toBe(true);
-  });
-
-  it("accepts only fixed-width nested bounded repetition", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("\\d{4}(?:-\\d{2}){2}")).toBe(true);
-    expect(isSafeRegex("(?:a{2}){3}")).toBe(true);
-    expect(isSafeRegex("(?:a{1,2}){3}")).toBe(false);
-    expect(isSafeRegex("(?:a{1,2}){2,4}")).toBe(false);
-  });
-
-  it("rejects nested quantifiers: (a+)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+)+")).toBe(false);
-  });
-
-  it("rejects nested quantifiers: (a+)*", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+)*")).toBe(false);
-  });
-
-  it("rejects nested quantifiers: (.*)*", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(.*)*")).toBe(false);
-  });
-
-  it("rejects nested quantifiers: (a*)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a*)+")).toBe(false);
-  });
-
-  it("rejects nested quantifiers: ([^/]+)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("([^/]+)+")).toBe(false);
-  });
-
-  it("rejects nested quantifiers with braces: (a+){2,}", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+){2,}")).toBe(false);
-  });
-
-  it("rejects bounded outer repetition around an unbounded inner atom", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a+){2}")).toBe(false);
-    expect(isSafeRegex("(a+){2,4}")).toBe(false);
-    expect(isSafeRegex("(a+){10}")).toBe(false);
-  });
-
-  it("accepts quantifier on group without inner quantifier", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // (ab)+ is fine — no inner quantifier
-    expect(isSafeRegex("(ab)+")).toBe(true);
-    expect(isSafeRegex("(foo|bar)*")).toBe(true);
-    expect(isSafeRegex("(?:(?!\\.)[^/])+?")).toBe(true);
-    expect(isSafeRegex("[^/]+.*")).toBe(true);
-  });
-
-  it("treats escaped characters as safe", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // \\+ is a literal +, not a quantifier
-    expect(isSafeRegex("(a\\+)+")).toBe(true);
-  });
-
-  it("treats quantifiers inside character classes as safe", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // [+*] is a character class, not a quantifier
-    expect(isSafeRegex("([+*])+")).toBe(true);
-  });
-
-  it("rejects nested optional quantifiers: (a?)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // '?' inside group + quantifier on group = catastrophic backtracking
-    expect(isSafeRegex("(a?)+")).toBe(false);
-    expect(isSafeRegex("(a?)+b")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (.?)+", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(.?)+")).toBe(false);
-  });
-
-  it("rejects nested optional quantifiers: (a?)*", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(isSafeRegex("(a?)*")).toBe(false);
-  });
-
-  it("accepts outer '?' on group (zero-or-one is not unbounded repetition)", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // '?' means zero or one — only 2 paths, not exponential backtracking
-    // This is safe even with inner quantifiers (e.g. URL patterns like (?:/.*)?  )
-    expect(isSafeRegex("(a+)?")).toBe(true);
-    expect(isSafeRegex("(?:/.*)?")).toBe(true);
-  });
-
-  it("treats non-greedy modifier as safe, not as quantifier", async () => {
-    const { isSafeRegex } = await import("../packages/vinext/src/config/config-matchers.js");
-    // a+? is non-greedy '+', not a nested quantifier
-    expect(isSafeRegex("(a+?)")).toBe(true);
-    // (a*?) is non-greedy '*', still just one quantifier
-    expect(isSafeRegex("(a*?)")).toBe(true);
-  });
-});
-
-describe("safeRegExp", () => {
-  it("returns RegExp for safe patterns", async () => {
-    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
-    const re = safeRegExp("^/about$");
-    expect(re).toBeInstanceOf(RegExp);
-    expect(re!.test("/about")).toBe(true);
-  });
-
-  it("returns null for pathological patterns", async () => {
-    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
-    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    const re = safeRegExp("(a+)+b");
-    expect(re).toBeNull();
-  });
-
-  it("uses the final ignore-case semantics for ambiguous alternatives", async () => {
-    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
-    expect(safeRegExp("(?:a|A)+", "i")).toBeNull();
-    expect(safeRegExp("(?:ab|ac)+", "i")).toBeInstanceOf(RegExp);
-  });
-
-  it("returns null for invalid regex syntax", async () => {
-    const { safeRegExp } = await import("../packages/vinext/src/config/config-matchers.js");
-    const re = safeRegExp("(?P<name>");
-    expect(re).toBeNull();
-  });
-});
-
-describe("matchConfigPattern rejects ReDoS patterns", () => {
-  it("returns null for pathological source patterns", async () => {
+describe("matchConfigPattern custom regex params", () => {
+  it("runs nested repetition as written, like Next.js", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
-    // This pattern has nested quantifiers: the compiled regex would be (a+)+b
-    // which causes catastrophic backtracking. matchConfigPattern should return
-    // null (no match) rather than hanging.
-    // lgtm[js/redos] — deliberate pathological regex to test safeRegExp guard
-    const result = matchConfigPattern("/aaaaaaaaaaaaaaaaaaaac", "/:id((a+)+b)");
-    expect(result).toBeNull();
+    // Next.js does not check config regexes for catastrophic backtracking.
+    expect(matchConfigPattern("/aab", "/:id((a+)+b)")).toEqual({ id: "aab" });
+    expect(matchConfigPattern("/aac", "/:id((a+)+b)")).toBeNull();
   });
 });
 
@@ -14087,7 +13856,7 @@ describe("matchConfigPattern compiled pattern cache", () => {
   it("returns consistent results when the same pattern is called multiple times", async () => {
     // Regression test for the per-request recompilation bug: patterns that
     // enter the regex branch (containing `(`, `\`, or param suffixes) were
-    // previously re-running isSafeRegex + new RegExp() on every call, which
+    // previously re-running new RegExp() on every call, which
     // dominated CPU profiles on apps with many locale-prefixed redirect rules.
     // After the fix the compiled RegExp is cached at module level.
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
@@ -14118,13 +13887,12 @@ describe("matchConfigPattern compiled pattern cache", () => {
     expect(fifth).toBeNull();
   });
 
-  it("caches rejection for unsafe (ReDoS) patterns and returns null on repeat calls", async () => {
+  it("caches rejection for invalid regex patterns and returns null on repeat calls", async () => {
     const { matchConfigPattern } = await import("../packages/vinext/src/config/config-matchers.js");
-    // lgtm[js/redos] — deliberate pathological regex to test cache-of-null path
-    const unsafe = "/:id((a+)+b)";
-    expect(matchConfigPattern("/x", unsafe)).toBeNull();
-    // Second call must not re-run isSafeRegex — just return null from cache.
-    expect(matchConfigPattern("/x", unsafe)).toBeNull();
+    const invalid = "/:id(a{2,1})";
+    expect(matchConfigPattern("/aa", invalid)).toBeNull();
+    // Second call returns the cached rejection without recompiling.
+    expect(matchConfigPattern("/aa", invalid)).toBeNull();
   });
 });
 
@@ -14935,31 +14703,16 @@ describe("matchHeaders source matching parity with Next.js", () => {
   });
 
   it.each([
-    // Nested repetition inside one parameter.
-    "/unsafe/:path((?:a+)+)",
-    // Repeats joined by `.` that the constraint can also match.
-    "/unsafe/x.:ext([^/]+)+/end",
-    // Neighbouring parameters with overlapping constraints.
-    "/unsafe/:a(a+):b(a+):c(a+):d(a+)",
-    // A constraint that can consume the `/` separator plus adjacent text.
-    "/unsafe/:x(a(?:/a)?)+/end",
-    // A negative lookahead that can never match does not shield the separator.
-    "/unsafe/x.:id((?:(?!(?=a)\\.)[^/])+?)+/end",
-    // Repeated constraints that can match one segment in more than one way.
-    "/unsafe/:x(a|A)+/end",
-    "/unsafe/:x(ab?|a)+/end",
-  ])("ignores the unsafe source %s", async (source) => {
+    ["/nested/:path((?:a+)+)", "/nested/aaa", "/nested/aab"],
+    ["/x.:ext([^/]+)+/end", "/x.a.b/end", "/x.a.b/nope"],
+    ["/:a(a+):b(a+)", "/aaa", "/aab"],
+    ["/repeat/:x(a|A)+/end", "/repeat/a/A/end", "/repeat/a/b/end"],
+  ])("runs the source %s as written, like Next.js", async (source, hit, miss) => {
+    // Next.js does not check headers() sources for catastrophic backtracking.
     const { matchHeaders } = await import("../packages/vinext/src/config/config-matchers.js");
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    try {
-      const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
-      expect(matchHeaders(`/unsafe/x.${"a.".repeat(30)}a/nope`, rules, ctx)).toEqual([]);
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("Ignoring unsafe headers() source"),
-      );
-    } finally {
-      warn.mockRestore();
-    }
+    const rules = [{ source, headers: [{ key: "x-rule", value: "1" }] }];
+    expect(matchHeaders(hit, rules, ctx)).toHaveLength(1);
+    expect(matchHeaders(miss, rules, ctx)).toEqual([]);
   });
 });
 
@@ -15160,9 +14913,9 @@ describe("matchHeaders param substitution parity with Next.js", () => {
 });
 
 describe("matchHeaders compiled source cache", () => {
-  // Regression test: header source compilation + safety checks were re-run on every
-  // request for every header rule. The result is now cached in _compiledHeaderSourceCache
-  // keyed by rule.source so subsequent calls skip the tokeniser and isSafeRegex.
+  // Regression test: header source compilation was re-run on every request for
+  // every header rule. The result is now cached in _compiledHeaderSourceCache
+  // keyed by rule.source so subsequent calls skip the tokeniser.
   function makeCtx(h: Record<string, string> = {}) {
     return {
       headers: new Headers(h),
@@ -15221,9 +14974,9 @@ describe("matchHeaders compiled source cache", () => {
 });
 
 describe("checkHasConditions condition value cache", () => {
-  // Regression test: safeRegExp(condition.value) was called on every request
-  // for every has/missing condition. The result is now cached in
-  // _compiledConditionCache keyed by value so isSafeRegex runs at most once.
+  // Regression test: condition.value was compiled on every request for every
+  // has/missing condition. The result is now cached in _compiledConditionCache
+  // keyed by value so each value compiles at most once.
   function makeCtx(
     overrides: {
       headers?: Record<string, string>;

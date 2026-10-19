@@ -261,14 +261,10 @@ export function normalizeMiddlewarePathTokens(
  * Build the regex source path-to-regexp's `tokensToRegexp` would produce
  * (with the default `start`/`end` options). Returned as a string so callers
  * can apply their own flags and post-processing.
- *
- * `unrollRepeats` emits at most one extra repetition for `*`/`+` tokens. The
- * result is only for regex safety analysis: it keeps neighbouring tokens
- * adjacent without the generated nested repetition analyzers reject.
  */
 export function pathTokensToRegExpSource(
   tokens: MiddlewarePathToken[],
-  options: PathToRegexpOptions & { unrollRepeats?: boolean } = {},
+  options: PathToRegexpOptions = {},
 ): string {
   const delimiter = options.delimiter ?? DEFAULT_DELIMITER;
   const delimiterRegex = `[${escapeRegex(delimiter)}]`;
@@ -286,8 +282,7 @@ export function pathTokensToRegExpSource(
       if (prefix || suffix) {
         if (token.modifier === "+" || token.modifier === "*") {
           const optional = token.modifier === "*" ? "?" : "";
-          const repeat = options.unrollRepeats ? "?" : "*";
-          route += `(?:${prefix}((?:${token.pattern})(?:${suffix}${prefix}(?:${token.pattern}))${repeat})${suffix})${optional}`;
+          route += `(?:${prefix}((?:${token.pattern})(?:${suffix}${prefix}(?:${token.pattern}))*)${suffix})${optional}`;
         } else {
           route += `(?:${prefix}(${token.pattern})${suffix})${token.modifier}`;
         }

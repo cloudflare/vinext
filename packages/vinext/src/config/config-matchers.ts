@@ -27,7 +27,6 @@ import {
   buildRequestHeadersFromMiddlewareResponse,
   getUnconsumedMiddlewareRequestHeaders,
 } from "../utils/middleware-request-headers.js";
-import { analyzeRegexSafety } from "../utils/regex-safety.js";
 import { requestContextFromRequest, type RequestContext } from "./request-context.js";
 import { isExternalUrl } from "../utils/external-url.js";
 import { attachRequestCfMetadata } from "../server/request-pipeline.js";
@@ -36,7 +35,6 @@ import {
   pathTokensToRegExpSource,
   type MiddlewarePathKey,
 } from "../server/middleware-path-to-regexp.js";
-import { validatePathTokens } from "../server/middleware-matcher-pattern.js";
 import {
   substituteDestinationParams,
   substituteRedirectDestinationQuery,
@@ -61,13 +59,13 @@ export { isExternalUrl } from "../utils/external-url.js";
  *
  * Redirect/rewrite patterns are static — they come from next.config.js and
  * never change at runtime. Without caching, every request that hits the regex
- * branch re-runs the full tokeniser walk + isSafeRegex + new RegExp() for
+ * branch re-runs the full tokeniser walk + new RegExp() for
  * every rule in the array. On apps with many locale-prefixed rules (which all
  * contain `(` and therefore enter the regex branch) this dominated profiling
  * at ~2.4 seconds of CPU self-time.
  *
- * Value is `null` when safeRegExp rejected the pattern (ReDoS risk), so we
- * skip it on subsequent requests too without re-running the scanner.
+ * Value is `null` when the pattern is not a valid regex, so we skip it on
+ * subsequent requests too without recompiling.
  */
 const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[] } | null>();
 
@@ -77,10 +75,9 @@ const _compiledPatternCache = new Map<string, { re: RegExp; paramNames: string[]
  * Each NextHeader rule has a `source` that is run through compileHeaderSource()
  * to produce a RegExp. It is a pure function of the source string and the
  * result never changes. Without caching, every request re-runs the
- * path-to-regexp tokeniser + regex safety checks + new RegExp() for every
- * header rule.
+ * path-to-regexp tokeniser + new RegExp() for every header rule.
  *
- * Value is `null` when the source is invalid or unsafe (ReDoS risk).
+ * Value is `null` when the source is invalid.
  */
 const _compiledHeaderSourceCache = new Map<string, CompiledHeaderSource | null>();
 
@@ -93,27 +90,24 @@ type CompiledHeaderSource = {
 /**
  * Cache for compiled has/missing condition value regexes in checkSingleCondition.
  *
- * Each has/missing condition may carry a `value` string that is passed directly
- * to safeRegExp() for matching against header/cookie/query/host values. The
- * condition objects are static (from next.config.js) so the compiled RegExp
- * never changes. Without caching, safeRegExp() is called on every request for
- * every condition on every rule.
+ * Each has/missing condition may carry a `value` string that is compiled as a
+ * regex for matching against header/cookie/query/host values. The condition
+ * objects are static (from next.config.js) so the compiled RegExp never
+ * changes. Without caching, the value is recompiled on every request for every
+ * condition on every rule.
  *
- * Value is `null` when safeRegExp rejected the pattern, or `false` when the
- * value string was undefined (no regex needed — use exact string comparison).
+ * Value is `null` when the value is not a valid regex (use exact string
+ * comparison instead).
  */
 const _compiledConditionCache = new Map<string, RegExp | null>();
 
 /**
  * Generic helper for the regex compilation caches above.
  *
- * Each cache stores the compiled artifact (or `null` when safeRegExp rejected
- * the pattern) the first time a key is seen, and reuses it forever. The
+ * Each cache stores the compiled artifact (or `null` when the pattern could
+ * not be compiled) the first time a key is seen, and reuses it forever. The
  * `undefined` sentinel distinguishes "not yet seen" from "seen and rejected"
- * so we never re-run isSafeRegex on the same input.
- *
- * Keep the security path intact: `compile()` is responsible for calling
- * safeRegExp(); this helper only handles caching.
+ * so we never recompile the same input.
  */
 function getCachedRegex<K, V>(cache: Map<K, V | null>, key: K, compile: () => V | null): V | null {
   let value = cache.get(key);
@@ -219,11 +213,9 @@ function _getRedirectIndex(redirects: NextRedirect[]): RedirectIndex {
       const suffix = "/" + m[3]; // e.g. "/security"
       // Build a small regex to validate the captured locale value against the
       // alternation. Using anchored match to avoid partial matches.
-      // The alternation comes from user config; run it through safeRegExp to
-      // guard against ReDoS in pathological configs.
-      const altRe = safeRegExp("^(?:" + alternation + ")$", "i");
+      const altRe = compileRegExp("^(?:" + alternation + ")$", "i");
       if (!altRe) {
-        // Unsafe alternation — fall back to linear scan for this rule.
+        // Invalid alternation — fall back to linear scan for this rule.
         linear.push([i, redirect]);
         continue;
       }
@@ -294,35 +286,12 @@ function stripHopByHopRequestHeaders(headers: Headers): void {
 }
 
 /**
- * Detect regex patterns vulnerable to catastrophic backtracking (ReDoS).
+ * Compile a regex from next.config, or return null when it is invalid.
  *
- * Uses the same deterministic structural analysis as middleware matcher
- * validation. Nested bounded repetition is accepted only when its repeated
- * language has fixed width and unambiguous branches; a fixed outer count can
- * otherwise still cause polynomially catastrophic backtracking on long near
- * misses.
- *
- * Returns true if the pattern appears safe, false if it's potentially dangerous.
+ * Like Next.js, patterns are not checked for catastrophic backtracking: they
+ * run as written.
  */
-export function isSafeRegex(pattern: string, flags?: string): boolean {
-  return analyzeRegexSafety(pattern, { ignoreCase: flags?.includes("i") }) === null;
-}
-
-/**
- * Compile a regex pattern safely. Returns the compiled RegExp or null if the
- * pattern is invalid or vulnerable to ReDoS.
- *
- * Logs a warning when a pattern is rejected so developers can fix their config.
- */
-export function safeRegExp(pattern: string, flags?: string): RegExp | null {
-  if (!isSafeRegex(pattern, flags)) {
-    console.warn(
-      `[vinext] Rejecting potentially unsafe regex pattern (ReDoS risk): ${pattern}\n` +
-        `  Nested or ambiguous repetition can cause catastrophic backtracking.\n` +
-        `  Simplify the pattern to make repeated matches fixed and unambiguous.`,
-    );
-    return null;
-  }
+function compileRegExp(pattern: string, flags?: string): RegExp | null {
   try {
     return new RegExp(pattern, flags);
   } catch {
@@ -342,19 +311,6 @@ function compileHeaderSource(source: string): CompiledHeaderSource | null {
   const options = { delimiter: "/", strict: true };
   try {
     const tokens = parseMiddlewarePath(source, options);
-    // The generated repeat structure (`(?:\/[^\/]+?)*`) trips the whole-regex
-    // safeRegExp() check. Validate each parameter pattern (including its repeat
-    // separator) the way the middleware matcher does, then analyze the route
-    // with repeats unrolled to catch overlap between neighbouring parameters.
-    let unsafeReason = validatePathTokens(tokens);
-    if (!unsafeReason) {
-      const analysisRoute = pathTokensToRegExpSource(tokens, { ...options, unrollRepeats: true });
-      unsafeReason = analyzeRegexSafety(analysisRoute, { ignoreCase: true });
-    }
-    if (unsafeReason) {
-      console.warn(`[vinext] Ignoring unsafe headers() source "${source}": ${unsafeReason}.`);
-      return null;
-    }
     const route = pathTokensToRegExpSource(tokens, options);
     return {
       re: new RegExp(route.replace(/\$$/, "(?:\\/)?$"), "i"),
@@ -536,15 +492,15 @@ function matchSingleCondition(
 
 /**
  * Return a cached RegExp for a has/missing condition value string, compiling
- * on first use. Returns null if safeRegExp rejected the pattern or if the
- * value is not a valid regex (fall back to exact string comparison).
+ * on first use. Returns null if the value is not a valid regex (fall back to
+ * exact string comparison).
  */
 function _cachedConditionRegex(value: string): RegExp | null {
   return getCachedRegex(_compiledConditionCache, value, () =>
     // Anchor the regex to match the full value, not a substring.
     // Matches Next.js: new RegExp(`^${hasItem.value}$`)
     // Without anchoring, has:[cookie:role=admin] would match "not-admin".
-    safeRegExp(`^${value}$`),
+    compileRegExp(`^${value}$`),
   );
 }
 
@@ -688,7 +644,7 @@ export function matchConfigPattern(
       // Look up the compiled regex in the module-level cache. Patterns come
       // from next.config.js and are static, so we only need to compile each
       // one once across the lifetime of the worker/server process.
-      // null is stored for rejected patterns so we don't re-run isSafeRegex.
+      // null is stored for invalid patterns so we don't recompile them.
       const compiled = getCachedRegex(_compiledPatternCache, pattern, () => {
         // Cache miss — compile the pattern now and store the result.
         // Param names may contain hyphens (e.g. :auth-method, :sign-in).
@@ -727,7 +683,7 @@ export function matchConfigPattern(
             regexStr += tok[0];
           }
         }
-        const re = safeRegExp("^" + regexStr + "$", "i");
+        const re = compileRegExp("^" + regexStr + "$", "i");
         return re ? { re, paramNames } : null;
       });
       if (!compiled) return null;
