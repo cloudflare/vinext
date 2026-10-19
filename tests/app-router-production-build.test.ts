@@ -92,6 +92,9 @@ describe("App Router Production build", () => {
     // directory.
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    // Client references that the same routes reach load through a route group
+    // chunk (app/actions renders two).
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(true);
     const clientJs = readAllJs(path.join(outDir, "client"));
 
     // Ported from Next.js:
@@ -218,6 +221,21 @@ describe("App Router Production build", () => {
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
+  }, 30000);
+
+  it("loads each client reference from its own chunk with disableNextLikeChunking", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir, disableNextLikeChunking: true })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
