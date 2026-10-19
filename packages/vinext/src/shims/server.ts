@@ -522,6 +522,8 @@ export class NextURL {
   private _buildId: string | undefined;
   /** First page segment of a raw data pathname, where its locale sits. */
   private _dataPathSegment: string | undefined;
+  /** The locale parsed from that segment, if it is one. */
+  private _dataPathLocale: string | undefined;
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
@@ -612,9 +614,11 @@ export class NextURL {
     let detectedLocale = this._detectPathnameLocale(this._locales);
     // A raw data pathname carries the locale after its build ID. Next.js
     // detects it there and leaves the pathname as is.
+    this._dataPathLocale = undefined;
     if (!detectedLocale && this._buildId && this._dataPathSegment) {
       const candidate = this._dataPathSegment.toLowerCase();
       detectedLocale = this._locales.find((l) => l.toLowerCase() === candidate);
+      this._dataPathLocale = detectedLocale;
     }
     const detectedLocaleLower = detectedLocale?.toLowerCase();
     const hostHeader = this._headers?.host;
@@ -634,6 +638,19 @@ export class NextURL {
   }
 
   /**
+   * A raw data pathname keeps its locale segment, replaced by the current
+   * locale once it has been changed.
+   */
+  private _formatDataPathLocale(pathname: string): string {
+    if (!this._dataPathLocale || this._locale === this._dataPathLocale) return pathname;
+    if (!this._locale || !isRawDataPathname(pathname)) return pathname;
+    const segments = pathname.slice("/_next/data/".length, -".json".length).split("/");
+    if (segments[1]?.toLowerCase() !== this._dataPathLocale.toLowerCase()) return pathname;
+    segments[1] = this._locale;
+    return "/_next/data/" + segments.join("/") + ".json";
+  }
+
+  /**
    * Reconstruct the full pathname with basePath + locale prefix and apply
    * the configured trailingSlash policy.
    * Mirrors Next.js's internal formatNextPathnameInfo().
@@ -641,7 +658,7 @@ export class NextURL {
   private _formatPathname(): string {
     // Build prefix: basePath + locale (skip defaultLocale — Next.js omits it)
     let prefix = this._basePath;
-    const inner = this._url.pathname;
+    const inner = this._formatDataPathLocale(this._url.pathname);
     const innerLower = inner.toLowerCase();
     const isApiPath = innerLower === "/api" || innerLower.startsWith("/api/");
     // A raw data pathname already contains its locale.

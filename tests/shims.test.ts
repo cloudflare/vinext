@@ -12539,6 +12539,27 @@ describe("NextRequest API", () => {
     expect(index.href).toBe("http://localhost/_next/data/abc123/index.json");
   });
 
+  it("a changed locale replaces the locale segment of a raw _next/data URL", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const config = {
+      nextConfig: { i18n: { locales: ["en", "fr", "de"], defaultLocale: "en" } },
+    };
+    const url = new NextURL("http://localhost/_next/data/abc123/fr/blog.json", undefined, config);
+    const cloned = url.clone();
+    cloned.locale = "de";
+    expect(cloned.href).toBe("http://localhost/_next/data/abc123/de/blog.json");
+    expect(cloned.clone().locale).toBe("de");
+    expect(url.href).toBe("http://localhost/_next/data/abc123/fr/blog.json");
+
+    const localeIndex = new NextURL(
+      "http://localhost/_next/data/abc123/fr.json",
+      undefined,
+      config,
+    );
+    localeIndex.locale = "en";
+    expect(localeIndex.href).toBe("http://localhost/_next/data/abc123/en.json");
+  });
+
   it("NextRequest.buildId delegates to nextUrl.buildId", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const req = new NextRequest("http://localhost/_next/data/test-build-456/index.json");
