@@ -103,11 +103,8 @@ import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-
 import type { RequestContext } from "../config/config-matchers.js";
 import { substituteDestinationParams } from "../config/destination-params.js";
 import type { ClientRewrite } from "../client/client-rewrites.js";
-import {
-  clientConfigSourceCouldMatch,
-  clientRewriteAppendsParams,
-  matchSimpleClientConfigSource,
-} from "../client/client-config-source-match.js";
+import { execConfigSource } from "../config/config-source.js";
+import { clientRewriteAppendsParams } from "../client/client-rewrite-params.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -1917,11 +1914,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!clientConfigSourceCouldMatch(routeContext.pathname, redirect.source)) {
-      continue;
-    }
-    const params = matchSimpleClientConfigSource(routeContext.pathname, redirect.source);
-    if (params !== null) return true;
+    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return true;
   }
 
   return false;
@@ -1939,12 +1932,13 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!clientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
-      continue;
-    }
-    const params = matchSimpleClientConfigSource(routeContext.pathname, rewrite.source);
-    if (params === null) continue;
-    if (params === undefined || rewrite.has || rewrite.requiresServerEvaluation) return undefined;
+    const match = execConfigSource(routeContext.pathname, rewrite.source);
+    if (match === null) continue;
+    if (rewrite.has || rewrite.requiresServerEvaluation) return undefined;
+    // The exact matcher never appends optional params that did not match to
+    // the destination query; leave those rewrites to it.
+    if (match.unmatched.length > 0) return undefined;
+    const { params } = match;
     // The exact matcher URL-parses a local destination template before it
     // substitutes params, which may drop dot segments and the params in them.
     if (!isSerializedRewriteDestination(rewrite.destination)) return undefined;

@@ -9,11 +9,8 @@ import {
   requestContextFromRequest,
 } from "../packages/vinext/src/config/config-matchers.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
-import {
-  clientConfigSourceCouldMatch,
-  clientRewriteAppendsParams,
-  matchSimpleClientConfigSource,
-} from "../packages/vinext/src/client/client-config-source-match.js";
+import { clientRewriteAppendsParams } from "../packages/vinext/src/client/client-rewrite-params.js";
+import { execConfigSource } from "../packages/vinext/src/config/config-source.js";
 
 // next.config.js redirects/rewrites/headers sources are compiled the way
 // Next.js 16 does at runtime: path-to-regexp 6 (`strict`, `delimiter: "/"`,
@@ -320,197 +317,7 @@ describe("config sources match like Next.js", () => {
   });
 });
 
-describe("Pages client sync matcher agrees with the server matcher", () => {
-  beforeEach(() => {
-    vi.spyOn(console, "warn").mockImplementation(() => {});
-  });
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  const CLIENT_PATHNAMES = [
-    ...PATHNAMES,
-    "/About/",
-    "/\u212Aey",
-    "/DOCS/A/B",
-    "/x/en/",
-    "/foobar",
-    "/foo.x.y",
-    "/foo/x/",
-    "/FOO.x",
-    "/foo",
-    "/foo//",
-    "/foo/bar",
-    "/foo.json",
-    "/bar",
-    "/.json",
-    "/.x.json",
-    "/post-123",
-    "/post-123/",
-    "/post-123/extra",
-    "/post-1-a/b",
-  ];
-  const CLIENT_SOURCES = [
-    ...SOURCES,
-    "/key",
-    "/docs/:path*/",
-    "/:a/b/:c",
-    "/Docs/:path+",
-    "/foo.:ext?",
-    "/foo.:ext*",
-    "/foo/:id?",
-    "/foo/:id+",
-    "/foo/:id?bar",
-    "/foo.:ext(x)?",
-    "/:id?",
-    "/foo/",
-    "/foo/:id(\\d+)",
-    "/foo/:id(\\d+)?",
-    "/foo/:id(x|(y))*",
-    "/foo/:id([)]+)",
-    "/foo/:id(\\d+)?/bar",
-    "/foo/:id?/bar",
-    "/foo.:ext*.json",
-    "/foo/:id?/:slug?",
-    "/foo/:id(b)?ar",
-    // At the root the `/` before `.` is plain text and the `.` the prefix.
-    "/.:id?bar",
-    "/.:id?",
-    "/.:id?.json",
-    // An optional unnamed group also makes the `/` or `.` before it optional.
-    "/foo/(bar)?",
-    "/foo/(bar)*",
-    "/foo.(bar)?",
-    "/foo.(bar)*",
-    "/foo/(bar)?/x",
-    "/post-:id",
-    "/post-:id-:slug",
-    "/post-{:id}?",
-    "/post-:id(.*)",
-  ];
-
-  it("returns the server's params whenever it does not defer", () => {
-    for (const source of CLIENT_SOURCES) {
-      for (const pathname of CLIENT_PATHNAMES) {
-        const actual = matchSimpleClientConfigSource(pathname, source);
-        if (actual === undefined) continue;
-        expect(actual, `${source} ← ${pathname}`).toEqual(matchConfigPattern(pathname, source));
-      }
-    }
-  });
-
-  it("only rules out sources the server cannot match", () => {
-    for (const source of CLIENT_SOURCES) {
-      for (const pathname of CLIENT_PATHNAMES) {
-        if (clientConfigSourceCouldMatch(pathname, source)) continue;
-        expect(matchConfigPattern(pathname, source), `${source} ← ${pathname}`).toBeNull();
-      }
-    }
-  });
-
-  it("rules out a source whose optional param prefix the pathname lacks", () => {
-    // An optional param's prefix may be absent, but then whatever follows
-    // the param must be there, so `/foobar` cannot reach `/foo.:ext?`,
-    // `/foo/:id?` or `/foo/:id?/bar`.
-    for (const source of [
-      "/foo.:ext?",
-      "/foo/:id?",
-      "/foo/:id+",
-      "/foo.:ext",
-      "/foo/",
-      "/foo/:id(\\d+)",
-      "/foo/:id(\\d+)?",
-      "/foo/:id(x|(y))*",
-      "/foo/:id([)]+)",
-      "/foo/:id(\\d+)?/bar",
-      "/foo/:id?/bar",
-      "/foo.:ext*.json",
-    ]) {
-      expect(clientConfigSourceCouldMatch("/foobar", source), source).toBe(false);
-    }
-    for (const [source, pathname] of [
-      ["/foo.:ext?", "/foo"],
-      ["/foo.:ext?", "/foo/"],
-      ["/foo.:ext?", "/FOO.x"],
-      ["/foo/:id?bar", "/foobar"],
-      ["/foo/:id(\\d+)?", "/foo"],
-      ["/foo/:id(\\d+)", "/foo/1"],
-      ["/foo/:id(b)?ar", "/fooar"],
-      ["/foo/:id?/bar", "/foo/bar"],
-      ["/foo.:ext*.json", "/foo.json"],
-      // The `/` before `:slug?` is that param's own optional prefix.
-      ["/foo/:id?/:slug?", "/foo"],
-      // At the root only the `.` is optional; the `/` before it stays.
-      ["/.:id?bar", "/bar"],
-      ["/.:id?", "/.json"],
-      ["/.:id?.json", "/.json"],
-      ["/foo/(bar)?", "/foo"],
-      ["/foo/(bar)*", "/foo"],
-      ["/foo.(bar)?", "/foo"],
-      ["/foo.(bar)*", "/foo"],
-      ["/foo/(bar)?/x", "/foo/x"],
-    ] as const) {
-      expect(clientConfigSourceCouldMatch(pathname, source), source).toBe(true);
-    }
-  });
-
-  it("rules out a deeper pathname when the rest of the source stays in one segment", () => {
-    for (const [source, pathname] of [
-      ["/post-:id", "/post-123/extra"],
-      ["/post-:id", "/post-123//"],
-      ["/post-:id-:slug", "/post-1-a/b"],
-      ["/post-{:id}?", "/post-123/extra"],
-      ["/foo", "/foo/bar"],
-      ["/foo.:ext*", "/foo.x/y"],
-    ] as const) {
-      expect(clientConfigSourceCouldMatch(pathname, source), `${source} ← ${pathname}`).toBe(false);
-    }
-    for (const [source, pathname] of [
-      ["/post-:id", "/post-123"],
-      ["/post-:id", "/post-123/"],
-      // A custom pattern may match a slash.
-      ["/post-:id(.*)", "/post-123/extra"],
-    ] as const) {
-      expect(clientConfigSourceCouldMatch(pathname, source), `${source} ← ${pathname}`).toBe(true);
-      expect(matchConfigPattern(pathname, source), `${source} ← ${pathname}`).not.toBeNull();
-    }
-  });
-
-  it("defers sources it does not model", () => {
-    for (const [source, pathname] of [
-      ["/x/:locale?", "/x/en"],
-      ["/:auth-method", "/google-method"],
-      ["/blog-:slug", "/blog-x"],
-      ["/blog/:slug.md", "/blog/x.md"],
-      ["/foo{-:bar}?", "/foo-x"],
-      ["/docs/:rest(.*)", "/docs/a"],
-      ["/a\\:b", "/a:b"],
-      ["/docs/:path*/", "/docs/a/"],
-      ["/\u20ac/:slug", "/\u20ac/x"],
-      ["/docs/:path*", "/docs//a"],
-      // Duplicate names keep the last capture that matched.
-      ["/:id/:id*", "/foo"],
-      // An empty `*` is unmatched, which can change the rewrite query.
-      ["/From/:id/:rest*", "/from/foo"],
-      ["/docs/:path*", "/docs"],
-      ["/:id/:id", "/a/b"],
-      ["/foo/(bar)?", "/foo"],
-    ]) {
-      expect(matchSimpleClientConfigSource(pathname, source), source).toBeUndefined();
-    }
-  });
-
-  it("returns a null-prototype params object", () => {
-    for (const params of [
-      matchSimpleClientConfigSource("/foo/x", "/foo/:__proto__"),
-      matchConfigPattern("/foo/x", "/foo/:__proto__"),
-    ]) {
-      expect(Object.getPrototypeOf(params)).toBeNull();
-      expect(Object.hasOwn(params!, "__proto__")).toBe(true);
-      expect(params!["__proto__"]).toBe("x");
-    }
-  });
-
+describe("Pages client sync rewrites", () => {
   it("defers rewrites that append unused source params to the query", () => {
     const ctx = requestContextFromRequest(new Request("http://localhost/"));
     // The sync path only substitutes params, so it defers exactly the
@@ -536,11 +343,11 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
       ],
     ] as const) {
       expect(matchRewrite(pathname, [{ source, destination }], ctx), source).toBe(server);
-      const params = matchSimpleClientConfigSource(pathname, source)!;
+      const params = matchConfigPattern(pathname, source)!;
       expect(clientRewriteAppendsParams(destination, params), source).toBe(defers);
     }
-    // An empty `*` is unmatched, so the server appends `id`; the fast path
-    // defers it rather than substitute `/target/`.
+    // An empty `*` is unmatched, so the server still appends `id`; the sync
+    // path defers any rewrite with unmatched params.
     expect(
       matchRewrite(
         "/from/foo",
@@ -548,23 +355,18 @@ describe("Pages client sync matcher agrees with the server matcher", () => {
         ctx,
       ),
     ).toBe("/target/?id=foo");
-    expect(matchSimpleClientConfigSource("/from/foo", "/From/:id/:rest*")).toBeUndefined();
-  });
-
-  it("matches the shapes it models", () => {
-    expect(matchSimpleClientConfigSource("/About/", "/about")).toEqual({});
-    expect(matchSimpleClientConfigSource("/\u212Aey", "/key")).toBeNull();
-    expect(matchSimpleClientConfigSource("/docs/a/b/", "/docs/:path*")).toEqual({ path: "a/b" });
-    expect(matchSimpleClientConfigSource("/docs", "/docs/:path+")).toBeNull();
-    expect(matchSimpleClientConfigSource("/blog/x", "/blog/:slug")).toEqual({ slug: "x" });
-    // path-to-regexp reads `[`, `]`, `|` and `)` as plain text.
-    expect(matchSimpleClientConfigSource("/FOO[BAR]", "/foo[bar]")).toEqual({});
-    expect(matchSimpleClientConfigSource("/a|b", "/a|b")).toEqual({});
-    expect(matchSimpleClientConfigSource("/FOO)BAR", "/foo)bar")).toEqual({});
+    expect(execConfigSource("/from/foo", "/From/:id/:rest*")?.unmatched).toEqual(["rest"]);
   });
 });
 
 describe("config source matching regressions", () => {
+  it("returns a null-prototype params object", () => {
+    const params = matchConfigPattern("/foo/x", "/foo/:__proto__");
+    expect(Object.getPrototypeOf(params)).toBeNull();
+    expect(Object.hasOwn(params!, "__proto__")).toBe(true);
+    expect(params!["__proto__"]).toBe("x");
+  });
+
   it("captures a regex param across segments", () => {
     expect(matchConfigPattern("/docs/a/b", "/docs/:rest(.*)")).toEqual({ rest: "a/b" });
     expect(matchConfigPattern("/docs/", "/docs/:rest(.*)")).toEqual({ rest: "" });

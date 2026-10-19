@@ -26328,6 +26328,47 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
+  it("reuses the mounted page for a rewrite source with a custom param pattern", async () => {
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
+
+    const destinationLoader = vi.fn(async () => makePageModule("destination"));
+    const { win, pushState } = createDataNavWindow({
+      page: "/target",
+      pathname: "/item-42",
+      loaders: { "/": vi.fn(async () => makePageModule("home")), "/target": destinationLoader },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    // The sync path matches sources with the server's compiled source, so
+    // custom patterns and in-segment params resolve in the same turn too.
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [{ source: "/item-:id(\\d+)", destination: "/target?id=:id" }],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+    globalThis.fetch = vi.fn(async () => new Response("{}")) as typeof fetch;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      const pushPromise = Router.push({ query: { param: 1 } });
+      expect(pushState).toHaveBeenLastCalledWith(
+        expect.objectContaining({ as: "/item-42?param=1" }),
+        "",
+        "/item-42?param=1",
+      );
+      await expect(pushPromise).resolves.toBe(true);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
+      vi.resetModules();
+    }
+  });
+
   it("preserves the visible pathname for query-only beforeFiles rewrite navigations", async () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
