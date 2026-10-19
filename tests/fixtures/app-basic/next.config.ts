@@ -32,6 +32,9 @@ const nextConfig: NextConfig = {
   // don't assert the method's absence against this fixture.
   experimental: {
     gestureTransition: true,
+    // Used by E2E: optimize-imports-client-barrel.spec.ts — a "use client"
+    // barrel whose imports SSR rewrites to the modules that define them.
+    optimizePackageImports: ["fake-client-barrel"],
   },
 
   // Used by Vitest: app-router-production-server.test.ts — a next/dynamic()
