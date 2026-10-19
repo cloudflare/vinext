@@ -301,6 +301,23 @@ export function createRscClientReferenceLoadersPlugin(
           );
           const { external } = this.environment.config.build.rolldownOptions;
           const moduleInfos = new Map<string, Rollup.ModuleInfo>();
+          // Every reference's walk checks the modules it reaches, so shared
+          // modules are checked once per reference. Cache the checks that depend
+          // only on the id; externals are learned while the walk resolves.
+          const excludedById = new Map<string, boolean>();
+          const isExcludedById = (moduleId: string) => {
+            let excluded = excludedById.get(moduleId);
+            if (excluded === undefined) {
+              excluded =
+                !isMeasured(moduleId) ||
+                moduleId === CLIENT_REFERENCES_ID ||
+                moduleId.startsWith(RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX) ||
+                isCSSRequest(moduleId) ||
+                grouping.isAlwaysLoadedClientModule(moduleId);
+              excludedById.set(moduleId, excluded);
+            }
+            return excluded;
+          };
           // Measure every reference, not just grouping candidates, so code shared
           // with an ungroupable reference still counts as shared.
           const costs = await measureClientReferenceGroupCosts({
@@ -364,13 +381,7 @@ export function createRscClientReferenceLoadersPlugin(
             // Rolldown's module info never reports `moduleSideEffects: false`,
             // so this reads the flag from the resolution.
             isSideEffectFree: (moduleId) => packages.get(moduleId)?.moduleSideEffects === false,
-            isExcluded: (moduleId) =>
-              !isMeasured(moduleId) ||
-              externalIds.has(moduleId) ||
-              moduleId === CLIENT_REFERENCES_ID ||
-              moduleId.startsWith(RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX) ||
-              isCSSRequest(moduleId) ||
-              grouping.isAlwaysLoadedClientModule(moduleId),
+            isExcluded: (moduleId) => externalIds.has(moduleId) || isExcludedById(moduleId),
           });
           // A group re-exports its members' rendered exports statically, which
           // fails the build when the browser module lacks one, for example when
