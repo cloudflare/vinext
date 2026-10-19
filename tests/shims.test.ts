@@ -15088,6 +15088,13 @@ describe("matchHeaders param substitution parity with Next.js", () => {
     expect(compileHeaderParamTemplate(":a", { a: "3" })).toBe("3");
     expect(() => compileHeaderParamTemplate(":a", { a: ["1", "2"] })).toThrow(TypeError);
   });
+
+  it("does not let a template containing NUL share another template's cache entry", async () => {
+    const { compileHeaderParamTemplate } =
+      await import("../packages/vinext/src/config/header-params.js");
+    expect(compileHeaderParamTemplate("v=:a/:b\0a", { b: "B", c: "C" })).toBe("v=:a/B\0a");
+    expect(compileHeaderParamTemplate("v=:a/:b", { a: "A", b: "B", c: "C" })).toBe("v=A/B");
+  });
 });
 
 describe("matchHeaders compiled source cache", () => {

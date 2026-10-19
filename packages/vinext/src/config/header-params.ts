@@ -32,7 +32,9 @@ export function compileHeaderParamTemplate(value: string, params: HeaderParams):
   // The escaped and parsed template depends only on the template and the
   // param names, so build it once per pair rather than on every request.
   const keys = Object.keys(params);
-  const cacheKey = `${value}\0${keys.join("\0")}`;
+  // JSON keeps the key unambiguous: a config template may itself contain any
+  // delimiter, including `\0`.
+  const cacheKey = JSON.stringify([value, keys]);
   let compiled = _compiledTemplateCache.get(cacheKey);
   if (!compiled) {
     try {
