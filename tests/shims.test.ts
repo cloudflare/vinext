@@ -12539,6 +12539,25 @@ describe("NextRequest API", () => {
     expect(index.href).toBe("http://localhost/_next/data/abc123/index.json");
   });
 
+  it("the locale of a raw _next/data URL does not select the domain", async () => {
+    const { NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const url = new NextURL("https://example.com/_next/data/abc123/fr/about.json", undefined, {
+      nextConfig: {
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [
+            { domain: "example.fr", defaultLocale: "fr" },
+            { domain: "example.com", defaultLocale: "en" },
+          ],
+        },
+      },
+    });
+    expect(url.locale).toBe("fr");
+    expect(url.domainLocale?.domain).toBe("example.com");
+    expect(url.defaultLocale).toBe("en");
+  });
+
   it("a changed locale replaces the locale segment of a raw _next/data URL", async () => {
     const { NextURL } = await import("../packages/vinext/src/shims/server.js");
     const config = {

@@ -611,14 +611,14 @@ export class NextURL {
 
   private _analyzeI18n(): void {
     if (!this._locales || !this._configDefaultLocale) return;
-    let detectedLocale = this._detectPathnameLocale(this._locales);
+    const detectedLocale = this._detectPathnameLocale(this._locales);
     // A raw data pathname carries the locale after its build ID. Next.js
-    // detects it there and leaves the pathname as is.
+    // detects it there, leaves the pathname as is, and doesn't let it pick
+    // the domain.
     this._dataPathLocale = undefined;
     if (!detectedLocale && this._buildId && this._dataPathSegment) {
       const candidate = this._dataPathSegment.toLowerCase();
-      detectedLocale = this._locales.find((l) => l.toLowerCase() === candidate);
-      this._dataPathLocale = detectedLocale;
+      this._dataPathLocale = this._locales.find((l) => l.toLowerCase() === candidate);
     }
     const detectedLocaleLower = detectedLocale?.toLowerCase();
     const hostHeader = this._headers?.host;
@@ -634,7 +634,7 @@ export class NextURL {
         domain.locales?.some((locale) => locale.toLowerCase() === detectedLocaleLower),
     );
     this._defaultLocale = this._domainLocale?.defaultLocale ?? this._configDefaultLocale;
-    this._locale = detectedLocale ?? this._defaultLocale;
+    this._locale = detectedLocale ?? this._dataPathLocale ?? this._defaultLocale;
   }
 
   /**
