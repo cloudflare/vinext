@@ -190,12 +190,16 @@ function importedName(kind: string, name: string | null): string {
 /**
  * The export names an ES module declares, not counting names that only come
  * through `export * from`. Undefined for CommonJS, whose named exports always
- * resolve through rolldown's interop.
+ * resolve through rolldown's interop. Code without module syntax only counts
+ * as CommonJS when it refers to `module` or `exports`; an ES module stub with
+ * no exports declares none.
  */
 export function readDeclaredExportNames(code: string): ReadonlySet<string> | undefined {
   const record = parseModuleRecord(code, "js");
   if (!record) return new Set();
-  if (!record.hasModuleSyntax) return undefined;
+  if (!record.hasModuleSyntax) {
+    return /(?<![\w$.])(?:module|exports)(?![\w$])/.test(code) ? undefined : new Set();
+  }
   return new Set(
     record.staticExports.flatMap((statement) =>
       statement.entries.flatMap((entry) =>

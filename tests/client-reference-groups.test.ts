@@ -372,6 +372,11 @@ describe("readDeclaredExportNames", () => {
 
   it("returns undefined for CommonJS modules", () => {
     expect(readDeclaredExportNames(`module.exports = { Foo() {} };`)).toBeUndefined();
+    expect(readDeclaredExportNames(`"use client";\nexports.Foo = () => null;`)).toBeUndefined();
+  });
+
+  it("declares no exports for a module without module syntax or CommonJS exports", () => {
+    expect(readDeclaredExportNames(`"use client";\n`)).toEqual(new Set());
   });
 });
 
