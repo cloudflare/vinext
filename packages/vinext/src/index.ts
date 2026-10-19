@@ -3055,11 +3055,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           String(nextConfig.images?.unoptimized === true),
         );
         // Build ID — resolved from next.config generateBuildId() or random UUID.
-        // Server entries and the next/server shim read it, and it namespaces
-        // ISR cache keys so a previous deploy's entries are never served. The
-        // real value is a server-only define (see vinext:compiler-define-server):
-        // a random per-build value in the browser would rename client chunks
-        // on every build. As in Next.js, `NextURL.buildId` is undefined there.
+        // Server entries read it, and it namespaces ISR cache keys so a
+        // previous deploy's entries are never served. The real value is a
+        // server-only define (see vinext:compiler-define-server): a random
+        // per-build value in the browser would rename client chunks on every
+        // build.
         defines["process.env.__VINEXT_BUILD_ID"] = "undefined";
         // Public identity for App Router RSC compatibility checks. Prefer
         // Next.js-style deploymentId when configured; otherwise generate a

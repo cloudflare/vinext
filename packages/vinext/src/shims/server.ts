@@ -515,6 +515,7 @@ export class NextURL {
     | NonNullable<NonNullable<NonNullable<NextURLConfig["nextConfig"]>["i18n"]>["domains"]>[number]
     | undefined;
   private _headers: NextURLConfig["headers"];
+  private _buildId: string | undefined;
 
   constructor(input: string | URL, base?: string | URL, config?: NextURLConfig) {
     this._url = new URL(input.toString(), base);
@@ -814,13 +815,16 @@ export class NextURL {
   }
 
   /**
-   * The build ID of the Next.js application.
-   * Set from `generateBuildId` in next.config.js, or a random UUID if not configured.
-   * Can be used in middleware to detect deployment skew between client and server.
-   * Matches the Next.js API: `request.nextUrl.buildId`.
+   * Matches the Next.js API: `request.nextUrl.buildId`. Next.js derives it
+   * from the URL (only `/_next/data/<buildId>/…` paths carry one) and never
+   * from the deployment, so it is undefined unless assigned, on the server
+   * and in the browser alike.
    */
   get buildId(): string | undefined {
-    return process.env.__VINEXT_BUILD_ID ?? undefined;
+    return this._buildId;
+  }
+  set buildId(value: string | undefined) {
+    this._buildId = value;
   }
 }
 
