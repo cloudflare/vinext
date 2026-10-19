@@ -12496,6 +12496,28 @@ describe("NextRequest API", () => {
     }
   });
 
+  it("nextUrl.buildId is parsed from a raw _next/data URL", async () => {
+    // With skipProxyUrlNormalize, middleware receives the raw data URL;
+    // getNextPathnameInfo still reads its build ID.
+    const { NextRequest, NextURL } = await import("../packages/vinext/src/shims/server.js");
+    const req = new NextRequest("http://localhost/_next/data/abc123/blog/post.json");
+    expect(req.nextUrl.buildId).toBe("abc123");
+    expect(req.nextUrl.pathname).toBe("/_next/data/abc123/blog/post.json");
+    expect(req.nextUrl.href).toBe("http://localhost/_next/data/abc123/blog/post.json");
+
+    const withBasePath = new NextURL(
+      "http://localhost/docs/_next/data/abc123/index.json",
+      undefined,
+      {
+        basePath: "/docs",
+      },
+    );
+    expect(withBasePath.buildId).toBe("abc123");
+
+    withBasePath.href = "http://localhost/docs/about";
+    expect(withBasePath.buildId).toBeUndefined();
+  });
+
   it("nextUrl.buildId is assignable and NextRequest.buildId delegates to it", async () => {
     const { NextRequest } = await import("../packages/vinext/src/shims/server.js");
     const req = new NextRequest("http://localhost/");
