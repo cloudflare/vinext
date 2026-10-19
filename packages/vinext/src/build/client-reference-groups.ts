@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "pathslash";
 import type { Rollup } from "vite";
+import { parseModuleRecord } from "../plugins/ast-utils.js";
 import { actionOwnerRouteEntryIds } from "./action-owner-manifest.js";
 
 /**
@@ -152,14 +153,182 @@ export function collectClientReferenceRouteSignatures(options: {
   return signatures;
 }
 
-type LoadedModule = { code: string | null; importedIds: readonly string[] };
+/** Export names an importer uses from a module, or `"*"` for all of them. */
+type UsedNames = ReadonlySet<string> | "*";
+
+type ModuleBindings = {
+  /** Transformed source bytes, not counting import and export-list statements. */
+  bytes: number;
+  /** Whether the module has no side effects (`sideEffects: false`). */
+  sideEffectFree: boolean;
+  /** Static imports, with the names each one uses. */
+  imports: ReadonlyArray<{ id: string; names: UsedNames }>;
+  /**
+   * Re-exports: `export { a as b } from`, `export * from` (`exportName` and
+   * `importName` are `"*"`), `export * as ns from` (`importName` is `"*"`), and
+   * imported bindings that the module only re-exports.
+   */
+  reexports: ReadonlyArray<{ id: string; exportName: string; importName: string }>;
+};
+
+type LoadedModule = {
+  code: string | null;
+  importedIds: readonly string[];
+  /**
+   * Without bindings, every static import of the module counts in full. With
+   * them, a side-effect-free module's re-exports only count for the names its
+   * importers use, as tree-shaking would keep them.
+   */
+  bindings?: ModuleBindings;
+};
+
+function importedName(kind: string, name: string | null): string {
+  if (kind === "Name") return name!;
+  return kind === "Default" ? "default" : "*";
+}
+
+/**
+ * The export names an ES module declares, not counting names that only come
+ * through `export * from`. Undefined for CommonJS, whose named exports always
+ * resolve through rolldown's interop.
+ */
+export function readDeclaredExportNames(code: string): ReadonlySet<string> | undefined {
+  const record = parseModuleRecord(code, "js");
+  if (!record) return new Set();
+  if (!record.hasModuleSyntax) return undefined;
+  return new Set(
+    record.staticExports.flatMap((statement) =>
+      statement.entries.flatMap((entry) =>
+        entry.exportName.kind === "None"
+          ? []
+          : [importedName(entry.exportName.kind, entry.exportName.name)],
+      ),
+    ),
+  );
+}
+
+/**
+ * Read a module's static imports and re-exports for
+ * {@link measureClientReferenceGroupCosts}. Returns undefined when the code does
+ * not parse or a specifier does not resolve to one of `importedIds`.
+ */
+export async function readClientModuleBindings(options: {
+  code: string;
+  importedIds: readonly string[];
+  sideEffectFree: boolean;
+  resolve: (specifier: string) => Promise<string | null>;
+}): Promise<ModuleBindings | undefined> {
+  const { code } = options;
+  const record = parseModuleRecord(code, "js");
+  if (!record) return undefined;
+  const specifiers = new Set([
+    ...record.staticImports.map((statement) => statement.moduleRequest.value),
+    ...record.staticExports.flatMap((statement) =>
+      statement.entries.flatMap((entry) =>
+        entry.moduleRequest ? [entry.moduleRequest.value] : [],
+      ),
+    ),
+  ]);
+  const importedIds = new Set(options.importedIds);
+  const ids = new Map<string, string>();
+  for (const [specifier, id] of await Promise.all(
+    [...specifiers].map(
+      async (specifier) => [specifier, await options.resolve(specifier)] as const,
+    ),
+  )) {
+    if (id === null || !importedIds.has(id)) return undefined;
+    ids.set(specifier, id);
+  }
+
+  // The record lists `import { a } from "./a"; export { a };` as an indirect
+  // export entry on the import statement, located at the `a` specifier.
+  const isIndirect = (statement: { start: number }) => code.startsWith("import", statement.start);
+
+  // Import statements and `export { … }` / `export * …` lists emit no code of
+  // their own. Their removal also shows which imported bindings the rest of
+  // the module never references.
+  const exportList = /export\s*[{*]/y;
+  const ranges = [
+    ...record.staticImports,
+    ...record.staticExports.filter((statement) => {
+      exportList.lastIndex = statement.start;
+      return exportList.test(code);
+    }),
+    ...record.staticExports.filter(isIndirect).flatMap((statement) => statement.entries),
+  ].sort((a, b) => a.start - b.start);
+  let body = "";
+  let offset = 0;
+  for (const range of ranges) {
+    if (range.start > offset) body += code.slice(offset, range.start);
+    offset = Math.max(offset, range.end);
+  }
+  body += code.slice(offset);
+
+  const reexports: { id: string; exportName: string; importName: string }[] = [];
+  // Export names of local bindings, keyed by local name, or for indirect
+  // exports by the position of the imported name in the import statement
+  // (their recorded import name is the local name for default imports).
+  const localExports = new Map<string, string[]>();
+  const addLocalExport = (key: string, exportName: string) =>
+    localExports.set(key, [...(localExports.get(key) ?? []), exportName]);
+  for (const statement of record.staticExports) {
+    for (const entry of statement.entries) {
+      const exportName = importedName(entry.exportName.kind, entry.exportName.name);
+      const importName = importedName(entry.importName.kind, entry.importName.name);
+      if (entry.moduleRequest && isIndirect(statement)) {
+        addLocalExport(`\0${entry.importName.start}`, exportName);
+      } else if (entry.moduleRequest) {
+        reexports.push({ id: ids.get(entry.moduleRequest.value)!, exportName, importName });
+      } else if (entry.localName.name !== null) {
+        addLocalExport(entry.localName.name, exportName);
+      }
+    }
+  }
+
+  const imports: { id: string; names: UsedNames }[] = [];
+  for (const statement of record.staticImports) {
+    const id = ids.get(statement.moduleRequest.value)!;
+    imports.push({ id, names: new Set() });
+    for (const entry of statement.entries) {
+      if (entry.isType) continue;
+      const name = importedName(entry.importName.kind, entry.importName.name);
+      const local = entry.localName.value;
+      const exportNames = [
+        ...(localExports.get(local) ?? []),
+        ...((entry.importName.start !== null && localExports.get(`\0${entry.importName.start}`)) ||
+          []),
+      ];
+      if (
+        exportNames.length > 0 &&
+        !new RegExp(`(?<![\\w$])${local.replaceAll("$", "\\$")}(?![\\w$])`).test(body)
+      ) {
+        for (const exportName of exportNames) reexports.push({ id, exportName, importName: name });
+      } else {
+        imports.push({ id, names: name === "*" ? "*" : new Set([name]) });
+      }
+    }
+  }
+  // Count any import the record missed in full.
+  const covered = new Set(ids.values());
+  for (const id of options.importedIds) if (!covered.has(id)) imports.push({ id, names: "*" });
+
+  return {
+    bytes: Buffer.byteLength(body, "utf8"),
+    sideEffectFree: options.sideEffectFree,
+    imports,
+    reexports,
+  };
+}
 
 /**
  * Estimate, in transformed source bytes, how much code each client reference
  * would add to a route group's chunk: the modules only it uses, plus the cost
  * of every client reference it statically imports (grouping a reference pulls
  * those along). Modules shared with other client references are not charged
- * to any one of them, so shared libraries do not block grouping.
+ * to any one of them, so shared libraries do not block grouping. With
+ * {@link readClientModuleBindings}, a side-effect-free module only charges the
+ * re-exports that are imported from it, so a reference that imports one icon
+ * from a barrel is not charged for the whole library.
  *
  * `references` maps each client reference id to its module id in the client
  * graph. Traversal stops at modules for which `isExcluded` returns true (CSS,
@@ -187,17 +356,39 @@ export async function measureClientReferenceGroupCosts(options: {
   }
 
   // Each reference's own modules: its static graph up to (not including) any
-  // other client reference, which is recorded as an imported reference.
+  // other client reference, which is recorded as an imported reference. The
+  // walk tracks the export names used from each module, so a side-effect-free
+  // barrel only charges the re-exports a reference actually imports.
   const moduleBytes = new Map<string, number>();
   const ownModules = new Map<string, Set<string> | null>();
   const importedReferences = new Map<string, Set<string>>();
   await Promise.all(
     [...options.references].map(async ([referenceId, rootModuleId]) => {
-      const own = new Set<string>([rootModuleId]);
+      const own = new Set<string>();
       const imported = new Set<string>();
       importedReferences.set(referenceId, imported);
+      const used = new Map<string, Set<string> | "*">([[rootModuleId, "*"]]);
+      const use = (id: string, names: UsedNames, next: string[]) => {
+        if (options.isExcluded(id)) return;
+        const importedReference = referenceByModuleId.get(id);
+        if (importedReference !== undefined) {
+          if (importedReference !== referenceId) imported.add(importedReference);
+          return;
+        }
+        const current = used.get(id);
+        if (current === "*") return;
+        if (names === "*" || !current) {
+          used.set(id, names === "*" ? "*" : new Set(names));
+          next.push(id);
+          return;
+        }
+        const size = current.size;
+        for (const name of names) current.add(name);
+        if (current.size > size) next.push(id);
+      };
       let frontier = [rootModuleId];
       while (frontier.length > 0) {
+        frontier = [...new Set(frontier)];
         const modules = await Promise.all(frontier.map(load));
         const next: string[] = [];
         for (let index = 0; index < modules.length; index++) {
@@ -206,19 +397,33 @@ export async function measureClientReferenceGroupCosts(options: {
             ownModules.set(referenceId, null);
             return;
           }
+          const id = frontier[index]!;
+          const names = used.get(id)!;
+          const { bindings } = module;
+          const treeShaken = bindings?.sideEffectFree === true && names !== "*";
+          // Tree-shaking drops a side-effect-free module nothing uses.
+          if (treeShaken && names.size === 0) continue;
+          own.add(id);
           moduleBytes.set(
-            frontier[index]!,
-            module.code ? Buffer.byteLength(module.code, "utf8") : 0,
+            id,
+            bindings?.bytes ?? (module.code ? Buffer.byteLength(module.code, "utf8") : 0),
           );
-          for (const importedId of module.importedIds) {
-            if (own.has(importedId) || options.isExcluded(importedId)) continue;
-            const importedReference = referenceByModuleId.get(importedId);
-            if (importedReference !== undefined) {
-              if (importedReference !== referenceId) imported.add(importedReference);
-              continue;
+          if (!bindings) {
+            for (const importedId of module.importedIds) use(importedId, "*", next);
+            continue;
+          }
+          for (const edge of bindings.imports) use(edge.id, edge.names, next);
+          for (const edge of bindings.reexports) {
+            let reexported: UsedNames;
+            if (!treeShaken || (edge.exportName !== "*" && names.has(edge.exportName))) {
+              reexported = edge.importName === "*" ? "*" : new Set([edge.importName]);
+            } else if (edge.exportName === "*") {
+              reexported = new Set([...names].filter((name) => name !== "default"));
+            } else {
+              // Still reached, so a target with side effects counts.
+              reexported = new Set();
             }
-            own.add(importedId);
-            next.push(importedId);
+            use(edge.id, reexported, next);
           }
         }
         frontier = next;

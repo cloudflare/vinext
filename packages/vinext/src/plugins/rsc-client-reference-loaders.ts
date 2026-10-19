@@ -5,6 +5,8 @@ import {
   collectClientReferenceRouteSignatures,
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
+  readClientModuleBindings,
+  readDeclaredExportNames,
 } from "../build/client-reference-groups.js";
 import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
@@ -219,7 +221,7 @@ export function createRscClientReferenceLoadersPlugin(
         // Reference ids come from the RSC graph; resolve each import id in this
         // environment so packages are measured through their browser entry.
         const references = new Map<string, string>();
-        const resolvedReferences = new Map<string, Rollup.ResolvedId>();
+        const resolvedIds = new Map<string, Rollup.ResolvedId>();
         await Promise.all(
           metaEntries.map(async ([referenceId, meta]) => {
             if (meta.importId.startsWith("\0")) {
@@ -229,9 +231,11 @@ export function createRscClientReferenceLoadersPlugin(
             const resolved = await this.resolve(meta.importId);
             if (!resolved || resolved.external) return;
             references.set(referenceId, resolved.id);
-            resolvedReferences.set(resolved.id, resolved);
+            resolvedIds.set(resolved.id, resolved);
           }),
         );
+        const referenceModuleIds = new Set(references.values());
+        const declaredExports = new Map<string, ReadonlySet<string> | undefined>();
         // Measure every reference, not just grouping candidates, so code shared
         // with an ungroupable reference still counts as shared.
         const costs = await measureClientReferenceGroupCosts({
@@ -239,8 +243,27 @@ export function createRscClientReferenceLoadersPlugin(
           loadModule: async (moduleId) => {
             // Pass the full resolution so package metadata such as
             // `sideEffects` is kept for modules this loads first.
-            const info = await this.load(resolvedReferences.get(moduleId) ?? { id: moduleId });
-            return { code: info.code, importedIds: info.importedIds };
+            const info = await this.load(resolvedIds.get(moduleId) ?? { id: moduleId });
+            const { code, importedIds } = info;
+            if (code === null) return { code, importedIds };
+            if (referenceModuleIds.has(moduleId)) {
+              declaredExports.set(moduleId, readDeclaredExportNames(code));
+            }
+            const bindings = await readClientModuleBindings({
+              code,
+              importedIds,
+              // Loaded module info can lack the package `sideEffects` flag
+              // that the resolved id carries.
+              sideEffectFree:
+                (info.moduleSideEffects ?? resolvedIds.get(moduleId)?.moduleSideEffects) === false,
+              resolve: async (specifier) => {
+                const resolved = await this.resolve(specifier, moduleId);
+                if (!resolved || resolved.external) return null;
+                resolvedIds.set(resolved.id, resolved);
+                return resolved.id;
+              },
+            });
+            return { code, importedIds, bindings };
           },
           isExcluded: (moduleId) =>
             moduleId === CLIENT_REFERENCES_ID ||
@@ -248,6 +271,17 @@ export function createRscClientReferenceLoadersPlugin(
             isCSSRequest(moduleId) ||
             grouping.isAlwaysLoadedClientModule(moduleId),
         });
+        // A group re-exports its members' rendered exports statically, which
+        // fails the build when the browser module lacks one, for example when
+        // a package's `react-server` entry exports more than its browser
+        // entry. The direct loader reads exports lazily, so keep those there.
+        for (const [referenceId, meta] of metaEntries) {
+          const moduleId = references.get(referenceId);
+          const declared = moduleId === undefined ? undefined : declaredExports.get(moduleId);
+          if (declared && meta.renderedExports.some((name) => !declared.has(name))) {
+            costs.set(referenceId, null);
+          }
+        }
         const groups = planClientReferenceGroups({
           referenceIds,
           signatures: routeSignatures,

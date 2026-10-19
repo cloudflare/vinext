@@ -238,6 +238,80 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
+  it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
+
+    try {
+      // Client references to packages load through the package specifier, so
+      // the client build resolves the package's browser condition.
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      const pkgDir = path.join(tmpDir, "node_modules", "cond-pkg");
+      fs.mkdirSync(pkgDir);
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "cond-pkg",
+          type: "module",
+          exports: { ".": { "react-server": "./server.js", default: "./browser.js" } },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "server.js"),
+        `"use client";\nexport function Foo() { return null; }\nexport function Extra() { return null; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "browser.js"),
+        `"use client";\nexport function Foo() { return null; }\n`,
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "b.tsx"),
+        `"use client";\nexport function B() { return <p>b</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Extra, Foo } from "cond-pkg";
+import { B } from "./b";
+export default function Page() {
+  return <main><Foo />{Math.random() > 2 ? <Extra /> : null}<B /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      // A group would re-export the missing \`Extra\` statically and fail the
+      // build, so the package's reference keeps its own chunk.
+      await builder.buildApp();
+
+      const chunks = fs.readdirSync(
+        path.join(tmpDir, "dist", "client", "_next", "static", "chunks"),
+      );
+      expect(chunks.some((f: string) => f.startsWith("browser-"))).toBe(true);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("adopts __VINEXT_SHARED_BUILD_ID so the runtime and BUILD_ID file agree", async () => {
     // The `vite build` CLI resolves the build ID once and shares it via
     // __VINEXT_SHARED_BUILD_ID so that every plugin instance in a build (App

@@ -4,6 +4,8 @@ import {
   collectClientReferenceRouteSignatures,
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
+  readClientModuleBindings,
+  readDeclaredExportNames,
 } from "../packages/vinext/src/build/client-reference-groups.js";
 
 function route(pattern: string, pagePath: string, layouts: string[] = []) {
@@ -225,6 +227,151 @@ describe("measureClientReferenceGroupCosts", () => {
     });
 
     expect(Object.fromEntries(costs)).toEqual({ a: 10, broken: null });
+  });
+});
+
+describe("measureClientReferenceGroupCosts with module bindings", () => {
+  // Builds each module's bindings from its code, resolving "./x.js" to "/x.js".
+  function bindingLoader(modules: Record<string, { code: string; sideEffectFree?: boolean }>) {
+    return async (id: string) => {
+      const module = modules[id];
+      if (!module) throw new Error(`missing ${id}`);
+      const importedIds = [...module.code.matchAll(/from "\.(\/[^"]+)"|import "\.(\/[^"]+)"/g)].map(
+        (match) => match[1] ?? match[2]!,
+      );
+      const bindings = await readClientModuleBindings({
+        code: module.code,
+        importedIds,
+        sideEffectFree: module.sideEffectFree ?? false,
+        resolve: async (specifier) => specifier.slice(1),
+      });
+      return { code: module.code, importedIds, bindings };
+    };
+  }
+
+  const icon = (name: string) =>
+    `export default function ${name}() { return "${name.repeat(50)}"; }`;
+
+  it("charges only the re-exports a reference imports from a side-effect-free barrel", async () => {
+    const modules = {
+      "/a.js": { code: `import { Camera } from "./barrel.js";\nexport const A = () => Camera;` },
+      "/barrel.js": {
+        code: [
+          `import * as all from "./icons.js";`,
+          `export { all as icons };`,
+          `export { default as Camera, default as CameraIcon } from "./camera.js";`,
+          `export { default as Bell } from "./bell.js";`,
+          `export * from "./more.js";`,
+        ].join("\n"),
+        sideEffectFree: true,
+      },
+      "/icons.js": { code: icon("Everything"), sideEffectFree: true },
+      "/camera.js": { code: icon("Camera"), sideEffectFree: true },
+      "/bell.js": { code: icon("Bell"), sideEffectFree: true },
+      "/more.js": { code: `export * from "./polyfill.js";`, sideEffectFree: true },
+      "/polyfill.js": { code: `globalThis.x = 1;` },
+    };
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([["a", "/a.js"]]),
+      loadModule: bindingLoader(modules),
+      isExcluded: () => false,
+    });
+
+    const bytes = (code: string) => Buffer.byteLength(code, "utf8");
+    // The barrel's statements emit no code, leaving only its newlines. Bell and
+    // the namespace re-export are tree-shaken, but the side-effectful module
+    // behind `export *` stays.
+    expect(costs.get("a")).toBe(
+      bytes("\nexport const A = () => Camera;") +
+        bytes(icon("Camera")) +
+        bytes("\n\n\n\n") +
+        bytes(modules["/polyfill.js"].code),
+    );
+  });
+
+  it("charges every re-export of a barrel imported as a namespace or with side effects", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([
+        ["ns", "/ns.js"],
+        ["effects", "/effects.js"],
+      ]),
+      loadModule: bindingLoader({
+        "/ns.js": { code: `import * as all from "./barrel.js";\nexport const N = all;` },
+        "/effects.js": { code: `import { One } from "./effectful.js";\nexport const E = One;` },
+        "/barrel.js": {
+          code: `export { default as One } from "./one.js";\nexport { default as Two } from "./two.js";`,
+          sideEffectFree: true,
+        },
+        "/effectful.js": {
+          code: `export { default as One } from "./three.js";\nexport { default as Two } from "./four.js";`,
+        },
+        "/one.js": { code: icon("One"), sideEffectFree: true },
+        "/two.js": { code: icon("Two"), sideEffectFree: true },
+        "/three.js": { code: icon("Three"), sideEffectFree: true },
+        "/four.js": { code: icon("Four"), sideEffectFree: true },
+      }),
+      isExcluded: () => false,
+    });
+
+    const bytes = (code: string) => Buffer.byteLength(code, "utf8");
+    expect(costs.get("ns")).toBe(
+      bytes("\nexport const N = all;") + bytes("\n") + bytes(icon("One")) + bytes(icon("Two")),
+    );
+    expect(costs.get("effects")).toBe(
+      bytes("\nexport const E = One;") + bytes("\n") + bytes(icon("Three")) + bytes(icon("Four")),
+    );
+  });
+
+  it("counts every import in full when a specifier does not resolve to an imported id", async () => {
+    await expect(
+      readClientModuleBindings({
+        code: `export { a } from "./a.js";`,
+        importedIds: ["/elsewhere.js"],
+        sideEffectFree: true,
+        resolve: async () => "/a.js",
+      }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("treats imported bindings that a module only re-exports as re-exports", async () => {
+    const bindings = await readClientModuleBindings({
+      code: `import a, { b as c } from "./a.js";\nexport { a as A, c };\nexport const d = 1;`,
+      importedIds: ["/a.js"],
+      sideEffectFree: true,
+      resolve: async (specifier) => specifier.slice(1),
+    });
+
+    expect(bindings?.imports).toEqual([{ id: "/a.js", names: new Set() }]);
+    expect(bindings?.reexports).toEqual([
+      { id: "/a.js", exportName: "A", importName: "default" },
+      { id: "/a.js", exportName: "c", importName: "b" },
+    ]);
+  });
+
+  it("keeps imported bindings that the module also uses as plain imports", async () => {
+    const bindings = await readClientModuleBindings({
+      code: `import { a } from "./a.js";\nexport { a };\nexport const b = () => a();`,
+      importedIds: ["/a.js"],
+      sideEffectFree: true,
+      resolve: async (specifier) => specifier.slice(1),
+    });
+
+    expect(bindings?.imports).toContainEqual({ id: "/a.js", names: new Set(["a"]) });
+    expect(bindings?.reexports).toEqual([]);
+  });
+});
+
+describe("readDeclaredExportNames", () => {
+  it("lists declared ES exports, including default and re-exported names", () => {
+    expect(
+      readDeclaredExportNames(
+        `export function Foo() {}\nexport default 1;\nexport { x as Bar } from "./x";\nexport * as ns from "./y";\nexport * from "./z";`,
+      ),
+    ).toEqual(new Set(["Foo", "default", "Bar", "ns"]));
+  });
+
+  it("returns undefined for CommonJS modules", () => {
+    expect(readDeclaredExportNames(`module.exports = { Foo() {} };`)).toBeUndefined();
   });
 });
 
