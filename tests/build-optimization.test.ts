@@ -1928,8 +1928,8 @@ describe("treeshake config integration", () => {
         });
         const defaultOutput = defaultBuilder.environments.client.config.build.rolldownOptions
           .output as Record<string, unknown>;
-        expect(defaultOutput.entryFileNames).toBe("_next/static/chunks/[name]-[hash].js");
-        expect(defaultOutput.chunkFileNames).toBe("_next/static/chunks/[name]-[hash].js");
+        expect(defaultOutput.entryFileNames).toBe("_next/static/chunks/[hash].js");
+        expect(defaultOutput.chunkFileNames).toBe("_next/static/chunks/[hash].js");
         expect(defaultOutput.assetFileNames).toEqual(expect.any(Function));
 
         const builder = await createBuilder({
@@ -2202,8 +2202,8 @@ describe("treeshake config integration", () => {
           assetsInlineLimit: 0,
           rolldownOptions: {
             output: {
-              entryFileNames: "_next/static/chunks/[name]-[hash].js",
-              chunkFileNames: "_next/static/chunks/[name]-[hash].js",
+              entryFileNames: "_next/static/chunks/[hash].js",
+              chunkFileNames: "_next/static/chunks/[hash].js",
               assetFileNames: expect.any(Function),
             },
           },
