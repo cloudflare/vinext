@@ -754,7 +754,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 
-export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders, middlewareResponseHeaders) {
+export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders, middlewareResponseHeaders, middlewareSetCookies) {
   ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
@@ -763,6 +763,7 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
     edgeRuntime,
     initialResponseHeaders,
     middlewareResponseHeaders,
+    middlewareSetCookies,
     match,
     nextConfig: vinextConfig,
     request,

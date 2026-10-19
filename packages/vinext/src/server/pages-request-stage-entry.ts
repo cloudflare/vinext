@@ -500,7 +500,7 @@ async function handleRequestImpl(
         typeof runMiddleware === "function"
           ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
           : null,
-      renderPage: (req, resolvedUrl, options, stagedHeaders) => {
+      renderPage: (req, resolvedUrl, options, stagedHeaders, middlewareSetCookies = []) => {
         if (options?.renderErrorPageOnMiss === false && req.body !== null && !req.bodyUsed) {
           speculativeRenderRequest = req;
         }
@@ -549,6 +549,9 @@ async function handleRequestImpl(
           // request-time handlers may read res.getHeader(), so their complete
           // pre-handler snapshot is part of the shared-stage identity.
           stagedHeaders: isSharedStaticPage ? null : [...(stagedHeaders ?? new Headers())],
+          ...(isSharedStaticPage || middlewareSetCookies.length === 0
+            ? {}
+            : { middlewareSetCookies: [...middlewareSetCookies] }),
         });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
         const dispatched = trackedDispatchResponseStage(
@@ -587,7 +590,7 @@ async function handleRequestImpl(
           });
         });
       },
-      handleApi: (req, apiUrl, _ctx, stagedHeaders) => {
+      handleApi: (req, apiUrl, _ctx, stagedHeaders, middlewareSetCookies) => {
         const transportedPolicyHeaders = withResponseStageVary(
           responseStagePolicyHeaders,
           stagedHeaders.get("Vary"),
@@ -604,6 +607,9 @@ async function handleRequestImpl(
           protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
           requestHost: new URL(req.url).host,
           stagedHeaders: [...stagedHeaders],
+          ...(middlewareSetCookies.length === 0
+            ? {}
+            : { middlewareSetCookies: [...middlewareSetCookies] }),
         });
         const cache =
           forceCacheBypass || probeMode

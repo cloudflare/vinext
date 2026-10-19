@@ -153,7 +153,7 @@ describe("after() in deploy mode — Pages Router worker entry", () => {
   it("forwards ctx and staged middleware headers to renderPage so page renders can call after() and apply CSP nonces", () => {
     const content = readPagesResponseStageEntrySource();
     expect(content).toMatch(
-      /pagesEntry\.renderPage\(\s*request,\s*props\.resolvedUrl,\s*null,\s*cacheabilityContext,\s*renderHeaders,\s*props\.renderOptions/,
+      /pagesEntry\.renderPage\(\s*request,\s*props\.resolvedUrl,\s*null,\s*cacheabilityContext,\s*renderHeaders,\s*(?:props\.middlewareSetCookies[\s\S]*?)?props\.renderOptions/,
     );
   });
 });

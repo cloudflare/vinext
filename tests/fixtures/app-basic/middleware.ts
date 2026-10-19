@@ -27,8 +27,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
 
   // Middleware cookies must precede the Pages API route's res.appendHeader
-  // cookies. Coverage: tests/app-router-production-server.test.ts
-  if (pathname === "/api/pages-append-header") {
+  // and res.setHeader cookies, and getServerSideProps' res.setHeader cookies.
+  // Coverage: tests/app-router-production-server.test.ts,
+  // tests/app-router-next-config-dev.test.ts
+  if (
+    pathname === "/api/pages-append-header" ||
+    pathname === "/api/pages-set-cookie-header" ||
+    pathname === "/pages-gssp-set-cookie"
+  ) {
     const response = NextResponse.next();
     response.cookies.set("mw", "1");
     return response;
@@ -649,9 +655,11 @@ export const config = {
     "/api/header-override-stray",
     "/api/pages-og",
     "/api/pages-append-header",
+    "/api/pages-set-cookie-header",
     "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",
+    "/pages-gssp-set-cookie",
     "/revalidate-test",
     "/script-nonce/:path*",
     "/script-manual-nonce",

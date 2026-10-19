@@ -593,6 +593,32 @@ function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse === true;
 }
 
+/**
+ * Install middleware cookies on a Pages handler's `res`, as Next.js does, so
+ * its `setHeader("Set-Cookie")` keeps them first and dedupes against them.
+ */
+function withMiddlewareSetCookies(
+  headers: Headers | undefined,
+  cookies: readonly string[],
+): Headers | undefined {
+  if (cookies.length === 0) return headers;
+  const seeded = new Headers(headers);
+  for (const cookie of cookies) seeded.append("Set-Cookie", cookie);
+  return seeded;
+}
+
+/** Drop the installed middleware cookies; the pipeline merges them again. */
+function stripMiddlewareSetCookies(response: Response, cookies: readonly string[]): Response {
+  if (cookies.length === 0) return response;
+  const inherited = withMiddlewareSetCookies(undefined, cookies)!;
+  const stripped = stripInheritedResponseStageCookies(response, inherited) as Response &
+    ResponseWithVinextStreamingMetadata;
+  if (stripped === response) return response;
+  if (isVinextStreamedHtmlResponse(response)) stripped.__vinextStreamedHtmlResponse = true;
+  if (isVinextStreamedApiResponse(response)) stripped.__vinextStreamedApiResponse = true;
+  return stripped;
+}
+
 function logProdServerStarted(host: string, port: number, purpose: ProdServerOptions["purpose"]) {
   const url = `http://${host}:${port}`;
   if (purpose === "prerender") {
@@ -2788,13 +2814,17 @@ async function createPagesRouterRequestHandler(
           : null,
         renderPage:
           typeof renderPage === "function"
-            ? (
+            ? async (
                 request: Request,
                 resolvedUrl: string,
                 options?: PagesRenderOptions,
                 stagedHeaders?: Headers,
-              ) =>
-                renderPage(
+                middlewareSetCookies: readonly string[] = [],
+              ) => {
+                // Like Next.js, every render's `res` starts with middleware's
+                // cookies, also a forced /404 or /_error. Pages ISR entries
+                // never store `res` headers.
+                const response = await renderPage(
                   request,
                   resolvedUrl,
                   ssrManifest,
@@ -2803,15 +2833,27 @@ async function createPagesRouterRequestHandler(
                   {
                     ...options,
                     originalUrl: originalRenderUrl,
+                    middlewareSetCookies,
                   },
-                  stagedHeaders?.has("Cache-Control")
-                    ? new Headers({ "Cache-Control": stagedHeaders.get("Cache-Control")! })
-                    : undefined,
-                )
+                  withMiddlewareSetCookies(
+                    stagedHeaders?.has("Cache-Control")
+                      ? new Headers({ "Cache-Control": stagedHeaders.get("Cache-Control")! })
+                      : undefined,
+                    middlewareSetCookies,
+                  ),
+                );
+                return stripMiddlewareSetCookies(response, middlewareSetCookies);
+              }
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? async (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+            ? async (
+                request: Request,
+                apiUrl: string,
+                _ctx: unknown,
+                stagedHeaders: Headers,
+                middlewareSetCookies: readonly string[],
+              ) => {
                 // Next.js installs middleware and next.config headers before
                 // the API route runs: a Node handler's setHeader() replaces
                 // them and an edge handler's headers follow them, skipping
@@ -2825,6 +2867,8 @@ async function createPagesRouterRequestHandler(
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
                   initialResponseHeaders,
+                  undefined,
+                  middlewareSetCookies,
                 );
                 // The pipeline adds the staged cookies ahead of the
                 // handler's, so drop the copy the response inherited.

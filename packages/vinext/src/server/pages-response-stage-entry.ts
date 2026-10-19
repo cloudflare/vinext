@@ -150,6 +150,8 @@ export async function renderPagesResponse(
           new URL(request.url).origin,
           cacheabilityContext.hostRuntime ?? "node",
           initialResponseHeaders,
+          undefined,
+          props.middlewareSetCookies,
         );
       });
     }
@@ -163,7 +165,9 @@ export async function renderPagesResponse(
         null,
         cacheabilityContext,
         renderHeaders,
-        props.renderOptions ?? undefined,
+        props.middlewareSetCookies
+          ? { ...props.renderOptions, middlewareSetCookies: props.middlewareSetCookies }
+          : (props.renderOptions ?? undefined),
         initialResponseHeaders,
       ),
     );

@@ -256,6 +256,18 @@ const nextConfig = {
         source: "/headers-before-middleware-rewrite",
         headers: [{ key: "X-Rewrite-Source-Header", value: "1" }],
       },
+      // Used by Vitest: pages-router.test.ts — a handler's res.setHeader
+      // replaces a config Set-Cookie, unlike a middleware cookie.
+      {
+        source: "/gssp-set-cookie",
+        has: [{ type: "query", key: "cfgcookie" }],
+        headers: [{ key: "Set-Cookie", value: "cfg=1; Path=/" }],
+      },
+      {
+        source: "/api/set-cookie-header",
+        has: [{ type: "query", key: "cfgcookie" }],
+        headers: [{ key: "Set-Cookie", value: "cfg=1; Path=/" }],
+      },
     ];
   },
 };

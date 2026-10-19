@@ -1687,6 +1687,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect((await res.blob()).size).toBeGreaterThan(0);
   });
 
+  it.each(["/pages-gssp-set-cookie", "/pages-gssp-set-cookie?same=1"])(
+    "keeps middleware cookies once when Pages getServerSideProps sets Set-Cookie in hybrid production (%s)",
+    async (pathname) => {
+      const res = await fetch(`${baseUrl}${pathname}`);
+
+      expect(res.status).toBe(200);
+      expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    },
+  );
+
   it("supports res.appendHeader in Pages API routes after middleware cookies in hybrid production", async () => {
     const res = await fetch(`${baseUrl}/api/pages-append-header`);
 

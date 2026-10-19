@@ -116,6 +116,8 @@ type HandlePagesApiRouteOptions = {
    * edge handler's headers are appended after them.
    */
   middlewareResponseHeaders?: Headers | null;
+  /** Middleware's Set-Cookie values among `initialResponseHeaders`. */
+  middlewareSetCookies?: readonly string[];
   match: PagesApiRouteMatch | null;
   reportRequestError?: (error: Error, routePattern: string) => void | Promise<void>;
   request: Request;
@@ -317,6 +319,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       body,
       initialResponseHeaders: options.initialResponseHeaders,
       middlewareResponseHeaders: options.middlewareResponseHeaders,
+      middlewareSetCookies: options.middlewareSetCookies,
       query,
       request: options.request,
       trustedRevalidateOrigin: options.trustedRevalidateOrigin,

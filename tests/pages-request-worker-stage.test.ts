@@ -463,6 +463,36 @@ describe("Pages Worker request stage", () => {
     expect(mocks.renderResponse).not.toHaveBeenCalled();
   });
 
+  // The response stage keeps these first when user code replaces Set-Cookie
+  // (Next.js patchSetHeaderWithCookieSupport); config cookies are not included.
+  it.each([
+    { name: "a middleware cookie", middlewareCookie: true, staged: ["mw=1; Path=/"] },
+    { name: "only a config cookie", middlewareCookie: false, staged: ["cfg=1; Path=/"] },
+  ])(
+    "marks only middleware's own Set-Cookie values for the response stage with $name",
+    async ({ middlewareCookie, staged }) => {
+      mocks.configHeaders.push({
+        source: "/:path*",
+        headers: [{ key: "Set-Cookie", value: "cfg=1; Path=/" }],
+      });
+      const responseHeaders = new Headers();
+      if (middlewareCookie) responseHeaders.append("Set-Cookie", "mw=1; Path=/");
+      mocks.runMiddleware.mockResolvedValue({ continue: true, responseHeaders });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("api"));
+
+      await handleRequestStage(
+        new Request("https://example.com/api/hello"),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      const props = dispatch.mock.calls[0]?.[1];
+      expect(new Headers(props?.stagedHeaders ?? []).getSetCookie()).toEqual(staged);
+      expect(props?.middlewareSetCookies).toEqual(middlewareCookie ? staged : undefined);
+    },
+  );
+
   it("authenticates probes before filtering and bypasses the shared transport", async () => {
     const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("probe"));
     const response = await handleRequestStage(

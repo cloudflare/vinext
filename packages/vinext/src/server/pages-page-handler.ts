@@ -371,6 +371,8 @@ type RenderPageOptions = {
   asPath?: string;
   originalUrl?: string;
   renderErrorPageOnMiss?: boolean;
+  /** Middleware's Set-Cookie values among the initial response headers. */
+  middlewareSetCookies?: readonly string[];
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
   /** Source-page cache lifetime forwarded while rendering a notFound error page. */
@@ -969,6 +971,7 @@ export function createPagesPageHandler(
           const reqRes = createPagesReqRes({
             body: undefined,
             initialResponseHeaders,
+            middlewareSetCookies: options?.middlewareSetCookies,
             query,
             request,
             url: originalRequestPathAndSearch,
@@ -1227,6 +1230,7 @@ export function createPagesPageHandler(
                 __notFoundExpireSeconds: pageDataResult.expireSeconds,
                 __notFoundCachePathname: isrCachePathname,
                 __notFoundSourceHeaders: pageDataResult.responseHeaders,
+                middlewareSetCookies: options?.middlewareSetCookies,
               },
               initialResponseHeaders,
             );
@@ -1432,6 +1436,7 @@ export function createPagesPageHandler(
                   __isInternalErrorRender: true,
                   __forcedRoute: errorRoute,
                   err: e instanceof Error ? e : new Error(String(e)),
+                  middlewareSetCookies: options?.middlewareSetCookies,
                 },
                 initialResponseHeaders,
               );

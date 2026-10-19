@@ -24,11 +24,39 @@ export function middleware(request: NextRequest) {
       }),
     );
   }
-  // Middleware cookies must precede the API route's res.appendHeader cookies.
+  // Middleware cookies must precede the API route's res.appendHeader and
+  // res.setHeader cookies, and getServerSideProps' res.setHeader cookies.
   // Coverage: tests/pages-router.test.ts
-  if (url.pathname === "/api/append-header") {
+  if (
+    url.pathname === "/api/append-header" ||
+    url.pathname === "/api/set-cookie-header" ||
+    url.pathname === "/api/edge-set-cookie" ||
+    (url.pathname === "/gssp-set-cookie" && url.searchParams.has("mwcookie"))
+  ) {
     const res = NextResponse.next();
     res.cookies.set("mw", "1");
+    return res;
+  }
+  // Middleware sets the same cookie the route sets; Next.js sends it once.
+  // Coverage: tests/pages-router.test.ts
+  if (
+    (url.pathname === "/api/set-cookie-dedupe" ||
+      url.pathname === "/gssp-set-cookie" ||
+      url.pathname === "/gip-set-cookie" ||
+      url.pathname === "/missing-set-cookie" ||
+      url.pathname === "/encoded-isr/not-found-set-cookie" ||
+      url.pathname === "/encoded-isr/not-found-append-cookie") &&
+    url.searchParams.has("mwd")
+  ) {
+    const res = NextResponse.next();
+    res.cookies.set("d", "1");
+    return res;
+  }
+  // Two middleware cookies on a page that sets none; each is sent once.
+  if (url.pathname === "/gip-set-cookie" && url.searchParams.has("mw2")) {
+    const res = NextResponse.next();
+    res.cookies.set("a", "1");
+    res.cookies.set("b", "2");
     return res;
   }
   if (url.pathname === "/api/edge-request-signal") {
@@ -424,6 +452,9 @@ export const config = {
     "/api/append-header",
     "/api/middleware-header-precedence",
     "/api/middleware-header-precedence-edge",
+    "/api/set-cookie-header",
+    "/api/edge-set-cookie",
+    "/api/set-cookie-dedupe",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {

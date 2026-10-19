@@ -914,6 +914,7 @@ describe("middleware", () => {
       "/bar",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -1265,6 +1266,7 @@ describe("beforeFiles rewrites", () => {
       "/alias",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -1356,6 +1358,7 @@ describe("beforeFiles rewrites", () => {
       "/gssp",
       undefined,
       expect.any(Headers),
+      [],
     );
     expect(matchPageRoute).toHaveBeenCalledWith("/gssp", expect.any(Request));
   });
@@ -1399,6 +1402,7 @@ describe("beforeFiles rewrites", () => {
       "/rewrite-no-basePath",
       undefined,
       expect.any(Headers),
+      [],
     );
     expect(proxyExternal).not.toHaveBeenCalled();
   });
@@ -1425,6 +1429,7 @@ describe("beforeFiles rewrites", () => {
       "/to",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -1455,6 +1460,7 @@ describe("beforeFiles rewrites", () => {
       "/to?keep=1&stage=1",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -1483,6 +1489,7 @@ describe("beforeFiles rewrites", () => {
       "/destination?first=1&second=2",
       undefined,
       expect.any(Headers),
+      [],
     );
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/destination?first=1&second=2");
   });
@@ -1665,6 +1672,7 @@ describe("API routes", () => {
       "/api/users",
       null,
       expect.any(Headers),
+      [],
     );
     // API responses default a missing content-type to octet-stream, not text/html.
     expect(result.defaultContentType).toBe("application/octet-stream");
@@ -2106,6 +2114,7 @@ describe("serveFilesystemRoute", () => {
       "/api/rewritten",
       null,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2147,6 +2156,7 @@ describe("serveFilesystemRoute", () => {
       "/api/from-middleware",
       null,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2238,6 +2248,7 @@ describe("serveFilesystemRoute", () => {
       "/api/hello",
       null,
       expect.any(Headers),
+      [],
     );
     expect(pageResult.type).toBe("response");
     expect(renderPage).toHaveBeenCalledWith(
@@ -2245,6 +2256,7 @@ describe("serveFilesystemRoute", () => {
       "/about",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 });
@@ -2323,6 +2335,7 @@ describe("afterFiles rewrites", () => {
       "/after-control",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2356,6 +2369,7 @@ describe("afterFiles rewrites", () => {
       "/api/hello",
       null,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2381,6 +2395,7 @@ describe("afterFiles rewrites", () => {
       "/rewritten",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2407,6 +2422,7 @@ describe("afterFiles rewrites", () => {
       "/static-page",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2439,6 +2455,7 @@ describe("afterFiles rewrites", () => {
         "/caf%C3%A9?q=1",
         undefined,
         expect.any(Headers),
+        [],
       );
     }
   });
@@ -2470,6 +2487,7 @@ describe("afterFiles rewrites", () => {
       "/resolved#section",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2513,6 +2531,7 @@ describe("afterFiles rewrites", () => {
       "/ssg?slug=first",
       { isDataReq: true },
       expect.any(Headers),
+      [],
     );
     expect(result.response.headers.get(MIDDLEWARE_SKIP_HEADER)).toBeNull();
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssg");
@@ -2685,6 +2704,7 @@ describe("fallback rewrites on 404", () => {
       "/api/hello",
       null,
       expect.any(Headers),
+      [],
     );
   });
 
@@ -2748,6 +2768,7 @@ describe("fallback rewrites on 404", () => {
       "/resolved#section",
       undefined,
       expect.any(Headers),
+      [],
     );
   });
 });
@@ -2835,6 +2856,7 @@ describe("deferred error page re-render on 404", () => {
       "/fallback-target?from=fallback",
       undefined,
       expect.any(Headers),
+      [],
     );
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/fallback-target?from=fallback");
   });

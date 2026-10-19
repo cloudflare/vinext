@@ -263,6 +263,8 @@ export type PagesPipelineDeps = {
         resolvedUrl: string,
         options?: PagesRenderOptions,
         stagedHeaders?: Headers,
+        /** Middleware's Set-Cookie values among `stagedHeaders`. */
+        middlewareSetCookies?: readonly string[],
       ) => Promise<Response>)
     | null;
   handleApi?:
@@ -271,6 +273,8 @@ export type PagesPipelineDeps = {
         apiUrl: string,
         ctx: unknown,
         stagedHeaders: Headers,
+        /** Middleware's Set-Cookie values among `stagedHeaders`. */
+        middlewareSetCookies: readonly string[],
       ) => Promise<Response>)
     | null;
   /**
@@ -346,6 +350,8 @@ export type PagesPipelineResult =
       resolvedUrl: string;
       renderOptions: PagesRenderOptions | undefined;
       stagedHeaders: HeaderRecord;
+      /** Middleware's Set-Cookie values, without next.config header cookies. */
+      middlewareSetCookies: string[];
       /** Post-middleware request headers — dev adapters apply these to req.headers before SSR. */
       requestHeaders: Headers;
       middlewareStatus: number | undefined;
@@ -357,6 +363,8 @@ export type PagesPipelineResult =
       /** True only when next.config rewrites changed API resolution. */
       configRewriteFired: boolean;
       stagedHeaders: HeaderRecord;
+      /** Middleware's Set-Cookie values, without next.config header cookies. */
+      middlewareSetCookies: string[];
       /** Post-middleware request headers — dev adapters apply these to req.headers before API handler. */
       requestHeaders: Headers;
       middlewareStatus: number | undefined;
@@ -493,7 +501,8 @@ export async function runPagesRequest(
   });
   const middlewareHeaders: HeaderRecord = {};
   // Middleware's own cookies, which Next.js keeps ahead of an external
-  // rewrite's upstream cookies.
+  // rewrite's upstream cookies and of a handler's res.setHeader("Set-Cookie").
+  // Config headers are staged into middlewareHeaders later and are excluded.
   let middlewareCookies: string[] = [];
   const mergeConfigHeadersIntoEarlyResponse = (response: Response): Response => {
     if (configHeaders.length === 0) return response;
@@ -828,6 +837,7 @@ export async function runPagesRequest(
         apiLookupUrl,
         deps.ctx ?? null,
         headersFromRecord(middlewareHeaders),
+        middlewareCookies,
       );
       const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
@@ -851,6 +861,7 @@ export async function runPagesRequest(
       apiUrl: apiLookupUrl,
       configRewriteFired,
       stagedHeaders: middlewareHeaders,
+      middlewareSetCookies: middlewareCookies,
       requestHeaders: request.headers,
       middlewareStatus,
     };
@@ -969,7 +980,13 @@ export async function runPagesRequest(
     if (renderPageMatch) {
       setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
     }
-    let response = await deps.renderPage(request, resolvedUrl, initialRenderOptions, stagedHeaders);
+    let response = await deps.renderPage(
+      request,
+      resolvedUrl,
+      initialRenderOptions,
+      stagedHeaders,
+      middlewareCookies,
+    );
 
     // Fallback rewrites if 404 + deferred
     let matchedFallbackRewrite = false;
@@ -1000,7 +1017,13 @@ export async function runPagesRequest(
         if (renderPageMatch) {
           setFrameworkRequestRoute(matchedPathnameForRoute(renderPageMatch.route.pattern));
         }
-        response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+        response = await deps.renderPage(
+          request,
+          resolvedUrl,
+          undefined,
+          stagedHeaders,
+          middlewareCookies,
+        );
         matchedFallbackRewrite = true;
         if (response.status !== 404) break;
       }
@@ -1020,7 +1043,13 @@ export async function runPagesRequest(
 
     // Deferred 404 re-render
     if (response.status === 404 && shouldDeferErrorPageOnMiss && !matchedFallbackRewrite) {
-      response = await deps.renderPage(request, resolvedUrl, undefined, stagedHeaders);
+      response = await deps.renderPage(
+        request,
+        resolvedUrl,
+        undefined,
+        stagedHeaders,
+        middlewareCookies,
+      );
     }
 
     const matchedPathHeaders = { ...middlewareHeaders };
@@ -1117,6 +1146,7 @@ export async function runPagesRequest(
     resolvedUrl,
     renderOptions: isDataReq ? { isDataReq: true } : undefined,
     stagedHeaders: middlewareHeaders,
+    middlewareSetCookies: middlewareCookies,
     requestHeaders: request.headers,
     middlewareStatus,
     isDataReq,

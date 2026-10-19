@@ -114,6 +114,11 @@ type CreatePagesReqResOptions = {
   initialResponseHeaders?: Headers;
   /** Middleware response headers, installed on `res` before user code runs. */
   middlewareResponseHeaders?: Headers | null;
+  /**
+   * Middleware's Set-Cookie values among `initialResponseHeaders`. A handler's
+   * `setHeader("Set-Cookie")` keeps them first, as in Next.js.
+   */
+  middlewareSetCookies?: readonly string[];
   query: PagesRequestQuery;
   request: Request;
   url: string;
@@ -410,6 +415,11 @@ class PagesResponseStream extends Writable {
     return false;
   }
 
+  /** Record which installed Set-Cookie values came from middleware. */
+  markMiddlewareSetCookies(cookies: readonly string[]): void {
+    this.middlewareSetCookieHeaders = [...this.middlewareSetCookieHeaders, ...cookies];
+  }
+
   getHeader(name: string): PagesReqResHeaderValue | undefined {
     return this.resHeaders[name.toLowerCase()];
   }
@@ -571,14 +581,20 @@ class PagesResponseStream extends Writable {
     const key = name.toLowerCase();
     if (!this.seeding && !this.resolved) this.userSetHeaderNames.add(key);
     const middlewareCookies = this.middlewareSetCookieHeaders;
-    if (key === "set-cookie" && !options.append && middlewareCookies.length > 0) {
+    if (
+      key === "set-cookie" &&
+      !options.append &&
+      !this.seeding &&
+      (middlewareCookies.length === 0 ||
+        !Array.isArray(value) ||
+        !value.every((cookie, i) => cookie === middlewareCookies[i]))
+    ) {
       // Next.js patchSetHeaderWithCookieSupport keeps middleware cookies ahead
       // of a replacement unless the handler passes back (a prefix of) the
-      // middleware cookies themselves.
+      // middleware cookies themselves, and dedupes the result. Framework
+      // seeding installs headers as they are, like Next's own writes.
       const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (!(Array.isArray(value) && values.every((cookie, i) => cookie === middlewareCookies[i]))) {
-        value = [...new Set([...middlewareCookies, ...values])];
-      }
+      value = [...new Set([...middlewareCookies, ...values])];
     }
     // Like Node, keep header arrays (and appended values) as a list of the
     // original values so getHeader() returns every value in its own type.
@@ -728,6 +744,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   if (options.initialResponseHeaders) {
     stream.seedResponseHeaders(options.initialResponseHeaders, { cookies: true });
   }
+  if (options.middlewareSetCookies) stream.markMiddlewareSetCookies(options.middlewareSetCookies);
   // Before the preview API: its expired preview cookies follow middleware's.
   if (options.middlewareResponseHeaders) {
     stream.seedMiddlewareResponseHeaders(options.middlewareResponseHeaders);

@@ -169,6 +169,27 @@ describe("Pages Node compat response", () => {
     );
   });
 
+  it("seeds duplicate middleware cookies as they are and appends after them", () => {
+    const cookie = "d=1; Path=/";
+    const initialResponseHeaders = new Headers();
+    initialResponseHeaders.append("Set-Cookie", cookie);
+    initialResponseHeaders.append("Set-Cookie", cookie);
+    const { res } = createPagesReqRes({
+      body: undefined,
+      initialResponseHeaders,
+      middlewareSetCookies: [cookie, cookie],
+      query: {},
+      request: new Request("https://example.test/api/cookies"),
+      url: "/api/cookies",
+    });
+
+    expect(res.getHeader("Set-Cookie")).toEqual([cookie, cookie]);
+    res.appendHeader("Set-Cookie", cookie);
+    expect(res.getHeader("Set-Cookie")).toEqual([cookie, cookie, cookie]);
+    res.setHeader("Set-Cookie", [cookie, cookie]);
+    expect(res.getHeader("Set-Cookie")).toEqual([cookie, cookie]);
+  });
+
   it("reads preview data from cookies emitted by setPreviewData", () => {
     const { res } = createPagesReqRes({
       body: undefined,
@@ -388,21 +409,23 @@ describe("Pages Node compat appendHeader", () => {
     expect(response.headers.get("x-list")).toBe("a, b, c");
   });
 
-  it("stores Set-Cookie like any other header", async () => {
+  // Next.js patchSetHeaderWithCookieSupport stores a deduped copy of a
+  // replaced Set-Cookie, so later pushes to the caller's array are not sent.
+  it("stores a deduped copy of a replaced Set-Cookie", async () => {
     const { res, responsePromise } = createApiResponse();
 
     res.appendHeader("Set-Cookie", "a=1; Path=/");
     expect(res.getHeader("Set-Cookie")).toBe("a=1; Path=/");
-    const cookies = ["b=1; Path=/"];
+    const cookies = ["b=1; Path=/", "b=1; Path=/"];
     res.appendHeader("x-unrelated", "1");
     res.setHeader("Set-Cookie", cookies);
     cookies.push("c=1; Path=/");
     res.appendHeader("Set-Cookie", "d=1; Path=/");
-    expect(res.getHeader("Set-Cookie")).toBe(cookies);
+    expect(res.getHeader("Set-Cookie")).toEqual(["b=1; Path=/", "d=1; Path=/"]);
 
     res.end();
     const response = await responsePromise;
-    expect(response.headers.getSetCookie()).toEqual(["b=1; Path=/", "c=1; Path=/", "d=1; Path=/"]);
+    expect(response.headers.getSetCookie()).toEqual(["b=1; Path=/", "d=1; Path=/"]);
   });
 
   it("keeps an existing scalar's type when appending to it", async () => {

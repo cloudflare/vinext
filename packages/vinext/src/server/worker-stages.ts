@@ -4,7 +4,7 @@ import type {
   VinextResponseStageTransport,
 } from "./multi-stage.js";
 
-export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 5;
+export const PAGES_RESPONSE_STAGE_PROTOCOL_VERSION = 6;
 export const PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER =
   "x-vinext-pages-response-stage-policy-owner";
 export type PagesResponseStagePolicyOwner = "request-time" | "static";
@@ -17,6 +17,8 @@ type PagesResponseStageEnvelope = {
   requestHost: string;
   /** Complete response-header snapshot installed before Pages user code runs. */
   stagedHeaders: Array<[string, string]> | null;
+  /** Middleware's Set-Cookie values among `stagedHeaders`. */
+  middlewareSetCookies?: string[];
 };
 
 /** Serializable Pages page render delegated to a cacheable Worker stage. */
@@ -102,7 +104,12 @@ export function isPagesResponseStageProps(value: unknown): value is WorkerRespon
     !isResponseStageCacheability(props.cacheability) ||
     typeof props.requestHost !== "string" ||
     props.requestHost.length === 0 ||
-    (props.stagedHeaders !== null && !isSerializedHeaders(props.stagedHeaders))
+    (props.stagedHeaders !== null && !isSerializedHeaders(props.stagedHeaders)) ||
+    (props.middlewareSetCookies !== undefined &&
+      !(
+        Array.isArray(props.middlewareSetCookies) &&
+        props.middlewareSetCookies.every((cookie) => typeof cookie === "string")
+      ))
   ) {
     return false;
   }

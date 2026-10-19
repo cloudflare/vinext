@@ -51,6 +51,7 @@ import {
 } from "./routing/file-matcher.js";
 import { createSSRHandler } from "./server/dev-server.js";
 import { handleApiRoute } from "./server/api-handler.js";
+import { patchSetHeaderWithCookieSupport } from "./server/patch-set-header.js";
 import { signalFromNodeResponse } from "./server/node-response-signal.js";
 import {
   DEFAULT_DEVICE_SIZES,
@@ -7186,6 +7187,7 @@ export const loadServerActionClient = ${
               const flushStagedHeaders = () => {
                 forEachStagedHeader((key, value) => res.appendHeader(key, value));
               };
+              const { middlewareSetCookies } = pipelineResult;
 
               // Apply post-middleware request headers to req.headers so the
               // SSR/API handler sees middleware-modified cookies/headers.
@@ -7258,6 +7260,7 @@ export const loadServerActionClient = ${
                     allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                     skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
+                    middlewareSetCookies,
                   },
                 );
                 if (handled) return;
@@ -7353,7 +7356,11 @@ export const loadServerActionClient = ${
                     ),
                   };
                 }
+                // Like Next.js, keep middleware cookies when getServerSideProps
+                // replaces Set-Cookie on the shared response. Patch after the
+                // flush: appendHeader() goes through setHeader().
                 flushStagedHeaders();
+                patchSetHeaderWithCookieSupport(res, middlewareSetCookies);
                 flushRequestHeaders();
                 if (pipelineResult.middlewareStatus !== undefined) {
                   req.__vinextMiddlewareStatus = pipelineResult.middlewareStatus;

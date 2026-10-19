@@ -136,6 +136,27 @@ describe("App Router next.config.js features (dev server integration)", () => {
     });
   });
 
+  // Next.js patchSetHeaderWithCookieSupport keeps middleware cookies ahead of
+  // a Pages API route's res.setHeader("Set-Cookie"), even when it then throws.
+  it("keeps middleware cookies when a Pages API route sets Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/pages-set-cookie-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps middleware cookies when a Pages API route throws after setting Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/pages-set-cookie-header?throw`);
+    expect(res.status).toBe(500);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
+  it("keeps middleware cookies when Pages getServerSideProps sets Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/pages-gssp-set-cookie`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
   it("applies custom headers from next.config.js on API routes", async () => {
     const res = await fetch(`${baseUrl}/api/hello`);
     expect(res.headers.get("x-custom-header")).toBe("vinext-app");

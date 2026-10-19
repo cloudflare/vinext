@@ -438,6 +438,8 @@ describe("Pages Worker response stage", () => {
       "https://example.com",
       "node",
       expect.any(Headers),
+      undefined,
+      undefined,
     );
     expect(stages.renderPage).not.toHaveBeenCalled();
   });

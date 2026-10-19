@@ -1860,6 +1860,72 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Next.js patchSetHeaderWithCookieSupport keeps middleware cookies ahead of
+  // an API route's res.setHeader("Set-Cookie"), even when it then throws.
+  it("keeps middleware cookies when an API route sets Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+  });
+
+  it("keeps middleware cookies when an API route throws after setting Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie-header?throw`);
+    expect(res.status).toBe(500);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
+  it("sends each of two middleware cookies once on a page that sets none", async () => {
+    const res = await fetch(`${baseUrl}/gip-set-cookie?mw2`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+  });
+
+  it("keeps middleware cookies ahead of an Edge API route's Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/api/edge-set-cookie`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
+  it("dedupes Set-Cookie values an API route sets", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie-dedupe`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+  });
+
+  it("ignores res.setHeader after the API route wrote its headers", async () => {
+    const res = await fetch(`${baseUrl}/api/set-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ignored");
+  });
+
+  it("keeps middleware cookies when getServerSideProps sets Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/gssp-set-cookie?mwcookie`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
+  // Next.js protects only middleware's cookies: config header cookies are
+  // replaced like any other header.
+  it("lets getServerSideProps replace a next.config Set-Cookie", async () => {
+    const res = await fetch(`${baseUrl}/gssp-set-cookie?cfgcookie=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["h=1; Path=/"]);
+  });
+
+  it("lets an API route replace a next.config Set-Cookie but keeps middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/set-cookie-header?cfgcookie=1`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
+  it("dedupes Set-Cookie values getServerSideProps sets", async () => {
+    const res = await fetch(`${baseUrl}/gssp-set-cookie?dup`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+  });
+
   it("rejects res.appendHeader after the API route wrote its headers", async () => {
     const res = await fetch(`${baseUrl}/api/append-header-after-write`);
     expect(res.status).toBe(200);
@@ -5978,7 +6044,7 @@ export const config = { matcher: ["/protected"] };
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
       const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(36 * 1024); // < 36 KB, including storage-policy, encoded-path, config query-param, res.revalidate and getStaticPaths request-time fixture routes
+      expect(entrySize).toBeLessThan(37 * 1024); // < 37 KB, including storage-policy, encoded-path, config query-param, res.revalidate, getStaticPaths request-time and gSSP Set-Cookie fixture routes
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -7577,6 +7643,66 @@ describe("Production server middleware (Pages Router)", () => {
       multi: ["a", "b"],
       headersMulti: ["a", "b"],
     });
+  });
+
+  // Next.js patchSetHeaderWithCookieSupport keeps middleware cookies ahead of
+  // an API route's res.setHeader("Set-Cookie"), and sendError() keeps them on
+  // the 500 when the route then throws.
+  it.each([
+    { query: "", status: 200 },
+    { query: "?throw", status: 500 },
+  ])(
+    "keeps middleware cookies ahead of an API route's Set-Cookie in production ($status)",
+    async ({ query, status }) => {
+      const res = await fetch(`${prodUrl}/api/set-cookie-header${query}`);
+      expect(res.status).toBe(status);
+      expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    },
+  );
+
+  it("dedupes Set-Cookie values an API route sets in production", async () => {
+    const res = await fetch(`${prodUrl}/api/set-cookie-dedupe`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+  });
+
+  it("dedupes Set-Cookie values getServerSideProps sets in production", async () => {
+    const res = await fetch(`${prodUrl}/gssp-set-cookie?dup`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+  });
+
+  // Next.js runs one Set over middleware's and the handler's cookies.
+  it("dedupes an API route's Set-Cookie against middleware's in production", async () => {
+    const res = await fetch(`${prodUrl}/api/set-cookie-dedupe?mwd`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+  });
+
+  it("keeps an API route's appended duplicate of a middleware cookie in production", async () => {
+    const res = await fetch(`${prodUrl}/api/set-cookie-dedupe?mwd&append`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/", "d=1; Path=/"]);
+  });
+
+  it.each([
+    { pathname: "/gssp-set-cookie?dup&mwd", status: 200 },
+    { pathname: "/gip-set-cookie?mwd", status: 200 },
+    { pathname: "/missing-set-cookie?mwd", status: 404 },
+    { pathname: "/encoded-isr/not-found-set-cookie?mwd", status: 404 },
+  ])(
+    "dedupes a request-time page's Set-Cookie against middleware's in production ($pathname)",
+    async ({ pathname, status }) => {
+      const res = await fetch(`${prodUrl}${pathname}`);
+      expect(res.status).toBe(status);
+      expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/"]);
+    },
+  );
+
+  it("keeps middleware's cookie first on a getStaticProps notFound page that appends it in production", async () => {
+    const res = await fetch(`${prodUrl}/encoded-isr/not-found-append-cookie?mwd`);
+    expect(res.status).toBe(404);
+    expect(res.headers.getSetCookie()).toEqual(["d=1; Path=/", "h=1; Path=/", "d=1; Path=/"]);
   });
 
   it("rejects res.appendHeader after the API route wrote its headers in production", async () => {

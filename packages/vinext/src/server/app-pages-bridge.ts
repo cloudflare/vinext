@@ -5,6 +5,7 @@ import { beginRouteCacheability } from "vinext/shims/cacheability-classification
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
+import { stripInheritedResponseStageCookies } from "./response-stage-policy.js";
 import { mergeHeaders } from "./worker-utils.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import { applyRouteHandlerMiddlewareContext as applyMiddlewareHeadersToResponse } from "./app-route-handler-middleware-context.js";
@@ -27,7 +28,7 @@ export type PagesEntry = {
     query: Record<string, unknown>,
     parsedUrl: unknown,
     middlewareRequestHeaders?: Headers | null,
-    options?: { isDataReq?: boolean },
+    options?: { isDataReq?: boolean; middlewareSetCookies?: readonly string[] },
     initialResponseHeaders?: Headers,
   ) => Promise<Response> | Response;
 };
@@ -269,13 +270,33 @@ export async function renderPagesFallback(
     getRequestExecutionContext() ?? undefined,
     middlewareContext.requestHeaders,
   ] as const;
-  const pagesRes = isDataRequest
-    ? await (initialResponseHeaders
-        ? pagesEntry.renderPage(...renderArgs, { isDataReq: true }, initialResponseHeaders)
-        : pagesEntry.renderPage(...renderArgs, { isDataReq: true }))
-    : await (initialResponseHeaders
-        ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
-        : pagesEntry.renderPage(...renderArgs));
+  // Like Next.js, the page's `res` starts with middleware's cookies, so its
+  // setHeader("Set-Cookie") keeps them first and dedupes against them. They
+  // are removed again here, and applyPagesMiddlewareContext() merges them.
+  const middlewareSetCookies = middlewareContext.headers?.getSetCookie() ?? [];
+  let pagesRes: Response;
+  if (middlewareSetCookies.length > 0) {
+    const middlewareCookieHeaders = new Headers();
+    for (const cookie of middlewareSetCookies) middlewareCookieHeaders.append("Set-Cookie", cookie);
+    const renderHeaders = new Headers(initialResponseHeaders);
+    for (const cookie of middlewareSetCookies) renderHeaders.append("Set-Cookie", cookie);
+    pagesRes = stripInheritedResponseStageCookies(
+      await pagesEntry.renderPage(
+        ...renderArgs,
+        isDataRequest ? { isDataReq: true, middlewareSetCookies } : { middlewareSetCookies },
+        renderHeaders,
+      ),
+      middlewareCookieHeaders,
+    );
+  } else {
+    pagesRes = isDataRequest
+      ? await (initialResponseHeaders
+          ? pagesEntry.renderPage(...renderArgs, { isDataReq: true }, initialResponseHeaders)
+          : pagesEntry.renderPage(...renderArgs, { isDataReq: true }))
+      : await (initialResponseHeaders
+          ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
+          : pagesEntry.renderPage(...renderArgs));
+  }
   if (pagesRes.status === 404 && pageMatch === null) return null;
   return applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),

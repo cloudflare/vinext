@@ -37,6 +37,7 @@ import {
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { patchSetHeaderWithCookieSupport } from "./patch-set-header.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -410,12 +411,17 @@ export async function handleApiRoute(
     allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
     skipTrailingSlashRedirect?: boolean;
+    /** Set-Cookie values middleware already wrote to `res`. */
+    middlewareSetCookies?: readonly string[];
   },
 ): Promise<boolean> {
   const match = matchRoute(url, apiRoutes);
   if (!match) return false;
 
   const { route, params } = match;
+  // Like Next.js, patch before dispatch so Edge and Node handlers both keep
+  // middleware cookies when they replace Set-Cookie.
+  patchSetHeaderWithCookieSupport(res, nextConfig?.middlewareSetCookies ?? []);
 
   try {
     // Load the API route module through the ModuleRunner
