@@ -7,7 +7,9 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 concurrency:
-  group: deploy-${{ github.event_name }}-${{ github.ref }}
+  # A merged PR's `closed` run has github.ref set to the base branch, so key PR runs by
+  # number: closing then cancels that PR's in-flight deploy before preview cleanup runs.
+  group: deploy-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions: {}
