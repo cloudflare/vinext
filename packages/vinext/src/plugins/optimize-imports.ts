@@ -776,14 +776,12 @@ export function createOptimizeImportsPlugin(
       // In pnpm strict mode, sub-packages like @radix-ui/react-slot are only
       // resolvable from the barrel package's location, not from user code.
       // Use Vite's own resolver (not createRequire) so it picks the ESM entry.
-      // subpkgOrigin is keyed by environment; prefer the current env's map but
-      // fall back to the other env's map for the case where only one environment
-      // has transformed files that import from a given barrel (e.g. a barrel
-      // only reachable from the RSC graph may still need resolving from SSR).
-      const envName = (this as PluginCtx).environment?.name ?? "ssr";
-      const barrelEntry =
-        barrelCaches.subpkgOrigin.get(envName)?.get(source) ??
-        barrelCaches.subpkgOrigin.get(envName === "rsc" ? "ssr" : "rsc")?.get(source);
+      // subpkgOrigin is keyed like the transform below, which registers every
+      // specifier it emits in its own environment's map. The other environment's
+      // map may hold specifiers this one never emits, such as packages behind a
+      // "use client" boundary in RSC.
+      const envKey = (this as PluginCtx).environment?.name === "rsc" ? "rsc" : "ssr";
+      const barrelEntry = barrelCaches.subpkgOrigin.get(envKey)?.get(source);
       if (!barrelEntry) return;
       const resolved = await this.resolve(source, barrelEntry, { skipSelf: true });
       return resolved ?? undefined;

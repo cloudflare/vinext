@@ -870,12 +870,17 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
     const transform = unwrapHook(plugin.transform)!;
     const resolveId = unwrapHook(plugin.resolveId)!;
-    const context = { ...plugin, environment: { name: "rsc" }, resolve: vi.fn() };
+    const rsc = { ...plugin, environment: { name: "rsc" }, resolve: vi.fn() };
+    const ssr = { ...plugin, environment: { name: "ssr" }, resolve: vi.fn() };
 
-    // RSC imports Slot from the "use client" entry, never from @radix-ui/react-slot.
-    await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
-    await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
-    expect(context.resolve).not.toHaveBeenCalled();
+    // SSR imports Slot from @radix-ui/react-slot, but RSC imports it from the
+    // "use client" entry, whichever environment transforms first.
+    for (const context of [ssr, rsc]) {
+      await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
+      await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
+    }
+    expect(ssr.resolve).toHaveBeenCalledOnce();
+    expect(rsc.resolve).not.toHaveBeenCalled();
   });
 
   it('stops at "use server" modules in SSR', async () => {
