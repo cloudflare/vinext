@@ -371,6 +371,39 @@ export async function measureClientReferenceGroupCosts(options: {
     referenceByModuleId.set(moduleId, referenceId);
   }
 
+  // A tree-shaken module only follows the re-exports its importers use, so
+  // index them by export name. A barrel then costs each reference the names it
+  // imports, not its whole export list. Re-exports nobody uses still keep
+  // targets with side effects. Every target has resolved by the time the
+  // module's bindings are read, so its side-effect flag is known here.
+  type Reexport = ModuleBindings["reexports"][number];
+  type ReexportIndex = {
+    byName: Map<string, Reexport[]>;
+    stars: Reexport[];
+    sideEffectTargets: Set<string>;
+  };
+  const reexportIndexes = new Map<string, ReexportIndex>();
+  const indexReexports = (id: string, bindings: ModuleBindings) => {
+    let index = reexportIndexes.get(id);
+    if (index) return index;
+    index = { byName: new Map(), stars: [], sideEffectTargets: new Set() };
+    for (const edge of bindings.reexports) {
+      if (edge.exportName === "*") {
+        index.stars.push(edge);
+        continue;
+      }
+      const edges = index.byName.get(edge.exportName);
+      if (edges) edges.push(edge);
+      else index.byName.set(edge.exportName, [edge]);
+      if (!options.isSideEffectFree(edge.id)) index.sideEffectTargets.add(edge.id);
+    }
+    reexportIndexes.set(id, index);
+    return index;
+  };
+  const noNames: ReadonlySet<string> = new Set();
+  const importedNames = (edge: { importName: string }): UsedNames =>
+    edge.importName === "*" ? "*" : new Set([edge.importName]);
+
   // Each reference's own modules: its static graph up to (not including) any
   // other client reference, which is recorded as an imported reference. The
   // walk tracks the export names used from each module, so a side-effect-free
@@ -430,18 +463,22 @@ export async function measureClientReferenceGroupCosts(options: {
             continue;
           }
           for (const edge of bindings.imports) use(edge.id, edge.names, next);
-          for (const edge of bindings.reexports) {
-            let reexported: UsedNames;
-            if (!treeShaken || (edge.exportName !== "*" && names.has(edge.exportName))) {
-              reexported = edge.importName === "*" ? "*" : new Set([edge.importName]);
-            } else if (edge.exportName === "*") {
-              reexported = new Set([...names].filter((name) => name !== "default"));
-            } else {
-              // Still reached, so a target with side effects counts.
-              reexported = new Set();
-            }
-            use(edge.id, reexported, next);
+          if (!treeShaken) {
+            for (const edge of bindings.reexports) use(edge.id, importedNames(edge), next);
+            continue;
           }
+          const reexports = indexReexports(id, bindings);
+          for (const name of names) {
+            for (const edge of reexports.byName.get(name) ?? []) {
+              use(edge.id, importedNames(edge), next);
+            }
+          }
+          if (reexports.stars.length > 0) {
+            const starNames = new Set([...names].filter((name) => name !== "default"));
+            for (const edge of reexports.stars) use(edge.id, starNames, next);
+          }
+          // Still reached, so a target with side effects counts.
+          for (const target of reexports.sideEffectTargets) use(target, noNames, next);
         }
         frontier = next;
       }

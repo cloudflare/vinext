@@ -305,6 +305,7 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
           `export { all as icons };`,
           `export { default as Camera, default as CameraIcon } from "./camera.js";`,
           `export { default as Bell } from "./bell.js";`,
+          `export { default as Siren } from "./siren.js";`,
           `export * from "./more.js";`,
         ].join("\n"),
         sideEffectFree: true,
@@ -312,6 +313,7 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
       "/icons.js": { code: icon("Everything"), sideEffectFree: true },
       "/camera.js": { code: icon("Camera"), sideEffectFree: true },
       "/bell.js": { code: icon("Bell"), sideEffectFree: true },
+      "/siren.js": { code: `globalThis.siren = 1;\n${icon("Siren")}` },
       "/more.js": { code: `export * from "./polyfill.js";`, sideEffectFree: true },
       "/polyfill.js": { code: `globalThis.x = 1;` },
     };
@@ -332,12 +334,13 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     expect(loaded).not.toContain("/icons.js");
     const bytes = (code: string) => Buffer.byteLength(code, "utf8");
     // The barrel's statements emit no code, leaving only its newlines. Bell and
-    // the namespace re-export are tree-shaken, but the side-effectful module
-    // behind `export *` stays.
+    // the namespace re-export are tree-shaken, but the side-effectful modules
+    // behind the unused Siren re-export and `export *` stay.
     expect(costs.get("a")).toBe(
       bytes("\nexport const A = () => Camera;") +
         bytes(icon("Camera")) +
-        bytes("\n\n\n\n") +
+        bytes("\n\n\n\n\n") +
+        bytes(modules["/siren.js"].code) +
         bytes(modules["/polyfill.js"].code),
     );
   });
