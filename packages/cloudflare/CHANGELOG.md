@@ -2,6 +2,8 @@
 
 ## 1.2.0
 
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
 ### Features
 
 - **Cloudflare:** support Worker Previews via vinext-cloudflare previews deploy (#3900)

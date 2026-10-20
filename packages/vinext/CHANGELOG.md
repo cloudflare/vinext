@@ -2,6 +2,8 @@
 
 ## 1.3.0
 
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
 ### Features
 
 - **Build:** emit hash-only client chunk and CSS file names (#3615)
