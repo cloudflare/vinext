@@ -689,7 +689,7 @@ export function createAppBrowserNavigationController(
     const renderId = allocateRenderId();
     // Await both so a failed response does not leave either rejection unobserved.
     // Approval below reads the RouteManifest, so its load joins them.
-    const [navigationSnapshot] = await Promise.all([
+    const [navigationSnapshot, , routeManifestLoaded] = await Promise.all([
       pendingNavigationSnapshot,
       nextElements,
       loadRouteManifest(),
@@ -711,6 +711,12 @@ export function createAppBrowserNavigationController(
     // before dispatching so a racing unmount doesn't surface as an
     // initialized-setter error.
     if (!hasBrowserRouterState()) return;
+
+    // Without the RouteManifest the update cannot be classified; reload it.
+    if (routeManifestLoaded === false) {
+      performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
+      return;
+    }
 
     const approval = approveHmrVisibleCommit({
       currentState: getBrowserRouterState(),
@@ -945,6 +951,22 @@ export function createAppBrowserNavigationController(
   async function renderNavigationPayload(
     options: BrowserNavigationPayloadOptions,
   ): Promise<NavigationPayloadOutcome> {
+    // Approval reads the RouteManifest. Without it the commit cannot be
+    // classified: the navigation that still owns the router loads as a
+    // document instead, and a superseded one commits nothing.
+    const routeManifestLoad = loadRouteManifest();
+    if (routeManifestLoad !== null && !(await routeManifestLoad)) {
+      settlePendingBrowserRouterState(options.pendingRouterState);
+      consumeAppRouterScrollIntent(options.scrollIntent ?? null);
+      if (isCurrentNavigation(options.navId)) {
+        performHardNavigation(
+          options.targetHref,
+          options.historyUpdateMode === "push" ? "assign" : "replace",
+        );
+      }
+      return "no-commit";
+    }
+
     if (options.navId === pendingUserNavigationId) {
       pendingUserNavigationLane = options.operationLane;
     }
@@ -993,11 +1015,6 @@ export function createAppBrowserNavigationController(
               nextElements: options.nextElements,
             });
 
-      const routeManifestLoad = loadRouteManifest();
-      if (routeManifestLoad !== null && !(await routeManifestLoad)) {
-        // Callers recover from a failed commit with a document navigation.
-        throw new Error("[vinext] The App Router route manifest is unavailable");
-      }
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
         currentState: getBrowserRouterState(),
@@ -1131,9 +1148,15 @@ export function createAppBrowserNavigationController(
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const routeManifestLoad = loadRouteManifest();
     if (routeManifestLoad !== null && !(await routeManifestLoad)) {
-      // Same contract as a hard-navigate decision below.
-      performHardNavigation(targetHref);
-      return undefined;
+      // The commit cannot be classified without the RouteManifest. An action
+      // that still owns the router reloads, like a hard-navigate decision
+      // below; a superseded one is discarded like a no-commit decision.
+      if (isCurrentNavigation(startedNavigationId)) {
+        performHardNavigation(targetHref);
+        return undefined;
+      }
+      notifyDiscardedServerActionRevalidation(lifecycleOptions);
+      return resolveSameUrlActionReturnValue(returnValue);
     }
     const {
       approvedCommit,
@@ -1206,6 +1229,12 @@ export function createAppBrowserNavigationController(
     // update was skipped due to a superseding navigation. That preserves the
     // existing caller contract; a future Phase 2 router state model could make
     // skipped UI updates observable to the caller without conflating them here.
+    return resolveSameUrlActionReturnValue(returnValue);
+  }
+
+  async function resolveSameUrlActionReturnValue(
+    returnValue: { ok: boolean; data: unknown } | undefined,
+  ): Promise<unknown> {
     if (returnValue) {
       if (!returnValue.ok) {
         // A failed action's thrown value may still be settling.

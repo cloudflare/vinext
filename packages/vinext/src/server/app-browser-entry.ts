@@ -919,14 +919,22 @@ async function commitSameUrlNavigatePayload(
   let supplementalHandle: ReturnType<
     typeof serverActionSupplementalRefreshCoordinator.begin
   > | null = null;
+  let routeManifestLoaded = true;
   if (revalidation !== "none") {
     const routeManifestLoad = loadNavigationRuntimeRouteManifest();
-    if (routeManifestLoad !== null && !(await routeManifestLoad)) {
-      // Persisted interceptions and commit approval need the manifest. Like a
-      // hard-navigate commit decision, reload the action's page instead.
+    if (routeManifestLoad !== null) routeManifestLoaded = await routeManifestLoad;
+    // Persisted interceptions and commit approval need the manifest. An action
+    // that still owns the router reloads its page, like a hard-navigate commit
+    // decision. A superseded one goes on to the commit below, which discards it.
+    if (
+      !routeManifestLoaded &&
+      browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)
+    ) {
       browserNavigationController.performHardNavigation(actionInitiation.href);
       return undefined;
     }
+  }
+  if (revalidation !== "none" && routeManifestLoaded) {
     const refreshUrl = new URL(actionInitiation.href);
     const requestInterceptionContext = resolveInterceptionContextFromPreviousNextUrl(
       actionInitiation.routerState.previousNextUrl,

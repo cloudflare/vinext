@@ -2875,6 +2875,33 @@ describe("app browser entry state helpers", () => {
     expect(nextState.slotBindings).toEqual(currentBindings);
   });
 
+  it("reloads instead of classifying an HMR replacement when the route manifest fails to load", async () => {
+    const { controller, detach, stateRef } = createControllerHarness(
+      createState({
+        rootLayoutTreePath: "/",
+        routeId: "route:/settings",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/settings",
+          {},
+        ),
+      }),
+      { loadRouteManifest: () => Promise.resolve(false) },
+    );
+    const { assign } = stubWindow("https://example.com/settings");
+
+    try {
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/settings/account", "/")),
+        createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      );
+
+      expect(assign).toHaveBeenCalledWith("/settings");
+      expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
   it("does not let a pending HMR replacement overwrite a navigation commit", async () => {
     const { controller, stateRef, setBrowserRouterState } = createControllerHarness();
     let resolveHmrPayload!: (elements: AppElements) => void;
@@ -4769,6 +4796,88 @@ describe("app browser navigation controller", () => {
         state: "committed",
         visibleCommitVersion: 1,
       });
+    } finally {
+      detach();
+    }
+  });
+
+  it("document-navigates a current payload render when the route manifest fails to load", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      loadRouteManifest: () => Promise.resolve(false),
+    });
+    const { assign, replace } = stubWindow("https://example.com/settings");
+    const navId = controller.beginNavigation();
+    const renderPayload = (targetHref: string) =>
+      renderCurrentStateNavigationPayload(controller, {
+        actionType: "replace",
+        historyUpdateMode: "replace",
+        navigationCommitKind: "authoritative",
+        navigationSnapshot: createClientNavigationRenderSnapshot(targetHref, {}),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements("route:/login", "/", null)),
+        operationLane: "server-action",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref,
+      });
+
+    try {
+      await expect(renderPayload("https://example.com/login")).resolves.toBe("no-commit");
+      expect(replace).toHaveBeenCalledWith("https://example.com/login");
+      expect(assign).not.toHaveBeenCalled();
+
+      // A superseded render commits nothing and leaves the document alone.
+      controller.beginNavigation();
+      await expect(renderPayload("https://example.com/stale")).resolves.toBe("no-commit");
+      expect(replace).toHaveBeenCalledTimes(1);
+      expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
+  it("only reloads for a same-URL server action that still owns the router when the route manifest fails to load", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      loadRouteManifest: () => Promise.resolve(false),
+    });
+    const { assign } = stubWindow("https://example.com/settings");
+    const onDiscardedRevalidation = vi.fn();
+    const commitAction = (startedNavigationId: number) =>
+      controller.commitSameUrlNavigatePayload(
+        Promise.resolve(createResolvedElements("route:/settings/account", "/", null)),
+        stateRef.current.navigationSnapshot,
+        { data: "action-result", ok: true },
+        stateRef.current,
+        {
+          onDiscardedRevalidation,
+          revalidation: "staticAndDynamic",
+          startedNavigationId,
+          targetHref: "https://example.com/settings",
+        },
+      );
+
+    try {
+      const staleNavigationId = controller.beginNavigation();
+      controller.beginNavigation();
+      await expect(commitAction(staleNavigationId)).resolves.toBe("action-result");
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+      expect(assign).not.toHaveBeenCalled();
+
+      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
+      expect(assign).toHaveBeenCalledWith("https://example.com/settings");
+      expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {
       detach();
     }
