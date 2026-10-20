@@ -322,6 +322,7 @@ import {
   createClientManualChunks,
   createClientCodeSplittingConfig,
   createClientAssetFileNames,
+  createWorkerFileNames,
   createMultiStageCodeSplittingConfig,
   createMultiStageChunkFileNames,
   createRscFrameworkChunkOutputConfig,
@@ -4617,22 +4618,19 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // directory. This must run after Vite merges config hooks: output arrays
         // are concatenated during config merging, so returning a mapped array
         // from config() would retain the original unisolated outputs as well.
-        // Hash-only, like client chunks: `[name]` would publish worker source
-        // file names in public URLs.
+        // See createWorkerFileNames for the hash-only naming.
         if (config.worker?.rolldownOptions) {
-          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[hash].js`;
+          const workerFileNames = createWorkerFileNames(
+            resolveAssetsDir(nextConfig.assetPrefix ?? ""),
+            config.root,
+          );
           const workerOutputs = config.worker.rolldownOptions.output;
           config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
             ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({
                 ...output,
-                entryFileNames: workerFileNames,
-                chunkFileNames: workerFileNames,
+                ...workerFileNames,
               }))
-            : {
-                ...workerOutputs,
-                entryFileNames: workerFileNames,
-                chunkFileNames: workerFileNames,
-              };
+            : { ...workerOutputs, ...workerFileNames };
         }
 
         // Provide the resolved config to the Sass-aware CSS Modules Loader so

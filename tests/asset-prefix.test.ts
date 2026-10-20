@@ -199,12 +199,12 @@ describe("renderVinextBuiltUrl", () => {
       expect(outputs).toEqual([
         expect.objectContaining({
           exports: "named",
-          entryFileNames: "_next/static/workers/[hash].js",
+          entryFileNames: expect.any(Function),
           chunkFileNames: "_next/static/workers/[hash].js",
         }),
         expect.objectContaining({
           sourcemap: true,
-          entryFileNames: "_next/static/workers/[hash].js",
+          entryFileNames: expect.any(Function),
           chunkFileNames: "_next/static/workers/[hash].js",
         }),
       ]);
@@ -233,10 +233,22 @@ describe("renderVinextBuiltUrl", () => {
 
     expect(config.worker.rolldownOptions.output).toEqual([
       expect.objectContaining({
-        entryFileNames: "_next/static/workers/[hash].js",
+        entryFileNames: expect.any(Function),
         chunkFileNames: "_next/static/workers/[hash].js",
       }),
     ]);
+
+    // Entries are hash-only, but two workers whose code is identical still get
+    // distinct names (and source maps) from their module ids.
+    const [{ entryFileNames }] = config.worker.rolldownOptions.output as Array<{
+      entryFileNames: (chunk: { facadeModuleId: string | null }) => string;
+    }>;
+    const entryName = (id: string) => entryFileNames({ facadeModuleId: id });
+    const consentWorker = entryName(`${APP_FIXTURE_DIR}/app/consent-banner-worker.ts?worker_file`);
+    const otherWorker = entryName(`${APP_FIXTURE_DIR}/app/other-worker.ts?worker_file`);
+    expect(consentWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
+    expect(otherWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
+    expect(consentWorker).not.toBe(otherWorker);
   });
 });
 

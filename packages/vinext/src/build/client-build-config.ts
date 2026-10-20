@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import type { UserConfig } from "vite";
 import path, { toSlash } from "pathslash";
+import { stripViteModuleQuery } from "../utils/path.js";
 
 type ClientAssetFileNameInfo = {
   readonly name?: string;
@@ -188,6 +190,28 @@ function createClientFileNameConfig(assetsDir: string) {
   return {
     entryFileNames: `${chunksDir}/[hash].js`,
     chunkFileNames: `${chunksDir}/[hash].js`,
+  };
+}
+
+/**
+ * Web Worker output names. Workers are hash-only like client chunks, so their
+ * URLs don't publish source file names. Vite bundles each worker separately
+ * and stores the outputs by file name, so two workers with identical code would
+ * share `[hash].js` and one's source map would overwrite the other's. Entries
+ * therefore also carry an opaque id derived from the worker's root-relative
+ * module id.
+ */
+export function createWorkerFileNames(assetsDir: string, root: string) {
+  const workersDir = `${assetsDir}/workers`;
+  return {
+    entryFileNames: (chunk: { facadeModuleId: string | null }) => {
+      const entryId = chunk.facadeModuleId
+        ? toSlash(path.relative(root, stripViteModuleQuery(chunk.facadeModuleId)))
+        : "";
+      const entryHash = createHash("sha256").update(entryId).digest("hex").slice(0, 8);
+      return `${workersDir}/${entryHash}-[hash].js`;
+    },
+    chunkFileNames: `${workersDir}/[hash].js`,
   };
 }
 

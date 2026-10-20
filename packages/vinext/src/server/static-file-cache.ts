@@ -293,6 +293,8 @@ const MANAGED_CSS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/css/`;
 const MANAGED_WORKERS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/workers/`;
 const MANAGED_MEDIA_SEGMENT = `${ASSET_PREFIX_URL_DIR}/media/`;
 const HASH_ONLY_BASENAME_RE = /^[A-Za-z0-9_-]{8}$/;
+// Worker entries: `<entry-id-hash>-<content-hash>` (see createWorkerFileNames).
+const WORKER_ENTRY_BASENAME_RE = /^[0-9a-f]{8}-[A-Za-z0-9_-]{8}$/;
 
 function isInManagedDir(normalizedPath: string, segment: string): boolean {
   return normalizedPath.startsWith(segment) || normalizedPath.includes(`/${segment}`);
@@ -325,6 +327,13 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
     ) {
       return `W/"${basename}"`;
     }
+  }
+  if (
+    basename.length === 17 &&
+    WORKER_ENTRY_BASENAME_RE.test(basename) &&
+    isInManagedDir(toSlash(relativePath), MANAGED_WORKERS_SEGMENT)
+  ) {
+    return `W/"${basename}"`;
   }
 
   const lastDash = basename.lastIndexOf("-");
