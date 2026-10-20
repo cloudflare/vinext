@@ -209,15 +209,15 @@ export function createWorkerFileNames(assetsDir: string, root: string) {
     // `lazy.js?one` and `lazy.js?two` are distinct modules. Virtual ids (e.g.
     // `\0virtual:x`) aren't passed to path.relative, which would resolve
     // them against the cwd; only root paths embedded in them (such as
-    // `\0vinext-worker-image-meta:<root>/a.png`) are dropped, so names don't
-    // depend on where the app lives or the build was launched.
+    // `\0vinext-worker-image-meta:<root>/a.png`) become a `<root>/` marker,
+    // so names don't depend on where the app lives or the build was launched.
     const rootPrefix = `${toSlash(root)}/`;
     const chunkId = ids
       .map((id) => {
         const file = stripViteModuleQuery(id);
         return path.isAbsolute(file)
           ? toSlash(path.relative(root, file)) + id.slice(file.length)
-          : toSlash(id).split(rootPrefix).join("");
+          : toSlash(id).split(rootPrefix).join("<root>/");
       })
       .join("\n");
     const idHash = createHash("sha256").update(chunkId).digest("hex").slice(0, 8);

@@ -262,6 +262,11 @@ describe("renderVinextBuiltUrl", () => {
         facadeModuleId: "\0vinext-worker-image-meta:/srv/a/app-root/app/other.png",
       }),
     );
+    expect(imageMetaName("/srv/a/app-root")).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0vinext-worker-image-meta:app/hero.png",
+      }),
+    );
     // Query variants of one file are distinct modules.
     expect(entryName(`${APP_FIXTURE_DIR}/app/lazy.js?one`)).not.toBe(
       entryName(`${APP_FIXTURE_DIR}/app/lazy.js?two`),
