@@ -36,7 +36,7 @@ vinext warns about string patterns it can't serve correctly. Keep them:
 - ending in `.js` for entries and chunks, and in `[extname]` for assets;
 - starting with `[name].` or `[name]-` in asset basenames, so assets that CSS `url()` references keep their hashed names.
 
-Function patterns and array-shaped `output` are left to you to keep within these rules.
+Function patterns are left to you to keep within these rules. Array-shaped client `output` isn't supported: Vite appends vinext's own client output to the array, which builds an extra bundle.
 
 ## React
 
