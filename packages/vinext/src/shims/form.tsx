@@ -27,7 +27,10 @@ import {
   type FormHTMLAttributes,
   type ForwardedRef,
 } from "react";
-import { hasAppNavigationRuntime } from "../client/navigation-runtime.js";
+import {
+  hasAppNavigationRuntime,
+  loadNavigationRuntimeRouteManifest,
+} from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
 import {
   getMountedSlotsHeader,
@@ -319,14 +322,21 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
           if (entry.isIntersecting || entry.intersectionRatio > 0) {
             void (async () => {
               if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
-
               // Mirror the Link/router prefetch computation so the cache key the
               // navigation later looks up matches what we prefetch here. Without
               // this, intercepted routes or pages with mounted parallel slots
               // would key under a different context and miss the cached payload.
-              // (See link.tsx:373-389 and navigation.ts:1909-1916.)
-              const interceptionContext = getPrefetchInterceptionContext(actionHref);
+              // (See link.tsx:373-389 and navigation.ts:1909-1916.) The context
+              // is captured now; the interception context, which reads the
+              // RouteManifest, resolves from it once the manifest has loaded.
+              const currentPathname = window.location.pathname;
               const mountedSlotsHeader = getMountedSlotsHeader();
+              const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+              if (routeManifestLoad !== null) await routeManifestLoad;
+              const interceptionContext = getPrefetchInterceptionContext(
+                actionHref,
+                currentPathname,
+              );
               const headers = createRscRequestHeaders({
                 interceptionContext,
                 renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,

@@ -6,6 +6,7 @@ import type {
 import { toClientRewrites } from "../client/client-rewrites.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
+import { toBrowserRouteManifestWire } from "../routing/browser-route-manifest.js";
 import type { NextRewrite } from "../config/next-config.js";
 
 /**
@@ -17,7 +18,6 @@ import type { NextRewrite } from "../config/next-config.js";
  */
 export function generateBrowserEntry(
   routes: readonly AppRoute[] = [],
-  routeManifest: RouteManifest | null = null,
   pagesPrefetchRoutes: readonly VinextPagesLinkPrefetchRoute[] = [],
   rewrites: { afterFiles: NextRewrite[]; beforeFiles: NextRewrite[]; fallback: NextRewrite[] } = {
     afterFiles: [],
@@ -28,12 +28,10 @@ export function generateBrowserEntry(
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
   const prefetchRoutes = toLinkPrefetchRoutes(routes);
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
-import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // Pages route manifest for hybrid ownership decisions. In a hybrid
@@ -43,9 +41,6 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
 window.__VINEXT_LOCALES__ = ${JSON.stringify(locales)};
-registerNavigationRuntimeBootstrap({
-    routeManifest: ${buildRouteManifestExpression(routeManifest)}
-});
 import ${JSON.stringify(entryPath)};`;
 }
 
@@ -147,29 +142,16 @@ export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPre
   );
 }
 
-function buildRouteManifestExpression(routeManifest: RouteManifest | null): string {
-  if (routeManifest === null) return "null";
-
-  const graph = routeManifest.segmentGraph;
-  return `{
-  graphVersion: ${JSON.stringify(routeManifest.graphVersion)},
-  segmentGraph: {
-    routes: ${buildMapExpression(graph.routes)},
-    pages: ${buildMapExpression(graph.pages)},
-    routeHandlers: ${buildMapExpression(graph.routeHandlers)},
-    layouts: ${buildMapExpression(graph.layouts)},
-    templates: ${buildMapExpression(graph.templates)},
-    slots: ${buildMapExpression(graph.slots)},
-    defaults: ${buildMapExpression(graph.defaults)},
-    slotBindings: ${buildMapExpression(graph.slotBindings)},
-    interceptions: ${buildMapExpression(graph.interceptions)},
-    interceptionsBySlotId: ${buildMapExpression(graph.interceptionsBySlotId)},
-    boundaries: ${buildMapExpression(graph.boundaries)},
-    rootBoundaries: ${buildMapExpression(graph.rootBoundaries)}
-  }
-}`;
-}
-
-function buildMapExpression<Key extends string, Value>(map: ReadonlyMap<Key, Value>): string {
-  return `new Map(${JSON.stringify(Array.from(map.entries()))})`;
+/**
+ * Generate the virtual module that holds the browser RouteManifest.
+ *
+ * The App browser runtime imports it dynamically when hydration starts, so the
+ * manifest, which grows with every route, stays out of the entry chunk. The
+ * JSON string keeps the parse on V8's fast JSON path.
+ */
+export function generateBrowserRouteManifestModule(routeManifest: RouteManifest | null): string {
+  if (routeManifest === null) return "export default null;";
+  return `export default JSON.parse(${JSON.stringify(
+    JSON.stringify(toBrowserRouteManifestWire(routeManifest)),
+  )});`;
 }

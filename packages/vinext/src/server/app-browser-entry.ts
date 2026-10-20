@@ -60,7 +60,9 @@ import {
   type PrefetchCacheEntry,
 } from "vinext/shims/navigation";
 import {
+  createNavigationRuntimeRouteManifestLoader,
   getNavigationRuntime,
+  loadNavigationRuntimeRouteManifest,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntimeNavigate,
@@ -173,7 +175,10 @@ import {
   bindAppElementsRenderedSearch,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
-import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
+import type {
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+} from "../routing/browser-route-manifest.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { addBasePathToPathname, stripBasePath } from "../utils/base-path.js";
@@ -211,7 +216,6 @@ import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
-  matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
@@ -312,7 +316,13 @@ function markInitialAppRouterBootstrapHydrated(): void {
   window.__VINEXT_RSC_BOOTSTRAP_STATE__ = "hydrated";
 }
 
-function getBrowserRouteManifest(): RouteManifest | null {
+registerNavigationRuntimeFunctions({
+  loadRouteManifest: createNavigationRuntimeRouteManifestLoader(
+    () => import("virtual:vinext-app-route-manifest"),
+  ),
+});
+
+function getBrowserRouteManifest(): BrowserRouteManifest | null {
   return getNavigationRuntime()?.bootstrap.routeManifest ?? null;
 }
 
@@ -357,6 +367,7 @@ const historyController = new AppBrowserHistoryController({
 const browserNavigationController = createAppBrowserNavigationController({
   basePath: __basePath,
   getRouteManifest: getBrowserRouteManifest,
+  loadRouteManifest: loadNavigationRuntimeRouteManifest,
   navigateDocument: (href, mode) => {
     if (mpaNavigationTree) {
       mpaNavigationTree.enter(href, mode === "replace" ? "replace" : "push");
@@ -569,7 +580,7 @@ function clearClientNavigationCaches(): void {
 }
 
 type PersistedRefreshInterception = {
-  interception: RouteManifestInterception;
+  interception: BrowserRouteManifestInterception;
   interceptionContext: string;
   targetPathname: string;
 };
@@ -580,7 +591,7 @@ function getMatchedUrlPathname(matchedUrl: string): string {
 
 function resolvePersistedRefreshInterceptions(
   state: AppRouterState,
-  routeManifest: RouteManifest | null,
+  routeManifest: BrowserRouteManifest | null,
   refreshUrl: URL,
   requestInterceptionContext: string | null,
 ): PersistedRefreshInterception[] {
@@ -711,7 +722,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
 }): Promise<boolean> {
   const source = parsePrefetchCacheKey(options.cacheKey);
   if (source.interceptionContext !== options.interceptionContext) return false;
@@ -748,7 +759,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
 async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
 }): Promise<void> {
   if (options.routeManifest === null) return;
 
@@ -909,6 +920,8 @@ async function commitSameUrlNavigatePayload(
     typeof serverActionSupplementalRefreshCoordinator.begin
   > | null = null;
   if (revalidation !== "none") {
+    const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+    if (routeManifestLoad !== null) await routeManifestLoad;
     const refreshUrl = new URL(actionInitiation.href);
     const requestInterceptionContext = resolveInterceptionContextFromPreviousNextUrl(
       actionInitiation.routerState.previousNextUrl,
@@ -1918,6 +1931,9 @@ function registerServerActionCallback(): void {
 
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
+  // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
+  // in the entry chunk. Navigations and prefetches wait for it before reading it.
+  void loadNavigationRuntimeRouteManifest();
 
   if (hasServerActions) registerServerActionCallback();
   installAppNavigationFailureListeners();
@@ -1960,6 +1976,7 @@ function bootstrapHydration(
     ),
     initialRscBootstrap,
   );
+  const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
   const root = decodeAppElementsPromise(
     createFromReadableStream<AppWireElements>(reactBranch),
   ).then((elements) => {
@@ -1968,19 +1985,20 @@ function bootstrapHydration(
         AppElementsWire.readMetadata(elements).artifactCompatibility.deploymentVersion;
     }
     bindAppElementsRenderedSearch(elements, initialNavigationSnapshot);
+    // Set before hydration commits, so router.prefetch calls from hydration
+    // effects send the initial route's router state.
+    initialPrefetchRouterState = {
+      pathAndSearch: initialPathAndSearch,
+      routeId: AppElementsWire.readMetadata(elements).routeId,
+    };
     return elements;
   });
   const initialParams = initialNavigationSnapshot.params;
-  const initialPathAndSearch = createSnapshotPathAndSearch(initialNavigationSnapshot);
   const initialCacheBuffer = new Response(cacheBranch).arrayBuffer();
   void Promise.all([root, initialCacheBuffer])
     .then(async ([elements, buffer]) => {
       if (cacheGeneration !== clientNavigationCacheGeneration) return;
       const metadata = AppElementsWire.readMetadata(elements);
-      initialPrefetchRouterState = {
-        pathAndSearch: initialPathAndSearch,
-        routeId: metadata.routeId,
-      };
       if (!isCompleteAppPayloadMetadata(metadata)) return;
       const mountedSlotsHeader = getMountedSlotIdsHeader(elements);
       const headers = createRscRequestHeaders({ mountedSlotsHeader });
@@ -2182,6 +2200,15 @@ function bootstrapHydration(
         if (shouldUsePendingRouterState) {
           pendingRouterState = beginPendingBrowserRouterState();
         }
+      }
+
+      // Request-state resolution, optimistic shells and commit approval below
+      // read the RouteManifest synchronously. It loads from its own chunk, so a
+      // navigation that starts before it arrives waits for (or starts) that load.
+      const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+      if (routeManifestLoad !== null) {
+        await routeManifestLoad;
+        if (!browserNavigationController.isCurrentNavigation(navId)) return;
       }
 
       // Redirects and detached shells can change visible state before the
@@ -3019,24 +3046,7 @@ function bootstrapHydration(
       historyController.commitHashOnlyNavigation(href, historyUpdateMode, scroll),
     getPrefetchRouterState: () => {
       if (!browserNavigationController.hasBrowserRouterState()) {
-        if (initialPrefetchRouterState) return initialPrefetchRouterState;
-        const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest ?? null;
-        const match = routeManifest
-          ? matchOptimisticRouteManifestRoute({
-              basePath: __basePath,
-              href: window.location.href,
-              routeManifest,
-            })
-          : null;
-        return match
-          ? {
-              pathAndSearch: createBasePathStrippedPathAndSearch(
-                new URL(window.location.href),
-                __basePath,
-              ),
-              routeId: match.route.id,
-            }
-          : null;
+        return initialPrefetchRouterState;
       }
       const state = browserNavigationController.getBrowserRouterState();
       return {

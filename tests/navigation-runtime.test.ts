@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   NAVIGATION_RUNTIME_KEY,
+  createNavigationRuntimeRouteManifestLoader,
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  loadNavigationRuntimeRouteManifest,
   registerNavigationRuntimeBootstrap,
   registerNavigationRuntimeFunctions,
   type NavigationRuntime,
@@ -11,11 +13,13 @@ import {
   type NavigationRuntimeRscBootstrap,
   type NavigationRuntimeRscChunk,
 } from "../packages/vinext/src/client/navigation-runtime.js";
+import type { BrowserRouteManifestWire } from "../packages/vinext/src/routing/browser-route-manifest.js";
 
 const originalWindow = Reflect.get(globalThis, "window");
 const hadWindow = Reflect.has(globalThis, "window");
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (hadWindow) {
     Reflect.set(globalThis, "window", originalWindow);
     return;
@@ -114,18 +118,12 @@ describe("navigation runtime contract", () => {
   it("rejects route manifests with malformed interception entries", () => {
     const runtimeWindow = {};
     const segmentGraphMaps = {
-      boundaries: new Map(),
-      defaults: new Map(),
       interceptions: new Map([["bad", {}]]),
       interceptionsBySlotId: new Map(),
       layouts: new Map(),
-      pages: new Map(),
       rootBoundaries: new Map(),
-      routeHandlers: new Map(),
       routes: new Map(),
       slotBindings: new Map(),
-      slots: new Map(),
-      templates: new Map(),
     };
     Reflect.set(globalThis, "window", runtimeWindow);
     Reflect.set(runtimeWindow, NAVIGATION_RUNTIME_KEY, {
@@ -141,4 +139,77 @@ describe("navigation runtime contract", () => {
 
     expect(getNavigationRuntime()).toBeNull();
   });
+
+  it("loads the route manifest once and registers it", async () => {
+    Reflect.set(globalThis, "window", {});
+    const importManifest = vi.fn(() => Promise.resolve({ default: routeManifestWire }));
+    registerNavigationRuntimeFunctions({
+      loadRouteManifest: createNavigationRuntimeRouteManifestLoader(importManifest),
+    });
+
+    const load = loadNavigationRuntimeRouteManifest();
+    expect(load).not.toBeNull();
+    expect(loadNavigationRuntimeRouteManifest()).toBe(load);
+    expect(getNavigationRuntime()?.bootstrap.routeManifest).toBeNull();
+
+    await load;
+
+    const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest;
+    expect(routeManifest?.graphVersion).toBe("graph:test");
+    expect(routeManifest?.segmentGraph.routes.get("route:/blog/:slug")?.paramNames).toEqual([
+      "slug",
+    ]);
+    expect(loadNavigationRuntimeRouteManifest()).toBeNull();
+    expect(importManifest).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets callers continue after a failed route manifest load, retries it and reports once", async () => {
+    Reflect.set(globalThis, "window", {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const importManifest = vi
+      .fn<() => Promise<{ default: BrowserRouteManifestWire | null }>>()
+      .mockRejectedValueOnce(new Error("chunk load failed"))
+      .mockRejectedValueOnce(new Error("chunk load failed again"))
+      .mockResolvedValueOnce({ default: routeManifestWire });
+    registerNavigationRuntimeFunctions({
+      loadRouteManifest: createNavigationRuntimeRouteManifestLoader(importManifest),
+    });
+
+    await expect(loadNavigationRuntimeRouteManifest()).resolves.toBeUndefined();
+    expect(getNavigationRuntime()?.bootstrap.routeManifest).toBeNull();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    await loadNavigationRuntimeRouteManifest();
+    expect(consoleError).toHaveBeenCalledTimes(1);
+
+    await loadNavigationRuntimeRouteManifest();
+    expect(getNavigationRuntime()?.bootstrap.routeManifest?.graphVersion).toBe("graph:test");
+    expect(importManifest).toHaveBeenCalledTimes(3);
+  });
+
+  it("has no route manifest load to wait for without a registered loader", () => {
+    Reflect.set(globalThis, "window", {});
+
+    expect(loadNavigationRuntimeRouteManifest()).toBeNull();
+  });
 });
+
+const routeManifestWire: BrowserRouteManifestWire = {
+  graphVersion: "graph:test",
+  routes: [
+    {
+      patternParts: ["blog", ":slug"],
+      isDynamic: true,
+      paramNames: ["slug"],
+      rootBoundaryId: "root-boundary:/",
+      pageId: "page:/blog/:slug",
+      layoutIds: ["layout:/"],
+      slotIds: [],
+    },
+  ],
+  layouts: [{ id: "layout:/", patternParts: [], rootBoundaryId: "root-boundary:/" }],
+  slotBindings: [],
+  interceptions: [],
+  interceptionsBySlotId: [],
+  rootBoundaries: [{ id: "root-boundary:/", treePath: "/" }],
+};

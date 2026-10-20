@@ -19,7 +19,7 @@ import {
   consumeAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
   FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -97,7 +97,9 @@ type BrowserNavigationControllerDeps = {
   // Loads a URL as a new document once the reload-loop guard allows it.
   navigateDocument?: (href: string, mode: HardNavigationMode) => void;
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
-  getRouteManifest?: () => RouteManifest | null;
+  getRouteManifest?: () => BrowserRouteManifest | null;
+  // Starts or joins the RouteManifest load; null once it is loaded.
+  loadRouteManifest?: () => Promise<void> | null;
   syncHistoryStatePreviousNextUrl?: (
     previousNextUrl: string | null,
     bfcacheIds?: Readonly<Record<string, string>> | null,
@@ -300,6 +302,7 @@ export function createAppBrowserNavigationController(
     ((href: string, mode?: HardNavigationMode) =>
       performHardNavigationWithLoopGuard(href, mode, deps.navigateDocument));
   const getRouteManifest = deps.getRouteManifest ?? (() => null);
+  const loadRouteManifest = deps.loadRouteManifest ?? (() => null);
   const syncHistoryStatePreviousNextUrl = deps.syncHistoryStatePreviousNextUrl ?? (() => {});
 
   // These are plain module-level variables (inside the controller closure),
@@ -685,7 +688,12 @@ export function createAppBrowserNavigationController(
     const currentState = getBrowserRouterState();
     const renderId = allocateRenderId();
     // Await both so a failed response does not leave either rejection unobserved.
-    const [navigationSnapshot] = await Promise.all([pendingNavigationSnapshot, nextElements]);
+    // Approval below reads the RouteManifest, so its load joins them.
+    const [navigationSnapshot] = await Promise.all([
+      pendingNavigationSnapshot,
+      nextElements,
+      loadRouteManifest(),
+    ]);
     const pending = await createPendingNavigationCommit({
       currentState,
       nextElements,
@@ -985,6 +993,8 @@ export function createAppBrowserNavigationController(
               nextElements: options.nextElements,
             });
 
+      const routeManifestLoad = loadRouteManifest();
+      if (routeManifestLoad !== null) await routeManifestLoad;
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
         currentState: getBrowserRouterState(),
@@ -1116,6 +1126,8 @@ export function createAppBrowserNavigationController(
     const currentState = actionInitiationState ?? getBrowserRouterState();
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
+    const routeManifestLoad = loadRouteManifest();
+    if (routeManifestLoad !== null) await routeManifestLoad;
     const {
       approvedCommit,
       decision,

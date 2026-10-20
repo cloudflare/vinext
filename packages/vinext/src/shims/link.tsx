@@ -23,6 +23,7 @@ import type { UrlObject } from "node:url";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  loadNavigationRuntimeRouteManifest,
   registerNavigationRuntimeFunctions,
 } from "../client/navigation-runtime.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "./url-safety.js";
@@ -378,6 +379,8 @@ function prefetchUrl(
           import("../server/app-rsc-render-mode.js"),
           import("../server/headers.js"),
           HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwnerModule() : null,
+          // getPrefetchInterceptionContext below reads the RouteManifest.
+          loadNavigationRuntimeRouteManifest(),
         ]);
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not

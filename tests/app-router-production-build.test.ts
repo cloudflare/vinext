@@ -21,6 +21,8 @@ import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
 type ClientManifestEntry = {
+  dynamicImports?: string[];
+  file: string;
   imports?: string[];
   isEntry?: boolean;
   name?: string;
@@ -172,6 +174,35 @@ describe("App Router Production build", () => {
     };
     if (browserEntryKey) visitEagerImports(browserEntryKey);
     expect(linkEntryKey ? eagerKeys.has(linkEntryKey) : true).toBe(false);
+
+    // The browser RouteManifest grows with every route of the app, so the
+    // eager bootstrap must not inline it (#3957). It loads from its own lazy
+    // chunk, which carries only the maps and fields the browser reads.
+    const readClientChunk = (key: string): string =>
+      fs.readFileSync(path.join(outDir, "client", clientManifest[key]!.file), "utf-8");
+    const eagerJs = [...eagerKeys].map(readClientChunk).join("\n");
+    // Route ids that are `route:` plus their pattern are not serialized, so
+    // check layout and slot ids.
+    for (const graphId of ["layout:/dashboard", "slot:team:/dashboard"]) {
+      expect(eagerJs).not.toContain(graphId);
+    }
+    const routeManifestKey = Object.keys(clientManifest).find((key) =>
+      key.includes("vinext-app-route-manifest"),
+    );
+    expect(routeManifestKey).toBeDefined();
+    expect(eagerKeys.has(routeManifestKey!)).toBe(false);
+    expect(
+      [...eagerKeys].some((key) =>
+        (clientManifest[key]?.dynamicImports ?? []).includes(routeManifestKey!),
+      ),
+    ).toBe(true);
+    const routeManifestJs = readClientChunk(routeManifestKey!);
+    expect(routeManifestJs).toContain("layout:/dashboard");
+    expect(routeManifestJs).toContain("slot:team:/dashboard");
+    expect(routeManifestJs).toContain("JSON.parse(");
+    for (const unreadField of ["routeHandlerId", "templateIds", "boundaries", "defaults"]) {
+      expect(routeManifestJs).not.toContain(unreadField);
+    }
 
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");

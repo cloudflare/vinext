@@ -1,5 +1,5 @@
 import type { ClientNavigationRenderSnapshot } from "vinext/shims/navigation";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { mergeElements } from "vinext/shims/slot";
 import { resolveAppPageRouteStateKey } from "./app-page-segment-state.js";
 import {
@@ -326,7 +326,7 @@ function resolvePendingNavigationCommitDecision(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
 }): CommitDecision {
@@ -454,7 +454,7 @@ function addCommitTransactionTrace(
 export function approveHmrVisibleCommit(options: {
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   targetHref: string;
 }): CommitApproval {
   const { currentState, pending } = options;
@@ -488,7 +488,7 @@ export function approvePendingNavigationCommit(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
 }): CommitApproval {
@@ -539,7 +539,7 @@ export async function resolveAndClassifyNavigationCommit(options: {
   payloadOrigin: AppNavigationPayloadOrigin;
   previousNextUrl?: string | null;
   renderId: number;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref: string;
   type: "navigate" | "replace" | "traverse";
