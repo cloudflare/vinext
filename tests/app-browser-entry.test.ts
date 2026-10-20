@@ -4815,6 +4815,7 @@ describe("app browser navigation controller", () => {
     const renderPayload = (targetHref: string) =>
       renderCurrentStateNavigationPayload(controller, {
         actionType: "replace",
+        createNavigationCommitEffect: () => () => {},
         historyUpdateMode: "replace",
         navigationCommitKind: "authoritative",
         navigationSnapshot: createClientNavigationRenderSnapshot(targetHref, {}),
