@@ -15,6 +15,29 @@ export const metadata = {
 
 Development, bundling, and production builds run on Vite 8 instead of the Next.js compiler toolchain. Vite plugins can extend the build, while webpack plugins and framework-specific build internals do not carry over automatically.
 
+## Build output file names
+
+Production client JS, CSS, and Web Worker files use hash-only names, so component and source file names never appear in public asset URLs:
+
+- client JS: `_next/static/chunks/[hash].js`;
+- CSS: `_next/static/css/[hash].css`;
+- Web Workers: `_next/static/workers/<module-id>-[hash].js`.
+
+Images, fonts, and other media keep `_next/static/media/[name].[hash:8][extname]`.
+
+`<module-id>` is an opaque hash of the worker chunk's modules. It keeps workers with identical code from sharing a file name, and doesn't change with where the app lives or the directory the build runs from. Hash-only names also keep content blockers working against your app: a client component in `consent-banner.tsx` would otherwise ship as `consent-banner-<hash>.js`, which cookie-notice filter lists such as EasyList Cookie List block, breaking hydration.
+
+To use different client JS and CSS names, set `entryFileNames`, `chunkFileNames`, or `assetFileNames` in `build.rolldownOptions.output` or `environments.client.build.rolldownOptions.output`. vinext fills in only the names you leave unset, and server environments that render asset URLs follow the client's asset names, so those URLs match the files the client build writes. Web Worker names are fixed.
+
+vinext warns about string patterns it can't serve correctly. Keep them:
+
+- under the client assets directory: `_next/static/` by default, or `<prefix>/_next/static/` with a path-based `assetPrefix` such as `/cdn` (for example `chunkFileNames: "cdn/_next/static/chunks/[name]-[hash].js"`);
+- hashed with `[hash]`, because files there are served with immutable caching;
+- ending in `.js` for entries and chunks, and in `[extname]` for assets;
+- starting with `[name].` or `[name]-` in asset basenames, so assets that CSS `url()` references keep their hashed names.
+
+Function patterns and array-shaped `output` are left to you to keep within these rules.
+
 ## React
 
 The Next.js App Router runs on a copy of React bundled inside the `next` package, so React updates reach your app when a new Next.js release ships. vinext uses the `react`, `react-dom`, and `react-server-dom-webpack` installed in your project instead. When React ships a fix, including a security fix, you can upgrade right away without waiting for a vinext release:
