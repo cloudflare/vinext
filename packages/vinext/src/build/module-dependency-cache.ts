@@ -76,13 +76,20 @@ export class ModuleDependencyStore<T> {
     return entry.dependencies;
   }
 
-  /** `files` holds every spelling of one file, such as its symlinked and real path. */
-  invalidate(files: readonly string[], event: FileEvent["event"]): void {
+  /**
+   * `files` holds every spelling of one file, such as its symlinked and real
+   * path. Returns whether an entry was dropped.
+   */
+  invalidate(files: readonly string[], event: FileEvent["event"]): boolean {
     const fileEvent = { files, event };
     for (const pending of this.pendingReads) pending.events?.push(fileEvent);
+    let dropped = false;
     for (const [moduleId, entry] of this.entries) {
-      if (isOutdatedBy(moduleId, entry, fileEvent)) this.entries.delete(moduleId);
+      if (!isOutdatedBy(moduleId, entry, fileEvent)) continue;
+      this.entries.delete(moduleId);
+      dropped = true;
     }
+    return dropped;
   }
 
   clear(): void {

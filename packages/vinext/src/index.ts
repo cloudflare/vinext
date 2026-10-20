@@ -6182,8 +6182,13 @@ export const loadServerActionClient = ${
             canonicalizeFilePath(filePath),
             path.join(canonicalizeFilePath(path.dirname(filePath)), path.basename(filePath)),
           ]);
+          // Imports resolve through a file symlink to its target, and a deleted
+          // link no longer says what that was. A deleted file an import could
+          // load that matches no entry may have been such a link, so drop all.
+          const unmappedDelete =
+            event === "delete" && (isScriptModuleId(filePath) || isStylesheetSpecifier(filePath));
           for (const store of devPagesModuleDependencyStores.values()) {
-            store.invalidate([...files], event);
+            if (!store.invalidate([...files], event) && unmappedDelete) store.clear();
           }
         }
 

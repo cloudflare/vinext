@@ -63,6 +63,16 @@ describe("ModuleDependencyStore", () => {
     expect(collect.mock.calls.map(([id]) => id)).toEqual(["/app/a.ts"]);
   });
 
+  it("reports whether an event dropped an entry", async () => {
+    const store = new ModuleDependencyStore<string>();
+    const collect = createCollector({ "/app/a.ts": { resolvedFiles: ["/app/a.css"] } });
+    await store.read("/app/a.ts", collect);
+
+    expect(store.invalidate(["/app/other.css"], "delete")).toBe(false);
+    expect(store.invalidate(["/app/a.css"], "update")).toBe(false);
+    expect(store.invalidate(["/app/a.css"], "delete")).toBe(true);
+  });
+
   it("matches any spelling of the changed file", async () => {
     const store = new ModuleDependencyStore<string>();
     const collect = createCollector({});

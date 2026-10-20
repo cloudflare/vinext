@@ -4772,6 +4772,51 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("dev Pages client assets follow an imported stylesheet symlink being retargeted", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const themePath = path.join(tmpDir, "styles", "theme.css");
+    fs.mkdirSync(path.join(tmpDir, "themes"));
+    fs.writeFileSync(path.join(tmpDir, "themes", "light.css"), ".light { color: white; }\n");
+    fs.writeFileSync(path.join(tmpDir, "themes", "dark.css"), ".dark { color: black; }\n");
+    fs.symlinkSync(path.join(tmpDir, "themes", "light.css"), themePath);
+    fs.writeFileSync(
+      path.join(tmpDir, "lib", "transitive.ts"),
+      'import "../styles/theme.css";\n' +
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+        "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readAppManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+
+    try {
+      expect(await readAppManifest()).toContain("themes/light.css");
+
+      fs.rmSync(themePath);
+      testServer.watcher.emit("unlink", themePath);
+      fs.symlinkSync(path.join(tmpDir, "themes", "dark.css"), themePath);
+      testServer.watcher.emit("add", themePath);
+
+      const manifest = await readAppManifest();
+      expect(manifest).toContain("themes/dark.css");
+      expect(manifest).not.toContain("themes/light.css");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("dev Pages client assets do not treat Less as a built-in Next.js stylesheet", async () => {
     // Next.js built-in CSS rules cover css/scss/sass, not less:
     // .nextjs-ref/packages/next/src/build/webpack/config/blocks/css/index.ts regexLikeCss.
