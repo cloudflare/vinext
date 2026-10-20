@@ -5647,7 +5647,16 @@ export const loadServerActionClient = ${
           };
         }
         const plainPagesSsrAssetsDir = name === "ssr" ? plainPagesSsrFileNamesAssetsDir : null;
-        if (!(hasAppDir && (name === "rsc" || name === "ssr")) && !plainPagesSsrAssetsDir) {
+        // Cloudflare Pages Router builds render in the worker environment, and
+        // the asset URLs it renders must match the files the client build
+        // writes. The Cloudflare plugin owns the worker's entry and chunk names,
+        // so only asset names are aligned there.
+        const isCloudflarePagesServer = hasCloudflarePlugin && !hasAppDir;
+        if (
+          !(hasAppDir && (name === "rsc" || name === "ssr")) &&
+          !plainPagesSsrAssetsDir &&
+          !isCloudflarePagesServer
+        ) {
           return null;
         }
         const output = getBuildBundlerOptions(config.build)?.output;
@@ -5669,6 +5678,15 @@ export const loadServerActionClient = ${
             : output?.assetFileNames === undefined
               ? createClientAssetFileNames(resolveAssetsDir(nextConfig.assetPrefix ?? ""))
               : undefined;
+        if (isCloudflarePagesServer) {
+          return serverAssetFileNames === undefined
+            ? null
+            : {
+                build: withBuildBundlerOptions({
+                  output: { assetFileNames: serverAssetFileNames },
+                }),
+              };
+        }
         // Server chunk names are never public, so they keep `[name]`. Inherited
         // top-level names return to Vite's SSR defaults so fixed server entry
         // paths (dist/server/index.js, ssr/index.js) still exist.
