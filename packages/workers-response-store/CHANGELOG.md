@@ -1,5 +1,17 @@
 # @cloudflare/workers-response-store
 
+## 1.1.2
+
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
+### Bug Fixes
+
+- **Cloudflare:** keep the request that starts isolate-shared work alive until it settles (#4024)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.1
 
 Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
