@@ -254,6 +254,7 @@ import {
 } from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createScanBuildCssPlugin } from "./plugins/scan-build-css.js";
+import { createServerActionClientSourcemapPlugin } from "./plugins/server-action-client-sourcemap.js";
 import {
   createInstrumentationClientTransformPlugin,
   createInstrumentationServerTransformPlugin,
@@ -9075,6 +9076,14 @@ export const loadServerActionClient = ${
       }),
     );
     plugins.push(createScanBuildCssPlugin());
+    plugins.push(
+      createServerActionClientSourcemapPlugin({
+        async getManager(config) {
+          const rscPluginModule = await rscPluginModulePromise;
+          return rscPluginModule?.getPluginApi(config)?.manager;
+        },
+      }),
+    );
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
