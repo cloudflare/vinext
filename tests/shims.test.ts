@@ -23361,9 +23361,12 @@ describe("Pages Router concurrent navigation", () => {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      const result = await Router.push("/to?pathname=/api/ok", undefined, { locale: "nl" });
+      // Pages serves only API routes under /api, so the client leaves the
+      // redirect target to a document request without fetching it first.
+      void Router.push("/to?pathname=/api/ok", undefined, { locale: "nl" });
 
-      expect(result).toBe(false);
+      await vi.waitFor(() => expect(win.location.assign).toHaveBeenCalledWith("/api/ok"));
+      expect(fetch).toHaveBeenCalledTimes(1);
       expect(fetch).toHaveBeenNthCalledWith(
         1,
         "/_next/data/build-1/nl/to.json?pathname=/api/ok",
@@ -23371,9 +23374,8 @@ describe("Pages Router concurrent navigation", () => {
           headers: expect.objectContaining({ "x-nextjs-data": "1" }),
         }),
       );
+      expect(win.location.assign).not.toHaveBeenCalledWith("/nl/api/ok");
       expect(hrefAssignments).not.toContain("http://localhost/nl/to?pathname=/api/ok");
-      expect(hrefAssignments).toContain("/api/ok");
-      expect(hrefAssignments).not.toContain("/nl/api/ok");
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -26566,13 +26568,13 @@ describe("Pages Router _next/data client navigation", () => {
     const previousWindow = (globalThis as any).window;
     const originalFetch = globalThis.fetch;
 
-    const loaderApiPath = vi.fn(async () => makePageModule("apiPath"));
+    const loaderPathParams = vi.fn(async () => makePageModule("pathParams"));
     const loaderLocalized = vi.fn(async () => makePageModule("localized"));
     const loaderRegex = vi.fn(async () => makePageModule("regex"));
     const { win, buildId } = createDataNavWindow({
       loaders: {
         "/": vi.fn(async () => makePageModule("home")),
-        "/api/[...path]": loaderApiPath,
+        "/params/[...path]": loaderPathParams,
         "/localized": loaderLocalized,
         "/regex/[...path]": loaderRegex,
       },
@@ -26582,7 +26584,7 @@ describe("Pages Router _next/data client navigation", () => {
     (win.__NEXT_DATA__ as any).__vinext = { hasMiddleware: true };
     (win as any).__VINEXT_MIDDLEWARE_MATCHER__ = [
       ...compileClientMiddlewareMatchers([
-        "/api/:path*",
+        "/params/:path*",
         { source: "/en/localized", locale: false },
       ])!,
       { source: "/regex/(.*)", regexp: "^/regex/(.*)$", flags: "i" },
@@ -26601,16 +26603,16 @@ describe("Pages Router _next/data client navigation", () => {
       const routerModule = await import("../packages/vinext/src/shims/router.js");
       const Router = routerModule.default;
 
-      await Router.push("/api/hello/world");
+      await Router.push("/params/hello/world");
       await Router.push("/en/localized");
       await Router.push("/regex/value");
 
       expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
-        `/_next/data/${buildId}/en/api/hello/world.json`,
+        `/_next/data/${buildId}/en/params/hello/world.json`,
         `/_next/data/${buildId}/en/localized.json`,
         `/_next/data/${buildId}/en/regex/value.json`,
       ]);
-      expect(loaderApiPath).toHaveBeenCalledTimes(1);
+      expect(loaderPathParams).toHaveBeenCalledTimes(1);
       expect(loaderLocalized).toHaveBeenCalledTimes(1);
       expect(loaderRegex).toHaveBeenCalledTimes(1);
     } finally {
