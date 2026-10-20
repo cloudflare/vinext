@@ -404,105 +404,156 @@ export async function measureClientReferenceGroupCosts(options: {
   const importedNames = (edge: { importName: string }): UsedNames =>
     edge.importName === "*" ? "*" : new Set([edge.importName]);
 
-  // Each reference's own modules: its static graph up to (not including) any
-  // other client reference, which is recorded as an imported reference. The
-  // walk tracks the export names used from each module, so a side-effect-free
-  // barrel only charges the re-exports a reference actually imports.
+  // Each reference uses its static graph up to (not including) any other client
+  // reference, which is recorded as an imported reference. The walk tracks the
+  // export names used from each module, so a side-effect-free barrel only
+  // charges the re-exports a reference actually imports. Its nodes are slots: a
+  // module used as a whole (`"*"`), or one export name of a tree-shaken module.
+  // What a slot reaches does not depend on which reference reached it, so all
+  // references share one walk over the slots instead of each walking the
+  // libraries they share.
+  type Slot = {
+    id: string;
+    name: string;
+    children: Slot[];
+    references: string[];
+    failed: boolean;
+  };
+  const slots = new Map<string, Slot>();
   const moduleBytes = new Map<string, number>();
-  const ownModules = new Map<string, Set<string> | null>();
-  const importedReferences = new Map<string, Set<string>>();
-  await Promise.all(
-    [...options.references].map(async ([referenceId, rootModuleId]) => {
-      const own = new Set<string>();
-      const imported = new Set<string>();
-      importedReferences.set(referenceId, imported);
-      const used = new Map<string, Set<string> | "*">([[rootModuleId, "*"]]);
-      const use = (id: string, names: UsedNames, next: string[]) => {
-        if (options.isExcluded(id)) return;
-        const importedReference = referenceByModuleId.get(id);
-        if (importedReference !== undefined) {
-          if (importedReference !== referenceId) imported.add(importedReference);
-          return;
-        }
-        const current = used.get(id);
-        if (current === "*") return;
-        if (!current && names !== "*" && names.size === 0 && options.isSideEffectFree(id)) return;
-        if (names === "*" || !current) {
-          used.set(id, names === "*" ? "*" : new Set(names));
-          next.push(id);
-          return;
-        }
-        const size = current.size;
-        for (const name of names) current.add(name);
-        if (current.size > size) next.push(id);
-      };
-      let frontier = [rootModuleId];
-      while (frontier.length > 0) {
-        frontier = [...new Set(frontier)];
-        const modules = await Promise.all(frontier.map(load));
-        const next: string[] = [];
-        for (let index = 0; index < modules.length; index++) {
-          const module = modules[index];
-          if (!module) {
-            ownModules.set(referenceId, null);
-            return;
-          }
-          const id = frontier[index]!;
-          const names = used.get(id)!;
-          const { bindings } = module;
-          const treeShaken = names !== "*" && options.isSideEffectFree(id);
-          // Tree-shaking drops a side-effect-free module nothing uses.
-          if (treeShaken && names.size === 0) continue;
-          own.add(id);
-          moduleBytes.set(
-            id,
-            bindings?.bytes ?? (module.code ? Buffer.byteLength(module.code, "utf8") : 0),
-          );
-          if (!bindings) {
-            for (const importedId of module.importedIds) use(importedId, "*", next);
-            continue;
-          }
-          for (const edge of bindings.imports) use(edge.id, edge.names, next);
-          if (!treeShaken) {
-            for (const edge of bindings.reexports) use(edge.id, importedNames(edge), next);
-            continue;
-          }
-          const reexports = indexReexports(id, bindings);
-          for (const name of names) {
-            for (const edge of reexports.byName.get(name) ?? []) {
-              use(edge.id, importedNames(edge), next);
-            }
-          }
-          if (reexports.stars.length > 0) {
-            const starNames = new Set([...names].filter((name) => name !== "default"));
-            for (const edge of reexports.stars) use(edge.id, starNames, next);
-          }
-          // Still reached, so a target with side effects counts.
-          for (const target of reexports.sideEffectTargets) use(target, noNames, next);
-        }
-        frontier = next;
+  let frontier: Slot[] = [];
+  const slot = (id: string, name: string) => {
+    const key = `${name}\0${id}`;
+    let found = slots.get(key);
+    if (!found) {
+      found = { id, name, children: [], references: [], failed: false };
+      slots.set(key, found);
+      frontier.push(found);
+    }
+    return found;
+  };
+  const link = (from: Slot, id: string, names: UsedNames) => {
+    if (options.isExcluded(id)) return;
+    const reference = referenceByModuleId.get(id);
+    if (reference !== undefined) {
+      from.references.push(reference);
+    } else if (names === "*" || !options.isSideEffectFree(id)) {
+      from.children.push(slot(id, "*"));
+    } else {
+      // Tree-shaking drops a side-effect-free module nothing uses.
+      for (const name of names) from.children.push(slot(id, name));
+    }
+  };
+  const rootSlots = new Map<string, Slot>();
+  for (const [referenceId, rootModuleId] of options.references) {
+    rootSlots.set(referenceId, slot(rootModuleId, "*"));
+  }
+  while (frontier.length > 0) {
+    const current = frontier;
+    frontier = [];
+    const modules = await Promise.all(current.map((from) => load(from.id)));
+    for (let index = 0; index < modules.length; index++) {
+      const module = modules[index];
+      const from = current[index]!;
+      if (!module) {
+        from.failed = true;
+        continue;
       }
-      ownModules.set(referenceId, own);
-    }),
-  );
-
-  const ownerCounts = new Map<string, number>();
-  for (const own of ownModules.values()) {
-    for (const moduleId of own ?? []) {
-      ownerCounts.set(moduleId, (ownerCounts.get(moduleId) ?? 0) + 1);
+      const { bindings } = module;
+      moduleBytes.set(
+        from.id,
+        bindings?.bytes ?? (module.code ? Buffer.byteLength(module.code, "utf8") : 0),
+      );
+      if (!bindings) {
+        for (const importedId of module.importedIds) link(from, importedId, "*");
+        continue;
+      }
+      for (const edge of bindings.imports) link(from, edge.id, edge.names);
+      if (from.name === "*") {
+        for (const edge of bindings.reexports) link(from, edge.id, importedNames(edge));
+        continue;
+      }
+      const reexports = indexReexports(from.id, bindings);
+      for (const edge of reexports.byName.get(from.name) ?? []) {
+        link(from, edge.id, importedNames(edge));
+      }
+      // `export *` never re-exports `default`, but its targets are still reached.
+      const starNames = from.name === "default" ? noNames : new Set([from.name]);
+      for (const edge of reexports.stars) link(from, edge.id, starNames);
+      // Still reached, so a target with side effects counts.
+      for (const target of reexports.sideEffectTargets) link(from, target, noNames);
     }
   }
-  const exclusiveBytes = new Map<string, number | null>();
-  for (const [referenceId, own] of ownModules) {
-    if (!own) {
-      exclusiveBytes.set(referenceId, null);
-      continue;
+
+  // Imported references and modules that failed to load can sit below shared
+  // modules, so walk each reference's graph for them, but only through slots
+  // that lead to one.
+  const parents = new Map<Slot, Slot[]>();
+  const leads = new Set<Slot>();
+  for (const from of slots.values()) {
+    for (const child of from.children) {
+      let childParents = parents.get(child);
+      if (!childParents) {
+        childParents = [];
+        parents.set(child, childParents);
+      }
+      childParents.push(from);
     }
-    let bytes = 0;
-    for (const moduleId of own) {
-      if (ownerCounts.get(moduleId) === 1) bytes += moduleBytes.get(moduleId) ?? 0;
+    if (from.references.length > 0 || from.failed) leads.add(from);
+  }
+  for (const lead of leads) {
+    for (const parent of parents.get(lead) ?? []) leads.add(parent);
+  }
+  const importedReferences = new Map<string, Set<string>>();
+  const unloadable = new Set<string>();
+  for (const [referenceId, root] of rootSlots) {
+    const imported = new Set<string>();
+    importedReferences.set(referenceId, imported);
+    if (!leads.has(root)) continue;
+    const visited = new Set([root]);
+    const stack = [root];
+    while (stack.length > 0) {
+      const current = stack.pop()!;
+      if (current.failed) unloadable.add(referenceId);
+      for (const reference of current.references) {
+        if (reference !== referenceId) imported.add(reference);
+      }
+      for (const child of current.children) {
+        if (leads.has(child) && !visited.has(child)) {
+          visited.add(child);
+          stack.push(child);
+        }
+      }
     }
-    exclusiveBytes.set(referenceId, bytes);
+  }
+
+  // Mark each slot with the one reference that reaches it, or `null` once a
+  // second one does. A slot's mark changes at most twice, so this is linear in
+  // the size of the graph however many references share it.
+  const slotOwners = new Map<Slot, string | null>();
+  const marks: Array<[Slot, string | null]> = [];
+  for (const [referenceId, root] of rootSlots) {
+    // A reference whose graph did not fully load has no estimate, so modules it
+    // reaches still count toward the one other reference that uses them.
+    if (!unloadable.has(referenceId)) marks.push([root, referenceId]);
+  }
+  while (marks.length > 0) {
+    const [marked, owner] = marks.pop()!;
+    const current = slotOwners.get(marked);
+    const next = current === undefined || current === owner ? owner : null;
+    if (next === current) continue;
+    slotOwners.set(marked, next);
+    for (const child of marked.children) marks.push([child, next]);
+  }
+  const moduleOwners = new Map<string, string | null>();
+  for (const [marked, owner] of slotOwners) {
+    const current = moduleOwners.get(marked.id);
+    moduleOwners.set(marked.id, current === undefined || current === owner ? owner : null);
+  }
+  const exclusiveBytes = new Map<string, number>();
+  for (const [moduleId, owner] of moduleOwners) {
+    if (owner === null) continue;
+    exclusiveBytes.set(owner, (exclusiveBytes.get(owner) ?? 0) + (moduleBytes.get(moduleId) ?? 0));
   }
 
   const costs = new Map<string, number | null>();
@@ -514,8 +565,7 @@ export async function measureClientReferenceGroupCosts(options: {
       const current = queue[index]!;
       if (visited.has(current)) continue;
       visited.add(current);
-      const bytes = exclusiveBytes.get(current);
-      cost = bytes == null ? null : cost + bytes;
+      cost = unloadable.has(current) ? null : cost + (exclusiveBytes.get(current) ?? 0);
       for (const importedReference of importedReferences.get(current) ?? []) {
         queue.push(importedReference);
       }

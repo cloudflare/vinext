@@ -241,6 +241,50 @@ describe("measureClientReferenceGroupCosts", () => {
     expect(Object.fromEntries(costs)).toEqual({ box: 5060, code: 5050 });
   });
 
+  it("finds imported references and unloadable modules below shared modules", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([
+        ["a", "/a.tsx"],
+        ["b", "/b.tsx"],
+        ["code", "/code.tsx"],
+        ["d", "/d.tsx"],
+        ["e", "/e.tsx"],
+      ]),
+      loadModule: loader({
+        "/a.tsx": { bytes: 10, imports: ["/ui.ts"] },
+        "/b.tsx": { bytes: 20, imports: ["/ui.ts"] },
+        "/ui.ts": { bytes: 1000, imports: ["/code.tsx"] },
+        "/code.tsx": { bytes: 50, imports: ["/highlighter.ts"] },
+        "/highlighter.ts": { bytes: 200 },
+        "/d.tsx": { bytes: 10, imports: ["/flaky.ts"] },
+        "/e.tsx": { bytes: 10, imports: ["/flaky.ts"] },
+        "/flaky.ts": { bytes: 10, imports: ["/missing.ts"] },
+      }),
+      isExcluded: () => false,
+      isSideEffectFree: () => false,
+    });
+
+    expect(Object.fromEntries(costs)).toEqual({ a: 260, b: 270, code: 250, d: null, e: null });
+  });
+
+  it("still charges modules shared only with a reference that failed to load", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([
+        ["a", "/a.tsx"],
+        ["broken", "/broken.tsx"],
+      ]),
+      loadModule: loader({
+        "/a.tsx": { bytes: 10, imports: ["/shared.ts"] },
+        "/broken.tsx": { bytes: 10, imports: ["/shared.ts", "/missing.ts"] },
+        "/shared.ts": { bytes: 1000 },
+      }),
+      isExcluded: () => false,
+      isSideEffectFree: () => false,
+    });
+
+    expect(Object.fromEntries(costs)).toEqual({ a: 1010, broken: null });
+  });
+
   it("measures UTF-8 bytes", async () => {
     const costs = await measureClientReferenceGroupCosts({
       references: new Map([["a", "/a.tsx"]]),
@@ -377,6 +421,30 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     );
     expect(costs.get("effects")).toBe(
       bytes("\nexport const E = One;") + bytes("\n") + bytes(icon("Three")) + bytes(icon("Four")),
+    );
+  });
+
+  it("keeps the side effects behind `export *` of a barrel imported only for its default", async () => {
+    const modules: TestModules = {
+      "/a.js": { code: `import Logo from "./barrel.js";\nexport const A = () => Logo;` },
+      "/barrel.js": {
+        code: `export default function Logo() { return "logo"; }\nexport * from "./effects.js";`,
+        sideEffectFree: true,
+      },
+      "/effects.js": { code: `globalThis.effects = 1;` },
+    };
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([["a", "/a.js"]]),
+      loadModule: bindingLoader(modules),
+      isExcluded: () => false,
+      isSideEffectFree: sideEffectFreeIn(modules),
+    });
+
+    const bytes = (code: string) => Buffer.byteLength(code, "utf8");
+    expect(costs.get("a")).toBe(
+      bytes("\nexport const A = () => Logo;") +
+        bytes(`export default function Logo() { return "logo"; }\n`) +
+        bytes(modules["/effects.js"]!.code),
     );
   });
 
