@@ -21,6 +21,8 @@ import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
 type ClientManifestEntry = {
+  dynamicImports?: string[];
+  file: string;
   imports?: string[];
   isEntry?: boolean;
   name?: string;
@@ -114,6 +116,9 @@ describe("App Router Production build", () => {
     // directory.
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    // Client references that the same routes reach load through a route group
+    // chunk (app/actions renders two).
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(true);
     const clientJs = readAllJs(path.join(outDir, "client"));
 
     // Ported from Next.js:
@@ -169,6 +174,35 @@ describe("App Router Production build", () => {
     };
     if (browserEntryKey) visitEagerImports(browserEntryKey);
     expect(linkEntryKey ? eagerKeys.has(linkEntryKey) : true).toBe(false);
+
+    // The browser RouteManifest grows with every route of the app, so the
+    // eager bootstrap must not inline it (#3957). It loads from its own lazy
+    // chunk, which carries only the maps and fields the browser reads.
+    const readClientChunk = (key: string): string =>
+      fs.readFileSync(path.join(outDir, "client", clientManifest[key]!.file), "utf-8");
+    const eagerJs = [...eagerKeys].map(readClientChunk).join("\n");
+    // Route ids that are `route:` plus their pattern are not serialized, so
+    // check layout and slot ids.
+    for (const graphId of ["layout:/dashboard", "slot:team:/dashboard"]) {
+      expect(eagerJs).not.toContain(graphId);
+    }
+    const routeManifestKey = Object.keys(clientManifest).find((key) =>
+      key.includes("vinext-app-route-manifest"),
+    );
+    expect(routeManifestKey).toBeDefined();
+    expect(eagerKeys.has(routeManifestKey!)).toBe(false);
+    expect(
+      [...eagerKeys].some((key) =>
+        (clientManifest[key]?.dynamicImports ?? []).includes(routeManifestKey!),
+      ),
+    ).toBe(true);
+    const routeManifestJs = readClientChunk(routeManifestKey!);
+    expect(routeManifestJs).toContain("layout:/dashboard");
+    expect(routeManifestJs).toContain("slot:team:/dashboard");
+    expect(routeManifestJs).toContain("JSON.parse(");
+    for (const unreadField of ["routeHandlerId", "templateIds", "boundaries", "defaults"]) {
+      expect(routeManifestJs).not.toContain(unreadField);
+    }
 
     // RSC bundle should contain route handling code
     const rscEntry = fs.readFileSync(path.join(outDir, "server", "index.js"), "utf-8");
@@ -245,6 +279,310 @@ describe("App Router Production build", () => {
       const manifest = fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8");
       expect(manifest).not.toContain("app-browser-server-action-client");
       expect(readAllJs(clientDir)).not.toContain("UnrecognizedActionError");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("loads each client reference from its own chunk with disableNextLikeChunking", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir, disableNextLikeChunking: true })],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
+  // Route grouping with another chunk group broke hydration in a prototype
+  // (out-of-order evaluation), so either kind of foreign group turns it off.
+  it("loads each client reference from its own chunk when the client build has user chunk groups", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [vinext({ appDir: fixtureDir })],
+      environments: {
+        client: {
+          build: {
+            rolldownOptions: {
+              output: {
+                codeSplitting: { groups: [{ name: "user-react-dom", test: /react-dom/ }] },
+              },
+            },
+          },
+        },
+      },
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.includes("user-react-dom"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
+  it("loads each client reference from its own chunk when a plugin adds a chunk group in outputOptions", async () => {
+    const builder = await createBuilder({
+      root: fixtureDir,
+      cacheDir: testCacheDir(fixtureDir),
+      configFile: false,
+      plugins: [
+        {
+          name: "test:add-client-chunk-group",
+          outputOptions(output) {
+            if (this.environment?.name !== "client") return;
+            const codeSplitting =
+              typeof output.codeSplitting === "object" ? output.codeSplitting : {};
+            return {
+              ...output,
+              codeSplitting: {
+                ...codeSplitting,
+                groups: [
+                  { name: "plugin-react-dom", test: /react-dom/ },
+                  ...(codeSplitting.groups ?? []),
+                ],
+              },
+            };
+          },
+        },
+        vinext({ appDir: fixtureDir }),
+      ],
+      logLevel: "silent",
+    });
+    await builder.buildApp();
+
+    const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
+    expect(clientAssets.some((f: string) => f.includes("plugin-react-dom"))).toBe(true);
+    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
+  it("groups client references that import URLs without measuring them", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-url-import-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "a.tsx"),
+        `"use client";
+import confetti from "https://esm.sh/canvas-confetti@1.9.3";
+export function A() { return <p onClick={() => confetti()}>a</p>; }
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "b.tsx"),
+        `"use client";\nexport function B() { return <p>b</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { A } from "./a";
+import { B } from "./b";
+export default function Page() {
+  return <main><A /><B /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      // Loading the external URL module never settles, which hung the build.
+      await builder.buildApp();
+
+      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      expect(group).toBeDefined();
+      expect(fs.readFileSync(path.join(chunksDir, group!), "utf-8")).toContain(
+        "https://esm.sh/canvas-confetti@1.9.3",
+      );
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("charges only the barrel re-exports a client reference imports when sideEffects lists files", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-barrel-side-effects-"));
+
+    try {
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      // Library builds commonly mark only CSS as side-effectful and import
+      // files with explicit extensions.
+      const pkgDir = path.join(tmpDir, "node_modules", "barrel-pkg");
+      fs.mkdirSync(path.join(pkgDir, "parts"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "barrel-pkg",
+          type: "module",
+          sideEffects: ["**/*.css"],
+          exports: "./index.js",
+        }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "index.js"),
+        `export { Small } from "./small.js";\nexport * from "./parts/index.js";\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "small.js"),
+        `export function Small() { return "SMALL_MARKER"; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "parts", "index.js"),
+        `export { Big } from "./big.js";\nexport { Big2 } from "./big2.js";\n`,
+      );
+      for (const name of ["Big", "Big2"]) {
+        fs.writeFileSync(
+          path.join(pkgDir, "parts", `${name.toLowerCase()}.js`),
+          `export function ${name}() { return "BIG_MARKER${"x".repeat(150_000)}"; }\n`,
+        );
+      }
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "uses-small.tsx"),
+        `"use client";
+import { Small } from "barrel-pkg";
+export function UsesSmall() { return <p>{Small()}</p>; }
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "local.tsx"),
+        `"use client";\nexport function Local() { return <p>LOCAL_MARKER</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Local } from "./local";
+import { UsesSmall } from "./uses-small";
+export default function Page() {
+  return <main><UsesSmall /><Local /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const chunksDir = path.join(clientDir, "_next", "static", "chunks");
+      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      expect(group).toBeDefined();
+      const groupSource = fs.readFileSync(path.join(chunksDir, group!), "utf-8");
+      expect(groupSource).toContain("SMALL_MARKER");
+      expect(groupSource).toContain("LOCAL_MARKER");
+      expect(readAllJs(clientDir)).not.toContain("BIG_MARKER");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
+
+    try {
+      // Client references to packages load through the package specifier, so
+      // the client build resolves the package's browser condition.
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      const pkgDir = path.join(tmpDir, "node_modules", "cond-pkg");
+      fs.mkdirSync(pkgDir);
+      fs.writeFileSync(
+        path.join(pkgDir, "package.json"),
+        JSON.stringify({
+          name: "cond-pkg",
+          type: "module",
+          exports: { ".": { "react-server": "./server.js", default: "./browser.js" } },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "server.js"),
+        `"use client";\nexport function Foo() { return null; }\nexport function Extra() { return null; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "browser.js"),
+        `"use client";\nexport function Foo() { return null; }\n`,
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "b.tsx"),
+        `"use client";\nexport function B() { return <p>b</p>; }\n`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Extra, Foo } from "cond-pkg";
+import { B } from "./b";
+export default function Page() {
+  return <main><Foo />{Math.random() > 2 ? <Extra /> : null}<B /></main>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+      });
+      // A group would re-export the missing \`Extra\` statically and fail the
+      // build, so the package's reference keeps its own chunk.
+      await builder.buildApp();
+
+      const chunks = fs.readdirSync(
+        path.join(tmpDir, "dist", "client", "_next", "static", "chunks"),
+      );
+      expect(chunks.some((f: string) => f.startsWith("browser-"))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

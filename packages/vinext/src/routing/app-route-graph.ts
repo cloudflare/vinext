@@ -296,7 +296,7 @@ type RouteManifestRouteHandler = {
   pattern: string;
 };
 
-type RouteManifestLayout = {
+export type RouteManifestLayout = {
   id: string;
   treePath: string;
   patternParts: readonly string[];

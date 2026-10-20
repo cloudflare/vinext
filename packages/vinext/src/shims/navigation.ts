@@ -15,6 +15,7 @@ import type { Params } from "@vinext/types/next/upstream/dist/server/request/par
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
+  loadNavigationRuntimeRouteManifest,
   type NavigationRuntimeVisibleCommitMode,
 } from "../client/navigation-runtime.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
@@ -46,6 +47,7 @@ import {
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
@@ -378,7 +380,10 @@ export function getCurrentInterceptionContext(): string | null {
   return stripBasePath(window.location.pathname, __basePath);
 }
 
-export function getPrefetchInterceptionContext(targetHref: string): string | null {
+export function getPrefetchInterceptionContext(
+  targetHref: string,
+  currentPathname?: string,
+): string | null {
   if (isServer) {
     return null;
   }
@@ -392,7 +397,7 @@ export function getPrefetchInterceptionContext(targetHref: string): string | nul
 
   return resolveManifestNavigationInterceptionContext({
     basePath: __basePath,
-    currentPathname: window.location.pathname,
+    currentPathname: currentPathname ?? window.location.pathname,
     routeManifest: getNavigationRuntime()?.bootstrap.routeManifest ?? null,
     targetPathname: targetUrl.pathname,
   });
@@ -2936,7 +2941,8 @@ const _appRouter: AppRouterInstance = {
     // must not make this prefetch look as though it originated from the target
     // route, and an intervening route change must not change its interception
     // or mounted-slot key.
-    const interceptionContext = getPrefetchInterceptionContext(fullHref);
+    const currentPathname = window.location.pathname;
+    let interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
     const mountedSlotsHeader = getMountedSlotsHeader();
     const headers = createAppPrefetchRequestHeaders({
       fetchPriority: "low",
@@ -2945,6 +2951,18 @@ const _appRouter: AppRouterInstance = {
     });
     const setup = beginPrefetchSetup(fullHref);
     void (async () => {
+      // The interception context comes from the RouteManifest, which loads
+      // from its own chunk. A call before it arrives resolves the context from
+      // the call-time pathname once it does.
+      const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+      if (routeManifestLoad !== null) {
+        // Without the manifest the prefetch would miss its interception context.
+        if (!(await routeManifestLoad) || setup.cancelled) return;
+        interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
+        if (interceptionContext !== null) {
+          headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);
+        }
+      }
       // Hybrid ownership: when a Pages route owns the URL, the App Router
       // cannot serve it (Pages produces HTML documents / `_next/data` JSON,
       // not RSC streams). Prefetching an RSC URL would either 404 or warm

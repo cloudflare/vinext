@@ -89,7 +89,11 @@ import {
   generateImageAdaptersModule,
   type VinextImageConfig,
 } from "./image/image-adapters-virtual.js";
-import { generateBrowserEntry, toLinkPrefetchRoutes } from "./entries/app-browser-entry.js";
+import {
+  generateBrowserEntry,
+  generateBrowserRouteManifestModule,
+  toLinkPrefetchRoutes,
+} from "./entries/app-browser-entry.js";
 import {
   collectRouteClassificationManifest,
   type RouteClassificationManifest,
@@ -1364,6 +1368,8 @@ const VIRTUAL_APP_SSR_ENTRY = "virtual:vinext-app-ssr-entry";
 const RESOLVED_APP_SSR_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_SSR_ENTRY;
 const VIRTUAL_APP_BROWSER_ENTRY = "virtual:vinext-app-browser-entry";
 const RESOLVED_APP_BROWSER_ENTRY = VIRTUAL_PREFIX + VIRTUAL_APP_BROWSER_ENTRY;
+const VIRTUAL_APP_ROUTE_MANIFEST = "virtual:vinext-app-route-manifest";
+const RESOLVED_APP_ROUTE_MANIFEST = VIRTUAL_PREFIX + VIRTUAL_APP_ROUTE_MANIFEST;
 const VIRTUAL_APP_CAPABILITIES = "virtual:vinext-app-capabilities";
 const RESOLVED_APP_CAPABILITIES = VIRTUAL_PREFIX + VIRTUAL_APP_CAPABILITIES;
 const VIRTUAL_ROOT_PARAMS = "virtual:vinext-root-params";
@@ -1574,6 +1580,17 @@ export type VinextOptions = {
    * @default false
    */
   disableAppRouter?: boolean;
+  /**
+   * Turn off Next.js-like client chunking in App Router production builds.
+   * By default, client components that the same routes use load through one
+   * shared chunk, as they do from Next.js' per-route client entries. Set this
+   * to load each client component from its own chunk instead, for example to
+   * control chunking entirely through your own chunk groups. vinext already
+   * turns this chunking off when the client build has chunk groups other than
+   * its own (`codeSplitting.groups`, `advancedChunks` or `manualChunks`).
+   * @default false
+   */
+  disableNextLikeChunking?: boolean;
   /**
    * Override the output directory for the RSC server bundle.
    * Absolute paths are used as-is; relative paths are resolved from the
@@ -1859,6 +1876,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
+  let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -4916,6 +4934,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           if (cleanId === VIRTUAL_APP_RESPONSE_ENTRY) return RESOLVED_APP_RESPONSE_ENTRY;
           if (cleanId === VIRTUAL_APP_SSR_ENTRY) return RESOLVED_APP_SSR_ENTRY;
           if (cleanId === VIRTUAL_APP_BROWSER_ENTRY) return RESOLVED_APP_BROWSER_ENTRY;
+          if (cleanId === VIRTUAL_APP_ROUTE_MANIFEST) return RESOLVED_APP_ROUTE_MANIFEST;
           if (cleanId === VIRTUAL_APP_CAPABILITIES) return RESOLVED_APP_CAPABILITIES;
           if (cleanId === "next/root-params" || cleanId === "next/root-params.js") {
             return RESOLVED_ROOT_PARAMS;
@@ -5117,6 +5136,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
                 (path): path is string => path !== null,
               );
+              clientReferenceGroupRoutes =
+                this.environment.config.command === "build" ? routes : null;
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -5253,11 +5274,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               : [];
             return generateBrowserEntry(
               graph.routes,
-              graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
               nextConfig.i18n?.locales,
             );
+          }
+          if (id === RESOLVED_APP_ROUTE_MANIFEST && hasAppDir) {
+            const graph = await appRouteGraph(appDir, nextConfig?.pageExtensions, fileMatcher);
+            return generateBrowserRouteManifestModule(graph.routeManifest);
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
             const hasServerActions = await resolveHasServerActions(this.environment.config);
@@ -6017,11 +6041,19 @@ export const loadServerActionClient = ${
           }
         }
 
+        function invalidateAppRouteManifestModule() {
+          for (const env of Object.values(server.environments)) {
+            const mod = env.moduleGraph.getModuleById(RESOLVED_APP_ROUTE_MANIFEST);
+            if (mod) env.moduleGraph.invalidateModule(mod);
+          }
+        }
+
         function invalidateAppRoutingModules() {
           invalidateAppRouteCache();
           invalidateMetadataFileCache();
           invalidateRscEntryModule();
           invalidateRootParamsModule();
+          invalidateAppRouteManifestModule();
         }
 
         let hybridRouteValidation: Promise<void> = Promise.resolve();
@@ -8862,6 +8894,7 @@ export const loadServerActionClient = ${
         onComplete() {
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
+          clientReferenceGroupRoutes = null;
         },
       }),
     );
@@ -8869,7 +8902,25 @@ export const loadServerActionClient = ${
   }
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
-    plugins.push(createRscClientReferenceLoadersPlugin());
+    plugins.push(
+      createRscClientReferenceLoadersPlugin(
+        options.disableNextLikeChunking
+          ? undefined
+          : {
+              canonicalizeModuleId: canonicalize,
+              getRoutes: () => clientReferenceGroupRoutes,
+              getSharedRoots: () => rscActionOwnerSharedRoots,
+              isAlwaysLoadedClientModule(id) {
+                const chunkName = appClientManualChunks(id);
+                return chunkName === "framework" || chunkName === "vinext";
+              },
+              ownClientChunkGroups: new Set([
+                ...appClientCodeSplittingConfig.groups,
+                ...clientCodeSplittingConfig.groups,
+              ]),
+            },
+      ),
+    );
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);
   }

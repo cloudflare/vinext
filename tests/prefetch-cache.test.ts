@@ -28,6 +28,8 @@ import {
   VINEXT_RSC_REDIRECT_TYPE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { appendRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
+import { VINEXT_INTERCEPTION_CONTEXT_HEADER } from "../packages/vinext/src/server/app-rsc-vary.js";
+import { decodeBrowserRouteManifest } from "../packages/vinext/src/routing/browser-route-manifest.js";
 import type { PrefetchCacheEntry } from "../packages/vinext/src/shims/navigation.js";
 
 type Navigation = typeof import("../packages/vinext/src/shims/navigation.js");
@@ -287,6 +289,78 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("next-router-prefetch")).toBe("1");
     expect(headers.get("next-router-segment-prefetch")).toBe("1");
     expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
+  });
+
+  it("router.prefetch waits for the route manifest and resolves interception from the call-time URL", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const location = (globalThis as any).window.location;
+    location.pathname = "/feed";
+    location.href = "http://localhost/feed";
+    let loaded = false;
+    let releaseManifest!: () => void;
+    const manifestLoad = new Promise<void>((resolve) => {
+      releaseManifest = resolve;
+    }).then(() => {
+      runtime.bootstrap.routeManifest = decodeBrowserRouteManifest({
+        graphVersion: "graph:test",
+        routes: [],
+        layouts: [],
+        slotBindings: [],
+        interceptions: [
+          {
+            id: "interception:slot:modal:/feed->/photos/:id",
+            ownerLayoutId: "layout:/feed",
+            slotId: "slot:modal:/feed",
+            sourcePatternParts: ["feed"],
+            targetPatternParts: ["photos", ":id"],
+            targetRouteId: "route:/photos/:id",
+          },
+        ],
+        interceptionsBySlotId: [],
+        rootBoundaries: [],
+      });
+      loaded = true;
+      return true;
+    });
+    const runtime = {
+      bootstrap: { routeManifest: null as unknown, rsc: undefined },
+      functions: { navigate: vi.fn(), loadRouteManifest: () => (loaded ? null : manifestLoad) },
+    };
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = runtime;
+
+    appRouterInstance.prefetch("/photos/42", { kind: "full" });
+    location.pathname = "/elsewhere";
+    location.href = "http://localhost/elsewhere";
+    await settlePrefetchSetup();
+    expect(fetch).not.toHaveBeenCalled();
+
+    releaseManifest();
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
+    expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/feed");
+  });
+
+  it("router.prefetch skips the request when the route manifest fails to load", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const loadRouteManifest = vi.fn(() => Promise.resolve(false));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn(), loadRouteManifest },
+    };
+
+    appRouterInstance.prefetch("/photos/42", { kind: "full" });
+    await settlePrefetchSetup();
+
+    expect(loadRouteManifest).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {

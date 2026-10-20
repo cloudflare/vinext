@@ -2,7 +2,10 @@ import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
 import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
-import type { RouteManifest, RouteManifestRoute } from "../routing/app-route-graph.js";
+import type {
+  BrowserRouteManifest,
+  BrowserRouteManifestRoute,
+} from "../routing/browser-route-manifest.js";
 import { extractRawRoutePatternParams, matchRoutePattern } from "../routing/route-pattern.js";
 import {
   createNestedBfcacheSlotSegmentId,
@@ -23,16 +26,16 @@ import {
 } from "./app-page-segment-state.js";
 
 type OptimisticRouteTrieNode = {
-  catchAllChild: { paramName: string; route: RouteManifestRoute } | null;
+  catchAllChild: { paramName: string; route: BrowserRouteManifestRoute } | null;
   dynamicChild: { node: OptimisticRouteTrieNode; paramName: string } | null;
-  optionalCatchAllChild: { paramName: string; route: RouteManifestRoute } | null;
-  route: RouteManifestRoute | null;
+  optionalCatchAllChild: { paramName: string; route: BrowserRouteManifestRoute } | null;
+  route: BrowserRouteManifestRoute | null;
   staticChildren: Map<string, OptimisticRouteTrieNode>;
 };
 
 type OptimisticRouteMatch = {
   params: Record<string, string | string[]>;
-  route: RouteManifestRoute;
+  route: BrowserRouteManifestRoute;
 };
 
 export type OptimisticRouteTemplate = {
@@ -52,7 +55,7 @@ type OptimisticNavigationPayload = {
   urlParts: readonly string[];
 };
 
-const routeTrieCache = new WeakMap<RouteManifest, OptimisticRouteTrieNode>();
+const routeTrieCache = new WeakMap<BrowserRouteManifest, OptimisticRouteTrieNode>();
 // Shared never-settling thenable used to suspend optimistic page segments until
 // the real RSC payload replaces them.
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
@@ -83,7 +86,7 @@ function createNode(): OptimisticRouteTrieNode {
   };
 }
 
-function buildRouteTrie(routeManifest: RouteManifest): OptimisticRouteTrieNode {
+function buildRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieNode {
   const root = createNode();
 
   for (const route of routeManifest.segmentGraph.routes.values()) {
@@ -138,7 +141,7 @@ function buildRouteTrie(routeManifest: RouteManifest): OptimisticRouteTrieNode {
   return root;
 }
 
-function getRouteTrie(routeManifest: RouteManifest): OptimisticRouteTrieNode {
+function getRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieNode {
   const existing = routeTrieCache.get(routeManifest);
   if (existing) return existing;
 
@@ -222,7 +225,7 @@ function hrefToRouteParts(
 export function matchOptimisticRouteManifestRoute(options: {
   basePath: string;
   href: string;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
 }): OptimisticRouteMatch | null {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
@@ -246,7 +249,7 @@ function mergeParams(
 function resolveOptimisticNavigationParams(options: {
   match: OptimisticRouteMatch;
   rawUrlParts: readonly string[];
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
   urlParts: readonly string[];
 }): {
   navigationParams: Record<string, string | string[]>;
@@ -285,7 +288,7 @@ function resolveOptimisticNavigationParams(options: {
 export function resolveOptimisticNavigationParamsForHref(options: {
   basePath: string;
   href: string;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
 }): Record<string, string | string[]> | null {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
@@ -345,7 +348,7 @@ function getOmittedBfcacheSegmentIds(elements: AppElements): string[] {
 
 function resolveTargetBfcacheSegmentIdentity(options: {
   routeId: string;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
   segmentId: string;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
@@ -432,7 +435,7 @@ function elementHasSuspenseFallback(value: unknown, depth = 0): boolean {
 
 function getPageElementIds(
   elements: AppElements,
-  route: Pick<RouteManifestRoute, "pageId" | "slotIds">,
+  route: Pick<BrowserRouteManifestRoute, "pageId" | "slotIds">,
 ): string[] {
   const pageElementIds = new Set<string>();
   if (route.pageId && Object.hasOwn(elements, route.pageId)) {
@@ -463,7 +466,7 @@ export function createOptimisticRouteTemplate(options: {
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
 }): OptimisticRouteTemplate | null {
   const match = matchOptimisticRouteManifestRoute({
     basePath: options.basePath,
@@ -532,7 +535,7 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
@@ -604,7 +607,7 @@ export function resolveOptimisticNavigationPayload(options: {
   href: string;
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
-  routeManifest: RouteManifest;
+  routeManifest: BrowserRouteManifest;
   templates: ReadonlyMap<string, OptimisticRouteTemplate>;
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;

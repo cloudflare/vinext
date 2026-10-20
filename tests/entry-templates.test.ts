@@ -12,6 +12,7 @@ import { parseAst } from "vite";
 import { describe, it, expect } from "vite-plus/test";
 import {
   generateBrowserEntry,
+  generateBrowserRouteManifestModule,
   toLinkPrefetchRoute,
   toLinkPrefetchRoutes,
 } from "../packages/vinext/src/entries/app-browser-entry.js";
@@ -28,7 +29,15 @@ import {
   generateServerEntry,
 } from "../packages/vinext/src/entries/pages-server-entry.js";
 import { resolveNextConfig } from "../packages/vinext/src/config/next-config.js";
-import { buildAppRouteGraph } from "../packages/vinext/src/routing/app-route-graph.js";
+import {
+  buildAppRouteGraph,
+  type RouteManifest,
+  type RouteManifestInterception,
+} from "../packages/vinext/src/routing/app-route-graph.js";
+import {
+  decodeBrowserRouteManifest,
+  type BrowserRouteManifestWire,
+} from "../packages/vinext/src/routing/browser-route-manifest.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
@@ -139,24 +148,82 @@ const minimalAppRoutes: AppRoute[] = [
   },
 ];
 
+function readBrowserRouteManifestModule(code: string): BrowserRouteManifestWire {
+  const literal = /^export default JSON\.parse\(("(?:[^"\\]|\\.)*")\);$/.exec(code)?.[1];
+  expect(literal).toBeDefined();
+  return JSON.parse(JSON.parse(literal!));
+}
+
+/** The browser read model, picked field by field from the full RouteManifest. */
+function pickBrowserRouteManifest(routeManifest: RouteManifest) {
+  const graph = routeManifest.segmentGraph;
+  const pickMap = <Value, Picked>(
+    map: ReadonlyMap<string, Value>,
+    pick: (value: Value) => Picked,
+  ): Map<string, Picked> => new Map(Array.from(map, ([key, value]) => [key, pick(value)]));
+  const pickInterception = (interception: RouteManifestInterception) => ({
+    id: interception.id,
+    sourcePatternParts: interception.sourcePatternParts,
+    targetPatternParts: interception.targetPatternParts,
+    slotId: interception.slotId,
+    ownerLayoutId: interception.ownerLayoutId,
+    targetRouteId: interception.targetRouteId,
+  });
+  return {
+    graphVersion: routeManifest.graphVersion,
+    segmentGraph: {
+      routes: pickMap(graph.routes, (route) => ({
+        id: route.id,
+        patternParts: route.patternParts,
+        isDynamic: route.isDynamic,
+        paramNames: route.paramNames,
+        rootBoundaryId: route.rootBoundaryId,
+        pageId: route.pageId,
+        layoutIds: route.layoutIds,
+        slotIds: route.slotIds,
+      })),
+      layouts: pickMap(graph.layouts, (layout) => ({
+        id: layout.id,
+        patternParts: layout.patternParts,
+        rootBoundaryId: layout.rootBoundaryId,
+      })),
+      slotBindings: pickMap(graph.slotBindings, (binding) => ({
+        id: binding.id,
+        routeId: binding.routeId,
+        slotId: binding.slotId,
+        ownerLayoutId: binding.ownerLayoutId,
+        state: binding.state,
+        routeSegments: binding.routeSegments,
+        slotPatternParts: binding.slotPatternParts,
+        slotParamNames: binding.slotParamNames,
+      })),
+      interceptions: pickMap(graph.interceptions, pickInterception),
+      interceptionsBySlotId: pickMap(graph.interceptionsBySlotId, (interceptions) =>
+        interceptions.map(pickInterception),
+      ),
+      rootBoundaries: pickMap(graph.rootBoundaries, (rootBoundary) => ({
+        id: rootBoundary.id,
+        treePath: rootBoundary.treePath,
+      })),
+    },
+  };
+}
+
 // ── App Router manifest construction ─────────────────────────────────
 
 describe("App Router generated manifest construction", () => {
   it("registers the host React instance before the App Router browser runtime", () => {
     const code = generateBrowserEntry();
     const reactBootstrapIndex = code.indexOf("react-instance-bootstrap");
-    const navigationRuntimeIndex = code.indexOf("navigation-runtime");
     const browserRuntimeIndex = code.indexOf("app-browser-entry");
 
     expect(reactBootstrapIndex).toBeGreaterThanOrEqual(0);
-    expect(navigationRuntimeIndex).toBeGreaterThanOrEqual(0);
     expect(browserRuntimeIndex).toBeGreaterThanOrEqual(0);
-    expect(reactBootstrapIndex).toBeLessThan(navigationRuntimeIndex);
     expect(reactBootstrapIndex).toBeLessThan(browserRuntimeIndex);
   });
 
   it("embeds only client-safe rewrite data in the App browser entry", () => {
-    const code = generateBrowserEntry([], null, [], {
+    const code = generateBrowserEntry([], [], {
       afterFiles: [
         {
           source: "/conditional",
@@ -202,7 +269,7 @@ describe("App Router generated manifest construction", () => {
   });
 
   it("embeds i18n locales used by hybrid App and Pages route ownership", () => {
-    const code = generateBrowserEntry([], null, [], undefined, ["en", "fr"]);
+    const code = generateBrowserEntry([], [], undefined, ["en", "fr"]);
 
     expect(code).toContain('window.__VINEXT_LOCALES__ = ["en","fr"]');
   });
@@ -355,10 +422,7 @@ describe("App Router generated manifest construction", () => {
       },
     ]);
 
-    expect(code).toContain("import { registerNavigationRuntimeBootstrap } from ");
     expect(code).toContain("window.__VINEXT_LINK_PREFETCH_ROUTES__ = ");
-    expect(code).toContain("registerNavigationRuntimeBootstrap({");
-    expect(code).toContain("routeManifest: null");
     expect(code).toContain(
       '{"canPrefetchLoadingShell":false,"patternParts":["about"],"isDynamic":false}',
     );
@@ -447,7 +511,6 @@ describe("App Router generated manifest construction", () => {
     it("keeps every route handler in hybrid App and Pages builds", () => {
       const code = generateBrowserEntry(
         [...minimalAppRoutes, handler(["api", "platform", "users"])],
-        null,
         [{ canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["legacy"] }],
       );
 
@@ -621,27 +684,59 @@ describe("App Router generated manifest construction", () => {
     expect(unrelated.canPrefetchLoadingShell).toBe(false);
   });
 
-  it("embeds the RouteManifest read model in the browser entry", async () => {
+  it("keeps the RouteManifest out of the browser entry, in its own module", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-browser-route-manifest-"));
     const appDir = path.join(tmpDir, "app");
+    const writePage = (relativePath: string, source = "export default function Page() {}\n") => {
+      fs.mkdirSync(path.dirname(path.join(appDir, relativePath)), { recursive: true });
+      fs.writeFileSync(path.join(appDir, relativePath), source);
+    };
     try {
-      fs.mkdirSync(path.join(appDir, "dashboard"), { recursive: true });
-      fs.writeFileSync(path.join(appDir, "layout.tsx"), "export default function Layout() {}\n");
-      fs.writeFileSync(path.join(appDir, "page.tsx"), "export default function Page() {}\n");
-      fs.writeFileSync(
-        path.join(appDir, "dashboard", "page.tsx"),
-        "export default function Page() {}\n",
-      );
+      writePage("layout.tsx");
+      writePage("page.tsx");
+      writePage("(protected)/admin/layout.tsx");
+      writePage("(protected)/admin/[id]/page.tsx");
+      writePage("(protected)/admin/template.tsx");
+      writePage("api/status/route.ts", "export function GET() {}\n");
+      writePage("feed/layout.tsx");
+      writePage("feed/page.tsx");
+      writePage("feed/@modal/default.tsx");
+      writePage("feed/@modal/(..)photos/[photoId]/page.tsx");
+      writePage("photos/[photoId]/page.tsx");
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
-      const code = generateBrowserEntry(graph.routes, graph.routeManifest);
+      const entryCode = generateBrowserEntry(graph.routes);
+      expect(entryCode).not.toContain("route:/");
+      expect(entryCode).not.toContain(graph.routeManifest.graphVersion);
 
-      expect(code).toContain("registerNavigationRuntimeBootstrap({");
-      expect(code).toContain("graphVersion:");
-      expect(code).toContain("routes: new Map(");
-      expect(code).toContain("rootBoundaries: new Map(");
-      expect(code).toContain('"route:/dashboard"');
-      expect(code).toContain('"root-boundary:/"');
+      const decoded = decodeBrowserRouteManifest(
+        readBrowserRouteManifestModule(generateBrowserRouteManifestModule(graph.routeManifest)),
+      );
+      expect(decoded).toEqual(pickBrowserRouteManifest(graph.routeManifest));
+      // Map equality ignores order, but the planner takes the first matching route.
+      expect([...decoded.segmentGraph.routes.keys()]).toEqual([
+        ...graph.routeManifest.segmentGraph.routes.keys(),
+      ]);
+      expect(decoded.segmentGraph.routes.get("route:/admin/:id")?.layoutIds).toEqual([
+        "layout:/",
+        "layout:/(protected)/admin",
+      ]);
+      expect(decoded.segmentGraph.interceptionsBySlotId.size).toBe(1);
+      expect(generateBrowserRouteManifestModule(null)).toBe("export default null;");
+
+      // A route id that is not `route:` plus its pattern travels explicitly.
+      const [firstRouteId, firstRoute] = [...graph.routeManifest.segmentGraph.routes][0]!;
+      const customRoutes = new Map(graph.routeManifest.segmentGraph.routes);
+      customRoutes.set(firstRouteId, { ...firstRoute, id: "route:custom" });
+      const customManifest: RouteManifest = {
+        ...graph.routeManifest,
+        segmentGraph: { ...graph.routeManifest.segmentGraph, routes: customRoutes },
+      };
+      expect(
+        decodeBrowserRouteManifest(
+          readBrowserRouteManifestModule(generateBrowserRouteManifestModule(customManifest)),
+        ).segmentGraph.routes.has("route:custom"),
+      ).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

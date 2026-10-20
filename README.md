@@ -686,6 +686,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list.                                   |
 | `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                                                        |
 | `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                                                       |
+| `vinext({ disableNextLikeChunking: true })`      | ✅  | Loads each client component from its own chunk, instead of one chunk per route group (Next.js-like; App Router production builds). Grouping also turns off on its own when the client build has other chunk groups.                                      |
 
 ### React Compiler
 
