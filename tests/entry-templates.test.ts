@@ -39,6 +39,7 @@ import {
   type BrowserRouteManifestWire,
 } from "../packages/vinext/src/routing/browser-route-manifest.js";
 import { createValidFileMatcher } from "../packages/vinext/src/routing/file-matcher.js";
+import { hashRoutePatternParts } from "../packages/vinext/src/routing/hashed-route-patterns.js";
 import { matchOptimisticRouteManifestRoute } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
@@ -730,6 +731,12 @@ describe("App Router generated manifest construction", () => {
       return JSON.parse(json!) as { documentOnly?: true; patternParts: string[] }[];
     }
 
+    function readAppRouteHandlers(entryCode: string) {
+      const json = /^window\.__VINEXT_APP_ROUTE_HANDLERS__ = (.*);$/m.exec(entryCode)?.[1];
+      expect(json).toBeDefined();
+      return JSON.parse(json!) as { documentOnly?: true; patternParts: string[] }[];
+    }
+
     const pagePatterns = [
       "/",
       "/blog/:slug",
@@ -758,25 +765,34 @@ describe("App Router generated manifest construction", () => {
 
     it("leaves every route handler out of the App-only Link prefetch manifest", async () => {
       await withScannedApp((graph) => {
-        const routes = readLinkPrefetchRoutes(generateBrowserEntry(graph.routes));
+        const entryCode = generateBrowserEntry(graph.routes);
+        const routes = readLinkPrefetchRoutes(entryCode);
         expect(routes.filter((route) => route.documentOnly)).toEqual([]);
         expect(routes.map(toPattern).sort()).toEqual(pagePatterns);
+        expect(readAppRouteHandlers(entryCode)).toEqual([]);
       });
     });
 
-    it("keeps every route handler for hybrid App and Pages ownership", async () => {
+    it("ships hybrid App and Pages ownership every route handler with hashed static segments", async () => {
       await withScannedApp((graph) => {
-        const routes = readLinkPrefetchRoutes(
-          generateBrowserEntry(graph.routes, [
-            { canPrefetchLoadingShell: false, isDynamic: true, patternParts: [":page"] },
-          ]),
-        );
-        expect(
-          routes
-            .filter((route) => route.documentOnly)
-            .map(toPattern)
+        const entryCode = generateBrowserEntry(graph.routes, [
+          { canPrefetchLoadingShell: false, isDynamic: true, patternParts: [":page"] },
+        ]);
+        expect(readLinkPrefetchRoutes(entryCode).map(toPattern).sort()).toEqual(pagePatterns);
+        const handlers = readAppRouteHandlers(entryCode);
+        expect(handlers.every((route) => route.documentOnly)).toBe(true);
+        expect(handlers.map(toPattern).sort()).toEqual(
+          handlerPatterns
+            .map((pattern) =>
+              toPattern({
+                patternParts: hashRoutePatternParts(pattern.split("/").filter(Boolean)),
+              }),
+            )
             .sort(),
-        ).toEqual(handlerPatterns);
+        );
+        for (const segment of ["api", "comments", "feed.xml", "internal-status", "private"]) {
+          expect(entryCode).not.toContain(segment);
+        }
       });
     });
 

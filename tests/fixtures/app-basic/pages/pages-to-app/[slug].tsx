@@ -26,6 +26,9 @@ export default function PagesToAppPage({ params }: Props) {
       <Link id="to-middleware-rewritten-existing-page-link" href="/exists-but-not-routed">
         To Middleware-Rewritten Existing Page
       </Link>
+      <Link id="to-route-handler-link" href="/pages-to-app/hidden-endpoint">
+        To Route Handler
+      </Link>
     </>
   );
 }

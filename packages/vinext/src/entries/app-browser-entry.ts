@@ -7,6 +7,7 @@ import { toClientRewrites } from "../client/client-rewrites.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import { toBrowserRouteManifestWire } from "../routing/browser-route-manifest.js";
+import { hashRoutePatternParts } from "../routing/hashed-route-patterns.js";
 import type { NextRewrite } from "../config/next-config.js";
 
 /**
@@ -28,18 +29,17 @@ export function generateBrowserEntry(
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  // Route handler entries only feed hybrid App/Pages ownership. An App-only
-  // client learns a handler URL from its non-Flight response (a prefetch miss,
-  // then a document navigation), like Next.js, so shipping the paths would
-  // only publish the app's API surface (issue #3624).
-  const prefetchRoutes = toLinkPrefetchRoutes(routes, {
-    includeRouteHandlers: pagesPrefetchRoutes.length > 0,
-  });
+  const prefetchRoutes = toLinkPrefetchRoutes(routes);
+  // Route handlers only feed hybrid App/Pages ownership. An App-only client
+  // learns a handler URL from its non-Flight response (a prefetch miss, then a
+  // document navigation), like Next.js, so it gets none (issue #3624).
+  const routeHandlers = pagesPrefetchRoutes.length > 0 ? toHashedRouteHandlerRoutes(routes) : [];
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
 
 window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
+window.__VINEXT_APP_ROUTE_HANDLERS__ = ${JSON.stringify(routeHandlers)};
 // Pages route manifest for hybrid ownership decisions. In a hybrid
 // app+pages build the user can land on an App page, so the App browser
 // entry must also expose the Pages manifest (the Pages client entry does
@@ -61,13 +61,23 @@ function isLinkPrefetchRoute(route: AppRoute): boolean {
   return route.routePath === null && route.layouts.length > 0;
 }
 
-function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
-  return {
-    canPrefetchLoadingShell: false,
-    documentOnly: true,
-    patternParts: [...route.patternParts],
-    isDynamic: route.isDynamic,
-  };
+/**
+ * App route handlers for hybrid App/Pages ownership, with their static
+ * segments hashed so the client never receives their paths in plain text.
+ */
+export function toHashedRouteHandlerRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
+  return routes.flatMap((route) =>
+    isLinkPrefetchRoute(route)
+      ? []
+      : [
+          {
+            canPrefetchLoadingShell: false,
+            documentOnly: true,
+            isDynamic: route.isDynamic,
+            patternParts: hashRoutePatternParts(route.patternParts),
+          },
+        ],
+  );
 }
 
 function requiresDynamicNavigationRequest(route: AppRoute): boolean {
@@ -126,10 +136,7 @@ export function toLinkPrefetchRoute(
 }
 
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
-export function toLinkPrefetchRoutes(
-  routes: readonly AppRoute[],
-  { includeRouteHandlers = true }: { includeRouteHandlers?: boolean } = {},
-): VinextLinkPrefetchRoute[] {
+export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
     for (const intercept of route.siblingIntercepts) {
@@ -139,19 +146,14 @@ export function toLinkPrefetchRoutes(
     }
   }
 
-  return routes.flatMap((route) => {
-    if (isLinkPrefetchRoute(route)) {
-      return [
-        toLinkPrefetchRoute(
-          route,
-          siblingInterceptLoadingTargets.some((targetParts) =>
-            patternsStructurallyEquivalent(targetParts, route.patternParts),
-          ),
-        ),
-      ];
-    }
-    return includeRouteHandlers ? [toDocumentOnlyAppRoute(route)] : [];
-  });
+  return routes.filter(isLinkPrefetchRoute).map((route) =>
+    toLinkPrefetchRoute(
+      route,
+      siblingInterceptLoadingTargets.some((targetParts) =>
+        patternsStructurallyEquivalent(targetParts, route.patternParts),
+      ),
+    ),
+  );
 }
 
 /**

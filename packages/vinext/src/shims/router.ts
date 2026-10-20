@@ -1790,7 +1790,11 @@ function hasClientRedirectRules(): boolean {
 
 function hasClientAppRouteManifest(): boolean {
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  return Array.isArray(routes) && routes.length > 0;
+  const routeHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
+  return (
+    (Array.isArray(routes) && routes.length > 0) ||
+    (Array.isArray(routeHandlers) && routeHandlers.length > 0)
+  );
 }
 
 function getClientConfigRouteContext(href: string): {

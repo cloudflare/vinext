@@ -9,6 +9,7 @@ import type {
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../../client/vinext-next-data.js";
+import { hashRoutePathname } from "../../routing/hashed-route-patterns.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { compareHybridRoutePatterns } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
@@ -24,12 +25,14 @@ type HybridClientRouteMatches = {
 declare global {
   // oxlint-disable-next-line typescript-eslint/consistent-type-definitions
   interface Window {
+    __VINEXT_APP_ROUTE_HANDLERS__?: VinextLinkPrefetchRoute[];
     __VINEXT_LINK_PREFETCH_ROUTES__?: VinextLinkPrefetchRoute[];
     __VINEXT_PAGES_LINK_PREFETCH_ROUTES__?: VinextPagesLinkPrefetchRoute[];
   }
 }
 
 const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
+const appRouteHandlerTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 const pagesRouteTrieCache = createRouteTrieCache<VinextPagesLinkPrefetchRoute>();
 const pagesPageRoutesCache = new WeakMap<
   VinextPagesLinkPrefetchRoute[],
@@ -88,6 +91,33 @@ function selectPagesRoutes(
   return selected;
 }
 
+function patternPartRank(part: string | undefined): number {
+  if (part === undefined) return 0;
+  if (!part.startsWith(":")) return 1;
+  if (part.endsWith("+")) return 3;
+  if (part.endsWith("*")) return 4;
+  return 2;
+}
+
+/**
+ * The route the App router picks when both match the same URL: the first part
+ * whose kind differs decides, static > dynamic > catch-all > optional
+ * catch-all, as in `routing/route-trie.ts`.
+ */
+function preferredAppRoute(
+  page: VinextLinkPrefetchRoute | null,
+  handler: VinextLinkPrefetchRoute | null,
+): VinextLinkPrefetchRoute | null {
+  if (page === null || handler === null) return page ?? handler;
+  const length = Math.max(page.patternParts.length, handler.patternParts.length);
+  for (let index = 0; index < length; index++) {
+    const pageRank = patternPartRank(page.patternParts[index]);
+    const handlerRank = patternPartRank(handler.patternParts[index]);
+    if (pageRank !== handlerRank) return pageRank < handlerRank ? page : handler;
+  }
+  return page;
+}
+
 export function matchDirectHybridClientRoutes(
   href: string,
   basePath: string,
@@ -96,11 +126,21 @@ export function matchDirectHybridClientRoutes(
   if (pathnames === null) return { appMatch: null, pagesMatch: null };
 
   const appRoutes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  const appRouteHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
   const pagesRoutes = window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__;
   return {
-    appMatch: appRoutes
-      ? (matchRouteWithTrie(pathnames.appPathname, appRoutes, appRouteTrieCache)?.route ?? null)
-      : null,
+    appMatch: preferredAppRoute(
+      appRoutes
+        ? (matchRouteWithTrie(pathnames.appPathname, appRoutes, appRouteTrieCache)?.route ?? null)
+        : null,
+      appRouteHandlers?.length
+        ? (matchRouteWithTrie(
+            hashRoutePathname(pathnames.appPathname),
+            appRouteHandlers,
+            appRouteHandlerTrieCache,
+          )?.route ?? null)
+        : null,
+    ),
     pagesMatch: pagesRoutes
       ? (matchRouteWithTrie(
           pathnames.pagesPathname,

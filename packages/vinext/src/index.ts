@@ -93,6 +93,7 @@ import {
 import {
   generateBrowserEntry,
   generateBrowserRouteManifestModule,
+  toHashedRouteHandlerRoutes,
   toLinkPrefetchRoutes,
 } from "./entries/app-browser-entry.js";
 import {
@@ -2021,11 +2022,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     // `Router.prefetch` can mark App Router targets on `Router.components`
     // with `{ __appRouter: true }`. See `pages-client-entry.ts` and issue
     // #1526 for the Next.js parity rationale.
-    const appPrefetchRoutes = hasAppDir
-      ? toLinkPrefetchRoutes(await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher))
+    const appRoutes = hasAppDir
+      ? await appRouter(appDir, nextConfig?.pageExtensions, fileMatcher)
       : [];
     return _generateClientEntry(pagesDir, nextConfig, fileMatcher, {
-      appPrefetchRoutes,
+      appPrefetchRoutes: toLinkPrefetchRoutes(appRoutes),
+      appRouteHandlers: toHashedRouteHandlerRoutes(appRoutes),
       instrumentationClientPath,
       middlewareMatcher: middlewarePath
         ? extractMiddlewareMatcherConfig(middlewarePath)
