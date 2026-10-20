@@ -17,7 +17,7 @@
  * - dist/server/index.js — RSC entry (default export: handler(Request) → Response)
  * - dist/server/ssr/index.js — SSR entry (imported by RSC entry at runtime)
  */
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { createRequire } from "node:module";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Readable, pipeline } from "node:stream";
@@ -591,6 +591,14 @@ function isVinextStreamedHtmlResponse(response: Response): boolean {
 // stream in memory.
 function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamingMetadata).__vinextStreamedApiResponse === true;
+}
+
+// Build-time fetch pools idle sockets. If a render blocks the event loop past
+// keepAliveTimeout, Node can close a socket the client has just reused, losing
+// that request with ECONNRESET. One request per socket advertises Connection:
+// close on every response without changing user-server or client-pool settings.
+function applyPrerenderConnectionPolicy(server: Server, purpose: ProdServerOptions["purpose"]) {
+  if (purpose === "prerender") server.maxRequestsPerSocket = 1;
 }
 
 function logProdServerStarted(host: string, port: number, purpose: ProdServerOptions["purpose"]) {
@@ -2247,6 +2255,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   const server = createServer((req, res) => {
     void runWithServerEntryRequire(rscEntryRequire, () => handleRequest(req, res));
   });
+  applyPrerenderConnectionPolicy(server, purpose);
 
   await new Promise<void>((resolve) => {
     server.listen(port, host, () => {
@@ -2313,6 +2322,7 @@ async function startPagesRouterServer(options: PagesRouterServerOptions) {
   const { port, host, purpose, silent } = options;
   const handler = await createPagesRouterRequestHandler(options);
   const server = createServer(handler);
+  applyPrerenderConnectionPolicy(server, purpose);
 
   await new Promise<void>((resolve) => {
     server.listen(port, host, () => {

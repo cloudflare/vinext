@@ -80,6 +80,7 @@ import {
   markAppPprDynamicFallbackShellHtml,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
+import { createExportRequestFailures, fetchPrerenderServer } from "./prerender-request.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
@@ -822,6 +823,7 @@ export async function prerenderPages({
   const skipManifest = options.skipManifest ?? false;
   const fileMatcher = createValidFileMatcher(config.pageExtensions);
   const results: PrerenderRouteResult[] = [];
+  const exportRequestFailures = createExportRequestFailures(mode);
 
   if (!pagesBundlePath && !options._prodServer) {
     throw new Error(
@@ -925,7 +927,7 @@ export async function prerenderPages({
         config.basePath && routeRequestPath === "/" && !config.trailingSlash
           ? config.basePath
           : `${config.basePath ?? ""}${routeRequestPath}`;
-      return fetch(`http://127.0.0.1:${port}${requestPath}`, {
+      return fetchPrerenderServer(`http://127.0.0.1:${port}${requestPath}`, {
         headers: secretHeaders,
         redirect: "manual",
       });
@@ -944,7 +946,7 @@ export async function prerenderPages({
               const search = new URLSearchParams({ pattern: r.pattern });
               if (locales.length > 0) search.set("locales", JSON.stringify(locales));
               if (defaultLocale) search.set("defaultLocale", defaultLocale);
-              const res = await fetch(
+              const res = await fetchPrerenderServer(
                 `${baseUrl}/__vinext/prerender/pages-static-paths?${search}`,
                 { headers: secretHeaders },
               );
@@ -1049,12 +1051,13 @@ export async function prerenderPages({
             defaultLocale: config.i18n?.defaultLocale ?? "",
           });
         } catch (e) {
+          exportRequestFailures.record(e, route.pattern);
           results.push({
             route: route.pattern,
             status: "error",
             error: `Failed to call getStaticPaths(): ${(e as Error).message}`,
             // Only a thrown user getStaticPaths (a 500 from the endpoint) is fatal
-            // to the build; transport/fetch failures stay non-fatal. #1982
+            // to the build in default mode; export transport failures are collected. #1982
             ...(e instanceof PrerenderUserFunctionError ? { fatal: true as const } : {}),
           });
           continue;
@@ -1259,6 +1262,7 @@ export async function prerenderPages({
           };
         } catch (e) {
           renderPool?.recordRenderError(e);
+          exportRequestFailures.record(e, route.pattern, urlPath);
           const err = e as Error;
           result = {
             route: route.pattern,
@@ -1276,6 +1280,7 @@ export async function prerenderPages({
       },
     );
     results.push(...pageResults);
+    exportRequestFailures.throwIfAny();
 
     // A worker that crashed mid-render makes its routes fail with connection
     // errors that are otherwise recorded as non-fatal — fail the build loudly
@@ -1330,8 +1335,10 @@ export async function prerenderPages({
         // failure here is still captured by assertHealthy() below so a crashed
         // worker cannot silently skip an existing custom 404.
         renderPool?.recordRenderError(e);
+        exportRequestFailures.record(e, "/404", localizePagesPath("/404", locale, config.i18n));
       }
     }
+    exportRequestFailures.throwIfAny();
     renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
@@ -1370,7 +1377,8 @@ export async function prerenderPages({
  * Speculative static rendering: routes classified as 'unknown' (no explicit
  * config, non-dynamic URL) are attempted with an empty headers/cookies context.
  * If they succeed, they are marked as rendered. If they throw a DynamicUsageError
- * or fail, they are marked as skipped with reason 'dynamic'.
+ * or fail, they are marked as skipped with reason 'dynamic'. In a static export,
+ * a request that fails before any response arrives fails the export instead.
  */
 export async function prerenderApp({
   routes,
@@ -1390,6 +1398,7 @@ export async function prerenderApp({
   const results: PrerenderRouteResult[] = [];
 
   fs.mkdirSync(outDir, { recursive: true });
+  const exportRequestFailures = createExportRequestFailures(mode);
 
   const previousHandler = getCacheHandler();
   setCacheHandler(new NoOpCacheHandler());
@@ -1465,7 +1474,7 @@ export async function prerenderApp({
       const parsed = new URL(req.url);
       const port = renderPorts[renderRoundRobin++ % renderPorts.length];
       const url = `http://127.0.0.1:${port}${parsed.pathname}${parsed.search}`;
-      return fetch(url, {
+      return fetchPrerenderServer(url, {
         method: req.method,
         headers: { ...secretHeaders, ...Object.fromEntries(req.headers.entries()) },
         body: req.method !== "GET" && req.method !== "HEAD" ? req.body : undefined,
@@ -1506,9 +1515,10 @@ export async function prerenderApp({
             // Next.js fails an export on any empty generateStaticParams result,
             // so a composed resolver must not pass parents through one.
             if (mode === "export") search.set("rejectEmptyResults", "1");
-            const res = await fetch(`${baseUrl}/__vinext/prerender/static-params?${search}`, {
-              headers: secretHeaders,
-            });
+            const res = await fetchPrerenderServer(
+              `${baseUrl}/__vinext/prerender/static-params?${search}`,
+              { headers: secretHeaders },
+            );
             const text = await res.text();
             if (!res.ok) {
               // A 500 carries the real error thrown by the user's
@@ -1770,6 +1780,7 @@ export async function prerenderApp({
             }
           }
         } catch (e) {
+          exportRequestFailures.record(e, route.pattern);
           const err = e as Error;
           const detail = config.enablePrerenderSourceMaps
             ? getErrorMessageWithStack(err)
@@ -1780,7 +1791,7 @@ export async function prerenderApp({
             error: `Failed to call generateStaticParams(): ${detail}`,
             // Only a thrown user generateStaticParams (a 500 from the endpoint) or
             // a result that breaks the route's param contract is fatal to the
-            // build; transport/fetch failures stay non-fatal. #1982
+            // build in default mode; export transport failures are collected. #1982
             ...(e instanceof PrerenderUserFunctionError || e instanceof InvalidStaticParamsError
               ? { fatal: true as const }
               : {}),
@@ -2158,6 +2169,9 @@ export async function prerenderApp({
         };
       } catch (e) {
         renderPool?.recordRenderError(e);
+        if (exportRequestFailures.record(e, routePattern, urlPath)) {
+          return { route: routePattern, status: "error", error: e.message };
+        }
         if (isSpeculative) {
           return { route: routePattern, status: "skipped", reason: "dynamic" };
         }
@@ -2198,6 +2212,7 @@ export async function prerenderApp({
       return result;
     });
     results.push(...appResults);
+    exportRequestFailures.throwIfAny();
 
     // Fail loudly if a render worker crashed mid-build (otherwise its routes
     // fail with connection errors recorded as non-fatal → partial output).
@@ -2240,7 +2255,9 @@ export async function prerenderApp({
       // worker cannot silently skip an existing custom 404 (mirrors the
       // Pages Router 404 path).
       renderPool?.recordRenderError(e);
+      exportRequestFailures.record(e, "/404");
     }
+    exportRequestFailures.throwIfAny();
     renderPool?.assertHealthy();
 
     // ── Write vinext-prerender.json ───────────────────────────────────────────
