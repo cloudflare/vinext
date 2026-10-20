@@ -237,6 +237,38 @@ describe("collectClientReferencePreloadPlan", () => {
     ]);
   });
 
+  it("lets routes stream only references no dynamic import reaches", () => {
+    const plan = collectClientReferencePreloadPlan({
+      alwaysRoots: ["/app/global-error.tsx"],
+      clientReferenceIds: new Set([
+        "/nav.tsx",
+        "/chart.tsx",
+        "/lazy.tsx",
+        "/shared.tsx",
+        "/error-ref.tsx",
+      ]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "/app/layout.tsx": ["/nav.tsx"],
+          "/app/page.tsx": ["/chart.tsx", "/shared.tsx"],
+          "/app/global-error.tsx": ["/error-ref.tsx"],
+        },
+        {
+          // The RSC entry imports route files lazily.
+          "\0entry": ["/app/layout.tsx", "/app/page.tsx", "/app/about/page.tsx"],
+          "/app/about/page.tsx": ["/lazy.tsx", "/shared.tsx"],
+        },
+      ),
+      routes: [
+        route("/", "/app/page.tsx", ["/app/layout.tsx"]),
+        route("/about", "/app/about/page.tsx", ["/app/layout.tsx"]),
+      ],
+    });
+
+    expect(plan.staticOnly.sort()).toEqual(["/chart.tsx", "/nav.tsx"]);
+  });
+
   it("always preloads references reached outside route files, from global-error or by nothing", () => {
     const plan = collectClientReferencePreloadPlan({
       alwaysRoots: ["/app/global-error.tsx"],

@@ -11,7 +11,11 @@ type ClientReferencePreloaderOptions = {
 };
 
 type ClientReferencePreloader = {
-  preload: (referenceIds?: Iterable<string>) => Promise<void>;
+  /**
+   * Load `referenceIds`, or every reference without them, and also start the
+   * loads of `streamedIds`, which the returned promise doesn't wait for.
+   */
+  preload: (referenceIds?: Iterable<string>, streamedIds?: Iterable<string>) => Promise<void>;
 };
 
 const resolvedPreload = Promise.resolve();
@@ -39,17 +43,34 @@ export type RouteClientReferences = {
   routes: Readonly<Record<string, readonly number[]>>;
   /** The files of a render without a route, such as a route-miss 404. */
   routeless: readonly number[];
+  /**
+   * References whose SSR modules evaluate asynchronously (top-level await),
+   * which a render streams instead of waiting for.
+   */
+  async: readonly number[];
+};
+
+/** The client references a render loads before it starts, and those it streams. */
+export type RouteClientReferenceSet = {
+  awaited: string[];
+  streamed: string[];
+  /**
+   * Both in import order: the `always` set, then each route file's references
+   * in the order its route files render.
+   */
+  ordered: string[];
 };
 
 /**
  * The client references a render of `routePattern` preloads, or of no route
- * when it is null. Undefined, meaning every reference, without a plan or a
- * route to look up, or for a pattern the plan doesn't know.
+ * when it is null, split into those it waits for and those it streams.
+ * Undefined, meaning every reference, without a plan or a route to look up,
+ * or for a pattern the plan doesn't know.
  */
 export function resolveRouteClientReferences(
   plan: RouteClientReferences | null,
   routePattern: string | null | undefined,
-): string[] | undefined {
+): RouteClientReferenceSet | undefined {
   if (!plan || routePattern === undefined) return undefined;
   let files: readonly number[];
   if (routePattern === null) {
@@ -63,7 +84,16 @@ export function resolveRouteClientReferences(
   for (const file of files) {
     for (const index of plan.files[file]!) indices.add(index);
   }
-  return Array.from(indices, (index) => plan.references[index]!);
+  const asyncIndices = new Set(plan.async);
+  const awaited: string[] = [];
+  const streamed: string[] = [];
+  const ordered: string[] = [];
+  for (const index of indices) {
+    const id = plan.references[index]!;
+    (asyncIndices.has(index) ? streamed : awaited).push(id);
+    ordered.push(id);
+  }
+  return { awaited, streamed, ordered };
 }
 
 export function createClientReferencePreloader(
@@ -135,11 +165,17 @@ export function createClientReferencePreloader(
   }
 
   return {
-    preload(referenceIds) {
+    preload(referenceIds, streamedIds) {
       const refs = options.getReferences();
       const clientRequire = options.getClientRequire();
       if (!refs || !clientRequire) {
         return resolvedPreload;
+      }
+
+      for (const id of streamedIds ?? []) {
+        if (Object.hasOwn(refs, id) && !preloadedReferences.has(id)) {
+          void preloadReference(id, clientRequire);
+        }
       }
 
       if (referenceIds) {

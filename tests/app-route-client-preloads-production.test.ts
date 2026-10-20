@@ -119,6 +119,59 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(unrelatedClientEvaluated()).toBeUndefined();
   });
 
+  it("streams a client component that awaits at its top level, as Next.js does", async () => {
+    const stylesheets = (html: string) =>
+      (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).map(
+        (tag) => tag.match(/\bhref="([^"]+)"/)![1],
+      );
+    const read = async () => {
+      const response = await fetch(`${baseUrl}/streamed`);
+      expect(response.status).toBe(200);
+      const reader = response.body!.getReader();
+      const decoder = new TextDecoder();
+      const first = decoder.decode((await reader.read()).value, { stream: true });
+      let html = first;
+      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+        html += decoder.decode(chunk.value, { stream: true });
+      }
+      return { first, html };
+    };
+
+    const cold = await read();
+    // The shell carries the fallback; the panel streams in once it loads.
+    expect(cold.first).toContain('data-testid="streamed-fallback"');
+    expect(cold.first).not.toContain('data-testid="streamed-panel"');
+    expect(cold.first).toContain('data-testid="badge"');
+    expect(cold.html).toContain('data-testid="streamed-panel"');
+
+    const warm = await read();
+    expect(warm.first).toContain('data-testid="streamed-panel"');
+    // The panel's stylesheet links in import order, as Turbopack's do, just
+    // ahead of the badge's, loaded or not, so both renders link the same.
+    expect(stylesheets(cold.first)).toEqual(stylesheets(warm.first));
+    const clientDir = path.join(fixtureDir, "dist", "client");
+    const cssFile = (rule: string) =>
+      fs
+        .readdirSync(clientDir, { recursive: true, encoding: "utf8" })
+        .find(
+          (file) =>
+            file.endsWith(".css") &&
+            fs.readFileSync(path.join(clientDir, file), "utf8").includes(rule),
+        );
+    const panelCss = cssFile(".streamed-panel");
+    const badgeCss = cssFile(".streamed-badge");
+    expect(panelCss, "panel CSS missing from client output").toBeDefined();
+    expect(badgeCss, "badge CSS missing from client output").toBeDefined();
+    // /streamed/also renders the panel too, so it isn't grouped with the badge.
+    expect(panelCss).not.toBe(badgeCss);
+    const hrefs = stylesheets(cold.first);
+    const panelIndex = hrefs.findIndex((href) => href.endsWith(`/${path.basename(panelCss!)}`));
+    const badgeIndex = hrefs.findIndex((href) => href.endsWith(`/${path.basename(badgeCss!)}`));
+    expect(panelIndex).toBeGreaterThanOrEqual(0);
+    expect(badgeIndex).toBeGreaterThan(panelIndex);
+    expect(new Set(hrefs).size).toBe(hrefs.length);
+  });
+
   it("loads another route's client code on that route's first request", async () => {
     const response = await fetch(`${baseUrl}/other`);
 

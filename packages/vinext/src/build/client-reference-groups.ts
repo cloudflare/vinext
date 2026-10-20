@@ -200,6 +200,13 @@ export type ClientReferencePreloadPlan = {
   routes: Map<string, number[]>;
   /** The files of a render without a route, as indices into `files`. */
   routeless: number[];
+  /**
+   * References route files reach only through static imports, outside
+   * `always`. A render may stream one whose module evaluates asynchronously
+   * instead of waiting for it; a reference any dynamic import reaches, such as
+   * a `next/dynamic` component, always loads first.
+   */
+  staticOnly: string[];
 };
 
 /**
@@ -300,7 +307,36 @@ export function collectClientReferencePreloadPlan(options: {
     ...referencesReachedFrom(alwaysRoots),
   ]);
   for (const id of options.clientReferenceIds) if (!reached.has(id)) always.add(id);
-  return { always: [...always], files, routes, routeless };
+
+  // References any walk reaches through a dynamic import: each module is
+  // visited once statically and once behind a dynamic import. As above, the
+  // entry walk stops at route files, which the RSC entry imports lazily, and
+  // leaves them to their own walks.
+  const dynamicallyReached = new Set<string>();
+  const visited = new Set<string>();
+  const pending: Array<[id: string, dynamic: boolean, root: boolean]> = [
+    ...options.entryIds.map(canonicalize),
+    ...stopAt,
+  ].map((id) => [id, false, true]);
+  while (pending.length > 0) {
+    const [id, dynamic, root] = pending.pop()!;
+    if (!root && stopAt.has(id)) continue;
+    const key = dynamic ? `dynamic:${id}` : id;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    if (options.clientReferenceIds.has(id)) {
+      if (dynamic) dynamicallyReached.add(id);
+      continue;
+    }
+    const info = getModuleInfo(id);
+    if (!info) continue;
+    for (const imported of info.importedIds) pending.push([imported, dynamic, false]);
+    for (const imported of info.dynamicallyImportedIds) pending.push([imported, true, false]);
+  }
+  const staticOnly = [...new Set(files.flat())].filter(
+    (id) => !always.has(id) && !dynamicallyReached.has(id),
+  );
+  return { always: [...always], files, routes, routeless, staticOnly };
 }
 
 /** Export names an importer uses from a module, or `"*"` for all of them. */
