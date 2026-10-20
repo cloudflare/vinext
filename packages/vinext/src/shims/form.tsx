@@ -330,11 +330,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               // is captured now; the interception context, which reads the
               // RouteManifest, resolves from it once the manifest has loaded.
               const currentPathname = window.location.pathname;
+              const resolvedAction = new URL(actionHref, window.location.href);
+              const prefetchHref = resolvedAction.pathname + resolvedAction.search;
               const mountedSlotsHeader = getMountedSlotsHeader();
               const routeManifestLoad = loadNavigationRuntimeRouteManifest();
               if (routeManifestLoad !== null && !(await routeManifestLoad)) return;
               const interceptionContext = getPrefetchInterceptionContext(
-                actionHref,
+                prefetchHref,
                 currentPathname,
               );
               const headers = createRscRequestHeaders({
@@ -344,7 +346,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               if (mountedSlotsHeader) {
                 headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
               }
-              const rscUrl = await createRscRequestUrl(actionHref, headers);
+              const rscUrl = await createRscRequestUrl(prefetchHref, headers);
               const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
               // Dedup: skip if already in-flight or a fresh cache entry exists,
               // matching the gate link.tsx applies to avoid double-fetching a

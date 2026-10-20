@@ -19,6 +19,7 @@ import {
   consumeAppRouterScrollIntent,
   type AppRouterScrollIntent,
 } from "vinext/shims/app-router-scroll-state";
+import { withBasePath } from "vinext/shims/url-utils";
 import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import { stripBasePath } from "../utils/base-path.js";
 import {
@@ -713,8 +714,11 @@ export function createAppBrowserNavigationController(
     if (!hasBrowserRouterState()) return;
 
     // Without the RouteManifest the update cannot be classified; reload it.
+    // The snapshot path has basePath stripped.
     if (routeManifestLoaded === false) {
-      performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
+      performHardNavigation(
+        withBasePath(createSnapshotPathAndSearch(navigationSnapshot), basePath),
+      );
       return;
     }
 

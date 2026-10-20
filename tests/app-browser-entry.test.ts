@@ -2885,17 +2885,18 @@ describe("app browser entry state helpers", () => {
           {},
         ),
       }),
-      { loadRouteManifest: () => Promise.resolve(false) },
+      { basePath: "/base", loadRouteManifest: () => Promise.resolve(false) },
     );
-    const { assign } = stubWindow("https://example.com/settings");
+    const { assign } = stubWindow("https://example.com/base/settings");
 
     try {
+      // Snapshot paths have basePath stripped.
       await controller.hmrReplaceTree(
         Promise.resolve(createResolvedElements("route:/settings/account", "/")),
         createClientNavigationRenderSnapshot("https://example.com/settings", {}),
       );
 
-      expect(assign).toHaveBeenCalledWith("/settings");
+      expect(assign).toHaveBeenCalledWith("/base/settings");
       expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {
       detach();
