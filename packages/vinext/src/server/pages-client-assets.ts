@@ -4,7 +4,10 @@ export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
   ssrManifest?: Record<string, string[]>;
-  /** Build-time shared file list, valid only for this ssrManifest object. */
+  /**
+   * Shared Pages chunk files (framework, vinext runtime, client entry) keyed on
+   * chunk names from this client build, in the SSR-manifest key-space.
+   */
   sharedChunks?: string[];
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];

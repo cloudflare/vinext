@@ -232,6 +232,8 @@ The migration is non-destructive -- your existing Next.js setup continues to wor
 
 vinext targets Vite 8, which defaults to Rolldown, Oxc, Lightning CSS, and a newer browser baseline. If you bring custom Vite config or plugins from an older setup, prefer `oxc`, `optimizeDeps.rolldownOptions`, and `build.rolldownOptions` over older `esbuild` and `build.rollupOptions` knobs, and override `build.target` if you still need older browsers. If a dependency breaks because of stricter CommonJS default import handling, fix the import or use `legacy.inconsistentCjsInterop: true` as a temporary escape hatch. See the [Vite 8 migration guide](https://vite.dev/guide/migration).
 
+Production client JS, Web Worker and CSS files use hash-only file names (by default `_next/static/chunks/[hash].js`, `_next/static/workers/<module-id>-[hash].js` and `_next/static/css/[hash].css`) so component and source file names don't appear in public asset URLs. Web Worker file names are fixed. To use different client JS and CSS names, set `entryFileNames`, `chunkFileNames` or `assetFileNames` in `build.rolldownOptions.output` (or `environments.client.build.rolldownOptions.output`), keeping them under the client assets directory: `_next/static/` by default, or `<prefix>/_next/static/` with a path-based `assetPrefix` such as `/cdn` (e.g. `chunkFileNames: "cdn/_next/static/chunks/[name]-[hash].js"`).
+
 ```bash
 npm run dev:vinext    # Start the vinext dev server (port 3001)
 npm run build:vinext  # Build production output with vinext
@@ -686,6 +688,7 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 | `experimental.optimizePackageImports`            | ✅  | Rewrites barrel imports to direct sub-module imports in RSC/SSR environments. A default set (lucide-react, date-fns, radix-ui, antd, MUI, and others) are always optimized. Add package names here to extend the list.                                   |
 | `vinext({ nextConfig })`                         | ✅  | Inline Next-style config from `vite.config.*`. Supports object-form and function-form config. When provided, this overrides root `next.config.*`.                                                                                                        |
 | `vinext({ react: { compiler: true } })`          | ✅  | React Compiler auto memoization. Needs `@vitejs/plugin-react` 6.1+ and the optional `oxc-transform-react` package.                                                                                                                                       |
+| `vinext({ disableNextLikeChunking: true })`      | ✅  | Loads each client component from its own chunk, instead of one chunk per route group (Next.js-like; App Router production builds). Grouping also turns off on its own when the client build has other chunk groups.                                      |
 
 ### React Compiler
 

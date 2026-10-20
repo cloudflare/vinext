@@ -3,6 +3,10 @@
  */
 export type BuildManifestChunk = {
   file: string;
+  /** Source module id (or virtual id) of an entry chunk. */
+  src?: string;
+  /** Rolldown chunk name, independent of the configured output file name. */
+  name?: string;
   isEntry?: boolean;
   isDynamicEntry?: boolean;
   imports?: string[];

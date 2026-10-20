@@ -29,6 +29,7 @@ type CreateAppPageRscRenderStatusResolverOptions = {
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   navigationContext: NavigationContext | null;
   rootParams?: RootParams;
+  routePattern: string;
 };
 
 const PAGE_STATUS: AppPageRscRenderStatus = { kind: "page" };
@@ -67,6 +68,7 @@ async function resolveAppPageRscRenderStatus(
         // The RSC render already reported its errors, and this document is
         // discarded.
         onSsrError: () => undefined,
+        preloadRoutePattern: options.routePattern,
         rootParams: options.rootParams,
       },
     );

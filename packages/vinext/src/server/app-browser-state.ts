@@ -1,5 +1,5 @@
 import { stripBasePath } from "../utils/base-path.js";
-import type { RouteManifest } from "../routing/app-route-graph.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
   getMountedSlotIds,
@@ -301,7 +301,7 @@ export function resolvePendingNavigationCommitDispositionDecision(options: {
   activeNavigationId: number;
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest?: RouteManifest | null;
+  routeManifest?: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetHref?: string;
 }): PendingNavigationCommitDispositionDecision {
@@ -462,7 +462,7 @@ function createPendingRouteSnapshot(pending: PendingNavigationCommit): RouteSnap
 
 function createPendingNavigationOperationToken(options: {
   pending: PendingNavigationCommit;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   startedNavigationId: number;
   targetSnapshot: RouteSnapshot;
 }): OperationToken {
@@ -487,7 +487,7 @@ function createRootBoundarySnapshotFingerprint(snapshot: RouteSnapshot): string 
 function planPendingRootBoundaryFlightResponse(options: {
   currentState: AppRouterState;
   pending: PendingNavigationCommit;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   targetHref?: string;
   // The token has already passed commit eligibility (verifyOperationTokenForCommit)
   // in the disposition gate above. Requiring the verified brand here makes that

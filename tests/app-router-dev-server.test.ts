@@ -2185,6 +2185,18 @@ describe("App Router integration", () => {
     expect(cacheControl).toContain("stale-while-revalidate");
   });
 
+  it("keeps a revalidate page that imports CSS cacheable", async () => {
+    // React's dev build serializes element props as debug info, which calls
+    // `searchParams.then`. That must not count as the page reading it.
+    const res = await fetch(`${baseUrl}/nextjs-compat/revalidate-css-module`);
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('data-testid="revalidate-css-module"');
+
+    const cacheControl = res.headers.get("cache-control");
+    expect(cacheControl).toContain("s-maxage=60");
+    expect(cacheControl).toContain("stale-while-revalidate");
+  });
+
   it("applies revalidate exported from a layout to child pages", async () => {
     const res = await fetch(`${baseUrl}/layout-segment-config/revalidate`);
     expect(res.status).toBe(200);

@@ -20,7 +20,7 @@ test("runs an import.meta.url module worker in the deployed example", async ({
   expect(workerUrls).toHaveLength(1);
   expect(new URL(workerUrls[0]!).protocol).toMatch(/^https?:$/);
   expect(new URL(workerUrls[0]!).pathname).toMatch(
-    /\/_next\/static\/workers\/echo\.worker-[^/]+\.js$/,
+    /\/_next\/static\/workers\/[0-9a-f]{8}-[A-Za-z0-9_-]{8}\.js$/,
   );
 
   void consoleErrors;

@@ -96,7 +96,7 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 // payload the stand-in Flight render last serialized, once it has read the
 // stream's first chunk, and keeps draining the rest.
 const ssrFlight = vi.hoisted(() => ({ payload: undefined as unknown }));
-vi.mock("virtual:vite-rsc/client-references", () => ({ default: {} }));
+vi.mock("virtual:vite-rsc/client-references", () => ({ default: {}, routeClientReferences: null }));
 vi.mock("virtual:vinext-pages-client-assets", () => ({ default: {} }));
 vi.mock("@vitejs/plugin-rsc/ssr", () => ({
   async createFromReadableStream(stream: ReadableStream<Uint8Array>) {
