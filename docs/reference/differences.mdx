@@ -33,7 +33,7 @@ vinext warns about string patterns it can't serve correctly. Keep them:
 
 - under the client assets directory: `_next/static/` by default, or `<prefix>/_next/static/` with a path-based `assetPrefix` such as `/cdn` (for example `chunkFileNames: "cdn/_next/static/chunks/[name]-[hash].js"`);
 - hashed with `[hash]`, because files there are served with immutable caching;
-- ending in `.js` for entries and chunks, and in `[extname]` for assets;
+- ending in `.js` for entries and chunks, and in `[extname]` or `.[ext]` for assets;
 - starting with `[name].` or `[name]-` in asset basenames, so assets that CSS `url()` references keep their hashed names.
 
 Function patterns are left to you to keep within these rules. Array-shaped client `output` isn't supported: Vite appends vinext's own client output to the array, which builds an extra bundle.
