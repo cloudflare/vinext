@@ -57,7 +57,8 @@ import {
 } from "./client-trace-metadata.js";
 import { AppElementsWire, type AppWireElements } from "./app-elements.js";
 import { createInitialBfcacheMaps } from "./app-bfcache-identity.js";
-import { BfcacheIdentityMapContext, ElementsContext, Slot } from "vinext/shims/slot";
+import { createAppRouteTree } from "./app-route-tree.js";
+import { BfcacheIdentityMapContext } from "vinext/shims/slot";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import {
   createClientReferencePreloader,
@@ -551,11 +552,11 @@ export async function handleSsr(
             elements,
             metadata,
           });
-          const routeTree = createReactElement(
-            ElementsContext.Provider,
-            { value: elements },
-            createReactElement(Slot, { id: metadata.routeId }),
-          );
+          const routeTree = createAppRouteTree({
+            elements,
+            historyCommit: null,
+            routeId: metadata.routeId,
+          });
           const identityMapTree = createReactElement(
             BfcacheIdentityMapContext.Provider,
             { value: bfcacheMaps.identities },

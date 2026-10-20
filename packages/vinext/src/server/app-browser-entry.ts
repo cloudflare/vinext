@@ -93,6 +93,7 @@ import {
   type PendingBrowserRouterState,
 } from "./app-browser-navigation-controller.js";
 import { AppBrowserMpaNavigationScheduler } from "./app-browser-mpa-navigation.js";
+import { createAppRouteTree } from "./app-route-tree.js";
 import { shouldRecoverSamePathSearchCommitOnResponseCompletion } from "./app-browser-navigation-response.js";
 import {
   resolveManifestNavigationInterceptionContext,
@@ -170,8 +171,6 @@ import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import {
   BfcacheIdentityMapContext,
-  ElementsContext,
-  Slot,
   bindAppElementsRenderedSearch,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
@@ -399,6 +398,7 @@ const discardedServerActionRefreshScheduler = hasServerActions
     };
 const serverActionSupplementalRefreshCoordinator = createSupplementalRefreshCoordinator();
 const NavigationCommitSignal = browserNavigationController.NavigationCommitSignal;
+const NavigationHistoryCommit = browserNavigationController.NavigationHistoryCommit;
 const ACTION_HTTP_FALLBACK_ROBOTS_META_ATTR = "data-vinext-action-http-fallback";
 
 function syncServerActionHttpFallbackHead(status: number | null): void {
@@ -816,7 +816,10 @@ function createNavigationCommitEffect(options: {
   params: Record<string, string | string[]>;
   previousNextUrl: string | null;
   targetHistoryIndex?: number | null;
-}): (commit: { keepCurrentUrl: boolean; releaseSnapshot: boolean }) => void {
+}): {
+  writeHistory(commit: { keepCurrentUrl: boolean }): void;
+  publish(commit: { releaseSnapshot: boolean }): void;
+} {
   const {
     activeRoutePaths,
     bfcacheIds,
@@ -827,32 +830,39 @@ function createNavigationCommitEffect(options: {
     previousNextUrl,
     targetHistoryIndex,
   } = options;
+  let wroteHistory = false;
 
-  return ({ keepCurrentUrl, releaseSnapshot }) => {
-    // Only update URL if this is still the active navigation.
-    // A newer navigation would have superseded this navigation id.
-    if (!browserNavigationController.isCurrentNavigation(navId)) {
-      // This transition was superseded before commit; balance the active
-      // snapshot counter without clearing pendingPathname ownership.
-      commitClientNavigationState(undefined, { releaseSnapshot });
-      return;
-    }
+  return {
+    writeHistory({ keepCurrentUrl }) {
+      // Only update URL if this is still the active navigation.
+      // A newer navigation would have superseded this navigation id.
+      if (!browserNavigationController.isCurrentNavigation(navId)) return;
 
-    historyController.commitNavigationHistory({
-      activeRoutePaths,
-      bfcacheIds,
-      href,
-      // Without an update mode the current entry keeps its URL and only
-      // records this render's metadata, as for a refresh.
-      historyUpdateMode: keepCurrentUrl ? undefined : historyUpdateMode,
-      previousNextUrl,
-      stageClientParams: () => stageClientParams(params),
-      targetHistoryIndex,
-    });
+      historyController.commitNavigationHistory({
+        activeRoutePaths,
+        bfcacheIds,
+        href,
+        // Without an update mode the current entry keeps its URL and only
+        // records this render's metadata, as for a refresh.
+        historyUpdateMode: keepCurrentUrl ? undefined : historyUpdateMode,
+        previousNextUrl,
+        stageClientParams: () => stageClientParams(params),
+        targetHistoryIndex,
+      });
+      wroteHistory = true;
+    },
+    publish({ releaseSnapshot }) {
+      if (!wroteHistory) {
+        // This transition was superseded before commit; balance the active
+        // snapshot counter without clearing pendingPathname ownership.
+        commitClientNavigationState(undefined, { releaseSnapshot });
+        return;
+      }
 
-    // URL has been updated; the recovery hard-nav target is no longer needed.
-    clearAppNavigationFailureTarget(href);
-    commitClientNavigationState(navId, { releaseSnapshot });
+      // URL has been updated; the recovery hard-nav target is no longer needed.
+      clearAppNavigationFailureTarget(href);
+      commitClientNavigationState(navId, { releaseSnapshot });
+    },
   };
 }
 
@@ -1541,11 +1551,11 @@ function BrowserRoot({
     createElement(
       NavigationCommitSignal,
       { renderId: treeState.renderId },
-      createElement(
-        ElementsContext.Provider,
-        { value: treeState.elements },
-        createElement(Slot, { id: treeState.routeId }),
-      ),
+      createAppRouteTree({
+        elements: treeState.elements,
+        historyCommit: createElement(NavigationHistoryCommit, { renderId: treeState.renderId }),
+        routeId: treeState.routeId,
+      }),
     ),
   );
   const bfcacheSegmentIdentities = useMemo(

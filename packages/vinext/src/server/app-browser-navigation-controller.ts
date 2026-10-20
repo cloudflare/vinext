@@ -62,13 +62,29 @@ export type PendingBrowserRouterState = {
 export type NavigationPayloadOutcome = "committed" | "no-commit" | "hard-navigate";
 type HardNavigationMode = "assign" | "replace";
 
-type BrowserNavigationCommitEffect = (options: {
-  // Keep the current URL instead of writing the navigation's own, because a
-  // raw history write has replaced it since the optimistic shell committed.
-  keepCurrentUrl: boolean;
-  // Whether this render still holds an active render snapshot to release.
-  releaseSnapshot: boolean;
-}) => void;
+type BrowserNavigationCommitEffect = {
+  // Runs when React starts committing the render, before it changes the route
+  // tree's DOM, so the browser records the scroll position of the page being
+  // left with the entry. Next.js writes history in HistoryUpdater's insertion
+  // effect, which runs before the route tree's DOM mutations too.
+  writeHistory(options: {
+    // Keep the current URL instead of writing the navigation's own, because a
+    // raw history write has replaced it since the optimistic shell committed.
+    keepCurrentUrl: boolean;
+  }): void;
+  // Runs in the layout phase, since it notifies navigation listeners and
+  // React does not allow updates from an insertion effect.
+  publish(options: {
+    // Whether this render still holds an active render snapshot to release.
+    releaseSnapshot: boolean;
+  }): void;
+};
+
+type QueuedNavigationCommitEffect = {
+  // Null once the history write has run.
+  writeHistory: (() => void) | null;
+  publish: () => void;
+};
 
 type BrowserNavigationCommitEffectFactory = (options: {
   activeRoutePaths: readonly string[];
@@ -191,6 +207,7 @@ type BrowserNavigationController = {
       children?: ReactNode;
     },
   ): ReactNode;
+  NavigationHistoryCommit(this: void, { renderId }: { renderId: number }): null;
 };
 
 const HARD_NAVIGATION_LOOP_GUARD_KEY = "__vinext_hard_navigation_target__";
@@ -323,7 +340,7 @@ export function createAppBrowserNavigationController(
   let pendingUserNavigationId: number | null = null;
   let pendingUserNavigationLane: OperationLane | null = null;
   // Set between a navigation render's insertion and layout effects, while
-  // React commits it but before its URL update has run.
+  // React commits it but before its URL update has been published.
   let committingNavigationRenderId: number | null = null;
   // Whether a render has started committing since the pending user navigation
   // began. From then on it is visible and can no longer be discarded.
@@ -339,7 +356,7 @@ export function createAppBrowserNavigationController(
     }
   >();
   const pendingNavigationFailureTargets = new Map<number, URL>();
-  const pendingNavigationPrePaintEffects = new Map<number, () => void>();
+  const pendingNavigationPrePaintEffects = new Map<number, QueuedNavigationCommitEffect>();
   // Renders whose activateNavigationSnapshot() has not been balanced yet.
   const snapshotRenderIds = new Set<number>();
   // The visible URL of the pending user navigation's optimistic shell, once
@@ -556,11 +573,11 @@ export function createAppBrowserNavigationController(
   }
 
   /**
-   * Run the URL update of a navigation render React is committing right now.
-   * It normally runs in NavigationCommitSignal's layout effect, after the
-   * route's own layout effects. Next.js writes the URL in an insertion effect
-   * instead, so a raw history write from a destination layout effect lands on
-   * top of the destination entry. Called before such a write to keep that order.
+   * Publish the URL update of a navigation render React is committing right
+   * now. Its history entry is already written, but publishing normally runs in
+   * NavigationCommitSignal's layout effect, after the route's own layout
+   * effects. Called before a raw history write from such an effect, so the
+   * write is published on top of the destination's.
    */
   function flushCommittingNavigationUrl(): void {
     if (committingNavigationRenderId !== null) {
@@ -584,11 +601,14 @@ export function createAppBrowserNavigationController(
     );
   }
 
-  function queuePrePaintNavigationEffect(renderId: number, effect: (() => void) | null): void {
-    if (!effect) {
+  function writeNavigationRenderHistory(renderId: number): void {
+    const effect = pendingNavigationPrePaintEffects.get(renderId);
+    const writeHistory = effect?.writeHistory;
+    if (!effect || !writeHistory) {
       return;
     }
-    pendingNavigationPrePaintEffects.set(renderId, effect);
+    effect.writeHistory = null;
+    writeHistory();
   }
 
   /**
@@ -610,7 +630,10 @@ export function createAppBrowserNavigationController(
 
       pendingNavigationPrePaintEffects.delete(id);
       if (id === upToRenderId) {
-        effect();
+        // The history write has already run unless React never started
+        // committing this render (the dev recovery boundary replaced it).
+        effect.writeHistory?.();
+        effect.publish();
       } else {
         // Superseded navigations still need to balance the snapshot counter.
         releaseRenderSnapshot(id);
@@ -638,7 +661,10 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  /** Runs when React starts committing a render, before any layout effect. */
+  /**
+   * Runs when React starts committing a render, before it changes the route
+   * tree's DOM, and writes the render's history entry.
+   */
   function beginNavigationRenderCommit(renderId: number): void {
     committingNavigationRenderId = renderId;
     // The optimistic shell is a detached commit: the authoritative render
@@ -655,6 +681,7 @@ export function createAppBrowserNavigationController(
       pendingUserNavigationCommitStarted = true;
     }
     clearCommittedNavigationFailureTargets(renderId);
+    writeNavigationRenderHistory(renderId);
   }
 
   function commitNavigationRender(renderId: number): void {
@@ -735,6 +762,20 @@ export function createAppBrowserNavigationController(
     }
   }
 
+  /**
+   * Rendered before the route tree (see createAppRouteTree). Insertion effects
+   * run in the mutation phase, in tree order, after each component's own
+   * subtree mutations, so this one runs before React changes the route tree's
+   * DOM. An effect on NavigationCommitSignal itself would run after them.
+   */
+  function NavigationHistoryCommit(this: void, { renderId }: { renderId: number }): null {
+    useInsertionEffect(() => {
+      beginNavigationRenderCommit(renderId);
+    }, [renderId]);
+
+    return null;
+  }
+
   function NavigationCommitSignal(
     this: void,
     {
@@ -745,10 +786,6 @@ export function createAppBrowserNavigationController(
       children?: ReactNode;
     },
   ): ReactNode {
-    useInsertionEffect(() => {
-      beginNavigationRenderCommit(renderId);
-    }, [renderId]);
-
     useLayoutEffect(() => {
       commitNavigationRender(renderId);
 
@@ -785,7 +822,7 @@ export function createAppBrowserNavigationController(
       // search+hash response whose visible tree is unchanged can be retained by
       // React without mounting the new NavigationCommitSignal, though. In that
       // narrow synchronous mode, publish the resolved state directly as well;
-      // the signal's layout effect remains the authority for URL and scroll
+      // the signal's commit effects remain the authority for URL and scroll
       // effects, including when the response suspends or changes the tree.
       if (pendingRouterState.settled) return;
       const committedState = captureCandidateState(
@@ -1084,12 +1121,16 @@ export function createAppBrowserNavigationController(
         previousNextUrl: approvedCommit.previousNextUrl,
         targetHistoryIndex: options.targetHistoryIndex,
       });
-      queuePrePaintNavigationEffect(renderId, () => {
-        // Decided at commit: the URL can be retired while this render is pending.
-        commitEffect({
-          keepCurrentUrl: isRetiredNavigationUrl(options.navId, options.targetHref),
-          releaseSnapshot: snapshotRenderIds.delete(renderId),
-        });
+      pendingNavigationPrePaintEffects.set(renderId, {
+        writeHistory: () => {
+          // Decided at commit: the URL can be retired while this render is pending.
+          commitEffect.writeHistory({
+            keepCurrentUrl: isRetiredNavigationUrl(options.navId, options.targetHref),
+          });
+        },
+        publish: () => {
+          commitEffect.publish({ releaseSnapshot: snapshotRenderIds.delete(renderId) });
+        },
       });
       claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
       // The render snapshot gives hooks this navigation's URL while it renders.
@@ -1292,5 +1333,6 @@ export function createAppBrowserNavigationController(
     commitNavigationRender,
     clearCommittedNavigationFailureTargets,
     NavigationCommitSignal,
+    NavigationHistoryCommit,
   };
 }

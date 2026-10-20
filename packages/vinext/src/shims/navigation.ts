@@ -3369,8 +3369,8 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      // A write from a layout effect of a committing navigation must land on
-      // top of the destination entry, as it does in Next.js.
+      // Publish a committing navigation's URL first, so a write from a
+      // destination layout effect is published on top of it, as in Next.js.
       getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
       // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
       // history entry must remain a real traversal target so back/forward can
