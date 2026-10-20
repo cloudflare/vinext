@@ -137,46 +137,7 @@ Every App Router page shipped the path of every `route.ts` handler in the app, i
 
 ## next.config route matching
 
-`redirects`, `rewrites` and `headers` sources were matched by Vinext's own parser, which differed from Next.js in many cases. Some `headers()` sources from the Next.js docs never matched, so headers such as `X-Frame-Options`, CSP and HSTS were left off responses Next.js would have added them to:
-
-<table>
-  <thead>
-    <tr>
-      <th>Source</th>
-      <th>Path</th>
-      <th>Next.js</th>
-      <th>Vinext 1.2</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td>`/:path*`</td>
-      <td>`/`</td>
-      <td>match</td>
-      <td>no match</td>
-    </tr>
-    <tr>
-      <td>`/admin/:path+`</td>
-      <td>`/admin/x`</td>
-      <td>match</td>
-      <td>no match</td>
-    </tr>
-    <tr>
-      <td>`/admin/:id?`</td>
-      <td>`/admin`</td>
-      <td>match</td>
-      <td>no match</td>
-    </tr>
-    <tr>
-      <td>`/((?!api|_next/static).*)`</td>
-      <td>`/admin`</td>
-      <td>match</td>
-      <td>no match</td>
-    </tr>
-  </tbody>
-</table>
-
-All three now compile with path-to-regexp, as in Next.js 16. Other fixes in the same area:
+`redirects`, `rewrites` and `headers` sources were matched by Vinext's own parser, which differed from Next.js in many cases. Some `headers()` sources from the Next.js docs never matched, so headers such as `X-Frame-Options`, CSP and HSTS were left off responses Next.js would have added them to. All three now compile with path-to-regexp, as in Next.js 16. Other fixes in the same area:
 
 - Locale-prefixed redirects with params, such as `/:locale(en|sv)?/settings/:path*`, now fire under non-default locales.
 - `headers()` substitutes matched params into header keys and values. A `value: ":slug"` used to be sent as the literal text `:slug`.
