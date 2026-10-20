@@ -81,11 +81,50 @@ function createRouteIdFromPatternParts(patternParts: readonly string[]): string 
   return `route:/${patternParts.join("/")}`;
 }
 
+function isParamPart(part: string | undefined, suffix: "" | "+" | "*"): boolean {
+  return part !== undefined && part.startsWith(":") && (suffix === "" || part.endsWith(suffix));
+}
+
+/**
+ * Whether some URL pathname matches both route patterns. A catch-all is always
+ * the last part and takes whatever the other pattern's remainder produces: a
+ * required catch-all needs at least one more segment, an optional one also
+ * accepts none.
+ */
+function routePatternsOverlap(a: readonly string[], b: readonly string[], index = 0): boolean {
+  const partA = a[index];
+  const partB = b[index];
+  if (isParamPart(partA, "*") || isParamPart(partB, "*")) return true;
+  if (isParamPart(partA, "+")) return partB !== undefined;
+  if (isParamPart(partB, "+")) return partA !== undefined;
+  if (partA === undefined || partB === undefined) return partA === partB;
+  if (!isParamPart(partA, "") && !isParamPart(partB, "") && partA !== partB) return false;
+  return routePatternsOverlap(a, b, index + 1);
+}
+
+/**
+ * The browser only needs a route handler that another route could also match:
+ * the optimistic route matcher must find the handler there instead of
+ * predicting that route's shell. Any other handler URL matches nothing on the
+ * client, and its non-Flight response already turns the navigation into a
+ * document load, so shipping its path would only publish the app's API
+ * surface (issue #3624).
+ */
+function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifestRoute[] {
+  const allRoutes = [...routes];
+  const renderedRoutes = allRoutes.filter((route) => route.routeHandlerId === null);
+  return allRoutes.filter(
+    (route) =>
+      route.routeHandlerId === null ||
+      renderedRoutes.some((other) => routePatternsOverlap(route.patternParts, other.patternParts)),
+  );
+}
+
 export function toBrowserRouteManifestWire(routeManifest: RouteManifest): BrowserRouteManifestWire {
   const graph = routeManifest.segmentGraph;
   return {
     graphVersion: routeManifest.graphVersion,
-    routes: Array.from(graph.routes.values(), (route) => ({
+    routes: selectBrowserRoutes(graph.routes.values()).map((route) => ({
       ...(route.id === createRouteIdFromPatternParts(route.patternParts) ? {} : { id: route.id }),
       patternParts: route.patternParts,
       isDynamic: route.isDynamic,

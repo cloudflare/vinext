@@ -28,13 +28,13 @@ export function generateBrowserEntry(
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  const linkPrefetchRoutes = toLinkPrefetchRoutes(routes);
-  // Hybrid ownership needs every App route handler to tell a document-only
-  // App match apart from a Pages match, so only App-only builds drop them.
-  const prefetchRoutes =
-    pagesPrefetchRoutes.length === 0
-      ? omitUnshadowingDocumentOnlyRoutes(linkPrefetchRoutes)
-      : linkPrefetchRoutes;
+  // Route handler entries only feed hybrid App/Pages ownership. An App-only
+  // client learns a handler URL from its non-Flight response (a prefetch miss,
+  // then a document navigation), like Next.js, so shipping the paths would
+  // only publish the app's API surface (issue #3624).
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, {
+    includeRouteHandlers: pagesPrefetchRoutes.length > 0,
+  });
   const clientRewrites = toClientRewrites(rewrites);
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
@@ -68,49 +68,6 @@ function toDocumentOnlyAppRoute(route: AppRoute): VinextLinkPrefetchRoute {
     patternParts: [...route.patternParts],
     isDynamic: route.isDynamic,
   };
-}
-
-/**
- * Drop document-only entries (route handlers) that no prefetchable route
- * could also match. Such an entry only exists so the client matcher prefers
- * the handler over an overlapping page pattern like `[...slug]`; without an
- * overlap, `<Link>` already declines URLs nothing matches. Keeping them
- * ships every API path to every browser (issue #3624).
- */
-function omitUnshadowingDocumentOnlyRoutes(
-  routes: readonly VinextLinkPrefetchRoute[],
-): VinextLinkPrefetchRoute[] {
-  const pageRoutes = routes.filter((route) => !route.documentOnly);
-  return routes.filter(
-    (route) =>
-      !route.documentOnly ||
-      pageRoutes.some((pageRoute) =>
-        patternsMayOverlap(route.patternParts, pageRoute.patternParts),
-      ),
-  );
-}
-
-/** Whether some URL pathname matches both route patterns. */
-function patternsMayOverlap(a: readonly string[], b: readonly string[], i = 0, j = 0): boolean {
-  const segA = a[i];
-  const segB = b[j];
-  // A catch-all is always the last segment and accepts whatever the other
-  // pattern's remainder produces. An optional catch-all also accepts nothing,
-  // a required one needs at least one more segment.
-  if (isOptionalCatchAll(segA) || isOptionalCatchAll(segB)) return true;
-  if (isCatchAll(segA)) return segB !== undefined;
-  if (isCatchAll(segB)) return segA !== undefined;
-  if (segA === undefined || segB === undefined) return segA === segB;
-  if (!segA.startsWith(":") && !segB.startsWith(":") && segA !== segB) return false;
-  return patternsMayOverlap(a, b, i + 1, j + 1);
-}
-
-function isOptionalCatchAll(segment: string | undefined): boolean {
-  return segment !== undefined && segment.startsWith(":") && segment.endsWith("*");
-}
-
-function isCatchAll(segment: string | undefined): boolean {
-  return segment !== undefined && segment.startsWith(":") && segment.endsWith("+");
 }
 
 function requiresDynamicNavigationRequest(route: AppRoute): boolean {
@@ -169,7 +126,10 @@ export function toLinkPrefetchRoute(
 }
 
 /** Project App routes together so sibling-intercept loading is applied to its target route. */
-export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPrefetchRoute[] {
+export function toLinkPrefetchRoutes(
+  routes: readonly AppRoute[],
+  { includeRouteHandlers = true }: { includeRouteHandlers?: boolean } = {},
+): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
     for (const intercept of route.siblingIntercepts) {
@@ -179,16 +139,19 @@ export function toLinkPrefetchRoutes(routes: readonly AppRoute[]): VinextLinkPre
     }
   }
 
-  return routes.map((route) =>
-    isLinkPrefetchRoute(route)
-      ? toLinkPrefetchRoute(
+  return routes.flatMap((route) => {
+    if (isLinkPrefetchRoute(route)) {
+      return [
+        toLinkPrefetchRoute(
           route,
           siblingInterceptLoadingTargets.some((targetParts) =>
             patternsStructurallyEquivalent(targetParts, route.patternParts),
           ),
-        )
-      : toDocumentOnlyAppRoute(route),
-  );
+        ),
+      ];
+    }
+    return includeRouteHandlers ? [toDocumentOnlyAppRoute(route)] : [];
+  });
 }
 
 /**
