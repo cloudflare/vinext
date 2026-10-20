@@ -102,6 +102,49 @@ describe("ModuleDependencyStore", () => {
     expect(await store.read("/app/a.ts", fresh)).toEqual(["new.css"]);
   });
 
+  it("keeps a read that only unrelated file events overlapped", async () => {
+    const store = new ModuleDependencyStore<string>();
+    let finishRead!: () => void;
+    const collect = vi.fn(async (): Promise<ModuleDependencyEntry<string>> => {
+      await new Promise<void>((resolve) => (finishRead = resolve));
+      return { dependencies: ["a.css"], resolvedFiles: ["/app/a.css"], cacheable: true };
+    });
+
+    const pending = store.read("/app/a.ts", collect);
+    store.invalidate(["/app/other.ts"], "update");
+    store.invalidate(["/app/a.css"], "update");
+    finishRead();
+    await pending;
+    const fresh = createCollector({});
+    await store.read("/app/a.ts", fresh);
+
+    expect(fresh).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      "the deletion of a resolved file",
+      (store: ModuleDependencyStore<string>) => store.invalidate(["/app/a.css"], "delete"),
+    ],
+    ["clear", (store: ModuleDependencyStore<string>) => store.clear()],
+  ])("does not keep a read that %s overlapped", async (_name, interrupt) => {
+    const store = new ModuleDependencyStore<string>();
+    let finishRead!: () => void;
+    const collect = vi.fn(async (): Promise<ModuleDependencyEntry<string>> => {
+      await new Promise<void>((resolve) => (finishRead = resolve));
+      return { dependencies: ["a.css"], resolvedFiles: ["/app/a.css"], cacheable: true };
+    });
+
+    const pending = store.read("/app/a.ts", collect);
+    interrupt(store);
+    finishRead();
+    await pending;
+    const fresh = createCollector({});
+    await store.read("/app/a.ts", fresh);
+
+    expect(fresh).toHaveBeenCalledTimes(1);
+  });
+
   it("does not keep a failed read", async () => {
     const store = new ModuleDependencyStore<string>();
     const failing = vi.fn(async (): Promise<ModuleDependencyEntry<string>> => {

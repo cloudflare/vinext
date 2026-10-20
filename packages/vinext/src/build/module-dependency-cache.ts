@@ -26,6 +26,19 @@ export type ModuleDependencyEntry<T> = {
   cacheable: boolean;
 };
 
+type FileEvent = { files: readonly string[]; event: "create" | "update" | "delete" };
+
+function isOutdatedBy<T>(
+  moduleId: string,
+  entry: ModuleDependencyEntry<T>,
+  { files, event }: FileEvent,
+): boolean {
+  return (
+    files.includes(stripViteModuleQuery(moduleId)) ||
+    (event === "delete" && entry.resolvedFiles.some((file) => files.includes(file)))
+  );
+}
+
 /**
  * Dependency lists of source modules, kept across loads of a dev virtual
  * module. An entry is dropped by the file events that make Vite transform the
@@ -34,7 +47,8 @@ export type ModuleDependencyEntry<T> = {
  */
 export class ModuleDependencyStore<T> {
   private readonly entries = new Map<string, ModuleDependencyEntry<T>>();
-  private version = 0;
+  // File events seen by each read in flight. null once the store is cleared.
+  private readonly pendingReads = new Set<{ events: FileEvent[] | null }>();
 
   async read(
     moduleId: string,
@@ -43,28 +57,36 @@ export class ModuleDependencyStore<T> {
     const cached = this.entries.get(moduleId);
     if (cached) return cached.dependencies;
 
-    const version = this.version;
-    const entry = await collect(moduleId);
+    const pending: { events: FileEvent[] | null } = { events: [] };
+    this.pendingReads.add(pending);
+    let entry: ModuleDependencyEntry<T>;
+    try {
+      entry = await collect(moduleId);
+    } finally {
+      this.pendingReads.delete(pending);
+    }
     // A file event during the read can leave the entry outdated, so it is not kept.
-    if (entry.cacheable && version === this.version) this.entries.set(moduleId, entry);
+    if (
+      entry.cacheable &&
+      pending.events &&
+      !pending.events.some((event) => isOutdatedBy(moduleId, entry, event))
+    ) {
+      this.entries.set(moduleId, entry);
+    }
     return entry.dependencies;
   }
 
   /** `files` holds every spelling of one file, such as its symlinked and real path. */
-  invalidate(files: readonly string[], event: "create" | "update" | "delete"): void {
-    this.version++;
+  invalidate(files: readonly string[], event: FileEvent["event"]): void {
+    const fileEvent = { files, event };
+    for (const pending of this.pendingReads) pending.events?.push(fileEvent);
     for (const [moduleId, entry] of this.entries) {
-      if (
-        files.includes(stripViteModuleQuery(moduleId)) ||
-        (event === "delete" && entry.resolvedFiles.some((file) => files.includes(file)))
-      ) {
-        this.entries.delete(moduleId);
-      }
+      if (isOutdatedBy(moduleId, entry, fileEvent)) this.entries.delete(moduleId);
     }
   }
 
   clear(): void {
-    this.version++;
+    for (const pending of this.pendingReads) pending.events = null;
     this.entries.clear();
   }
 }
