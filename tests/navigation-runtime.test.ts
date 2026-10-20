@@ -152,7 +152,7 @@ describe("navigation runtime contract", () => {
     expect(loadNavigationRuntimeRouteManifest()).toBe(load);
     expect(getNavigationRuntime()?.bootstrap.routeManifest).toBeNull();
 
-    await load;
+    await expect(load).resolves.toBe(true);
 
     const routeManifest = getNavigationRuntime()?.bootstrap.routeManifest;
     expect(routeManifest?.graphVersion).toBe("graph:test");
@@ -163,7 +163,7 @@ describe("navigation runtime contract", () => {
     expect(importManifest).toHaveBeenCalledTimes(1);
   });
 
-  it("lets callers continue after a failed route manifest load, retries it and reports once", async () => {
+  it("reports a failed route manifest load to callers, retries it and logs once", async () => {
     Reflect.set(globalThis, "window", {});
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     const importManifest = vi
@@ -175,14 +175,14 @@ describe("navigation runtime contract", () => {
       loadRouteManifest: createNavigationRuntimeRouteManifestLoader(importManifest),
     });
 
-    await expect(loadNavigationRuntimeRouteManifest()).resolves.toBeUndefined();
+    await expect(loadNavigationRuntimeRouteManifest()).resolves.toBe(false);
     expect(getNavigationRuntime()?.bootstrap.routeManifest).toBeNull();
     expect(consoleError).toHaveBeenCalledTimes(1);
 
-    await loadNavigationRuntimeRouteManifest();
+    await expect(loadNavigationRuntimeRouteManifest()).resolves.toBe(false);
     expect(consoleError).toHaveBeenCalledTimes(1);
 
-    await loadNavigationRuntimeRouteManifest();
+    await expect(loadNavigationRuntimeRouteManifest()).resolves.toBe(true);
     expect(getNavigationRuntime()?.bootstrap.routeManifest?.graphVersion).toBe("graph:test");
     expect(importManifest).toHaveBeenCalledTimes(3);
   });

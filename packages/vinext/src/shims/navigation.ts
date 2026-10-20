@@ -2956,8 +2956,8 @@ const _appRouter: AppRouterInstance = {
       // the call-time pathname once it does.
       const routeManifestLoad = loadNavigationRuntimeRouteManifest();
       if (routeManifestLoad !== null) {
-        await routeManifestLoad;
-        if (setup.cancelled) return;
+        // Without the manifest the prefetch would miss its interception context.
+        if (!(await routeManifestLoad) || setup.cancelled) return;
         interceptionContext = getPrefetchInterceptionContext(fullHref, currentPathname);
         if (interceptionContext !== null) {
           headers.set(VINEXT_INTERCEPTION_CONTEXT_HEADER, interceptionContext);

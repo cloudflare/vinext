@@ -115,7 +115,7 @@ export type NavigationRuntimeFunctions = {
    * progress. Returns null once the manifest is registered. Created by
    * createNavigationRuntimeRouteManifestLoader.
    */
-  loadRouteManifest?: () => Promise<void> | null;
+  loadRouteManifest?: () => Promise<boolean> | null;
 };
 
 export type NavigationRuntimeBootstrap = {
@@ -393,10 +393,10 @@ function ensureNavigationRuntimeRscBootstrapForRuntime(
  */
 export function createNavigationRuntimeRouteManifestLoader(
   importManifest: () => Promise<{ default: BrowserRouteManifestWire | null }>,
-): () => Promise<void> | null {
+): () => Promise<boolean> | null {
   let loaded = false;
   let reportedFailure = false;
-  let pending: Promise<void> | null = null;
+  let pending: Promise<boolean> | null = null;
   return () => {
     if (loaded) return null;
     pending ??= importManifest()
@@ -405,22 +405,30 @@ export function createNavigationRuntimeRouteManifestLoader(
           routeManifest: wire === null ? null : decodeBrowserRouteManifest(wire),
         });
         loaded = true;
+        return true;
       })
       .catch((error: unknown) => {
-        // Callers continue without topology, as the planner does for any
-        // missing manifest, and the next caller retries the load. Every
-        // navigation and prefetch retries, so report the failure once.
+        // Resolves false: the waiting operation must not classify a commit or
+        // resolve an interception context without the manifest, so navigations
+        // fall back to a document navigation and prefetches are skipped. The
+        // next caller retries the load. Every navigation and prefetch retries,
+        // so report the failure once.
         pending = null;
-        if (reportedFailure) return;
-        reportedFailure = true;
-        console.error("[vinext] Failed to load the App Router route manifest:", error);
+        if (!reportedFailure) {
+          reportedFailure = true;
+          console.error("[vinext] Failed to load the App Router route manifest:", error);
+        }
+        return false;
       });
     return pending;
   };
 }
 
-/** Starts or joins the RouteManifest load. Returns null once it has loaded. */
-export function loadNavigationRuntimeRouteManifest(): Promise<void> | null {
+/**
+ * Starts or joins the RouteManifest load. Resolves whether it loaded, and
+ * returns null once it has (or when no App Router runtime registered a loader).
+ */
+export function loadNavigationRuntimeRouteManifest(): Promise<boolean> | null {
   return getNavigationRuntime()?.functions.loadRouteManifest?.() ?? null;
 }
 

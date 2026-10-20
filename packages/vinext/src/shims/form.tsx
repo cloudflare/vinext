@@ -332,7 +332,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               const currentPathname = window.location.pathname;
               const mountedSlotsHeader = getMountedSlotsHeader();
               const routeManifestLoad = loadNavigationRuntimeRouteManifest();
-              if (routeManifestLoad !== null) await routeManifestLoad;
+              if (routeManifestLoad !== null && !(await routeManifestLoad)) return;
               const interceptionContext = getPrefetchInterceptionContext(
                 actionHref,
                 currentPathname,

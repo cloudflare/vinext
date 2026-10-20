@@ -47,3 +47,26 @@ test("an intercepted navigation started before the route manifest loads waits fo
   expect(photoRscRequests.every((request) => request.interceptionContext === "/feed")).toBe(true);
   expect(manifestRequests).toHaveLength(1);
 });
+
+test("a navigation falls back to a document navigation when the route manifest fails to load", async ({
+  page,
+}) => {
+  await page.route(/vinext-app-route-manifest-[^/]*\.js$/, (route) => route.abort());
+
+  await page.goto("/feed");
+  await waitForAppRouterHydration(page);
+  await page.evaluate(() => {
+    (window as { __routeManifestDocumentMarker?: boolean }).__routeManifestDocumentMarker = true;
+  });
+
+  await page.click("#feed-photo-42-link");
+
+  await expect(page).toHaveURL(/\/photos\/42$/);
+  await expect(page.locator('[data-testid="photo-page"]')).toBeVisible();
+  await expect(page.locator('[data-testid="photo-modal"]')).not.toBeVisible();
+  expect(
+    await page.evaluate(
+      () => (window as { __routeManifestDocumentMarker?: boolean }).__routeManifestDocumentMarker,
+    ),
+  ).toBeUndefined();
+});

@@ -324,6 +324,7 @@ describe("prefetch cache eviction", () => {
         rootBoundaries: [],
       });
       loaded = true;
+      return true;
     });
     const runtime = {
       bootstrap: { routeManifest: null as unknown, rsc: undefined },
@@ -341,6 +342,25 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
     const headers = new Headers(fetch.mock.calls[0]![1]?.headers);
     expect(headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER)).toBe("/feed");
+  });
+
+  it("router.prefetch skips the request when the route manifest fails to load", async () => {
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const loadRouteManifest = vi.fn(() => Promise.resolve(false));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn(), loadRouteManifest },
+    };
+
+    appRouterInstance.prefetch("/photos/42", { kind: "full" });
+    await settlePrefetchSetup();
+
+    expect(loadRouteManifest).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
   it("router.prefetch calls onInvalidate once when the prefetched response is invalidated", async () => {

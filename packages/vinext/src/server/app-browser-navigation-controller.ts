@@ -99,7 +99,7 @@ type BrowserNavigationControllerDeps = {
   performHardNavigation?: (href: string, mode?: HardNavigationMode) => boolean;
   getRouteManifest?: () => BrowserRouteManifest | null;
   // Starts or joins the RouteManifest load; null once it is loaded.
-  loadRouteManifest?: () => Promise<void> | null;
+  loadRouteManifest?: () => Promise<boolean> | null;
   syncHistoryStatePreviousNextUrl?: (
     previousNextUrl: string | null,
     bfcacheIds?: Readonly<Record<string, string>> | null,
@@ -994,7 +994,10 @@ export function createAppBrowserNavigationController(
             });
 
       const routeManifestLoad = loadRouteManifest();
-      if (routeManifestLoad !== null) await routeManifestLoad;
+      if (routeManifestLoad !== null && !(await routeManifestLoad)) {
+        // Callers recover from a failed commit with a document navigation.
+        throw new Error("[vinext] The App Router route manifest is unavailable");
+      }
       const approval = approvePendingNavigationCommit({
         activeNavigationId,
         currentState: getBrowserRouterState(),
@@ -1127,7 +1130,11 @@ export function createAppBrowserNavigationController(
     const startedNavigationId = lifecycleOptions?.startedNavigationId ?? activeNavigationId;
     const targetHref = lifecycleOptions?.targetHref ?? window.location.href;
     const routeManifestLoad = loadRouteManifest();
-    if (routeManifestLoad !== null) await routeManifestLoad;
+    if (routeManifestLoad !== null && !(await routeManifestLoad)) {
+      // Same contract as a hard-navigate decision below.
+      performHardNavigation(targetHref);
+      return undefined;
+    }
     const {
       approvedCommit,
       decision,

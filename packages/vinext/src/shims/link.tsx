@@ -371,6 +371,7 @@ function prefetchUrl(
           },
           headersModule,
           hybridRouteOwner,
+          routeManifestLoaded,
         ] = await Promise.all([
           loadNavigationModule(),
           import("../server/app-elements.js"),
@@ -380,8 +381,10 @@ function prefetchUrl(
           import("../server/headers.js"),
           HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwnerModule() : null,
           // getPrefetchInterceptionContext below reads the RouteManifest.
+          // Without it the prefetch would miss its interception context.
           loadNavigationRuntimeRouteManifest(),
         ]);
+        if (routeManifestLoaded === false) return;
         // A pointer-intent prefetch and its click navigation can start in the
         // same event turn. If navigation won the module-loading race, do not
         // begin a second request after it consumes an equivalent cached route.

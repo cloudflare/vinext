@@ -921,7 +921,12 @@ async function commitSameUrlNavigatePayload(
   > | null = null;
   if (revalidation !== "none") {
     const routeManifestLoad = loadNavigationRuntimeRouteManifest();
-    if (routeManifestLoad !== null) await routeManifestLoad;
+    if (routeManifestLoad !== null && !(await routeManifestLoad)) {
+      // Persisted interceptions and commit approval need the manifest. Like a
+      // hard-navigate commit decision, reload the action's page instead.
+      browserNavigationController.performHardNavigation(actionInitiation.href);
+      return undefined;
+    }
     const refreshUrl = new URL(actionInitiation.href);
     const requestInterceptionContext = resolveInterceptionContextFromPreviousNextUrl(
       actionInitiation.routerState.previousNextUrl,
@@ -2205,10 +2210,16 @@ function bootstrapHydration(
       // Request-state resolution, optimistic shells and commit approval below
       // read the RouteManifest synchronously. It loads from its own chunk, so a
       // navigation that starts before it arrives waits for (or starts) that load.
+      // Without it the navigation cannot be classified, so a failed load falls
+      // back to a document navigation.
       const routeManifestLoad = loadNavigationRuntimeRouteManifest();
       if (routeManifestLoad !== null) {
-        await routeManifestLoad;
+        const routeManifestLoaded = await routeManifestLoad;
         if (!browserNavigationController.isCurrentNavigation(navId)) return;
+        if (!routeManifestLoaded) {
+          performHardNavigationForScrollIntent(currentHref);
+          return;
+        }
       }
 
       // Redirects and detached shells can change visible state before the
