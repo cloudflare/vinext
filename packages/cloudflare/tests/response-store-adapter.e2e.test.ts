@@ -480,6 +480,13 @@ describe("Cloudflare Workers Response Store adapter", () => {
       (entry.responseHeaders as Array<[string, string]>).find(([name]) => name === "location"),
       ["location", "/static-default"],
     );
+    const hit = await miniflare.dispatchFetch("https://tenant-b.test/api/host-redirect", {
+      redirect: "manual",
+    });
+    await hit.arrayBuffer();
+    assert.equal(hit.status, 307);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("location"), "/static-default");
   });
 
   test("never shares a route handler response that read the host", async () => {
