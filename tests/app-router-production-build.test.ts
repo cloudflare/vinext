@@ -45,6 +45,24 @@ function listFiles(dir: string, prefix = ""): string[] {
 }
 
 /** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
+// Client file names are hash-only; chunk names live in the client build manifest.
+function clientChunks(clientDir: string): { name: string; file: string }[] {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8"),
+  ) as Record<string, { file: string; name?: string }>;
+  return Object.values(manifest).flatMap(({ name, file }) =>
+    name && file.endsWith(".js") ? [{ name, file: path.join(clientDir, file) }] : [],
+  );
+}
+
+function clientChunkNames(clientDir: string): string[] {
+  return clientChunks(clientDir).map((chunk) => chunk.name);
+}
+
+function clientChunkFileByName(clientDir: string, match: (name: string) => boolean) {
+  return clientChunks(clientDir).find((chunk) => match(chunk.name))?.file;
+}
+
 function readAllJs(dir: string): string {
   let out = "";
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -118,7 +136,8 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
     // Client references that the same routes reach load through a route group
     // chunk (app/actions renders two).
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(true);
     const clientJs = readAllJs(path.join(outDir, "client"));
 
     // Ported from Next.js:
@@ -296,7 +315,8 @@ describe("App Router Production build", () => {
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   // Route grouping with another chunk group broke hydration in a prototype
@@ -323,8 +343,10 @@ describe("App Router Production build", () => {
     await builder.buildApp();
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
-    expect(clientAssets.some((f: string) => f.includes("user-react-dom"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames).toContain("user-react-dom");
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   it("loads each client reference from its own chunk when a plugin adds a chunk group in outputOptions", async () => {
@@ -358,8 +380,10 @@ describe("App Router Production build", () => {
     await builder.buildApp();
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
-    expect(clientAssets.some((f: string) => f.includes("plugin-react-dom"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames).toContain("plugin-react-dom");
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   it("groups client references that import URLs without measuring them", async () => {
@@ -409,12 +433,11 @@ export default function Page() {
       // Loading the external URL module never settles, which hung the build.
       await builder.buildApp();
 
-      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
-      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
-      expect(group).toBeDefined();
-      expect(fs.readFileSync(path.join(chunksDir, group!), "utf-8")).toContain(
-        "https://esm.sh/canvas-confetti@1.9.3",
+      const group = clientChunkFileByName(path.join(tmpDir, "dist", "client"), (name) =>
+        name.includes("client-reference-group"),
       );
+      expect(group).toBeDefined();
+      expect(fs.readFileSync(group!, "utf-8")).toContain("https://esm.sh/canvas-confetti@1.9.3");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -502,10 +525,11 @@ export default function Page() {
       await builder.buildApp();
 
       const clientDir = path.join(tmpDir, "dist", "client");
-      const chunksDir = path.join(clientDir, "_next", "static", "chunks");
-      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      const group = clientChunkFileByName(clientDir, (name) =>
+        name.includes("client-reference-group"),
+      );
       expect(group).toBeDefined();
-      const groupSource = fs.readFileSync(path.join(chunksDir, group!), "utf-8");
+      const groupSource = fs.readFileSync(group!, "utf-8");
       expect(groupSource).toContain("SMALL_MARKER");
       expect(groupSource).toContain("LOCAL_MARKER");
       expect(readAllJs(clientDir)).not.toContain("BIG_MARKER");
@@ -579,10 +603,8 @@ export default function Page() {
       // build, so the package's reference keeps its own chunk.
       await builder.buildApp();
 
-      const chunks = fs.readdirSync(
-        path.join(tmpDir, "dist", "client", "_next", "static", "chunks"),
-      );
-      expect(chunks.some((f: string) => f.startsWith("browser-"))).toBe(true);
+      const chunkNames = clientChunkNames(path.join(tmpDir, "dist", "client"));
+      expect(chunkNames.some((name) => name.startsWith("browser"))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
