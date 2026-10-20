@@ -273,6 +273,7 @@ import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
 import { createUseCacheCallablePlugin } from "./plugins/use-cache-callable.js";
 import { generateRouteTypes } from "./typegen.js";
+import { collectHostEntryOptimizeDepsIncludes } from "./plugins/host-entry-optimize-deps.js";
 import {
   mergeOptimizeDepsExclude,
   SSR_EXTERNAL_REACT_ENTRIES,
@@ -4613,10 +4614,28 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
+            // rsc: the multi-stage host-entry transform re-exports the
+            // adapter's Worker entry, which the scanner never sees. Without
+            // these, the first Worker import re-optimizes and reloads before
+            // dev is ready. The copy checks compare real paths, so they are
+            // skipped when preserveSymlinks keeps symlinked copies distinct.
+            const hostEntryIncludes =
+              hasAppDir &&
+              name === "rsc" &&
+              hasCloudflarePlugin &&
+              !optimizer.noDiscovery &&
+              !environment.resolve.preserveSymlinks &&
+              matchedMultiStageOutput
+                ? collectHostEntryOptimizeDepsIncludes(
+                    matchedMultiStageOutput.entry,
+                    config.root,
+                    config.resolve.alias,
+                  )
+                : null;
             const optionalIncludes = hasAppDir
               ? name === "client" && !optimizer.noDiscovery
                 ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : []
+                : (hostEntryIncludes ?? [])
               : name !== "client"
                 ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : [];
@@ -4635,6 +4654,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               optionalWarnings.add(
                 `Failed to resolve dependency: ${id}, present in ${name} 'optimizeDeps.include'`,
               );
+              // Host-entry ids are collected unresolved. Discovery skips the
+              // ones that resolve to non-JS files (a package's CSS, JSON or
+              // WASM subpath), so Vite skipping them as includes stays quiet.
+              if (hostEntryIncludes) {
+                optionalWarnings.add(
+                  `Cannot optimize dependency: ${id}, present in ${name} 'optimizeDeps.include'`,
+                );
+              }
             }
           }
           // Vite's resolved top-level fields are typed readonly, but the config
