@@ -1507,7 +1507,7 @@ describe("i18n domain routing (Pages Router)", () => {
       "example.com",
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
     expect(res.headers["x-nextjs-matched-path"]).toBe("/fr/missing");
     expect(JSON.parse(res.body)).toEqual({});
   });
@@ -1521,7 +1521,7 @@ describe("i18n domain routing (Pages Router)", () => {
       "example.com",
     );
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
     expect(res.headers["x-nextjs-matched-path"]).toBe("/en/missing");
     expect(JSON.parse(res.body)).toEqual({});
   });

@@ -37,6 +37,26 @@ test("staged middleware cookies appear once in production HTML and data", async 
   }
 });
 
+// Next.js router-server.ts answers a middleware app's data miss with a JSON
+// 404 naming the requested path, so the client router hard-navigates.
+test("answers a middleware app's data miss with a JSON 404", async ({ baseURL, request }) => {
+  const base = baseURL ?? BASE;
+  const html = await (await request.get(`${base}/rewrite-with-cookie`)).text();
+  const buildId = html.match(/"buildId":"([^"]+)"/)?.[1];
+  expect(buildId).toBeTruthy();
+
+  const response = await request.get(`${base}/_next/data/${buildId}/totally-missing-page.json`, {
+    headers: { "x-nextjs-data": "1" },
+  });
+  expect(response.status()).toBe(404);
+  expect(response.headers()["content-type"]).toContain("application/json");
+  expect(response.headers()["x-nextjs-matched-path"]).toBe("/totally-missing-page");
+  expect(response.headers()["cache-control"]).toBe(
+    "private, no-cache, no-store, max-age=0, must-revalidate",
+  );
+  expect(await response.json()).toEqual({});
+});
+
 test.describe("Pages Router Production Build", () => {
   test("index page renders with correct content", async ({ page }) => {
     const response = await page.goto(`${BASE}/`);
