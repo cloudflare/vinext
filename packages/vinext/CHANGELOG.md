@@ -1,5 +1,115 @@
 # vinext
 
+## 1.3.0
+
+### Features
+
+- **Build:** emit hash-only client chunk and CSS file names (#3615)
+- **App Router:** group client references by route (#3697)
+
+### Bug Fixes
+
+#### App
+
+- keep route handler auth challenges after middleware's (#4050)
+- order middleware Set-Cookie before route handler cookies (#4026)
+- keep route handler request.signal aborting after GC (#4022)
+
+#### App Router
+
+- write the history entry before the destination replaces the page (#4127)
+- only ship route handler paths the client needs (#4109)
+- stop CSS-importing pages from reading searchParams in dev (#4031)
+- load the browser route manifest from its own chunk (#4116)
+- read the static export deployment version from the initial page (#3802)
+- read the RSC compatibility ID from the page, not the bundle (#3797)
+- suspend the tree during hard navigations so redirect boundaries can't loop (#4063)
+- use React 19.3's #441 message for sanitized server errors (#4049)
+- keep root params in stale page regeneration (#4004)
+- stop dynamic = "error" searchParams from hanging the RSC stream (#4002)
+
+#### Build
+
+- honor user client entry, chunk and asset file names (#3614)
+- stop prerender servers expiring idle keep-alive sockets (#4119)
+- keep the build ID out of client JS (#4101)
+- cache the Server Actions key and keep build IDs out of client JS (#3784)
+- list Pages routes in _buildManifest.js sortedPages (#4035)
+
+#### Config
+
+- match redirects, rewrites and headers sources with path-to-regexp (#4062)
+- run config and matcher regexes as written, like Next.js (#4106)
+- match i18n headers() only in their locale-prefixed form (#4088)
+- substitute matched params into headers() keys and values (#4087)
+- match headers() sources with path-to-regexp like Next.js (#4030)
+- reject basePath: false rewrites to internal destinations (#4058)
+
+#### Nitro
+
+- keep Vite's build manifests out of the static output (#4086)
+- run middleware before serving public files (#4065)
+- serve public files that the router resolves (#4064)
+
+#### Server
+
+- fail `vinext start` when the port is in use (#4073)
+- detect the locale of raw _next/data URLs in NextURL (#4103)
+- run JS Server Actions against the final route (#4061)
+- decide progressive actions after late routing (#4037)
+- skip progressive actions for multipart route handlers (#3905)
+
+#### Misc
+
+- **Pages Router:** stop shipping Pages API route paths to the client (#4129)
+- **Hybrid:** ship App route handler patterns with hashed static segments (#4128)
+- **Dev Overlay:** ignore window error events without an error value (#4126)
+- **Optimize Imports:** only stop at use client modules in RSC (#4102)
+- **Image:** bundle ipaddr.js in production server builds (#4105)
+- **Actions:** resolve progressive bound references through the route-scoped manifest (#4089)
+- **Actions:** authorize server references in fetch action arguments (#3991)
+- **Optimize Imports:** support @heroui/react in Server Components (#4099)
+- **Use Cache:** match Next.js erroring searchParams in "use cache" pages (#4028)
+- **Pages:** keep res.revalidate() in-process when the App entry has no context (#4032)
+- **Image:** allow getImageProps in Server Components (#4055)
+- apply config and middleware headers to external rewrites like Next.js (#4081)
+- order next.config Set-Cookie like Next.js (#4054)
+- **Cache:** skip CDN purges for paths only force-dynamic routes serve (#4076)
+- **Pages:** support res.appendHeader in API routes (#4051)
+- **Cache:** batch CDN tag purges per request and log purge failures (#4074)
+- resolve nothing for rewrite destinations outside basePath (#4059)
+- **OG:** import @vercel/og again after a failed import (#4052)
+- **Middleware:** run Node middleware against the server's own origin (#4033)
+- **Init:** upgrade a declared @vitejs/plugin-react below vinext's peer range (#4047)
+- **Plugins:** skip unsupported @vitejs/plugin-react copies the app resolves (#4043)
+- **Dynamic:** keep the request that starts a server next/dynamic load alive until it settles (#4046)
+- **Prod Server:** don't serve Pages public files outside basePath (#4025)
+- **Cloudflare:** keep the request that starts isolate-shared work alive until it settles (#4024)
+
+### Performance
+
+#### App Router
+
+- preload only the rendered route's client references during SSR (#4114)
+- walk client reference graphs once for every reference (#4112)
+- follow only the barrel re-exports a client reference uses (#4111)
+- cache client reference group exclusion checks per module (#4110)
+
+#### Misc
+
+- **Pages:** keep dev Pages client asset dependency lists across loads (#4108)
+- **Config:** compile headers() param templates once per param set (#4098)
+
+### Contributors
+
+- @Arthur031221
+- @caumeira
+- @james-elicx
+- @owjs3901
+- @pitahashi
+- @tamujin
+- @Tiscs
+
 ## 1.2.1
 
 ### Bug Fixes
@@ -21,12 +131,12 @@
 - **Deps:** require React 19.3.1 (#3995)
 - **Headers:** share RequestCookies method symbols across shim module instances (#4001)
 - **Nitro:** stop generating Nitro SWR route rules from revalidate exports (#3979)
-- **Head:** drop on* attributes in any case from next/head tags (#3984)
+- **Head:** drop on\* attributes in any case from next/head tags (#3984)
 - **Middleware:** match matcher paths case-sensitively like Next.js (#3978)
 - **Build:** compile "use cache" imports in browser Web Workers as references (#3980)
 - **Server:** 404 absolute-form request targets on Node entries (#3986)
 - **Navigation:** never treat a same-origin // pathname as a protocol-relative local path (#3992)
-- **Image:** keep encoded dot segments in _next/static sources literal on Workers (#3982)
+- **Image:** keep encoded dot segments in \_next/static sources literal on Workers (#3982)
 - **Image:** reject image sources whose dot segments resolve to a protocol-relative path (#3983)
 - **Server:** only trust NextRequest.ip/geo from Cloudflare metadata or a trusted proxy (#3989)
 - **i18n:** keep relative hrefs on the configured locale domain (#3990)

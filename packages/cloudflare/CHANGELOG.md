@@ -1,5 +1,22 @@
 # @vinext/cloudflare
 
+## 1.2.0
+
+### Features
+
+- **Cloudflare:** support Worker Previews via vinext-cloudflare previews deploy (#3900)
+
+### Bug Fixes
+
+- **Cloudflare:** return redirects from cache-facing fetches (#3242)
+- **Cache:** batch CDN tag purges per request and log purge failures (#4074)
+
+### Contributors
+
+- @james-elicx
+- @JamesbbBriz
+- @ktKongTong
+
 ## 1.1.1
 
 Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
