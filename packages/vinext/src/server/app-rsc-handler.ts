@@ -535,7 +535,7 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
   );
 }
 
-/** Send a routing-level not-found from the page render as an unmatched route's 404. */
+/** Send a routing-level not-found from a dispatch as an unmatched route's 404. */
 function withRouteMissCacheControl(response: Response): Response {
   if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
   // Dispatch rejects the params after the matched route was recorded.
@@ -625,6 +625,8 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    * matched params object.
    */
   params: AppPageParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound: () => Promise<Response>;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -3081,7 +3083,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response, routeHandlerRuntime);
+      return withRouteMissCacheControl(
+        await composeResponseStageResponse(
+          response,
+          // The miss renders the not-found page, which takes page config headers.
+          response.headers.has(VINEXT_ROUTE_MISS_HEADER) ? undefined : routeHandlerRuntime,
+        ),
+      );
     }
     const { setCurrentFetchSoftTags } = await import("vinext/shims/fetch-cache");
     setCurrentFetchSoftTags(
@@ -3097,10 +3105,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
+      renderNotFound() {
+        // Render the 404 with the context of an unmatched route.
+        options.setNavigationContext({
+          pathname: canonicalPathname,
+          searchParams: resolvedSearchParams,
+          params: {},
+        });
+        setRootParams({});
+        return renderUnmatchedRoute();
+      },
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
     });
+    if (routeHandlerResponse.headers.has(VINEXT_ROUTE_MISS_HEADER)) {
+      // The not-found render is application code, so a redirect it throws
+      // still gets config headers, as for an unmatched URL.
+      return markAppRscApplicationResponse(withRouteMissCacheControl(routeHandlerResponse));
+    }
     return markAppRscRouteHandlerResponse(routeHandlerResponse, routeHandlerRuntime);
   }
 

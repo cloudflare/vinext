@@ -9,6 +9,7 @@ export { isPossibleAppRouteActionRequest } from "./app-action-request.js";
 
 export type AppRouteHandlerModule = {
   dynamic?: string;
+  dynamicParams?: unknown;
   fetchCache?: unknown;
   generateStaticParams?: unknown;
   revalidate?: unknown;
@@ -100,6 +101,34 @@ export function hasAppRouteHandlerDefaultExport(handler: RouteHandlerModule): bo
 /** Match Next.js methods that force an App Route out of static generation. */
 export function hasNonStaticAppRouteHandlerMethods(handler: RouteHandlerModule): boolean {
   return Boolean(handler.POST || handler.PUT || handler.DELETE || handler.PATCH || handler.OPTIONS);
+}
+
+/**
+ * How a dynamic App Route admits params outside its `generateStaticParams`.
+ * Next.js enforces `dynamicParams = false` through the route's prerender
+ * manifest entry. Dev writes that entry from `generateStaticParams`.
+ * A production build leaves out routes that bail out of static generation,
+ * and lists a route without `generateStaticParams` only when it is static.
+ * Non-static methods bail out only while a generated path prerenders, so a
+ * route whose generator returns no params stays listed.
+ * Edge routes never prerender, so they have no entry.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/index.ts
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-route.ts
+ */
+export function resolveAppRouteHandlerStaticParamsEnforcement(
+  handler: AppRouteHandlerModule,
+  isProduction: boolean,
+): "enforce" | "enforce-when-none-generated" | "skip" {
+  if (handler.dynamicParams !== false) return "skip";
+  const hasGenerateStaticParams = typeof handler.generateStaticParams === "function";
+  if (!isProduction) return hasGenerateStaticParams ? "enforce" : "skip";
+  if (handler.runtime === "edge" || handler.runtime === "experimental-edge") return "skip";
+  if (handler.dynamic === "force-dynamic" || handler.revalidate === 0) return "skip";
+  // With no generated paths to prerender, no method can bail out.
+  if (!hasGenerateStaticParams) {
+    return handler.dynamic === "force-static" || handler.dynamic === "error" ? "enforce" : "skip";
+  }
+  return hasNonStaticAppRouteHandlerMethods(handler) ? "enforce-when-none-generated" : "enforce";
 }
 
 export function resolveAppRouteHandlerMethod(

@@ -1732,6 +1732,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     cleanPathname,
     middlewareContext,
     params,
+    renderNotFound,
     request,
     route,
     searchParams,
@@ -1758,6 +1759,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       middlewareContext,
       middlewareRequestHeaders: middlewareContext.requestHeaders,
       params,
+      renderNotFound,
       request,
       route: {
         pattern: route.pattern,

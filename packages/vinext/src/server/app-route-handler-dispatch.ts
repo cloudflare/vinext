@@ -28,14 +28,17 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { coalesceOnDemandResponse, type ISRCacheEntry } from "./isr-cache.js";
+import { notFoundResponse } from "./http-error-responses.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
   hasNonStaticAppRouteHandlerMethods,
   resolveAppRouteHandlerMethod,
+  resolveAppRouteHandlerStaticParamsEnforcement,
   shouldReadAppRouteHandlerCache,
   type AppRouteHandlerModule,
 } from "./app-route-handler-policy.js";
+import type { ValidateAppPageDynamicParamsOptions } from "./app-page-request.js";
 import { readAppRouteHandlerCacheResponse } from "./app-route-handler-cache.js";
 import {
   applyDraftModeCachePolicy,
@@ -61,6 +64,7 @@ import { buildPageCacheTags } from "./implicit-tags.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import { reportRequestError } from "./instrumentation.js";
 import { applyCdnResponseBuildIdentityHeaders } from "./cache-control.js";
+import { markRouteMissResponse } from "./route-miss-response.js";
 import {
   isOnDemandRevalidateRequest,
   PRERENDER_REVALIDATE_HEADER,
@@ -109,6 +113,8 @@ type DispatchAppRouteHandlerOptions = {
    * (`params ? await params : null`) resolves to `null`.
    */
   params: AppRouteParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound?: () => Promise<Response>;
   request: Request;
   route: AppRouteHandlerDispatchRoute;
   scheduleBackgroundRegeneration: RouteHandlerBackgroundRegenerator;
@@ -117,6 +123,37 @@ type DispatchAppRouteHandlerOptions = {
 
 function isAppRouteHandlerFunction(value: unknown): value is AppRouteHandlerFunction {
   return typeof value === "function";
+}
+
+function encodeAppRouteParams(params: AppRouteParams): AppRouteParams {
+  // A null prototype keeps a param named `__proto__` as an own key.
+  const encoded: AppRouteParams = Object.create(null);
+  for (const [key, value] of Object.entries(params)) {
+    encoded[key] = Array.isArray(value)
+      ? value.map((item) => encodeURIComponent(item))
+      : encodeURIComponent(value);
+  }
+  return encoded;
+}
+
+/**
+ * Whether generated params list any concrete path. Next.js prerenders none
+ * unless every row fills every pathname param, and skips a row with an empty
+ * required segment.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/static-paths/app.ts
+ */
+function hasPrerenderedStaticParams(patternParts: readonly string[], generated: unknown): boolean {
+  if (!Array.isArray(generated)) return false;
+  const paramParts = patternParts.filter((part) => part.startsWith(":"));
+  const isCatchAll = (part: string) => part.endsWith("+") || part.endsWith("*");
+  const names = paramParts.map((part) => part.slice(1, isCatchAll(part) ? -1 : undefined));
+  const singleNames = paramParts.filter((part) => !isCatchAll(part)).map((part) => part.slice(1));
+  const rows = generated.filter(
+    (row): row is Record<string, unknown> => typeof row === "object" && row !== null,
+  );
+  if (rows.length !== generated.length) return false;
+  if (rows.some((row) => names.some((name) => !Object.hasOwn(row, name)))) return false;
+  return rows.some((row) => singleNames.every((name) => row[name] !== ""));
 }
 
 function buildRouteHandlerPageCacheTags(
@@ -234,6 +271,55 @@ async function dispatchAppRouteHandlerImpl(
     );
   };
 
+  // Next.js rejects params outside generateStaticParams before it resolves
+  // the method, and falls through to the unmatched-URL 404. Draft mode
+  // skips the check. This build only caches admitted params, so a cache read
+  // runs first and spares a hit the generateStaticParams call. An entry a
+  // previous deploy stored under a pinned build ID is served without the
+  // check, as docs/reference/differences.mdx notes.
+  const rejectUnlistedParams = async (): Promise<Response | null> => {
+    if (options.params === null || isDraftMode) return null;
+    const enforcement = resolveAppRouteHandlerStaticParamsEnforcement(handler, isProduction);
+    if (enforcement === "skip") return null;
+    const patternParts = route.pattern.split("/");
+    let notFound: Response | null;
+    if (enforcement === "enforce-when-none-generated") {
+      const generated = await (
+        handler.generateStaticParams as (context: { params: object }) => unknown
+      )({ params: {} });
+      if (hasPrerenderedStaticParams(patternParts, generated)) return null;
+      // The route is listed without params, so every param misses.
+      notFound = notFoundResponse();
+    } else {
+      const {
+        routePatternOptionalCatchAllParamNames,
+        routePatternParamNames,
+        validateAppPageDynamicParams,
+      } = await import("./app-page-request.js");
+      notFound = await validateAppPageDynamicParams({
+        enforceStaticParamsOnly: true,
+        generateStaticParams:
+          handler.generateStaticParams as ValidateAppPageDynamicParamsOptions["generateStaticParams"],
+        isDynamicRoute: true,
+        optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(patternParts),
+        // Route handlers receive decoded params. Next.js admits the decoded
+        // value, which matches the encoded form pages compare.
+        params: encodeAppRouteParams(options.params),
+        requiredParamNames: routePatternParamNames(patternParts),
+      });
+    }
+    if (!notFound) return null;
+    // Render the 404 as for an unmatched URL, without this route's fetch
+    // defaults or tags.
+    setCurrentFetchSoftTags([]);
+    setCurrentFetchCacheMode(null);
+    setCurrentFetchRevalidate(null);
+    setCurrentForceDynamicFetchDefault(false);
+    return markRouteMissResponse(
+      options.renderNotFound ? await options.renderNotFound() : finalizeFrameworkResponse(notFound),
+    );
+  };
+
   if (hasAppRouteHandlerDefaultExport(handler) && isDevelopment) {
     console.error(
       "[vinext] Detected default export in route handler " +
@@ -242,22 +328,42 @@ async function dispatchAppRouteHandlerImpl(
     );
   }
 
+  // Route handler fetches observe the handler's segment config the same way
+  // page fetches do: upstream's app-route module copies `userland.fetchCache`
+  // into the work store and sets `forceDynamic` for `dynamic = "force-dynamic"`,
+  // which patch-fetch turns into a no-store default for fetches without
+  // explicit cache config. Both setters are new wiring for the route-handler
+  // path (dispatch previously only set fetch soft tags), closing the gap
+  // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
+  // Installed before any generateStaticParams call, which Next.js runs with
+  // the segment's fetchCache too.
+  const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
+  setCurrentFetchCacheMode(fetchCacheMode);
+  setCurrentFetchRevalidate(configuredRevalidateSeconds);
+  setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
+
   // Reject non-standard HTTP methods before any auto-OPTIONS/405 logic.
   // Next.js returns 400 for invalid methods; vinext mirrors that behavior.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/app-route/module.ts#L390-L392
   if (!isValidHTTPMethod(method)) {
-    return finalizeFrameworkResponse(new Response(null, { status: 400 }));
+    return (
+      (await rejectUnlistedParams()) ??
+      finalizeFrameworkResponse(new Response(null, { status: 400 }))
+    );
   }
 
   const { allowHeaderForOptions, handlerFn, isAutoHead, shouldAutoRespondToOptions } =
     resolveAppRouteHandlerMethod(handler, method);
 
   if (shouldAutoRespondToOptions) {
-    return finalizeFrameworkResponse(
-      new Response(null, {
-        status: 204,
-        headers: { Allow: allowHeaderForOptions },
-      }),
+    return (
+      (await rejectUnlistedParams()) ??
+      finalizeFrameworkResponse(
+        new Response(null, {
+          status: 204,
+          headers: { Allow: allowHeaderForOptions },
+        }),
+      )
     );
   }
 
@@ -288,18 +394,6 @@ async function dispatchAppRouteHandlerImpl(
     : shouldReadRouteCache && revalidateSeconds !== Infinity
       ? "stale"
       : undefined;
-
-  // Route handler fetches observe the handler's segment config the same way
-  // page fetches do: upstream's app-route module copies `userland.fetchCache`
-  // into the work store and sets `forceDynamic` for `dynamic = "force-dynamic"`,
-  // which patch-fetch turns into a no-store default for fetches without
-  // explicit cache config. Both setters are new wiring for the route-handler
-  // path (dispatch previously only set fetch soft tags), closing the gap
-  // where handlers ignored their `fetchCache`/`force-dynamic` segment config.
-  const fetchCacheMode = resolveAppRouteHandlerFetchCacheMode(handler);
-  setCurrentFetchCacheMode(fetchCacheMode);
-  setCurrentFetchRevalidate(configuredRevalidateSeconds);
-  setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
   // An on-demand revalidation replaces the stored entry whatever its status,
   // as one regenerating a read entry does.
@@ -365,6 +459,9 @@ async function dispatchAppRouteHandlerImpl(
       return applyCdnResponseBuildIdentityHeaders(cachedRouteResponse);
     }
   }
+
+  const unlistedParamsResponse = await rejectUnlistedParams();
+  if (unlistedParamsResponse) return unlistedParamsResponse;
 
   if (resolvedHandlerFn) {
     const handlerOptions: Parameters<typeof executeAppRouteHandler>[0] = {

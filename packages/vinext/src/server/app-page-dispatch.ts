@@ -107,11 +107,9 @@ import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
-  VINEXT_ROUTE_MISS_HEADER,
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
-import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
-import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
+import { markRouteMissResponse } from "./route-miss-response.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
@@ -123,7 +121,6 @@ import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
-  markRouteCacheabilityFinalResponseUncacheable,
   markRouteCacheabilityPatternDynamic,
   readRouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
@@ -134,10 +131,7 @@ import {
 } from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
-import {
-  copyLinkHeaderProvenance,
-  getFrameworkLinkHeader,
-} from "./app-response-header-provenance.js";
+import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -621,28 +615,6 @@ async function runAppPageRevalidationContext<
   } finally {
     await closeAfterResponse(requestContext);
   }
-}
-
-/**
- * Next.js sends a routing-level 404 with its never-cache policy, which neither
- * middleware nor next.config headers can replace. The request stage reasserts
- * it after config headers, and shared-cache admission never stores it.
- */
-function markAppPageRouteMissResponse(response: Response): Response {
-  markRouteCacheabilityFinalResponseUncacheable("routing-level not-found");
-  const headers = new Headers(response.headers);
-  applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
-  headers.set(VINEXT_ROUTE_MISS_HEADER, "1");
-  const marked = preserveFullyBufferedBodyMetadata(
-    response,
-    new Response(response.body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText,
-    }),
-  );
-  copyLinkHeaderProvenance(response.headers, marked.headers);
-  return marked;
 }
 
 function toInterceptOptions(
@@ -1329,12 +1301,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
-        return markAppPageRouteMissResponse(
+        return markRouteMissResponse(
           applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy),
         );
       }
       options.clearRequestContext();
-      return markAppPageRouteMissResponse(
+      return markRouteMissResponse(
         applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy),
       );
     }
