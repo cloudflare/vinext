@@ -1924,6 +1924,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
+  // The dev environments whose runner loads Pages Router pages directly,
+  // by identity: `server.restart()` creates fresh environments, and the old
+  // server keeps running if the restart fails.
+  const pagesDevEnvironments = new WeakSet<object>();
   const serverRuntimeOutputDirs = new Set<string>();
 
   function recordServerEntryLoad(environmentName: string | undefined, id: string): void {
@@ -1972,6 +1976,25 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const isApiPage = (canonicalId: string): boolean => {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
+  };
+  /**
+   * Canonical paths of the pages the Pages Router serves (not API routes) and
+   * its root `_app`, `_document` and `_error`. A symlinked page is listed by
+   * its real path, which is its module id.
+   */
+  const getPagesClientRoots = async (): Promise<ReadonlySet<string>> => {
+    if (!hasPagesDir) return new Set();
+    const routes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
+    const roots = new Set<string>();
+    for (const route of routes) {
+      if (route.pattern === "/api" || route.pattern.startsWith("/api/")) continue;
+      roots.add(toSlash(route.filePath));
+    }
+    for (const name of ["_app", "_document", "_error"]) {
+      const filePath = findFileWithExts(pagesDir, name, fileMatcher);
+      if (filePath) roots.add(toSlash(filePath));
+    }
+    return roots;
   };
   const dynamicShimPaths: ReadonlySet<string> = new Set(
     [
@@ -6110,13 +6133,15 @@ export const loadServerActionClient = ${
           devPageRouteDataKinds.set(filePath, dataKind);
           return dataKind;
         }
+        // Selected up front, before SSR warmup can transform pages there.
+        const pagesEnvironment =
+          server.environments["ssr"] ??
+          Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
+          Object.values(server.environments)[0];
+        pagesDevEnvironments.add(pagesEnvironment);
         function getPagesRunner() {
           if (!pagesRunner) {
-            const env =
-              server.environments["ssr"] ??
-              Object.values(server.environments).find((e) => e !== server.environments["rsc"]) ??
-              Object.values(server.environments)[0];
-            pagesRunner = createDirectRunner(env);
+            pagesRunner = createDirectRunner(pagesEnvironment);
           }
           return pagesRunner;
         }
@@ -7866,11 +7891,14 @@ export const loadServerActionClient = ${
         },
       },
     },
-    // Match Next.js' compile error for request and cache APIs imported under a
-    // "use client" boundary. Runs after the Pages data-export transform for
-    // the same reason as the server-only check above.
+    // Match Next.js' compile error for request and cache APIs imported by
+    // client-layer modules: those under a "use client" boundary and Pages
+    // Router pages.
     createClientGraphServerApisPlugin({
       getAppDir: () => (hasAppDir ? canonicalize(appDir) : null),
+      getPagesPages: getPagesClientRoots,
+      pagesEntryIds: [RESOLVED_SERVER_ENTRY, RESOLVED_PAGES_RESPONSE_ENTRY],
+      isPagesDevEnvironment: (environment) => pagesDevEnvironments.has(environment),
     }),
     // Strip console.* calls from the client bundle when compiler.removeConsole
     // is enabled in next.config. Inspired by Next.js's SWC remove_console transform.
