@@ -1126,6 +1126,7 @@ async function renderAppPageLifecycleImpl(
             loadSsrHandler: options.loadSsrHandler,
             navigationContext: options.getNavigationContext(),
             rootParams: options.rootParams,
+            routePattern: options.routePattern,
           })
         : undefined;
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
@@ -1657,6 +1658,7 @@ async function renderAppPageLifecycleImpl(
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
+        preloadRoutePattern: options.routePattern,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
         scriptNonce: options.scriptNonce,

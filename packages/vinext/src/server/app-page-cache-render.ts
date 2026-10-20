@@ -143,6 +143,7 @@ async function renderAppPageCacheArtifactsImpl(
         mirrorNextFlight: options.mirrorNextFlight,
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
+        preloadRoutePattern: options.route.pattern,
         onSsrError:
           options.onSsrError && options.isCapturedRscError
             ? createAppPageSsrErrorHandler((error) => {

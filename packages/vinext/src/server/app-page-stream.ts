@@ -143,6 +143,8 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      /** Route whose client references load before the render; null for none. */
+      preloadRoutePattern?: string | null;
       /** When true, wait for the full React tree before emitting bytes. */
       waitForAllReady?: boolean;
       /** Render is producing a static/prerendered HTML artifact. */
@@ -200,6 +202,11 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
+  /**
+   * Route whose client references load before the render, or null for a
+   * render without a route. Undefined loads every client reference.
+   */
+  preloadRoutePattern?: string | null;
   /** When true, wait for the full React tree before emitting bytes. */
   waitForAllReady?: boolean;
   /** Render is producing a static/prerendered HTML artifact. */
@@ -301,6 +308,7 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
+    preloadRoutePattern: options.preloadRoutePattern,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
     isForceStatic: options.isForceStatic,

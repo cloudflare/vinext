@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vite-plus/test";
 import { hasUserClientChunkGroups } from "../packages/vinext/src/build/client-build-config.js";
 import {
+  collectClientReferencePreloadPlan,
   collectClientReferenceRouteSignatures,
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
@@ -200,6 +201,172 @@ describe("collectClientReferenceRouteSignatures", () => {
     });
 
     expect(signatures.get("/nav.tsx")).toBe("/");
+  });
+});
+
+describe("collectClientReferencePreloadPlan", () => {
+  function preloads(plan: ReturnType<typeof collectClientReferencePreloadPlan>, files: number[]) {
+    return [...new Set([...plan.always, ...files.flatMap((file) => plan.files[file]!)])].sort();
+  }
+
+  it("preloads what each route reaches, through dynamic imports too", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set(["/nav.tsx", "/chart.tsx", "/lazy.tsx", "/lazy-panel.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "\0entry": ["/app/layout.tsx", "/app/page.tsx", "/app/about/page.tsx"],
+          "/app/layout.tsx": ["/nav.tsx"],
+          "/app/page.tsx": ["/chart.tsx"],
+          "/about/lazy-section.tsx": ["/lazy-panel.tsx"],
+        },
+        { "/app/about/page.tsx": ["/lazy.tsx", "/about/lazy-section.tsx"] },
+      ),
+      routes: [
+        route("/", "/app/page.tsx", ["/app/layout.tsx"]),
+        route("/about", "/app/about/page.tsx", ["/app/layout.tsx"]),
+      ],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/chart.tsx", "/nav.tsx"]);
+    expect(preloads(plan, plan.routes.get("/about")!)).toEqual([
+      "/lazy-panel.tsx",
+      "/lazy.tsx",
+      "/nav.tsx",
+    ]);
+  });
+
+  it("always preloads references reached outside route files, from global-error or by nothing", () => {
+    const plan = collectClientReferencePreloadPlan({
+      alwaysRoots: ["/app/global-error.tsx"],
+      clientReferenceIds: new Set([
+        "/link.tsx",
+        "/boundary.tsx",
+        "/action-result.tsx",
+        "/retry.tsx",
+        "/chart.tsx",
+        "/orphan.tsx",
+      ]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "\0entry": ["/runtime.ts", "/app/page.tsx", "/app/global-error.tsx"],
+          "/runtime.ts": ["/boundary.tsx", "/default-not-found.tsx"],
+          "/default-not-found.tsx": ["/link.tsx"],
+          "/app/page.tsx": ["/link.tsx", "/chart.tsx"],
+          "/app/global-error.tsx": ["/retry.tsx"],
+          "/actions.ts": ["/action-result.tsx"],
+        },
+        { "\0entry": ["/actions.ts"] },
+      ),
+      routes: [route("/", "/app/page.tsx")],
+    });
+
+    // The page's own reference stays out of `always`, but one the runtime
+    // also renders doesn't.
+    expect([...plan.always].sort()).toEqual([
+      "/action-result.tsx",
+      "/boundary.tsx",
+      "/link.tsx",
+      "/orphan.tsx",
+      "/retry.tsx",
+    ]);
+    expect(preloads(plan, plan.routes.get("/")!)).toContain("/chart.tsx");
+  });
+
+  it("preloads the routeless files for a render without a route", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set(["/nav.tsx", "/chart.tsx", "/search.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo(
+        {
+          "\0entry": ["/app/layout.tsx", "/app/page.tsx"],
+          "/app/layout.tsx": ["/nav.tsx"],
+          "/app/page.tsx": ["/chart.tsx"],
+          "/app/global-not-found.tsx": ["/search.tsx"],
+        },
+        { "\0entry": ["/app/global-not-found.tsx"] },
+      ),
+      routelessFiles: ["/app/layout.tsx", "/app/global-not-found.tsx"],
+      routes: [route("/", "/app/page.tsx", ["/app/layout.tsx"])],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routeless)).toEqual(["/nav.tsx", "/search.tsx"]);
+    expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/chart.tsx", "/nav.tsx"]);
+  });
+
+  it("leaves intercepting routes out of every set", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set(["/grid.tsx", "/modal.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo({
+        "\0entry": ["/app/photos/page.tsx", "/app/@modal/(.)photo/page.tsx"],
+        "/app/photos/page.tsx": ["/grid.tsx"],
+        "/app/@modal/(.)photo/page.tsx": ["/modal.tsx"],
+      }),
+      routes: [
+        {
+          ...route("/photos", "/app/photos/page.tsx"),
+          siblingIntercepts: [
+            { layoutPaths: [], notFoundPath: null, pagePath: "/app/@modal/(.)photo/page.tsx" },
+          ],
+        } as never,
+      ],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routes.get("/photos")!)).toEqual(["/grid.tsx"]);
+  });
+
+  it("leaves route files that are client references to their routes", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set([
+        "/app/error.tsx",
+        "/app/client/page.tsx",
+        "/app/@modal/(.)photo/page.tsx",
+      ]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo({
+        "\0entry": [
+          "/app/page.tsx",
+          "/app/error.tsx",
+          "/app/client/page.tsx",
+          "/app/@modal/(.)photo/page.tsx",
+        ],
+      }),
+      routes: [
+        {
+          ...route("/", "/app/page.tsx"),
+          errorPath: "/app/error.tsx",
+          siblingIntercepts: [
+            { layoutPaths: [], notFoundPath: null, pagePath: "/app/@modal/(.)photo/page.tsx" },
+          ],
+        } as never,
+        route("/client", "/app/client/page.tsx"),
+      ],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/app/error.tsx"]);
+    expect(preloads(plan, plan.routes.get("/client")!)).toEqual(["/app/client/page.tsx"]);
+  });
+
+  it("canonicalizes route files and entry stops", () => {
+    const plan = collectClientReferencePreloadPlan({
+      canonicalizeModuleId: (id) => id.replace("/link/", "/real/"),
+      clientReferenceIds: new Set(["/chart.tsx"]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo({
+        "\0entry": ["/real/app/page.tsx"],
+        "/real/app/page.tsx": ["/chart.tsx"],
+      }),
+      routes: [route("/", "/link/app/page.tsx")],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/chart.tsx"]);
   });
 });
 

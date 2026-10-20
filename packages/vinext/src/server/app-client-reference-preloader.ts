@@ -16,6 +16,56 @@ type ClientReferencePreloader = {
 
 const resolvedPreload = Promise.resolve();
 
+/** A promise carrying React's thenable status fields. */
+type TrackedThenable = Promise<unknown> & {
+  status?: "fulfilled" | "rejected";
+  value?: unknown;
+  reason?: unknown;
+};
+
+/**
+ * The client references each App Router route preloads before SSR, generated
+ * by plugins/rsc-client-reference-loaders.ts from the RSC build's module graph.
+ * Each list holds indices into `references`, or for routes into `files`.
+ */
+export type RouteClientReferences = {
+  /** Client reference keys. */
+  references: readonly string[];
+  /** References any render may use, whatever its route. */
+  always: readonly number[];
+  /** The references each route file reaches. */
+  files: readonly (readonly number[])[];
+  /** Each route pattern's files. */
+  routes: Readonly<Record<string, readonly number[]>>;
+  /** The files of a render without a route, such as a route-miss 404. */
+  routeless: readonly number[];
+};
+
+/**
+ * The client references a render of `routePattern` preloads, or of no route
+ * when it is null. Undefined, meaning every reference, without a plan or a
+ * route to look up, or for a pattern the plan doesn't know.
+ */
+export function resolveRouteClientReferences(
+  plan: RouteClientReferences | null,
+  routePattern: string | null | undefined,
+): string[] | undefined {
+  if (!plan || routePattern === undefined) return undefined;
+  let files: readonly number[];
+  if (routePattern === null) {
+    files = plan.routeless;
+  } else if (Object.hasOwn(plan.routes, routePattern)) {
+    files = plan.routes[routePattern]!;
+  } else {
+    return undefined;
+  }
+  const indices = new Set(plan.always);
+  for (const file of files) {
+    for (const index of plan.files[file]!) indices.add(index);
+  }
+  return Array.from(indices, (index) => plan.references[index]!);
+}
+
 export function createClientReferencePreloader(
   options: ClientReferencePreloaderOptions,
 ): ClientReferencePreloader {
@@ -25,17 +75,29 @@ export function createClientReferencePreloader(
   const referencePreloadPromises = new Map<string, Promise<void>>();
 
   function preloadReference(id: string, clientRequire: ClientReferenceRequire): Promise<void> {
-    if (preloadedReferences.has(id)) {
-      return resolvedPreload;
-    }
-
     const existing = referencePreloadPromises.get(id);
     if (existing) {
       return existing;
     }
 
+    const loading: TrackedThenable = clientRequire(id);
     const preloadPromise = shareIsolatePromise(
-      clientRequire(id)
+      loading
+        .then(
+          (value) => {
+            // React's Flight client waits a tick for a module whose promise
+            // doesn't report itself settled, as React marks the promises it
+            // has seen. Mark it the same way, so the first render after this
+            // load resolves the module's elements as a warm render does.
+            loading.status = "fulfilled";
+            loading.value = value;
+          },
+          (error: unknown) => {
+            loading.status = "rejected";
+            loading.reason = error;
+            throw error;
+          },
+        )
         .catch((error) => {
           options.onPreloadError?.(id, error);
         })
@@ -59,7 +121,8 @@ export function createClientReferencePreloader(
     const pending: Promise<void>[] = [];
 
     for (const id of referenceIds) {
-      if (Object.hasOwn(refs, id)) {
+      // A warm render's references are all loaded: skip awaiting them.
+      if (Object.hasOwn(refs, id) && !preloadedReferences.has(id)) {
         pending.push(preloadReference(id, clientRequire));
       }
     }

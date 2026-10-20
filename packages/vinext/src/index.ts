@@ -73,6 +73,7 @@ import {
   generateAppResponseRscEntry,
   generateRscEntry,
 } from "./entries/app-rsc-entry.js";
+import { rootBoundaryFiles, rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
@@ -246,7 +247,10 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
-import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import {
+  createRouteClientReferencesFallbackPlugin,
+  createRscClientReferenceLoadersPlugin,
+} from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createScanBuildCssPlugin } from "./plugins/scan-build-css.js";
 import {
@@ -1892,7 +1896,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
-  let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let clientReferenceAlwaysRenderedFiles: string[] = [];
+  let clientReferenceRoutelessFiles: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -5167,8 +5173,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
                 (path): path is string => path !== null,
               );
-              clientReferenceGroupRoutes =
-                this.environment.config.command === "build" ? routes : null;
+              clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
+              clientReferenceAlwaysRenderedFiles = [
+                ...(globalErrorPath ? [globalErrorPath] : []),
+                ...rootBoundaryFiles(routes),
+              ];
+              clientReferenceRoutelessFiles = [
+                ...rootBoundaryRouteFiles(routes),
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+              ];
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -9001,7 +9014,9 @@ export const loadServerActionClient = ${
         onComplete() {
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
-          clientReferenceGroupRoutes = null;
+          clientReferenceRoutes = null;
+          clientReferenceAlwaysRenderedFiles = [];
+          clientReferenceRoutelessFiles = [];
         },
       }),
     );
@@ -9010,13 +9025,17 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(
-      createRscClientReferenceLoadersPlugin(
-        options.disableNextLikeChunking
+      createRscClientReferenceLoadersPlugin({
+        routes: {
+          canonicalizeModuleId: canonicalize,
+          getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
+          getRoutelessFiles: () => clientReferenceRoutelessFiles,
+          getRoutes: () => clientReferenceRoutes,
+          getSharedRoots: () => rscActionOwnerSharedRoots,
+        },
+        grouping: options.disableNextLikeChunking
           ? undefined
           : {
-              canonicalizeModuleId: canonicalize,
-              getRoutes: () => clientReferenceGroupRoutes,
-              getSharedRoots: () => rscActionOwnerSharedRoots,
               isAlwaysLoadedClientModule(id) {
                 const chunkName = appClientManualChunks(id);
                 return chunkName === "framework" || chunkName === "vinext";
@@ -9026,10 +9045,11 @@ export const loadServerActionClient = ${
                 ...clientCodeSplittingConfig.groups,
               ]),
             },
-      ),
+      }),
     );
-  } else if (manualUseCachePluginPromise) {
-    plugins.push(manualUseCachePluginPromise);
+  } else {
+    plugins.push(createRouteClientReferencesFallbackPlugin());
+    if (manualUseCachePluginPromise) plugins.push(manualUseCachePluginPromise);
   }
   plugins.push({
     name: "vinext:plain-pages-build-config",
