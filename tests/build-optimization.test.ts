@@ -3402,6 +3402,16 @@ describe("augmentSsrManifestFromBundle", () => {
         name: "about",
         modules: { "/app/pages/about.tsx": {} },
       },
+      // Hybrid builds also emit the App Router browser entry, which Pages
+      // documents must not load.
+      "_next/static/chunks/4ppEntry.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/4ppEntry.js",
+        name: "index",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-app-browser-entry",
+        modules: {},
+      },
     };
 
     const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app", "/docs/");

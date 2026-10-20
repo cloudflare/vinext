@@ -102,9 +102,10 @@ export function collapseDuplicateBase(file: string, base: string): string {
 }
 
 // Chunks every Pages Router document loads: the `framework` and `vinext`
-// manualChunks groups (see createClientManualChunks) plus the client entry.
+// manualChunks groups (see createClientManualChunks) plus the Pages client
+// entry. The App Router browser entry is not a Pages document chunk.
 const SHARED_CHUNK_NAMES = new Set(["framework", "vinext"]);
-const SHARED_ENTRY_CHUNK_MARKERS = ["vinext-client-entry", "vinext-app-browser-entry"];
+const SHARED_ENTRY_CHUNK_MARKER = "vinext-client-entry";
 
 /**
  * Whether a Rolldown chunk belongs to the shared Pages Router runtime, judged
@@ -117,8 +118,9 @@ export function isSharedClientChunkName(
   facadeModuleId?: string | null,
 ): boolean {
   if (name && SHARED_CHUNK_NAMES.has(name)) return true;
-  return SHARED_ENTRY_CHUNK_MARKERS.some(
-    (marker) => name?.includes(marker) || facadeModuleId?.includes(marker),
+  return (
+    !!name?.includes(SHARED_ENTRY_CHUNK_MARKER) ||
+    !!facadeModuleId?.includes(SHARED_ENTRY_CHUNK_MARKER)
   );
 }
 
