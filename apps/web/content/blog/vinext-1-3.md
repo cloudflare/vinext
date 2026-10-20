@@ -28,7 +28,7 @@ Three changes may need your attention when you upgrade:
 
 ## Fewer requests per page
 
-App Router production builds used to load every `"use client"` module through its own dynamic `import()`. Each client component became its own chunk, with its own shared chunks. On nodejs.org that was about 82 JS requests per page. Next.js with Turbopack serves the same site with 18–28.
+App Router production builds used to load every `"use client"` module through its own dynamic `import()`. Each client component became its own chunk, with its own shared chunks. On a prototype of a large content site, that was about 82 JS requests per page. Next.js with Turbopack serves the same prototype with 18–28.
 
 Vinext now groups the client components that the same set of routes reach into one chunk. This mirrors Next.js's per-route client entries:
 
@@ -44,21 +44,21 @@ Vinext now groups the client components that the same set of routes reach into o
   </thead>
   <tbody>
     <tr>
-      <td>nodejs.org, Vinext 1.2</td>
+      <td>Content site prototype, Vinext 1.2</td>
       <td>81.8</td>
       <td>25.8</td>
       <td>490.1 KiB</td>
       <td>957 ms</td>
     </tr>
     <tr>
-      <td>nodejs.org, Vinext 1.3</td>
+      <td>Content site prototype, Vinext 1.3</td>
       <td>**25 (−69%)**</td>
       <td>**15 (−42%)**</td>
       <td>469.7 KiB (−4%)</td>
       <td>900 ms (−6%)</td>
     </tr>
     <tr>
-      <td>nodejs.org, Next.js 16.2.6</td>
+      <td>Content site prototype, Next.js 16.2.6</td>
       <td>28</td>
       <td>5</td>
       <td>836.8 KiB</td>
@@ -79,13 +79,13 @@ Vinext now groups the client components that the same set of routes reach into o
 A few rules keep the groups from loading code a page doesn't need:
 
 - Client components that a route reaches through `next/dynamic` or `React.lazy` stay in their own lazy chunks.
-- A component is only grouped if its own code is 100 KiB or less. Heavier ones keep their own chunk, so a large component a route can render but rarely does isn't loaded on every visit. Without this cap, hydration on 4G got about 5% slower on nodejs.org.
+- A component is only grouped if its own code is 100 KiB or less. Heavier ones keep their own chunk, so a large component a route can render but rarely does isn't loaded on every visit. Without this cap, hydration on 4G got about 5% slower on the prototype.
 - Intercepting routes, `global-error` and `global-not-found` get their own groups, so a modal isn't loaded with every page.
 - A group's name comes from its members, so adding a route that reaches the same components doesn't rename it.
 
 Grouping turns itself off if your client build already sets its own chunk groups (`codeSplitting.groups`, `advancedChunks` or `manualChunks`), from your config or another plugin. You can also turn it off with `vinext({ disableNextLikeChunking: true })`, which loads each client component from its own chunk as before.
 
-Working out the groups needs an estimate of each component's code size. Three follow-up PRs made that estimate faster, so builds take about as long as before: nodejs.org builds in 9.2 s with grouping and 9.1 s without.
+Working out the groups needs an estimate of each component's code size. Three follow-up PRs made that estimate faster, so builds take about as long as before: the prototype builds in 9.2 s with grouping and 9.1 s without.
 
 ## Faster cold starts
 
