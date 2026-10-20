@@ -133,6 +133,23 @@ describe("app client reference preloader", () => {
     expect(reported[0]?.id).toBe("comp-a");
     expect(reported[0]?.error).toBeInstanceOf(Error);
   });
+
+  it("marks settled module promises the way React tracks thenables", async () => {
+    const error = new Error("load failed");
+    const loads: Record<string, Promise<unknown>> = {
+      "comp-a": Promise.resolve("module-a"),
+      "comp-b": Promise.reject(error),
+    };
+    const preloader = createClientReferencePreloader({
+      getReferences: () => ({ "comp-a": true, "comp-b": true }),
+      getClientRequire: () => (id) => loads[id]!,
+    });
+
+    await preloader.preload();
+
+    expect(loads["comp-a"]).toMatchObject({ status: "fulfilled", value: "module-a" });
+    expect(loads["comp-b"]).toMatchObject({ status: "rejected", reason: error });
+  });
 });
 
 describe("resolveRouteClientReferences", () => {

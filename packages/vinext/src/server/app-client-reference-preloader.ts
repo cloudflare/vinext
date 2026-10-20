@@ -16,6 +16,13 @@ type ClientReferencePreloader = {
 
 const resolvedPreload = Promise.resolve();
 
+/** A promise carrying React's thenable status fields. */
+type TrackedThenable = Promise<unknown> & {
+  status?: "fulfilled" | "rejected";
+  value?: unknown;
+  reason?: unknown;
+};
+
 /**
  * The client references each App Router route preloads before SSR, generated
  * by plugins/rsc-client-reference-loaders.ts from the RSC build's module graph.
@@ -77,8 +84,24 @@ export function createClientReferencePreloader(
       return existing;
     }
 
+    const loading: TrackedThenable = clientRequire(id);
     const preloadPromise = shareIsolatePromise(
-      clientRequire(id)
+      loading
+        .then(
+          (value) => {
+            // React's Flight client waits a tick for a module whose promise
+            // doesn't report itself settled, as React marks the promises it
+            // has seen. Mark it the same way, so the first render after this
+            // load resolves the module's elements as a warm render does.
+            loading.status = "fulfilled";
+            loading.value = value;
+          },
+          (error: unknown) => {
+            loading.status = "rejected";
+            loading.reason = error;
+            throw error;
+          },
+        )
         .catch((error) => {
           options.onPreloadError?.(id, error);
         })
