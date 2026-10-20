@@ -32,12 +32,12 @@ App Router production builds used to load every `"use client"` module through it
 
 Vinext now groups the client components that the same set of routes reach into one chunk. This mirrors Next.js's per-route client entries:
 
-| App | JS requests per page | CSS requests per page | JS gzip per page | 4G LCP |
-| --- | ---: | ---: | ---: | ---: |
-| nodejs.org, Vinext 1.2 | 81.8 | 25.8 | 490.1 KiB | 957 ms |
-| nodejs.org, Vinext 1.3 | **25 (−69%)** | **15 (−42%)** | 469.7 KiB (−4%) | 900 ms (−6%) |
-| nodejs.org, Next.js 16.2.6 | 28 | 5 | 836.8 KiB | 852 ms |
-| fumadocs docs template, 1.2 → 1.3 | 26.7 → **20 (−25%)** | 1 → 1 | 332.0 → 330.7 KiB | 657 → 636 ms |
+| App                               | JS requests per page | CSS requests per page |  JS gzip per page |       4G LCP |
+| --------------------------------- | -------------------: | --------------------: | ----------------: | -----------: |
+| nodejs.org, Vinext 1.2            |                 81.8 |                  25.8 |         490.1 KiB |       957 ms |
+| nodejs.org, Vinext 1.3            |        **25 (−69%)** |         **15 (−42%)** |   469.7 KiB (−4%) | 900 ms (−6%) |
+| nodejs.org, Next.js 16.2.6        |                   28 |                     5 |         836.8 KiB |       852 ms |
+| fumadocs docs template, 1.2 → 1.3 | 26.7 → **20 (−25%)** |                 1 → 1 | 332.0 → 330.7 KiB | 657 → 636 ms |
 
 "4G" is 150 ms RTT, 5 Mbit/s and a 4× CPU throttle.
 
@@ -58,11 +58,11 @@ On a cold server, the first App Router SSR render loaded the client code of ever
 
 Each render now waits only for the client components of the route it renders. The list is worked out at build time from the RSC module graph, using the same route walk as grouping. On a test app with 50 routes and 252 client components:
 
-| | Vinext 1.2 | Vinext 1.3 |
-| --- | ---: | ---: |
-| First `GET /login` | 228 ms | 42 ms |
-| First `GET` of a 5-component page | 234 ms | 48 ms |
-| Memory after the first request | 210 MB | 102 MB |
+|                                   | Vinext 1.2 | Vinext 1.3 |
+| --------------------------------- | ---------: | ---------: |
+| First `GET /login`                |     228 ms |      42 ms |
+| First `GET` of a 5-component page |     234 ms |      48 ms |
+| Memory after the first request    |     210 MB |     102 MB |
 
 Warm requests are unchanged.
 
@@ -90,12 +90,12 @@ Every App Router page shipped the path of every `route.ts` handler in the app, i
 
 `redirects`, `rewrites` and `headers` sources were matched by Vinext's own parser, which differed from Next.js in many cases. Some `headers()` sources from the Next.js docs never matched, so headers such as `X-Frame-Options`, CSP and HSTS were left off responses Next.js would have added them to:
 
-| Source | Path | Next.js | Vinext 1.2 |
-| --- | --- | --- | --- |
-| `/:path*` | `/` | match | no match |
-| `/admin/:path+` | `/admin/x` | match | no match |
-| `/admin/:id?` | `/admin` | match | no match |
-| `/((?!api\|_next/static).*)` | `/admin` | match | no match |
+| Source                       | Path       | Next.js | Vinext 1.2 |
+| ---------------------------- | ---------- | ------- | ---------- |
+| `/:path*`                    | `/`        | match   | no match   |
+| `/admin/:path+`              | `/admin/x` | match   | no match   |
+| `/admin/:id?`                | `/admin`   | match   | no match   |
+| `/((?!api\|_next/static).*)` | `/admin`   | match   | no match   |
 
 All three now compile with path-to-regexp, as in Next.js 16. Other fixes in the same area:
 
