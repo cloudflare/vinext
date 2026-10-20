@@ -161,7 +161,6 @@ describe("StaticFileCache", () => {
     // otherwise see a too-short suffix and fall back to mtime.
     await writeFile(clientDir, "_next/static/chunks/Dq-Zc3R4.js", "export {};");
     await writeFile(clientDir, "cdn/_next/static/css/Ab_Cd9-f.css", "body{}");
-    await writeFile(clientDir, "_next/static/workers/Wk-r9_Ab.js", "export {};");
     await writeFile(clientDir, "_next/static/workers/0a1b2c3d-Wk-r9_Ab.js", "export {};");
     await writeFile(clientDir, "_next/static/Dq-Zc3R4.js", "export {};");
 
@@ -169,12 +168,11 @@ describe("StaticFileCache", () => {
 
     expect(cache.lookup("/_next/static/chunks/Dq-Zc3R4.js")!.etag).toBe('W/"Dq-Zc3R4"');
     expect(cache.lookup("/cdn/_next/static/css/Ab_Cd9-f.css")!.etag).toBe('W/"Ab_Cd9-f"');
-    expect(cache.lookup("/_next/static/workers/Wk-r9_Ab.js")!.etag).toBe('W/"Wk-r9_Ab"');
-    // Worker entries carry an entry id before the content hash.
+    // Worker names carry an opaque module id before the content hash.
     expect(cache.lookup("/_next/static/workers/0a1b2c3d-Wk-r9_Ab.js")!.etag).toBe(
       'W/"0a1b2c3d-Wk-r9_Ab"',
     );
-    // Outside the managed chunks/workers/css directories the hash-only form isn't trusted.
+    // Outside the managed chunks/css directories the hash-only form isn't trusted.
     expect(cache.lookup("/_next/static/Dq-Zc3R4.js")!.etag).toMatch(/^W\/"\d+-\d+"$/);
   });
 

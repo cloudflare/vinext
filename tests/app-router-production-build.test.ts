@@ -386,6 +386,92 @@ describe("App Router Production build", () => {
     expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
+  it("keeps code-split chunks of separately bundled workers apart when their code is identical", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-worker-chunk-names-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "workers.tsx"),
+        `"use client";
+import { useEffect } from "react";
+export function Workers() {
+  useEffect(() => {
+    new Worker(new URL("./worker-a.ts", import.meta.url), { type: "module" });
+    new Worker(new URL("./worker-b.ts", import.meta.url), { type: "module" });
+  }, []);
+  return null;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Workers } from "./workers";
+export default function Page() {
+  return <main><Workers /></main>;
+}
+`,
+      );
+      for (const id of ["a", "b"]) {
+        fs.writeFileSync(
+          path.join(tmpDir, "app", `worker-${id}.ts`),
+          `import(\`./lazy-${id}\`).then((m) => self.postMessage(m.value));\n`,
+        );
+        // Identical code, so a content hash alone can't tell the chunks apart.
+        fs.writeFileSync(
+          path.join(tmpDir, "app", `lazy-${id}.ts`),
+          `export const value = "same";\n`,
+        );
+      }
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        worker: { format: "es" },
+        build: { sourcemap: true },
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const workersDir = path.join(tmpDir, "dist", "client", "_next", "static", "workers");
+      const files = fs.readdirSync(workersDir);
+      // Hash-only names: no worker source names in public URLs.
+      expect(files.filter((f) => /worker-|lazy-/.test(f))).toEqual([]);
+      const mapSources = files
+        .filter((f) => f.endsWith(".js.map"))
+        .map(
+          (f) =>
+            (
+              JSON.parse(fs.readFileSync(path.join(workersDir, f), "utf-8")) as {
+                sources: string[];
+              }
+            ).sources,
+        );
+      for (const id of ["a", "b"]) {
+        expect(
+          mapSources.filter((sources) =>
+            sources.some((source) => source.endsWith(`lazy-${id}.ts`)),
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
   it("groups client references that import URLs without measuring them", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-url-import-"));
 

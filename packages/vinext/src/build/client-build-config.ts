@@ -196,23 +196,22 @@ function createClientFileNameConfig(assetsDir: string) {
 /**
  * Web Worker output names. Workers are hash-only like client chunks, so their
  * URLs don't publish source file names. Vite bundles each worker separately
- * and stores the outputs by file name, so two workers with identical code would
- * share `[hash].js` and one's source map would overwrite the other's. Entries
- * therefore also carry an opaque id derived from the worker's root-relative
- * module id.
+ * and stores the outputs by file name, so two workers' entries or chunks with
+ * identical code would share `[hash].js` and one's source map would overwrite
+ * the other's. Each name therefore also carries an opaque id derived from the
+ * chunk's root-relative module ids.
  */
 export function createWorkerFileNames(assetsDir: string, root: string) {
   const workersDir = `${assetsDir}/workers`;
-  return {
-    entryFileNames: (chunk: { facadeModuleId: string | null }) => {
-      const entryId = chunk.facadeModuleId
-        ? toSlash(path.relative(root, stripViteModuleQuery(chunk.facadeModuleId)))
-        : "";
-      const entryHash = createHash("sha256").update(entryId).digest("hex").slice(0, 8);
-      return `${workersDir}/${entryHash}-[hash].js`;
-    },
-    chunkFileNames: `${workersDir}/[hash].js`,
+  const fileName = (chunk: { facadeModuleId: string | null; moduleIds?: readonly string[] }) => {
+    const ids = chunk.facadeModuleId ? [chunk.facadeModuleId] : (chunk.moduleIds ?? []);
+    const chunkId = ids
+      .map((id) => toSlash(path.relative(root, stripViteModuleQuery(id))))
+      .join("\n");
+    const idHash = createHash("sha256").update(chunkId).digest("hex").slice(0, 8);
+    return `${workersDir}/${idHash}-[hash].js`;
   };
+  return { entryFileNames: fileName, chunkFileNames: fileName };
 }
 
 /**

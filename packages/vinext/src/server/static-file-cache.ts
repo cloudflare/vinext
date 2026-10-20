@@ -293,8 +293,9 @@ const MANAGED_CSS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/css/`;
 const MANAGED_WORKERS_SEGMENT = `${ASSET_PREFIX_URL_DIR}/workers/`;
 const MANAGED_MEDIA_SEGMENT = `${ASSET_PREFIX_URL_DIR}/media/`;
 const HASH_ONLY_BASENAME_RE = /^[A-Za-z0-9_-]{8}$/;
-// Worker entries: `<entry-id-hash>-<content-hash>` (see createWorkerFileNames).
-const WORKER_ENTRY_BASENAME_RE = /^[0-9a-f]{8}-[A-Za-z0-9_-]{8}$/;
+// Worker entries and chunks: `<module-id-hash>-<content-hash>` (see
+// createWorkerFileNames).
+const WORKER_BASENAME_RE = /^[0-9a-f]{8}-[A-Za-z0-9_-]{8}$/;
 
 function isInManagedDir(normalizedPath: string, segment: string): boolean {
   return normalizedPath.startsWith(segment) || normalizedPath.includes(`/${segment}`);
@@ -313,16 +314,16 @@ function isInManagedDir(normalizedPath: string, segment: string): boolean {
 export function etagFromFilenameHash(relativePath: string, ext: string): string | null {
   const basename = path.basename(relativePath, ext);
 
-  // vinext's default client JS, worker and CSS names are hash-only
-  // (`chunks/[hash].js`, `workers/[hash].js`, `css/[hash].css`). Rolldown's
-  // 8-char base64url hash can itself contain `-`, so match the whole basename
-  // before the `name-<hash>` split below would take only a fragment of it.
-  // The length check keeps `name-<hash>` files off the path-normalization work.
+  // vinext's default client JS and CSS names are hash-only (`chunks/[hash].js`,
+  // `css/[hash].css`), and worker names put an opaque module id before the
+  // hash. Rolldown's 8-char base64url hash can itself contain `-`, so match the
+  // whole basename before the `name-<hash>` split below would take only a
+  // fragment of it. The length checks keep `name-<hash>` files off the
+  // path-normalization work.
   if (basename.length === 8 && HASH_ONLY_BASENAME_RE.test(basename)) {
     const normalizedPath = toSlash(relativePath);
     if (
       isInManagedDir(normalizedPath, MANAGED_CHUNKS_SEGMENT) ||
-      isInManagedDir(normalizedPath, MANAGED_WORKERS_SEGMENT) ||
       isInManagedDir(normalizedPath, MANAGED_CSS_SEGMENT)
     ) {
       return `W/"${basename}"`;
@@ -330,7 +331,7 @@ export function etagFromFilenameHash(relativePath: string, ext: string): string 
   }
   if (
     basename.length === 17 &&
-    WORKER_ENTRY_BASENAME_RE.test(basename) &&
+    WORKER_BASENAME_RE.test(basename) &&
     isInManagedDir(toSlash(relativePath), MANAGED_WORKERS_SEGMENT)
   ) {
     return `W/"${basename}"`;

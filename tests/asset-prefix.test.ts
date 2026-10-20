@@ -200,12 +200,12 @@ describe("renderVinextBuiltUrl", () => {
         expect.objectContaining({
           exports: "named",
           entryFileNames: expect.any(Function),
-          chunkFileNames: "_next/static/workers/[hash].js",
+          chunkFileNames: expect.any(Function),
         }),
         expect.objectContaining({
           sourcemap: true,
           entryFileNames: expect.any(Function),
-          chunkFileNames: "_next/static/workers/[hash].js",
+          chunkFileNames: expect.any(Function),
         }),
       ]);
 
@@ -234,11 +234,11 @@ describe("renderVinextBuiltUrl", () => {
     expect(config.worker.rolldownOptions.output).toEqual([
       expect.objectContaining({
         entryFileNames: expect.any(Function),
-        chunkFileNames: "_next/static/workers/[hash].js",
+        chunkFileNames: expect.any(Function),
       }),
     ]);
 
-    // Entries are hash-only, but two workers whose code is identical still get
+    // Names are hash-only, but two workers whose code is identical still get
     // distinct names (and source maps) from their module ids.
     const [{ entryFileNames }] = config.worker.rolldownOptions.output as Array<{
       entryFileNames: (chunk: { facadeModuleId: string | null }) => string;
