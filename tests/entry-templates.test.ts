@@ -859,6 +859,46 @@ describe("App Router generated manifest construction", () => {
         },
       );
     });
+
+    it("keeps a route handler wherever its URLs lead the trie to a page it outranks", async () => {
+      const matchIn = (graph: Awaited<ReturnType<typeof buildAppRouteGraph>>) => {
+        const routeManifest = decodeBrowserRouteManifest(
+          readBrowserRouteManifestModule(generateBrowserRouteManifestModule(graph.routeManifest)),
+        );
+        return (href: string) =>
+          matchOptimisticRouteManifestRoute({ basePath: "", href, routeManifest })?.route.id ??
+          null;
+      };
+      // `/hooks/settings` names the page's static segment, and the handler's
+      // static `hooks` outranks the page's dynamic `[lang]`.
+      await withScannedApp(
+        (graph) => {
+          expect(matchIn(graph)("/hooks/settings")).toBe("route:/hooks/:event");
+        },
+        {
+          "layout.tsx": PAGE,
+          "page.tsx": PAGE,
+          "[lang]/settings/page.tsx": PAGE,
+          "hooks/[event]/route.ts": HANDLER,
+        },
+      );
+      // The trie never leaves the static `files` subtree, but a two-segment
+      // remainder fails inside it and falls back to the root catch-all.
+      await withScannedApp(
+        (graph) => {
+          const match = matchIn(graph);
+          expect(match("/en/files/a/b")).toBe("route:/:lang/files/:path+");
+          expect(match("/en/files/a")).toBe("route:/:lang/files/:name");
+        },
+        {
+          "layout.tsx": PAGE,
+          "page.tsx": PAGE,
+          "[lang]/files/[name]/page.tsx": PAGE,
+          "[lang]/files/[...path]/route.ts": HANDLER,
+          "[...all]/page.tsx": PAGE,
+        },
+      );
+    });
   });
 
   it("constructs route module imports and route entries from the scanned app shape", () => {

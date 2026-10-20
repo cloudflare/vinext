@@ -7,7 +7,7 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "./app-route-graph.js";
-import { buildOptimisticRouteTrie, matchOptimisticRouteTrie } from "./optimistic-route-trie.js";
+import { buildOptimisticRouteTrie, type OptimisticRouteTrieNode } from "./optimistic-route-trie.js";
 
 export type BrowserRouteManifestRoute = Pick<
   RouteManifestRoute,
@@ -109,17 +109,63 @@ function routeHandlerOutranks(handler: readonly string[], rendered: readonly str
   }
 }
 
-// No static route segment, a directory name, can contain "/".
-const PROBE_SEGMENT = "/";
+type RenderedRouteTrie = OptimisticRouteTrieNode<RouteManifestRoute>;
+
+/** What the optimistic trie can predict over a set of URL pathnames. */
+type TriePredictions = { outranked: boolean; unmatched: boolean };
 
 /**
- * URL pathnames that stand for every URL the handler pattern matches on the
- * optimistic trie: a param value that equals a static segment descends into
- * that static subtree, whose routes outrank the handler there.
+ * Whether the optimistic trie of the rendered routes predicts a rendered
+ * route that the route handler outranks for some URL pathname the handler
+ * pattern matches. The trie match descends one path and only backtracks to a
+ * catch-all on its way up, so this follows that path for every URL: a param
+ * segment either names one of the node's static children or none of them,
+ * and a catch-all takes any number of such segments.
  */
-function routeHandlerProbes(handler: readonly string[]): string[][] {
-  const parts = handler.map((part) => (part.startsWith(":") ? PROBE_SEGMENT : part));
-  return handler.at(-1)?.endsWith("*") ? [parts.slice(0, -1), parts] : [parts];
+function triePredictsOutrankedRoute(trie: RenderedRouteTrie, handler: readonly string[]): boolean {
+  const lastPart = handler.at(-1);
+  const isCatchAll = lastPart?.startsWith(":") === true && /[+*]$/.test(lastPart);
+  const fixedLength = isCatchAll ? handler.length - 1 : handler.length;
+  const minLength = lastPart?.endsWith("+") === true ? handler.length : fixedLength;
+
+  const predict = (route: RouteManifestRoute | null): TriePredictions =>
+    route === null
+      ? { outranked: false, unmatched: true }
+      : { outranked: routeHandlerOutranks(handler, route.patternParts), unmatched: false };
+
+  // A URL segment that names no static child of the node.
+  const afterOtherSegment = (node: RenderedRouteTrie, depth: number): TriePredictions => {
+    const dynamic = node.dynamicChild
+      ? predictFrom(node.dynamicChild.node, depth)
+      : { outranked: false, unmatched: true };
+    if (!dynamic.unmatched) return dynamic;
+    const fallback = predict(
+      node.catchAllChild?.route ?? node.optionalCatchAllChild?.route ?? null,
+    );
+    return { outranked: dynamic.outranked || fallback.outranked, unmatched: fallback.unmatched };
+  };
+
+  // Predictions for every URL suffix after `depth` segments that reach `node`.
+  const predictFrom = (node: RenderedRouteTrie, depth: number): TriePredictions => {
+    const predictions: TriePredictions = { outranked: false, unmatched: false };
+    const add = (more: TriePredictions) => {
+      predictions.outranked ||= more.outranked;
+      predictions.unmatched ||= more.unmatched;
+    };
+    if (isCatchAll ? depth >= minLength : depth === fixedLength) {
+      add(predict(node.route ?? node.optionalCatchAllChild?.route ?? null));
+    }
+    if (depth < fixedLength && !handler[depth].startsWith(":")) {
+      const child = node.staticChildren.get(handler[depth]);
+      add(child ? predictFrom(child, depth + 1) : afterOtherSegment(node, depth + 1));
+    } else if (depth < fixedLength || isCatchAll) {
+      for (const child of node.staticChildren.values()) add(predictFrom(child, depth + 1));
+      add(afterOtherSegment(node, depth + 1));
+    }
+    return predictions;
+  };
+
+  return predictFrom(trie, 0).outranked;
 }
 
 /**
@@ -138,13 +184,7 @@ function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifes
   );
   return allRoutes.filter(
     (route) =>
-      route.routeHandlerId === null ||
-      routeHandlerProbes(route.patternParts).some((urlParts) => {
-        const rendered = matchOptimisticRouteTrie(renderedTrie, urlParts)?.route;
-        return (
-          rendered !== undefined && routeHandlerOutranks(route.patternParts, rendered.patternParts)
-        );
-      }),
+      route.routeHandlerId === null || triePredictsOutrankedRoute(renderedTrie, route.patternParts),
   );
 }
 
