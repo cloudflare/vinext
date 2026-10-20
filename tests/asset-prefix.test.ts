@@ -249,6 +249,10 @@ describe("renderVinextBuiltUrl", () => {
     expect(consentWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(otherWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(consentWorker).not.toBe(otherWorker);
+    // Query variants of one file are distinct modules.
+    expect(entryName(`${APP_FIXTURE_DIR}/app/lazy.js?one`)).not.toBe(
+      entryName(`${APP_FIXTURE_DIR}/app/lazy.js?two`),
+    );
 
     // Names don't depend on the directory the build was launched from.
     const virtualWorker = entryName("\0virtual:lazy-worker");

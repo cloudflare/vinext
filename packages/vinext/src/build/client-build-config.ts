@@ -205,13 +205,17 @@ export function createWorkerFileNames(assetsDir: string, root: string) {
   const workersDir = `${assetsDir}/workers`;
   const fileName = (chunk: { facadeModuleId: string | null; moduleIds?: readonly string[] }) => {
     const ids = chunk.facadeModuleId ? [chunk.facadeModuleId] : (chunk.moduleIds ?? []);
-    // Virtual ids (e.g. `\0virtual:x`) are hashed verbatim: relativizing a
-    // non-absolute id resolves it against the cwd, so names would depend on
-    // where the build was launched.
+    // Only absolute file paths are made root-relative; their query stays, as
+    // `lazy.js?one` and `lazy.js?two` are distinct modules. Virtual ids (e.g.
+    // `\0virtual:x`) are hashed verbatim: relativizing a non-absolute id
+    // resolves it against the cwd, so names would depend on where the build
+    // was launched.
     const chunkId = ids
       .map((id) => {
         const file = stripViteModuleQuery(id);
-        return path.isAbsolute(file) ? toSlash(path.relative(root, file)) : file;
+        return path.isAbsolute(file)
+          ? toSlash(path.relative(root, file)) + id.slice(file.length)
+          : id;
       })
       .join("\n");
     const idHash = createHash("sha256").update(chunkId).digest("hex").slice(0, 8);
