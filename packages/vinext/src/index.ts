@@ -5630,8 +5630,8 @@ export const loadServerActionClient = ${
             if (unsupported.length > 0) {
               console.warn(
                 `[vinext] Client output file names should stay under "${clientOutputFileNamesAssetsDir}/", ` +
-                  `include [hash], emit ".js" chunks and keep [name] and a trailing [extname] in asset ` +
-                  `names so asset URLs, immutable caching, content types, CSS url() assets and ` +
+                  `include [hash], emit ".js" chunks and start asset basenames with "[name]." or ` +
+                  `"[name]-" and end them with [extname] so asset URLs, immutable caching, content types, CSS url() assets and ` +
                   `script tags keep working: ` +
                   unsupported.join("; "),
               );

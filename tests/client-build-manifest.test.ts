@@ -194,6 +194,27 @@ describe("client build manifest helpers", () => {
     );
   });
 
+  it("does not let entries whose names contain a marker shadow vinext's entry", () => {
+    const manifest = {
+      "src/vinext-client-entry-debug.ts": {
+        file: "_next/static/chunks/Ab12Cd34.js",
+        name: "vinext-client-entry-debug",
+        src: "src/vinext-client-entry-debug.ts",
+        isEntry: true,
+      },
+      "virtual:vinext-client-entry": {
+        file: "_next/static/chunks/Df3k8Lm0.js",
+        name: "index",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+      },
+    };
+
+    expect(findPagesClientEntryFileFromManifest(manifest, "/")).toBe(
+      "_next/static/chunks/Df3k8Lm0.js",
+    );
+  });
+
   it("reads vinext's entry manifest for hashed client entry names", async () => {
     await fsp.writeFile(
       path.join(clientDir, VINEXT_CLIENT_ENTRY_MANIFEST),

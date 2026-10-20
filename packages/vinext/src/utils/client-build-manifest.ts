@@ -69,18 +69,20 @@ function findEntryFileFromManifest(
   // iteration order is not guaranteed to surface the client entry first.
   // Prefer marker order over manifest order so hybrid app+pages builds use the
   // Pages entry for the Pages renderer even if the App entry appears first.
-  // Match every entry's manifest key, source id and chunk name before any
-  // output file: users can configure file names that no longer carry (or
-  // happen to contain another) entry's name.
-  const fieldGroups = [
-    (key: string, entry: BuildManifestChunk) => [key, entry.src, entry.name],
-    (_key: string, entry: BuildManifestChunk) => [entry.file],
+  // Match every entry's identity (exact chunk name, or the virtual entry as
+  // its manifest key or source id) before any output file: users can
+  // configure file names that no longer carry (or happen to contain another)
+  // entry's name, and add entries whose names merely contain a marker.
+  const matchers = [
+    (marker: string, key: string, entry: BuildManifestChunk) =>
+      entry.name === marker ||
+      isVirtualEntryId(key, marker) ||
+      (entry.src !== undefined && isVirtualEntryId(entry.src, marker)),
+    (marker: string, _key: string, entry: BuildManifestChunk) => entry.file.includes(marker),
   ];
-  for (const fields of fieldGroups) {
+  for (const matches of matchers) {
     for (const marker of markers) {
-      const markedEntry = entries.find(([key, entry]) =>
-        fields(key, entry).some((value) => value?.includes(marker)),
-      );
+      const markedEntry = entries.find(([key, entry]) => matches(marker, key, entry));
       if (markedEntry) return manifestFileWithBase(markedEntry[1].file, assetBase);
     }
   }
@@ -88,6 +90,11 @@ function findEntryFileFromManifest(
   const chosen = fallbackToFirstEntry ? entries[0]?.[1] : undefined;
 
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
+}
+
+function isVirtualEntryId(id: string, marker: string): boolean {
+  const virtualId = `virtual:${marker}`;
+  return id === virtualId || id.endsWith(`/${virtualId}`);
 }
 
 function listFilesRecursive(dir: string): string[] {
