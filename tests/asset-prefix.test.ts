@@ -36,6 +36,7 @@ import {
   ASSET_PREFIX_URL_DIR,
 } from "../packages/vinext/src/utils/asset-prefix.js";
 import { manifestFileWithAssetPrefix } from "../packages/vinext/src/utils/manifest-paths.js";
+import { createWorkerFileNames } from "../packages/vinext/src/build/client-build-config.js";
 import { resolveAppRouterAssetPath } from "../packages/vinext/src/server/prod-server.js";
 import { normalizeAssetPrefix } from "../packages/vinext/src/config/next-config.js";
 import { renderVinextBuiltUrl } from "../packages/vinext/src/utils/built-asset-url.js";
@@ -249,6 +250,18 @@ describe("renderVinextBuiltUrl", () => {
     expect(consentWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(otherWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(consentWorker).not.toBe(otherWorker);
+    // Root paths inside virtual ids (worker image metadata) don't change
+    // names when the app moves.
+    const imageMetaName = (root: string) =>
+      createWorkerFileNames("_next/static", root).entryFileNames({
+        facadeModuleId: `\0vinext-worker-image-meta:${root}/app/hero.png`,
+      });
+    expect(imageMetaName("/srv/a/app-root")).toBe(imageMetaName("/srv/b/app-root"));
+    expect(imageMetaName("/srv/a/app-root")).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0vinext-worker-image-meta:/srv/a/app-root/app/other.png",
+      }),
+    );
     // Query variants of one file are distinct modules.
     expect(entryName(`${APP_FIXTURE_DIR}/app/lazy.js?one`)).not.toBe(
       entryName(`${APP_FIXTURE_DIR}/app/lazy.js?two`),
