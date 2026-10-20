@@ -241,6 +241,50 @@ describe("measureClientReferenceGroupCosts", () => {
     expect(Object.fromEntries(costs)).toEqual({ box: 5060, code: 5050 });
   });
 
+  it("finds imported references and unloadable modules below shared modules", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([
+        ["a", "/a.tsx"],
+        ["b", "/b.tsx"],
+        ["code", "/code.tsx"],
+        ["d", "/d.tsx"],
+        ["e", "/e.tsx"],
+      ]),
+      loadModule: loader({
+        "/a.tsx": { bytes: 10, imports: ["/ui.ts"] },
+        "/b.tsx": { bytes: 20, imports: ["/ui.ts"] },
+        "/ui.ts": { bytes: 1000, imports: ["/code.tsx"] },
+        "/code.tsx": { bytes: 50, imports: ["/highlighter.ts"] },
+        "/highlighter.ts": { bytes: 200 },
+        "/d.tsx": { bytes: 10, imports: ["/flaky.ts"] },
+        "/e.tsx": { bytes: 10, imports: ["/flaky.ts"] },
+        "/flaky.ts": { bytes: 10, imports: ["/missing.ts"] },
+      }),
+      isExcluded: () => false,
+      isSideEffectFree: () => false,
+    });
+
+    expect(Object.fromEntries(costs)).toEqual({ a: 260, b: 270, code: 250, d: null, e: null });
+  });
+
+  it("still charges modules shared only with a reference that failed to load", async () => {
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([
+        ["a", "/a.tsx"],
+        ["broken", "/broken.tsx"],
+      ]),
+      loadModule: loader({
+        "/a.tsx": { bytes: 10, imports: ["/shared.ts"] },
+        "/broken.tsx": { bytes: 10, imports: ["/shared.ts", "/missing.ts"] },
+        "/shared.ts": { bytes: 1000 },
+      }),
+      isExcluded: () => false,
+      isSideEffectFree: () => false,
+    });
+
+    expect(Object.fromEntries(costs)).toEqual({ a: 1010, broken: null });
+  });
+
   it("measures UTF-8 bytes", async () => {
     const costs = await measureClientReferenceGroupCosts({
       references: new Map([["a", "/a.tsx"]]),
@@ -305,6 +349,7 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
           `export { all as icons };`,
           `export { default as Camera, default as CameraIcon } from "./camera.js";`,
           `export { default as Bell } from "./bell.js";`,
+          `export { default as Siren } from "./siren.js";`,
           `export * from "./more.js";`,
         ].join("\n"),
         sideEffectFree: true,
@@ -312,6 +357,7 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
       "/icons.js": { code: icon("Everything"), sideEffectFree: true },
       "/camera.js": { code: icon("Camera"), sideEffectFree: true },
       "/bell.js": { code: icon("Bell"), sideEffectFree: true },
+      "/siren.js": { code: `globalThis.siren = 1;\n${icon("Siren")}` },
       "/more.js": { code: `export * from "./polyfill.js";`, sideEffectFree: true },
       "/polyfill.js": { code: `globalThis.x = 1;` },
     };
@@ -332,12 +378,13 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     expect(loaded).not.toContain("/icons.js");
     const bytes = (code: string) => Buffer.byteLength(code, "utf8");
     // The barrel's statements emit no code, leaving only its newlines. Bell and
-    // the namespace re-export are tree-shaken, but the side-effectful module
-    // behind `export *` stays.
+    // the namespace re-export are tree-shaken, but the side-effectful modules
+    // behind the unused Siren re-export and `export *` stay.
     expect(costs.get("a")).toBe(
       bytes("\nexport const A = () => Camera;") +
         bytes(icon("Camera")) +
-        bytes("\n\n\n\n") +
+        bytes("\n\n\n\n\n") +
+        bytes(modules["/siren.js"].code) +
         bytes(modules["/polyfill.js"].code),
     );
   });
@@ -374,6 +421,30 @@ describe("measureClientReferenceGroupCosts with module bindings", () => {
     );
     expect(costs.get("effects")).toBe(
       bytes("\nexport const E = One;") + bytes("\n") + bytes(icon("Three")) + bytes(icon("Four")),
+    );
+  });
+
+  it("keeps the side effects behind `export *` of a barrel imported only for its default", async () => {
+    const modules: TestModules = {
+      "/a.js": { code: `import Logo from "./barrel.js";\nexport const A = () => Logo;` },
+      "/barrel.js": {
+        code: `export default function Logo() { return "logo"; }\nexport * from "./effects.js";`,
+        sideEffectFree: true,
+      },
+      "/effects.js": { code: `globalThis.effects = 1;` },
+    };
+    const costs = await measureClientReferenceGroupCosts({
+      references: new Map([["a", "/a.js"]]),
+      loadModule: bindingLoader(modules),
+      isExcluded: () => false,
+      isSideEffectFree: sideEffectFreeIn(modules),
+    });
+
+    const bytes = (code: string) => Buffer.byteLength(code, "utf8");
+    expect(costs.get("a")).toBe(
+      bytes("\nexport const A = () => Logo;") +
+        bytes(`export default function Logo() { return "logo"; }\n`) +
+        bytes(modules["/effects.js"]!.code),
     );
   });
 
