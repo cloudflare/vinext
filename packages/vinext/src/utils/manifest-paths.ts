@@ -103,25 +103,19 @@ export function collapseDuplicateBase(file: string, base: string): string {
 
 // Chunks every Pages Router document loads: the `framework` and `vinext`
 // manualChunks groups (see createClientManualChunks) plus the Pages client
-// entry. The App Router browser entry is not a Pages document chunk.
-const SHARED_CHUNK_NAMES = new Set(["framework", "vinext"]);
-const SHARED_ENTRY_CHUNK_MARKER = "vinext-client-entry";
+// entry, named `vinext-client-entry` in hybrid builds. Pages-only builds name
+// that entry `index`, so the build also matches its facade module (see
+// augmentSsrManifestFromBundle). The App Router browser entry is not a Pages
+// document chunk.
+const SHARED_CHUNK_NAMES = new Set(["framework", "vinext", "vinext-client-entry"]);
 
 /**
  * Whether a Rolldown chunk belongs to the shared Pages Router runtime, judged
- * by its chunk name (or entry facade module id) rather than its emitted file
- * name so user-configured or hash-only `chunkFileNames` keep their
- * modulepreload/script tags.
+ * by its exact chunk name rather than its emitted file name so user-configured
+ * or hash-only `chunkFileNames` keep their modulepreload/script tags.
  */
-export function isSharedClientChunkName(
-  name: string | undefined,
-  facadeModuleId?: string | null,
-): boolean {
-  if (name && SHARED_CHUNK_NAMES.has(name)) return true;
-  return (
-    !!name?.includes(SHARED_ENTRY_CHUNK_MARKER) ||
-    !!facadeModuleId?.includes(SHARED_ENTRY_CHUNK_MARKER)
-  );
+export function isSharedClientChunkName(name: string | undefined): boolean {
+  return name !== undefined && SHARED_CHUNK_NAMES.has(name);
 }
 
 /**

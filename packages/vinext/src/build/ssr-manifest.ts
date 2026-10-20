@@ -7,6 +7,14 @@ import {
   SSR_MANIFEST_SHARED_CHUNKS_KEY,
 } from "../utils/manifest-paths.js";
 
+const PAGES_CLIENT_ENTRY_ID = "virtual:vinext-client-entry";
+
+function isPagesClientEntryFacade(facadeModuleId: string | null | undefined): boolean {
+  if (!facadeModuleId) return false;
+  const id = toSlash(facadeModuleId.startsWith("\0") ? facadeModuleId.slice(1) : facadeModuleId);
+  return id === PAGES_CLIENT_ENTRY_ID || id.endsWith(`/${PAGES_CLIENT_ENTRY_ID}`);
+}
+
 export type BundleBackfillChunk = {
   type: "chunk";
   fileName: string;
@@ -125,7 +133,8 @@ export function augmentSsrManifestFromBundle(
 
     if (
       chunk.fileName.endsWith(".js") &&
-      isSharedClientChunkName(chunk.name, chunk.isEntry ? chunk.facadeModuleId : null)
+      (isSharedClientChunkName(chunk.name) ||
+        (chunk.isEntry && isPagesClientEntryFacade(chunk.facadeModuleId)))
     ) {
       sharedChunkFiles.add(manifestFileWithBase(chunk.fileName, base));
     }

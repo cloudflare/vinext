@@ -3402,6 +3402,14 @@ describe("augmentSsrManifestFromBundle", () => {
         name: "about",
         modules: { "/app/pages/about.tsx": {} },
       },
+      // An application chunk whose name merely contains the entry name is
+      // not part of the shared runtime.
+      "_next/static/chunks/D3bugCh1.js": {
+        type: "chunk" as const,
+        fileName: "_next/static/chunks/D3bugCh1.js",
+        name: "vinext-client-entry-debug",
+        modules: { "/app/lib/vinext-client-entry-debug.ts": {} },
+      },
       // Hybrid builds also emit the App Router browser entry, which Pages
       // documents must not load.
       "_next/static/chunks/4ppEntry.js": {
