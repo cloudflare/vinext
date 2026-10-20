@@ -189,16 +189,24 @@ function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifes
 }
 
 /**
- * The graph records the browser receives: the shipped routes, their slot
- * bindings, and the layouts and root boundaries those and the interceptions
- * reach. Records only omitted route handlers reach would still name those
- * handlers' directories, and the browser reads no others.
+ * The graph records the browser receives: the shipped routes, the rendered
+ * routes' slot bindings, and the layouts and root boundaries those and the
+ * interceptions reach. A shipped route handler only stops an optimistic
+ * match, and its non-Flight response never renders a tree, so it ships as a
+ * bare pattern; its layouts, slots and root boundary would only name its
+ * directories.
  */
 function selectBrowserGraph(graph: RouteManifest["segmentGraph"]) {
-  const routes = selectBrowserRoutes(graph.routes.values());
-  const routeIds = new Set(routes.map((route) => route.id));
+  const routes = selectBrowserRoutes(graph.routes.values()).map((route) =>
+    route.routeHandlerId === null
+      ? route
+      : { ...route, layoutIds: [], rootBoundaryId: null, slotIds: [] },
+  );
+  const renderedRouteIds = new Set(
+    routes.filter((route) => route.routeHandlerId === null).map((route) => route.id),
+  );
   const slotBindings = [...graph.slotBindings.values()].filter((binding) =>
-    routeIds.has(binding.routeId),
+    renderedRouteIds.has(binding.routeId),
   );
   const layoutIds = new Set([
     ...routes.flatMap((route) => route.layoutIds),

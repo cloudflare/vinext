@@ -860,6 +860,62 @@ describe("App Router generated manifest construction", () => {
       );
     });
 
+    it("ships a route handler that blocks a page match without its layouts or root boundary", async () => {
+      await withScannedApp(
+        (graph) => {
+          const moduleCode = generateBrowserRouteManifestModule(graph.routeManifest);
+          expect(moduleCode).not.toContain("(ops)");
+          const routeManifest = decodeBrowserRouteManifest(
+            readBrowserRouteManifestModule(moduleCode),
+          );
+          expect(routeManifest.segmentGraph.routes.get("route:/docs/private")).toMatchObject({
+            layoutIds: [],
+            pageId: null,
+            rootBoundaryId: null,
+            slotIds: [],
+          });
+          expect(
+            matchOptimisticRouteManifestRoute({
+              basePath: "",
+              href: "/docs/private",
+              routeManifest,
+            })?.route.id,
+          ).toBe("route:/docs/private");
+        },
+        {
+          "(site)/layout.tsx": PAGE,
+          "(site)/docs/[...path]/page.tsx": PAGE,
+          "(ops)/layout.tsx": PAGE,
+          "(ops)/docs/private/route.ts": HANDLER,
+        },
+      );
+    });
+
+    it("ships a route handler that blocks a page match without its slot bindings", async () => {
+      await withScannedApp(
+        (graph) => {
+          const handlerId = "route:/docs/private";
+          expect(graph.routeManifest.segmentGraph.routes.get(handlerId)?.slotIds).not.toEqual([]);
+          const routeManifest = decodeBrowserRouteManifest(
+            readBrowserRouteManifestModule(generateBrowserRouteManifestModule(graph.routeManifest)),
+          );
+          expect(routeManifest.segmentGraph.routes.get(handlerId)?.slotIds).toEqual([]);
+          expect(
+            [...routeManifest.segmentGraph.slotBindings.values()].filter(
+              (binding) => binding.routeId === handlerId,
+            ),
+          ).toEqual([]);
+        },
+        {
+          "(site)/layout.tsx": PAGE,
+          "(site)/docs/[...path]/page.tsx": PAGE,
+          "(ops)/layout.tsx": PAGE,
+          "(ops)/@panel/default.tsx": PAGE,
+          "(ops)/docs/private/route.ts": HANDLER,
+        },
+      );
+    });
+
     it("keeps a route handler wherever its URLs lead the trie to a page it outranks", async () => {
       const matchIn = (graph: Awaited<ReturnType<typeof buildAppRouteGraph>>) => {
         const routeManifest = decodeBrowserRouteManifest(
