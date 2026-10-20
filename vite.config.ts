@@ -195,6 +195,7 @@ export default defineConfig({
             // dirs and use per-worker optimizer caches in their own project.
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
+            "tests/app-route-client-preloads-production.test.ts",
             "tests/app-router-client-preloading.test.ts",
             "tests/app-router-deployment-id.test.ts",
             "tests/app-router-dev-server.test.ts",
@@ -285,6 +286,7 @@ export default defineConfig({
           // test needs to mock an external fetch, wire MSW per-file with
           // `setupServer` rather than reverting this exclusion.
           include: [
+            "tests/app-route-client-preloads-production.test.ts",
             "tests/app-router-client-preloading.test.ts",
             "tests/app-router-deployment-id.test.ts",
             "tests/app-router-dev-server.test.ts",

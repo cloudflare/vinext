@@ -473,6 +473,8 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           isCacheCandidate: options.isCacheCandidate,
           isEdgeRuntime: options.isEdgeRuntime,
           middlewareHeaders: options.middlewareContext.headers,
+          // A boundary without a route shows the root layouts, or global-not-found.
+          preloadRoutePattern: options.route ? options.route.pattern : null,
           navigationContext: options.getNavigationContext() ?? {
             pathname,
             searchParams: requestUrl.searchParams,

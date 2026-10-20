@@ -187,6 +187,120 @@ export function collectClientReferenceRouteSignatures(options: {
   return signatures;
 }
 
+export type ClientReferencePreloadPlan = {
+  /**
+   * Client references any render may use: those reached from outside route
+   * files (vinext's runtime, server actions), global-error's, and those no
+   * walk reaches.
+   */
+  always: string[];
+  /** The client references each route file reaches, through any import. */
+  files: string[][];
+  /** Each route pattern's files, as indices into `files`. */
+  routes: Map<string, number[]>;
+  /** The files of a render without a route, as indices into `files`. */
+  routeless: number[];
+};
+
+/**
+ * Plan which client references SSR loads before rendering each route. A route
+ * preloads every client reference its page, layouts, templates, boundaries and
+ * parallel slots reach, statically or through dynamic imports (a
+ * `next/dynamic` component renders on the server), plus the `always` set.
+ * Intercepting routes only render on soft navigation, which SSR never
+ * renders, so they add to no set. `entryIds` are the RSC graph's entries:
+ * walking them up to route files finds what renders outside any route.
+ */
+export function collectClientReferencePreloadPlan(options: {
+  alwaysRoots?: readonly string[];
+  canonicalizeModuleId?: (id: string) => string;
+  clientReferenceIds: ReadonlySet<string>;
+  entryIds: readonly string[];
+  getModuleInfo: (id: string) => ModuleGraphInfo | null;
+  routelessFiles?: readonly string[];
+  routes: readonly ClientReferenceGroupRoute[];
+}): ClientReferencePreloadPlan {
+  const canonicalize = options.canonicalizeModuleId ?? ((id: string) => id);
+  const moduleInfoCache = new Map<string, ModuleGraphInfo | null>();
+  const getModuleInfo = (id: string) => {
+    let info = moduleInfoCache.get(id);
+    if (info === undefined) {
+      info = options.getModuleInfo(id);
+      moduleInfoCache.set(id, info);
+    }
+    return info;
+  };
+  const reached = new Set<string>();
+  const referencesReachedFrom = (roots: readonly string[], stopAt?: ReadonlySet<string>) => {
+    const references: string[] = [];
+    const visited = new Set<string>();
+    const stack = roots.map(canonicalize).reverse();
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      if (visited.has(id)) continue;
+      visited.add(id);
+      if (options.clientReferenceIds.has(id)) {
+        references.push(id);
+        reached.add(id);
+        continue;
+      }
+      if (stopAt?.has(id)) continue;
+      const info = getModuleInfo(id);
+      if (!info) continue;
+      const imports = [...info.importedIds, ...info.dynamicallyImportedIds];
+      for (let index = imports.length - 1; index >= 0; index--) stack.push(imports[index]!);
+    }
+    return references;
+  };
+
+  const files: string[][] = [];
+  const fileIndices = new Map<string, number>();
+  const fileIndex = (file: string) => {
+    const id = canonicalize(file);
+    let index = fileIndices.get(id);
+    if (index === undefined) {
+      index = files.length;
+      fileIndices.set(id, index);
+      files.push(referencesReachedFrom([id]));
+    }
+    return index;
+  };
+  const routes = new Map<string, number[]>();
+  const interceptFiles: string[] = [];
+  for (const route of options.routes) {
+    const indices = inRenderOrder(
+      actionOwnerRouteEntryIds({
+        ...route,
+        parallelSlots: route.parallelSlots.map((slot) => ({ ...slot, interceptingRoutes: [] })),
+        siblingIntercepts: [],
+      }),
+    ).map(fileIndex);
+    // Patterns are unique, but a duplicate must still preload both routes.
+    routes.set(route.pattern, [...new Set([...(routes.get(route.pattern) ?? []), ...indices])]);
+    for (const intercept of [
+      ...route.parallelSlots.flatMap((slot) => slot.interceptingRoutes),
+      ...route.siblingIntercepts,
+    ]) {
+      interceptFiles.push(...interceptEntryIds(intercept));
+    }
+  }
+  const routeless = [...new Set((options.routelessFiles ?? []).map(fileIndex))];
+  // Only for `reached`: an intercept's references load during its render.
+  referencesReachedFrom(interceptFiles);
+
+  const alwaysRoots = options.alwaysRoots ?? [];
+  const stopAt = new Set([
+    ...fileIndices.keys(),
+    ...[...interceptFiles, ...alwaysRoots].map(canonicalize),
+  ]);
+  const always = new Set([
+    ...referencesReachedFrom(options.entryIds, stopAt),
+    ...referencesReachedFrom(alwaysRoots),
+  ]);
+  for (const id of options.clientReferenceIds) if (!reached.has(id)) always.add(id);
+  return { always: [...always], files, routes, routeless };
+}
+
 /** Export names an importer uses from a module, or `"*"` for all of them. */
 type UsedNames = ReadonlySet<string> | "*";
 

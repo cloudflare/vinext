@@ -73,6 +73,7 @@ import {
   generateAppResponseRscEntry,
   generateRscEntry,
 } from "./entries/app-rsc-entry.js";
+import { rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
@@ -1870,7 +1871,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
-  let clientReferenceGroupRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  let clientReferenceGlobalErrorPath: string | null = null;
+  let clientReferenceRoutelessFiles: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
 
@@ -5129,8 +5132,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
                 (path): path is string => path !== null,
               );
-              clientReferenceGroupRoutes =
-                this.environment.config.command === "build" ? routes : null;
+              clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
+              clientReferenceGlobalErrorPath = globalErrorPath;
+              clientReferenceRoutelessFiles = [
+                ...rootBoundaryRouteFiles(routes),
+                ...(globalNotFoundPath ? [globalNotFoundPath] : []),
+              ];
             }
             const generateEntry =
               id === RESOLVED_APP_REQUEST_ENTRY
@@ -8876,7 +8883,9 @@ export const loadServerActionClient = ${
         onComplete() {
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
-          clientReferenceGroupRoutes = null;
+          clientReferenceRoutes = null;
+          clientReferenceGlobalErrorPath = null;
+          clientReferenceRoutelessFiles = [];
         },
       }),
     );
@@ -8885,13 +8894,17 @@ export const loadServerActionClient = ${
   if (rscPluginPromise) {
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(
-      createRscClientReferenceLoadersPlugin(
-        options.disableNextLikeChunking
+      createRscClientReferenceLoadersPlugin({
+        routes: {
+          canonicalizeModuleId: canonicalize,
+          getGlobalErrorPath: () => clientReferenceGlobalErrorPath,
+          getRoutelessFiles: () => clientReferenceRoutelessFiles,
+          getRoutes: () => clientReferenceRoutes,
+          getSharedRoots: () => rscActionOwnerSharedRoots,
+        },
+        grouping: options.disableNextLikeChunking
           ? undefined
           : {
-              canonicalizeModuleId: canonicalize,
-              getRoutes: () => clientReferenceGroupRoutes,
-              getSharedRoots: () => rscActionOwnerSharedRoots,
               isAlwaysLoadedClientModule(id) {
                 const chunkName = appClientManualChunks(id);
                 return chunkName === "framework" || chunkName === "vinext";
@@ -8901,7 +8914,7 @@ export const loadServerActionClient = ${
                 ...clientCodeSplittingConfig.groups,
               ]),
             },
-      ),
+      }),
     );
   } else if (manualUseCachePluginPromise) {
     plugins.push(manualUseCachePluginPromise);

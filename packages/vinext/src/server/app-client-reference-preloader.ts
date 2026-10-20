@@ -16,6 +16,49 @@ type ClientReferencePreloader = {
 
 const resolvedPreload = Promise.resolve();
 
+/**
+ * The client references each App Router route preloads before SSR, generated
+ * by plugins/rsc-client-reference-loaders.ts from the RSC build's module graph.
+ * Each list holds indices into `references`, or for routes into `files`.
+ */
+export type RouteClientReferences = {
+  /** Client reference keys. */
+  references: readonly string[];
+  /** References any render may use, whatever its route. */
+  always: readonly number[];
+  /** The references each route file reaches. */
+  files: readonly (readonly number[])[];
+  /** Each route pattern's files. */
+  routes: Readonly<Record<string, readonly number[]>>;
+  /** The files of a render without a route, such as a route-miss 404. */
+  routeless: readonly number[];
+};
+
+/**
+ * The client references a render of `routePattern` preloads, or of no route
+ * when it is null. Undefined, meaning every reference, without a plan or a
+ * route to look up, or for a pattern the plan doesn't know.
+ */
+export function resolveRouteClientReferences(
+  plan: RouteClientReferences | null,
+  routePattern: string | null | undefined,
+): string[] | undefined {
+  if (!plan || routePattern === undefined) return undefined;
+  let files: readonly number[];
+  if (routePattern === null) {
+    files = plan.routeless;
+  } else if (Object.hasOwn(plan.routes, routePattern)) {
+    files = plan.routes[routePattern]!;
+  } else {
+    return undefined;
+  }
+  const indices = new Set(plan.always);
+  for (const file of files) {
+    for (const index of plan.files[file]!) indices.add(index);
+  }
+  return Array.from(indices, (index) => plan.references[index]!);
+}
+
 export function createClientReferencePreloader(
   options: ClientReferencePreloaderOptions,
 ): ClientReferencePreloader {

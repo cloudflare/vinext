@@ -4,10 +4,12 @@ import { isCSSRequest, type Plugin, type Rollup } from "vite";
 import type { PluginApi } from "@vitejs/plugin-rsc";
 import {
   CLIENT_REFERENCE_GROUP_MAX_COST_BYTES,
+  collectClientReferencePreloadPlan,
   collectClientReferenceRouteSignatures,
   measureClientReferenceGroupCosts,
   planClientReferenceGroups,
   readClientModuleBindings,
+  type ClientReferencePreloadPlan,
 } from "../build/client-reference-groups.js";
 import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
@@ -26,13 +28,23 @@ type RscPluginWithApi = Plugin & {
   api?: PluginApi;
 };
 
-export type RscClientReferenceGroupingOptions = {
+export type RscClientReferenceRouteOptions = {
   /** Maps route file paths to the module ids used by the RSC module graph. */
   canonicalizeModuleId: (id: string) => string;
   /** App Router routes of the current build, or null outside App Router builds. */
   getRoutes: () => readonly AppRoute[] | null;
+  /** global-error, which any render can show, or null. */
+  getGlobalErrorPath: () => string | null;
+  /**
+   * The files a render without a route (a route-miss 404) shows: the root
+   * layouts and boundaries, and global-not-found.
+   */
+  getRoutelessFiles: () => readonly string[];
   /** Route-independent roots such as global-error and global-not-found. */
   getSharedRoots: () => readonly string[];
+};
+
+export type RscClientReferenceGroupingOptions = {
   /** Modules that live in chunks every page loads anyway (React, vinext runtime). */
   isAlwaysLoadedClientModule: (id: string) => boolean;
   /** vinext's own client chunk groups. Any other chunk group disables grouping. */
@@ -154,21 +166,77 @@ function generateClientReferenceGroupModule(metas: readonly RscClientReferenceMe
 }
 
 /**
+ * The SSR build's `routeClientReferences` export: the reference keys each route
+ * preloads before it renders (see server/app-client-reference-preloader.ts),
+ * stored as indices into `references`. Client references the plan doesn't know
+ * join `always`.
+ */
+function generateRouteClientReferencesExport(
+  plan: { referenceIds: ReadonlySet<string>; preloads: ClientReferencePreloadPlan } | null,
+  metaEntries: readonly (readonly [string, RscClientReferenceMeta])[],
+): string {
+  if (!plan) return "export const routeClientReferences = null;\n";
+  const metaById = new Map(metaEntries);
+  const references: string[] = [];
+  const indices = new Map<string, number>();
+  const toIndices = (referenceIds: readonly string[]) =>
+    referenceIds.flatMap((referenceId) => {
+      const meta = metaById.get(referenceId);
+      if (!meta) return [];
+      let index = indices.get(referenceId);
+      if (index === undefined) {
+        index = references.length;
+        indices.set(referenceId, index);
+        references.push(meta.referenceKey);
+      }
+      return [index];
+    });
+  const always = toIndices([
+    ...plan.preloads.always,
+    ...metaEntries
+      .map(([referenceId]) => referenceId)
+      .filter((referenceId) => !plan.referenceIds.has(referenceId)),
+  ]);
+  const files = plan.preloads.files.map(toIndices);
+  const manifest = {
+    references,
+    always,
+    files,
+    routes: Object.fromEntries(plan.preloads.routes),
+    routeless: plan.preloads.routeless,
+  };
+  return `export const routeClientReferences = ${JSON.stringify(manifest)};\n`;
+}
+
+/**
  * Replaces @vitejs/plugin-rsc's client-reference facades with per-reference
- * loaders. With `grouping`, production client builds additionally load
- * references that the same App Router routes reach through one shared route
- * group module (see build/client-reference-groups.ts), so a page fetches one
- * chunk per route group instead of one per `"use client"` module.
+ * loaders. With `routes`, the SSR build also exports the client references
+ * each App Router route preloads. With `grouping`, production client builds
+ * additionally load references that the same App Router routes reach through
+ * one shared route group module (see build/client-reference-groups.ts), so a
+ * page fetches one chunk per route group instead of one per `"use client"`
+ * module.
  */
 export function createRscClientReferenceLoadersPlugin(
-  grouping?: RscClientReferenceGroupingOptions,
+  options: {
+    routes?: RscClientReferenceRouteOptions;
+    grouping?: RscClientReferenceGroupingOptions;
+  } = {},
 ): Plugin {
+  const { routes: routeOptions } = options;
+  const grouping = routeOptions && options.grouping;
   let rscApi: PluginApi | undefined;
   let root = "";
   let groupingEnabled = false;
   // Client reference id -> signature of the routes that reach it, collected
   // from the RSC graph, which @vitejs/plugin-rsc builds before the client.
   let routeSignatures = new Map<string, string>();
+  // What SSR preloads per route, collected from the same RSC graph, which
+  // @vitejs/plugin-rsc also builds before the SSR environment.
+  let preloadPlan: {
+    referenceIds: ReadonlySet<string>;
+    preloads: ClientReferencePreloadPlan;
+  } | null = null;
   const groupModules = new Map<string, string>();
 
   return {
@@ -196,23 +264,42 @@ export function createRscClientReferenceLoadersPlugin(
       },
     },
     buildStart() {
-      if (this.environment.name === "rsc") routeSignatures = new Map();
+      if (this.environment.name === "rsc") {
+        routeSignatures = new Map();
+        preloadPlan = null;
+      }
       if (this.environment.name === "client") groupModules.clear();
     },
     buildEnd(error) {
-      if (error || !grouping) return;
+      if (error || !routeOptions) return;
       if (this.environment.name !== "rsc" || this.environment.mode !== "build") return;
       const manager = rscApi?.manager;
-      const routes = grouping.getRoutes();
+      const routes = routeOptions.getRoutes();
       if (!manager || manager.isScanBuild || !routes) return;
 
+      const clientReferenceIds = new Set(Object.keys(manager.clientReferenceMetaMap));
+      const getModuleInfo = (id: string) => this.getModuleInfo(id);
+      const globalErrorPath = routeOptions.getGlobalErrorPath();
+      preloadPlan = {
+        referenceIds: clientReferenceIds,
+        preloads: collectClientReferencePreloadPlan({
+          alwaysRoots: globalErrorPath ? [globalErrorPath] : [],
+          canonicalizeModuleId: routeOptions.canonicalizeModuleId,
+          clientReferenceIds,
+          entryIds: [...this.getModuleIds()].filter((id) => this.getModuleInfo(id)?.isEntry),
+          getModuleInfo,
+          routelessFiles: routeOptions.getRoutelessFiles(),
+          routes,
+        }),
+      };
+      if (!grouping) return;
       routeSignatures = collectClientReferenceRouteSignatures({
-        canonicalizeModuleId: grouping.canonicalizeModuleId,
-        clientReferenceIds: new Set(Object.keys(manager.clientReferenceMetaMap)),
-        getModuleInfo: (id) => this.getModuleInfo(id),
+        canonicalizeModuleId: routeOptions.canonicalizeModuleId,
+        clientReferenceIds,
+        getModuleInfo,
         root,
         routes,
-        sharedRoots: grouping.getSharedRoots(),
+        sharedRoots: routeOptions.getSharedRoots(),
       });
     },
     resolveId: {
@@ -229,9 +316,10 @@ export function createRscClientReferenceLoadersPlugin(
     },
     transform: {
       filter: { id: CLIENT_REFERENCES_ID_RE },
-      async handler() {
+      async handler(code) {
         const manager = rscApi?.manager;
         if (!manager || manager.isScanBuild) return null;
+        const isServer = this.environment.config.consumer === "server";
 
         // This post-transform runs after @vitejs/plugin-rsc has loaded the
         // client-reference virtual module and populated the manager metadata. The
@@ -244,7 +332,15 @@ export function createRscClientReferenceLoadersPlugin(
           ([, meta]) => meta.serverChunk,
         );
         const metas = metaEntries.map(([, meta]) => meta);
-        if (metas.length === 0) return null;
+        // The SSR entry imports the preload plan, so emit it even without
+        // client references. Development has no plan: plugin-rsc loads each
+        // client reference on demand there.
+        const routeClientReferencesExport = isServer
+          ? generateRouteClientReferencesExport(preloadPlan, metaEntries)
+          : "";
+        if (metas.length === 0) {
+          return isServer ? { code: `${code}\n${routeClientReferencesExport}`, map: null } : null;
+        }
 
         for (const [id, meta] of metaEntries) {
           // The RSC assets manifest indexes deps by Rollup/Rolldown module ids
@@ -406,7 +502,7 @@ export function createRscClientReferenceLoadersPlugin(
         }
 
         return {
-          code: generateClientReferenceLoaders(metas, slots),
+          code: generateClientReferenceLoaders(metas, slots) + routeClientReferencesExport,
           map: null,
         };
       },
