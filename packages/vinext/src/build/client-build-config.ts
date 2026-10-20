@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { UserConfig } from "vite";
 import path, { toSlash } from "pathslash";
+import { WORKER_IMAGE_METADATA_PREFIX } from "../plugins/worker-image-imports.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 type ClientAssetFileNameInfo = {
@@ -205,21 +206,27 @@ export function createWorkerFileNames(assetsDir: string, root: string) {
   const workersDir = `${assetsDir}/workers`;
   const fileName = (chunk: { facadeModuleId: string | null; moduleIds?: readonly string[] }) => {
     const ids = chunk.facadeModuleId ? [chunk.facadeModuleId] : (chunk.moduleIds ?? []);
-    // Absolute file paths are made root-relative; their query stays, as
-    // `lazy.js?one` and `lazy.js?two` are distinct modules. Virtual ids (e.g.
-    // `\0virtual:x`) aren't passed to path.relative, which would resolve
-    // them against the cwd; only root paths embedded in them (such as
-    // `\0vinext-worker-image-meta:<root>/a.png`) become a `<root>/` marker,
-    // so names don't depend on where the app lives or the build was launched.
-    const rootPrefix = `${toSlash(root)}/`;
-    const chunkId = ids
-      .map((id) => {
+    // Each id is serialized with a tag, so distinct ids never collide.
+    // Absolute file paths are made root-relative, keeping their query
+    // (`lazy.js?one` and `lazy.js?two` are distinct modules), and so is the
+    // image path in vinext's worker image metadata ids. Other ids are kept
+    // verbatim: path.relative would resolve a virtual id against the cwd.
+    // Names thus don't depend on where the app lives or the build was launched.
+    const chunkId = JSON.stringify(
+      ids.map((id) => {
         const file = stripViteModuleQuery(id);
-        return path.isAbsolute(file)
-          ? toSlash(path.relative(root, file)) + id.slice(file.length)
-          : toSlash(id).split(rootPrefix).join("<root>/");
-      })
-      .join("\n");
+        if (path.isAbsolute(file)) {
+          return ["file", toSlash(path.relative(root, file)) + id.slice(file.length)];
+        }
+        const imagePath = id.startsWith(WORKER_IMAGE_METADATA_PREFIX)
+          ? id.slice(WORKER_IMAGE_METADATA_PREFIX.length)
+          : undefined;
+        if (imagePath !== undefined && path.isAbsolute(imagePath)) {
+          return ["image-meta", toSlash(path.relative(root, imagePath))];
+        }
+        return ["id", id];
+      }),
+    );
     const idHash = createHash("sha256").update(chunkId).digest("hex").slice(0, 8);
     return `${workersDir}/${idHash}-[hash].js`;
   };

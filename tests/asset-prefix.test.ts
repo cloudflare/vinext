@@ -267,6 +267,16 @@ describe("renderVinextBuiltUrl", () => {
         facadeModuleId: "\0vinext-worker-image-meta:app/hero.png",
       }),
     );
+    // Root paths elsewhere in virtual ids are kept verbatim.
+    expect(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0plugin:/srv/a/app-root/foo",
+      }),
+    ).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0plugin:<root>/foo",
+      }),
+    );
     // Query variants of one file are distinct modules.
     expect(entryName(`${APP_FIXTURE_DIR}/app/lazy.js?one`)).not.toBe(
       entryName(`${APP_FIXTURE_DIR}/app/lazy.js?two`),
