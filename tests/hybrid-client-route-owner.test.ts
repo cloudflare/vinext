@@ -293,6 +293,28 @@ describe("resolveHybridClientRouteOwner", () => {
     },
   );
 
+  it.each(["afterFiles", "fallback"] as const)(
+    "stops %s rewrite chains at a Pages API URL that may be served",
+    (rewritePhase) => {
+      const rewrite = [
+        { source: "/source", destination: "/api/test" },
+        { source: "/api/test", destination: "/app-destination" },
+      ];
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles: [],
+          afterFiles: rewritePhase === "afterFiles" ? rewrite : [],
+          fallback: rewritePhase === "fallback" ? rewrite : [],
+        },
+      });
+
+      expect(resolveHybridClientRouteOwner("/source", "")).toBe("document");
+      expect(resolveHybridClientRewriteHref("/source", "")).toBe("/api/test");
+    },
+  );
+
   it("evaluates conditional client rewrites against browser-visible context", () => {
     installWindow({
       app: [appRoute(["app-destination"], false)],

@@ -102,7 +102,7 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
       currentHref = afterFilesRewrite.href;
       didRewrite = true;
       matches = matchDirectHybridClientRoutes(currentHref, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
@@ -114,7 +114,7 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
       currentHref = fallbackRewrite.href;
       didRewrite = true;
       matches = matchDirectHybridClientRoutes(currentHref, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
@@ -161,7 +161,7 @@ export function resolveHybridClientRouteOwner(
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       href = afterFilesRewrite.href;
       matches = matchDirectHybridClientRoutes(href, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
@@ -177,7 +177,7 @@ export function resolveHybridClientRouteOwner(
       if (fallbackRewrite?.kind !== "rewrite") continue;
       href = fallbackRewrite.href;
       matches = matchDirectHybridClientRoutes(href, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
