@@ -1,5 +1,28 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page, type Route } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
+
+// Client chunk names are hash-only, so find the route manifest chunk by its
+// serialized graph instead of its file name.
+const ROUTE_MANIFEST_MARKER = '"graphVersion":"graph:';
+
+async function routeManifestChunk(
+  page: Page,
+  handle: (route: Route, response: Awaited<ReturnType<Route["fetch"]>>) => Promise<void>,
+): Promise<void> {
+  await page.route(/\/_next\/static\/chunks\/[^/]+\.js$/, async (route) => {
+    const response = await route.fetch();
+    if (!(await response.text()).includes(ROUTE_MANIFEST_MARKER)) {
+      await route.fulfill({ response });
+      return;
+    }
+    await handle(route, response);
+  });
+}
+
+// Chunk requests still in flight when a test ends must not fail it.
+test.afterEach(async ({ page }) => {
+  await page.unrouteAll({ behavior: "ignoreErrors" });
+});
 
 // The browser RouteManifest is not inlined in the entry chunk (#3957). It loads
 // from its own chunk, and navigations and prefetches wait for it: without it,
@@ -13,10 +36,10 @@ test("an intercepted navigation started before the route manifest loads waits fo
   const manifestReleased = new Promise<void>((resolve) => {
     releaseManifest = resolve;
   });
-  await page.route(/vinext-app-route-manifest-[^/]*\.js$/, async (route) => {
+  await routeManifestChunk(page, async (route, response) => {
     manifestRequests.push(route.request().url());
     await manifestReleased;
-    await route.continue();
+    await route.fulfill({ response });
   });
   const photoRscRequests: { interceptionContext: string | null }[] = [];
   page.on("request", (request) => {
@@ -51,7 +74,7 @@ test("an intercepted navigation started before the route manifest loads waits fo
 test("a navigation falls back to a document navigation when the route manifest fails to load", async ({
   page,
 }) => {
-  await page.route(/vinext-app-route-manifest-[^/]*\.js$/, (route) => route.abort());
+  await routeManifestChunk(page, (route) => route.abort());
 
   await page.goto("/feed");
   await waitForAppRouterHydration(page);

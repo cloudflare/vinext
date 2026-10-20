@@ -21,7 +21,7 @@
  * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
  */
 
-import { describe, it, expect, afterAll } from "vite-plus/test";
+import { describe, it, expect, afterAll, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,6 +36,7 @@ import {
   ASSET_PREFIX_URL_DIR,
 } from "../packages/vinext/src/utils/asset-prefix.js";
 import { manifestFileWithAssetPrefix } from "../packages/vinext/src/utils/manifest-paths.js";
+import { createWorkerFileNames } from "../packages/vinext/src/build/client-build-config.js";
 import { resolveAppRouterAssetPath } from "../packages/vinext/src/server/prod-server.js";
 import { normalizeAssetPrefix } from "../packages/vinext/src/config/next-config.js";
 import { renderVinextBuiltUrl } from "../packages/vinext/src/utils/built-asset-url.js";
@@ -199,13 +200,13 @@ describe("renderVinextBuiltUrl", () => {
       expect(outputs).toEqual([
         expect.objectContaining({
           exports: "named",
-          entryFileNames: "_next/static/workers/[name]-[hash].js",
-          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+          entryFileNames: expect.any(Function),
+          chunkFileNames: expect.any(Function),
         }),
         expect.objectContaining({
           sourcemap: true,
-          entryFileNames: "_next/static/workers/[name]-[hash].js",
-          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+          entryFileNames: expect.any(Function),
+          chunkFileNames: expect.any(Function),
         }),
       ]);
 
@@ -233,10 +234,65 @@ describe("renderVinextBuiltUrl", () => {
 
     expect(config.worker.rolldownOptions.output).toEqual([
       expect.objectContaining({
-        entryFileNames: "_next/static/workers/[name]-[hash].js",
-        chunkFileNames: "_next/static/workers/[name]-[hash].js",
+        entryFileNames: expect.any(Function),
+        chunkFileNames: expect.any(Function),
       }),
     ]);
+
+    // Names are hash-only, but two workers whose code is identical still get
+    // distinct names (and source maps) from their module ids.
+    const [{ entryFileNames }] = config.worker.rolldownOptions.output as Array<{
+      entryFileNames: (chunk: { facadeModuleId: string | null }) => string;
+    }>;
+    const entryName = (id: string) => entryFileNames({ facadeModuleId: id });
+    const consentWorker = entryName(`${APP_FIXTURE_DIR}/app/consent-banner-worker.ts?worker_file`);
+    const otherWorker = entryName(`${APP_FIXTURE_DIR}/app/other-worker.ts?worker_file`);
+    expect(consentWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
+    expect(otherWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
+    expect(consentWorker).not.toBe(otherWorker);
+    // Root paths inside virtual ids (worker image metadata) don't change
+    // names when the app moves.
+    const imageMetaName = (root: string) =>
+      createWorkerFileNames("_next/static", root).entryFileNames({
+        facadeModuleId: `\0vinext-worker-image-meta:${root}/app/hero.png`,
+      });
+    expect(imageMetaName("/srv/a/app-root")).toBe(imageMetaName("/srv/b/app-root"));
+    expect(imageMetaName("/srv/a/app-root")).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0vinext-worker-image-meta:/srv/a/app-root/app/other.png",
+      }),
+    );
+    expect(imageMetaName("/srv/a/app-root")).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0vinext-worker-image-meta:app/hero.png",
+      }),
+    );
+    // Root paths elsewhere in virtual ids are kept verbatim.
+    expect(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0plugin:/srv/a/app-root/foo",
+      }),
+    ).not.toBe(
+      createWorkerFileNames("_next/static", "/srv/a/app-root").entryFileNames({
+        facadeModuleId: "\0plugin:<root>/foo",
+      }),
+    );
+    // Query variants of one file are distinct modules.
+    expect(entryName(`${APP_FIXTURE_DIR}/app/lazy.js?one`)).not.toBe(
+      entryName(`${APP_FIXTURE_DIR}/app/lazy.js?two`),
+    );
+
+    // Names don't depend on the directory the build was launched from.
+    const virtualWorker = entryName("\0virtual:lazy-worker");
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(path.dirname(APP_FIXTURE_DIR));
+    try {
+      expect(entryName("\0virtual:lazy-worker")).toBe(virtualWorker);
+      expect(entryName(`${APP_FIXTURE_DIR}/app/consent-banner-worker.ts?worker_file`)).toBe(
+        consentWorker,
+      );
+    } finally {
+      cwd.mockRestore();
+    }
   });
 });
 

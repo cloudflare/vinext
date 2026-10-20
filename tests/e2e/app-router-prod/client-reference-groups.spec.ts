@@ -4,17 +4,20 @@ import { waitForAppRouterHydration } from "../helpers";
 // Production client builds load client references that the same routes reach
 // through one route group chunk. /actions renders two such references.
 test("App Router loads a route's client references through one group chunk", async ({ page }) => {
-  const groupChunks: string[] = [];
+  // Client chunk file names are hash-only, so find the group by its contents.
+  const chunkUrls: string[] = [];
   page.on("response", (response) => {
-    if (response.url().includes("client-reference-group")) groupChunks.push(response.url());
+    if (new URL(response.url()).pathname.startsWith("/_next/static/chunks/")) {
+      chunkUrls.push(response.url());
+    }
   });
 
   await page.goto("/actions");
   await waitForAppRouterHydration(page);
 
-  await expect.poll(() => groupChunks.length).toBeGreaterThan(0);
+  await expect.poll(() => chunkUrls.length).toBeGreaterThan(0);
   const sources = await Promise.all(
-    groupChunks.map(async (url) => (await page.request.get(url)).text()),
+    chunkUrls.map(async (url) => (await page.request.get(url)).text()),
   );
   const groupWithBoth = sources.filter(
     (source) => source.includes("like-btn") && source.includes("send-btn"),

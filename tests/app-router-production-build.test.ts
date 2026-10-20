@@ -45,6 +45,24 @@ function listFiles(dir: string, prefix = ""): string[] {
 }
 
 /** Concatenate every `.js` file under `dir` (recursively) for substring checks. */
+// Client file names are hash-only; chunk names live in the client build manifest.
+function clientChunks(clientDir: string): { name: string; file: string }[] {
+  const manifest = JSON.parse(
+    fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf-8"),
+  ) as Record<string, { file: string; name?: string }>;
+  return Object.values(manifest).flatMap(({ name, file }) =>
+    name && file.endsWith(".js") ? [{ name, file: path.join(clientDir, file) }] : [],
+  );
+}
+
+function clientChunkNames(clientDir: string): string[] {
+  return clientChunks(clientDir).map((chunk) => chunk.name);
+}
+
+function clientChunkFileByName(clientDir: string, match: (name: string) => boolean) {
+  return clientChunks(clientDir).find((chunk) => match(chunk.name))?.file;
+}
+
 function readAllJs(dir: string): string {
   let out = "";
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
@@ -118,7 +136,8 @@ describe("App Router Production build", () => {
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
     // Client references that the same routes reach load through a route group
     // chunk (app/actions renders two).
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(true);
     const clientJs = readAllJs(path.join(outDir, "client"));
 
     // Ported from Next.js:
@@ -296,7 +315,8 @@ describe("App Router Production build", () => {
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
     expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   // Route grouping with another chunk group broke hydration in a prototype
@@ -323,8 +343,10 @@ describe("App Router Production build", () => {
     await builder.buildApp();
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
-    expect(clientAssets.some((f: string) => f.includes("user-react-dom"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames).toContain("user-react-dom");
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
   }, 30000);
 
   it("loads each client reference from its own chunk when a plugin adds a chunk group in outputOptions", async () => {
@@ -358,8 +380,96 @@ describe("App Router Production build", () => {
     await builder.buildApp();
 
     const clientAssets = fs.readdirSync(path.join(outDir, "client", "_next", "static", "chunks"));
-    expect(clientAssets.some((f: string) => f.includes("plugin-react-dom"))).toBe(true);
-    expect(clientAssets.some((f: string) => f.includes("client-reference-group"))).toBe(false);
+    expect(clientAssets.some((f: string) => f.endsWith(".js"))).toBe(true);
+    const chunkNames = clientChunkNames(path.join(outDir, "client"));
+    expect(chunkNames).toContain("plugin-react-dom");
+    expect(chunkNames.some((name) => name.includes("client-reference-group"))).toBe(false);
+  }, 30000);
+
+  it("keeps code-split chunks of separately bundled workers apart when their code is identical", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-worker-chunk-names-"));
+
+    try {
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"));
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "workers.tsx"),
+        `"use client";
+import { useEffect } from "react";
+export function Workers() {
+  useEffect(() => {
+    new Worker(new URL("./worker-a.ts", import.meta.url), { type: "module" });
+    new Worker(new URL("./worker-b.ts", import.meta.url), { type: "module" });
+  }, []);
+  return null;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `import { Workers } from "./workers";
+export default function Page() {
+  return <main><Workers /></main>;
+}
+`,
+      );
+      for (const id of ["a", "b"]) {
+        fs.writeFileSync(
+          path.join(tmpDir, "app", `worker-${id}.ts`),
+          `import(\`./lazy-${id}\`).then((m) => self.postMessage(m.value));\n`,
+        );
+        // Identical code, so a content hash alone can't tell the chunks apart.
+        fs.writeFileSync(
+          path.join(tmpDir, "app", `lazy-${id}.ts`),
+          `export const value = "same";\n`,
+        );
+      }
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        worker: { format: "es" },
+        build: { sourcemap: true },
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const workersDir = path.join(tmpDir, "dist", "client", "_next", "static", "workers");
+      const files = fs.readdirSync(workersDir);
+      // Hash-only names: no worker source names in public URLs.
+      expect(files.filter((f) => /worker-|lazy-/.test(f))).toEqual([]);
+      const mapSources = files
+        .filter((f) => f.endsWith(".js.map"))
+        .map(
+          (f) =>
+            (
+              JSON.parse(fs.readFileSync(path.join(workersDir, f), "utf-8")) as {
+                sources: string[];
+              }
+            ).sources,
+        );
+      for (const id of ["a", "b"]) {
+        expect(
+          mapSources.filter((sources) =>
+            sources.some((source) => source.endsWith(`lazy-${id}.ts`)),
+          ),
+        ).toHaveLength(1);
+      }
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   }, 30000);
 
   it("groups client references that import URLs without measuring them", async () => {
@@ -409,12 +519,11 @@ export default function Page() {
       // Loading the external URL module never settles, which hung the build.
       await builder.buildApp();
 
-      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
-      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
-      expect(group).toBeDefined();
-      expect(fs.readFileSync(path.join(chunksDir, group!), "utf-8")).toContain(
-        "https://esm.sh/canvas-confetti@1.9.3",
+      const group = clientChunkFileByName(path.join(tmpDir, "dist", "client"), (name) =>
+        name.includes("client-reference-group"),
       );
+      expect(group).toBeDefined();
+      expect(fs.readFileSync(group!, "utf-8")).toContain("https://esm.sh/canvas-confetti@1.9.3");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -502,10 +611,11 @@ export default function Page() {
       await builder.buildApp();
 
       const clientDir = path.join(tmpDir, "dist", "client");
-      const chunksDir = path.join(clientDir, "_next", "static", "chunks");
-      const group = fs.readdirSync(chunksDir).find((f) => f.includes("client-reference-group"));
+      const group = clientChunkFileByName(clientDir, (name) =>
+        name.includes("client-reference-group"),
+      );
       expect(group).toBeDefined();
-      const groupSource = fs.readFileSync(path.join(chunksDir, group!), "utf-8");
+      const groupSource = fs.readFileSync(group!, "utf-8");
       expect(groupSource).toContain("SMALL_MARKER");
       expect(groupSource).toContain("LOCAL_MARKER");
       expect(readAllJs(clientDir)).not.toContain("BIG_MARKER");
@@ -579,10 +689,8 @@ export default function Page() {
       // build, so the package's reference keeps its own chunk.
       await builder.buildApp();
 
-      const chunks = fs.readdirSync(
-        path.join(tmpDir, "dist", "client", "_next", "static", "chunks"),
-      );
-      expect(chunks.some((f: string) => f.startsWith("browser-"))).toBe(true);
+      const chunkNames = clientChunkNames(path.join(tmpDir, "dist", "client"));
+      expect(chunkNames.some((name) => name.startsWith("browser"))).toBe(true);
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -1273,6 +1381,67 @@ export default async function OpenGraphImage() {
     }
   }, 30000);
 
+  it("keeps server entries when top-level output names are client-only", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-top-level-client-names-"));
+
+    try {
+      fs.writeFileSync(path.join(tmpDir, "package.json"), `{"type":"module"}`);
+      fs.symlinkSync(
+        path.resolve(import.meta.dirname, "../node_modules"),
+        path.join(tmpDir, "node_modules"),
+        "junction",
+      );
+      fs.mkdirSync(path.join(tmpDir, "app"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "layout.tsx"),
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      fs.writeFileSync(
+        path.join(tmpDir, "app", "page.tsx"),
+        `export default function Page() {
+  return <p>Top-level names</p>;
+}
+`,
+      );
+
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        logLevel: "silent",
+        build: {
+          rolldownOptions: {
+            output: {
+              entryFileNames: "_next/static/chunks/[hash].js",
+              chunkFileNames: "_next/static/chunks/[hash].js",
+            },
+          },
+        },
+      });
+      await builder.buildApp();
+
+      const clientEntryManifest = JSON.parse(
+        fs.readFileSync(
+          path.join(tmpDir, "dist", "client", "vinext-client-entry-manifest.json"),
+          "utf-8",
+        ),
+      );
+      expect(clientEntryManifest.appBrowserEntry).toMatch(/^_next\/static\/chunks\/[\w-]{8}\.js$/);
+      expect(fs.existsSync(path.join(tmpDir, "dist", "server", "ssr", "index.js"))).toBe(true);
+
+      const rscEntryPath = path.join(tmpDir, "dist", "server", "index.js");
+      const rscModule = await import(pathToFileURL(rscEntryPath).href);
+      const response = await rscModule.default(new Request("http://localhost/"));
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("Top-level names");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 120000);
+
   it("emits and serves Pages client entry in hybrid builds with basePath + assetPrefix", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-hybrid-basepath-assetprefix-"));
 
@@ -1331,12 +1500,13 @@ export default async function OpenGraphImage() {
       // (cdn/_next/static/...) because assetPrefix is a path prefix.
       const pagesEntryPath = clientEntryManifest.pagesClientEntry;
       expect(pagesEntryPath.startsWith("cdn/_next/static/")).toBe(true);
-      expect(pagesEntryPath).toContain("vinext-client-entry");
+      expect(pagesEntryPath).toMatch(/^cdn\/_next\/static\/chunks\/[\w-]{8}\.js$/);
 
       // The App browser entry should also be under the assetPrefix path
       const appEntryPath = clientEntryManifest.appBrowserEntry;
       expect(appEntryPath.startsWith("cdn/_next/static/")).toBe(true);
-      expect(appEntryPath).toContain("index-");
+      expect(appEntryPath).toMatch(/^cdn\/_next\/static\/chunks\/[\w-]{8}\.js$/);
+      expect(appEntryPath).not.toBe(pagesEntryPath);
 
       // Import the RSC handler and verify the baked constants
       const rscEntryPath = path.join(tmpDir, "dist", "server", "index.js");

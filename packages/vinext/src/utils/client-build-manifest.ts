@@ -26,6 +26,8 @@ export function readClientBuildManifest(manifestPath: string): ClientBuildManife
       const assets = readStringArray(entry.assets);
       manifest[key] = {
         file: entry.file,
+        ...(typeof entry.src === "string" ? { src: entry.src } : {}),
+        ...(typeof entry.name === "string" ? { name: entry.name } : {}),
         ...(entry.isEntry === true ? { isEntry: true } : {}),
         ...(entry.isDynamicEntry === true ? { isDynamicEntry: true } : {}),
         ...(imports ? { imports } : {}),
@@ -61,20 +63,38 @@ function findEntryFileFromManifest(
   markers: string[],
   fallbackToFirstEntry: boolean,
 ): string | undefined {
-  const entries = Object.values(buildManifest).filter((entry) => entry.isEntry && entry.file);
+  const entries = Object.entries(buildManifest).filter(([, entry]) => entry.isEntry && entry.file);
   // A client build can emit more than one `isEntry` chunk (e.g. the client
   // entry plus instrumentation or middleware entries), and the manifest's
   // iteration order is not guaranteed to surface the client entry first.
   // Prefer marker order over manifest order so hybrid app+pages builds use the
   // Pages entry for the Pages renderer even if the App entry appears first.
-  for (const marker of markers) {
-    const markedEntry = entries.find((entry) => entry.file.includes(marker));
-    if (markedEntry) return manifestFileWithBase(markedEntry.file, assetBase);
+  // Match every entry's identity (exact chunk name, or the virtual entry as
+  // its manifest key or source id) before any output file: users can
+  // configure file names that no longer carry (or happen to contain another)
+  // entry's name, and add entries whose names merely contain a marker.
+  const matchers = [
+    (marker: string, key: string, entry: BuildManifestChunk) =>
+      entry.name === marker ||
+      isVirtualEntryId(key, marker) ||
+      (entry.src !== undefined && isVirtualEntryId(entry.src, marker)),
+    (marker: string, _key: string, entry: BuildManifestChunk) => entry.file.includes(marker),
+  ];
+  for (const matches of matchers) {
+    for (const marker of markers) {
+      const markedEntry = entries.find(([key, entry]) => matches(marker, key, entry));
+      if (markedEntry) return manifestFileWithBase(markedEntry[1].file, assetBase);
+    }
   }
 
-  const chosen = fallbackToFirstEntry ? entries[0] : undefined;
+  const chosen = fallbackToFirstEntry ? entries[0]?.[1] : undefined;
 
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
+}
+
+function isVirtualEntryId(id: string, marker: string): boolean {
+  const virtualId = `virtual:${marker}`;
+  return id === virtualId || id.endsWith(`/${virtualId}`);
 }
 
 function listFilesRecursive(dir: string): string[] {
@@ -99,6 +119,8 @@ function findClientEntryFileInAssetsDir(options: {
   const assetsDir = path.join(options.clientDir, options.assetsSubdir);
   if (!fs.existsSync(assetsDir)) return undefined;
 
+  // Fallback for builds without a client manifest. It matches entry names in
+  // file names, so it can't find entries under hash-only `chunkFileNames`.
   // Walk recursively: client JS entries are emitted under
   // `<assetsSubdir>/chunks/` (see createClientFileNameConfig), not directly in
   // `<assetsSubdir>`. A flat readdir here would miss the entry entirely.
