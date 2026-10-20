@@ -95,8 +95,20 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(response.status).toBe(200);
     const html = await response.text();
     expect(html).toContain('data-testid="dynamic-widget"');
+    // Client CSS file names are hash-only (`css/[hash].css`), so find the
+    // widget's stylesheet by content.
+    const clientDir = path.join(fixtureDir, "dist", "client");
+    const widgetCss = fs
+      .readdirSync(clientDir, { recursive: true, encoding: "utf8" })
+      .find(
+        (file) =>
+          file.endsWith(".css") &&
+          fs.readFileSync(path.join(clientDir, file), "utf8").includes("dynamic-widget"),
+      );
+    expect(widgetCss, "widget CSS missing from client output").toBeDefined();
+    const widgetHref = `/${path.basename(widgetCss!)}"`;
     const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter((tag) =>
-      /\/widget[^"]*\.css/.test(tag),
+      tag.includes(widgetHref),
     );
     // plugin-rsc links the same CSS (no nonce) when the widget renders; Fizz
     // keeps the first registration of an href, so the nonce-bearing
