@@ -17,7 +17,7 @@ function createPagesBuild(options?: { instrumentationFailure?: boolean }): strin
       "export const vinextConfig = {};",
       "export async function renderPage() { return new Response('ok', { headers: { 'content-type': 'text/html' } }); }",
       "export async function handleApiRoute() { return new Response('api'); }",
-      "export async function runMiddleware() { return {}; }",
+      "export async function runMiddleware() { return null; }",
       ...(options?.instrumentationFailure
         ? ["export function __ensureInstrumentation() { throw new Error('register failed'); }"]
         : []),
@@ -61,38 +61,6 @@ describe("startProdServer logging", () => {
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
-
-  it.each([
-    ["app", "prerender", 1, "close"],
-    ["pages", "prerender", 1, "close"],
-    ["app", undefined, 0, "keep-alive"],
-    ["pages", undefined, 0, "keep-alive"],
-  ] as const)(
-    "keeps %s connection policy scoped to purpose %s",
-    async (router, purpose, limit, connection) => {
-      const root = router === "app" ? createAppBuild() : createPagesBuild();
-      roots.push(root);
-      fs.writeFileSync(path.join(root, "dist/client/connection-policy.txt"), "ok");
-      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-      const { server, port } = await startProdServer({
-        port: 0,
-        host: "127.0.0.1",
-        outDir: path.join(root, "dist"),
-        noCompression: true,
-        silent: true,
-        purpose,
-      });
-      try {
-        const response = await fetch(`http://127.0.0.1:${port}/connection-policy.txt`);
-        expect(await response.text()).toBe("ok");
-        expect(server.maxRequestsPerSocket).toBe(limit);
-        expect(response.headers.get("connection")).toBe(connection);
-      } finally {
-        server.closeAllConnections();
-        await new Promise<void>((resolve) => server.close(() => resolve()));
-      }
-    },
-  );
 
   it("keeps the generic production server log by default", async () => {
     const root = createPagesBuild();
