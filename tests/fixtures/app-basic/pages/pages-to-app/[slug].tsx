@@ -29,6 +29,9 @@ export default function PagesToAppPage({ params }: Props) {
       <Link id="to-route-handler-link" href="/pages-to-app/hidden-endpoint">
         To Route Handler
       </Link>
+      <Link id="to-pages-api-link" href="/api/pages-hidden-endpoint">
+        To Pages API Route
+      </Link>
     </>
   );
 }

@@ -30,7 +30,6 @@ export type VinextLinkPrefetchRoute = {
  */
 export type VinextPagesLinkPrefetchRoute = {
   canPrefetchLoadingShell: false;
-  documentOnly?: boolean;
   isDynamic: boolean;
   patternParts: string[];
   requiresDynamicNavigationRequest?: boolean;

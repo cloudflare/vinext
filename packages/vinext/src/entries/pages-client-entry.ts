@@ -11,7 +11,6 @@
  */
 import { readFile } from "node:fs/promises";
 import {
-  apiRouter,
   pagesRouter,
   patternToNextFormat as pagesPatternToNextFormat,
   type Route,
@@ -85,17 +84,14 @@ export async function generateClientEntry(
   } = {},
 ): Promise<string> {
   const pageRoutes = await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
-  const apiRoutes = await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher);
 
   const appFilePath = findFileWithExts(pagesDir, "_app", fileMatcher);
   const errorFilePath = findFileWithExts(pagesDir, "_error", fileMatcher);
   const hasApp = appFilePath !== null;
   const appPrefetchRoutes = options.appPrefetchRoutes ?? [];
   const appRouteHandlers = options.appRouteHandlers ?? [];
-  const pagesPrefetchRoutes: VinextPagesLinkPrefetchRoute[] = [
-    ...pageRoutes.map(toPagesLinkPrefetchRoute),
-    ...apiRoutes.map((route) => ({ ...toPagesLinkPrefetchRoute(route), documentOnly: true })),
-  ];
+  const pagesPrefetchRoutes: VinextPagesLinkPrefetchRoute[] =
+    pageRoutes.map(toPagesLinkPrefetchRoute);
   const pagesSsgPatterns = (
     await Promise.all(
       pageRoutes.map(async (route) =>

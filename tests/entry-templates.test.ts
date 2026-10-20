@@ -2892,6 +2892,34 @@ describe("Pages Router entry template", () => {
     }
   });
 
+  it("leaves Pages API routes out of the client entry", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-api-client-entry-"));
+    const pagesDir = path.join(tmpDir, "pages");
+
+    try {
+      fs.mkdirSync(path.join(pagesDir, "api", "internal"), { recursive: true });
+      fs.writeFileSync(
+        path.join(pagesDir, "index.tsx"),
+        "export default function Page() { return null; }",
+      );
+      fs.writeFileSync(
+        path.join(pagesDir, "api", "internal", "operator-endpoint.ts"),
+        "export default function handler() {}",
+      );
+
+      const clientCode = await generateClientEntry(
+        pagesDir,
+        await resolveNextConfig({}),
+        createValidFileMatcher(),
+      );
+
+      expect(clientCode).toContain("window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = [");
+      expect(clientCode).not.toContain("operator-endpoint");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   // Ported from Next.js: test/e2e/no-page-props/no-page-props.test.ts
   // https://github.com/vercel/next.js/blob/v16.3.0-canary.80/test/e2e/no-page-props/no-page-props.test.ts
   it("uses the framework error page in server and client entries when _error is absent", async () => {

@@ -5300,23 +5300,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // route manifest so a user who lands on an App page can still
             // see Pages ownership from a `<Link>` click.
             const pagesPrefetchRoutes = hasPagesDir
-              ? [
-                  ...(await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)).map(
-                    (route) => ({
-                      canPrefetchLoadingShell: false as const,
-                      isDynamic: route.isDynamic,
-                      patternParts: [...route.patternParts],
-                    }),
-                  ),
-                  ...(await apiRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)).map(
-                    (route) => ({
-                      canPrefetchLoadingShell: false as const,
-                      documentOnly: true,
-                      isDynamic: route.isDynamic,
-                      patternParts: [...route.patternParts],
-                    }),
-                  ),
-                ]
+              ? (await pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher)).map(
+                  (route) => ({
+                    canPrefetchLoadingShell: false as const,
+                    isDynamic: route.isDynamic,
+                    patternParts: [...route.patternParts],
+                  }),
+                )
               : [];
             return generateBrowserEntry(
               graph.routes,

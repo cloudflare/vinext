@@ -19,6 +19,8 @@ export type HybridClientOwner = "app" | "document" | "pages";
 
 type HybridClientRouteMatches = {
   appMatch: VinextLinkPrefetchRoute | null;
+  /** A Pages Router URL under `/api`, which only API routes serve. */
+  pagesApiRequest: boolean;
   pagesMatch: VinextPagesLinkPrefetchRoute | null;
 };
 
@@ -34,14 +36,6 @@ declare global {
 const appRouteTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 const appRouteHandlerTrieCache = createRouteTrieCache<VinextLinkPrefetchRoute>();
 const pagesRouteTrieCache = createRouteTrieCache<VinextPagesLinkPrefetchRoute>();
-const pagesPageRoutesCache = new WeakMap<
-  VinextPagesLinkPrefetchRoute[],
-  VinextPagesLinkPrefetchRoute[]
->();
-const pagesApiRoutesCache = new WeakMap<
-  VinextPagesLinkPrefetchRoute[],
-  VinextPagesLinkPrefetchRoute[]
->();
 
 function patternFromParts(parts: readonly string[]): string {
   return "/" + parts.join("/");
@@ -78,19 +72,6 @@ export function resolveSameOriginAppPathname(href: string, basePath: string): st
   return resolveSameOriginPathnames(href, basePath)?.appPathname ?? null;
 }
 
-function selectPagesRoutes(
-  routes: VinextPagesLinkPrefetchRoute[],
-  apiRequest: boolean,
-): VinextPagesLinkPrefetchRoute[] {
-  const cache = apiRequest ? pagesApiRoutesCache : pagesPageRoutesCache;
-  let selected = cache.get(routes);
-  if (!selected) {
-    selected = routes.filter((route) => Boolean(route.documentOnly) === apiRequest);
-    cache.set(routes, selected);
-  }
-  return selected;
-}
-
 function patternPartRank(part: string | undefined): number {
   if (part === undefined) return 0;
   if (!part.startsWith(":")) return 1;
@@ -123,7 +104,7 @@ export function matchDirectHybridClientRoutes(
   basePath: string,
 ): HybridClientRouteMatches {
   const pathnames = resolveSameOriginPathnames(href, basePath);
-  if (pathnames === null) return { appMatch: null, pagesMatch: null };
+  if (pathnames === null) return { appMatch: null, pagesApiRequest: false, pagesMatch: null };
 
   const appRoutes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
   const appRouteHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
@@ -141,23 +122,29 @@ export function matchDirectHybridClientRoutes(
           )?.route ?? null)
         : null,
     ),
-    pagesMatch: pagesRoutes
-      ? (matchRouteWithTrie(
-          pathnames.pagesPathname,
-          selectPagesRoutes(pagesRoutes, pathnames.pagesApiRequest),
-          pagesRouteTrieCache,
-        )?.route ?? null)
-      : null,
+    pagesApiRequest: pathnames.pagesApiRequest,
+    pagesMatch:
+      pagesRoutes && !pathnames.pagesApiRequest
+        ? (matchRouteWithTrie(pathnames.pagesPathname, pagesRoutes, pagesRouteTrieCache)?.route ??
+          null)
+        : null,
   };
 }
 
 export function resolveMatchedHybridClientRouteOwner({
   appMatch,
+  pagesApiRequest,
   pagesMatch,
 }: HybridClientRouteMatches): HybridClientOwner | null {
+  // The client gets no Pages API route list. Pages serves nothing but API
+  // routes under /api, and only a static App route outranks every one of them,
+  // so any other owner is left to the document request.
+  if (pagesApiRequest) {
+    return appMatch?.isDynamic === false && !appMatch.documentOnly ? "app" : "document";
+  }
   if (appMatch === null && pagesMatch === null) return null;
   if (pagesMatch === null) return appMatch!.documentOnly ? "document" : "app";
-  if (appMatch === null) return pagesMatch.documentOnly ? "document" : "pages";
+  if (appMatch === null) return "pages";
 
   const owner = compareHybridRoutePatterns(
     patternFromParts(pagesMatch.patternParts),
@@ -165,8 +152,7 @@ export function resolveMatchedHybridClientRouteOwner({
     patternFromParts(appMatch.patternParts),
     appMatch.isDynamic,
   );
-  const winningRoute = owner === "app" ? appMatch : pagesMatch;
-  return winningRoute.documentOnly ? "document" : owner;
+  return owner === "app" && appMatch.documentOnly ? "document" : owner;
 }
 
 export function resolveDirectHybridClientRouteOwner(

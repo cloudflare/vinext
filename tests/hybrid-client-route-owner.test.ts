@@ -122,13 +122,14 @@ describe("resolveHybridClientRouteOwner", () => {
     installWindow({
       app: [],
       handlers: [routeHandler(["app-api"], false)],
-      pages: [{ ...pagesRoute(["api", ":slug"]), documentOnly: true }],
+      pages: [pagesRoute([":slug"])],
     });
 
     expect(resolveHybridClientRouteOwner("/app-api", "")).toBe("document");
     expect(resolveHybridClientRouteOwner("/app-api/", "")).toBe("document");
+    expect(resolveHybridClientRouteOwner("/api", "")).toBe("document");
     expect(resolveHybridClientRouteOwner("/api/test", "")).toBe("document");
-    expect(resolveHybridClientRouteOwner("/other", "")).toBeNull();
+    expect(resolveHybridClientRouteOwner("/other", "")).toBe("pages");
   });
 
   it("matches hashed route handler segments against the decoded URL", () => {
@@ -159,7 +160,7 @@ describe("resolveHybridClientRouteOwner", () => {
     installWindow({
       app: [appRoute([":locale", "api", "status"])],
       locales: ["en", "fr"],
-      pages: [{ ...pagesRoute(["api", "status"], false), documentOnly: true }],
+      pages: [],
     });
 
     expect(resolveHybridClientRouteOwner("/fr/api/status", "")).toBe("app");
@@ -178,10 +179,14 @@ describe("resolveHybridClientRouteOwner", () => {
 
   it("applies document ownership only after choosing the most specific route", () => {
     installWindow({
-      app: [appRoute(["api", "settings"], false)],
-      pages: [{ ...pagesRoute(["api", ":slug"]), documentOnly: true }],
+      app: [appRoute(["api", "settings"], false), appRoute(["api", ":slug"])],
+      handlers: [routeHandler(["api", "status"], false)],
+      pages: [],
     });
     expect(resolveHybridClientRouteOwner("/api/settings", "")).toBe("app");
+    expect(resolveHybridClientRouteOwner("/api/status", "")).toBe("document");
+    // A Pages API route may outrank the dynamic App route.
+    expect(resolveHybridClientRouteOwner("/api/other", "")).toBe("document");
 
     installWindow({
       app: [],
@@ -260,6 +265,31 @@ describe("resolveHybridClientRouteOwner", () => {
       });
 
       expect(resolveHybridClientRewriteHref("/source", "")).toBe("/app-destination");
+    },
+  );
+
+  it.each(["beforeFiles", "afterFiles", "fallback"] as const)(
+    "leaves %s rewrites of a Pages API URL that may be served to the document request",
+    (rewritePhase) => {
+      const rewrite = [{ source: "/api/test", destination: "/app-destination" }];
+      installWindow({
+        app: [appRoute(["app-destination"], false)],
+        pages: [],
+        rewrites: {
+          beforeFiles: rewritePhase === "beforeFiles" ? rewrite : [],
+          afterFiles: rewritePhase === "afterFiles" ? rewrite : [],
+          fallback: rewritePhase === "fallback" ? rewrite : [],
+        },
+      });
+
+      // Only beforeFiles rewrites run before Pages API routes on the server.
+      const rewritesFirst = rewritePhase === "beforeFiles";
+      expect(resolveHybridClientRouteOwner("/api/test", "")).toBe(
+        rewritesFirst ? "app" : "document",
+      );
+      expect(resolveHybridClientRewriteHref("/api/test", "")).toBe(
+        rewritesFirst ? "/app-destination" : null,
+      );
     },
   );
 
