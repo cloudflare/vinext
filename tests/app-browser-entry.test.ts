@@ -4429,8 +4429,9 @@ describe("app browser navigation controller", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      // Pre-paint effect is queued but not yet run (drainPrePaintEffects
-      // only fires inside NavigationCommitSignal's useLayoutEffect).
+      // The commit effect is queued but neither phase has run: its history
+      // write waits for NavigationHistoryCommit's insertion effect and its
+      // publish for NavigationCommitSignal's layout effect.
       expectCommitEffectNotRun(commitEffect);
 
       // The promise must not resolve — NavigationCommitSignal has not
