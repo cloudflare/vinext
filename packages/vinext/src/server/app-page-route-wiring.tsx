@@ -1273,16 +1273,24 @@ export function buildAppPageElements<
         <Children />
       </LayoutComponent>
     );
-    const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
-    const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
-    if (ancestorLoadingComponent && ancestorLoadingEntry) {
-      const AncestorLoadingComponent = ancestorLoadingComponent;
-      const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
-      layoutElement = (
-        <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
-          {layoutElement}
-        </Suspense>
-      );
+    // Loading-shell prefetches skip the route-entry per-segment wrappers
+    // below, so they still need a fallback on the layout entry itself. A
+    // real navigation already owns that ancestor boundary on the route
+    // entry. Wrapping the layout's Flight record too remounts a shared
+    // layout on every payload replace — including same-slug <Link>
+    // moves that should keep the layout mounted.
+    if (isPrefetchLoadingShell) {
+      const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
+      const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
+      if (ancestorLoadingComponent && ancestorLoadingEntry) {
+        const AncestorLoadingComponent = ancestorLoadingComponent;
+        const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
+        layoutElement = (
+          <Suspense key={loadingResetKey || routeResetKey} fallback={<AncestorLoadingComponent />}>
+            {layoutElement}
+          </Suspense>
+        );
+      }
     }
     elements[layoutEntry.id] = renderAfterAppDependencies(layoutElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
