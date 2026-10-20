@@ -18,6 +18,7 @@ import { parseCookies, type RequestContext } from "../../config/config-matchers.
 import { matchClientRewrite } from "../../client/client-rewrite-matcher.js";
 import type { ClientRewrite } from "../../client/client-rewrites.js";
 import { mergeRewriteQuery } from "../../utils/query.js";
+import { addClientConfigDefaultLocale } from "../client-locale.js";
 import {
   matchDirectHybridClientRoutes,
   resolveSameOriginAppPathname,
@@ -27,11 +28,21 @@ import {
 
 export type { HybridClientOwner } from "./hybrid-client-route-owner-direct.js";
 
+const TRAILING_SLASH = process.env.__VINEXT_TRAILING_SLASH === "true";
+const SKIP_PROXY_URL_NORMALIZE = process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE === "true";
+
+/**
+ * `isNavigationHref` marks the URL being navigated to, as opposed to a
+ * rewrite destination. Like the server, rules match the
+ * default-locale-prefixed pathname, and only the navigation URL keeps the
+ * locale root's trailing slash (`shouldRestoreLocaleRootTrailingSlash`).
+ */
 function resolveClientRewrite(
   href: string,
   basePath: string,
   rewrites: readonly ClientRewrite[],
   continueAfterMatch = false,
+  isNavigationHref = false,
 ): { kind: "document" } | { href: string; kind: "rewrite" } | null {
   const initialUrl = new URL(href, window.location.href);
   const basePathState = {
@@ -44,9 +55,18 @@ function resolveClientRewrite(
   let matched = false;
 
   for (const rewrite of rewrites) {
-    const pathname = resolveSameOriginAppPathname(currentHref, basePath);
-    if (pathname === null) return null;
+    const appPathname = resolveSameOriginAppPathname(currentHref, basePath);
+    if (appPathname === null) return null;
     const url = new URL(currentHref, window.location.href);
+    const pathname = addClientConfigDefaultLocale(
+      appPathname,
+      url.hostname,
+      isNavigationHref &&
+        !matched &&
+        TRAILING_SLASH &&
+        !SKIP_PROXY_URL_NORMALIZE &&
+        url.pathname.endsWith("/"),
+    );
     const headers = new Headers({ "user-agent": globalThis.navigator?.userAgent ?? "" });
     const context: RequestContext = {
       cookies: parseCookies(globalThis.document?.cookie ?? ""),
@@ -79,6 +99,7 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
     basePath,
     rewrites.beforeFiles,
     true,
+    true,
   );
   if (beforeFilesRewrite?.kind === "document") return null;
   if (beforeFilesRewrite?.kind === "rewrite") {
@@ -93,7 +114,13 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
     (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
   ) {
     for (const rewrite of rewrites.afterFiles) {
-      const afterFilesRewrite = resolveClientRewrite(currentHref, basePath, [rewrite]);
+      const afterFilesRewrite = resolveClientRewrite(
+        currentHref,
+        basePath,
+        [rewrite],
+        false,
+        !didRewrite,
+      );
       if (afterFilesRewrite?.kind === "document") return didRewrite ? currentHref : null;
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       currentHref = afterFilesRewrite.href;
@@ -105,7 +132,13 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
 
   if (matches.appMatch === null && matches.pagesMatch === null) {
     for (const rewrite of rewrites.fallback) {
-      const fallbackRewrite = resolveClientRewrite(currentHref, basePath, [rewrite]);
+      const fallbackRewrite = resolveClientRewrite(
+        currentHref,
+        basePath,
+        [rewrite],
+        false,
+        !didRewrite,
+      );
       if (fallbackRewrite?.kind === "document") return didRewrite ? currentHref : null;
       if (fallbackRewrite?.kind !== "rewrite") continue;
       currentHref = fallbackRewrite.href;
@@ -137,11 +170,21 @@ export function resolveHybridClientRouteOwner(
   if (typeof window === "undefined") return null;
 
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
+  let didRewrite = false;
 
   if (rewrites) {
-    const beforeFilesRewrite = resolveClientRewrite(href, basePath, rewrites.beforeFiles, true);
+    const beforeFilesRewrite = resolveClientRewrite(
+      href,
+      basePath,
+      rewrites.beforeFiles,
+      true,
+      true,
+    );
     if (beforeFilesRewrite?.kind === "document") return "document";
-    if (beforeFilesRewrite?.kind === "rewrite") href = beforeFilesRewrite.href;
+    if (beforeFilesRewrite?.kind === "rewrite") {
+      href = beforeFilesRewrite.href;
+      didRewrite = true;
+    }
   }
 
   let matches = matchDirectHybridClientRoutes(href, basePath);
@@ -152,10 +195,11 @@ export function resolveHybridClientRouteOwner(
     (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
   ) {
     for (const rewrite of rewrites.afterFiles) {
-      const afterFilesRewrite = resolveClientRewrite(href, basePath, [rewrite]);
+      const afterFilesRewrite = resolveClientRewrite(href, basePath, [rewrite], false, !didRewrite);
       if (afterFilesRewrite?.kind === "document") return "document";
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       href = afterFilesRewrite.href;
+      didRewrite = true;
       matches = matchDirectHybridClientRoutes(href, basePath);
       if (matches.appMatch || matches.pagesMatch) break;
     }
@@ -163,10 +207,11 @@ export function resolveHybridClientRouteOwner(
 
   if (rewrites && matches.appMatch === null && matches.pagesMatch === null) {
     for (const rewrite of rewrites.fallback) {
-      const fallbackRewrite = resolveClientRewrite(href, basePath, [rewrite]);
+      const fallbackRewrite = resolveClientRewrite(href, basePath, [rewrite], false, !didRewrite);
       if (fallbackRewrite?.kind === "document") return "document";
       if (fallbackRewrite?.kind !== "rewrite") continue;
       href = fallbackRewrite.href;
+      didRewrite = true;
       matches = matchDirectHybridClientRoutes(href, basePath);
       if (matches.appMatch || matches.pagesMatch) break;
     }

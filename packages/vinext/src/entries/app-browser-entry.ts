@@ -6,7 +6,7 @@ import type {
 import { toClientRewrites } from "../client/client-rewrites.js";
 import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
-import type { NextRewrite } from "../config/next-config.js";
+import type { NextI18nConfig, NextRewrite } from "../config/next-config.js";
 
 /**
  * Generate the virtual browser entry module.
@@ -24,13 +24,25 @@ export function generateBrowserEntry(
     beforeFiles: [],
     fallback: [],
   },
-  locales: readonly string[] = [],
+  i18n: Pick<NextI18nConfig, "defaultLocale" | "domains" | "locales"> | null | undefined = null,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
   const navigationRuntimePath = resolveClientRuntimeModule("navigation-runtime");
   const prefetchRoutes = toLinkPrefetchRoutes(routes);
   const clientRewrites = toClientRewrites(rewrites);
+  // Hybrid route ownership matches config rewrites against the
+  // default-locale-prefixed pathname, as the server does.
+  const configDefaultLocale = i18n
+    ? {
+        defaultLocale: i18n.defaultLocale,
+        domains: i18n.domains?.map(({ domain, defaultLocale, http }) => ({
+          domain,
+          defaultLocale,
+          ...(http ? { http } : {}),
+        })),
+      }
+    : undefined;
 
   return `import ${JSON.stringify(reactInstanceBootstrapPath)};
 import { registerNavigationRuntimeBootstrap } from ${JSON.stringify(navigationRuntimePath)};
@@ -42,7 +54,8 @@ window.__VINEXT_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(prefetchRoutes)};
 // the same — whichever entry runs first emits both globals).
 window.__VINEXT_PAGES_LINK_PREFETCH_ROUTES__ = ${JSON.stringify(pagesPrefetchRoutes)};
 window.__VINEXT_CLIENT_REWRITES__ = ${JSON.stringify(clientRewrites)};
-window.__VINEXT_LOCALES__ = ${JSON.stringify(locales)};
+window.__VINEXT_LOCALES__ = ${JSON.stringify(i18n?.locales ?? [])};
+window.__VINEXT_CONFIG_DEFAULT_LOCALE__ = ${JSON.stringify(configDefaultLocale)};
 registerNavigationRuntimeBootstrap({
     routeManifest: ${buildRouteManifestExpression(routeManifest)}
 });

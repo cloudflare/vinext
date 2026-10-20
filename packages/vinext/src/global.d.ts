@@ -158,6 +158,18 @@ declare global {
      */
     __VINEXT_DEFAULT_LOCALE__: string | undefined;
 
+    /**
+     * The configured i18n default locale and domains, set by the App Router
+     * browser entry (which has no `__NEXT_DATA__`) so hybrid route ownership
+     * can match config rewrites against the default-locale-prefixed pathname.
+     */
+    __VINEXT_CONFIG_DEFAULT_LOCALE__:
+      | {
+          defaultLocale: string;
+          domains?: Array<{ domain: string; defaultLocale: string; http?: true }>;
+        }
+      | undefined;
+
     // ── App Router ──────────────────────────────────────────────────────────
 
     /**

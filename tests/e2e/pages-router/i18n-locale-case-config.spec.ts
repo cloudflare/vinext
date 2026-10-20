@@ -157,4 +157,83 @@ test.describe("i18n config rules with mixed-case locale prefixes", () => {
       expect(await response.text(), pathname).toContain("about page");
     }
   });
+
+  // Next.js's processRoutes keeps only the localized variants of a redirect or
+  // rewrite, matched against the default-locale-prefixed path: the lookahead
+  // sees `api/hello` for `/api/hello` and `/sv/api/hello`, and other paths
+  // match once. Expected values were observed against real Next.js 16.2.7
+  // with the same rules (which 404s locale-prefixed API paths; vinext serves
+  // them, so only the absence of the redirect/rewrite is asserted there).
+  test("redirects() negative lookaheads skip the locale prefix", async ({ request }) => {
+    for (const [pathname, location] of [
+      ["/after-control", "/about?lookahead-redirect=1"],
+      ["/en/after-control", "/about?lookahead-redirect=1"],
+      ["/sv/after-control", "/sv/about?lookahead-redirect=1"],
+      ["/api/hello", undefined],
+      ["/en/api/hello", undefined],
+      ["/sv/api/hello", undefined],
+    ]) {
+      const response = await request.get(`${BASE_URL}${pathname}?lookahead-redirect=1`, {
+        maxRedirects: 0,
+      });
+      expect(response.headers()["location"], pathname).toBe(location);
+      if (location) expect(response.status(), pathname).toBe(307);
+      else expect(await response.text(), pathname).not.toContain("about page");
+    }
+    const api = await request.get(`${BASE_URL}/api/hello?lookahead-redirect=1`);
+    expect(await api.text()).toBe("hello from api");
+  });
+
+  test("rewrites() negative lookaheads skip the locale prefix", async ({ request }) => {
+    for (const [pathname, body] of [
+      ["/missing-page", "afterFiles page wins"],
+      ["/en/missing-page", "afterFiles page wins"],
+      ["/sv/missing-page", "afterFiles page wins"],
+      ["/about", "about page"],
+      ["/en/about", "about page"],
+      ["/sv/about", "about page"],
+      ["/api/hello", "hello from api"],
+    ]) {
+      const response = await request.get(`${BASE_URL}${pathname}?lookahead-rewrite=1`, {
+        maxRedirects: 0,
+      });
+      expect(response.status(), pathname).toBe(200);
+      expect(await response.text(), pathname).toContain(body);
+    }
+    for (const pathname of ["/en/api/hello", "/sv/api/hello"]) {
+      const response = await request.get(`${BASE_URL}${pathname}?lookahead-rewrite=1`, {
+        maxRedirects: 0,
+      });
+      expect(await response.text(), pathname).not.toContain("afterFiles page wins");
+    }
+  });
+
+  // Observed against real Next.js 16.2.7, like the file-looking source below.
+  test("rewrites() catch-alls do not match /_next paths", async ({ request }) => {
+    const asset = await request.get(`${BASE_URL}/_next/static/missing.js?catch-all-rewrite=1`, {
+      maxRedirects: 0,
+    });
+    expect(asset.status()).toBe(404);
+    expect(await asset.text()).not.toContain("about page");
+
+    const page = await request.get(`${BASE_URL}/sv/missing-page?catch-all-rewrite=1`, {
+      maxRedirects: 0,
+    });
+    expect(page.status()).toBe(200);
+    expect(await page.text()).toContain("about page");
+  });
+
+  test("rewrites() with a file-looking source match default-locale paths in dev", async ({
+    request,
+  }) => {
+    for (const pathname of [
+      "/locale-dotted.xml",
+      "/en/locale-dotted.xml",
+      "/sv/locale-dotted.xml",
+    ]) {
+      const response = await request.get(`${BASE_URL}${pathname}`, { maxRedirects: 0 });
+      expect(response.status(), pathname).toBe(200);
+      expect(await response.text(), pathname).toContain("about page");
+    }
+  });
 });

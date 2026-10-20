@@ -25100,15 +25100,13 @@ describe("Pages Router _next/data client navigation", () => {
         await import("../packages/vinext/src/config/config-matchers.js");
       const { toClientRedirects } =
         await import("../packages/vinext/src/client/client-redirects.js");
-      // Drop the unprefixed `/` fallback copy so only the locale-root variants
-      // can match.
       (win as any).__VINEXT_CLIENT_REDIRECTS__ = toClientRedirects(
         applyLocaleToRoutes(
           [{ source: "/", destination: "/somewhere/else/", permanent: false }],
           { locales: ["en", "fr"], defaultLocale: "en" },
           "redirect",
           { trailingSlash: true },
-        ).filter((redirect) => redirect.source !== "/"),
+        ),
       );
       (globalThis as any).window = win;
       vi.resetModules();
@@ -25193,67 +25191,60 @@ describe("Pages Router _next/data client navigation", () => {
     }
   });
 
-  it.each([
-    ["generated locale variants", true, "/final"],
-    ["only the unprefixed fallback copy", false, "/middle"],
-  ])(
-    "continues rewrite chains through locale variants, not fallback copies: %s",
-    async (_label, withLocaleVariants, expectedRoute) => {
-      // Like the server, the destination is re-prefixed with the default
-      // locale, so the localized variant continues the chain and the
-      // unprefixed fallback copy never matches.
-      const previousWindow = (globalThis as any).window;
-      const originalFetch = globalThis.fetch;
+  it("continues rewrite chains through generated locale variants", async () => {
+    // Like the server, the destination is re-prefixed with the default
+    // locale, so the localized variant continues the chain.
+    const previousWindow = (globalThis as any).window;
+    const originalFetch = globalThis.fetch;
 
-      const middleLoader = vi.fn(async () => makePageModule("middle"));
-      const finalLoader = vi.fn(async () => makePageModule("final"));
-      const { win } = createDataNavWindow({
-        locale: "en",
-        loaders: {
-          "/": vi.fn(async () => makePageModule("home")),
-          "/middle": middleLoader,
-          "/final": finalLoader,
-        },
-        ssgPatterns: [],
-        sspPatterns: [],
-      });
-      (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
-      (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
-      const { applyLocaleToRoutes } =
-        await import("../packages/vinext/src/config/config-matchers.js");
-      const ordinary = applyLocaleToRoutes<NextRewrite>(
-        [{ source: "/middle", destination: "/final" }],
-        { locales: ["en", "fr"], defaultLocale: "en" },
-        "rewrite",
-      ).filter((rule) => withLocaleVariants || rule.localeFallback);
-      (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
-        beforeFiles: [
-          { source: "/:locale/start", destination: "/middle", locale: false },
-          ...ordinary,
-        ],
-        afterFiles: [],
-        fallback: [],
-      });
-      (globalThis as any).window = win;
+    const middleLoader = vi.fn(async () => makePageModule("middle"));
+    const finalLoader = vi.fn(async () => makePageModule("final"));
+    const { win } = createDataNavWindow({
+      locale: "en",
+      loaders: {
+        "/": vi.fn(async () => makePageModule("home")),
+        "/middle": middleLoader,
+        "/final": finalLoader,
+      },
+      ssgPatterns: [],
+      sspPatterns: [],
+    });
+    (win as any).__VINEXT_LOCALES__ = ["en", "fr"];
+    (win as any).__VINEXT_DEFAULT_LOCALE__ = "en";
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const ordinary = applyLocaleToRoutes<NextRewrite>(
+      [{ source: "/middle", destination: "/final" }],
+      { locales: ["en", "fr"], defaultLocale: "en" },
+      "rewrite",
+    );
+    (win as any).__VINEXT_CLIENT_REWRITES__ = toClientRewrites({
+      beforeFiles: [
+        { source: "/:locale/start", destination: "/middle", locale: false },
+        ...ordinary,
+      ],
+      afterFiles: [],
+      fallback: [],
+    });
+    (globalThis as any).window = win;
+    vi.resetModules();
+
+    const fetchMock = vi.fn(async () => new Response("{}"));
+    globalThis.fetch = fetchMock as any;
+
+    try {
+      const Router = (await import("../packages/vinext/src/shims/router.js")).default;
+      expect(await Router.push("/start")).toBe(true);
+
+      expect(middleLoader).not.toHaveBeenCalled();
+      expect(finalLoader).toHaveBeenCalledTimes(1);
+    } finally {
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+      globalThis.fetch = originalFetch;
       vi.resetModules();
-
-      const fetchMock = vi.fn(async () => new Response("{}"));
-      globalThis.fetch = fetchMock as any;
-
-      try {
-        const Router = (await import("../packages/vinext/src/shims/router.js")).default;
-        expect(await Router.push("/start")).toBe(true);
-
-        expect(middleLoader).toHaveBeenCalledTimes(expectedRoute === "/middle" ? 1 : 0);
-        expect(finalLoader).toHaveBeenCalledTimes(expectedRoute === "/final" ? 1 : 0);
-      } finally {
-        if (previousWindow === undefined) delete (globalThis as any).window;
-        else (globalThis as any).window = previousWindow;
-        globalThis.fetch = originalFetch;
-        vi.resetModules();
-      }
-    },
-  );
+    }
+  });
 
   it("leaves params with literal suffixes to the full config matcher", async () => {
     const previousWindow = (globalThis as any).window;
@@ -32758,9 +32749,9 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
 
   it("matchRewrite without locale:false matches all locale-prefixed forms", async () => {
     // When the user writes a plain source like `/old` and i18n is configured,
-    // vinext emits a `/:nextInternalLocale(en|sv|nl)` variant so the rule
-    // matches any locale-prefixed URL while retaining the original `/old`
-    // source for default-locale requests that arrive without a prefix.
+    // vinext emits only a `/:nextInternalLocale(en|sv|nl)` variant, like
+    // Next.js's processRoutes. Callers splice the default locale into
+    // unprefixed requests first, so `/old` is matched as `/en/old`.
     const { matchRewrite, applyLocaleToRoutes } =
       await import("../packages/vinext/src/config/config-matchers.js");
     const i18n = { locales: ["en", "sv", "nl"], defaultLocale: "en" };
@@ -32770,8 +32761,9 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     expect(matchRewrite("/en/old", rules, emptyCtx)).toBe("/en/new");
     expect(matchRewrite("/sv/old", rules, emptyCtx)).toBe("/sv/new");
     expect(matchRewrite("/nl/old", rules, emptyCtx)).toBe("/nl/new");
-    // Unprefixed default-locale paths still match the original source.
-    expect(matchRewrite("/old", rules, emptyCtx)).toBe("/new");
+    // No unprefixed copy is kept (`/old` arrives here as `/en/old`).
+    expect(rules.map((rule) => rule.source)).toEqual(["/:nextInternalLocale(en|sv|nl)/old"]);
+    expect(matchRewrite("/old", rules, emptyCtx)).toBeNull();
   });
 
   it("matchRedirect uses the locale-static fast path for nextInternalLocale variants", async () => {
@@ -32796,10 +32788,9 @@ describe("locale: false on rewrites/redirects (issue #1336)", () => {
     expect(matchRedirect("/sv/security", rules, emptyCtx)?.destination).toBe("/sv/security-dest");
     // Default-locale-literal variant strips the prefix.
     expect(matchRedirect("/en/security", rules, emptyCtx)?.destination).toBe("/security-dest");
-    // No-locale-prefix path must not be matched by the mandatory variant —
-    // the original (unprefixed) source matches and produces the unprefixed
-    // destination.
-    expect(matchRedirect("/security", rules, emptyCtx)?.destination).toBe("/security-dest");
+    // No-locale-prefix path must not be matched by the mandatory variant, and
+    // no unprefixed copy is kept (callers match `/security` as `/en/security`).
+    expect(matchRedirect("/security", rules, emptyCtx)).toBeNull();
   });
 
   it("applyLocaleToRoutes preserves trailing slash when trailingSlash is true", async () => {

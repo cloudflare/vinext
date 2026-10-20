@@ -200,11 +200,6 @@ export type NextRedirect = {
    * `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:26`.
    */
   basePath?: false;
-  /**
-   * Internal: set by `applyLocaleToRoutes` on the unprefixed copy it keeps for
-   * matchers that see default-locale paths without the locale prefix.
-   */
-  localeFallback?: true;
 };
 
 export type NextRewrite = {
@@ -216,8 +211,6 @@ export type NextRewrite = {
   locale?: false;
   /** See {@link NextRedirect.basePath}. */
   basePath?: false;
-  /** See {@link NextRedirect.localeFallback}. */
-  localeFallback?: true;
 };
 
 export type NextHeader = {

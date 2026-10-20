@@ -74,7 +74,6 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
-  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
   type DomainLocale,
@@ -99,7 +98,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { formatUrlObject, formatUrlObjectWithValidation } from "./internal/format-url-object.js";
 import { normalizeRouterHref, resolvePagesRouterHref } from "./internal/normalize-router-href.js";
 import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-warning.js";
-import { getCurrentBrowserLocale } from "./client-locale.js";
+import { addClientConfigDefaultLocale, getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
 import { substituteDestinationParams } from "../config/destination-params.js";
@@ -1828,41 +1827,18 @@ function getClientConfigRouteContext(
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname: normalizeClientConfigLocalePathname(
+    // Match config rules against the locale-prefixed pathname, as the server
+    // does (`normalizeDefaultLocalePathname`) and as Next.js's client router
+    // does before resolving rewrites (`addLocale(asPath, locale)`). Without
+    // this, a default-locale URL such as `/about` misses `locale: false` rules
+    // written against `/:locale/about` and the localized rule variants.
+    pathname: addClientConfigDefaultLocale(
       pathname,
       parsed.hostname,
       isNavigationHref && shouldRestoreClientLocaleRootTrailingSlash(parsed.pathname),
     ),
     search: parsed.search,
   };
-}
-
-/**
- * Match config rules against the locale-prefixed pathname, as the server does
- * (`normalizeDefaultLocalePathname`) and as Next.js's client router does before
- * resolving rewrites (`addLocale(asPath, locale)`). Without this, a
- * default-locale URL such as `/about` misses `locale: false` rules written
- * against `/:locale/about` and matches unprefixed `locale: false` rules the
- * server never applies to it.
- */
-function normalizeClientConfigLocalePathname(
-  pathname: string,
-  hostname: string,
-  restoreRootTrailingSlash: boolean,
-): string {
-  const locales = window.__VINEXT_LOCALES__;
-  if (!locales?.length) return pathname;
-  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
-  if (getLocalePathPrefix(pathname, locales)) return pathname;
-
-  const defaultLocale =
-    detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
-    window.__VINEXT_DEFAULT_LOCALE__;
-  if (!defaultLocale) return pathname;
-  if (pathname === "/") {
-    return restoreRootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
-  }
-  return `/${defaultLocale}${pathname}`;
 }
 
 /**
@@ -1961,7 +1937,11 @@ function isExternalClientConfigUrl(url: string): boolean {
 /**
  * With i18n, rules match the locale-prefixed pathname, which reaches source
  * shapes the simple matcher does not handle exactly as matchConfigPattern
- * does. Leave those navigations to the full matcher.
+ * does. Leave those navigations to the full matcher. This is an accepted
+ * cost: without a sync rewrite result, `reusesMountedConfigRewritePage` never
+ * applies in i18n apps, so query-only `beforeFiles` rewrite navigations emit
+ * `beforeHistoryChange` when the navigation commits rather than in the click
+ * turn.
  */
 function usesFullClientConfigMatcher(): boolean {
   return Boolean(window.__VINEXT_LOCALES__?.length);
@@ -2072,7 +2052,6 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    if (rewrite.localeFallback) continue;
     const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;

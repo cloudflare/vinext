@@ -141,6 +141,7 @@ import {
   urlParserCreatesPagesDataPath,
 } from "./server/pages-data-route.js";
 import {
+  normalizeDefaultLocalePathname,
   resolvePagesI18nRequest,
   shouldRestoreLocaleRootTrailingSlash,
   stripI18nLocaleForApiRoute,
@@ -5275,7 +5276,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               graph.routeManifest,
               pagesPrefetchRoutes,
               nextConfig.rewrites,
-              nextConfig.i18n?.locales,
+              nextConfig.i18n,
             );
           }
           if (id === RESOLVED_APP_CAPABILITIES && hasAppDir) {
@@ -6901,12 +6902,20 @@ export const loadServerActionClient = ${
               // except rewrites and Pages routes that should stay in the pipeline.
               // This still lets dynamic routes like /catch-all/hello.world/ receive
               // the same Next.js redirects and route matching as extensionless URLs.
+              // Rules match the default-locale-prefixed pathname, as in the
+              // pipeline (a file-looking pathname is never the locale root).
+              const requestHostname = getUrlHostname(requestOrigin);
+              const rewriteMatchPathname = normalizeDefaultLocalePathname(
+                pathname,
+                nextConfig?.i18n,
+                { hostname: requestHostname },
+              );
               const filePathMatchesRewrite = [
                 ...(nextConfig?.rewrites.beforeFiles ?? []),
                 ...(nextConfig?.rewrites.afterFiles ?? []),
                 ...(nextConfig?.rewrites.fallback ?? []),
               ].some((rewrite) =>
-                matchesRewriteSource(pathname, rewrite, {
+                matchesRewriteSource(rewriteMatchPathname, rewrite, {
                   basePath: bp,
                   hadBasePath: true,
                 }),
@@ -6915,7 +6924,6 @@ export const loadServerActionClient = ${
               const isExistingPublicMutation =
                 req.method !== "GET" && req.method !== "HEAD" && isExistingDevPublicFile(pathname);
               let filePathMatchesPagesRoute = false;
-              const requestHostname = getUrlHostname(requestOrigin);
               if (isFilePathRequest && !filePathMatchesRewrite && !isDataReq) {
                 const [pageRoutes, apiRoutes] = await Promise.all([
                   pagesRouter(pagesDir, nextConfig?.pageExtensions, fileMatcher),

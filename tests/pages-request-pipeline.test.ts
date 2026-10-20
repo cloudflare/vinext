@@ -2989,3 +2989,105 @@ describe("wrapMiddlewareWithBasePath", () => {
     expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/dashboard");
   });
 });
+
+// Next.js's processRoutes (load-custom-routes.ts) keeps only the localized
+// variants of an i18n redirect/rewrite (`/${defaultLocale}` redirects plus
+// `/:nextInternalLocale(...)`), never the unprefixed source, and resolve-routes
+// matches them against the default-locale-prefixed pathname.
+describe("i18n config rule locale variants", () => {
+  const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+  const pageDeps = (overrides: Partial<PagesPipelineDeps>) =>
+    baseDeps({
+      i18nConfig,
+      matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false, pattern: "/page" } }),
+      renderPage: makeRenderPage(200, "page"),
+      ...overrides,
+    });
+
+  it.each([
+    ["/:path((?!api).*)", "/moved/:path", "/api/x", null],
+    ["/:path((?!api).*)", "/moved/:path", "/fr/api/x", null],
+    ["/:path((?!api).*)", "/moved/:path", "/about", "/moved/about"],
+    ["/:path((?!api).*)", "/moved/:path", "/fr/about", "/fr/moved/about"],
+    ["/((?!api).*)", "/moved", "/api/x", null],
+    ["/((?!api).*)", "/moved", "/fr/api/x", null],
+    ["/((?!api).*)", "/moved", "/about", "/moved"],
+    ["/((?!api).*)", "/moved", "/fr/about", "/fr/moved"],
+    ["/", "/home", "/", "/home"],
+    ["/", "/home", "/fr", "/fr/home"],
+  ])("redirect %s -> %s handles %s once", async (source, destination, pathname, location) => {
+    const configRedirects = applyLocaleToRoutes(
+      [{ source, destination, permanent: false }],
+      i18nConfig,
+      "redirect",
+    );
+    const result = await runPagesRequest(makeRequest(pathname), pageDeps({ configRedirects }));
+
+    // Unredirected `/api` paths continue to API routing.
+    const response = result.type === "response" ? result.response : null;
+    expect(response?.headers.get("location") ?? null).toBe(location);
+    if (location) expect(response?.status).toBe(307);
+    else expect(result.type).toBe(pathname.includes("/api/") ? "api" : "response");
+  });
+
+  it.each([
+    ["/api/x", "/api/x"],
+    // The API lookup URL drops the locale prefix.
+    ["/fr/api/x", "/api/x"],
+    ["/about", "/en/rewritten/about"],
+    ["/fr/about", "/fr/rewritten/about"],
+  ])("lookahead rewrite resolves %s to %s", async (pathname, resolvedUrl) => {
+    const beforeFiles = applyLocaleToRoutes(
+      [{ source: "/:path((?!api).*)", destination: "/rewritten/:path" }],
+      i18nConfig,
+      "rewrite",
+    );
+    const result = await runPagesRequest(
+      makeRequest(pathname),
+      baseDeps({
+        i18nConfig,
+        configRewrites: { beforeFiles, afterFiles: [], fallback: [] },
+      }),
+    );
+
+    if (result.type === "api") expect(result.apiUrl).toBe(resolvedUrl);
+    else if (result.type === "render") expect(result.resolvedUrl).toBe(resolvedUrl);
+    else throw new Error(`unexpected ${result.type} result`);
+  });
+
+  it("keeps /_next paths away from a localized catch-all rewrite", async () => {
+    const afterFiles = applyLocaleToRoutes(
+      [{ source: "/:path*", destination: "/catch/:path*" }],
+      i18nConfig,
+      "rewrite",
+    );
+    const result = await runPagesRequest(
+      makeRequest("/_next/static/x.js"),
+      pageDeps({
+        matchPageRoute: () => null,
+        renderPage: makeRenderPage(404, "custom page"),
+        configRewrites: { beforeFiles: [], afterFiles, fallback: [] },
+      }),
+    );
+
+    if (result.type !== "response") throw new Error("expected response");
+    expect(result.response.status).toBe(404);
+    expect(await result.response.text()).toBe("Not Found");
+  });
+
+  it.each([
+    ["/legacy", "/new"],
+    ["/en/legacy", "/new"],
+    ["/fr/legacy", null],
+  ])("matches a locale:false /en source for %s", async (pathname, location) => {
+    const configRedirects = applyLocaleToRoutes(
+      [{ source: "/en/legacy", destination: "/new", permanent: false, locale: false }],
+      i18nConfig,
+      "redirect",
+    );
+    const result = await runPagesRequest(makeRequest(pathname), pageDeps({ configRedirects }));
+
+    if (result.type !== "response") throw new Error("expected response");
+    expect(result.response.headers.get("location")).toBe(location);
+  });
+});

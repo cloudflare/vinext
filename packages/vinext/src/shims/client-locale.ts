@@ -34,3 +34,36 @@ export function getCurrentBrowserLocale({
     window.__VINEXT_DEFAULT_LOCALE__
   );
 }
+
+/**
+ * Splice the (domain-aware) default locale into an unprefixed pathname before
+ * matching config rules, like the server's `normalizeDefaultLocalePathname`
+ * (Next.js resolve-routes). Locale-prefixed, `/_next/` and `/__vinext/` paths
+ * are left as is. Pages documents carry the defaults in `__NEXT_DATA__`; App
+ * documents in `__VINEXT_CONFIG_DEFAULT_LOCALE__`.
+ */
+export function addClientConfigDefaultLocale(
+  pathname: string,
+  hostname: string | undefined,
+  restoreRootTrailingSlash: boolean,
+): string {
+  if (typeof window === "undefined") return pathname;
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  if (getLocalePathPrefix(pathname, locales)) return pathname;
+
+  const appDefaults = window.__VINEXT_CONFIG_DEFAULT_LOCALE__;
+  const domainLocales =
+    (window.__NEXT_DATA__ as { domainLocales?: readonly DomainLocale[] } | undefined)
+      ?.domainLocales ?? appDefaults?.domains;
+  const defaultLocale =
+    detectDomainLocale(domainLocales, hostname)?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__ ??
+    appDefaults?.defaultLocale;
+  if (!defaultLocale) return pathname;
+  if (pathname === "/") {
+    return restoreRootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
+  return `/${defaultLocale}${pathname}`;
+}

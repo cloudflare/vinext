@@ -50,11 +50,35 @@ export default {
         locale: false,
         missing: [{ type: "cookie", key: "session" }],
       },
+      // Used by E2E: pages-router/i18n-locale-case-config.spec.ts — like
+      // Next.js, only the localized variants exist, so the lookahead sees
+      // `api/hello` (never `sv/api/hello` or `en/api/hello`). Query-gated.
+      {
+        source: "/:path((?!api).*)",
+        has: [{ type: "query", key: "lookahead-redirect" }],
+        destination: "/about",
+        permanent: false,
+      },
     ];
   },
   async rewrites() {
     return {
       beforeFiles: [
+        // Used by E2E: pages-router/i18n-locale-case-config.spec.ts and
+        // pages-router-prod/i18n-client-config-locale.spec.ts — the rewrite
+        // counterpart of the `lookahead-redirect` rule, also excluding a real
+        // page so client navigation can be compared. Query-gated.
+        {
+          source: "/:path((?!api|about).*)",
+          has: [{ type: "query", key: "lookahead-rewrite" }],
+          destination: "/after-control",
+        },
+        // Used by E2E: pages-router/i18n-locale-case-config.spec.ts — a
+        // file-looking source reaches the dev pipeline for default-locale paths.
+        {
+          source: "/locale-dotted.xml",
+          destination: "/about",
+        },
         {
           source: "/locale-case-rewrite",
           destination: "/about",
@@ -109,6 +133,14 @@ export default {
         {
           source: "/after-control",
           destination: "/file.txt",
+        },
+        // Used by E2E: pages-router/i18n-locale-case-config.spec.ts — `/_next/`
+        // paths get no locale prefix, so a localized catch-all never matches
+        // them. Query-gated.
+        {
+          source: "/:path*",
+          has: [{ type: "query", key: "catch-all-rewrite" }],
+          destination: "/about",
         },
       ],
       fallback: [

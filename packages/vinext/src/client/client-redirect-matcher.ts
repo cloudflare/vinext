@@ -47,7 +47,6 @@ export function matchClientRedirect(
   basePathState: BasePathMatchState,
 ): RedirectMatch | null {
   for (const redirect of redirects) {
-    if (redirect.localeFallback) continue;
     const match = matchRedirect(pathname, getMatcherRule(redirect), context, basePathState);
     if (match === null) continue;
     return redirect.requiresServerEvaluation ? null : match;

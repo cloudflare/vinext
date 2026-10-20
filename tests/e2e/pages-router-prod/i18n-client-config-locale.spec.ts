@@ -113,6 +113,34 @@ test.describe("Pages i18n locale: false rewrites (production)", () => {
       expect(await page.evaluate(() => (window as any).__LOCALE_NAV_MARKER__)).toBe(true);
     });
   }
+
+  // Like Next.js, only the localized variant of `/:path((?!api|about).*)`
+  // exists, so default-locale paths are matched once as `/en/...`: `/about` is
+  // excluded and `/missing-page` is rewritten. The server used to also match
+  // an unprefixed copy (`en/about`), rewriting `/about` unlike the client.
+  for (const [target, heading] of [
+    ["/missing-page?lookahead-rewrite=1", "afterFiles page wins"],
+    ["/about?lookahead-rewrite=1", "about page"],
+  ]) {
+    test(`client navigation to the lookahead rewrite ${target} renders the server page`, async ({
+      page,
+      request,
+    }) => {
+      const html = await (await request.get(`${app.baseUrl}${target}`)).text();
+      expect(html).toContain(`<h1>${heading}</h1>`);
+
+      await page.goto(`${app.baseUrl}/`);
+      await waitForHydration(page);
+      await page.evaluate(() => {
+        (window as any).__LOCALE_NAV_MARKER__ = true;
+      });
+
+      await page.evaluate((href) => (window as any).next.router.push(href), target);
+      await expect(page.locator("h1")).toHaveText(heading);
+      expect(new URL(page.url()).pathname + new URL(page.url()).search).toBe(target);
+      expect(await page.evaluate(() => (window as any).__LOCALE_NAV_MARKER__)).toBe(true);
+    });
+  }
 });
 
 // The server matches each later rule in a rewrite chain against the

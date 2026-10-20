@@ -30,6 +30,7 @@ import {
   resolveHybridClientRewriteHref,
   resolveHybridClientRouteOwner,
 } from "../packages/vinext/src/shims/internal/hybrid-client-route-owner.js";
+import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 
 const APP_BASE = "http://localhost/";
 
@@ -207,6 +208,44 @@ describe("resolveHybridClientRouteOwner", () => {
     });
 
     expect(resolveHybridClientRouteOwner("/fr/source", "")).toBe("app");
+  });
+
+  // Like the server (Next.js resolve-routes), rules match default-locale paths
+  // with the locale prefixed: only the localized variants of an i18n rule
+  // exist, so the unprefixed `/source` is matched as `/en/source`.
+  it.each([
+    ["an App document", { __VINEXT_CONFIG_DEFAULT_LOCALE__: { defaultLocale: "en" } }],
+    ["a Pages document", { __VINEXT_DEFAULT_LOCALE__: "en" }],
+  ])("matches localized rewrites for default-locale paths on %s", (_label, globals) => {
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    const install = (source: string) => {
+      installWindow({
+        app: [],
+        locales: i18n.locales,
+        pages: [pagesRoute(["pages-destination"], false)],
+        rewrites: toClientRewrites({
+          afterFiles: [],
+          beforeFiles: applyLocaleToRoutes(
+            [{ source, destination: "/pages-destination" }],
+            i18n,
+            "rewrite",
+          ),
+          fallback: [],
+        }),
+      });
+      Object.assign((globalThis as any).window, globals);
+    };
+
+    install("/source");
+    expect(resolveHybridClientRouteOwner("/source", "")).toBe("pages");
+    expect(resolveHybridClientRewriteHref("/source", "")).toBe("/en/pages-destination");
+    expect(resolveHybridClientRewriteHref("/fr/source", "")).toBe("/fr/pages-destination");
+
+    // The lookahead sees `api/status`, not `en/api/status` or `fr/api/status`.
+    install("/:path((?!api).*)");
+    expect(resolveHybridClientRewriteHref("/api/status", "")).toBeNull();
+    expect(resolveHybridClientRewriteHref("/fr/api/status", "")).toBeNull();
+    expect(resolveHybridClientRewriteHref("/about", "")).toBe("/en/pages-destination?path=about");
   });
 
   it.each(["beforeFiles", "afterFiles", "fallback"] as const)(

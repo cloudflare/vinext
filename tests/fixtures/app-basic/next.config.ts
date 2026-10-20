@@ -162,11 +162,15 @@ const nextConfig: NextConfig = {
           destination: "/route-handler-cache-identity/:slug*",
         },
         // Encoded App Page params must have the same canonical representation
-        // on direct requests and config rewrites.
+        // on direct requests and config rewrites. In i18n mode the `/en/...`
+        // sources are `locale: false`: like Next.js, a localized source is
+        // prefixed again (`/:nextInternalLocale(en|fr)/en/...`) and never
+        // matches the default-locale request `/en/...`.
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity/rewrite/:path*"
             : "/encoded-parity/rewrite/:path*",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/encoded-parity/page/:path*",
         },
         // Used by E2E: app-router-encoded-basepath-i18n — every rewrite phase
@@ -176,18 +180,21 @@ const nextConfig: NextConfig = {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/before"
             : "/encoded-parity-pages/before",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/encoded-parity-café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/before-dynamic"
             : "/encoded-parity-pages/before-dynamic",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/pages-to-app/café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/before-capture"
             : "/encoded-parity-pages/before-capture",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
           destination: "/pages-to-app/:n",
         },
@@ -196,6 +203,7 @@ const nextConfig: NextConfig = {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/rewrite-about"
             : "/rewrite-about",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/about",
         },
         // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
@@ -265,18 +273,21 @@ const nextConfig: NextConfig = {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/after"
             : "/encoded-parity-pages/after",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/encoded-parity-café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/after-dynamic"
             : "/encoded-parity-pages/after-dynamic",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/pages-to-app/café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/after-capture"
             : "/encoded-parity-pages/after-capture",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
           destination: "/pages-to-app/:n",
         },
@@ -330,18 +341,21 @@ const nextConfig: NextConfig = {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/fallback"
             : "/encoded-parity-pages/fallback",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/encoded-parity-café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/fallback-dynamic"
             : "/encoded-parity-pages/fallback-dynamic",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           destination: "/pages-to-app/café",
         },
         {
           source: process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N
             ? "/en/encoded-parity-pages/fallback-capture"
             : "/encoded-parity-pages/fallback-capture",
+          ...(process.env.VINEXT_ENCODED_PATH_BASEPATH_I18N ? { locale: false as const } : {}),
           has: [{ type: "query", key: "n", value: "(?<n>.*)" }],
           destination: "/pages-to-app/:n",
         },

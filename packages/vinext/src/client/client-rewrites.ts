@@ -5,10 +5,7 @@ export type ClientHasCondition = Omit<HasCondition, "type"> & {
   type: "host" | "query";
 };
 
-type ClientRewriteFields = Pick<
-  NextRewrite,
-  "basePath" | "locale" | "localeFallback" | "source"
-> & {
+type ClientRewriteFields = Pick<NextRewrite, "basePath" | "locale" | "source"> & {
   has?: ClientHasCondition[];
 };
 
@@ -61,7 +58,6 @@ function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
     source: rewrite.source,
     has: clientHas?.length ? clientHas : undefined,
     locale: rewrite.locale,
-    localeFallback: rewrite.localeFallback,
     basePath: rewrite.basePath,
   };
 
@@ -81,7 +77,6 @@ function toClientRewrite(rewrite: NextRewrite): ClientRewrite {
     destination: rewrite.destination,
     has: common.has,
     locale: rewrite.locale,
-    localeFallback: rewrite.localeFallback,
     basePath: rewrite.basePath,
   };
 }

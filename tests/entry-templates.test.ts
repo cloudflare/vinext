@@ -202,9 +202,16 @@ describe("App Router generated manifest construction", () => {
   });
 
   it("embeds i18n locales used by hybrid App and Pages route ownership", () => {
-    const code = generateBrowserEntry([], null, [], undefined, ["en", "fr"]);
+    const code = generateBrowserEntry([], null, [], undefined, {
+      locales: ["en", "fr"],
+      defaultLocale: "en",
+      domains: [{ domain: "example.fr", defaultLocale: "fr", locales: ["fr"], http: true }],
+    });
 
     expect(code).toContain('window.__VINEXT_LOCALES__ = ["en","fr"]');
+    expect(code).toContain(
+      'window.__VINEXT_CONFIG_DEFAULT_LOCALE__ = {"defaultLocale":"en","domains":[{"domain":"example.fr","defaultLocale":"fr","http":true}]}',
+    );
   });
 
   it("embeds the Link auto-prefetch route manifest in the browser entry", () => {
