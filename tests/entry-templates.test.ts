@@ -674,29 +674,39 @@ describe("App Router generated manifest construction", () => {
     const PAGE = "export default function Page() {}\n";
     const HANDLER = "export function GET() {}\n";
 
+    const DEFAULT_FILES: Record<string, string> = {
+      "layout.tsx": PAGE,
+      "page.tsx": PAGE,
+      // No page route can match these handlers' URLs.
+      "api/status/route.ts": HANDLER,
+      "api/items/[id]/route.ts": HANDLER,
+      "feed.xml/route.ts": HANDLER,
+      "blog/[slug]/page.tsx": PAGE,
+      "blog/[slug]/comments/route.ts": HANDLER,
+      // A required catch-all needs at least one segment, so it never sees `/docs`.
+      "docs/route.ts": HANDLER,
+      "docs/[...path]/page.tsx": PAGE,
+      // Page routes that also match these handlers' URLs.
+      "blog/rss/route.ts": HANDLER,
+      "docs/search/route.ts": HANDLER,
+      "shop/[[...path]]/page.tsx": PAGE,
+      "shop/cart/route.ts": HANDLER,
+      // Page routes that win every URL they share with these handlers.
+      "pricing/enterprise/page.tsx": PAGE,
+      "pricing/[plan]/route.ts": HANDLER,
+      "reports/summary/page.tsx": PAGE,
+      "reports/[...rest]/route.ts": HANDLER,
+      // A layout only this omitted handler reaches.
+      "internal-status/layout.tsx": PAGE,
+      "internal-status/route.ts": HANDLER,
+    };
+
     async function withScannedApp(
       run: (graph: Awaited<ReturnType<typeof buildAppRouteGraph>>) => void,
+      files: Record<string, string> = DEFAULT_FILES,
     ): Promise<void> {
       const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-route-handler-exposure-"));
       const appDir = path.join(tmpDir, "app");
-      const files: Record<string, string> = {
-        "layout.tsx": PAGE,
-        "page.tsx": PAGE,
-        // No page route can match these handlers' URLs.
-        "api/status/route.ts": HANDLER,
-        "api/items/[id]/route.ts": HANDLER,
-        "feed.xml/route.ts": HANDLER,
-        "blog/[slug]/page.tsx": PAGE,
-        "blog/[slug]/comments/route.ts": HANDLER,
-        // A required catch-all needs at least one segment, so it never sees `/docs`.
-        "docs/route.ts": HANDLER,
-        "docs/[...path]/page.tsx": PAGE,
-        // Page routes that also match these handlers' URLs.
-        "blog/rss/route.ts": HANDLER,
-        "docs/search/route.ts": HANDLER,
-        "shop/[[...path]]/page.tsx": PAGE,
-        "shop/cart/route.ts": HANDLER,
-      };
       for (const [relativePath, source] of Object.entries(files)) {
         fs.mkdirSync(path.dirname(path.join(appDir, relativePath)), { recursive: true });
         fs.writeFileSync(path.join(appDir, relativePath), source);
@@ -714,7 +724,14 @@ describe("App Router generated manifest construction", () => {
       return JSON.parse(json!) as { documentOnly?: true; patternParts: string[] }[];
     }
 
-    const pagePatterns = ["/", "/blog/:slug", "/docs/:path+", "/shop/:path*"];
+    const pagePatterns = [
+      "/",
+      "/blog/:slug",
+      "/docs/:path+",
+      "/pricing/enterprise",
+      "/reports/summary",
+      "/shop/:path*",
+    ];
     const handlerPatterns = [
       "/api/items/:id",
       "/api/status",
@@ -723,6 +740,9 @@ describe("App Router generated manifest construction", () => {
       "/docs",
       "/docs/search",
       "/feed.xml",
+      "/internal-status",
+      "/pricing/:plan",
+      "/reports/:rest+",
       "/shop/cart",
     ];
     const toPattern = (route: { patternParts: readonly string[] }) =>
@@ -789,7 +809,44 @@ describe("App Router generated manifest construction", () => {
         expect(match("/shop/cart")).toBe("route:/shop/cart");
         expect(match("/api/status")).toBeNull();
         expect(match("/blog/hello/comments")).toBeNull();
+        expect(match("/pricing/enterprise")).toBe("route:/pricing/enterprise");
+        expect(match("/pricing/pro")).toBeNull();
+        expect(match("/reports/summary")).toBe("route:/reports/summary");
+        expect(match("/reports/2026/q3")).toBeNull();
       });
+    });
+
+    it("leaves out the layouts that only an omitted route handler reaches", async () => {
+      await withScannedApp((graph) => {
+        const moduleCode = generateBrowserRouteManifestModule(graph.routeManifest);
+        expect(moduleCode).not.toContain("internal-status");
+        expect(moduleCode).not.toContain(":plan");
+        expect(moduleCode).not.toContain(":rest");
+        const layouts = decodeBrowserRouteManifest(readBrowserRouteManifestModule(moduleCode))
+          .segmentGraph.layouts;
+        expect([...layouts.values()].map(toPattern)).toEqual(["/"]);
+      });
+    });
+
+    it("leaves out the root boundary that only an omitted route handler reaches", async () => {
+      await withScannedApp(
+        (graph) => {
+          const moduleCode = generateBrowserRouteManifestModule(graph.routeManifest);
+          expect(moduleCode).not.toContain("(ops)");
+          expect(moduleCode).not.toContain("ops-status");
+          const { rootBoundaries } = decodeBrowserRouteManifest(
+            readBrowserRouteManifestModule(moduleCode),
+          ).segmentGraph;
+          expect(rootBoundaries.size).toBe(1);
+          expect([...rootBoundaries.values()][0].treePath).toContain("(site)");
+        },
+        {
+          "(site)/layout.tsx": PAGE,
+          "(site)/page.tsx": PAGE,
+          "(ops)/layout.tsx": PAGE,
+          "(ops)/ops-status/route.ts": HANDLER,
+        },
+      );
     });
   });
 

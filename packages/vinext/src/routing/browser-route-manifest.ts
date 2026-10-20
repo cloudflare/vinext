@@ -103,12 +103,49 @@ function routePatternsOverlap(a: readonly string[], b: readonly string[], index 
 }
 
 /**
- * The browser only needs a route handler that another route could also match:
- * the optimistic route matcher must find the handler there instead of
- * predicting that route's shell. Any other handler URL matches nothing on the
- * client, and its non-Flight response already turns the navigation into a
- * document load, so shipping its path would only publish the app's API
- * surface (issue #3624).
+ * Route matching precedence of one pattern part, lower wins: the URL ending
+ * here, then a static, dynamic, catch-all and optional catch-all part.
+ */
+function patternPartRank(part: string | undefined): number {
+  if (part === undefined) return 0;
+  if (!part.startsWith(":")) return 1;
+  if (part.endsWith("+")) return 3;
+  if (part.endsWith("*")) return 4;
+  return 2;
+}
+
+/**
+ * Whether the route handler wins some URL pathname that the rendered route
+ * also matches. Both route matchers walk the parts in order and take the
+ * first part kind that differs by precedence, so the handler shadows the
+ * rendered route only when it wins at that part and the remainders overlap.
+ */
+function routeHandlerShadowsRoute(
+  handler: readonly string[],
+  rendered: readonly string[],
+  index = 0,
+): boolean {
+  const handlerPart = handler[index];
+  const renderedPart = rendered[index];
+  const handlerRank = patternPartRank(handlerPart);
+  const renderedRank = patternPartRank(renderedPart);
+  if (handlerRank !== renderedRank) {
+    return handlerRank < renderedRank && routePatternsOverlap(handler, rendered, index);
+  }
+  // Equal ends or catch-alls would be the same route shape, which cannot
+  // hold both a handler and a page.
+  if (handlerRank === 0 || handlerRank >= 3) return false;
+  if (handlerRank === 1 && handlerPart !== renderedPart) return false;
+  return routeHandlerShadowsRoute(handler, rendered, index + 1);
+}
+
+/**
+ * The browser only needs a route handler that wins a URL another route also
+ * matches: the optimistic route matcher must find the handler there instead
+ * of predicting that route's shell. Any other handler URL is either won by a
+ * rendered route or matches nothing on the client, and its non-Flight
+ * response already turns the navigation into a document load, so shipping
+ * its path would only publish the app's API surface (issue #3624).
  */
 function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifestRoute[] {
   const allRoutes = [...routes];
@@ -116,15 +153,61 @@ function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifes
   return allRoutes.filter(
     (route) =>
       route.routeHandlerId === null ||
-      renderedRoutes.some((other) => routePatternsOverlap(route.patternParts, other.patternParts)),
+      renderedRoutes.some((other) =>
+        routeHandlerShadowsRoute(route.patternParts, other.patternParts),
+      ),
   );
+}
+
+/**
+ * The graph records the browser receives. Layouts and root boundaries that
+ * only omitted route handlers reach would still name those handlers'
+ * directories, so they are left out too; records shared with a shipped route,
+ * slot binding or interception stay.
+ */
+function selectBrowserGraph(graph: RouteManifest["segmentGraph"]) {
+  const routes = selectBrowserRoutes(graph.routes.values());
+  const routeIds = new Set(routes.map((route) => route.id));
+  const omittedRoutes = [...graph.routes.values()].filter((route) => !routeIds.has(route.id));
+  const slotBindings = [...graph.slotBindings.values()].filter((binding) =>
+    routeIds.has(binding.routeId),
+  );
+
+  const keptLayoutIds = new Set([
+    ...routes.flatMap((route) => route.layoutIds),
+    ...slotBindings.flatMap((binding) => binding.ownerLayoutId ?? []),
+    ...[...graph.interceptions.values()].flatMap(
+      (interception) => interception.ownerLayoutId ?? [],
+    ),
+  ]);
+  const omittedLayoutIds = new Set(
+    omittedRoutes.flatMap((route) => route.layoutIds).filter((id) => !keptLayoutIds.has(id)),
+  );
+  const allLayouts = [...graph.layouts.values()];
+  const layouts = allLayouts.filter((layout) => !omittedLayoutIds.has(layout.id));
+  const omittedLayouts = allLayouts.filter((layout) => omittedLayoutIds.has(layout.id));
+
+  const keptRootBoundaryIds = new Set(
+    [...routes, ...layouts].flatMap((record) => record.rootBoundaryId ?? []),
+  );
+  const omittedRootBoundaryIds = new Set(
+    [...omittedRoutes, ...omittedLayouts]
+      .flatMap((record) => record.rootBoundaryId ?? [])
+      .filter((id) => !keptRootBoundaryIds.has(id)),
+  );
+  const rootBoundaries = [...graph.rootBoundaries.values()].filter(
+    (rootBoundary) => !omittedRootBoundaryIds.has(rootBoundary.id),
+  );
+
+  return { routes, layouts, slotBindings, rootBoundaries };
 }
 
 export function toBrowserRouteManifestWire(routeManifest: RouteManifest): BrowserRouteManifestWire {
   const graph = routeManifest.segmentGraph;
+  const browserGraph = selectBrowserGraph(graph);
   return {
     graphVersion: routeManifest.graphVersion,
-    routes: selectBrowserRoutes(graph.routes.values()).map((route) => ({
+    routes: browserGraph.routes.map((route) => ({
       ...(route.id === createRouteIdFromPatternParts(route.patternParts) ? {} : { id: route.id }),
       patternParts: route.patternParts,
       isDynamic: route.isDynamic,
@@ -134,12 +217,12 @@ export function toBrowserRouteManifestWire(routeManifest: RouteManifest): Browse
       layoutIds: route.layoutIds,
       slotIds: route.slotIds,
     })),
-    layouts: Array.from(graph.layouts.values(), (layout) => ({
+    layouts: browserGraph.layouts.map((layout) => ({
       id: layout.id,
       patternParts: layout.patternParts,
       rootBoundaryId: layout.rootBoundaryId,
     })),
-    slotBindings: Array.from(graph.slotBindings.values(), (binding) => ({
+    slotBindings: browserGraph.slotBindings.map((binding) => ({
       id: binding.id,
       routeId: binding.routeId,
       slotId: binding.slotId,
@@ -161,7 +244,7 @@ export function toBrowserRouteManifestWire(routeManifest: RouteManifest): Browse
       slotId,
       interceptions.map((interception) => interception.id),
     ]),
-    rootBoundaries: Array.from(graph.rootBoundaries.values(), (rootBoundary) => ({
+    rootBoundaries: browserGraph.rootBoundaries.map((rootBoundary) => ({
       id: rootBoundary.id,
       treePath: rootBoundary.treePath,
     })),
