@@ -7,6 +7,7 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "./app-route-graph.js";
+import { buildOptimisticRouteTrie, matchOptimisticRouteTrie } from "./optimistic-route-trie.js";
 
 export type BrowserRouteManifestRoute = Pick<
   RouteManifestRoute,
@@ -81,27 +82,6 @@ function createRouteIdFromPatternParts(patternParts: readonly string[]): string 
   return `route:/${patternParts.join("/")}`;
 }
 
-function isParamPart(part: string | undefined, suffix: "" | "+" | "*"): boolean {
-  return part !== undefined && part.startsWith(":") && (suffix === "" || part.endsWith(suffix));
-}
-
-/**
- * Whether some URL pathname matches both route patterns. A catch-all is always
- * the last part and takes whatever the other pattern's remainder produces: a
- * required catch-all needs at least one more segment, an optional one also
- * accepts none.
- */
-function routePatternsOverlap(a: readonly string[], b: readonly string[], index = 0): boolean {
-  const partA = a[index];
-  const partB = b[index];
-  if (isParamPart(partA, "*") || isParamPart(partB, "*")) return true;
-  if (isParamPart(partA, "+")) return partB !== undefined;
-  if (isParamPart(partB, "+")) return partA !== undefined;
-  if (partA === undefined || partB === undefined) return partA === partB;
-  if (!isParamPart(partA, "") && !isParamPart(partB, "") && partA !== partB) return false;
-  return routePatternsOverlap(a, b, index + 1);
-}
-
 /**
  * Route matching precedence of one pattern part, lower wins: the URL ending
  * here, then a static, dynamic, catch-all and optional catch-all part.
@@ -115,88 +95,84 @@ function patternPartRank(part: string | undefined): number {
 }
 
 /**
- * Whether the route handler wins some URL pathname that the rendered route
- * also matches. Both route matchers walk the parts in order and take the
- * first part kind that differs by precedence, so the handler shadows the
- * rendered route only when it wins at that part and the remainders overlap.
+ * Whether the router sends a URL pathname that both patterns match to the
+ * route handler: it wins at the first part whose kind differs. Two patterns
+ * that never differ would be the same route shape, which cannot hold both a
+ * handler and a page.
  */
-function routeHandlerShadowsRoute(
-  handler: readonly string[],
-  rendered: readonly string[],
-  index = 0,
-): boolean {
-  const handlerPart = handler[index];
-  const renderedPart = rendered[index];
-  const handlerRank = patternPartRank(handlerPart);
-  const renderedRank = patternPartRank(renderedPart);
-  if (handlerRank !== renderedRank) {
-    return handlerRank < renderedRank && routePatternsOverlap(handler, rendered, index);
+function routeHandlerOutranks(handler: readonly string[], rendered: readonly string[]): boolean {
+  for (let index = 0; ; index++) {
+    const handlerRank = patternPartRank(handler[index]);
+    const renderedRank = patternPartRank(rendered[index]);
+    if (handlerRank !== renderedRank) return handlerRank < renderedRank;
+    if (handlerRank === 0 || handlerRank >= 3) return false;
   }
-  // Equal ends or catch-alls would be the same route shape, which cannot
-  // hold both a handler and a page.
-  if (handlerRank === 0 || handlerRank >= 3) return false;
-  if (handlerRank === 1 && handlerPart !== renderedPart) return false;
-  return routeHandlerShadowsRoute(handler, rendered, index + 1);
+}
+
+// No static route segment, a directory name, can contain "/".
+const PROBE_SEGMENT = "/";
+
+/**
+ * URL pathnames that stand for every URL the handler pattern matches on the
+ * optimistic trie: a param value that equals a static segment descends into
+ * that static subtree, whose routes outrank the handler there.
+ */
+function routeHandlerProbes(handler: readonly string[]): string[][] {
+  const parts = handler.map((part) => (part.startsWith(":") ? PROBE_SEGMENT : part));
+  return handler.at(-1)?.endsWith("*") ? [parts.slice(0, -1), parts] : [parts];
 }
 
 /**
- * The browser only needs a route handler that wins a URL another route also
- * matches: the optimistic route matcher must find the handler there instead
- * of predicting that route's shell. Any other handler URL is either won by a
- * rendered route or matches nothing on the client, and its non-Flight
- * response already turns the navigation into a document load, so shipping
- * its path would only publish the app's API surface (issue #3624).
+ * The browser only needs a route handler where the optimistic route trie of
+ * the rendered routes would predict a route the handler outranks: the matcher
+ * must find the handler there instead of rendering that route's shell. Any
+ * other handler URL matches no rendered route on the client, or one the
+ * router prefers, and its non-Flight response already turns the navigation
+ * into a document load, so shipping its path would only publish the app's
+ * API surface (issue #3624).
  */
 function selectBrowserRoutes(routes: Iterable<RouteManifestRoute>): RouteManifestRoute[] {
   const allRoutes = [...routes];
-  const renderedRoutes = allRoutes.filter((route) => route.routeHandlerId === null);
+  const renderedTrie = buildOptimisticRouteTrie(
+    allRoutes.filter((route) => route.routeHandlerId === null),
+  );
   return allRoutes.filter(
     (route) =>
       route.routeHandlerId === null ||
-      renderedRoutes.some((other) =>
-        routeHandlerShadowsRoute(route.patternParts, other.patternParts),
-      ),
+      routeHandlerProbes(route.patternParts).some((urlParts) => {
+        const rendered = matchOptimisticRouteTrie(renderedTrie, urlParts)?.route;
+        return (
+          rendered !== undefined && routeHandlerOutranks(route.patternParts, rendered.patternParts)
+        );
+      }),
   );
 }
 
 /**
- * The graph records the browser receives. Layouts and root boundaries that
- * only omitted route handlers reach would still name those handlers'
- * directories, so they are left out too; records shared with a shipped route,
- * slot binding or interception stay.
+ * The graph records the browser receives: the shipped routes, their slot
+ * bindings, and the layouts and root boundaries those and the interceptions
+ * reach. Records only omitted route handlers reach would still name those
+ * handlers' directories, and the browser reads no others.
  */
 function selectBrowserGraph(graph: RouteManifest["segmentGraph"]) {
   const routes = selectBrowserRoutes(graph.routes.values());
   const routeIds = new Set(routes.map((route) => route.id));
-  const omittedRoutes = [...graph.routes.values()].filter((route) => !routeIds.has(route.id));
   const slotBindings = [...graph.slotBindings.values()].filter((binding) =>
     routeIds.has(binding.routeId),
   );
-
-  const keptLayoutIds = new Set([
+  const layoutIds = new Set([
     ...routes.flatMap((route) => route.layoutIds),
     ...slotBindings.flatMap((binding) => binding.ownerLayoutId ?? []),
     ...[...graph.interceptions.values()].flatMap(
       (interception) => interception.ownerLayoutId ?? [],
     ),
   ]);
-  const omittedLayoutIds = new Set(
-    omittedRoutes.flatMap((route) => route.layoutIds).filter((id) => !keptLayoutIds.has(id)),
-  );
-  const allLayouts = [...graph.layouts.values()];
-  const layouts = allLayouts.filter((layout) => !omittedLayoutIds.has(layout.id));
-  const omittedLayouts = allLayouts.filter((layout) => omittedLayoutIds.has(layout.id));
-
-  const keptRootBoundaryIds = new Set(
+  const layouts = [...graph.layouts.values()].filter((layout) => layoutIds.has(layout.id));
+  const rootBoundaryIds = new Set(
     [...routes, ...layouts].flatMap((record) => record.rootBoundaryId ?? []),
   );
-  const omittedRootBoundaryIds = new Set(
-    [...omittedRoutes, ...omittedLayouts]
-      .flatMap((record) => record.rootBoundaryId ?? [])
-      .filter((id) => !keptRootBoundaryIds.has(id)),
-  );
-  const rootBoundaries = [...graph.rootBoundaries.values()].filter(
-    (rootBoundary) => !omittedRootBoundaryIds.has(rootBoundary.id),
+  const rootBoundaries = [...graph.rootBoundaries.values()].filter((rootBoundary) =>
+    rootBoundaryIds.has(rootBoundary.id),
   );
 
   return { routes, layouts, slotBindings, rootBoundaries };

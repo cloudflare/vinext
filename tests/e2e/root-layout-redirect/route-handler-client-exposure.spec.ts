@@ -1,6 +1,6 @@
 /**
  * Issue #3624: an App Router-only client only gets the route handler paths it
- * needs to tell a handler apart from a page route that also matches its URL.
+ * needs to tell a handler apart from a page route it outranks for some URL.
  * Like Next.js, it learns any other handler URL from the non-Flight response:
  * a prefetch miss, then a document navigation. Link prefetching and optimistic
  * route shells are production-only, and a hybrid app keeps every handler for
@@ -29,9 +29,7 @@ async function isSameDocument(page: Page): Promise<boolean> {
   );
 }
 
-test("the client only receives route handler paths that a page route also matches", async ({
-  page,
-}) => {
+test("the client only receives route handler paths that outrank a page route", async ({ page }) => {
   const scripts: string[] = [];
   page.on("response", async (response) => {
     if (!(response.headers()["content-type"] ?? "").includes("javascript")) return;

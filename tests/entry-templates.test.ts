@@ -696,8 +696,14 @@ describe("App Router generated manifest construction", () => {
       "pricing/[plan]/route.ts": HANDLER,
       "reports/summary/page.tsx": PAGE,
       "reports/[...rest]/route.ts": HANDLER,
-      // A layout only this omitted handler reaches.
+      // A static page subtree the optimistic trie never leaves, so the
+      // catch-all page beside it never sees this handler's URL.
+      "docs/guides/intro/page.tsx": PAGE,
+      "docs/guides/private/route.ts": HANDLER,
+      // Layouts only this omitted handler reaches, including a slot-local one.
       "internal-status/layout.tsx": PAGE,
+      "internal-status/@modal/layout.tsx": PAGE,
+      "internal-status/@modal/default.tsx": PAGE,
       "internal-status/route.ts": HANDLER,
     };
 
@@ -728,6 +734,7 @@ describe("App Router generated manifest construction", () => {
       "/",
       "/blog/:slug",
       "/docs/:path+",
+      "/docs/guides/intro",
       "/pricing/enterprise",
       "/reports/summary",
       "/shop/:path*",
@@ -738,6 +745,7 @@ describe("App Router generated manifest construction", () => {
       "/blog/:slug/comments",
       "/blog/rss",
       "/docs",
+      "/docs/guides/private",
       "/docs/search",
       "/feed.xml",
       "/internal-status",
@@ -772,7 +780,7 @@ describe("App Router generated manifest construction", () => {
       });
     });
 
-    it("ships only the route handlers that a page route could shadow in the route manifest", async () => {
+    it("ships only the route handlers the optimistic route trie needs in the route manifest", async () => {
       await withScannedApp((graph) => {
         const browserRouteManifest = decodeBrowserRouteManifest(
           readBrowserRouteManifestModule(generateBrowserRouteManifestModule(graph.routeManifest)),
@@ -813,6 +821,8 @@ describe("App Router generated manifest construction", () => {
         expect(match("/pricing/pro")).toBeNull();
         expect(match("/reports/summary")).toBe("route:/reports/summary");
         expect(match("/reports/2026/q3")).toBeNull();
+        expect(match("/docs/guides/intro")).toBe("route:/docs/guides/intro");
+        expect(match("/docs/guides/private")).toBeNull();
       });
     });
 
@@ -822,6 +832,7 @@ describe("App Router generated manifest construction", () => {
         expect(moduleCode).not.toContain("internal-status");
         expect(moduleCode).not.toContain(":plan");
         expect(moduleCode).not.toContain(":rest");
+        expect(moduleCode).not.toContain("private");
         const layouts = decodeBrowserRouteManifest(readBrowserRouteManifestModule(moduleCode))
           .segmentGraph.layouts;
         expect([...layouts.values()].map(toPattern)).toEqual(["/"]);

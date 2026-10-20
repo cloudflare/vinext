@@ -1,7 +1,13 @@
 import { createElement, isValidElement, Suspense } from "react";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
-import { buildParams, decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import { decodeMatchedParams, splitPathnameForRouteMatch } from "../routing/utils.js";
+import {
+  buildOptimisticRouteTrie,
+  matchOptimisticRouteTrie,
+  type OptimisticRouteTrieMatch,
+  type OptimisticRouteTrieNode as TrieNode,
+} from "../routing/optimistic-route-trie.js";
 import type {
   BrowserRouteManifest,
   BrowserRouteManifestRoute,
@@ -25,18 +31,8 @@ import {
   resolveAppPageSemanticSegmentStateKey,
 } from "./app-page-segment-state.js";
 
-type OptimisticRouteTrieNode = {
-  catchAllChild: { paramName: string; route: BrowserRouteManifestRoute } | null;
-  dynamicChild: { node: OptimisticRouteTrieNode; paramName: string } | null;
-  optionalCatchAllChild: { paramName: string; route: BrowserRouteManifestRoute } | null;
-  route: BrowserRouteManifestRoute | null;
-  staticChildren: Map<string, OptimisticRouteTrieNode>;
-};
-
-type OptimisticRouteMatch = {
-  params: Record<string, string | string[]>;
-  route: BrowserRouteManifestRoute;
-};
+type OptimisticRouteTrieNode = TrieNode<BrowserRouteManifestRoute>;
+type OptimisticRouteMatch = OptimisticRouteTrieMatch<BrowserRouteManifestRoute>;
 
 export type OptimisticRouteTemplate = {
   elements: AppElements;
@@ -76,69 +72,16 @@ export function getOptimisticPrefetchSourceKey(options: {
   return `${options.cacheKey}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
 }
 
-function createNode(): OptimisticRouteTrieNode {
-  return {
-    catchAllChild: null,
-    dynamicChild: null,
-    optionalCatchAllChild: null,
-    route: null,
-    staticChildren: new Map(),
-  };
-}
-
 function buildRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieNode {
-  const root = createNode();
-
-  for (const route of routeManifest.segmentGraph.routes.values()) {
-    let node = root;
-    const parts = route.patternParts;
-
-    if (parts.length === 0) {
-      node.route ??= route;
-      continue;
-    }
-
-    for (const [index, part] of parts.entries()) {
-      const isTerminal = index === parts.length - 1;
-      if (part.startsWith(":") && part.endsWith("+")) {
-        if (isTerminal && node.catchAllChild === null) {
-          node.catchAllChild = { paramName: part.slice(1, -1), route };
-        }
-        break;
-      }
-
-      if (part.startsWith(":") && part.endsWith("*")) {
-        if (isTerminal && node.optionalCatchAllChild === null) {
-          node.optionalCatchAllChild = { paramName: part.slice(1, -1), route };
-        }
-        break;
-      }
-
-      if (part.startsWith(":")) {
-        const paramName = part.slice(1);
-        if (node.dynamicChild === null) {
-          node.dynamicChild = { node: createNode(), paramName };
-        } else if (node.dynamicChild.paramName !== paramName && import.meta.env.DEV) {
+  return buildOptimisticRouteTrie(
+    routeManifest.segmentGraph.routes.values(),
+    import.meta.env.DEV
+      ? (existingParamName, part) =>
           console.warn(
-            `[vinext] Optimistic route trie found conflicting dynamic segments at the same level: :${node.dynamicChild.paramName} vs ${part}`,
-          );
-        }
-        node = node.dynamicChild.node;
-        if (isTerminal) node.route ??= route;
-        continue;
-      }
-
-      let staticChild = node.staticChildren.get(part);
-      if (staticChild === undefined) {
-        staticChild = createNode();
-        node.staticChildren.set(part, staticChild);
-      }
-      node = staticChild;
-      if (isTerminal) node.route ??= route;
-    }
-  }
-
-  return root;
+            `[vinext] Optimistic route trie found conflicting dynamic segments at the same level: :${existingParamName} vs ${part}`,
+          )
+      : undefined,
+  );
 }
 
 function getRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieNode {
@@ -148,57 +91,6 @@ function getRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieN
   const trie = buildRouteTrie(routeManifest);
   routeTrieCache.set(routeManifest, trie);
   return trie;
-}
-
-function matchNode(
-  node: OptimisticRouteTrieNode,
-  urlParts: readonly string[],
-  index: number,
-  entries: Array<[string, string | string[]]>,
-): OptimisticRouteMatch | null {
-  if (index === urlParts.length) {
-    if (node.route !== null) {
-      return { route: node.route, params: buildParams(entries) };
-    }
-    if (node.optionalCatchAllChild !== null) {
-      return {
-        route: node.optionalCatchAllChild.route,
-        params: buildParams(entries),
-      };
-    }
-    return null;
-  }
-
-  const segment = urlParts[index];
-  const staticChild = node.staticChildren.get(segment);
-  if (staticChild !== undefined) {
-    // Static children are authoritative for optimistic routing. If a known
-    // static subtree does not contain the remaining URL, do not fall through to
-    // a catch-all sibling and render the wrong loading boundary.
-    return matchNode(staticChild, urlParts, index + 1, entries);
-  }
-
-  if (node.dynamicChild !== null) {
-    entries.push([node.dynamicChild.paramName, segment]);
-    const match = matchNode(node.dynamicChild.node, urlParts, index + 1, entries);
-    if (match !== null) return match;
-    entries.pop();
-  }
-
-  if (node.catchAllChild !== null) {
-    const params = buildParams(entries);
-    params[node.catchAllChild.paramName] = urlParts.slice(index);
-    return { route: node.catchAllChild.route, params };
-  }
-
-  // At this point index < urlParts.length, so remaining always has ≥1 segment.
-  if (node.optionalCatchAllChild !== null) {
-    const params = buildParams(entries);
-    params[node.optionalCatchAllChild.paramName] = urlParts.slice(index);
-    return { route: node.optionalCatchAllChild.route, params };
-  }
-
-  return null;
 }
 
 function hrefToRouteParts(
@@ -230,7 +122,7 @@ export function matchOptimisticRouteManifestRoute(options: {
   const urlParts = hrefToRouteParts(options.href, options.basePath);
   if (urlParts === null) return null;
 
-  const match = matchNode(getRouteTrie(options.routeManifest), urlParts.normalized, 0, []);
+  const match = matchOptimisticRouteTrie(getRouteTrie(options.routeManifest), urlParts.normalized);
   if (match === null) return null;
 
   decodeMatchedParams(match.params);
