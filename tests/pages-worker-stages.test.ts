@@ -230,6 +230,7 @@ describe("Pages Worker response stage", () => {
           requestHost: "example.com",
           renderOptions: null,
           resolvedUrl: "/posts/one",
+          sharedAcrossHosts: false,
           stagedHeaders: null,
         },
         dispatchRequestStage,
