@@ -21,7 +21,7 @@
  * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/assetPrefix
  */
 
-import { describe, it, expect, afterAll } from "vite-plus/test";
+import { describe, it, expect, afterAll, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -249,6 +249,18 @@ describe("renderVinextBuiltUrl", () => {
     expect(consentWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(otherWorker).toMatch(/^_next\/static\/workers\/[0-9a-f]{8}-\[hash\]\.js$/);
     expect(consentWorker).not.toBe(otherWorker);
+
+    // Names don't depend on the directory the build was launched from.
+    const virtualWorker = entryName("\0virtual:lazy-worker");
+    const cwd = vi.spyOn(process, "cwd").mockReturnValue(path.dirname(APP_FIXTURE_DIR));
+    try {
+      expect(entryName("\0virtual:lazy-worker")).toBe(virtualWorker);
+      expect(entryName(`${APP_FIXTURE_DIR}/app/consent-banner-worker.ts?worker_file`)).toBe(
+        consentWorker,
+      );
+    } finally {
+      cwd.mockRestore();
+    }
   });
 });
 
