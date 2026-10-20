@@ -195,7 +195,11 @@ import {
 } from "./app-response-header-provenance.js";
 import { traceAppPageRender } from "./app-page-tracing.js";
 import { runOutsideWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import { setFrameworkRequestRoute, traceFrameworkRequest } from "./request-tracing.js";
+import {
+  replaceFrameworkRequestRoute,
+  setFrameworkRequestRoute,
+  traceFrameworkRequest,
+} from "./request-tracing.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type RequestContext = ReturnType<typeof requestContextFromRequest>;
@@ -465,9 +469,11 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
   );
 }
 
-/** Send a routing-level not-found from the page render as an unmatched route's 404. */
+/** Send a routing-level not-found from a dispatch as an unmatched route's 404. */
 function withRouteMissCacheControl(response: Response): Response {
   if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
+  // Dispatch rejects the params after the matched route was recorded.
+  replaceFrameworkRequestRoute("/404");
   let unmarkedResponse = response;
   try {
     // Keep the response itself, whose config headers may already be applied.
@@ -554,6 +560,8 @@ type DispatchMatchedRouteHandlerOptions<TRoute> = {
    * matched params object.
    */
   params: AppPageParams | null;
+  /** Render the not-found page Next.js serves for an unmatched URL. */
+  renderNotFound: () => Promise<Response>;
   request: Request;
   route: TRoute;
   searchParams: URLSearchParams;
@@ -2904,13 +2912,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
       });
-      return composeResponseStageResponse(response);
+      return withRouteMissCacheControl(await composeResponseStageResponse(response));
     }
     const { setCurrentFetchSoftTags } = await import("vinext/shims/fetch-cache");
     setCurrentFetchSoftTags(
       buildPageCacheTags(cleanPathname, [], [...route.routeSegments], "route"),
     );
-    return options.dispatchMatchedRouteHandler({
+    const routeHandlerResponse = await options.dispatchMatchedRouteHandler({
       bypassInterceptionContextCache,
       cachePathname,
       cleanPathname,
@@ -2920,10 +2928,21 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // object (always `{}` for non-dynamic) so `useParams()` etc. still see
       // an object shape; only the user-facing handler context surfaces null.
       params: route.isDynamic ? renderParams : null,
+      renderNotFound() {
+        // Render the 404 with the context of an unmatched route.
+        options.setNavigationContext({
+          pathname: canonicalPathname,
+          searchParams: resolvedSearchParams,
+          params: {},
+        });
+        setRootParams({});
+        return renderUnmatchedRoute();
+      },
       request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
       route,
       searchParams: resolvedSearchParams,
     });
+    return withRouteMissCacheControl(routeHandlerResponse);
   }
 
   const failedProgressiveActionResult =

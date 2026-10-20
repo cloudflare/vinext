@@ -557,19 +557,6 @@ function matchMetadataRoute(
   return cleanPathname === route.servedUrl ? { params: null, imageId: null } : null;
 }
 
-function metadataRouteParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) => {
-    if (!part.startsWith(":")) return [];
-    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
-  });
-}
-
-function metadataRouteOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
-  return patternParts.flatMap((part) =>
-    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
-  );
-}
-
 function metadataRouteRawParams(
   route: MetadataRuntimeRoute,
   match: MatchedMetadataRoute,
@@ -938,16 +925,20 @@ export async function handleMetadataRouteRequest(
     if (route.isDynamic && isImageMetadataRoute(route) && functions.dynamicParams === false) {
       const validationParams = { ...rawParams };
       canonicalizeAppPageParams(validationParams);
-      const { validateAppPageDynamicParams } = await import("./app-page-request.js");
+      const {
+        routePatternOptionalCatchAllParamNames,
+        routePatternParamNames,
+        validateAppPageDynamicParams,
+      } = await import("./app-page-request.js");
       const dynamicParamsResponse = await validateAppPageDynamicParams({
         enforceStaticParamsOnly: true,
         generateStaticParams: functions.generateStaticParams,
         isDynamicRoute: Boolean(route.patternParts),
-        optionalCatchAllParamNames: metadataRouteOptionalCatchAllParamNames(
+        optionalCatchAllParamNames: routePatternOptionalCatchAllParamNames(
           route.patternParts ?? [],
         ),
         params: validationParams,
-        requiredParamNames: metadataRouteParamNames(route.patternParts ?? []),
+        requiredParamNames: routePatternParamNames(route.patternParts ?? []),
       });
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }

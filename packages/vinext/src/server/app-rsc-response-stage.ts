@@ -246,6 +246,26 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
     requestHeaders: null,
     status: null,
   };
+  // The not-found page Next.js serves for an unmatched URL.
+  const renderNotFound = async (): Promise<Response> => {
+    options.setNavigationContext({
+      pathname: props.canonicalPathname,
+      searchParams: new URL(props.resolvedUrl, request.url).searchParams,
+      params: {},
+    });
+    setRootParams({});
+    return (
+      (await traceAppPageRender("/404", "render", () =>
+        options.renderNotFound({
+          isRscRequest: normalized.isRscRequest,
+          middlewareContext,
+          request,
+          route: null,
+          scriptNonce: props.scriptNonce ?? undefined,
+        }),
+      )) ?? new Response("Not Found", { status: 404 })
+    );
+  };
 
   const responsePromise = runWithRequestContext(requestContext, () =>
     runWithPrerenderWorkUnit(
@@ -283,22 +303,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           return response;
         }
         if (props.kind === "app-not-found") {
-          options.setNavigationContext({
-            pathname: props.canonicalPathname,
-            searchParams: new URL(props.resolvedUrl, request.url).searchParams,
-            params: {},
-          });
-          setRootParams({});
-          const response = await traceAppPageRender("/404", "render", () =>
-            options.renderNotFound({
-              isRscRequest: normalized.isRscRequest,
-              middlewareContext,
-              request,
-              route: null,
-              scriptNonce: props.scriptNonce ?? undefined,
-            }),
-          );
-          return response ?? new Response("Not Found", { status: 404 });
+          return renderNotFound();
         }
         if (props.kind === "hybrid-pages") {
           if (!options.renderPagesFallback) {
@@ -390,6 +395,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
             cleanPathname: props.cleanPathname,
             middlewareContext,
             params: route.isDynamic ? renderParams : null,
+            renderNotFound,
             request: cloneRequestWithUrl(routeHandlerRequest, routeHandlerUrl.toString()),
             route,
             searchParams,

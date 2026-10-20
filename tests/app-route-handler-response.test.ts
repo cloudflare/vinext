@@ -1,4 +1,4 @@
-import { describe, expect, it, afterEach } from "vite-plus/test";
+import { describe, expect, it, afterEach, vi } from "vite-plus/test";
 import type { CachedRouteValue } from "../packages/vinext/src/shims/cache.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -8,7 +8,9 @@ import {
   buildRouteHandlerCachedResponse,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  stripAppRouteHandlerRouteMissMarker,
 } from "../packages/vinext/src/server/app-route-handler-response.js";
+import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
 import { setCdnCacheAdapter } from "../packages/vinext/src/shims/cdn-cache.js";
 import {
   CloudflareCdnCacheAdapter,
@@ -457,6 +459,44 @@ describe("app route handler response helpers", () => {
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+  });
+});
+
+describe("stripAppRouteHandlerRouteMissMarker", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("rebuilds an immutable response from the response itself", async () => {
+    const original = new Response("proxied", {
+      headers: { [VINEXT_ROUTE_MISS_HEADER]: "1", link: "</a.css>; rel=preload" },
+      status: 203,
+      statusText: "Proxied",
+    });
+    original.headers.delete = () => {
+      throw new TypeError("immutable");
+    };
+    // Workerd copies cf, webSocket and encodeBody only from a Response init.
+    const inits: unknown[] = [];
+    const NativeResponse = Response;
+    vi.stubGlobal(
+      "Response",
+      class extends NativeResponse {
+        constructor(body?: BodyInit | null, init?: ResponseInit) {
+          inits.push(init);
+          super(body, init);
+        }
+      },
+    );
+
+    const stripped = stripAppRouteHandlerRouteMissMarker(original);
+
+    expect(inits).toEqual([original]);
+    expect(stripped.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+    expect(stripped.headers.get("link")).toBe("</a.css>; rel=preload");
+    expect(stripped.status).toBe(203);
+    expect(stripped.statusText).toBe("Proxied");
+    await expect(stripped.text()).resolves.toBe("proxied");
   });
 });
 

@@ -13,6 +13,16 @@ import {
   setCdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
+import {
+  createRequestContext,
+  getRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
+import { setCurrentFetchSoftTags } from "../packages/vinext/src/shims/fetch-cache.js";
+import { withResponseStageCacheability } from "../packages/vinext/src/server/response-stage-cacheability.js";
+import { VINEXT_ROUTE_MISS_HEADER } from "../packages/vinext/src/server/headers.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import {
   getRevalidateSecret,
@@ -569,6 +579,337 @@ describe("app route handler dispatch", () => {
     expect(response.headers.get("cache-control")).toBeNull();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     await expect(response.text()).resolves.toBe("fresh");
+  });
+
+  describe("dynamicParams = false", () => {
+    function dispatchClosedRoute(options: {
+      cached?: boolean;
+      generateStaticParams?: () => Record<string, unknown>[];
+      handlerConfig?: Record<string, unknown>;
+      isProduction?: boolean;
+      params: Record<string, string | string[]>;
+      pathname: string;
+      pattern: string;
+      renderNotFound?: () => Promise<Response>;
+    }) {
+      const handlerCalls: unknown[] = [];
+      const renderNotFound = vi.fn(
+        options.renderNotFound ?? (async () => new Response("not found page", { status: 404 })),
+      );
+      const response = dispatchAppRouteHandler({
+        cleanPathname: options.pathname,
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        isDevelopment: options.isProduction === false,
+        isProduction: options.isProduction ?? true,
+        async isrGet() {
+          return options.cached ? buildISRCacheEntry(buildCachedRouteValue("cached")) : null;
+        },
+        isrRouteKey: (pathname) => pathname,
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        params: options.params,
+        renderNotFound,
+        request: new Request(`https://example.com${options.pathname}`),
+        route: {
+          pattern: options.pattern,
+          routeHandler: {
+            ...options.handlerConfig,
+            dynamicParams: false,
+            generateStaticParams: options.generateStaticParams,
+            async GET(_request: Request, context: { params: Promise<unknown> }) {
+              handlerCalls.push(await context.params);
+              return new Response("handler");
+            },
+          },
+          routeSegments: options.pattern.split("/").filter(Boolean),
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      return { handlerCalls, renderNotFound, response };
+    }
+
+    // Verified against next@16.2.7 `next build` / `next start`: a POST export
+    // bails out only while a generated path prerenders.
+    it("404s every param of a mixed-method route whose generator returns none", async () => {
+      const POST = () => new Response("post");
+      const emptyGenerator = vi.fn(() => []);
+      const empty = dispatchClosedRoute({
+        generateStaticParams: emptyGenerator,
+        handlerConfig: { POST },
+        params: { slug: "any" },
+        pathname: "/posts/any",
+        pattern: "/posts/:slug",
+      });
+      expect((await empty.response).status).toBe(404);
+      expect(empty.handlerCalls).toEqual([]);
+      expect(emptyGenerator).toHaveBeenCalledTimes(1);
+
+      const generator = vi.fn(() => [{ slug: "listed" }]);
+      const generated = dispatchClosedRoute({
+        generateStaticParams: generator,
+        handlerConfig: { POST },
+        params: { slug: "unlisted" },
+        pathname: "/posts/unlisted",
+        pattern: "/posts/:slug",
+      });
+      expect((await generated.response).status).toBe(200);
+      expect(generated.handlerCalls).toEqual([{ slug: "unlisted" }]);
+      expect(generator).toHaveBeenCalledTimes(1);
+    });
+
+    it("compares decoded params as Next.js does", async () => {
+      const generateStaticParams = () => [{ slug: "public post" }];
+      const listed = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: "public post" },
+        pathname: "/posts/public%20post",
+        pattern: "/posts/:slug",
+      });
+      expect((await listed.response).status).toBe(200);
+      expect(listed.handlerCalls).toEqual([{ slug: "public post" }]);
+
+      // `/posts/public%2520post` decodes to an unlisted value.
+      const unlisted = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: "public%20post" },
+        pathname: "/posts/public%2520post",
+        pattern: "/posts/:slug",
+      });
+      const unlistedResponse = await unlisted.response;
+      expect(unlistedResponse.status).toBe(404);
+      expect(await unlistedResponse.text()).toBe("not found page");
+      expect(unlistedResponse.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(unlisted.handlerCalls).toEqual([]);
+    });
+
+    it("rejects a missing optional catch-all the generated params do not list", async () => {
+      const generateStaticParams = () => [{ slug: ["a"] }];
+      const missing = dispatchClosedRoute({
+        generateStaticParams,
+        params: {},
+        pathname: "/docs",
+        pattern: "/docs/:slug*",
+      });
+      expect((await missing.response).status).toBe(404);
+      expect(missing.handlerCalls).toEqual([]);
+
+      const listed = dispatchClosedRoute({
+        generateStaticParams,
+        params: { slug: ["a"] },
+        pathname: "/docs/a",
+        pattern: "/docs/:slug*",
+      });
+      expect((await listed.response).status).toBe(200);
+    });
+
+    it("serves a cached response without calling generateStaticParams", async () => {
+      const generateStaticParams = vi.fn(() => [{ slug: "listed" }]);
+      const cached = dispatchClosedRoute({
+        cached: true,
+        generateStaticParams,
+        params: { slug: "listed" },
+        pathname: "/posts/listed",
+        pattern: "/posts/:slug",
+      });
+      const response = await cached.response;
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("cached");
+      expect(generateStaticParams).not.toHaveBeenCalled();
+    });
+
+    it("admits any param without generateStaticParams in dev, as Next.js does", async () => {
+      const result = dispatchClosedRoute({
+        isProduction: false,
+        params: { slug: "anything" },
+        pathname: "/posts/anything",
+        pattern: "/posts/:slug",
+      });
+      expect((await result.response).status).toBe(200);
+      expect(result.renderNotFound).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      {
+        name: "mutable headers",
+        GET: () => new Response("ok", { headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" } }),
+      },
+      {
+        // As on a proxied fetch() response.
+        name: "immutable headers",
+        GET: () => {
+          const response = new Response("ok", { headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" } });
+          response.headers.delete = () => {
+            throw new TypeError("immutable");
+          };
+          return response;
+        },
+      },
+      {
+        name: "headers its body's producer sets",
+        GET: () => {
+          let response: Response;
+          const body = new ReadableStream(
+            {
+              pull(controller) {
+                response.headers.set(VINEXT_ROUTE_MISS_HEADER, "1");
+                controller.enqueue(new TextEncoder().encode("ok"));
+                controller.close();
+              },
+            },
+            // Pull only once the body is read.
+            { highWaterMark: 0 },
+          );
+          response = new Response(body);
+          return response;
+        },
+      },
+    ])("drops a route-miss marker a handler sets on $name", async ({ GET }) => {
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/forged",
+        clearRequestContext() {},
+        draftModeSecret: "test-secret",
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => null,
+        isrRouteKey: (path) => path,
+        isrSet: async () => {},
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        request: new Request("https://example.com/api/forged"),
+        route: {
+          pattern: "/api/forged",
+          routeSegments: ["api", "forged"],
+          // Cacheable, so the response is completed before it's returned.
+          routeHandler: { revalidate: 60, GET },
+        },
+        scheduleBackgroundRegeneration() {},
+        searchParams: new URLSearchParams(),
+      });
+      await expect(response.text()).resolves.toBe("ok");
+      expect(response.headers.has(VINEXT_ROUTE_MISS_HEADER)).toBe(false);
+    });
+
+    it("stores a regenerated response without a route-miss marker the handler set", async () => {
+      let scheduledRender: (() => Promise<void>) | undefined;
+      const write = vi.fn();
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/forged-stale",
+        clearRequestContext() {},
+        draftModeSecret: "test-secret",
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => buildISRCacheEntry(buildCachedRouteValue("stale"), true),
+        isrRouteKey: (path) => path,
+        isrSet: write,
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        request: new Request("https://example.com/api/forged-stale"),
+        route: {
+          pattern: "/api/forged-stale",
+          routeSegments: ["api", "forged-stale"],
+          routeHandler: {
+            revalidate: 60,
+            GET: () => {
+              let response: Response;
+              const body = new ReadableStream(
+                {
+                  pull(controller) {
+                    response.headers.set(VINEXT_ROUTE_MISS_HEADER, "1");
+                    controller.enqueue(new TextEncoder().encode("regenerated"));
+                    controller.close();
+                  },
+                },
+                { highWaterMark: 0 },
+              );
+              response = new Response(body, { headers: { [VINEXT_ROUTE_MISS_HEADER]: "1" } });
+              return response;
+            },
+          },
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+      await scheduledRender?.();
+      expect(write).toHaveBeenCalledTimes(1);
+      expect(write.mock.calls[0][1].headers).not.toHaveProperty(VINEXT_ROUTE_MISS_HEADER);
+    });
+
+    it("renders the 404 without the route's fetch defaults or tags", async () => {
+      let fetchState: unknown = null;
+      await runWithRequestContext(createRequestContext(), async () => {
+        setCurrentFetchSoftTags(["_N_T_/posts/unlisted"]);
+        const rejected = dispatchClosedRoute({
+          generateStaticParams: () => [{ slug: "listed" }],
+          handlerConfig: { fetchCache: "force-cache", revalidate: 60 },
+          params: { slug: "unlisted" },
+          pathname: "/posts/unlisted",
+          pattern: "/posts/:slug",
+          async renderNotFound() {
+            const context = getRequestContext();
+            fetchState = {
+              cacheMode: context.currentFetchCacheMode,
+              forceDynamic: context.currentForceDynamicFetchDefault,
+              revalidate: context.currentFetchRevalidate,
+              softTags: context.currentFetchSoftTags,
+            };
+            return new Response("not found page", { status: 404 });
+          },
+        });
+        expect((await rejected.response).status).toBe(404);
+      });
+
+      // As for an unmatched URL.
+      expect(fetchState).toEqual({
+        cacheMode: null,
+        forceDynamic: false,
+        revalidate: null,
+        softTags: [],
+      });
+    });
+
+    it("keeps the 404 out of a split stage's shared cache under a public config policy", async () => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      try {
+        let rejected: ReturnType<typeof dispatchClosedRoute> | undefined;
+        const response = await withResponseStageCacheability(
+          {
+            buildId: "build-a",
+            cache: "shared",
+            context: { waitUntil() {} },
+            policyHeaders: [["Cloudflare-CDN-Cache-Control", "public, s-maxage=3600"]],
+            rawManifest: null,
+            registerCacheAdapters() {},
+            request: new Request("https://example.com/posts/unlisted"),
+            resolvedRoutePathname: "/posts/unlisted",
+          },
+          (context) =>
+            runWithExecutionContext(context, () => {
+              rejected = dispatchClosedRoute({
+                generateStaticParams: () => [{ slug: "listed" }],
+                params: { slug: "unlisted" },
+                pathname: "/posts/unlisted",
+                pattern: "/posts/:slug",
+              });
+              return rejected.response;
+            }),
+        );
+
+        expect(response.status).toBe(404);
+        expect(rejected?.handlerCalls).toEqual([]);
+        expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+        expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+        // The request stage reads the marker to reassert the never-cache policy.
+        expect(response.headers.get(VINEXT_ROUTE_MISS_HEADER)).toBe("1");
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    });
   });
 
   // Matches Next.js behavior: route handlers on non-dynamic routes receive

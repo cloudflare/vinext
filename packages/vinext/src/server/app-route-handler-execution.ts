@@ -39,6 +39,7 @@ import {
   buildAppRouteCacheValue,
   finalizeRouteHandlerResponse,
   markRouteHandlerCacheMiss,
+  stripAppRouteHandlerRouteMissMarker,
   type RouteHandlerMiddlewareContext,
 } from "./app-route-handler-response.js";
 import {
@@ -448,6 +449,7 @@ async function executeAppRouteHandlerImpl(
 
     // Stream producers may add, replace, or remove headers while completing.
     // Snapshot user policy only after EOF and before framework ISR headers.
+    response = stripAppRouteHandlerRouteMissMarker(response);
     const browserCacheControl = response.headers.get("Cache-Control") ?? undefined;
     const handlerSetCachePolicy = hasCdnResponsePolicy(response.headers);
     if (handlerSetCachePolicy) markRouteCacheabilityExplicitResponsePolicy();

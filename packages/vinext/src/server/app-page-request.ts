@@ -639,6 +639,19 @@ function normalizeGenerateStaticParams(
   });
 }
 
+export function routePatternParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) => {
+    if (!part.startsWith(":")) return [];
+    return [part.slice(1, part.endsWith("+") || part.endsWith("*") ? -1 : undefined)];
+  });
+}
+
+export function routePatternOptionalCatchAllParamNames(patternParts: readonly string[]): string[] {
+  return patternParts.flatMap((part) =>
+    part.startsWith(":") && part.endsWith("*") ? [part.slice(1, -1)] : [],
+  );
+}
+
 export async function validateAppPageDynamicParams(
   options: ValidateAppPageDynamicParamsOptions,
 ): Promise<Response | null> {

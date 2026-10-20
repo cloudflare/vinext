@@ -14,6 +14,7 @@ import {
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
   VINEXT_CACHE_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
 } from "./headers.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import {
@@ -22,7 +23,11 @@ import {
 } from "./middleware-response-headers.js";
 import { processMiddlewareHeaders } from "./request-pipeline.js";
 import { getSetCookieName } from "./cookie-utils.js";
-import { markEdgeRouteHandlerLinkHeaders } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  markEdgeRouteHandlerLinkHeaders,
+} from "./app-response-header-provenance.js";
+import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 
 export type RouteHandlerMiddlewareContext = {
   headers: Headers | null;
@@ -91,6 +96,25 @@ export function assertSupportedAppRouteHandlerResponse(response: Response): void
   if (response.headers.get(MIDDLEWARE_NEXT_HEADER) === "1") {
     throw new Error(APP_ROUTE_NEXT_ERROR);
   }
+}
+
+/** Drop a route-miss marker the handler set, so only routing can mark a miss. */
+export function stripAppRouteHandlerRouteMissMarker(response: Response): Response {
+  if (!response.headers.has(VINEXT_ROUTE_MISS_HEADER)) return response;
+  try {
+    response.headers.delete(VINEXT_ROUTE_MISS_HEADER);
+    return response;
+  } catch {
+    // Fetch/service-binding responses may have immutable headers.
+  }
+  // Workerd copies cf, webSocket and encodeBody from a Response init.
+  const rebuilt = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, response as ResponseInit),
+  );
+  copyLinkHeaderProvenance(response.headers, rebuilt.headers);
+  rebuilt.headers.delete(VINEXT_ROUTE_MISS_HEADER);
+  return rebuilt;
 }
 
 export function buildRouteHandlerCachedResponse(
