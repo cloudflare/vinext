@@ -73,7 +73,7 @@ import {
   generateAppResponseRscEntry,
   generateRscEntry,
 } from "./entries/app-rsc-entry.js";
-import { rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
+import { rootBoundaryFiles, rootBoundaryRouteFiles } from "./entries/app-rsc-manifest.js";
 import { generateSsrEntry } from "./entries/app-ssr-entry.js";
 import { resolveRuntimeEntryModule } from "./entries/runtime-entry-module.js";
 import {
@@ -243,7 +243,10 @@ import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
-import { createRscClientReferenceLoadersPlugin } from "./plugins/rsc-client-reference-loaders.js";
+import {
+  createRouteClientReferencesFallbackPlugin,
+  createRscClientReferenceLoadersPlugin,
+} from "./plugins/rsc-client-reference-loaders.js";
 import { createRscReferenceValidationNormalizerPlugin } from "./plugins/rsc-reference-validation-normalizer.js";
 import { createScanBuildCssPlugin } from "./plugins/scan-build-css.js";
 import {
@@ -1872,7 +1875,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
-  let clientReferenceGlobalErrorPath: string | null = null;
+  let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
   const serverRuntimeOutputDirs = new Set<string>();
@@ -5133,7 +5136,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 (path): path is string => path !== null,
               );
               clientReferenceRoutes = this.environment.config.command === "build" ? routes : null;
-              clientReferenceGlobalErrorPath = globalErrorPath;
+              clientReferenceAlwaysRenderedFiles = [
+                ...(globalErrorPath ? [globalErrorPath] : []),
+                ...rootBoundaryFiles(routes),
+              ];
               clientReferenceRoutelessFiles = [
                 ...rootBoundaryRouteFiles(routes),
                 ...(globalNotFoundPath ? [globalNotFoundPath] : []),
@@ -8884,7 +8890,7 @@ export const loadServerActionClient = ${
           rscActionOwnerRoutes = null;
           rscActionOwnerSharedRoots = [];
           clientReferenceRoutes = null;
-          clientReferenceGlobalErrorPath = null;
+          clientReferenceAlwaysRenderedFiles = [];
           clientReferenceRoutelessFiles = [];
         },
       }),
@@ -8897,7 +8903,7 @@ export const loadServerActionClient = ${
       createRscClientReferenceLoadersPlugin({
         routes: {
           canonicalizeModuleId: canonicalize,
-          getGlobalErrorPath: () => clientReferenceGlobalErrorPath,
+          getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,
           getRoutelessFiles: () => clientReferenceRoutelessFiles,
           getRoutes: () => clientReferenceRoutes,
           getSharedRoots: () => rscActionOwnerSharedRoots,
@@ -8916,8 +8922,9 @@ export const loadServerActionClient = ${
             },
       }),
     );
-  } else if (manualUseCachePluginPromise) {
-    plugins.push(manualUseCachePluginPromise);
+  } else {
+    plugins.push(createRouteClientReferencesFallbackPlugin());
+    if (manualUseCachePluginPromise) plugins.push(manualUseCachePluginPromise);
   }
   plugins.push({
     name: "vinext:plain-pages-build-config",

@@ -33,8 +33,11 @@ export type RscClientReferenceRouteOptions = {
   canonicalizeModuleId: (id: string) => string;
   /** App Router routes of the current build, or null outside App Router builds. */
   getRoutes: () => readonly AppRoute[] | null;
-  /** global-error, which any render can show, or null. */
-  getGlobalErrorPath: () => string | null;
+  /**
+   * Files any route's render can show: global-error, and the root boundaries
+   * that routes without their own not-found, forbidden or unauthorized use.
+   */
+  getAlwaysRenderedFiles: () => readonly string[];
   /**
    * The files a render without a route (a route-miss 404) shows: the root
    * layouts and boundaries, and global-not-found.
@@ -279,11 +282,10 @@ export function createRscClientReferenceLoadersPlugin(
 
       const clientReferenceIds = new Set(Object.keys(manager.clientReferenceMetaMap));
       const getModuleInfo = (id: string) => this.getModuleInfo(id);
-      const globalErrorPath = routeOptions.getGlobalErrorPath();
       preloadPlan = {
         referenceIds: clientReferenceIds,
         preloads: collectClientReferencePreloadPlan({
-          alwaysRoots: globalErrorPath ? [globalErrorPath] : [],
+          alwaysRoots: routeOptions.getAlwaysRenderedFiles(),
           canonicalizeModuleId: routeOptions.canonicalizeModuleId,
           clientReferenceIds,
           entryIds: [...this.getModuleIds()].filter((id) => this.getModuleInfo(id)?.isEntry),
@@ -505,6 +507,26 @@ export function createRscClientReferenceLoadersPlugin(
           code: generateClientReferenceLoaders(metas, slots) + routeClientReferencesExport,
           map: null,
         };
+      },
+    },
+  };
+}
+
+/**
+ * Exports a null preload plan from the client-references virtual module when
+ * the app registers @vitejs/plugin-rsc itself (`rsc: false`), where vinext
+ * doesn't add the loaders plugin above. The App Router SSR entry imports the
+ * plan, and null makes it preload every client reference.
+ */
+export function createRouteClientReferencesFallbackPlugin(): Plugin {
+  return {
+    name: "vinext:route-client-references-fallback",
+    enforce: "post",
+    transform: {
+      filter: { id: CLIENT_REFERENCES_ID_RE },
+      handler(code) {
+        if (this.environment.config.consumer !== "server") return null;
+        return { code: `${code}\n${generateRouteClientReferencesExport(null, [])}`, map: null };
       },
     },
   };

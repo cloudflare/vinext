@@ -190,8 +190,8 @@ export function collectClientReferenceRouteSignatures(options: {
 export type ClientReferencePreloadPlan = {
   /**
    * Client references any render may use: those reached from outside route
-   * files (vinext's runtime, server actions), global-error's, and those no
-   * walk reaches.
+   * files (vinext's runtime, server actions), those of `alwaysRoots`
+   * (global-error, the root boundaries), and those no walk reaches.
    */
   always: string[];
   /** The client references each route file reaches, through any import. */
@@ -239,12 +239,14 @@ export function collectClientReferencePreloadPlan(options: {
       const id = stack.pop()!;
       if (visited.has(id)) continue;
       visited.add(id);
+      // Checked first, so the entry walk leaves route files that are client
+      // references themselves (every error.tsx) to their routes' sets.
+      if (stopAt?.has(id)) continue;
       if (options.clientReferenceIds.has(id)) {
         references.push(id);
         reached.add(id);
         continue;
       }
-      if (stopAt?.has(id)) continue;
       const info = getModuleInfo(id);
       if (!info) continue;
       const imports = [...info.importedIds, ...info.dynamicallyImportedIds];

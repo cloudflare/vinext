@@ -87,17 +87,24 @@ function rootRouteBoundaryPath(
 }
 
 /**
- * The files a render without a matched route shows (a route-miss 404, or a
- * forbidden or unauthorized boundary): the root layouts and root boundaries.
+ * The root not-found, forbidden and unauthorized boundaries, which a route
+ * without its own boundary falls back to.
  */
-export function rootBoundaryRouteFiles(routes: readonly AppRoute[]): string[] {
+export function rootBoundaryFiles(routes: readonly AppRoute[]): string[] {
   const rootRoute = findRootBoundaryRoute(routes);
   return [
-    ...rootRouteLayoutPaths(rootRoute),
     rootRouteBoundaryPath(rootRoute, rootRoute?.notFoundPaths, rootRoute?.notFoundPath),
     rootRouteBoundaryPath(rootRoute, rootRoute?.forbiddenPaths, rootRoute?.forbiddenPath),
     rootRouteBoundaryPath(rootRoute, rootRoute?.unauthorizedPaths, rootRoute?.unauthorizedPath),
   ].filter((file): file is string => file !== null);
+}
+
+/**
+ * The files a render without a matched route shows (a route-miss 404, or a
+ * forbidden or unauthorized boundary): the root layouts and root boundaries.
+ */
+export function rootBoundaryRouteFiles(routes: readonly AppRoute[]): string[] {
+  return [...rootRouteLayoutPaths(findRootBoundaryRoute(routes)), ...rootBoundaryFiles(routes)];
 }
 
 type ImportAllocator = {

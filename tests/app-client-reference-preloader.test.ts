@@ -134,6 +134,17 @@ describe("app client reference preloader", () => {
     expect(reported[0]?.error).toBeInstanceOf(Error);
   });
 
+  it("returns one settled promise for a warm scoped preload", async () => {
+    const preloader = createClientReferencePreloader({
+      getReferences: () => ({ "comp-a": true, "comp-b": true }),
+      getClientRequire: () => async () => {},
+    });
+
+    await preloader.preload(["comp-a", "comp-b"]);
+
+    expect(preloader.preload(["comp-a", "comp-b"])).toBe(preloader.preload(["comp-b"]));
+  });
+
   it("marks settled module promises the way React tracks thenables", async () => {
     const error = new Error("load failed");
     const loads: Record<string, Promise<unknown>> = {

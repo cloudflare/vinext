@@ -320,6 +320,39 @@ describe("collectClientReferencePreloadPlan", () => {
     expect(preloads(plan, plan.routes.get("/photos")!)).toEqual(["/grid.tsx"]);
   });
 
+  it("leaves route files that are client references to their routes", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set([
+        "/app/error.tsx",
+        "/app/client/page.tsx",
+        "/app/@modal/(.)photo/page.tsx",
+      ]),
+      entryIds: ["\0entry"],
+      getModuleInfo: moduleInfo({
+        "\0entry": [
+          "/app/page.tsx",
+          "/app/error.tsx",
+          "/app/client/page.tsx",
+          "/app/@modal/(.)photo/page.tsx",
+        ],
+      }),
+      routes: [
+        {
+          ...route("/", "/app/page.tsx"),
+          errorPath: "/app/error.tsx",
+          siblingIntercepts: [
+            { layoutPaths: [], notFoundPath: null, pagePath: "/app/@modal/(.)photo/page.tsx" },
+          ],
+        } as never,
+        route("/client", "/app/client/page.tsx"),
+      ],
+    });
+
+    expect(plan.always).toEqual([]);
+    expect(preloads(plan, plan.routes.get("/")!)).toEqual(["/app/error.tsx"]);
+    expect(preloads(plan, plan.routes.get("/client")!)).toEqual(["/app/client/page.tsx"]);
+  });
+
   it("canonicalizes route files and entry stops", () => {
     const plan = collectClientReferencePreloadPlan({
       canonicalizeModuleId: (id) => id.replace("/link/", "/real/"),

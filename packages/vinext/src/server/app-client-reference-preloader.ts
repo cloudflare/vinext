@@ -75,10 +75,6 @@ export function createClientReferencePreloader(
   const referencePreloadPromises = new Map<string, Promise<void>>();
 
   function preloadReference(id: string, clientRequire: ClientReferenceRequire): Promise<void> {
-    if (preloadedReferences.has(id)) {
-      return resolvedPreload;
-    }
-
     const existing = referencePreloadPromises.get(id);
     if (existing) {
       return existing;
@@ -125,7 +121,8 @@ export function createClientReferencePreloader(
     const pending: Promise<void>[] = [];
 
     for (const id of referenceIds) {
-      if (Object.hasOwn(refs, id)) {
+      // A warm render's references are all loaded: skip awaiting them.
+      if (Object.hasOwn(refs, id) && !preloadedReferences.has(id)) {
         pending.push(preloadReference(id, clientRequire));
       }
     }
