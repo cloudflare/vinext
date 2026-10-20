@@ -4673,7 +4673,7 @@ describe("Virtual server entry generation", () => {
     }
   });
 
-  it("dev Pages client assets only re-resolve imports of edited modules", async () => {
+  it("dev Pages client assets re-resolve only edited modules until tsconfig.json changes", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-"));
     const fixture = writePagesAppGlobalCssFixture(tmpDir);
     // The assets module resolves each import of the modules it reads.
@@ -4716,6 +4716,13 @@ describe("Virtual server entry generation", () => {
       expect(resolvedFrom("/pages/_app.tsx")).toBe(true);
       expect(resolvedFrom("/lib/reexport.ts")).toBe(false);
       expect(resolvedFrom("/lib/transitive.ts")).toBe(false);
+
+      // Like Vite, which invalidates every module when a tsconfig.json changes.
+      resolveImporters.length = 0;
+      testServer.watcher.emit("change", path.join(tmpDir, "tsconfig.json"));
+
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+      expect(resolvedFrom("/lib/transitive.ts")).toBe(true);
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

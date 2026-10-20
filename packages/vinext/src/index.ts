@@ -6174,6 +6174,11 @@ export const loadServerActionClient = ${
           event: "create" | "update" | "delete",
         ) {
           if (devPagesModuleDependencyStores.size === 0) return;
+          // Vite invalidates every module when a tsconfig.json changes.
+          if (path.basename(filePath) === "tsconfig.json") {
+            devPagesModuleDependencyStores.clear();
+            return;
+          }
           // Module ids are real paths, while chokidar reports paths under the
           // watched root, which can be a symlink. A deleted file has no real
           // path left, but its directory does.
