@@ -4617,8 +4617,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // directory. This must run after Vite merges config hooks: output arrays
         // are concatenated during config merging, so returning a mapped array
         // from config() would retain the original unisolated outputs as well.
+        // Hash-only, like client chunks: `[name]` would publish worker source
+        // file names in public URLs.
         if (config.worker?.rolldownOptions) {
-          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[name]-[hash].js`;
+          const workerFileNames = `${resolveAssetsDir(nextConfig.assetPrefix ?? "")}/workers/[hash].js`;
           const workerOutputs = config.worker.rolldownOptions.output;
           config.worker.rolldownOptions.output = Array.isArray(workerOutputs)
             ? (workerOutputs.length > 0 ? workerOutputs : [{}]).map((output) => ({

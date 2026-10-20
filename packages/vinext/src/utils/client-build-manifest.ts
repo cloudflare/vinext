@@ -119,6 +119,8 @@ function findClientEntryFileInAssetsDir(options: {
   const assetsDir = path.join(options.clientDir, options.assetsSubdir);
   if (!fs.existsSync(assetsDir)) return undefined;
 
+  // Fallback for builds without a client manifest. It matches entry names in
+  // file names, so it can't find entries under hash-only `chunkFileNames`.
   // Walk recursively: client JS entries are emitted under
   // `<assetsSubdir>/chunks/` (see createClientFileNameConfig), not directly in
   // `<assetsSubdir>`. A flat readdir here would miss the entry entirely.

@@ -199,13 +199,13 @@ describe("renderVinextBuiltUrl", () => {
       expect(outputs).toEqual([
         expect.objectContaining({
           exports: "named",
-          entryFileNames: "_next/static/workers/[name]-[hash].js",
-          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+          entryFileNames: "_next/static/workers/[hash].js",
+          chunkFileNames: "_next/static/workers/[hash].js",
         }),
         expect.objectContaining({
           sourcemap: true,
-          entryFileNames: "_next/static/workers/[name]-[hash].js",
-          chunkFileNames: "_next/static/workers/[name]-[hash].js",
+          entryFileNames: "_next/static/workers/[hash].js",
+          chunkFileNames: "_next/static/workers/[hash].js",
         }),
       ]);
 
@@ -233,8 +233,8 @@ describe("renderVinextBuiltUrl", () => {
 
     expect(config.worker.rolldownOptions.output).toEqual([
       expect.objectContaining({
-        entryFileNames: "_next/static/workers/[name]-[hash].js",
-        chunkFileNames: "_next/static/workers/[name]-[hash].js",
+        entryFileNames: "_next/static/workers/[hash].js",
+        chunkFileNames: "_next/static/workers/[hash].js",
       }),
     ]);
   });
