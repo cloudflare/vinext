@@ -9682,6 +9682,31 @@ describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
     }
   });
 
+  it("reports non-Error values as-is by default", () => {
+    withFakeWindow(({ reportErrorSpy }) => {
+      const handler = createOnUncaughtError();
+      handler(undefined, {});
+      expect(reportErrorSpy).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  it("coerces non-Error values to Errors when coerceToError is set", () => {
+    withFakeWindow(({ reportErrorSpy }) => {
+      const handler = createOnUncaughtError({ coerceToError: true });
+      const err = new Error("boom");
+      handler(err, {});
+      handler(undefined, {});
+      handler("boom", {});
+      expect(reportErrorSpy.mock.calls[0][0]).toBe(err);
+      expect(reportErrorSpy.mock.calls[1][0]).toBeInstanceOf(Error);
+      expect(reportErrorSpy.mock.calls[1][0].message).toBe("undefined");
+      expect(reportErrorSpy.mock.calls[2][0].message).toBe("boom");
+      const signal = { digest: "NEXT_NOT_FOUND" };
+      handler(signal, {});
+      expect(reportErrorSpy.mock.calls[3][0]).toBe(signal);
+    });
+  });
+
   it("leaves navigation failure dispatch to the global error listener", () => {
     withFakeWindow(({ assignSpy, reportErrorSpy }) => {
       const handler = createOnUncaughtError();

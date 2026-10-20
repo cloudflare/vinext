@@ -2065,7 +2065,7 @@ function bootstrapHydration(
     .catch(() => {});
   historyController.writeBootstrapHistoryMetadata();
 
-  const reportUncaughtError = createOnUncaughtError();
+  const reportUncaughtError = createOnUncaughtError({ coerceToError: import.meta.env.DEV });
   const onUncaughtError = (...args: Parameters<typeof reportUncaughtError>) => {
     hydrationCachePublication.fail();
     reportUncaughtError(...args);

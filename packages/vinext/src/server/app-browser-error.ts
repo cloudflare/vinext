@@ -31,11 +31,27 @@ function reportGlobalError(error: unknown): void {
   console.error(error);
 }
 
+// Ported from Next.js's next-devtools coerceError/isError. The dev overlay only
+// reports window error events that carry a value, so dev wraps non-Error
+// values (e.g. `throw undefined` from a crashing global-error.tsx) before
+// reporting them.
+// Navigation signals pass through untouched so their digest stays readable.
+function coerceError(value: unknown): unknown {
+  if (isNavigationSignalError(value)) return value;
+  if (typeof value === "object" && value !== null && "name" in value && "message" in value) {
+    return value;
+  }
+  return new Error(String(value));
+}
+
 // Match Next.js's root callback: report the error globally. The optional
 // navigation-failure listener handles the resulting error event when enabled.
-export function createOnUncaughtError(): HydrateRootErrorHandler {
+// Dev coerces non-Error values first, like Next.js's decorateDevError.
+export function createOnUncaughtError(
+  options: { coerceToError?: boolean } = {},
+): HydrateRootErrorHandler {
   return (error) => {
-    reportGlobalError(error);
+    reportGlobalError(options.coerceToError ? coerceError(error) : error);
   };
 }
 
