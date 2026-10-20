@@ -21,6 +21,8 @@ type AppRscManifestCode = {
   rootForbiddenVar: string | null;
   rootUnauthorizedVar: string | null;
   rootLayoutVars: string[];
+  /** Whether `app/layout` exists, rather than only route-group root layouts. */
+  hasAppRootLayout: boolean;
   globalErrorVar: string | null;
   /**
    * Path expression for the `app/global-not-found.{tsx,ts,js,jsx}` module
@@ -680,6 +682,10 @@ export function buildAppRscManifestCode(
   const rootLayoutVars = rootRouteLayoutPaths(rootRoute).map((layoutPath) =>
     imports.getImportVar(layoutPath),
   );
+  // Tree position 0 is the app directory itself.
+  const hasAppRootLayout = options.routes.some(
+    (route) => route.layouts.length > 0 && route.layoutTreePositions[0] === 0,
+  );
   const globalErrorVar = options.globalErrorPath
     ? imports.getImportVar(options.globalErrorPath)
     : null;
@@ -712,6 +718,7 @@ export function buildAppRscManifestCode(
     rootForbiddenVar,
     rootUnauthorizedVar,
     rootLayoutVars,
+    hasAppRootLayout,
     globalErrorVar,
     globalNotFoundImportSpecifier,
   };

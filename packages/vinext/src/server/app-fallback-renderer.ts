@@ -61,6 +61,8 @@ type AppFallbackRendererOptions<TModule extends AppPageModule = AppPageModule> =
   globalErrorModule?: TModule | null;
   /** Whether experimental.globalNotFound is enabled for route-miss 404s. */
   globalNotFoundEnabled?: boolean;
+  /** Whether the app has a root `app/layout`, rather than only route-group root layouts. */
+  hasAppRootLayout?: boolean;
   /**
    * Loader for the user's `app/global-not-found.tsx` module. When provided,
    * route-miss 404s render this module as a standalone document (skipping the
@@ -149,6 +151,8 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
       matchedParams?: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead | null;
+      /** A routing-level not-found for params a `dynamicParams = false` route rejects. */
+      routeMiss?: boolean;
     },
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
@@ -181,6 +185,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
     getNavigationContext,
     globalErrorModule,
     globalNotFoundEnabled = false,
+    hasAppRootLayout = true,
     loadGlobalNotFoundModule,
     makeThenableParams,
     metadataRoutes,
@@ -265,6 +270,18 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       // See https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx#L495-L520
       const useGlobalNotFound =
         statusCode === 404 && globalNotFoundEnabled && !route && !opts?.boundaryComponent;
+      // Without app/layout, Next.js' /_not-found page wraps the built-in
+      // not-found in a default document rather than a route group's root
+      // layout. A routing-level miss renders that page, so a route-group root
+      // layout and its not-found never wrap it.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+      const useStandaloneNotFound =
+        useGlobalNotFound ||
+        (statusCode === 404 &&
+          !route &&
+          opts?.routeMiss === true &&
+          !hasAppRootLayout &&
+          !opts.boundaryComponent);
 
       if (useGlobalNotFound && loadGlobalNotFoundModule) {
         const globalNotFoundModule = await resolveGlobalNotFoundModule();
@@ -312,7 +329,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         }
       }
 
-      const routeMissRootNotFoundModule = useGlobalNotFound
+      const routeMissRootNotFoundModule = useStandaloneNotFound
         ? (DEFAULT_GLOBAL_NOT_FOUND_MODULE as unknown as TModule)
         : effectiveRootNotFoundModule;
 
@@ -334,12 +351,12 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
         headBoundaryModule: opts?.headBoundaryModule ?? null,
-        headLayoutModules: useGlobalNotFound ? [] : (opts?.headLayouts ?? null),
+        headLayoutModules: useStandaloneNotFound ? [] : (opts?.headLayouts ?? null),
         intercept: opts?.intercept ?? null,
         isCacheCandidate: opts?.isCacheCandidate,
         isEdgeRuntime: callContext?.isEdgeRuntime,
         isRscRequest,
-        layoutModules: useGlobalNotFound ? [] : (opts?.layouts ?? null),
+        layoutModules: useStandaloneNotFound ? [] : (opts?.layouts ?? null),
         loadSsrHandler: ssrLoader,
         makeThenableParams,
         matchedParams: opts?.matchedParams ?? route?.params ?? {},
@@ -349,10 +366,10 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         requestUrl: request.url,
         resolveChildSegments,
         rootForbiddenModule,
-        rootLayouts: useGlobalNotFound ? [] : rootLayouts,
+        rootLayouts: useStandaloneNotFound ? [] : rootLayouts,
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
-        route: useGlobalNotFound ? null : route,
+        route: useStandaloneNotFound ? null : route,
         routeHead: opts?.routeHead ?? null,
         routePathname: callContext?.routePathname,
         renderToReadableStream: rscRenderer,

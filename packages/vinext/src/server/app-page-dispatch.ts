@@ -6,7 +6,7 @@ import {
   _captureRequestScopedCacheLifeAccessors,
   _isOnDemandRevalidate,
 } from "vinext/shims/cache-request-state";
-import type { RootParams } from "vinext/shims/root-params";
+import { setRootParams, type RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
   consumeDynamicUsage,
@@ -73,7 +73,7 @@ import {
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptState,
-  validateAppPageDynamicParams,
+  validateAppPageRouteDynamicParams,
   type ValidateAppPageDynamicParamsOptions,
 } from "./app-page-request.js";
 import { applyIneligibleRouteCachePolicy, renderAppPageLifecycle } from "./app-page-render.js";
@@ -105,8 +105,11 @@ import {
   VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
+  VINEXT_ROUTE_MISS_HEADER,
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
+import { preserveFullyBufferedBodyMetadata } from "./fully-buffered-response.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
@@ -118,6 +121,7 @@ import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
   isRouteCacheabilityProbe,
+  markRouteCacheabilityFinalResponseUncacheable,
   markRouteCacheabilityPatternDynamic,
   readRouteCacheabilityState,
 } from "vinext/shims/cacheability-classification";
@@ -128,7 +132,10 @@ import {
 } from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { traceResponseStart } from "./response-start-tracing.js";
-import { getFrameworkLinkHeader } from "./app-response-header-provenance.js";
+import {
+  copyLinkHeaderProvenance,
+  getFrameworkLinkHeader,
+} from "./app-response-header-provenance.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type AppPageElement = ReactNode | Readonly<Record<string, ReactNode>>;
@@ -470,6 +477,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
       matchedParams: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead;
+      /** Render the root not-found as if no route matched, as Next.js routing does. */
+      routeMiss?: boolean;
     },
     middlewareContext: AppPageMiddlewareContext | null,
   ) => Promise<Response | null>;
@@ -610,6 +619,28 @@ async function runAppPageRevalidationContext<
   } finally {
     await closeAfterResponse(requestContext);
   }
+}
+
+/**
+ * Next.js sends a routing-level 404 with its never-cache policy, which neither
+ * middleware nor next.config headers can replace. The request stage reasserts
+ * it after config headers, and shared-cache admission never stores it.
+ */
+function markAppPageRouteMissResponse(response: Response): Response {
+  markRouteCacheabilityFinalResponseUncacheable("routing-level not-found");
+  const headers = new Headers(response.headers);
+  applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+  headers.set(VINEXT_ROUTE_MISS_HEADER, "1");
+  const marked = preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    }),
+  );
+  copyLinkHeaderProvenance(response.headers, marked.headers);
+  return marked;
 }
 
 function toInterceptOptions(
@@ -1235,28 +1266,40 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     }
   }
 
-  // Next.js' production force-dynamic routes are absent from the prerender
-  // manifest, so they never enter its generated-path fallback gate. Dev still
-  // resolves and exact-matches generateStaticParams for the same route.
-  if (options.skipStaticParamsValidation !== true && !(options.isProduction && isForceDynamic)) {
-    const dynamicParamsResponse = await validateAppPageDynamicParams({
-      enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+  if (options.skipStaticParamsValidation !== true) {
+    const dynamicParamsResponse = await validateAppPageRouteDynamicParams({
+      dynamicConfig,
+      dynamicParamsConfig: options.dynamicParamsConfig,
       generateStaticParams: options.generateStaticParams,
       isDynamicRoute: route.isDynamic,
+      isProduction: options.isProduction,
       params: options.staticParamsValidationParams ?? options.params,
     });
     if (dynamicParamsResponse) {
-      // A generated-param miss belongs to a matched App route, so render the
-      // route's not-found boundary just like a page-level notFound() signal.
-      // The plain response remains a defensive fallback if boundary rendering
-      // is unavailable, but the normal path must include Next.js's canonical
-      // not-found markup (and custom not-found.tsx when present). The route's
-      // own not-found is the nearest one in its tree; the manifest's root
-      // not-found can belong to another root layout's (issue #4304).
-      const boundaryModule = route.notFound ?? getDefaultHttpAccessFallbackModule(404);
+      // Next.js rejects a generated-param miss while routing, so it renders
+      // the root not-found as if no route matched. None of this route's
+      // layouts or generateMetadata may run with the rejected params. The
+      // plain response remains a defensive fallback if boundary rendering is
+      // unavailable.
+      // Undo this route's config too: its fetch defaults, and the static
+      // headers context and search params of force-static / dynamic = "error".
+      const navigationContext = options.getNavigationContext();
+      if (navigationContext) {
+        options.setNavigationContext({
+          ...navigationContext,
+          params: {},
+          searchParams: options.searchParams,
+        });
+      }
+      setRootParams(null);
+      setHeadersContext(requestHeadersContext);
+      setCurrentFetchSoftTags([]);
+      setCurrentFetchCacheMode(null);
+      setCurrentFetchRevalidate(null);
+      setCurrentForceDynamicFetchDefault(false);
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
-        { boundaryModule, matchedParams: options.params },
+        { matchedParams: {}, routeMiss: true },
         options.middlewareContext,
       );
       const cachePolicy = {
@@ -1276,10 +1319,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         scriptNonce: options.scriptNonce,
       };
       if (renderedNotFound) {
-        return applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy);
+        return markAppPageRouteMissResponse(
+          applyIneligibleRouteCachePolicy(renderedNotFound, cachePolicy),
+        );
       }
       options.clearRequestContext();
-      return applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy);
+      return markAppPageRouteMissResponse(
+        applyIneligibleRouteCachePolicy(dynamicParamsResponse, cachePolicy),
+      );
     }
   }
 
