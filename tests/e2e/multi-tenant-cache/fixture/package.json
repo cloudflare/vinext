@@ -1,0 +1,5 @@
+{
+  "name": "@vinext/e2e-multi-tenant-cache",
+  "private": true,
+  "type": "module"
+}
