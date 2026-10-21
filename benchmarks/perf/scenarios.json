@@ -14,7 +14,9 @@
       "cwd": "benchmarks/nextjs",
       "implementationId": "nextjs"
     },
-    { "command": ["node", "benchmarks/perf/generate-pages-app.mjs"], "trusted": true }
+    { "command": ["node", "benchmarks/perf/generate-pages-app.mjs"], "trusted": true },
+    { "command": ["vp", "build"], "cwd": "benchmarks/vinext", "implementationId": "vinext" },
+    { "command": ["npm", "run", "build"], "cwd": "benchmarks/nextjs", "implementationId": "nextjs" }
   ],
   "scenarios": [
     {
@@ -162,6 +164,30 @@
           "profile": false,
           "compareBase": true,
           "command": ["node", "benchmarks/perf/bundle-size.mjs", "vinext", "server"]
+        }
+      ]
+    },
+    {
+      "id": "prod-cold-start-dashboard",
+      "suite": "Production",
+      "label": "Production server cold start",
+      "description": "Time from launching a fresh production-server process (vinext start, next start) over the build created during setup until /dashboard first responds with server-rendered client components. The route is force-dynamic and its layout and page render \"use client\" components, so the first response loads the server bundle, the client-reference manifest, and the SSR entry instead of serving a prerendered file. The build is not timed, and the server is stopped after every sample.",
+      "unit": "ms",
+      "lowerIsBetter": true,
+      "implementations": [
+        {
+          "id": "nextjs",
+          "label": "Next.js",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/production-cold-start.mjs", "nextjs", "/dashboard"]
+        },
+        {
+          "id": "vinext",
+          "label": "vinext",
+          "profile": false,
+          "compareBase": true,
+          "command": ["node", "benchmarks/perf/production-cold-start.mjs", "vinext", "/dashboard"]
         }
       ]
     }
