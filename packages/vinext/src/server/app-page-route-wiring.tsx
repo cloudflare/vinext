@@ -22,7 +22,9 @@ import {
 } from "vinext/shims/error-boundary";
 import { AppRouterScrollTarget } from "vinext/shims/app-router-scroll";
 import DefaultGlobalError from "vinext/shims/default-global-error";
+import DefaultForbidden from "vinext/shims/default-forbidden";
 import DefaultNotFound from "vinext/shims/default-not-found";
+import DefaultUnauthorized from "vinext/shims/default-unauthorized";
 import type { AppRouteSemanticIds } from "../routing/app-route-graph.js";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { withUseCacheLayoutMarker } from "vinext/shims/internal/app-page-props-cache-key";
@@ -90,6 +92,8 @@ const APP_PAGE_SLOT_SEGMENT_KEY = "(__SLOT__)";
 const APP_PAGE_LAYOUT_PROBE_CHILD = <Fragment />;
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageErrorComponent;
 const DEFAULT_NOT_FOUND_COMPONENT = DefaultNotFound as AppPageComponent;
+const DEFAULT_FORBIDDEN_COMPONENT = DefaultForbidden as AppPageComponent;
+const DEFAULT_UNAUTHORIZED_COMPONENT = DefaultUnauthorized as AppPageComponent;
 
 function resolveSlotLayoutParams(
   routeSegments: readonly string[],
@@ -319,7 +323,7 @@ type AppPageErrorEntry<TErrorModule extends AppPageErrorModule = AppPageErrorMod
 
 type AppPageAccessBoundary<TModule extends AppPageModule = AppPageModule> = {
   component: AppPageComponent;
-  /** `null` for the built-in not-found. */
+  /** `null` for a built-in page. */
   module: TModule | null;
 };
 
@@ -980,7 +984,7 @@ export function buildAppPageElements<
   // Next.js wraps each segment's children in that segment's not-found,
   // forbidden and unauthorized boundaries, inside its layout, whether or not
   // the segment has a layout. The root segment falls back to the built-in
-  // not-found, and a first-layer route group without a file of its own
+  // page, and a first-layer route group without a file of its own
   // inherits the root's, as Turbopack does.
   // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
   // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
@@ -1072,13 +1076,13 @@ export function buildAppPageElements<
     options.route.segmentForbiddens,
     options.route.segmentForbiddenTreePositions,
     (entry) => entry.forbiddenModule,
-    null,
+    rootForbiddenModule ? null : DEFAULT_FORBIDDEN_COMPONENT,
   );
   const unauthorizedBoundaries = resolveAccessBoundaries(
     options.route.segmentUnauthorizeds,
     options.route.segmentUnauthorizedTreePositions,
     (entry) => entry.unauthorizedModule,
-    null,
+    rootUnauthorizedModule ? null : DEFAULT_UNAUTHORIZED_COMPONENT,
   );
   const layoutDependenciesByIndex = new Map<number, AppRenderDependency>();
   const renderDependenciesByElementId = new Map<string, AppRenderDependency>();

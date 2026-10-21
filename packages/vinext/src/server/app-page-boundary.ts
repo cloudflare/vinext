@@ -173,7 +173,7 @@ export function resolveAppPageLayoutHttpAccessBoundary<TModule>(
 /**
  * Tree position at which the root segment's boundary catches a layout's error.
  * Next.js gives a first-layer route group the root segment's boundary (the
- * custom `app/not-found` or the built-in one) when the group has none of its
+ * custom file or the built-in page) when the group has none of its
  * own, so the boundary renders inside the group's layout, which is often the
  * root layout. Without `app/layout`, the root layout sits deeper (for example
  * `app/[lang]/layout`), and the boundary renders inside it so the page keeps

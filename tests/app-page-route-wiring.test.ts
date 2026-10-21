@@ -4536,6 +4536,73 @@ describe("app page route wiring helpers", () => {
     expect(groupBoundary.props.resetKey).toBe(pageBoundary.props.resetKey);
   });
 
+  it.each([
+    { boundaryTypeName: "ForbiddenBoundary", builtInTypeName: "DefaultForbidden" },
+    { boundaryTypeName: "UnauthorizedBoundary", builtInTypeName: "DefaultUnauthorized" },
+  ])(
+    "places the built-in $builtInTypeName at the root and in a first-layer route group",
+    ({ boundaryTypeName, builtInTypeName }) => {
+      // Without forbidden/unauthorized files, Next.js gives the root segment
+      // its built-in pages, and a first-layer route group inherits them.
+      // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
+      const routeEntry = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null, null, null],
+          layoutTreePositions: [0, 1, 2],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null, null],
+          routeSegments: ["(shop)", "cart", "items"],
+          segmentForbiddens: [],
+          segmentForbiddenTreePositions: [],
+          segmentNotFounds: [],
+          segmentNotFoundTreePositions: [],
+          segmentUnauthorizeds: [],
+          segmentUnauthorizedTreePositions: [],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/cart/items",
+        rootForbiddenModule: null,
+        rootNotFoundModule: null,
+        rootUnauthorizedModule: null,
+      })["route:/cart/items"];
+
+      const rootLayoutSlot = findSlotById(routeEntry, "layout:/");
+      if (!rootLayoutSlot) throw new Error("Expected the root layout slot");
+      const rootBoundary = findBoundaryWithFallback(
+        rootLayoutSlot.props.children,
+        boundaryTypeName,
+        builtInTypeName,
+      );
+      if (!rootBoundary) throw new Error("Expected the built-in page inside the root layout");
+      expect(findSlotById(rootBoundary.props.children, "layout:/(shop)")).not.toBeNull();
+      const groupLayoutSlot = findSlotById(routeEntry, "layout:/(shop)");
+      if (!groupLayoutSlot) throw new Error("Expected the group layout slot");
+      const groupBoundary = findBoundaryWithFallback(
+        groupLayoutSlot.props.children,
+        boundaryTypeName,
+        builtInTypeName,
+      );
+      if (!groupBoundary) throw new Error("Expected the built-in page inside the group layout");
+      expect(findSlotById(groupBoundary.props.children, "layout:/(shop)/cart")).not.toBeNull();
+      // Built-in pages clear when the visible pathname changes.
+      expect(rootBoundary.props.resetKey).toBeUndefined();
+      expect(groupBoundary.props.resetKey).toBeUndefined();
+      const cartLayoutSlot = findSlotById(routeEntry, "layout:/(shop)/cart");
+      if (!cartLayoutSlot) throw new Error("Expected the cart layout slot");
+      expect(findElementByTypeName(cartLayoutSlot.props.children, boundaryTypeName)).toBeNull();
+    },
+  );
+
   it("renders a boundary file above a deeper root layout inside that layout", () => {
     // app/(site)/not-found.tsx sits above the app/(site)/[lang]/layout.tsx
     // root layout. Rendering it above that layout would drop <html>, so it

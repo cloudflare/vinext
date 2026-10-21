@@ -6,7 +6,11 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
-import { DEFAULT_NOT_FOUND_MODULE } from "../packages/vinext/src/server/default-not-found-module.js";
+import {
+  DEFAULT_FORBIDDEN_MODULE,
+  DEFAULT_NOT_FOUND_MODULE,
+  DEFAULT_UNAUTHORIZED_MODULE,
+} from "../packages/vinext/src/server/default-http-access-fallback-modules.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -122,6 +126,8 @@ type TestRoute = {
   segmentForbiddenTreePositions?: readonly number[];
   segmentNotFounds?: readonly ({ default?: unknown } | null | undefined)[];
   segmentNotFoundTreePositions?: readonly number[];
+  segmentUnauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentUnauthorizedTreePositions?: readonly number[];
   isDynamic: boolean;
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
@@ -963,33 +969,143 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("keeps the plain status response for a page's forbidden() without a boundary file", async () => {
-    const layouts = [{ default: () => null }, { default: () => null }];
-    const route = createRoute({
-      layouts,
+  // Next.js gives the root segment its built-in forbidden and unauthorized
+  // pages when the app has no file, as it does for not-found.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
+  const builtInAccessPages = [
+    { statusCode: 403, builtInModule: DEFAULT_FORBIDDEN_MODULE },
+    { statusCode: 401, builtInModule: DEFAULT_UNAUTHORIZED_MODULE },
+  ];
+  const builtInAccessPlacements = [
+    {
+      name: "the root segment",
       layoutTreePositions: [0, 1],
       routeSegments: ["posts", "[slug]"],
-      segmentForbiddens: [],
-      segmentForbiddenTreePositions: [],
-    });
-    const renderHttpAccessFallbackPage = vi.fn(async () => null);
-    const { options } = createDispatchOptions({
-      async buildPageElement() {
-        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;403"), {
-          digest: "NEXT_HTTP_ERROR_FALLBACK;403",
-        });
-      },
-      route,
-    });
-    // The "/" route's file can belong to another route group's subtree.
-    options.rootForbiddenModule = { default: () => null };
-    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      renderedLayoutCount: 1,
+    },
+    {
+      // The first-layer route group inherits the root segment's page.
+      name: "a first-layer route group below the root layout",
+      layoutTreePositions: [0, 1, 3],
+      routeSegments: ["(group)", "posts", "[slug]"],
+      renderedLayoutCount: 2,
+    },
+    {
+      // The root layout lives in a first-layer route group.
+      name: "a first-layer route group root layout",
+      layoutTreePositions: [1, 3],
+      routeSegments: ["(site)", "posts", "[slug]"],
+      renderedLayoutCount: 1,
+    },
+  ];
 
-    const response = await dispatchAppPage(options);
+  it.each(
+    builtInAccessPages.flatMap((page) =>
+      builtInAccessPlacements.map((placement) => ({ ...page, ...placement })),
+    ),
+  )(
+    "renders the built-in $statusCode page for a page's signal in $name",
+    async ({
+      builtInModule,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+      statusCode,
+    }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentForbiddens: [],
+        segmentForbiddenTreePositions: [],
+        segmentUnauthorizeds: [],
+        segmentUnauthorizedTreePositions: [],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>denied</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw Object.assign(new Error(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`), {
+            digest: `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`,
+          });
+        },
+        route,
+      });
+      // The "/" route's file can belong to another route group's subtree.
+      options.rootForbiddenModule = { default: () => null };
+      options.rootUnauthorizedModule = { default: () => null };
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
 
-    expect(response.status).toBe(403);
-    expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
-  });
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining({
+          boundaryModule: builtInModule,
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it.each(
+    builtInAccessPages.flatMap((page) =>
+      builtInAccessPlacements.map((placement) => ({ ...page, ...placement })),
+    ),
+  )(
+    "renders the built-in $statusCode page for a layout's signal in $name",
+    async ({
+      builtInModule,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+      statusCode,
+    }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const throwingLayoutIndex = layouts.length - 1;
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentForbiddens: [],
+        segmentForbiddenTreePositions: [],
+        segmentUnauthorizeds: [],
+        segmentUnauthorizedTreePositions: [],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>denied</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === throwingLayoutIndex) {
+            throw Object.assign(new Error(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`), {
+              digest: `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`,
+            });
+          }
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining({
+          boundaryModule: builtInModule,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
 
   it("disables streaming metadata while producing prerendered HTML", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");

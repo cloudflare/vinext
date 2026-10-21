@@ -44,7 +44,7 @@ import {
   resolveAppPageRootHttpAccessBoundaryTreePosition,
   resolveAppPageParentHttpAccessBoundary,
 } from "./app-page-boundary.js";
-import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
+import { getDefaultHttpAccessFallbackModule } from "./default-http-access-fallback-modules.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
@@ -1594,11 +1594,9 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
               boundaryTreePositions: boundaryTreePositions ?? [],
               layoutTreePosition,
             });
-      // Without a segment boundary, 404 renders Next.js' built-in not-found.
-      // Forbidden and unauthorized have no built-in page in vinext, so they
-      // get the plain status response, as they do for a page without a boundary.
-      const boundaryModule =
-        boundary?.module ?? (statusCode === 404 ? DEFAULT_NOT_FOUND_MODULE : null);
+      // Without a segment boundary, Next.js renders its built-in not-found,
+      // forbidden or unauthorized page.
+      const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
       if (!boundaryModule) return Promise.resolve(null);
       // The boundary replaces its segment's children, so layouts below its
       // segment do not render around it. It never renders above the root layout.
@@ -1643,9 +1641,9 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
  * The fallback for a page's `notFound()` / `forbidden()` / `unauthorized()`.
  * Next.js wraps each segment's children in its boundaries, with or without a
  * layout, so the route's deepest boundary catches the signal and replaces
- * every layout below its segment. Without one, 404 renders the built-in
- * not-found inside the root layout, and 403 and 401 resolve to `null` for the
- * plain status response. Returns `null` for routes without segment data.
+ * every layout below its segment. Without one, the built-in not-found,
+ * forbidden or unauthorized page renders inside the root layout. Returns
+ * `null` for routes without segment data.
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
  */
 function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
@@ -1673,9 +1671,7 @@ function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
     boundaryTreePositions,
     layoutTreePosition: Number.POSITIVE_INFINITY,
   });
-  // Forbidden and unauthorized have no built-in page in vinext, so they keep
-  // the plain status response.
-  const boundaryModule = boundary?.module ?? (statusCode === 404 ? DEFAULT_NOT_FOUND_MODULE : null);
+  const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
   if (!boundaryModule) return Promise.resolve(null);
   const layoutTreePositions = route.layoutTreePositions ?? [];
   // The root segment's boundary renders inside the root layout, including a
