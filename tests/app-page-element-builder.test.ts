@@ -275,6 +275,39 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
   );
 }
 
+// Renders a loading shell the way the browser commits it optimistically: the
+// page entries stay suspended, so only the HTML up to their boundaries streams.
+async function renderOptimisticRouteEntry(elements: AppElements, routeId: string): Promise<string> {
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  const { createOptimisticRouteElements } =
+    await import("../packages/vinext/src/server/app-optimistic-routing.js");
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const optimisticElements = createOptimisticRouteElements(
+    {
+      elements,
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: Object.keys(elements).filter((key) => key.startsWith("page:")),
+      routeId,
+      routeStateKey: "",
+      urlRouteStateKey: "",
+    },
+    "",
+  )!;
+  const controller = new AbortController();
+  const stream = await renderToReadableStream(
+    React.createElement(
+      ElementsContext.Provider,
+      { value: optimisticElements },
+      React.createElement(Slot, { id: routeId }),
+    ),
+    { onError() {}, signal: controller.signal },
+  );
+  controller.abort();
+  return readStreamAsText(stream);
+}
+
 /**
  * Starts the head resolution an element entry renders. React's client build,
  * which these tests load, doesn't memoise cache(), so every call resolves the
@@ -754,7 +787,7 @@ describe("buildPageElements", () => {
         renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       },
     });
-    const html = await renderRouteEntry(result, result[APP_ROUTE_KEY] as string);
+    const html = await renderOptimisticRouteEntry(result, result[APP_ROUTE_KEY] as string);
 
     expect(html).toContain("Loading shell");
     expect(html).not.toContain("Page content");

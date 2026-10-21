@@ -20,6 +20,10 @@
 // change, not a silent string-format tweak. The route-building layer is the only
 // producer of these descriptors. The wire carries the resulting opaque strings,
 // and browser consumers compare those strings without reinterpreting route facts.
+// The one exception is the optimistic router: when it commits a loading shell
+// learned from another URL, it swaps the dynamic segment keys inside these
+// strings for the target's, which yields what this module derives for the
+// target's params (app-optimistic-routing.ts).
 
 type ParallelSlotBindingState = "active" | "default" | "unmatched";
 // NUL cannot occur in a filesystem-backed @slot name, so this internal slot-id

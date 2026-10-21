@@ -1,7 +1,16 @@
-import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  createElement,
+  isValidElement,
+  Suspense,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
+import { ErrorBoundary } from "vinext/shims/error-boundary";
+import { Slot } from "vinext/shims/slot";
 import {
   AppElementsWire,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
@@ -14,6 +23,7 @@ import {
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
+  settleOptimisticRouteRows,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import type {
@@ -22,6 +32,7 @@ import type {
   RouteManifestRoute,
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
+import { resolveAppPageRouteStateKey } from "../packages/vinext/src/server/app-page-segment-state.js";
 import {
   createNestedBfcacheSlotSegmentId,
   deriveBfcacheSegmentIdentity,
@@ -152,6 +163,62 @@ function createBlogLoadingShellElements(): AppElements {
   };
 }
 
+function blogRouteStateKey(slug: string): string {
+  return resolveAppPageRouteStateKey(["blog", "[slug]"], { slug });
+}
+
+function routeElementId(slug: string): string {
+  return AppElementsWire.encodeRouteId(`/blog/${slug}`, null);
+}
+
+// A loading shell that stops at the route's own loading.tsx: the route entry
+// and page entry carry the boundaries the full render keys by route state.
+function blogPageIdentity(slug: string): string {
+  return deriveBfcacheSegmentIdentity({
+    boundSegmentKey: blogRouteStateKey(slug),
+    graphId: "page:/blog/:slug",
+    kind: "page",
+    rootBoundaryId: "/",
+  });
+}
+
+function createBlogMirroredLoadingShellElements(slug: string): AppElements {
+  const routeId = routeElementId(slug);
+  const pageId = AppElementsWire.encodePageId(`/blog/${slug}`, null);
+  const key = blogRouteStateKey(slug);
+  return {
+    ...AppElementsWire.createMetadataEntries({
+      bfcacheSegmentIdentities: { [pageId]: blogPageIdentity(slug) },
+      interceptionContext: null,
+      layoutIds: ["layout:/"],
+      rootLayoutTreePath: "/",
+      routeId,
+    }),
+    [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+    [pageId]: createElement(Suspense, { fallback: createElement("p", null, "Loading"), key }, null),
+    [routeId]: createElement(
+      "main",
+      null,
+      createElement(Suspense, { fallback: createElement("p", null, "Loading"), key }, "Page slot"),
+    ),
+  };
+}
+
+function readSuspense(value: unknown) {
+  if (
+    !isValidElement<{ children?: unknown; fallback?: unknown }>(value) ||
+    value.type !== Suspense
+  ) {
+    throw new Error("Expected a Suspense boundary");
+  }
+  return value;
+}
+
+function readChild(value: unknown): unknown {
+  if (!isValidElement<{ children?: unknown }>(value)) throw new Error("Expected an element");
+  return value.props.children;
+}
+
 function staticSettingsManifest(): RouteManifest {
   return manifest([
     route({
@@ -271,7 +338,7 @@ describe("App Router optimistic routing", () => {
     }
 
     const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
-    const optimisticElements = createOptimisticRouteElements(template);
+    const optimisticElements = createOptimisticRouteElements(template, template.urlRouteStateKey)!;
     expect(optimisticElements[pageId]).not.toBe(elements[pageId]);
 
     const navigationPayload = resolveOptimisticNavigationPayload({
@@ -294,6 +361,499 @@ describe("App Router optimistic routing", () => {
 
     expect(navigationPayload?.params).toEqual({ slug: "post-2" });
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
+  });
+
+  it("suspends inside the page entry's own loading boundary", () => {
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: createBlogMirroredLoadingShellElements("post-1"),
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const elements = createOptimisticRouteElements(template, blogRouteStateKey("post-1"))!;
+    const optimisticBoundary = readSuspense(elements[pageId]);
+    // The real payload renders this keyed boundary, so React keeps the
+    // fallback the optimistic commit mounted.
+    expect(optimisticBoundary.key).toBe(blogRouteStateKey("post-1"));
+    expect(optimisticBoundary.props.fallback).toBe(
+      readSuspense(template.elements[pageId]).props.fallback,
+    );
+    expect(isValidElement(optimisticBoundary.props.children)).toBe(true);
+    expect(readSuspense(readChild(elements[routeElementId("post-1")])).key).toBe(
+      blogRouteStateKey("post-1"),
+    );
+  });
+
+  it("does not keep a full prefetch's page boundary", () => {
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const pageBoundary = createElement(Suspense, { fallback: null, key: "page-key" }, null);
+    const template: OptimisticRouteTemplate = {
+      elements: { [pageId]: pageBoundary },
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: [pageId],
+      routeId: "route:/blog/:slug",
+      routeStateKey: blogRouteStateKey("post-1"),
+      urlRouteStateKey: blogRouteStateKey("post-1"),
+    };
+
+    const pageElement = createOptimisticRouteElements(template, blogRouteStateKey("post-1"))![
+      pageId
+    ];
+    expect(isValidElement(pageElement) && pageElement.type).not.toBe(Suspense);
+  });
+
+  it("keys a template learned from another URL for the target", () => {
+    const routeManifest = blogManifest();
+    const routeId = routeElementId("post-3");
+    const pageId = AppElementsWire.encodePageId("/blog/post-3", null);
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const AppShell = (props: { children?: ReactNode; resetKey: string }) => props.children;
+    const lazySlot = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init: (payload: unknown) => payload,
+      _payload: Slot,
+    } as unknown as typeof Slot;
+    const SegmentError = () => createElement("p", null, "Error");
+    const rootLayoutIdentity = deriveBfcacheSegmentIdentity({
+      boundSegmentKey: "",
+      graphId: "layout:/",
+      kind: "layout",
+      rootBoundaryId: "/",
+    });
+    // The slug segment's own key, bare, as a segment boundary is keyed.
+    const slugSegmentKey = (slug: string): string => JSON.parse(blogRouteStateKey(slug))[1];
+    // A template above the leaf inside a route group keeps the group segment.
+    const groupTemplateKey = (slug: string) =>
+      JSON.stringify(["(shop)", "blog", slugSegmentKey(slug)]);
+    const groupTemplateIdentity = (slug: string) =>
+      deriveBfcacheSegmentIdentity({
+        boundSegmentKey: groupTemplateKey(slug),
+        graphId: "template:/blog",
+        kind: "template",
+        rootBoundaryId: "/",
+      });
+    const loadingFallback = createElement("p", null, "Loading");
+    const learn = (identities: Record<string, string>) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...shell,
+          [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: identities,
+          // Flight decodes a deferred row as a lazy element: a template's
+          // slot, then the slug segment's error and loading boundaries. It
+          // decodes the slot's client component type as a lazy too.
+          [routeId]: {
+            $$typeof: Symbol.for("react.lazy"),
+            _init: (payload: unknown) => payload,
+            _payload: createElement(
+              lazySlot,
+              { id: "template:/blog", key: groupTemplateKey("post-3") },
+              createElement(
+                ErrorBoundary,
+                {
+                  fallback: SegmentError,
+                  resetKey: slugSegmentKey("post-3"),
+                  // Children are passed as the third argument.
+                } as unknown as ComponentProps<typeof ErrorBoundary>,
+                createElement(
+                  Suspense,
+                  { fallback: loadingFallback, key: slugSegmentKey("post-3") },
+                  readChild(shell[routeId]) as ReactNode,
+                ),
+              ),
+            ),
+          } as unknown as AppElements[string],
+          // A loading boundary around what the template rendered, which keys
+          // its own elements.
+          "template:/blog": createElement(
+            Suspense,
+            { fallback: loadingFallback, key: slugSegmentKey("post-3") },
+            createElement(
+              AppShell,
+              { key: slugSegmentKey("post-3"), resetKey: slugSegmentKey("post-3") },
+              createElement(Suspense, { fallback: null, key: slugSegmentKey("post-3") }, "App"),
+            ),
+          ),
+        },
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: "/blog/post-4",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates: new Map([
+          [
+            getOptimisticRouteTemplateKey({
+              interceptionContext: null,
+              mountedSlotsHeader: null,
+              routeId: template.routeId,
+            }),
+            template,
+          ],
+        ]),
+      });
+    };
+
+    const payload = learn({
+      [pageId]: blogPageIdentity("post-3"),
+      "layout:/": rootLayoutIdentity,
+      "template:/blog": groupTemplateIdentity("post-3"),
+    });
+    // The real payload for post-4 renders these keys, so it reuses the
+    // boundaries the optimistic commit mounts.
+    if (payload === null) throw new Error("Expected optimistic payload");
+    const routeElement = payload.elements[routeId];
+    if (!isValidElement(routeElement)) throw new Error("Expected an element");
+    const errorBoundary = readChild(routeElement);
+    if (!isValidElement<{ resetKey?: unknown }>(errorBoundary)) {
+      throw new Error("Expected an element");
+    }
+    const segmentBoundary = readSuspense(readChild(errorBoundary));
+    expect(readSuspense(payload.elements[pageId]).key).toBe(blogRouteStateKey("post-4"));
+    expect(routeElement.key).toBe(groupTemplateKey("post-4"));
+    expect(errorBoundary.props.resetKey).toBe(slugSegmentKey("post-4"));
+    expect(segmentBoundary.key).toBe(slugSegmentKey("post-4"));
+    expect(readSuspense(readChild(segmentBoundary)).key).toBe(blogRouteStateKey("post-4"));
+    // The template entry's loading boundary is rebound. What the app rendered
+    // inside it keeps its keys and props.
+    const templateBoundary = readSuspense(payload.elements["template:/blog"]);
+    expect(templateBoundary.key).toBe(slugSegmentKey("post-4"));
+    const appShell = readChild(templateBoundary);
+    if (!isValidElement<{ resetKey?: unknown }>(appShell)) throw new Error("Expected an element");
+    expect(appShell.key).toBe(slugSegmentKey("post-3"));
+    expect(appShell.props.resetKey).toBe(slugSegmentKey("post-3"));
+    expect(readSuspense(readChild(appShell)).key).toBe(slugSegmentKey("post-3"));
+    // Slots are keyed by segment identities too. The page's and the
+    // template's name the target; the root layout's is not bound to the slug.
+    expect(AppElementsWire.readMetadata(payload.elements).bfcacheSegmentIdentities).toEqual({
+      [pageId]: blogPageIdentity("post-4"),
+      "layout:/": rootLayoutIdentity,
+      "template:/blog": groupTemplateIdentity("post-4"),
+    });
+
+    // A layout or named slot bound to the slug was rendered with post-3's
+    // params, so the shell is not committed for post-4.
+    const leafLayoutIdentity = deriveBfcacheSegmentIdentity({
+      boundSegmentKey: blogRouteStateKey("post-3"),
+      graphId: "layout:/blog/[slug]",
+      kind: "layout",
+      rootBoundaryId: "/",
+    });
+    // Slot identities nest their owner's state key.
+    const modalIdentity = deriveBfcacheSegmentIdentity({
+      activeRouteGraphId: null,
+      boundSegmentKey: JSON.stringify([blogRouteStateKey("post-3"), "photo"]),
+      interceptionTargetRouteGraphId: null,
+      kind: "slot",
+      ownerLayoutGraphId: "layout:/blog/[slug]",
+      slotGraphId: "slot:@modal",
+      state: "active",
+    });
+    expect(
+      learn({
+        [pageId]: blogPageIdentity("post-3"),
+        "layout:/blog/[slug]": leafLayoutIdentity,
+      }),
+    ).toBeNull();
+    expect(
+      learn({
+        [pageId]: blogPageIdentity("post-3"),
+        "slot:modal:/blog/[slug]": modalIdentity,
+      }),
+    ).toBeNull();
+    // A slot binds params of its own, which the route state key doesn't
+    // carry, so an identity naming none of the route's segments may still be
+    // the learned URL's.
+    const catchAllModalIdentity = deriveBfcacheSegmentIdentity({
+      activeRouteGraphId: "/blog/[...rest]",
+      boundSegmentKey: JSON.stringify(["blog", "rest|post-3|c"]),
+      interceptionTargetRouteGraphId: null,
+      kind: "slot",
+      ownerLayoutGraphId: "layout:/",
+      slotGraphId: "slot:@modal",
+      state: "active",
+    });
+    expect(
+      learn({
+        [pageId]: blogPageIdentity("post-3"),
+        "slot:modal:/": catchAllModalIdentity,
+      }),
+    ).toBeNull();
+  });
+
+  it("keys a template by the route state the server rendered", () => {
+    // A rewrite served /blog/post-1 from /blog/post-9, so the shell's
+    // boundaries are keyed for post-9.
+    const shell = createBlogMirroredLoadingShellElements("post-9");
+    const routeId = routeElementId("post-1");
+    const pageId = AppElementsWire.encodePageId("/blog/post-1", null);
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...shell,
+        ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: { [pageId]: blogPageIdentity("post-9") },
+          interceptionContext: null,
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId,
+        }),
+        [pageId]: shell[AppElementsWire.encodePageId("/blog/post-9", null)],
+        [routeId]: shell[routeElementId("post-9")],
+      },
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+    expect(template?.routeStateKey).toBe(blogRouteStateKey("post-9"));
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    // Committed for /blog/post-1, the real payload is rewritten the same way,
+    // so the shell keeps its keys.
+    const own = createOptimisticRouteElements(template, blogRouteStateKey("post-1"))!;
+    expect(readSuspense(own[pageId]).key).toBe(blogRouteStateKey("post-9"));
+    expect(readSuspense(readChild(own[routeId])).key).toBe(blogRouteStateKey("post-9"));
+
+    // Committed for another URL, it is keyed for that URL.
+    const other = createOptimisticRouteElements(template, blogRouteStateKey("post-2"))!;
+    expect(readSuspense(other[pageId]).key).toBe(blogRouteStateKey("post-2"));
+    expect(readSuspense(readChild(other[routeId])).key).toBe(blogRouteStateKey("post-2"));
+    expect(AppElementsWire.readMetadata(other).bfcacheSegmentIdentities[pageId]).toBe(
+      blogPageIdentity("post-2"),
+    );
+  });
+
+  it("does not commit a shell whose segment keys can't be rebound", () => {
+    // app/id|2|d/(g)/template.tsx above app/id|2|d/(g)/[id]: learned from
+    // /id|2|d/2 and committed for /id|2|d/3, only the [id] segment changes,
+    // but the static segment has the same key, so bare keys such as the
+    // template's or an [id] boundary's can't tell the two apart.
+    const fromKey = JSON.stringify(["id|2|d", "id|2|d"]);
+    const toKey = JSON.stringify(["id|2|d", "id|3|d"]);
+    const staticTemplateKey = JSON.stringify(["id|2|d", "(g)"]);
+    const pageId = AppElementsWire.encodePageId("/id|2|d/2", null);
+    const routeId = "route:/id|2|d/2";
+    const fallback = createElement("p", null, "Loading");
+    const template: OptimisticRouteTemplate = {
+      elements: {
+        ...AppElementsWire.createMetadataEntries({
+          interceptionContext: null,
+          layoutIds: ["layout:/"],
+          rootLayoutTreePath: "/",
+          routeId,
+        }),
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageId]: createElement(Suspense, { fallback, key: fromKey }, null),
+        [routeId]: createElement(
+          "div",
+          { key: staticTemplateKey },
+          createElement(Suspense, { fallback, key: fromKey }, "Page slot"),
+        ),
+      },
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: [pageId],
+      routeId: "route:/id|2|d/:id",
+      routeStateKey: fromKey,
+      urlRouteStateKey: fromKey,
+    };
+
+    expect(createOptimisticRouteElements(template, toKey)).toBeNull();
+    // Committed for its own URL, it needs no rebinding.
+    expect(createOptimisticRouteElements(template, fromKey)).not.toBeNull();
+  });
+
+  it("does not commit a shell while what it mirrors or rebinds is pending", () => {
+    const routeManifest = blogManifest();
+    const routeId = routeElementId("post-3");
+    const pageId = AppElementsWire.encodePageId("/blog/post-3", null);
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const slugSegmentKey = JSON.parse(blogRouteStateKey("post-3"))[1];
+    // Flight decodes a row it hasn't read yet, or a client component type
+    // whose module hasn't loaded, as a lazy whose initializer throws.
+    let resolved: unknown = null;
+    const lazy = <T>(value: () => T): T =>
+      ({
+        $$typeof: Symbol.for("react.lazy"),
+        _init: () => {
+          if (resolved === null) throw new Promise(() => {});
+          return value();
+        },
+        _payload: null,
+      }) as unknown as T;
+    const learn = (elements: Partial<AppElements>) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: { ...shell, ...elements } as AppElements,
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const post4 = blogRouteStateKey("post-4");
+
+    // The page entry's boundary is mirrored, and shows which route state the
+    // shell is keyed for, even when committed for the URL it was learned from.
+    const pendingPage = learn({ [pageId]: lazy(() => shell[pageId]) });
+    expect(createOptimisticRouteElements(pendingPage, post4)).toBeNull();
+    expect(createOptimisticRouteElements(pendingPage, blogRouteStateKey("post-3"))).toBeNull();
+    // Once it has resolved, the shell is keyed for the target.
+    resolved = true;
+    expect(readSuspense(createOptimisticRouteElements(pendingPage, post4)![pageId]).key).toBe(
+      post4,
+    );
+    resolved = null;
+
+    expect(
+      createOptimisticRouteElements(learn({ [routeId]: lazy(() => shell[routeId]) }), post4),
+    ).toBeNull();
+    // A pending type is read only for an element keyed by a changed segment.
+    const PendingBoundary = lazy(() => Slot);
+    const routeWithPendingType = (key: string) =>
+      learn({
+        [routeId]: createElement(PendingBoundary, { id: "x", key }, shell[routeId] as ReactNode),
+      });
+    expect(createOptimisticRouteElements(routeWithPendingType(slugSegmentKey), post4)).toBeNull();
+    expect(createOptimisticRouteElements(routeWithPendingType("blog"), post4)).not.toBeNull();
+  });
+
+  it("reads the rows a shell rebinds before it is learned", async () => {
+    const routeId = routeElementId("post-3");
+    const pageId = AppElementsWire.encodePageId("/blog/post-3", null);
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    // Flight parses a row when it is first read, and a row that renders a
+    // client component then waits for its module.
+    const deferred = <T>(value: T): T => {
+      let loaded = false;
+      let loading: Promise<void> | null = null;
+      return {
+        $$typeof: Symbol.for("react.lazy"),
+        _init: () => {
+          if (loaded) return value;
+          loading ??= new Promise<void>((resolve) =>
+            setTimeout(() => {
+              loaded = true;
+              resolve();
+            }),
+          );
+          throw loading;
+        },
+        // React's dev checks read a lazy child's payload.
+        _payload: {},
+      } as unknown as T;
+    };
+    const elements = {
+      ...shell,
+      [pageId]: deferred(shell[pageId]),
+      // A row inside a row, around a client component type.
+      [routeId]: deferred(
+        createElement(
+          deferred(Slot),
+          { id: "template:/blog", key: JSON.parse(blogRouteStateKey("post-3"))[1] },
+          deferred(shell[routeId]) as ReactNode,
+        ),
+      ),
+    } as AppElements;
+    await settleOptimisticRouteRows(elements);
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements,
+      href: "/blog/post-3.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    const post4 = blogRouteStateKey("post-4");
+    const payload = createOptimisticRouteElements(template, post4);
+    expect(readSuspense(payload![pageId]).key).toBe(post4);
+  });
+
+  it("gives up a shell whose rows don't resolve rather than hold the navigation", async () => {
+    vi.useFakeTimers();
+    try {
+      const routeId = routeElementId("post-3");
+      const shell = createBlogMirroredLoadingShellElements("post-3");
+      // A client module whose chunk never loads.
+      const stalled = new Promise<never>(() => {});
+      const elements = {
+        ...shell,
+        [routeId]: {
+          $$typeof: Symbol.for("react.lazy"),
+          _init: () => {
+            throw stalled;
+          },
+          _payload: {},
+        },
+      } as unknown as AppElements;
+      let settled = false;
+      const settling = settleOptimisticRouteRows(elements).then(() => {
+        settled = true;
+      });
+      await vi.advanceTimersByTimeAsync(49);
+      expect(settled).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await settling;
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements,
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      expect(createOptimisticRouteElements(template, blogRouteStateKey("post-4"))).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not commit a shell for another URL deeper than it rebinds", () => {
+    const routeId = routeElementId("post-3");
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const learn = (wrappers: number) => {
+      let route = shell[routeId] as ReactNode;
+      for (let index = 0; index < wrappers; index++) route = createElement("div", null, route);
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: { ...shell, [routeId]: route } as AppElements,
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return createOptimisticRouteElements(template, blogRouteStateKey("post-4"));
+    };
+    expect(learn(90)).not.toBeNull();
+    // Boundaries below the limit would stay keyed for post-3.
+    expect(learn(110)).toBeNull();
   });
 
   it("includes active parallel slot params in optimistic navigation payloads", () => {
@@ -415,9 +975,9 @@ describe("App Router optimistic routing", () => {
     });
 
     expect(template?.pageElementIds).toEqual([childrenSlotId]);
-    expect(createOptimisticRouteElements(template!)[childrenSlotId]).not.toBe(
-      elements[childrenSlotId],
-    );
+    expect(
+      createOptimisticRouteElements(template!, template!.urlRouteStateKey)![childrenSlotId],
+    ).not.toBe(elements[childrenSlotId]);
   });
 
   it("does not learn routes without a loading boundary", () => {

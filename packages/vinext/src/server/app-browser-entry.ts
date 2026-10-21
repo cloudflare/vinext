@@ -217,6 +217,7 @@ import {
   getOptimisticRouteTemplateKey,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
+  settleOptimisticRouteRows,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import {
@@ -734,6 +735,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
+  await settleOptimisticRouteRows(elements);
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,

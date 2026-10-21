@@ -108,6 +108,7 @@ const projectServers = {
       "app-router-prod/middleware-external-rewrite-host.spec.ts",
       "app-router-prod/hybrid-route-handler-exposure.spec.ts",
       "app-router-prod/settled-prefetch-suspense.spec.ts",
+      "app-router-prod/loading-shell-remount.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
     ],
