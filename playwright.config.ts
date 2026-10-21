@@ -104,6 +104,7 @@ const projectServers = {
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
       "app-router-prod/middleware-external-rewrite-host.spec.ts",
       "app-router-prod/hybrid-route-handler-exposure.spec.ts",
+      "app-router-prod/settled-prefetch-suspense.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
     ],

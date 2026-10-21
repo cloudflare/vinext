@@ -2917,10 +2917,11 @@ function bootstrapHydration(
           scrollIntent,
           targetHref: currentHref,
           traversalIntent: activeTraversalIntent,
-          // Only a settled prefetch carrying already-decoded elements can
-          // commit within the initiating click task. Missing, in-flight, and
-          // preparation-failed entries keep the ordinary transition path.
-          visibleCommitMode: prefetchedElements ? "synchronous" : visibleCommitMode,
+          // A settled prefetch still commits as a transition, as in Next.js:
+          // its decoded elements can reference client modules that are still
+          // loading, and a sync render would show the nearest Suspense
+          // fallback over the current page.
+          visibleCommitMode,
         });
         if (renderOutcome === "hard-navigate") {
           startedHardNavigation = true;

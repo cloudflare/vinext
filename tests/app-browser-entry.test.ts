@@ -4179,7 +4179,7 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("forces same-path search and hash state into a synchronous React commit", async () => {
+  it("republishes same-path search and hash state before the commit signal", async () => {
     const initialElements = createResolvedElements("route:/hash", "/", null, {
       "page:/hash": React.createElement("main", null, "hash page"),
     });

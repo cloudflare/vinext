@@ -805,6 +805,7 @@ export function createAppBrowserNavigationController(
     commit: ApprovedVisibleCommit,
     pendingRouterState: PendingBrowserRouterState | null,
     visibleCommitMode: NavigationRuntimeVisibleCommitMode,
+    republishPendingRouterState: boolean,
   ): void {
     const setter = getBrowserRouterStateSetter();
     const pendingCommit = pendingNavigationCommits.get(renderId);
@@ -821,9 +822,13 @@ export function createAppBrowserNavigationController(
       // resolving the deferred promise is normally sufficient. A same-path
       // search+hash response whose visible tree is unchanged can be retained by
       // React without mounting the new NavigationCommitSignal, though. In that
-      // narrow synchronous mode, publish the resolved state directly as well;
-      // the signal's commit effects remain the authority for URL and scroll
-      // effects, including when the response suspends or changes the tree.
+      // narrow case, publish the resolved state directly as well; the signal's
+      // commit effects remain the authority for URL and scroll effects,
+      // including when the response suspends or changes the tree. The publish
+      // stays a transition: the payload can still be resolving, and a sync
+      // render that suspends replaces the visible page with the nearest
+      // Suspense fallback. This branch ignores visibleCommitMode: its only
+      // "synchronous" caller (gesture push) never has a pending router state.
       if (pendingRouterState.settled) return;
       const committedState = captureCandidateState(
         applyApprovedVisibleCommit(getBrowserRouterState(), commit),
@@ -833,8 +838,8 @@ export function createAppBrowserNavigationController(
       if (activePendingBrowserRouterState === pendingRouterState) {
         activePendingBrowserRouterState = null;
       }
-      if (visibleCommitMode === "synchronous") {
-        flushSync(() => {
+      if (republishPendingRouterState) {
+        startTransition(() => {
           setter(committedState);
         });
       }
@@ -982,7 +987,7 @@ export function createAppBrowserNavigationController(
     }
   }
 
-  function shouldForceSynchronousCommit(options: BrowserNavigationPayloadOptions): boolean {
+  function shouldRepublishPendingRouterState(options: BrowserNavigationPayloadOptions): boolean {
     if (options.actionType === "traverse") return false;
     if (options.historyUpdateMode === undefined) return false;
     if (options.scrollIntent?.hash == null) return false;
@@ -1143,9 +1148,8 @@ export function createAppBrowserNavigationController(
         renderId,
         approvedCommit,
         options.pendingRouterState,
-        shouldForceSynchronousCommit(options)
-          ? "synchronous"
-          : (options.visibleCommitMode ?? "transition"),
+        options.visibleCommitMode ?? "transition",
+        shouldRepublishPendingRouterState(options),
       );
       if (options.navigationResponseCompletion) {
         // Keep the live Flight branch streaming. If React commits it normally,
