@@ -27,7 +27,10 @@ describe("hasTopLevelAwait", () => {
 });
 
 describe("collectAsyncModules", () => {
-  const graph: Record<string, { code: string; importedIds: string[] }> = {
+  const graph: Record<
+    string,
+    { code: string; importedIds: string[]; moduleSideEffects?: boolean }
+  > = {
     "/direct.tsx": { code: "await init();", importedIds: [] },
     "/importer.tsx": { code: "export {};", importedIds: ["/lib/a.ts"] },
     "/lib/a.ts": { code: "export {};", importedIds: ["/lib/b.ts"] },
@@ -41,6 +44,11 @@ describe("collectAsyncModules", () => {
     "/dropped.tsx": { code: "export {};", importedIds: ["/lib/elsewhere.ts"] },
     "/lib/elsewhere.ts": { code: "await setup();", importedIds: [] },
     "/elsewhere-user.tsx": { code: "export {};", importedIds: ["/lib/elsewhere.ts"] },
+    // Imports a side-effect-free one it never uses from a chunk it loads for
+    // another import.
+    "/shared.tsx": { code: "export {};", importedIds: ["/lib/used.ts", "/lib/pure.ts"] },
+    "/lib/used.ts": { code: "export {};", importedIds: [] },
+    "/lib/pure.ts": { code: "await setup();", importedIds: [], moduleSideEffects: false },
   };
   const getModuleInfo = (id: string) => graph[id] ?? null;
   const rendered = (...ids: string[]) =>
@@ -69,6 +77,8 @@ describe("collectAsyncModules", () => {
       imports: ["elsewhere.js"],
       modules: rendered("/elsewhere-user.tsx"),
     },
+    { fileName: "shared.js", imports: ["lib-shared.js"], modules: rendered("/shared.tsx") },
+    { fileName: "lib-shared.js", imports: [], modules: rendered("/lib/used.ts", "/lib/pure.ts") },
   ];
 
   it("marks roots that await at the top level or import a module that does", () => {
@@ -80,7 +90,7 @@ describe("collectAsyncModules", () => {
   });
 
   it("ignores imports the emitted output dropped", () => {
-    const roots = ["/shaken.tsx", "/dropped.tsx"];
+    const roots = ["/shaken.tsx", "/dropped.tsx", "/shared.tsx"];
 
     expect(collectAsyncModules({ roots, getModuleInfo, chunks })).toEqual(new Set());
   });

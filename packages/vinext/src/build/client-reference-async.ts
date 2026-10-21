@@ -1,7 +1,11 @@
 import type { ESTree } from "vite";
 import { parseProgram, walkAst } from "../plugins/ast-utils.js";
 
-type AsyncModuleGraphInfo = { code: string | null; importedIds: readonly string[] };
+type AsyncModuleGraphInfo = {
+  code: string | null;
+  importedIds: readonly string[];
+  moduleSideEffects?: boolean | "no-treeshake" | null;
+};
 
 /** A chunk of the emitted output, as `renderChunk`'s `meta.chunks` lists it. */
 export type EmittedChunk = {
@@ -53,9 +57,11 @@ export function hasTopLevelAwait(code: string): boolean {
  * The `roots` whose evaluation is asynchronous in the emitted output: the
  * module, or a module it imports at any depth, awaits at its top level. Webpack
  * calls these async modules, and React's Flight client suspends on them as they
- * load. Only what the output keeps counts: modules tree-shaking dropped, and
- * imports of a module in a chunk the importer's chunks never load (an unused
- * import that tree-shaking removed), don't make a module async.
+ * load. Only what the output keeps counts: modules tree-shaking dropped don't
+ * make a module async. Neither do imports of a module declared free of side
+ * effects (`sideEffects: false`), which the output drops when unused, nor of a
+ * module in a chunk the importer's chunks never load. Other imports stay: the
+ * imported module's side effects, its await included, run before the importer.
  */
 export function collectAsyncModules(options: {
   roots: readonly string[];
@@ -104,6 +110,7 @@ export function collectAsyncModules(options: {
     for (const imported of info?.importedIds ?? []) {
       const importedChunk = chunkOf.get(imported);
       if (!importedChunk || !loaded.has(importedChunk.fileName)) continue;
+      if (options.getModuleInfo(imported)?.moduleSideEffects === false) continue;
       let list = importers.get(imported);
       if (!list) importers.set(imported, (list = []));
       list.push(id);
