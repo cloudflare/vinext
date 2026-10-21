@@ -6,6 +6,7 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { DEFAULT_NOT_FOUND_MODULE } from "../packages/vinext/src/server/default-not-found-module.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
@@ -117,6 +118,10 @@ type TestRoute = {
   error?: { default?: unknown } | null;
   errors?: readonly ({ default?: unknown } | null | undefined)[];
   forbiddens?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentForbiddens?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentForbiddenTreePositions?: readonly number[];
+  segmentNotFounds?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentNotFoundTreePositions?: readonly number[];
   isDynamic: boolean;
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
@@ -709,6 +714,150 @@ describe("app page dispatch", () => {
     // same position. Probe the root and co-located layout only.
     expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
   });
+
+  it.each([
+    { digest: "NEXT_HTTP_ERROR_FALLBACK;404", status: 404 },
+    { digest: "NEXT_HTTP_ERROR_FALLBACK;403", status: 403 },
+  ])(
+    "renders the root $status boundary inside a first-layer route group's root layout",
+    async ({ digest, status }) => {
+      // app/(site)/layout is the root layout and app/ holds the boundary file.
+      const rootBoundary = { default: () => null };
+      const layouts = [{ default: () => null }, { default: () => null }];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [1, 2],
+        routeSegments: ["(site)", "[slug]"],
+        ...(status === 404
+          ? { segmentNotFounds: [rootBoundary], segmentNotFoundTreePositions: [0] }
+          : { segmentForbiddens: [rootBoundary], segmentForbiddenTreePositions: [0] }),
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>fallback</html>", { status }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === 1) throw Object.assign(new Error(digest), { digest });
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(status);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        status,
+        expect.objectContaining({ boundaryModule: rootBoundary, layouts: layouts.slice(0, 1) }),
+        null,
+      );
+    },
+  );
+
+  it("renders a boundary file above a deeper root layout inside that layout", async () => {
+    // app/(site)/not-found.tsx sits above the app/(site)/[lang]/layout.tsx
+    // root layout, which holds the <html> element.
+    const siteNotFound = { default: () => null };
+    const layouts = [{ default: () => null }, { default: () => null }];
+    const route = createRoute({
+      layouts,
+      layoutTreePositions: [2, 3],
+      routeSegments: ["(site)", "[lang]", "shop", "[id]"],
+      segmentNotFounds: [siteNotFound],
+      segmentNotFoundTreePositions: [1],
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        }
+        return null;
+      },
+      route,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ boundaryModule: siteNotFound, layouts: layouts.slice(0, 1) }),
+      null,
+    );
+  });
+  it.each([
+    {
+      // The root layout lives in a first-layer route group, where Next.js
+      // also puts its built-in not-found.
+      name: "a first-layer route group",
+      layoutTreePositions: [1, 2],
+      routeSegments: ["(site)", "[slug]"],
+      throwingLayoutIndex: 1,
+      renderedLayoutCount: 1,
+    },
+    {
+      name: "a first-layer route group below the root layout",
+      layoutTreePositions: [0, 1, 3],
+      routeSegments: ["(group)", "posts", "[slug]"],
+      throwingLayoutIndex: 2,
+      renderedLayoutCount: 2,
+    },
+    {
+      name: "the root segment",
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["posts", "[slug]"],
+      throwingLayoutIndex: 2,
+      renderedLayoutCount: 1,
+    },
+    {
+      // app/[lang]/layout is the root layout and holds the <html> element.
+      name: "a root layout below app/",
+      layoutTreePositions: [1, 2],
+      routeSegments: ["[lang]", "shop"],
+      throwingLayoutIndex: 1,
+      renderedLayoutCount: 1,
+    },
+  ])(
+    "renders the built-in not-found for a layout's notFound() in $name",
+    async ({ layoutTreePositions, renderedLayoutCount, routeSegments, throwingLayoutIndex }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({ layouts, layoutTreePositions, routeSegments });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === throwingLayoutIndex) {
+            throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+              digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+            });
+          }
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: DEFAULT_NOT_FOUND_MODULE,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
 
   it("disables streaming metadata while producing prerendered HTML", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");

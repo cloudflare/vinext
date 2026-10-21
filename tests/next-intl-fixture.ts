@@ -103,6 +103,14 @@ export async function createNextIntlFixture({
           )
           .replace('href="/" locale="de"', 'href="/de"'),
       );
+      const notFoundPage = path.join(root, "app/[locale]/not-found.tsx");
+      await fs.writeFile(
+        notFoundPage,
+        (await fs.readFile(notFoundPage, "utf8")).replace(
+          'import { Link } from "../../i18n/navigation";',
+          'import Link from "next/link";',
+        ),
+      );
     }
     if (convention === "proxy") {
       await fs.mkdir(path.join(root, "src"));

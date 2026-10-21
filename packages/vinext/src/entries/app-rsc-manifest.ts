@@ -214,6 +214,13 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
         if (up) imports.getLazyLoaderVar(up);
       }
     }
+    for (const boundaryPath of [
+      ...(route.segmentNotFoundPaths ?? []),
+      ...(route.segmentForbiddenPaths ?? []),
+      ...(route.segmentUnauthorizedPaths ?? []),
+    ]) {
+      imports.getLazyLoaderVar(boundaryPath);
+    }
     for (const slot of route.parallelSlots) {
       if (slot.pagePath) imports.getLazyLoaderVar(slot.pagePath);
       if (slot.defaultPath) imports.getLazyLoaderVar(slot.defaultPath);
@@ -367,6 +374,9 @@ ${interceptEntries.join(",\n")}
       }`;
     });
     const layoutErrorPaths = route.layoutErrorPaths ?? [];
+    const segmentNotFoundPaths = route.segmentNotFoundPaths ?? [];
+    const segmentForbiddenPaths = route.segmentForbiddenPaths ?? [];
+    const segmentUnauthorizedPaths = route.segmentUnauthorizedPaths ?? [];
     const errorPaths = route.errorPaths ?? [];
     const layoutErrorLoaders = lazyLoaderArray(layoutErrorPaths, imports);
     const errorLoaders = lazyLoaderArray(errorPaths, imports);
@@ -433,6 +443,15 @@ ${siblingInterceptEntries.join(",\n")}
     unauthorizedTreePosition: ${route.unauthorizedTreePosition ?? "null"},
     unauthorizeds: ${moduleArray(unauthorizedPaths.length)},
     __loadUnauthorizeds: ${unauthorizedLoaders},
+    segmentNotFounds: ${moduleArray(segmentNotFoundPaths.length)},
+    __loadSegmentNotFounds: ${lazyLoaderArray(segmentNotFoundPaths, imports)},
+    segmentNotFoundTreePositions: ${JSON.stringify(route.segmentNotFoundTreePositions ?? [])},
+    segmentForbiddens: ${moduleArray(segmentForbiddenPaths.length)},
+    __loadSegmentForbiddens: ${lazyLoaderArray(segmentForbiddenPaths, imports)},
+    segmentForbiddenTreePositions: ${JSON.stringify(route.segmentForbiddenTreePositions ?? [])},
+    segmentUnauthorizeds: ${moduleArray(segmentUnauthorizedPaths.length)},
+    __loadSegmentUnauthorizeds: ${lazyLoaderArray(segmentUnauthorizedPaths, imports)},
+    segmentUnauthorizedTreePositions: ${JSON.stringify(route.segmentUnauthorizedTreePositions ?? [])},
   }`;
   });
 }

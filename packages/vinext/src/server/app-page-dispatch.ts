@@ -40,9 +40,11 @@ import { AppElementsWire, type AppOutgoingElements } from "./app-elements.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
 import type { WarmPprFallbackShellCachesOptions } from "./app-ppr-fallback-shell-render.js";
 import {
+  resolveAppPageLayoutHttpAccessBoundary,
+  resolveAppPageRootHttpAccessBoundaryTreePosition,
   resolveAppPageParentHttpAccessBoundary,
-  resolveAppPageParentHttpAccessBoundaryModule,
 } from "./app-page-boundary.js";
+import { DEFAULT_NOT_FOUND_MODULE } from "./default-not-found-module.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
@@ -227,6 +229,12 @@ export type AppPageDispatchRoute = {
   params: readonly string[];
   pattern: string;
   routeSegments: readonly string[];
+  segmentForbiddens?: readonly (AppPageModule | null | undefined)[];
+  segmentForbiddenTreePositions?: readonly number[];
+  segmentNotFounds?: readonly (AppPageModule | null | undefined)[];
+  segmentNotFoundTreePositions?: readonly number[];
+  segmentUnauthorizeds?: readonly (AppPageModule | null | undefined)[];
+  segmentUnauthorizedTreePositions?: readonly number[];
   slots?: Readonly<Record<string, AppPageDispatchSlot>>;
   unauthorized?: AppPageModule | null;
   unauthorizedTreePosition?: number | null;
@@ -421,6 +429,10 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     opts: {
       boundaryComponent?: unknown;
       boundaryModule?: AppPageModule | null;
+      /** Boundary whose metadata the head uses, when not `boundaryModule`. */
+      headBoundaryModule?: AppPageModule | null;
+      /** Layouts whose metadata the head uses, when more than `layouts`. */
+      headLayouts?: readonly AppPageModule[];
       intercept?: AppPageDispatchInterceptOptions | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
@@ -1559,25 +1571,68 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
-      const parentBoundaryModule = resolveAppPageParentHttpAccessBoundaryModule({
-        layoutIndex,
-        rootForbiddenModule: options.rootForbiddenModule,
-        rootNotFoundModule: options.rootNotFoundModule,
-        rootUnauthorizedModule: options.rootUnauthorizedModule,
-        routeForbiddenModules: options.route.forbiddens,
-        routeNotFoundModules: options.route.notFounds,
-        routeUnauthorizedModules: options.route.unauthorizeds,
-        statusCode,
+      const { route } = options;
+      const layoutTreePositions = route.layoutTreePositions ?? [];
+      const boundaryModules =
+        statusCode === 403
+          ? route.segmentForbiddens
+          : statusCode === 401
+            ? route.segmentUnauthorizeds
+            : route.segmentNotFounds;
+      const boundaryTreePositions =
+        statusCode === 403
+          ? route.segmentForbiddenTreePositions
+          : statusCode === 401
+            ? route.segmentUnauthorizedTreePositions
+            : route.segmentNotFoundTreePositions;
+      const layoutTreePosition = layoutTreePositions[layoutIndex];
+      const boundary =
+        layoutTreePosition === undefined
+          ? null
+          : resolveAppPageLayoutHttpAccessBoundary({
+              boundaryModules: boundaryModules ?? [],
+              boundaryTreePositions: boundaryTreePositions ?? [],
+              layoutTreePosition,
+            });
+      // Without a segment boundary, 404 renders Next.js' built-in not-found.
+      // Forbidden and unauthorized have no built-in page in vinext, so they
+      // get the plain status response, as they do for a page without a boundary.
+      const boundaryModule =
+        boundary?.module ?? (statusCode === 404 ? DEFAULT_NOT_FOUND_MODULE : null);
+      if (!boundaryModule) return Promise.resolve(null);
+      // The boundary replaces its segment's children, so layouts below its
+      // segment do not render around it. It never renders above the root layout.
+      const boundaryTreePosition = Math.max(
+        boundary?.treePosition ?? 0,
+        resolveAppPageRootHttpAccessBoundaryTreePosition(
+          route.routeSegments,
+          layoutTreePositions,
+          layoutTreePosition,
+        ),
+      );
+      // Next.js takes the head from the route's deepest boundary file, which
+      // can sit below the one that catches the error.
+      const headBoundary = resolveAppPageLayoutHttpAccessBoundary({
+        boundaryModules: boundaryModules ?? [],
+        boundaryTreePositions: boundaryTreePositions ?? [],
+        layoutTreePosition: Number.POSITIVE_INFINITY,
       });
-      const fallbackOptions: Parameters<typeof options.renderHttpAccessFallbackPage>[1] = {
-        layouts: options.route.layouts.slice(0, layoutIndex),
-        matchedParams: options.params,
-      };
-      if (parentBoundaryModule) {
-        fallbackOptions.boundaryComponent = parentBoundaryModule.default;
-        fallbackOptions.boundaryModule = parentBoundaryModule;
-      }
-      return options.renderHttpAccessFallbackPage(statusCode, fallbackOptions, null);
+      return options.renderHttpAccessFallbackPage(
+        statusCode,
+        {
+          boundaryComponent: boundaryModule.default,
+          boundaryModule,
+          headBoundaryModule: headBoundary?.module ?? boundaryModule,
+          // Every layout above the throwing one still contributes metadata.
+          headLayouts: route.layouts.slice(0, layoutIndex),
+          layouts: route.layouts.filter(
+            (_, index) =>
+              index < layoutIndex && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
+          ),
+          matchedParams: options.params,
+        },
+        null,
+      );
     },
     request: options.request,
     specialError,

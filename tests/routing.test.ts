@@ -517,6 +517,64 @@ describe("appRouter - route discovery", () => {
     });
   });
 
+  it("records every segment's HTTP access boundaries with their positions", async () => {
+    // Issue #4045: app/not-found.tsx sits above a root layout at
+    // app/[locale]/layout.tsx, but it is neither a layout's boundary nor the
+    // route's nearest one.
+    await withTempDir("vinext-app-segment-boundaries-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[locale]", "shop"), { recursive: true });
+      await writeFile(path.join(appDir, "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "shop", "unauthorized.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "shop", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/:locale/shop");
+
+      expect(route?.notFoundPaths).toEqual([canonical(appDir, "[locale]/not-found.tsx")]);
+      expect(route?.segmentNotFoundPaths).toEqual([
+        canonical(appDir, "not-found.tsx"),
+        canonical(appDir, "[locale]/not-found.tsx"),
+      ]);
+      expect(route?.segmentNotFoundTreePositions).toEqual([0, 1]);
+      expect(route?.segmentForbiddenPaths).toEqual([canonical(appDir, "forbidden.tsx")]);
+      expect(route?.segmentForbiddenTreePositions).toEqual([0]);
+      expect(route?.segmentUnauthorizedPaths).toEqual([
+        canonical(appDir, "[locale]/shop/unauthorized.tsx"),
+      ]);
+      expect(route?.segmentUnauthorizedTreePositions).toEqual([2]);
+    });
+  });
+
+  it("records no segment HTTP access boundaries for a route handler", async () => {
+    // A route handler never renders them, so its requests must not import them.
+    await withTempDir("vinext-app-route-handler-boundaries-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      await mkdir(path.join(appDir, "[locale]", "api"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "not-found.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "[locale]", "api", "unauthorized.tsx"), EMPTY_PAGE);
+      await writeFile(
+        path.join(appDir, "[locale]", "api", "route.ts"),
+        "export function GET() { return new Response('ok'); }",
+      );
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const route = routes.find((candidate) => candidate.pattern === "/:locale/api");
+
+      expect(route?.routePath).toBe(canonical(appDir, "[locale]/api/route.ts"));
+      expect(route?.segmentNotFoundPaths).toEqual([]);
+      expect(route?.segmentForbiddenPaths).toEqual([]);
+      expect(route?.segmentUnauthorizedPaths).toEqual([]);
+    });
+  });
+
   it("records auth boundary owner positions without co-located layouts", async () => {
     await withTempDir("vinext-app-auth-owner-", async (tmpDir) => {
       const appDir = path.join(tmpDir, "app");

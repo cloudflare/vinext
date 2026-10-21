@@ -138,6 +138,10 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     opts: {
       boundaryComponent?: AppPageComponent | null;
       boundaryModule?: TModule | null;
+      /** Boundary whose metadata the head uses, when not `boundaryModule`. */
+      headBoundaryModule?: TModule | null;
+      /** Layouts whose metadata the head uses, when more than `layouts`. */
+      headLayouts?: readonly (TModule | null | undefined)[] | null;
       intercept?: AppPageInterceptOptions<TModule> | null;
       /** The document may be stored, so it must not carry the request's query. */
       isCacheCandidate?: boolean;
@@ -327,6 +331,8 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         getAndClearPendingCookies,
         getNavigationContext,
         globalErrorModule: effectiveGlobalErrorModule,
+        headBoundaryModule: opts?.headBoundaryModule ?? null,
+        headLayoutModules: useGlobalNotFound ? [] : (opts?.headLayouts ?? null),
         intercept: opts?.intercept ?? null,
         isCacheCandidate: opts?.isCacheCandidate,
         isEdgeRuntime: callContext?.isEdgeRuntime,

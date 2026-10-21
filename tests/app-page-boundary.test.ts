@@ -3,7 +3,8 @@ import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryComponent,
-  resolveAppPageParentHttpAccessBoundaryModule,
+  resolveAppPageRootHttpAccessBoundaryTreePosition,
+  resolveAppPageLayoutHttpAccessBoundary,
   wrapAppPageBoundaryElement,
 } from "../packages/vinext/src/server/app-page-boundary.js";
 
@@ -53,26 +54,70 @@ describe("app page boundary helpers", () => {
     expect(component).toBe("RootNotFound");
   });
 
-  it("selects the matching parent HTTP access boundary for layout throws", () => {
+  // Issue #4045. Checked against Next.js 16 (webpack and Turbopack): a
+  // layout's notFound() is caught by the deepest segment boundary above the
+  // layout's own segment, whether or not that segment has a layout.
+  it("selects the deepest segment boundary above a throwing layout", () => {
+    // app/not-found, app/[locale]/not-found and app/[locale]/shop/not-found;
+    // app/[locale]/shop/layout throws.
     expect(
-      resolveAppPageParentHttpAccessBoundaryModule({
-        layoutIndex: 2,
-        rootForbiddenModule: "RootForbidden",
-        routeForbiddenModules: [null, "ParentForbidden", "ThrowingLayoutForbidden"],
-        routeNotFoundModules: [null, "ParentNotFound"],
-        statusCode: 403,
+      resolveAppPageLayoutHttpAccessBoundary({
+        boundaryModules: ["AppNotFound", "LocaleNotFound", "ShopNotFound"],
+        boundaryTreePositions: [0, 1, 2],
+        layoutTreePosition: 2,
       }),
-    ).toBe("ParentForbidden");
+    ).toEqual({ module: "LocaleNotFound", treePosition: 1 });
+  });
 
+  it("skips the throwing layout's own boundary and the ones below it", () => {
+    // No app/layout: app/[locale]/layout is the root layout and throws. Its
+    // own not-found needs its providers, so app/not-found catches it.
     expect(
-      resolveAppPageParentHttpAccessBoundaryModule({
-        layoutIndex: 2,
-        rootUnauthorizedModule: "RootUnauthorized",
-        routeNotFoundModules: [null, "ParentNotFound"],
-        routeUnauthorizedModules: [null, undefined, "ThrowingLayoutUnauthorized"],
-        statusCode: 401,
+      resolveAppPageLayoutHttpAccessBoundary({
+        boundaryModules: ["AppNotFound", "LocaleNotFound"],
+        boundaryTreePositions: [0, 1],
+        layoutTreePosition: 1,
       }),
-    ).toBe("RootUnauthorized");
+    ).toEqual({ module: "AppNotFound", treePosition: 0 });
+
+    // Without app/not-found nothing above the layout can catch it.
+    expect(
+      resolveAppPageLayoutHttpAccessBoundary({
+        boundaryModules: ["LocaleNotFound", "BlogNotFound"],
+        boundaryTreePositions: [1, 2],
+        layoutTreePosition: 1,
+      }),
+    ).toBeNull();
+
+    // A root layout's own boundary cannot catch the root layout's throw.
+    expect(
+      resolveAppPageLayoutHttpAccessBoundary({
+        boundaryModules: ["AppNotFound"],
+        boundaryTreePositions: [0],
+        layoutTreePosition: 0,
+      }),
+    ).toBeNull();
+  });
+
+  it("places the root boundary in a first-layer route group above the layout", () => {
+    expect(
+      resolveAppPageRootHttpAccessBoundaryTreePosition(["(site)", "[locale]"], [1, 2], 2),
+    ).toBe(1);
+    // The group's own layout cannot be caught by the group's boundary.
+    expect(resolveAppPageRootHttpAccessBoundaryTreePosition(["(site)", "[locale]"], [1], 1)).toBe(
+      0,
+    );
+    expect(resolveAppPageRootHttpAccessBoundaryTreePosition(["blog", "[slug]"], [0, 2], 2)).toBe(0);
+    expect(resolveAppPageRootHttpAccessBoundaryTreePosition(["(site)"], [0], undefined)).toBe(0);
+  });
+
+  it("places the root boundary inside a root layout below app/", () => {
+    expect(resolveAppPageRootHttpAccessBoundaryTreePosition(["[lang]", "shop"], [1, 2], 2)).toBe(1);
+    expect(
+      resolveAppPageRootHttpAccessBoundaryTreePosition(["(site)", "[lang]", "shop"], [2, 3], 3),
+    ).toBe(2);
+    // The root layout cannot be caught inside itself.
+    expect(resolveAppPageRootHttpAccessBoundaryTreePosition(["[lang]", "shop"], [1, 2], 1)).toBe(0);
   });
 
   it("resolves page, layout, and global error boundaries in order", () => {

@@ -206,6 +206,18 @@ export type AppRoute = {
   /** Unauthorized component paths per layout level (aligned with layouts array). */
   unauthorizedPaths: (string | null)[];
   /**
+   * Not-found, forbidden and unauthorized component paths for every segment
+   * from app/ to the route's directory, including segments without a layout,
+   * aligned with the matching tree positions. A layout's notFound() is caught
+   * by the deepest of these above the layout's own segment.
+   */
+  segmentNotFoundPaths?: string[];
+  segmentNotFoundTreePositions?: number[];
+  segmentForbiddenPaths?: string[];
+  segmentForbiddenTreePositions?: number[];
+  segmentUnauthorizedPaths?: string[];
+  segmentUnauthorizedTreePositions?: number[];
+  /**
    * Filesystem segments from app/ root to the route's directory.
    * Includes route groups and dynamic segments (as template strings like "[id]").
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
@@ -554,7 +566,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       }
     }
 
-    addRouteManifestSegmentErrorBoundaryFacts({ boundaries, route });
+    addRouteManifestSegmentBoundaryFacts({ boundaries, route });
 
     for (const [index, templateId] of route.ids.templates.entries()) {
       const treePosition = route.templateTreePositions?.[index];
@@ -826,27 +838,36 @@ function addRouteManifestBoundaryFacts(input: {
   );
 }
 
-function addRouteManifestSegmentErrorBoundaryFacts(input: {
+function addRouteManifestSegmentBoundaryFacts(input: {
   boundaries: Map<string, RouteManifestBoundary>;
   route: AppRouteGraphRoute;
 }): void {
-  for (const [index, boundaryPath] of (input.route.errorPaths ?? []).entries()) {
-    const treePosition = input.route.errorTreePositions?.[index];
-    assertRouteManifestBoundaryTreePosition(input.route, boundaryPath, treePosition);
-    const ownerLayoutId = findRouteManifestOwnerLayoutId(input.route, treePosition);
-    if (ownerLayoutId !== null) continue;
+  const { route } = input;
+  const segmentBoundaries: [
+    RouteManifestBoundaryOutcome,
+    readonly string[] | undefined,
+    readonly number[] | undefined,
+  ][] = [
+    ["error", route.errorPaths, route.errorTreePositions],
+    ["notFound", route.segmentNotFoundPaths, route.segmentNotFoundTreePositions],
+    ["forbidden", route.segmentForbiddenPaths, route.segmentForbiddenTreePositions],
+    ["unauthorized", route.segmentUnauthorizedPaths, route.segmentUnauthorizedTreePositions],
+  ];
+  for (const [outcome, boundaryPaths, treePositions] of segmentBoundaries) {
+    for (const [index, boundaryPath] of (boundaryPaths ?? []).entries()) {
+      const treePosition = treePositions?.[index];
+      assertRouteManifestBoundaryTreePosition(route, boundaryPath, treePosition);
+      // Boundaries beside a layout are recorded with their layout.
+      const ownerLayoutId = findRouteManifestOwnerLayoutId(route, treePosition);
+      if (ownerLayoutId !== null) continue;
 
-    const treePath = createAppRouteGraphTreePath(input.route.routeSegments, treePosition);
-    addRouteManifestBoundaryFact(
-      {
-        boundaries: input.boundaries,
-        route: input.route,
-        layoutId: ownerLayoutId,
-        treePath,
-      },
-      "error",
-      boundaryPath,
-    );
+      const treePath = createAppRouteGraphTreePath(route.routeSegments, treePosition);
+      addRouteManifestBoundaryFact(
+        { boundaries: input.boundaries, route, layoutId: ownerLayoutId, treePath },
+        outcome,
+        boundaryPath,
+      );
+    }
   }
 }
 
@@ -1433,6 +1454,12 @@ function discoverSlotSubRoutes(
         unauthorizedPath: parentRoute.unauthorizedPath,
         unauthorizedTreePosition: parentRoute.unauthorizedTreePosition,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
+        segmentNotFoundPaths: parentRoute.segmentNotFoundPaths,
+        segmentNotFoundTreePositions: parentRoute.segmentNotFoundTreePositions,
+        segmentForbiddenPaths: parentRoute.segmentForbiddenPaths,
+        segmentForbiddenTreePositions: parentRoute.segmentForbiddenTreePositions,
+        segmentUnauthorizedPaths: parentRoute.segmentUnauthorizedPaths,
+        segmentUnauthorizedTreePositions: parentRoute.segmentUnauthorizedTreePositions,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
         childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
@@ -1749,12 +1776,22 @@ function directoryToAppRoute(
   const unauthorizedEntry = discoverBoundaryFileEntry(segments, appDir, "unauthorized", matcher);
   const unauthorizedPath = unauthorizedEntry?.path ?? null;
 
-  // Discover per-layout not-found files (one per layout directory).
-  // These are used for per-layout NotFoundBoundary to match Next.js behavior where
-  // notFound() thrown from a layout is caught by the parent layout's boundary.
+  // Discover per-layout not-found files (one per layout directory), aligned
+  // with the layouts array. The segment lists below also cover segments
+  // without a layout, and a probed layout's notFound() uses the deepest of
+  // those above it.
   const notFoundPaths = discoverBoundaryFilePerLayout(layouts, "not-found", matcher);
   const forbiddenPaths = discoverBoundaryFilePerLayout(layouts, "forbidden", matcher);
   const unauthorizedPaths = discoverBoundaryFilePerLayout(layouts, "unauthorized", matcher);
+  // A route handler never renders these boundaries, so its requests must not
+  // import them. Next.js's App Route entry loads only the handler module.
+  const discoverPageSegmentBoundaryFiles = (fileName: string) =>
+    pagePath === null && routePath !== null
+      ? []
+      : discoverSegmentBoundaryFiles(segments, appDir, fileName, matcher);
+  const segmentNotFounds = discoverPageSegmentBoundaryFiles("not-found");
+  const segmentForbiddens = discoverPageSegmentBoundaryFiles("forbidden");
+  const segmentUnauthorizeds = discoverPageSegmentBoundaryFiles("unauthorized");
 
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
@@ -1798,6 +1835,12 @@ function directoryToAppRoute(
     forbiddenTreePosition: forbiddenEntry?.treePosition ?? null,
     unauthorizedPath,
     unauthorizedTreePosition: unauthorizedEntry?.treePosition ?? null,
+    segmentNotFoundPaths: segmentNotFounds.map((entry) => entry.path),
+    segmentNotFoundTreePositions: segmentNotFounds.map((entry) => entry.treePosition),
+    segmentForbiddenPaths: segmentForbiddens.map((entry) => entry.path),
+    segmentForbiddenTreePositions: segmentForbiddens.map((entry) => entry.treePosition),
+    segmentUnauthorizedPaths: segmentUnauthorizeds.map((entry) => entry.path),
+    segmentUnauthorizedTreePositions: segmentUnauthorizeds.map((entry) => entry.treePosition),
     unauthorizedPaths,
     routeSegments: segments,
     templateTreePositions,
@@ -2087,6 +2130,27 @@ function discoverBoundaryFileEntry(
     if (f) return { path: f, treePosition: i };
   }
   return null;
+}
+
+/**
+ * Discover boundary files (not-found, forbidden, unauthorized) by segment tree
+ * position. As with error.tsx, Next.js wraps each segment's children in its
+ * boundary whether or not the segment has a layout.
+ */
+function discoverSegmentBoundaryFiles(
+  segments: string[],
+  appDir: string,
+  fileName: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const boundaries: { path: string; treePosition: number }[] = [];
+  let currentDir = appDir;
+  for (let index = 0; index <= segments.length; index++) {
+    if (index > 0) currentDir = path.join(currentDir, segments[index - 1]);
+    const boundary = findFile(currentDir, fileName, matcher);
+    if (boundary) boundaries.push({ path: boundary, treePosition: index });
+  }
+  return boundaries;
 }
 
 /**

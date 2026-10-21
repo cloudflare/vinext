@@ -17,6 +17,9 @@ type ActionOwnerRoute = Pick<
   | "pagePath"
   | "parallelSlots"
   | "pattern"
+  | "segmentForbiddenPaths"
+  | "segmentNotFoundPaths"
+  | "segmentUnauthorizedPaths"
   | "siblingIntercepts"
   | "templates"
   | "unauthorizedPath"
@@ -54,6 +57,9 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
     ...(route.forbiddenPaths ?? []),
     route.unauthorizedPath,
     ...(route.unauthorizedPaths ?? []),
+    ...(route.segmentNotFoundPaths ?? []),
+    ...(route.segmentForbiddenPaths ?? []),
+    ...(route.segmentUnauthorizedPaths ?? []),
     ...route.parallelSlots.flatMap((slot) => [
       slot.pagePath,
       slot.defaultPath,

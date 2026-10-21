@@ -98,4 +98,23 @@ describe("next-intl static rendering (production)", () => {
     expect(second.headers.get("x-vinext-cache")).toBe("HIT");
     expect(second.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
   });
+
+  it("renders the built-in 404 when the locale layout calls notFound()", async () => {
+    // Issue #4045: [locale]/not-found.tsx is inside the [locale] layout and
+    // needs its NextIntlClientProvider, so it cannot catch that layout's
+    // notFound(). Next.js renders the boundary above the layout instead.
+    const response = await fetch(`${baseUrl}/missing.webp`);
+    expect(response.status).toBe(404);
+    const html = await response.text();
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("locale-not-found");
+
+    const rsc = await fetch(`${baseUrl}/missing.webp.rsc`, { headers: RSC_HEADERS });
+    // vinext answers 404 for RSC requests here; Next.js answers 200 and puts
+    // the not-found in the flight.
+    expect(rsc.status).toBe(404);
+    const flight = await rsc.text();
+    expect(flight).toContain("This page could not be found.");
+    expect(flight).not.toContain("locale-not-found");
+  });
 });

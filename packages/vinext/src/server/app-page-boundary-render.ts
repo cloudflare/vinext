@@ -110,6 +110,12 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
   params?: AppPageParams;
   pattern?: string;
   routeSegments?: readonly string[];
+  segmentForbiddens?: readonly (TModule | null | undefined)[] | null;
+  segmentForbiddenTreePositions?: readonly number[] | null;
+  segmentNotFounds?: readonly (TModule | null | undefined)[] | null;
+  segmentNotFoundTreePositions?: readonly number[] | null;
+  segmentUnauthorizeds?: readonly (TModule | null | undefined)[] | null;
+  segmentUnauthorizedTreePositions?: readonly number[] | null;
   slots?: AppPageRouteWiringRoute<TModule>["slots"];
   unauthorized?: TModule | null;
   unauthorizedTreePosition?: number | null;
@@ -176,6 +182,10 @@ type AppPageBoundaryRenderCommonOptions<TModule extends AppPageModule = AppPageM
 type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppPageModule> = {
   boundaryComponent?: AppPageComponent | null;
   boundaryModule?: TModule | null;
+  /** Boundary whose metadata the head uses, when not the rendered boundary. */
+  headBoundaryModule?: TModule | null;
+  /** Layouts whose metadata the head uses, when more than render around the boundary. */
+  headLayoutModules?: readonly (TModule | null | undefined)[] | null;
   intercept?: AppPageInterceptOptions<TModule> | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   matchedParams: AppPageParams;
@@ -237,6 +247,22 @@ function resolveHttpAccessBoundaryTreePosition<TModule extends AppPageModule>(
     if (layoutBoundaries?.[index] === boundaryModule) {
       return route.layoutTreePositions?.[index] ?? null;
     }
+  }
+  const segmentBoundaries =
+    statusCode === 403
+      ? route.segmentForbiddens
+      : statusCode === 401
+        ? route.segmentUnauthorizeds
+        : route.segmentNotFounds;
+  const segmentIndex = segmentBoundaries?.lastIndexOf(boundaryModule) ?? -1;
+  if (segmentIndex !== -1) {
+    const segmentTreePositions =
+      statusCode === 403
+        ? route.segmentForbiddenTreePositions
+        : statusCode === 401
+          ? route.segmentUnauthorizedTreePositions
+          : route.segmentNotFoundTreePositions;
+    return segmentTreePositions?.[segmentIndex] ?? null;
   }
   return null;
 }
@@ -580,7 +606,12 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   const pathname = new URL(options.requestUrl).pathname;
   const routePathname =
     options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
-  const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(options.route, layoutModules);
+  const headBoundaryModule = options.headBoundaryModule ?? boundaryModule;
+  const headLayoutModules = options.headLayoutModules ?? layoutModules;
+  const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(
+    options.route,
+    headLayoutModules,
+  );
   const fallbackRouteSegments = routeSegments ?? [];
   let head: Pick<Awaited<ReturnType<typeof resolveAppPageHead>>, "metadata" | "viewport">;
   try {
@@ -588,14 +619,20 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     if (useHttpAccessHeadPlan) {
       const boundaryTreePosition = resolveHttpAccessBoundaryTreePosition(
         options.route,
-        boundaryModule,
+        headBoundaryModule,
         options.statusCode,
+      );
+      // A boundary in a segment without a layout can sit below the last
+      // rendered layout, so its params and segments come from the full route.
+      const boundaryRouteSegments = (options.route?.routeSegments ?? fallbackRouteSegments).slice(
+        0,
+        boundaryTreePosition ?? 0,
       );
       const boundaryParams =
         boundaryTreePosition == null
           ? {}
           : resolveAppPageSegmentParams(
-              fallbackRouteSegments,
+              boundaryRouteSegments,
               boundaryTreePosition,
               options.matchedParams,
             );
@@ -664,9 +701,9 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           }
         : null;
       const fallbackHeadOptions = {
-        boundaryModule,
+        boundaryModule: headBoundaryModule,
         boundaryParams,
-        boundaryRouteSegments: fallbackRouteSegments.slice(0, boundaryTreePosition ?? 0),
+        boundaryRouteSegments,
         branchNotFoundConventions: options.statusCode === 404,
         errorConvention:
           options.statusCode === 403
@@ -674,10 +711,10 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
             : options.statusCode === 401
               ? ("unauthorized" as const)
               : ("not-found" as const),
-        layoutModules,
+        layoutModules: headLayoutModules,
         layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
           options.route,
-          layoutModules,
+          headLayoutModules,
         ),
         parallelBranches,
         params: options.matchedParams,
@@ -699,13 +736,13 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
       head = await resolveAppPageHead({
         applyFileBasedMetadata: options.applyFileBasedMetadata,
         basePath: options.basePath ?? "",
-        layoutModules,
+        layoutModules: headLayoutModules,
         layoutTreePositions: resolveHttpAccessFallbackHeadLayoutTreePositions(
           options.route,
-          layoutModules,
+          headLayoutModules,
         ),
         metadataRoutes: options.metadataRoutes,
-        pageModule: boundaryModule,
+        pageModule: headBoundaryModule,
         params: options.matchedParams,
         routePath: options.route?.pattern ?? pathname,
         routeSegments,

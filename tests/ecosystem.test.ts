@@ -226,6 +226,17 @@ describe("next-intl", () => {
     expect(html).toMatch(/data-testid="nav"[^>]*>Startseite</);
     expect(html).toMatch(/data-testid="about-title"[^>]*>Über</);
   });
+
+  it("renders the built-in 404 when the locale layout calls notFound()", async () => {
+    // Issue #4045: [locale]/not-found.tsx sits inside the [locale] layout, so it
+    // cannot catch that layout's notFound(). It also needs the layout's
+    // NextIntlClientProvider. Next.js renders the boundary above the layout,
+    // here the built-in not-found.
+    const { html, status } = await fetchPage("/missing.webp");
+    expect(status).toBe(404);
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("locale-not-found");
+  });
 });
 
 // ─── better-auth ──────────────────────────────────────────────────────────────

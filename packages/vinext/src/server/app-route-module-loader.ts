@@ -88,6 +88,9 @@ export type LazyLoadableRoute = {
   notFounds?: unknown[];
   forbiddens?: unknown[];
   unauthorizeds?: unknown[];
+  segmentNotFounds?: unknown[];
+  segmentForbiddens?: unknown[];
+  segmentUnauthorizeds?: unknown[];
   loading?: unknown;
   error?: unknown;
   notFound?: unknown;
@@ -107,6 +110,9 @@ export type LazyLoadableRoute = {
   __loadNotFounds?: LazyModuleLoaderArray | null;
   __loadForbiddens?: LazyModuleLoaderArray | null;
   __loadUnauthorizeds?: LazyModuleLoaderArray | null;
+  __loadSegmentNotFounds?: LazyModuleLoaderArray | null;
+  __loadSegmentForbiddens?: LazyModuleLoaderArray | null;
+  __loadSegmentUnauthorizeds?: LazyModuleLoaderArray | null;
   __loadLoading?: LazyModuleThunk | null;
   __loadError?: LazyModuleThunk | null;
   __loadNotFound?: LazyModuleThunk | null;
@@ -267,6 +273,9 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
   pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
   pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
+  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
+  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
+  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
 
   for (const slot of Object.values(route.slots ?? {})) {
     pushFieldLoad(loads, slot as Record<string, unknown>, "page", slot.__loadPage);

@@ -277,6 +277,45 @@ describe("Next.js compat: not-found", () => {
     expect(res.status).toBe(404);
   });
 
+  // Issue #4045. Ported from the behavior of Next.js'
+  // create-component-tree.tsx: every segment wraps its children in its
+  // not-found boundary, with or without a layout, and the boundary replaces
+  // the layouts below it.
+  it("notFound() from layout is caught by a segment boundary without a layout", async () => {
+    const valid = await fetchHtml(baseUrl, "/nextjs-compat/not-found-layout-segment/en/shop/hello");
+    expect(valid.res.status).toBe(200);
+    expect(valid.html).toContain("not-found-layout-segment-page");
+
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/shop/invalid",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    // The head comes from the route's deepest not-found (shop/[id]), which has
+    // no metadata, so the layouts' title applies.
+    expect(html).toContain("<title>App Basic</title>");
+    expect(html).toContain('<meta name="description" content="Shop layout description"/>');
+    // Match rendered markup: like Next.js, the flight may name skipped layouts.
+    expect(html).not.toContain("<h1>404 - Page Not Found</h1>");
+    expect(html).not.toContain("Not Found (id boundary)");
+    expect(html).not.toContain('id="not-found-layout-segment-shop"');
+    expect(html).not.toContain("not-found-layout-segment-wrapper");
+  });
+
+  // The 404's metadata comes from the route's deepest not-found, here the
+  // catching boundary, with that segment's params.
+  it("notFound() from layout uses the segment boundary's metadata", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/blog/invalid",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain("<title>Not found (en)</title>");
+    expect(html).not.toContain('id="not-found-layout-segment-blog"');
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before
