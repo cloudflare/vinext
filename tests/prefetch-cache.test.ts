@@ -47,6 +47,8 @@ let resolveCachedRscResponseTtlMs: Navigation["resolveCachedRscResponseTtlMs"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
 let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationResponsePrefetchCacheReuse"];
+let invalidateBfcachePrefetchCacheEntries: Navigation["invalidateBfcachePrefetchCacheEntries"];
+let isConsumedPrefetchHeldOutsideBfcache: Navigation["isConsumedPrefetchHeldOutsideBfcache"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
 let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNavigation"];
@@ -88,6 +90,8 @@ beforeEach(async () => {
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
   disableNavigationResponsePrefetchCacheReuse = nav.disableNavigationResponsePrefetchCacheReuse;
+  invalidateBfcachePrefetchCacheEntries = nav.invalidateBfcachePrefetchCacheEntries;
+  isConsumedPrefetchHeldOutsideBfcache = nav.isConsumedPrefetchHeldOutsideBfcache;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
   peekPrefetchResponseForNavigation = nav.peekPrefetchResponseForNavigation;
@@ -641,6 +645,415 @@ describe("prefetch cache eviction", () => {
     pingVisibleLinks.mockClear();
     disableNavigationResponsePrefetchCacheReuse();
     expect(pingVisibleLinks).not.toHaveBeenCalled();
+  });
+
+  it("drops only BFCache-equivalent entries for a dynamic-only revalidation", async () => {
+    // Next.js: a refresh() Server Action evicts only the BFCache and keeps
+    // every prefetch without re-prefetching (server-action-reducer.ts calls
+    // invalidateEntirePrefetchCache() only for ActionDidRevalidateStaticAndDynamic):
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/router-reducer/reducers/server-action-reducer.ts
+    vi.useFakeTimers();
+    try {
+      const queue =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      let inFlightSignal: AbortSignal | undefined;
+      const inFlight = queue.scheduleAppPrefetchFetch((signal) => {
+        inFlightSignal = signal;
+        return new Promise<Response>(() => {});
+      }, "high");
+      // A low-priority request the queue already sent keeps its runner but has
+      // left the queue.
+      let inFlightLowSignal: AbortSignal | undefined;
+      const inFlightLow = queue.scheduleAppPrefetchFetch((signal) => {
+        inFlightLowSignal = signal;
+        return new Promise<Response>(() => {});
+      }, "low");
+      await Promise.resolve();
+      expect(inFlightLowSignal).toBeDefined();
+      // The Server Action starts the cooldown first, so a queued request is sent
+      // after the revalidation.
+      queue.startAppPrefetchRevalidationCooldown();
+      const queued = queue.scheduleAppPrefetchFetch(() => new Promise<Response>(() => {}), "low");
+      const cache = getPrefetchCache();
+      const prefetched = getPrefetchedUrls();
+      const snapshot = {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/",
+      };
+      const entries: Record<string, Partial<PrefetchCacheEntry>> = {
+        "/navigation-response.rsc": {},
+        // A visited seed of a prefetch Next.js keeps in its segment cache.
+        "/held-navigation-response.rsc": { heldOutsideBfcache: true },
+        "/auto-dynamic.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          snapshot: { ...snapshot, dynamicStaleTimeSeconds: 0 },
+        },
+        "/auto-completed-dynamic.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          snapshot: { ...snapshot, completedDynamicStaleTimeSeconds: 0 },
+        },
+        "/auto-in-flight.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          fetchPromise: inFlight,
+          outcome: "pending",
+          pending: new Promise(() => {}),
+          snapshot: undefined,
+        },
+        "/auto-in-flight-low.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          fetchPromise: inFlightLow,
+          outcome: "pending",
+          pending: new Promise(() => {}),
+          snapshot: undefined,
+        },
+        "/auto-queued.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          fetchPromise: queued,
+          outcome: "pending",
+          pending: new Promise(() => {}),
+          snapshot: undefined,
+        },
+        "/auto-static.rsc": { prefetchKind: "navigation", verbatimDynamicStaleTime: true },
+        // A gated prefetch has no queue entry of its own, so it can't be told
+        // apart from one already in flight.
+        "/auto-gated.rsc": {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          fetchPromise: queue.markGatedAppPrefetchFetch(new Promise<Response>(() => {})),
+          outcome: "pending",
+          pending: new Promise(() => {}),
+          snapshot: undefined,
+        },
+        "/full.rsc": {
+          prefetchKind: "navigation",
+          dynamicStaleTime: "full-prefetch",
+          snapshot: { ...snapshot, dynamicStaleTimeSeconds: 0 },
+        },
+        "/loading-shell.rsc": { prefetchKind: "loading-shell" },
+        "/route-tree.rsc": { prefetchKind: "route-tree" },
+      };
+      const invalidated = new Map<string, ReturnType<typeof vi.fn>>();
+      for (const [key, overrides] of Object.entries(entries)) {
+        const onInvalidate = vi.fn();
+        invalidated.set(key, onInvalidate);
+        cache.set(key, {
+          cacheForNavigation: true,
+          outcome: "cache-seeded",
+          snapshot: { ...snapshot, url: key },
+          timestamp: Date.now(),
+          onInvalidateCallbacks: new Set([onInvalidate]),
+          ...overrides,
+        });
+        prefetched.add(key);
+      }
+      const pingVisibleLinks = vi.fn();
+      Reflect.set(globalThis.window, Symbol.for("vinext.navigationRuntime"), {
+        bootstrap: { routeManifest: null, rsc: undefined },
+        functions: { pingVisibleLinks },
+      });
+
+      invalidateBfcachePrefetchCacheEntries();
+
+      const dropped = [
+        "/navigation-response.rsc",
+        "/auto-dynamic.rsc",
+        "/auto-completed-dynamic.rsc",
+        "/auto-in-flight.rsc",
+        "/auto-in-flight-low.rsc",
+        "/auto-gated.rsc",
+      ];
+      expect([...cache.keys()].sort()).toEqual(
+        Object.keys(entries)
+          .filter((key) => !dropped.includes(key))
+          .sort(),
+      );
+      expect([...prefetched].sort()).toEqual([...cache.keys()].sort());
+      expect(inFlightSignal?.aborted).toBe(true);
+      expect(inFlightLowSignal?.aborted).toBe(true);
+      expect(pingVisibleLinks).not.toHaveBeenCalled();
+      // Next.js calls no onInvalidate for a BFCache eviction; the callbacks of
+      // dropped entries still run on the next cache invalidation.
+      for (const onInvalidate of invalidated.values()) {
+        expect(onInvalidate).not.toHaveBeenCalled();
+      }
+      invalidatePrefetchCache();
+      for (const onInvalidate of invalidated.values()) {
+        expect(onInvalidate).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      await vi.advanceTimersByTimeAsync(300);
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops an automatic prefetch for a dynamic-only revalidation only if it rendered dynamically", async () => {
+    const responses = new Map<string, Record<string, string>>([
+      ["/auto-dynamic.rsc", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30" }],
+      ["/auto-static.rsc", {}],
+    ]);
+    for (const [rscUrl, headers] of responses) {
+      prefetchRscResponse(
+        rscUrl,
+        Promise.resolve(
+          new Response("flight", { headers: { "content-type": "text/x-component", ...headers } }),
+        ),
+        null,
+        null,
+        undefined,
+        { cacheForNavigation: true, dynamicStaleTime: "verbatim", prefetchKind: "navigation" },
+      );
+    }
+    // A full prefetch keeps its dynamic data, as a prefetch={true} payload does
+    // in Next.js.
+    prefetchRscResponse(
+      "/full-dynamic.rsc",
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: true, dynamicStaleTime: "full-prefetch", prefetchKind: "navigation" },
+    );
+    // Prefetches that never reuse their dynamic data verbatim are kept too: a
+    // dynamic page's automatic full prefetch only teaches the route, like the
+    // route tree Next.js would have prefetched, and shells ignore it.
+    const kept = {
+      "/learning-only.rsc": { dynamicStaleTime: "learning-only" as const },
+      "/search-agnostic.rsc": { searchAgnosticShell: true },
+      "/optimistic-shell.rsc": { optimisticRouteShell: true },
+    };
+    for (const [rscUrl, behavior] of Object.entries(kept)) {
+      prefetchRscResponse(
+        rscUrl,
+        Promise.resolve(
+          new Response("flight", {
+            headers: {
+              "content-type": "text/x-component",
+              [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+            },
+          }),
+        ),
+        null,
+        null,
+        undefined,
+        { cacheForNavigation: true, prefetchKind: "navigation", ...behavior },
+      );
+    }
+    await Promise.all(
+      [...getPrefetchCache().values()].map((entry) => Promise.resolve(entry.pending)),
+    );
+
+    invalidateBfcachePrefetchCacheEntries();
+
+    expect([...getPrefetchCache().keys()].sort()).toEqual(
+      ["/auto-static.rsc", "/full-dynamic.rsc", ...Object.keys(kept)].sort(),
+    );
+  });
+
+  it.each([
+    { name: "a nonzero", dynamicStaleTime: undefined, dropsCommittedPages: true },
+    { name: "a zero", dynamicStaleTime: "0", dropsCommittedPages: false },
+  ])(
+    "drops entries for the pages a dynamic-only revalidation rendered only with $name staleTimes.dynamic",
+    async ({ dynamicStaleTime, dropsCommittedPages }) => {
+      // Next.js writes the action's render to its BFCache, which a regular
+      // navigation reads before any prefetch until staleTimes.dynamic elapses
+      // (readFromBFCacheDuringRegularNavigation in ppr-navigations.ts).
+      let invalidate = invalidateBfcachePrefetchCacheEntries;
+      let cache = getPrefetchCache();
+      let prefetched = getPrefetchedUrls();
+      if (dynamicStaleTime !== undefined) {
+        vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", dynamicStaleTime);
+        vi.resetModules();
+        const nav = await import("../packages/vinext/src/shims/navigation.js");
+        invalidate = nav.invalidateBfcachePrefetchCacheEntries;
+        cache = nav.getPrefetchCache();
+        prefetched = nav.getPrefetchedUrls();
+      }
+      const snapshot = {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/",
+      };
+      const entries: Record<string, Partial<PrefetchCacheEntry>> = {
+        "/action-page?tab=1&_rsc=a": { heldOutsideBfcache: true },
+        [AppElementsWire.encodeCacheKey("/action-page?tab=1&_rsc=b", "/feed")]: {
+          dynamicStaleTime: "full-prefetch",
+          prefetchKind: "navigation",
+        },
+        "/redirect-target?_rsc=c": {
+          dynamicStaleTime: "full-prefetch",
+          prefetchKind: "navigation",
+        },
+        "/action-page?_rsc=d": { heldOutsideBfcache: true },
+        "/other?_rsc=e": { heldOutsideBfcache: true },
+      };
+      for (const [cacheKey, overrides] of Object.entries(entries)) {
+        cache.set(cacheKey, {
+          cacheForNavigation: true,
+          outcome: "cache-seeded",
+          snapshot: { ...snapshot, url: cacheKey },
+          timestamp: Date.now(),
+          ...overrides,
+        });
+        prefetched.add(cacheKey);
+      }
+
+      invalidate(["http://localhost/action-page?tab=1#top", "http://localhost/redirect-target"]);
+
+      expect([...cache.keys()].sort()).toEqual(
+        dropsCommittedPages
+          ? ["/action-page?_rsc=d", "/other?_rsc=e"]
+          : Object.keys(entries).sort(),
+      );
+    },
+  );
+
+  it("keeps an automatic prefetch a full prefetch joined for a dynamic-only revalidation", async () => {
+    const { promotePrefetchCacheEntryForNavigation } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    prefetchRscResponse(
+      "/joined.rsc",
+      Promise.resolve(
+        new Response("flight", {
+          headers: {
+            "content-type": "text/x-component",
+            [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "30",
+          },
+        }),
+      ),
+      null,
+      null,
+      undefined,
+      { cacheForNavigation: true, dynamicStaleTime: "verbatim", prefetchKind: "navigation" },
+    );
+    const entry = getPrefetchCache().get("/joined.rsc")!;
+    // Next.js keeps the full prefetch outside its BFCache.
+    promotePrefetchCacheEntryForNavigation("/joined.rsc", entry);
+    await Promise.resolve(entry.pending);
+
+    invalidateBfcachePrefetchCacheEntries();
+
+    expect([...getPrefetchCache().keys()]).toEqual(["/joined.rsc"]);
+  });
+
+  it("gives a pending automatic prefetch a full prefetch joined the full-prefetch lifetime", async () => {
+    const { promotePrefetchCacheEntryForNavigation } =
+      await import("../packages/vinext/src/shims/navigation.js");
+    for (const rscUrl of ["/joined-pending.rsc", "/joined-settled.rsc"]) {
+      prefetchRscResponse(
+        rscUrl,
+        Promise.resolve(
+          new Response("flight", {
+            headers: {
+              "content-type": "text/x-component",
+              [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0",
+            },
+          }),
+        ),
+        null,
+        null,
+        undefined,
+        { cacheForNavigation: true, dynamicStaleTime: "verbatim", prefetchKind: "navigation" },
+      );
+    }
+    const cache = getPrefetchCache();
+    const pending = cache.get("/joined-pending.rsc")!;
+    promotePrefetchCacheEntryForNavigation("/joined-pending.rsc", pending);
+    await Promise.resolve(pending.pending);
+    const settled = cache.get("/joined-settled.rsc")!;
+    await Promise.resolve(settled.pending);
+    promotePrefetchCacheEntryForNavigation("/joined-settled.rsc", settled);
+    // A response that settled while its snapshot is still being prepared.
+    const timestamp = Date.now();
+    const preparing: PrefetchCacheEntry = {
+      cacheForNavigation: true,
+      expiresAt: timestamp,
+      outcome: "pending",
+      pending: new Promise(() => {}),
+      prefetchKind: "navigation",
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 0,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/joined-preparing.rsc",
+      },
+      timestamp,
+      verbatimDynamicStaleTime: true,
+    };
+    cache.set("/joined-preparing.rsc", preparing);
+    promotePrefetchCacheEntryForNavigation("/joined-preparing.rsc", preparing);
+
+    // A prefetch={true} payload with a zero dynamic stale time takes the static
+    // window, as Next.js's full prefetch does. An automatic prefetch that
+    // already settled keeps its zero bound.
+    expect(pending.expiresAt! - pending.timestamp).toBe(PREFETCH_CACHE_TTL);
+    expect(preparing.expiresAt! - preparing.timestamp).toBe(PREFETCH_CACHE_TTL);
+    expect(settled.expiresAt! - settled.timestamp).toBe(0);
+  });
+
+  it("marks a consumed prefetch Next.js keeps outside its BFCache", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/",
+    };
+    const entries: Record<string, [Partial<PrefetchCacheEntry>, boolean]> = {
+      "/full.rsc": [
+        {
+          dynamicStaleTime: "full-prefetch",
+          prefetchKind: "navigation",
+          snapshot: { ...snapshot, dynamicStaleTimeSeconds: 30 },
+        },
+        true,
+      ],
+      "/auto-static.rsc": [{ prefetchKind: "navigation", verbatimDynamicStaleTime: true }, true],
+      "/auto-dynamic.rsc": [
+        {
+          prefetchKind: "navigation",
+          verbatimDynamicStaleTime: true,
+          snapshot: { ...snapshot, dynamicStaleTimeSeconds: 30 },
+        },
+        false,
+      ],
+      "/held-seed.rsc": [{ heldOutsideBfcache: true }, true],
+      "/navigation-response.rsc": [{}, false],
+    };
+    for (const [rscUrl, [overrides, held]] of Object.entries(entries)) {
+      cache.set(rscUrl, {
+        cacheForNavigation: true,
+        outcome: "cache-seeded",
+        snapshot: { ...snapshot, url: rscUrl },
+        timestamp: Date.now(),
+        ...overrides,
+      });
+      prefetched.add(rscUrl);
+      const consumed = consumePrefetchResponse(rscUrl);
+      expect(consumed).not.toBeNull();
+      expect([rscUrl, isConsumedPrefetchHeldOutsideBfcache(consumed!)]).toEqual([rscUrl, held]);
+    }
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {

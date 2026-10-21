@@ -74,6 +74,16 @@ export function isAppPrefetchFetchHeldByRevalidationCooldown(
   );
 }
 
+/** Whether the request behind `promise` is still queued, not yet sent. */
+export function isAppPrefetchFetchQueued(promise: Promise<Response> | undefined): boolean {
+  if (promise === undefined) return false;
+  const runner = appPrefetchFetchControls.get(promise)?.runner;
+  return (
+    runner !== undefined &&
+    (cooldownHighPriorityQueue.includes(runner) || defaultAppPrefetchQueue.includes(runner))
+  );
+}
+
 /**
  * Wait for `pending`, the settled state of the prefetch request behind
  * `promise`, unless the revalidation cooldown starts during the wait and holds

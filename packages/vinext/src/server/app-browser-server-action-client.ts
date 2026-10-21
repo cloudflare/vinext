@@ -52,6 +52,8 @@ type ActionRedirectTarget = {
 
 export type ClientServerActionDeps = {
   basePath: string;
+  /** `committedHrefs` are the pages the action rendered: its own and a redirect target. */
+  clearClientNavigationBfcache(committedHrefs: readonly string[]): void;
   clearClientNavigationCaches(): void;
   clientRscCompatibilityId: string | null;
   commitSameUrlNavigatePayload(
@@ -223,10 +225,19 @@ export async function invokeClientServerAction(
   // Next.js invalidates and starts the cooldown once the action response is
   // decoded (server-action-reducer.ts), so the window ends 300ms after the
   // action completes. The cooldown starts first so it holds the re-prefetches
-  // the cache clear triggers.
+  // the cache clear triggers. Next.js evicts its BFCache for any revalidation
+  // and the prefetch cache only for a static-and-dynamic one.
   if (revalidation !== "none") {
     startAppPrefetchRevalidationCooldown();
-    deps.clearClientNavigationCaches();
+    if (revalidation === "dynamicOnly") {
+      deps.clearClientNavigationBfcache(
+        actionRedirectTarget === null
+          ? [actionInitiation.href]
+          : [actionInitiation.href, actionRedirectTarget.href],
+      );
+    } else {
+      deps.clearClientNavigationCaches();
+    }
   }
   if (
     revalidation === "none" &&

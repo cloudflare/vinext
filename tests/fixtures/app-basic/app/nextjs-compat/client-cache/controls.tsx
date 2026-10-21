@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { revalidateClientCacheAction } from "./actions";
+import { refreshClientCacheAction, revalidateClientCacheAction } from "./actions";
 
 export function ClientCacheControls() {
   const router = useRouter();
@@ -14,6 +14,11 @@ export function ClientCacheControls() {
       <form action={revalidateClientCacheAction}>
         <button id="client-cache-revalidate-action" type="submit">
           Revalidate with a Server Action
+        </button>
+      </form>
+      <form action={refreshClientCacheAction}>
+        <button id="client-cache-refresh-action" type="submit">
+          Refresh dynamic data with a Server Action
         </button>
       </form>
     </>

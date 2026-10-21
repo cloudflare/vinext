@@ -109,6 +109,7 @@ import {
 import {
   cancelAppPrefetchFetch,
   isAppPrefetchFetchHeldByRevalidationCooldown,
+  isAppPrefetchFetchQueued,
   markGatedAppPrefetchFetch,
   promoteAppPrefetchFetch,
   releaseAppPrefetchFetchSlot,
@@ -364,6 +365,12 @@ export type PrefetchCacheEntry = {
    * renders dynamically. A hover upgrade turns it into a full prefetch.
    */
   dynamicStaleTime?: "learning-only" | "full-prefetch";
+  /**
+   * The response's dynamic stale time bounds the entry verbatim, as for an
+   * automatic prefetch, rather than as a full or search-agnostic prefetch.
+   * Cleared when a full prefetch joins the entry.
+   */
+  verbatimDynamicStaleTime?: boolean;
   expiresAt?: number;
   fallbackTtlMs?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
@@ -380,6 +387,8 @@ export type PrefetchCacheEntry = {
   prefetchKind?: PrefetchCacheKind;
   reuseAfterHistoryRestore?: boolean;
   searchAgnosticShell?: boolean;
+  /** A visited seed of a consumed prefetch Next.js keeps outside its BFCache. */
+  heldOutsideBfcache?: boolean;
   size?: number;
   timestamp: number;
 };
@@ -1089,13 +1098,32 @@ export function discardLearningOnlyPrefetchCacheEntry(
  * learning-only because its page rendered dynamically is left for the full
  * prefetch to replace: Next.js refetches it with `FetchStrategy.Full`, so the
  * page reflects the cookies and headers at hover time.
+ *
+ * Next.js keeps a full prefetch outside its BFCache, so a dynamic-only
+ * revalidation keeps the entry too. A pending automatic prefetch that would
+ * take its dynamic stale time verbatim stands in for the full prefetch's own
+ * request, so it settles with the full-prefetch lifetime. A settled one keeps
+ * its bound, as Next.js's full prefetch would fetch the page again.
  */
 export function promotePrefetchCacheEntryForNavigation(
   cacheKey: string,
   entry: PrefetchCacheEntry,
 ): void {
+  const wasVerbatim = entry.verbatimDynamicStaleTime === true;
+  entry.verbatimDynamicStaleTime = false;
   if (entry.dynamicStaleTime !== "learning-only") {
     entry.cacheForNavigation = true;
+    if (!wasVerbatim || entry.pending === undefined) return;
+    entry.dynamicStaleTime = "full-prefetch";
+    // The response may have settled while its snapshot is still being prepared.
+    if (entry.snapshot === undefined) return;
+    entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+      entry.timestamp,
+      entry.snapshot,
+      entry.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
+      "full-prefetch",
+    );
+    schedulePrefetchInvalidation(cacheKey, entry);
     return;
   }
   if (entry.cacheForNavigation === false) return;
@@ -1189,6 +1217,74 @@ export function invalidatePrefetchCache(): void {
 }
 
 /**
+ * Whether an entry holds data Next.js keeps only in its BFCache: a navigation
+ * response, or an automatic prefetch that rendered dynamically. Next.js's
+ * automatic prefetch stops at the route tree or the nearest loading boundary,
+ * so it caches no dynamic page data. A navigation response is dropped even for
+ * a static page, as nothing on it proves the page static, unless it came from
+ * a prefetch Next.js would keep.
+ */
+function holdsBfcacheOnlyData(entry: PrefetchCacheEntry): boolean {
+  if (entry.prefetchKind === undefined) return entry.heldOutsideBfcache !== true;
+  if (entry.prefetchKind !== "navigation" || entry.verbatimDynamicStaleTime !== true) return false;
+  // A request still queued is sent after the revalidation. One already in
+  // flight may render dynamically from before it, so it is dropped even if it
+  // turns out static; the Link prefetches it again on intent or viewport entry.
+  // A gated prefetch has no queue entry of its own and is dropped the same way.
+  if (entry.pending !== undefined) return !isAppPrefetchFetchQueued(entry.fetchPromise);
+  return (
+    entry.snapshot?.dynamicStaleTimeSeconds !== undefined ||
+    entry.snapshot?.completedDynamicStaleTimeSeconds !== undefined
+  );
+}
+
+/**
+ * Drop the entries a dynamic-only revalidation (`refresh()` from `next/cache`
+ * in a Server Action) invalidates. Next.js only evicts its BFCache for it and
+ * keeps every prefetch, including `prefetch={true}` payloads, without
+ * re-prefetching (server-action-reducer.ts calls invalidateBfCache() for any
+ * revalidation and invalidateEntirePrefetchCache() only for
+ * ActionDidRevalidateStaticAndDynamic).
+ */
+export function invalidateBfcachePrefetchCacheEntries(
+  committedHrefs: readonly string[] = [],
+): void {
+  const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
+  // Next.js writes the action's own render to its BFCache, which a regular
+  // navigation reads before any prefetch until staleTimes.dynamic elapses. With
+  // a nonzero dynamic stale time, an entry for a page the action rendered would
+  // show data from before it there, so it is dropped and refetched instead.
+  const committedPages = new Set(
+    DYNAMIC_NAVIGATION_CACHE_TTL > 0
+      ? committedHrefs
+          .map((href) => normalizeRscCacheLookupUrl(href))
+          .filter((page): page is string => page !== null)
+      : [],
+  );
+  const invalidated = new Map<PrefetchCacheEntry, string>();
+  for (const [cacheKey, entry] of cache) {
+    if (invalidated.has(entry)) continue;
+    if (
+      holdsBfcacheOnlyData(entry) ||
+      (committedPages.size > 0 &&
+        committedPages.has(
+          normalizeRscCacheLookupUrl(parsePrefetchCacheKey(cacheKey).rscUrl) ?? "",
+        ))
+    ) {
+      invalidated.set(entry, cacheKey);
+    }
+  }
+  for (const [entry, cacheKey] of invalidated) {
+    if (entry.pending !== undefined) cancelAppPrefetchFetch(entry.fetchPromise);
+    // Next.js doesn't call onInvalidate for a BFCache eviction, so keep the
+    // callbacks for the next cache invalidation or the entry's expiry.
+    retainPrefetchInvalidationAfterConsume(entry);
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, false);
+  }
+}
+
+/**
  * Prevent completed navigation responses from becoming authoritative again
  * after restoring a history snapshot. Explicit Link/router prefetches remain
  * consumable. Responses with a positive cache lifetime and interception
@@ -1214,6 +1310,7 @@ export function seedPrefetchResponseSnapshot(
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
   reuseAfterHistoryRestore: boolean = false,
+  heldOutsideBfcache: boolean = false,
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1229,6 +1326,7 @@ export function seedPrefetchResponseSnapshot(
     mountedSlotsHeader,
     outcome: "cache-seeded",
     reuseAfterHistoryRestore,
+    ...(heldOutsideBfcache ? { heldOutsideBfcache } : {}),
     size: snapshot.buffer.byteLength,
     snapshot,
     timestamp,
@@ -1606,6 +1704,13 @@ export function prefetchRscResponse(
     searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
+  if (
+    behavior.searchAgnosticShell !== true &&
+    (behavior.dynamicStaleTime ??
+      (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")) === "verbatim"
+  ) {
+    entry.verbatimDynamicStaleTime = true;
+  }
   if (behavior.dynamicStaleTime === "learning-only" && behavior.searchAgnosticShell !== true) {
     entry.dynamicStaleTime = "learning-only";
     entry.fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
@@ -1821,19 +1926,32 @@ function consumeMatchedPrefetchResponse(
     // its snapshot) already carried one. Entries that never had an explicit
     // expiry must round-trip unchanged so callers/tests can assert the raw
     // snapshot — don't collapse this into an unconditional spread.
-    if (entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined) {
-      return {
-        ...snapshot,
-        expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
-        ...(entry.preparedElements ? { preparedElements: entry.preparedElements } : {}),
-      };
-    }
-    return entry.preparedElements
-      ? { ...snapshot, preparedElements: entry.preparedElements }
-      : snapshot;
+    const consumed =
+      entry.expiresAt !== undefined || entry.snapshot.expiresAt !== undefined
+        ? {
+            ...snapshot,
+            expiresAt: resolvePrefetchCacheEntryExpiresAt(entry),
+            ...(entry.preparedElements ? { preparedElements: entry.preparedElements } : {}),
+          }
+        : entry.preparedElements
+          ? { ...snapshot, preparedElements: entry.preparedElements }
+          : snapshot;
+    if (!holdsBfcacheOnlyData(entry)) consumedPrefetchesHeldOutsideBfcache.add(consumed);
+    return consumed;
   }
 
   return null;
+}
+
+/**
+ * Consumed prefetch payloads that Next.js would still hold in its segment
+ * cache after the navigation, outside its BFCache: a full prefetch, or an
+ * automatic prefetch of a static page. Their visited seed keeps that status.
+ */
+const consumedPrefetchesHeldOutsideBfcache = new WeakSet<CachedRscResponse>();
+
+export function isConsumedPrefetchHeldOutsideBfcache(snapshot: CachedRscResponse): boolean {
+  return consumedPrefetchesHeldOutsideBfcache.has(snapshot);
 }
 
 /**
