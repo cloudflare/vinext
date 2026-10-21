@@ -496,7 +496,7 @@ function replaceLinkTagsOutsideRawText(
   );
 }
 
-function rewriteInlineCssStylesheetLinks(
+export function rewriteInlineCssStylesheetLinks(
   html: string,
   inlineCssManifest: InlineCssManifest | undefined,
   prependCss: string,

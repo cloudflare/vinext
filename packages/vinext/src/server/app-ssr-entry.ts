@@ -44,6 +44,7 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
+  rewriteInlineCssStylesheetLinks,
   waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
@@ -856,7 +857,14 @@ export async function handleSsr(
               errorMetaHTML +
               getTraceMetaHTML() +
               initialDevServerErrorHTML +
-              renderStreamedStylesheets(streamedReferences),
+              // The transform inlines Fizz's stylesheet links before it adds
+              // this HTML, so inline the streamed ones here.
+              rewriteInlineCssStylesheetLinks(
+                renderStreamedStylesheets(streamedReferences),
+                inlineCssManifest,
+                "",
+                options?.scriptNonce,
+              ).html,
             fontHTML,
             options?.dynamicStaleTimeSeconds,
             isSearchParamsFromBrowser,

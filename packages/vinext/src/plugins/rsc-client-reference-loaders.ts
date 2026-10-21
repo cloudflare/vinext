@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import MagicString from "magic-string";
 import path from "pathslash";
@@ -24,9 +25,9 @@ const RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX = `\0${CLIENT_REFERENCE_GROUP_PREFI
 const CLIENT_REFERENCES_ID_RE = /^\0virtual:vite-rsc\/client-references$/;
 const CLIENT_REFERENCE_GROUP_RE = /^virtual:vinext-client-reference-group-/;
 const RESOLVED_CLIENT_REFERENCE_GROUP_RE = /^\0virtual:vinext-client-reference-group-/;
-// Stands in for the plan's async references until the SSR graph is complete.
-const ASYNC_REFERENCES_PLACEHOLDER = "__vinext_async_client_references__";
-const ASYNC_REFERENCES_PLACEHOLDER_RE = /(["'])__vinext_async_client_references__\1/g;
+
+// A null plan makes the App Router SSR entry preload every client reference.
+const NO_ROUTE_CLIENT_REFERENCES_EXPORT = "export const routeClientReferences = null;\n";
 
 type RscClientReferenceMeta = PluginApi["manager"]["clientReferenceMetaMap"][string];
 
@@ -181,14 +182,15 @@ type AsyncReferenceCandidate = { index: number; importId: string };
  * The SSR build's `routeClientReferences` export: the reference keys each route
  * preloads before it renders (see server/app-client-reference-preloader.ts),
  * stored as indices into `references`. Client references the plan doesn't know
- * join `always`. `async` holds a placeholder that renderChunk replaces with the
- * candidates whose SSR modules evaluate asynchronously.
+ * join `always`. `async` holds `asyncPlaceholder`, which renderChunk replaces
+ * with the candidates whose SSR modules evaluate asynchronously.
  */
 function generateRouteClientReferencesExport(
   plan: { referenceIds: ReadonlySet<string>; preloads: ClientReferencePreloadPlan } | null,
   metaEntries: readonly (readonly [string, RscClientReferenceMeta])[],
+  asyncPlaceholder: string,
 ): { code: string; asyncCandidates: AsyncReferenceCandidate[] } {
-  if (!plan) return { code: "export const routeClientReferences = null;\n", asyncCandidates: [] };
+  if (!plan) return { code: NO_ROUTE_CLIENT_REFERENCES_EXPORT, asyncCandidates: [] };
   const metaById = new Map(metaEntries);
   const references: string[] = [];
   const indices = new Map<string, number>();
@@ -222,7 +224,7 @@ function generateRouteClientReferencesExport(
     files,
     routes: Object.fromEntries(plan.preloads.routes),
     routeless: plan.preloads.routeless,
-    async: ASYNC_REFERENCES_PLACEHOLDER,
+    async: asyncPlaceholder,
   };
   return {
     code: `export const routeClientReferences = ${JSON.stringify(manifest)};\n`,
@@ -262,6 +264,10 @@ export function createRscClientReferenceLoadersPlugin(
   const groupModules = new Map<string, string>();
   // The SSR build's references that may stream, until renderChunk checks them.
   let asyncCandidates: AsyncReferenceCandidate[] = [];
+  // Stands in for the plan's async references until the SSR graph is
+  // complete. Random per build, so no string in application code matches it.
+  const asyncPlaceholder = `__vinext_async_client_references_${randomBytes(8).toString("hex")}__`;
+  const asyncPlaceholderRe = new RegExp(`(["'])${asyncPlaceholder}\\1`, "g");
 
   return {
     name: "vinext:rsc-client-reference-loaders",
@@ -360,7 +366,11 @@ export function createRscClientReferenceLoadersPlugin(
         // client reference on demand there.
         let routeClientReferencesExport = "";
         if (isServer) {
-          const generated = generateRouteClientReferencesExport(preloadPlan, metaEntries);
+          const generated = generateRouteClientReferencesExport(
+            preloadPlan,
+            metaEntries,
+            asyncPlaceholder,
+          );
           routeClientReferencesExport = generated.code;
           asyncCandidates = generated.asyncCandidates;
         }
@@ -544,10 +554,10 @@ export function createRscClientReferenceLoadersPlugin(
         };
       },
     },
-    async renderChunk(code) {
+    async renderChunk(code, _chunk, _outputOptions, meta) {
       if (this.environment.config.consumer !== "server") return null;
-      if (!code.includes(ASYNC_REFERENCES_PLACEHOLDER)) return null;
-      // The SSR graph is complete once chunks render: find the candidates
+      if (!code.includes(asyncPlaceholder)) return null;
+      // The SSR output is complete once chunks render: find the candidates
       // whose modules await at their top level, or import one that does.
       const roots = new Map<string, number[]>();
       await Promise.all(
@@ -566,10 +576,11 @@ export function createRscClientReferenceLoadersPlugin(
       const asyncModules = collectAsyncModules({
         roots: [...roots.keys()],
         getModuleInfo: (id) => this.getModuleInfo(id),
+        chunks: Object.values(meta.chunks),
       });
       const asyncIndices = [...asyncModules].flatMap((id) => roots.get(id)!).sort((a, b) => a - b);
       const output = new MagicString(code);
-      for (const match of code.matchAll(ASYNC_REFERENCES_PLACEHOLDER_RE)) {
+      for (const match of code.matchAll(asyncPlaceholderRe)) {
         output.overwrite(match.index, match.index + match[0].length, JSON.stringify(asyncIndices));
       }
       return omitUnusedBuildSourcemap(this.environment, magicStringTransformResult(output));
@@ -592,7 +603,7 @@ export function createRouteClientReferencesFallbackPlugin(): Plugin {
       handler(code) {
         if (this.environment.config.consumer !== "server") return null;
         return {
-          code: `${code}\n${generateRouteClientReferencesExport(null, []).code}`,
+          code: `${code}\n${NO_ROUTE_CLIENT_REFERENCES_EXPORT}`,
           map: null,
         };
       },
