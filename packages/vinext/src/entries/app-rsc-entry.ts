@@ -1535,6 +1535,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
+          isUncacheableRender: buildOptions?.isUncacheableRender === true,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,
           isProduction: process.env.NODE_ENV === "production",

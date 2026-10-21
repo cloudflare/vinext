@@ -390,6 +390,65 @@ test.describe("Next.js compat: client cache", () => {
     });
   }
 
+  test("a loading-shell prefetch without a loading boundary carries only the route tree", async ({
+    page,
+  }) => {
+    // Next.js answers a pre-PPR prefetch with no loading boundary with only the
+    // router state and a [null, null] head, rendering no layout
+    // (walkTreeWithFlightRouterState()):
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+    const response = await page.request.get(`${ROOT}/no-loading/1?_rsc=no-loading-shell`, {
+      headers: {
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    });
+    const body = await response.text();
+    expect(response.status()).toBe(200);
+    expect(body).toContain(`route:${ROOT}/no-loading/1`);
+    expect(body).not.toContain('"lang":"en"');
+    expect(body).not.toContain("App Basic");
+
+    // The browser's own prefetch gets the same route tree, and navigation
+    // fetches the page.
+    const requests = trackRscRequests(page);
+    const browserPrefetch = page.waitForResponse(
+      (candidate) =>
+        new URL(candidate.url()).pathname === `${ROOT}/no-loading/1` &&
+        candidate.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell",
+    );
+    await openHome(page);
+    const browserPrefetchBody = await (await browserPrefetch).text();
+    expect(browserPrefetchBody).toContain(`route:${ROOT}/no-loading/1`);
+    expect(browserPrefetchBody).not.toContain('"lang":"en"');
+    await navigateToNoLoading(page);
+    expect(requestsFor(requests, `${ROOT}/no-loading/1`).some((request) => !request.partial)).toBe(
+      true,
+    );
+  });
+
+  test("a loading-shell prefetch without a loading boundary that may be stored keeps its layouts", async ({
+    page,
+  }) => {
+    // A static route's shell may be stored, so its layouts still render and a
+    // layout reading request data keeps it out of the cache, as before.
+    const response = await page.request.get("/about?_rsc=no-loading-static-shell", {
+      headers: {
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    });
+    const body = await response.text();
+    expect(response.status()).toBe(200);
+    expect(body).toContain("route:/about");
+    expect(body).toContain('"lang":"en"');
+    expect(body).toContain("App Basic");
+  });
+
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
     page,
   }) => {

@@ -22,6 +22,7 @@ import type { LayoutClassificationOptions } from "../packages/vinext/src/server/
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { consumeAppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
 import { createClientPageSsrSearchParamsSource } from "../packages/vinext/src/server/app-page-search-params-observation.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
@@ -3995,6 +3996,60 @@ describe("layoutFlags injection into RSC payload", () => {
 
     await renderAppPageLifecycle(options);
     expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
+  });
+
+  // Next.js runs no layout for a pre-PPR prefetch with no loading boundary
+  // (walkTreeWithFlightRouterState()):
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+  it("probes no layout for a route-tree-only loading-shell prefetch", async () => {
+    const probeLayoutAt = vi.fn(() => null);
+    const routeTreeOnly = createRscOptions({
+      element: {
+        [AppElementsWire.keys.route]: "route:/test",
+        "page:/test": null,
+        "route:/test": null,
+      } as Record<string, ReactNode>,
+      layoutCount: 2,
+      probeLayoutAt,
+    });
+    await renderAppPageLifecycle({
+      ...routeTreeOnly.options,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    expect(probeLayoutAt).not.toHaveBeenCalled();
+
+    // A shell that renders a loading boundary still probes its layouts.
+    const loadingShell = createRscOptions({
+      element: {
+        [AppElementsWire.keys.route]: "route:/test",
+        "page:/test": null,
+        "route:/test": "route-loading-shell",
+      } as Record<string, ReactNode>,
+      layoutCount: 2,
+      probeLayoutAt,
+    });
+    await renderAppPageLifecycle({
+      ...loadingShell.options,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    expect(probeLayoutAt).toHaveBeenCalledTimes(2);
+
+    // A render that may be stored always probes its layouts.
+    const storable = createRscOptions({
+      element: {
+        [AppElementsWire.keys.route]: "route:/test",
+        "page:/test": null,
+        "route:/test": null,
+      } as Record<string, ReactNode>,
+      layoutCount: 2,
+      probeLayoutAt,
+    });
+    await renderAppPageLifecycle({
+      ...storable.options,
+      isCacheCandidate: true,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+    });
+    expect(probeLayoutAt).toHaveBeenCalledTimes(4);
   });
 
   it("injects __layoutFlags with 'd' for dynamic layouts", async () => {

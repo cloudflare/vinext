@@ -238,6 +238,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   observePageSearchParamsAccess?: boolean;
   /** The route is `dynamic = "force-static"`, so pages read an empty query. */
   isForceStatic?: boolean;
+  /** The render can never be stored (see buildAppPageElements). */
+  isUncacheableRender?: boolean;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -350,6 +352,7 @@ export async function buildPageElements<
     observeMetadataSearchParamsAccess = false,
     observePageSearchParamsAccess = false,
     isForceStatic = false,
+    isUncacheableRender = false,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
@@ -932,6 +935,7 @@ export async function buildPageElements<
       globalErrorModule:
         globalErrorModule ?? (DEFAULT_GLOBAL_ERROR_MODULE as unknown as TErrorModule),
       isRscRequest,
+      isUncacheableRender,
       interceptionId: opts?.interceptionId ?? null,
       layoutParamAccess: options.layoutParamAccess,
       mountedSlotIds,

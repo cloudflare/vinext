@@ -1286,6 +1286,74 @@ describe("app page dispatch", () => {
     });
   });
 
+  // Only a render that can never be stored may skip its layouts in a
+  // loading-shell prefetch without a loading boundary (buildAppPageElements).
+  it.each([
+    { name: "a production static route", overrides: { isProduction: true }, expected: false },
+    {
+      name: "a PPR fallback shell",
+      overrides: {
+        isProduction: true,
+        dynamicConfig: "force-dynamic" as const,
+        pprFallbackShell: { fallbackParamNames: ["slug"], routePattern: "/posts/[slug]" },
+      },
+      expected: false,
+    },
+    {
+      name: "a dynamic route without generateStaticParams",
+      overrides: { isProduction: true, route: createRoute({ isDynamic: true }) },
+      expected: true,
+    },
+    { name: "dev", overrides: { isProduction: false }, expected: true },
+    {
+      name: "a force-dynamic route",
+      overrides: { isProduction: true, dynamicConfig: "force-dynamic" as const },
+      expected: true,
+    },
+    {
+      name: "a draft-mode render",
+      overrides: {
+        isProduction: true,
+        request: new Request("https://example.com/posts/hello", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+      expected: true,
+    },
+    // Next.js renders layouts for every production prefetch with Cache
+    // Components (isRoutePPREnabled in walkTreeWithFlightRouterState()).
+    {
+      name: "a Cache Components draft-mode render",
+      overrides: {
+        isProduction: true,
+        pprRuntime: appPagePprRuntime,
+        request: new Request("https://example.com/posts/hello", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+      expected: false,
+    },
+    {
+      name: "a Cache Components dev render",
+      overrides: { isProduction: false, pprRuntime: appPagePprRuntime },
+      expected: true,
+    },
+  ])("marks $name as uncacheable: $expected", async ({ overrides, expected }) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      ...overrides,
+      buildPageElement,
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    expect(buildPageElement.mock.calls[0]?.[5]?.isUncacheableRender).toBe(expected);
+  });
+
   afterEach(() => {
     consumeDynamicUsage();
     consumeRenderRequestApiUsage();
@@ -4103,6 +4171,7 @@ describe("app page dispatch", () => {
     expect(buildOptions).toEqual([
       {
         isForceStatic: false,
+        isUncacheableRender: true,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
         placeStreamedMetadataInHead: false,

@@ -335,6 +335,15 @@ type BuildAppPageElementsOptions<
   interceptionId?: string | null;
   interceptionContext?: string | null;
   isRscRequest?: boolean;
+  /**
+   * The render can never be stored and, in production, is never sent with
+   * static cache headers (see app-page-dispatch.ts), so a loading-shell
+   * prefetch without a loading boundary may skip its layouts. A render that
+   * may be stored keeps them, so a layout's dynamic API read still keeps it
+   * out of the cache. An explicit CDN cache policy on a dynamic route can
+   * still store the route tree, as a CDN would store Next.js's.
+   */
+  isUncacheableRender?: boolean;
   mountedSlotIds?: ReadonlySet<string> | null;
   renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
@@ -1281,6 +1290,27 @@ export function buildAppPageElements<
       ...metadataEntries,
       [APP_LAYOUT_IDS_KEY]: [],
       [APP_ROOT_LAYOUT_KEY]: null,
+      [pageElementId]: null,
+      [routeId]: null,
+    };
+  }
+  // A loading-shell prefetch with no loading boundary is the counterpart of
+  // Next.js's pre-PPR no-loading prefetch, which sends only the router state
+  // and a [null, null] head (walkTreeWithFlightRouterState() in
+  // server/app-render/walk-tree-with-flight-router-state.tsx). The client only
+  // learns the route from it, so no layout, template, slot or head renders.
+  // Only for a render that can never be stored: a stored shell keeps rendering
+  // its layouts, so what is cached stays the same.
+  if (
+    isPrefetchLoadingShell &&
+    !shouldRenderPrefetchLoadingShell &&
+    options.isUncacheableRender === true
+  ) {
+    return {
+      ...metadataEntries,
+      ...(options.route.staticSiblings && options.route.staticSiblings.length > 0
+        ? { [APP_STATIC_SIBLINGS_KEY]: options.route.staticSiblings }
+        : {}),
       [pageElementId]: null,
       [routeId]: null,
     };
