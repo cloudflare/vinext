@@ -505,7 +505,10 @@ export async function handleSsr(
       ? undefined
       : resolveRouteClientReferences(routeClientReferences, options?.preloadRoutePattern);
     const streamedReferences = createStreamedClientReferences(routeReferences);
-    await clientReferencePreloader.preload(routeReferences?.awaited, routeReferences?.streamed);
+    await clientReferencePreloader.preload(
+      routeReferences?.references,
+      streamedReferences?.streamed,
+    );
 
     setNavigationContext(ssrNavigationContext);
 

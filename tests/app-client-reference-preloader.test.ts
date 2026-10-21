@@ -162,11 +162,11 @@ describe("app client reference preloader", () => {
     expect(loads["comp-b"]).toMatchObject({ status: "rejected", reason: error });
   });
 
-  it("starts streamed references without waiting for them", async () => {
+  it("starts streamed references in order without waiting for them", async () => {
     let finishStreamed!: () => void;
     const calls: string[] = [];
     const preloader = createClientReferencePreloader({
-      getReferences: () => ({ "comp-a": true, "comp-b": true }),
+      getReferences: () => ({ "comp-a": true, "comp-b": true, "comp-c": true }),
       getClientRequire: () => (id) => {
         calls.push(id);
         return id === "comp-b"
@@ -175,9 +175,9 @@ describe("app client reference preloader", () => {
       },
     });
 
-    await preloader.preload(["comp-a"], ["comp-b"]);
+    await preloader.preload(["comp-a", "comp-b", "comp-c"], new Set(["comp-b"]));
 
-    expect(calls).toEqual(["comp-b", "comp-a"]);
+    expect(calls).toEqual(["comp-a", "comp-b", "comp-c"]);
     finishStreamed();
   });
 });
@@ -194,17 +194,15 @@ describe("resolveRouteClientReferences", () => {
 
   it("resolves a route's files and the references every render uses", () => {
     expect(resolveRouteClientReferences(plan, "/")).toEqual({
-      awaited: ["link", "nav"],
+      references: ["link", "nav", "chart"],
       streamed: ["chart"],
-      ordered: ["link", "nav", "chart"],
     });
   });
 
   it("resolves the routeless files for a render without a route", () => {
     expect(resolveRouteClientReferences(plan, null)).toEqual({
-      awaited: ["link", "nav", "search"],
+      references: ["link", "nav", "search"],
       streamed: [],
-      ordered: ["link", "nav", "search"],
     });
   });
 

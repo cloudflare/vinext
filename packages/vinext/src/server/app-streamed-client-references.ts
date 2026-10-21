@@ -132,14 +132,14 @@ export function wrapClientReferenceRequireForStreaming(
 }
 
 export function createStreamedClientReferences(
-  references: RouteClientReferenceSet | undefined,
+  route: RouteClientReferenceSet | undefined,
 ): StreamedClientReferences | null {
-  if (!references || references.streamed.length === 0) return null;
-  const streamed = new Set(references.streamed);
+  if (!route || route.streamed.length === 0) return null;
+  const streamed = new Set(route.streamed);
   return {
     streamed,
-    positions: new Map(references.ordered.map((id, index) => [id, index])),
-    unlinked: references.ordered.filter((id) => streamed.has(id)),
+    positions: new Map(route.references.map((id, index) => [id, index])),
+    unlinked: route.references.filter((id) => streamed.has(id)),
     linkedStylesheets: new Set(),
   };
 }
