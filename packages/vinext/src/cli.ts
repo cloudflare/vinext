@@ -162,6 +162,10 @@ async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
 
+  // Like `next start`, default to production so React and other packages
+  // load their production builds, which omit dev-only error details.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   loadDotenv({
     root: process.cwd(),
     mode: "production",
