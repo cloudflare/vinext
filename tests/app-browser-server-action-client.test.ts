@@ -14,6 +14,17 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { startAppPrefetchRevalidationCooldown } from "../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js";
+
+vi.mock(
+  "../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js")
+    >()),
+    startAppPrefetchRevalidationCooldown: vi.fn(),
+  }),
+);
 
 vi.mock("@vitejs/plugin-rsc/browser", () => ({
   createFromFetch: vi.fn(),
@@ -407,6 +418,59 @@ describe("app browser server action client", () => {
     rejectActionResult(thrown);
     await rejection;
   });
+
+  // Next.js: server-action-reducer.ts calls startRevalidationCooldown() for
+  // every revalidation kind, and never for an action that didn't revalidate.
+  it.each([
+    ["1", true],
+    ["2", true],
+    [null, false],
+  ] as const)(
+    "holds prefetches for the revalidation cooldown (x-action-revalidated: %s)",
+    async (revalidatedHeader, startsCooldown) => {
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("flight", {
+            status: 200,
+            headers: {
+              "content-type": "text/x-component",
+              ...(revalidatedHeader === null
+                ? {}
+                : { [ACTION_REVALIDATED_HEADER]: revalidatedHeader }),
+            },
+          }),
+        ),
+      );
+      vi.mocked(createFromFetch).mockResolvedValueOnce({
+        returnValue: { ok: true, data: "value" },
+      });
+
+      await invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches: vi.fn(),
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      });
+
+      expect(vi.mocked(startAppPrefetchRevalidationCooldown).mock.calls.length).toBe(
+        startsCooldown ? 1 : 0,
+      );
+    },
+  );
 
   it("commits the RSC tree for revalidated actions and returns the action value", async () => {
     const wireElements = AppElementsWire.createMetadataEntries({

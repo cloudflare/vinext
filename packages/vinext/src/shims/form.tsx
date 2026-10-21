@@ -32,6 +32,7 @@ import {
   loadNavigationRuntimeRouteManifest,
 } from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
+import { waitForAppPrefetchRevalidationCooldown } from "./internal/app-prefetch-fetch-queue.js";
 import {
   getMountedSlotsHeader,
   getPrefetchInterceptionContext,
@@ -367,15 +368,17 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               )
                 return;
               prefetched.add(cacheKey);
-              const fetchPromise = fetch(rscUrl, {
-                headers,
-                credentials: "include",
-                // Match link.tsx: deprioritize the background prefetch and tag it
-                // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
-                priority: "low",
-                // @ts-expect-error — purpose is a valid fetch option in some browsers
-                purpose: "prefetch",
-              });
+              const fetchPromise = waitForAppPrefetchRevalidationCooldown().then(() =>
+                fetch(rscUrl, {
+                  headers,
+                  credentials: "include",
+                  // Match link.tsx: deprioritize the background prefetch and tag it
+                  // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
+                  priority: "low",
+                  // @ts-expect-error — purpose is a valid fetch option in some browsers
+                  purpose: "prefetch",
+                }),
+              );
               prefetchRscResponse(
                 rscUrl,
                 fetchPromise,
