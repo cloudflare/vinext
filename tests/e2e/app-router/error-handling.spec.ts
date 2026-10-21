@@ -208,6 +208,70 @@ test.describe("Not Found", () => {
     await expect(page.locator("#not-found-ancestor-boundary-team")).toBeVisible();
     await expect(counter).toHaveText("count:2");
   });
+
+  // https://github.com/cloudflare/vinext/issues/4092
+  test("client-side notFound() renders a not-found from a segment without a layout", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+    const counter = page.locator("#not-found-layout-segment-counter");
+    await counter.click();
+    await counter.click();
+    await expect(counter).toHaveText("count:2");
+
+    // [lang]/not-found.tsx replaces the shop layout, inside the layout above.
+    await page.getByRole("link", { name: "Gone" }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-shop")).toHaveCount(0);
+    await expect(counter).toHaveText("count:2");
+
+    // A sibling whose nearest not-found file differs clears the fallback.
+    await page.getByRole("link", { name: "Item", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-page")).toHaveText("Item: hello");
+    await expect(page.locator("#not-found-layout-segment-nf")).toHaveCount(0);
+    await expect(counter).toHaveText("count:2");
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4045
+  test("a layout's notFound() below a loading.tsx renders the segment boundary above it", async ({
+    page,
+  }) => {
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/not-found-layout-segment/en/slow/invalid`,
+      { waitUntil: "commit" },
+    );
+    // Layouts below a loading.tsx are not probed, so the document streamed the
+    // loading shell and the [lang] boundary in the tree caught the signal.
+    expect(response?.status()).toBe(200);
+    expect(await response?.text()).toContain("not-found-layout-segment-loading");
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-slow")).toHaveCount(0);
+
+    // The same signal on a client navigation lands on the same boundary.
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Item", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-page")).toHaveText("Item: hello");
+    await page.getByRole("link", { name: "Slow", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-slow")).toHaveCount(0);
+
+    // Like Next.js, the boundary clears when the pathname changes, even when
+    // only the throwing layout's own param does.
+    await page.getByRole("link", { name: "Slow item" }).click();
+    await expect(page.locator("#not-found-layout-segment-slow")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-nf")).toHaveCount(0);
+  });
 });
 
 test.describe("Forbidden & Unauthorized", () => {

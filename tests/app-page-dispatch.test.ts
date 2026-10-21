@@ -859,6 +859,138 @@ describe("app page dispatch", () => {
     },
   );
 
+  // https://github.com/cloudflare/vinext/issues/4092
+  it.each([
+    {
+      // [lang]/not-found.tsx sits in a segment without a layout, so it
+      // replaces the shop layout, but every layout keeps its metadata.
+      name: "a segment boundary without a layout",
+      boundaryTreePositions: [1],
+      layoutTreePositions: [0, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: false,
+    },
+    {
+      // A file beside the page wraps only the page.
+      name: "a boundary beside the page",
+      boundaryTreePositions: [1, 3],
+      layoutTreePositions: [0, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 2,
+      builtIn: false,
+    },
+    {
+      // The root file renders inside the first-layer route group's layout.
+      name: "the root boundary below a first-layer route group",
+      boundaryTreePositions: [0],
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["(site)", "posts", "[slug]"],
+      renderedLayoutCount: 2,
+      builtIn: false,
+    },
+    {
+      // Without a file, Next.js renders its built-in not-found at the root.
+      name: "no boundary file",
+      boundaryTreePositions: [],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["posts", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: true,
+    },
+    {
+      // app/[lang]/layout is the root layout and holds the <html> element.
+      name: "a root layout below app/",
+      boundaryTreePositions: [],
+      layoutTreePositions: [1, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: true,
+    },
+    {
+      // app/(site)/not-found.tsx renders inside the app/(site)/[lang] root
+      // layout rather than above it.
+      name: "a boundary file above a deeper root layout",
+      boundaryTreePositions: [1],
+      layoutTreePositions: [2, 3],
+      routeSegments: ["(site)", "[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: false,
+    },
+  ])(
+    "renders a page's notFound() in $name",
+    async ({
+      boundaryTreePositions,
+      builtIn,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+    }) => {
+      const boundaries = boundaryTreePositions.map(() => ({ default: () => null }));
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentNotFounds: boundaries,
+        segmentNotFoundTreePositions: boundaryTreePositions,
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: builtIn ? DEFAULT_NOT_FOUND_MODULE : boundaries[boundaries.length - 1],
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it("keeps the plain status response for a page's forbidden() without a boundary file", async () => {
+    const layouts = [{ default: () => null }, { default: () => null }];
+    const route = createRoute({
+      layouts,
+      layoutTreePositions: [0, 1],
+      routeSegments: ["posts", "[slug]"],
+      segmentForbiddens: [],
+      segmentForbiddenTreePositions: [],
+    });
+    const renderHttpAccessFallbackPage = vi.fn(async () => null);
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;403"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+        });
+      },
+      route,
+    });
+    // The "/" route's file can belong to another route group's subtree.
+    options.rootForbiddenModule = { default: () => null };
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(403);
+    expect(renderHttpAccessFallbackPage).not.toHaveBeenCalled();
+  });
+
   it("disables streaming metadata while producing prerendered HTML", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>

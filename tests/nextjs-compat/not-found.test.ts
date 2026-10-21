@@ -316,6 +316,21 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain('id="not-found-layout-segment-blog"');
   });
 
+  // Issue #4092: a page's notFound() is caught by its nearest not-found file,
+  // here in a segment without a layout, which replaces the layouts below it.
+  it("notFound() from page is caught by an ancestor segment boundary without a layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/shop/gone",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain('id="not-found-layout-segment-layout"');
+    // Every layout on the route still contributes metadata.
+    expect(html).toContain('<meta name="description" content="Shop layout description"/>');
+    expect(html).not.toContain('id="not-found-layout-segment-shop"');
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

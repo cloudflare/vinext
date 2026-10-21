@@ -1639,6 +1639,74 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
   });
 }
 
+/**
+ * The fallback for a page's `notFound()` / `forbidden()` / `unauthorized()`.
+ * Next.js wraps each segment's children in its boundaries, with or without a
+ * layout, so the route's deepest boundary catches the signal and replaces
+ * every layout below its segment. Without one, 404 renders the built-in
+ * not-found inside the root layout, and 403 and 401 resolve to `null` for the
+ * plain status response. Returns `null` for routes without segment data.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+function renderPageSegmentBoundaryFallback<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
+  intercept: AppPageDispatchInterceptOptions | null | undefined,
+  isCacheCandidate: boolean,
+): Promise<Response | null> | null {
+  const { route } = options;
+  const boundaryModules =
+    statusCode === 403
+      ? route.segmentForbiddens
+      : statusCode === 401
+        ? route.segmentUnauthorizeds
+        : route.segmentNotFounds;
+  const boundaryTreePositions =
+    statusCode === 403
+      ? route.segmentForbiddenTreePositions
+      : statusCode === 401
+        ? route.segmentUnauthorizedTreePositions
+        : route.segmentNotFoundTreePositions;
+  if (!boundaryTreePositions) return null;
+  const boundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: boundaryModules ?? [],
+    boundaryTreePositions,
+    layoutTreePosition: Number.POSITIVE_INFINITY,
+  });
+  // Forbidden and unauthorized have no built-in page in vinext, so they keep
+  // the plain status response.
+  const boundaryModule = boundary?.module ?? (statusCode === 404 ? DEFAULT_NOT_FOUND_MODULE : null);
+  if (!boundaryModule) return Promise.resolve(null);
+  const layoutTreePositions = route.layoutTreePositions ?? [];
+  // The root segment's boundary renders inside the root layout, including a
+  // first-layer route group's layout, as Turbopack copies it into the group.
+  // No boundary renders above the root layout.
+  const boundaryTreePosition = Math.max(
+    boundary?.treePosition ?? 0,
+    resolveAppPageRootHttpAccessBoundaryTreePosition(
+      route.routeSegments,
+      layoutTreePositions,
+      Number.POSITIVE_INFINITY,
+    ),
+  );
+  return options.renderHttpAccessFallbackPage(
+    statusCode,
+    {
+      boundaryComponent: boundaryModule.default,
+      boundaryModule,
+      // Every layout on the route still contributes metadata.
+      headLayouts: route.layouts,
+      intercept,
+      ...(isCacheCandidate ? { isCacheCandidate } : {}),
+      layouts: route.layouts.filter(
+        (_, index) => (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
+      ),
+      matchedParams: options.params,
+    },
+    null,
+  );
+}
+
 async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   specialError: AppPageSpecialError,
@@ -1660,6 +1728,15 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
+      const pageBoundaryFallback = renderPageSegmentBoundaryFallback(
+        options,
+        statusCode,
+        intercept,
+        isCacheCandidate,
+      );
+      if (pageBoundaryFallback) return pageBoundaryFallback;
+      // Routes without segment data resolve the boundary from the files
+      // beside each layout.
       // `forbidden()` / `unauthorized()` / `notFound()` should be caught by the
       // nearest ancestor boundary. When the page (the deepest segment) calls
       // one of these and an intermediate layout has no matching boundary file,

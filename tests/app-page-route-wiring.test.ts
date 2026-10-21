@@ -213,6 +213,19 @@ function findSuspenseWithFallback(
   return match as ReactElement<Record<string, unknown>> | null;
 }
 
+function findBoundaryWithFallback(
+  node: unknown,
+  boundaryTypeName: string,
+  fallbackTypeName: string,
+): ReactElement<Record<string, unknown>> | null {
+  const match = findElement(node, (element) => {
+    if (getElementTypeName(element.type) !== boundaryTypeName) return false;
+    const fallback = element.props.fallback;
+    return isValidElement(fallback) && getElementTypeName(fallback.type) === fallbackTypeName;
+  });
+  return match as ReactElement<Record<string, unknown>> | null;
+}
+
 function countSuspenseWithFallback(node: unknown, fallbackTypeName: string): number {
   if (Array.isArray(node)) {
     return node.reduce(
@@ -4249,6 +4262,48 @@ describe("app page route wiring helpers", () => {
     expect(findElementByTypeName(nestedLayoutSlot.props.children, "NotFoundBoundary")).toBeNull();
   });
 
+  it("clears the built-in not-found boundary on the visible pathname, not the route", () => {
+    // With no custom not-found file, the built-in boundary at the root layout
+    // catches the page's notFound(). Next.js resets it on any pathname change,
+    // so /docs/missing -> /docs/present must leave the fallback, but not on a
+    // search-only change that rewrites to another page. Without a reset key
+    // the boundary compares the visible pathname.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
+    const build = (slug: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { slug },
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["docs", "[slug]"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/docs/[slug]",
+        rootNotFoundModule: null,
+      })["route:/docs/[slug]"];
+    const readRootBoundary = (routeEntry: ReturnType<typeof build>) => {
+      const rootLayoutSlot = findSlotById(routeEntry, "layout:/");
+      if (!rootLayoutSlot) throw new Error("Expected the root layout slot");
+      const boundary = findElementByTypeName(rootLayoutSlot.props.children, "NotFoundBoundary");
+      if (!boundary) throw new Error("Expected the built-in not-found boundary");
+      return boundary;
+    };
+
+    expect(readRootBoundary(build("missing")).props.resetKey).toBeUndefined();
+    expect(readRootBoundary(build("present")).props.resetKey).toBeUndefined();
+  });
+
   // https://github.com/cloudflare/vinext/issues/4092
   it("hands the page's access signals to the ancestor layout that owns the file", () => {
     // Next.js hands a segment's not-found/forbidden/unauthorized file to that
@@ -4315,11 +4370,8 @@ describe("app page route wiring helpers", () => {
       expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
         "HttpAccessFallbackPassthrough",
       );
-      const leafBoundary = findElementByTypeName(leafEntry, boundaryName);
+      const leafBoundary = findBoundaryWithFallback(leafEntry, boundaryName, fallbackName);
       if (!leafBoundary) throw new Error(`Expected a page-level ${boundaryName}`);
-      expect(getElementTypeName((leafBoundary.props.fallback as ReactElement).type)).toBe(
-        fallbackName,
-      );
       const boundary = findElementByTypeName(sectionLayoutSlot.props.children, boundaryName);
       if (!boundary) throw new Error(`Expected ${boundaryName} above the child layout`);
       expect(getElementTypeName((boundary.props.fallback as ReactElement).type)).toBe(fallbackName);
@@ -4328,6 +4380,213 @@ describe("app page route wiring helpers", () => {
       // when it wraps the page, so a deeper navigation leaves the fallback.
       expect(boundary.props.resetKey).toBe(leafBoundary.props.resetKey);
     }
+  });
+
+  // https://github.com/cloudflare/vinext/issues/4092
+  // https://github.com/cloudflare/vinext/issues/4045
+  it("wraps the layouts below a segment without a layout in that segment's boundaries", () => {
+    // Next.js wraps each segment's children in its own boundaries, with or
+    // without a layout, so [lang]/not-found.tsx replaces the shop layout.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+    function LangNotFound() {
+      return createElement("p", null, "Lang not found");
+    }
+    function LangForbidden() {
+      return createElement("p", null, "Lang forbidden");
+    }
+    function ItemNotFound() {
+      return createElement("p", null, "Item not found");
+    }
+    const langNotFound: AppPageModule = { default: LangNotFound };
+    const langForbidden: AppPageModule = { default: LangForbidden };
+    const itemNotFound: AppPageModule = { default: ItemNotFound };
+    const build = (leaf: string, ownNotFound: boolean) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { lang: "en" },
+        route: {
+          error: null,
+          errors: [null, null],
+          forbidden: langForbidden,
+          forbiddenTreePosition: 1,
+          forbiddens: [null, null],
+          layoutTreePositions: [0, 2],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: ownNotFound ? itemNotFound : langNotFound,
+          notFoundTreePosition: ownNotFound ? 3 : 1,
+          notFounds: [null, null],
+          routeSegments: ["[lang]", "shop", leaf],
+          segmentForbiddens: [langForbidden],
+          segmentForbiddenTreePositions: [1],
+          segmentNotFounds: ownNotFound ? [langNotFound, itemNotFound] : [langNotFound],
+          segmentNotFoundTreePositions: ownNotFound ? [1, 3] : [1],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: `/[lang]/shop/${leaf}`,
+        rootNotFoundModule: null,
+      })[`route:/[lang]/shop/${leaf}`];
+
+    const routeEntry = build("gone", false);
+    const rootLayoutSlot = findSlotById(routeEntry, "layout:/");
+    const shopLayoutSlot = findSlotById(routeEntry, "layout:/[lang]/shop");
+    if (!rootLayoutSlot || !shopLayoutSlot) throw new Error("Expected both layout slots");
+    const pageNotFound = findElementByTypeName(shopLayoutSlot.props.children, "NotFoundBoundary");
+    if (!pageNotFound) throw new Error("Expected a page-level NotFoundBoundary");
+
+    for (const [boundaryName, fallbackName] of [
+      ["NotFoundBoundary", "LangNotFound"],
+      ["ForbiddenBoundary", "LangForbidden"],
+    ]) {
+      const boundary = findBoundaryWithFallback(
+        rootLayoutSlot.props.children,
+        boundaryName,
+        fallbackName,
+      );
+      if (!boundary) throw new Error(`Expected the [lang] ${boundaryName}`);
+      // The boundary replaces the shop layout, which also covers that
+      // layout's own notFound() below a loading.tsx (issue #4045).
+      expect(findSlotById(boundary.props.children, "layout:/[lang]/shop")).not.toBeNull();
+      // It owns the page's signal, so it clears on the route reset key.
+      expect(boundary.props.resetKey).toBe(pageNotFound.props.resetKey);
+      const pageBoundary = findElementByTypeName(shopLayoutSlot.props.children, boundaryName);
+      if (!pageBoundary) throw new Error(`Expected a page-level ${boundaryName}`);
+      expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
+        "HttpAccessFallbackPassthrough",
+      );
+    }
+
+    // A sibling with its own not-found keeps the same boundary above the shop
+    // layout, so moving between the two never remounts that layout's subtree.
+    const siblingEntry = build("item", true);
+    const siblingRootSlot = findSlotById(siblingEntry, "layout:/");
+    const siblingShopSlot = findSlotById(siblingEntry, "layout:/[lang]/shop");
+    if (!siblingRootSlot || !siblingShopSlot) throw new Error("Expected both layout slots");
+    const siblingLangBoundary = findBoundaryWithFallback(
+      siblingRootSlot.props.children,
+      "NotFoundBoundary",
+      "LangNotFound",
+    );
+    if (!siblingLangBoundary) throw new Error("Expected the [lang] NotFoundBoundary");
+    expect(findSlotById(siblingLangBoundary.props.children, "layout:/[lang]/shop")).not.toBeNull();
+    // It only catches the shop layout's signals, so like Next.js it clears
+    // when the visible pathname changes, even if only a deeper param does.
+    expect(siblingLangBoundary.props.resetKey).toBeUndefined();
+    expect(
+      findBoundaryWithFallback(siblingShopSlot.props.children, "NotFoundBoundary", "ItemNotFound"),
+    ).not.toBeNull();
+  });
+
+  it("gives a first-layer route group the root boundary when it has none of its own", () => {
+    // Turbopack copies the root not-found, forbidden and unauthorized files
+    // into a first-layer route group without its own, so the root file
+    // renders inside the group's layout.
+    // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
+    function RootNotFound() {
+      return createElement("p", null, "Root not found");
+    }
+    const rootNotFound: AppPageModule = { default: RootNotFound };
+    const routeEntry = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null, null, null],
+        layoutTreePositions: [0, 1, 2],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: rootNotFound,
+        notFoundTreePosition: 0,
+        notFounds: [rootNotFound, null, null],
+        routeSegments: ["(shop)", "cart", "items"],
+        segmentNotFounds: [rootNotFound],
+        segmentNotFoundTreePositions: [0],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/cart/items",
+      rootNotFoundModule: rootNotFound,
+    })["route:/cart/items"];
+
+    const groupLayoutSlot = findSlotById(routeEntry, "layout:/(shop)");
+    if (!groupLayoutSlot) throw new Error("Expected the group layout slot");
+    const groupBoundary = findBoundaryWithFallback(
+      groupLayoutSlot.props.children,
+      "NotFoundBoundary",
+      "RootNotFound",
+    );
+    if (!groupBoundary) throw new Error("Expected the root not-found inside the group layout");
+    expect(findSlotById(groupBoundary.props.children, "layout:/(shop)/cart")).not.toBeNull();
+    const cartLayoutSlot = findSlotById(routeEntry, "layout:/(shop)/cart");
+    if (!cartLayoutSlot) throw new Error("Expected the cart layout slot");
+    const pageBoundary = findElementByTypeName(cartLayoutSlot.props.children, "NotFoundBoundary");
+    if (!pageBoundary) throw new Error("Expected a page-level NotFoundBoundary");
+    expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
+      "HttpAccessFallbackPassthrough",
+    );
+    expect(groupBoundary.props.resetKey).toBe(pageBoundary.props.resetKey);
+  });
+
+  it("renders a boundary file above a deeper root layout inside that layout", () => {
+    // app/(site)/not-found.tsx sits above the app/(site)/[lang]/layout.tsx
+    // root layout. Rendering it above that layout would drop <html>, so it
+    // renders inside it, as the server's fallback does.
+    function SiteNotFound() {
+      return createElement("p", null, "Site not found");
+    }
+    const siteNotFound: AppPageModule = { default: SiteNotFound };
+    const routeEntry = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { lang: "en" },
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [2, 3],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: siteNotFound,
+        notFoundTreePosition: 1,
+        notFounds: [null, null],
+        routeSegments: ["(site)", "[lang]", "shop", "[id]"],
+        segmentNotFounds: [siteNotFound],
+        segmentNotFoundTreePositions: [1],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/(site)/[lang]/shop/[id]",
+      rootNotFoundModule: null,
+    })["route:/(site)/[lang]/shop/[id]"];
+
+    const rootLayoutSlot = findSlotById(routeEntry, "layout:/(site)/[lang]");
+    if (!rootLayoutSlot) throw new Error("Expected the root layout slot");
+    const siteBoundary = findBoundaryWithFallback(
+      rootLayoutSlot.props.children,
+      "NotFoundBoundary",
+      "SiteNotFound",
+    );
+    if (!siteBoundary) throw new Error("Expected the site not-found inside the root layout");
+    expect(findSlotById(siteBoundary.props.children, "layout:/(site)/[lang]/shop")).not.toBeNull();
+    const shopLayoutSlot = findSlotById(routeEntry, "layout:/(site)/[lang]/shop");
+    if (!shopLayoutSlot) throw new Error("Expected the shop layout slot");
+    // The page's signal goes up to it, so the shop layout does not render.
+    const pageBoundary = findElementByTypeName(shopLayoutSlot.props.children, "NotFoundBoundary");
+    if (!pageBoundary) throw new Error("Expected a page-level NotFoundBoundary");
+    expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
+      "HttpAccessFallbackPassthrough",
+    );
   });
 
   it("nests per-segment NotFoundBoundary inside the template wrapper", () => {
@@ -4634,7 +4893,11 @@ describe("app page route wiring helpers", () => {
     const routeEntry = elements["route:/products/alpha"];
     const loadingBoundary = findSuspenseWithFallback(routeEntry, "RouteLoading");
     const errorBoundary = findElementByTypeName(routeEntry, "ErrorBoundary");
-    const notFoundBoundary = findElementByTypeName(routeEntry, "NotFoundBoundary");
+    const notFoundBoundary = findBoundaryWithFallback(
+      routeEntry,
+      "NotFoundBoundary",
+      "RouteNotFound",
+    );
 
     expect(loadingBoundary?.key).toBe(JSON.stringify(["products", "id|alpha|d"]));
     expect(errorBoundary?.props.resetKey).toBe(JSON.stringify(["products", "id|alpha|d"]));
@@ -4685,8 +4948,16 @@ describe("app page route wiring helpers", () => {
     const photosLoadingBoundary = findSuspenseWithFallback(photosRoute, "RouteLoading");
     const postsErrorBoundary = findElementByTypeName(postsRoute, "ErrorBoundary");
     const photosErrorBoundary = findElementByTypeName(photosRoute, "ErrorBoundary");
-    const postsNotFoundBoundary = findElementByTypeName(postsRoute, "NotFoundBoundary");
-    const photosNotFoundBoundary = findElementByTypeName(photosRoute, "NotFoundBoundary");
+    const postsNotFoundBoundary = findBoundaryWithFallback(
+      postsRoute,
+      "NotFoundBoundary",
+      "RouteNotFound",
+    );
+    const photosNotFoundBoundary = findBoundaryWithFallback(
+      photosRoute,
+      "NotFoundBoundary",
+      "RouteNotFound",
+    );
 
     expect(postsLoadingBoundary?.key).toBe(
       JSON.stringify(["reset-collision", "posts", "id|123|d"]),
