@@ -4383,6 +4383,62 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("clears a segment boundary when a same-path rewrite changes the route group below it", () => {
+    // Next.js's LayoutRouter keys the subtree below a segment by the child
+    // segment, route groups included, so a rewrite from section/(a)/foo to
+    // section/(b)/bar remounts section/not-found.tsx even though the visible
+    // pathname stays the same.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/layout-router.tsx
+    function SectionNotFound() {
+      return createElement("p", null, "Section not found");
+    }
+    const sectionNotFound: AppPageModule = { default: SectionNotFound };
+    const build = (group: string, leaf: string) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: sectionNotFound,
+          notFoundTreePosition: 1,
+          notFounds: [null, null],
+          routeSegments: ["section", group, leaf],
+          segmentNotFounds: [sectionNotFound],
+          segmentNotFoundTreePositions: [1],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: `/section/${group}/${leaf}`,
+        rootNotFoundModule: null,
+      })[`route:/section/${group}/${leaf}`];
+    const readSectionBoundary = (routeEntry: ReturnType<typeof build>) => {
+      const sectionLayoutSlot = findSlotById(routeEntry, "layout:/section");
+      if (!sectionLayoutSlot) throw new Error("Expected the section layout slot");
+      const boundary = findBoundaryWithFallback(
+        sectionLayoutSlot.props.children,
+        "NotFoundBoundary",
+        "SectionNotFound",
+      );
+      if (!boundary) throw new Error("Expected the section NotFoundBoundary");
+      return boundary;
+    };
+
+    expect(readSectionBoundary(build("(a)", "foo")).props.resetKey).toBe(
+      JSON.stringify(["section", "(a)"]),
+    );
+    expect(readSectionBoundary(build("(b)", "bar")).props.resetKey).toBe(
+      JSON.stringify(["section", "(b)"]),
+    );
+  });
+
   // https://github.com/cloudflare/vinext/issues/4092
   // https://github.com/cloudflare/vinext/issues/4045
   it("wraps the layouts below a segment without a layout in that segment's boundaries", () => {
@@ -4539,7 +4595,7 @@ describe("app page route wiring helpers", () => {
     );
     // It sits inside the group layout, so it clears when the cart segment
     // below it changes.
-    expect(groupBoundary.props.resetKey).toBe(JSON.stringify(["cart"]));
+    expect(groupBoundary.props.resetKey).toBe(JSON.stringify(["(shop)", "cart"]));
   });
 
   it("renders a boundary file above a deeper root layout inside that layout", () => {

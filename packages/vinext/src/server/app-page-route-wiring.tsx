@@ -63,7 +63,6 @@ import {
 import {
   APP_PAGE_SEGMENT_KEY,
   resolveAppPageChildSegments,
-  resolveAppPageRouteStateKey,
   resolveAppPageSegmentStateKey,
   resolveAppPageTemplateStateKey,
   type AppPageSemanticSegment,
@@ -1928,12 +1927,14 @@ export function buildAppPageElements<
     ] as const;
     // Like Next.js's, every access boundary clears when the visible pathname
     // changes, even under an intercepted route whose reset key stays the
-    // source's. Next.js also remounts it when the segment below it changes, so
-    // a rewrite that keeps the pathname clears it only then. The reset key is
-    // the route's state path down to that segment.
+    // source's. Next.js also remounts it when the segment below it changes,
+    // including a route group, so a rewrite that keeps the pathname clears it
+    // only then. The reset key is the route's state path down to that
+    // segment, keyed like a template's.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/layout-router.tsx
-    const accessResetKey = resolveAppPageRouteStateKey(
-      routeSegments.slice(0, treePosition + 1),
+    const accessResetKey = resolveAppPageTemplateStateKey(
+      routeSegments,
+      treePosition,
       options.matchedParams,
     );
     for (const [boundaries, AccessBoundary] of accessBoundaries) {
