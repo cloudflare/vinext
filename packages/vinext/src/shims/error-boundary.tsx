@@ -102,6 +102,21 @@ function shouldResetBoundary(
   return nextResetState.previousPathname !== previousResetState.previousPathname;
 }
 
+// Next.js's HTTPAccessFallbackErrorBoundary clears on any visible pathname
+// change, and its LayoutRouter remounts it when the segment below it changes.
+// The reset key stands in for that remount, so either change clears it.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
+function shouldResetAccessBoundary(
+  nextResetState: BoundaryResetState,
+  previousResetState: BoundaryResetState,
+): boolean {
+  return (
+    nextResetState.previousPathname !== previousResetState.previousPathname ||
+    normalizeBoundaryResetKey(nextResetState.previousResetKey) !==
+      normalizeBoundaryResetKey(previousResetState.previousResetKey)
+  );
+}
+
 function addDevErrorRecoveryListener(listener: () => void): void {
   if (typeof window === "undefined") return;
   window.addEventListener(VINEXT_DEV_ERROR_RECOVERY_EVENT, listener);
@@ -366,13 +381,13 @@ type NotFoundBoundaryState = {
 
 /**
  * Inner class component that catches notFound() errors and renders the
- * not-found.tsx fallback. Resets on the caller's segment reset key when one is
- * provided, otherwise falls back to pathname changes for legacy callers.
+ * not-found.tsx fallback. Resets when the pathname or the caller's segment
+ * reset key changes.
  *
  * The ErrorBoundary above re-throws notFound errors so they propagate up to this
  * boundary. This must be placed above the ErrorBoundary in the component tree.
  */
-class NotFoundBoundaryInner extends React.Component<
+export class NotFoundBoundaryInner extends React.Component<
   NotFoundBoundaryInnerProps,
   NotFoundBoundaryState
 > {
@@ -386,7 +401,7 @@ class NotFoundBoundaryInner extends React.Component<
     state: NotFoundBoundaryState,
   ): NotFoundBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.notFound && shouldResetBoundary(nextResetState, state)) {
+    if (state.notFound && shouldResetAccessBoundary(nextResetState, state)) {
       return { notFound: false, ...nextResetState };
     }
     return { notFound: state.notFound, ...nextResetState };
@@ -430,7 +445,7 @@ export function HttpAccessFallbackPassthrough({ status }: { status: 401 | 403 | 
 
 /**
  * Wrapper that reads the current pathname and passes it to the inner class
- * component. Segment reset keys own App Router remount semantics when present.
+ * component.
  */
 export function NotFoundBoundary({ fallback, children, resetKey }: NotFoundBoundaryProps) {
   const pathname = useErrorBoundaryPathname();
@@ -475,7 +490,7 @@ export class ForbiddenBoundaryInner extends React.Component<
     state: ForbiddenBoundaryState,
   ): ForbiddenBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.forbidden && shouldResetBoundary(nextResetState, state)) {
+    if (state.forbidden && shouldResetAccessBoundary(nextResetState, state)) {
       return { forbidden: false, ...nextResetState };
     }
     return { forbidden: state.forbidden, ...nextResetState };
@@ -547,7 +562,7 @@ export class UnauthorizedBoundaryInner extends React.Component<
     state: UnauthorizedBoundaryState,
   ): UnauthorizedBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.unauthorized && shouldResetBoundary(nextResetState, state)) {
+    if (state.unauthorized && shouldResetAccessBoundary(nextResetState, state)) {
       return { unauthorized: false, ...nextResetState };
     }
     return { unauthorized: state.unauthorized, ...nextResetState };

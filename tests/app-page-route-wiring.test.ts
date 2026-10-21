@@ -4266,8 +4266,9 @@ describe("app page route wiring helpers", () => {
     // With no custom not-found file, the built-in boundary at the root layout
     // catches the page's notFound(). Next.js resets it on any pathname change,
     // so /docs/missing -> /docs/present must leave the fallback, but not on a
-    // search-only change that rewrites to another page. Without a reset key
-    // the boundary compares the visible pathname.
+    // search-only change that rewrites to another page. Its reset key only
+    // tracks the docs segment below it, which both pages share, so the
+    // boundary compares the visible pathname.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
     const build = (slug: string) =>
       buildAppPageElements({
@@ -4300,8 +4301,8 @@ describe("app page route wiring helpers", () => {
       return boundary;
     };
 
-    expect(readRootBoundary(build("missing")).props.resetKey).toBeUndefined();
-    expect(readRootBoundary(build("present")).props.resetKey).toBeUndefined();
+    expect(readRootBoundary(build("missing")).props.resetKey).toBe(JSON.stringify(["docs"]));
+    expect(readRootBoundary(build("present")).props.resetKey).toBe(JSON.stringify(["docs"]));
   });
 
   // https://github.com/cloudflare/vinext/issues/4092
@@ -4376,8 +4377,8 @@ describe("app page route wiring helpers", () => {
       if (!boundary) throw new Error(`Expected ${boundaryName} above the child layout`);
       expect(getElementTypeName((boundary.props.fallback as ReactElement).type)).toBe(fallbackName);
       expect(findSlotById(boundary.props.children, "layout:/section/child")).not.toBeNull();
-      // The boundary still clears on the route's own reset key, as it does
-      // when it wraps the page, so a deeper navigation leaves the fallback.
+      // The segment below the boundary is the page's, so it clears on the
+      // same reset key as when it wraps the page.
       expect(boundary.props.resetKey).toBe(leafBoundary.props.resetKey);
     }
   });
@@ -4452,8 +4453,10 @@ describe("app page route wiring helpers", () => {
       // The boundary replaces the shop layout, which also covers that
       // layout's own notFound() below a loading.tsx (issue #4045).
       expect(findSlotById(boundary.props.children, "layout:/[lang]/shop")).not.toBeNull();
-      // It owns the page's signal, so it clears on the route reset key.
-      expect(boundary.props.resetKey).toBe(pageNotFound.props.resetKey);
+      // It clears when the shop segment below it changes, not on the route
+      // reset key, so a rewrite to a sibling page keeps the fallback.
+      expect(boundary.props.resetKey).toBe(JSON.stringify(["lang|en|d", "shop"]));
+      expect(pageNotFound.props.resetKey).toBe(JSON.stringify(["lang|en|d", "shop", "gone"]));
       const pageBoundary = findElementByTypeName(shopLayoutSlot.props.children, boundaryName);
       if (!pageBoundary) throw new Error(`Expected a page-level ${boundaryName}`);
       expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
@@ -4474,9 +4477,10 @@ describe("app page route wiring helpers", () => {
     );
     if (!siblingLangBoundary) throw new Error("Expected the [lang] NotFoundBoundary");
     expect(findSlotById(siblingLangBoundary.props.children, "layout:/[lang]/shop")).not.toBeNull();
-    // It only catches the shop layout's signals, so like Next.js it clears
-    // when the visible pathname changes, even if only a deeper param does.
-    expect(siblingLangBoundary.props.resetKey).toBeUndefined();
+    // The segment below it is still shop, so its reset key is unchanged. Like
+    // Next.js it still clears when the visible pathname changes, even if only
+    // a deeper param does.
+    expect(siblingLangBoundary.props.resetKey).toBe(JSON.stringify(["lang|en|d", "shop"]));
     expect(
       findBoundaryWithFallback(siblingShopSlot.props.children, "NotFoundBoundary", "ItemNotFound"),
     ).not.toBeNull();
@@ -4533,7 +4537,9 @@ describe("app page route wiring helpers", () => {
     expect(getElementTypeName((pageBoundary.props.fallback as ReactElement).type)).toBe(
       "HttpAccessFallbackPassthrough",
     );
-    expect(groupBoundary.props.resetKey).toBe(pageBoundary.props.resetKey);
+    // It sits inside the group layout, so it clears when the cart segment
+    // below it changes.
+    expect(groupBoundary.props.resetKey).toBe(JSON.stringify(["cart"]));
   });
 
   it("renders a boundary file above a deeper root layout inside that layout", () => {

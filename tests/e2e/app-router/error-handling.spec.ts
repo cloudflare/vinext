@@ -272,6 +272,36 @@ test.describe("Not Found", () => {
     await expect(page.locator("#not-found-layout-segment-slow")).toBeVisible();
     await expect(page.locator("#not-found-layout-segment-nf")).toHaveCount(0);
   });
+
+  test("an intercepted modal's notFound() clears when the modal navigates to another photo", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-intercept-reset/feed`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // The modal's signal leaves the feed layout, so the segment's not-found
+    // replaces it.
+    await page.getByRole("link", { name: "Missing photo" }).click();
+    await expect(page.locator("#not-found-intercept-reset-nf")).toBeVisible();
+    await expect(page.locator("#not-found-intercept-reset-feed")).toHaveCount(0);
+
+    // Still intercepted from the feed, the next photo keeps the source route.
+    // Like Next.js, the boundary clears because the visible pathname changed.
+    await page.getByRole("link", { name: "Photo 1" }).click();
+    await expect(page).toHaveURL(/\/not-found-intercept-reset\/feed\/photo\/1$/);
+    await expect(page.locator("#not-found-intercept-reset-modal")).toHaveText("Photo modal: 1");
+    await expect(page.locator("#not-found-intercept-reset-feed-page")).toBeVisible();
+    await expect(page.locator("#not-found-intercept-reset-nf")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
 });
 
 test.describe("Forbidden & Unauthorized", () => {

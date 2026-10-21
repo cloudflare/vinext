@@ -637,3 +637,77 @@ describe("UnauthorizedBoundary digest classification", () => {
     expect(() => UnauthorizedBoundaryInnerClass?.getDerivedStateFromError(e)).toThrow(e);
   });
 });
+
+// Next.js's HTTPAccessFallbackErrorBoundary clears on any visible pathname
+// change, and its LayoutRouter remounts it when the segment below it changes.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
+describe("HTTP access boundary reset", () => {
+  type AccessBoundaryInner = {
+    getDerivedStateFromProps(
+      props: { children: null; fallback: null; pathname: string; resetKey?: string | null },
+      state: Record<string, unknown>,
+    ): Record<string, unknown> | null;
+  };
+  const boundaries: [string, string][] = [
+    ["NotFoundBoundaryInner", "notFound"],
+    ["ForbiddenBoundaryInner", "forbidden"],
+    ["UnauthorizedBoundaryInner", "unauthorized"],
+  ];
+  let mod: Record<string, unknown>;
+
+  beforeAll(async () => {
+    mod = await import("../packages/vinext/src/shims/error-boundary.js");
+  });
+
+  function readBoundary(name: string): AccessBoundaryInner {
+    const boundary = Reflect.get(mod, name) as AccessBoundaryInner | undefined;
+    if (!boundary) throw new Error(`Expected ${name} export`);
+    return boundary;
+  }
+
+  it("clears on a pathname change when the reset key stays the same", () => {
+    // An intercepted navigation keeps the source route's reset key while the
+    // visible pathname moves from /feed/photo/999 to /feed/photo/1.
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/feed/photo/1", resetKey: '["feed"]' },
+        { [flag]: true, previousPathname: "/feed/photo/999", previousResetKey: '["feed"]' },
+      );
+      expect(state).toEqual({
+        [flag]: false,
+        previousPathname: "/feed/photo/1",
+        previousResetKey: '["feed"]',
+      });
+    }
+  });
+
+  it("clears on a reset key change when the pathname stays the same", () => {
+    // A search-only change that rewrites to a sibling page changes the segment
+    // below the boundary, which Next.js remounts.
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/alias", resetKey: '["docs","present"]' },
+        { [flag]: true, previousPathname: "/alias", previousResetKey: '["docs","missing"]' },
+      );
+      expect(state).toEqual({
+        [flag]: false,
+        previousPathname: "/alias",
+        previousResetKey: '["docs","present"]',
+      });
+    }
+  });
+
+  it("stays caught when neither the pathname nor the reset key changes", () => {
+    for (const [name, flag] of boundaries) {
+      const state = readBoundary(name).getDerivedStateFromProps(
+        { children: null, fallback: null, pathname: "/alias", resetKey: '["docs"]' },
+        { [flag]: true, previousPathname: "/alias", previousResetKey: '["docs"]' },
+      );
+      expect(state).toEqual({
+        [flag]: true,
+        previousPathname: "/alias",
+        previousResetKey: '["docs"]',
+      });
+    }
+  });
+});
