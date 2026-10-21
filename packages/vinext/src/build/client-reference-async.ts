@@ -1,11 +1,9 @@
+import fs from "node:fs";
+import path from "pathslash";
 import type { ESTree } from "vite";
 import { parseProgram, walkAst } from "../plugins/ast-utils.js";
 
-type AsyncModuleGraphInfo = {
-  code: string | null;
-  importedIds: readonly string[];
-  moduleSideEffects?: boolean | "no-treeshake" | null;
-};
+type AsyncModuleGraphInfo = { code: string | null; importedIds: readonly string[] };
 
 /** A chunk of the emitted output, as `renderChunk`'s `meta.chunks` lists it. */
 export type EmittedChunk = {
@@ -58,15 +56,16 @@ export function hasTopLevelAwait(code: string): boolean {
  * module, or a module it imports at any depth, awaits at its top level. Webpack
  * calls these async modules, and React's Flight client suspends on them as they
  * load. Only what the output keeps counts: modules tree-shaking dropped don't
- * make a module async. Neither do imports of a module declared free of side
- * effects (`sideEffects: false`), which the output drops when unused, nor of a
- * module in a chunk the importer's chunks never load. Other imports stay: the
- * imported module's side effects, its await included, run before the importer.
+ * make a module async. Neither do imports of a module in a chunk the
+ * importer's chunks never load, nor of one `declaresSideEffects` reports, which
+ * the output drops when unused. Other imports stay: the imported module's side
+ * effects, its await included, run before the importer.
  */
 export function collectAsyncModules(options: {
   roots: readonly string[];
   getModuleInfo: (id: string) => AsyncModuleGraphInfo | null;
   chunks: readonly EmittedChunk[];
+  declaresSideEffects?: (id: string) => boolean;
 }): Set<string> {
   const chunkOf = new Map<string, EmittedChunk>();
   for (const chunk of options.chunks) {
@@ -110,7 +109,7 @@ export function collectAsyncModules(options: {
     for (const imported of info?.importedIds ?? []) {
       const importedChunk = chunkOf.get(imported);
       if (!importedChunk || !loaded.has(importedChunk.fileName)) continue;
-      if (options.getModuleInfo(imported)?.moduleSideEffects === false) continue;
+      if (options.declaresSideEffects?.(imported)) continue;
       let list = importers.get(imported);
       if (!list) importers.set(imported, (list = []));
       list.push(id);
@@ -126,4 +125,38 @@ export function collectAsyncModules(options: {
     }
   }
   return new Set(options.roots.filter((id) => asyncModules.has(id)));
+}
+
+/**
+ * Whether a module's package declares which of its modules have side effects
+ * (`sideEffects` other than `true` in the nearest package.json naming a
+ * package or declaring it). A bundler drops an unused import of a module the
+ * declaration marks side-effect-free, which Rolldown's module info doesn't
+ * report, so an import into such a package may not survive.
+ */
+export function createSideEffectsDeclarationCheck(): (id: string) => boolean {
+  const byDirectory = new Map<string, boolean>();
+  const declares = (directory: string): boolean => {
+    const cached = byDirectory.get(directory);
+    if (cached !== undefined) return cached;
+    let pkg: { name?: unknown; sideEffects?: unknown } | undefined;
+    try {
+      pkg = JSON.parse(fs.readFileSync(path.join(directory, "package.json"), "utf8"));
+    } catch {
+      pkg = undefined;
+    }
+    let result: boolean;
+    if (pkg && typeof pkg === "object" && ("sideEffects" in pkg || "name" in pkg)) {
+      result = "sideEffects" in pkg && pkg.sideEffects !== true;
+    } else {
+      const parent = path.dirname(directory);
+      result = parent !== directory && declares(parent);
+    }
+    byDirectory.set(directory, result);
+    return result;
+  };
+  return (id) => {
+    const file = id.split("?")[0]!;
+    return !id.startsWith("\0") && path.isAbsolute(file) && declares(path.dirname(file));
+  };
 }

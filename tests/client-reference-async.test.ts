@@ -1,6 +1,10 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import {
   collectAsyncModules,
+  createSideEffectsDeclarationCheck,
   hasTopLevelAwait,
 } from "../packages/vinext/src/build/client-reference-async.js";
 
@@ -27,10 +31,7 @@ describe("hasTopLevelAwait", () => {
 });
 
 describe("collectAsyncModules", () => {
-  const graph: Record<
-    string,
-    { code: string; importedIds: string[]; moduleSideEffects?: boolean }
-  > = {
+  const graph: Record<string, { code: string; importedIds: string[] }> = {
     "/direct.tsx": { code: "await init();", importedIds: [] },
     "/importer.tsx": { code: "export {};", importedIds: ["/lib/a.ts"] },
     "/lib/a.ts": { code: "export {};", importedIds: ["/lib/b.ts"] },
@@ -48,9 +49,10 @@ describe("collectAsyncModules", () => {
     // another import.
     "/shared.tsx": { code: "export {};", importedIds: ["/lib/used.ts", "/lib/pure.ts"] },
     "/lib/used.ts": { code: "export {};", importedIds: [] },
-    "/lib/pure.ts": { code: "await setup();", importedIds: [], moduleSideEffects: false },
+    "/lib/pure.ts": { code: "await setup();", importedIds: [] },
   };
   const getModuleInfo = (id: string) => graph[id] ?? null;
+  const declaresSideEffects = (id: string) => id === "/lib/pure.ts";
   const rendered = (...ids: string[]) =>
     Object.fromEntries(ids.map((id) => [id, { code: graph[id]!.code, renderedLength: 1 }]));
   const chunks = [
@@ -84,7 +86,7 @@ describe("collectAsyncModules", () => {
   it("marks roots that await at the top level or import a module that does", () => {
     const roots = ["/direct.tsx", "/importer.tsx", "/sync.tsx", "/external", "/elsewhere-user.tsx"];
 
-    expect(collectAsyncModules({ roots, getModuleInfo, chunks })).toEqual(
+    expect(collectAsyncModules({ roots, getModuleInfo, chunks, declaresSideEffects })).toEqual(
       new Set(["/direct.tsx", "/importer.tsx", "/elsewhere-user.tsx"]),
     );
   });
@@ -92,7 +94,9 @@ describe("collectAsyncModules", () => {
   it("ignores imports the emitted output dropped", () => {
     const roots = ["/shaken.tsx", "/dropped.tsx", "/shared.tsx"];
 
-    expect(collectAsyncModules({ roots, getModuleInfo, chunks })).toEqual(new Set());
+    expect(collectAsyncModules({ roots, getModuleInfo, chunks, declaresSideEffects })).toEqual(
+      new Set(),
+    );
   });
 
   it("reads the code the output keeps", () => {
@@ -107,5 +111,32 @@ describe("collectAsyncModules", () => {
     expect(
       collectAsyncModules({ roots: ["/direct.tsx"], getModuleInfo, chunks: keptChunks }),
     ).toEqual(new Set());
+  });
+});
+
+describe("createSideEffectsDeclarationCheck", () => {
+  it("reads the sideEffects field of the package a module belongs to", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-side-effects-"));
+    try {
+      const write = (file: string, json: object) => {
+        fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+        fs.writeFileSync(path.join(root, file), JSON.stringify(json));
+      };
+      write("package.json", { name: "app" });
+      write("node_modules/pure/package.json", { name: "pure", sideEffects: false });
+      // A nested package.json that only sets the module type defers upwards.
+      write("node_modules/pure/dist/package.json", { type: "module" });
+      write("node_modules/listed/package.json", { name: "listed", sideEffects: ["*.css"] });
+      write("node_modules/impure/package.json", { name: "impure", sideEffects: true });
+      const declaresSideEffects = createSideEffectsDeclarationCheck();
+
+      expect(declaresSideEffects(path.join(root, "node_modules/pure/dist/index.js"))).toBe(true);
+      expect(declaresSideEffects(path.join(root, "node_modules/listed/index.js"))).toBe(true);
+      expect(declaresSideEffects(path.join(root, "node_modules/impure/index.js"))).toBe(false);
+      expect(declaresSideEffects(path.join(root, "app/page.tsx?v=1"))).toBe(false);
+      expect(declaresSideEffects("\0virtual:module")).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -13,7 +13,10 @@ import {
   readClientModuleBindings,
   type ClientReferencePreloadPlan,
 } from "../build/client-reference-groups.js";
-import { collectAsyncModules } from "../build/client-reference-async.js";
+import {
+  collectAsyncModules,
+  createSideEffectsDeclarationCheck,
+} from "../build/client-reference-async.js";
 import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
 import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
@@ -577,6 +580,7 @@ export function createRscClientReferenceLoadersPlugin(
         roots: [...roots.keys()],
         getModuleInfo: (id) => this.getModuleInfo(id),
         chunks: Object.values(meta.chunks),
+        declaresSideEffects: createSideEffectsDeclarationCheck(),
       });
       const asyncIndices = [...asyncModules].flatMap((id) => roots.get(id)!).sort((a, b) => a - b);
       const output = new MagicString(code);
