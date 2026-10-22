@@ -166,3 +166,35 @@ test("dynamic route: a shell is keyed for the URL it commits", async ({ page }) 
     }),
   ).toBe(0);
 });
+
+test("dynamic layout: a URL commits the shell prefetched for it", async ({ page }) => {
+  // Three navigations, each behind the 800ms layout.
+  test.slow();
+  await trackSkeletonMounts(page);
+  const base = "/loading-shell-remount/dynamic-layout";
+  await page.goto(`${base}/2`);
+  await waitForAppRouterHydration(page);
+  await prefetchLoadingShell(page, `${base}/3`);
+  await prefetchLoadingShell(page, `${base}/4`);
+
+  // The [id] layout is rendered into each shell with its URL's params, so a
+  // URL commits its own shell, whichever one the route learned last.
+  for (const id of ["3", "4"]) {
+    expect(
+      await navigate(page, {
+        heading: `dynamic-layout ${id}`,
+        href: `${base}/${id}`,
+        showsLoading: true,
+        whileHeld: () => expect(page.locator("#layout-id")).toHaveText(id),
+      }),
+    ).toBe(1);
+  }
+
+  // /2 has no shell of its own, and another URL's shell would show that
+  // URL's layout, so the current page stays up until /2's payload arrives.
+  await navigate(page, {
+    heading: "dynamic-layout 2",
+    href: `${base}/2`,
+    showsLoading: false,
+  });
+});
