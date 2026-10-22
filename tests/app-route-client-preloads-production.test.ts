@@ -354,7 +354,11 @@ describe("App Router production SSR route client reference preloads", () => {
     expect((globalThis as SharedEvaluationMarker).__vinextSharedClientEvaluated).toBe(true);
   });
 
-  it("links client components' stylesheets without crossorigin, as Next.js does when it's unset", async () => {
+  it("links client components' stylesheets as anonymous when crossOrigin is unset", async () => {
+    // Vite's preload helper links a lazily imported component's stylesheet as
+    // anonymous, which would fail the CORS check on a no-cors copy the browser
+    // cached.
+    //
     // The shell links /streamed's panel stylesheet ahead of the badge's, and
     // /streamed/also's in the head; the rest link as the render reads them.
     for (const route of ["/", "/streamed", "/streamed/also", "/layout-streamed/nested"]) {
@@ -363,7 +367,7 @@ describe("App Router production SSR route client reference preloads", () => {
         (tag) => tag.includes('data-precedence="vite-rsc/client-reference"'),
       );
       expect(stylesheets.length, route).toBeGreaterThan(0);
-      for (const tag of stylesheets) expect(tag, route).not.toContain("crossorigin");
+      for (const tag of stylesheets) expect(tag, route).toContain('crossorigin=""');
     }
   });
 

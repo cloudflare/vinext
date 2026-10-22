@@ -21,9 +21,11 @@
  * `crossOrigin: "use-credentials"` the browser fetches the module the page
  * then imports without credentials. React keeps the first hint for each
  * script, so a render with either hints them first, with both, as Next.js does.
- * plugin-rsc also links its stylesheets as anonymous whatever the config,
- * where Next.js links them with the configured crossOrigin, and without one
- * when unset; a render links them first too.
+ * plugin-rsc also links its stylesheets as anonymous whatever the config, so a
+ * render links them first with the configured crossOrigin too. Unlike Next.js,
+ * it links them as anonymous when that's unset: Vite's preload helper always
+ * links a lazily imported module's stylesheets as anonymous, and a later page
+ * doing so would fail the CORS check on the no-cors copy the browser cached.
  */
 import * as ReactDOM from "react-dom";
 import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
@@ -77,11 +79,10 @@ function linkScripts(deps: AssetDeps, render: StreamedClientReferences): void {
   for (const href of deps.js) ReactDOM.preloadModule(href, options);
 }
 
-// Like Next.js, a stylesheet only gets crossorigin when it's configured.
 function linkStylesheets(hrefs: readonly string[], render: StreamedClientReferences): void {
   const options: ReactDOM.PreinitOptions = {
     as: "style",
-    crossOrigin: render.crossOrigin || undefined,
+    crossOrigin: render.crossOrigin,
     precedence: STYLESHEET_PRECEDENCE,
   };
   for (const href of hrefs) ReactDOM.preinit(href, options);
@@ -213,13 +214,11 @@ export function renderStreamedStylesheets(render: StreamedClientReferences): str
     }
   }
   // React writes "" for anonymous.
-  const crossOrigin = render.crossOrigin
-    ? ` crossorigin="${render.crossOrigin === "use-credentials" ? "use-credentials" : ""}"`
-    : "";
+  const crossOrigin = render.crossOrigin === "use-credentials" ? "use-credentials" : "";
   let html = "";
   for (const href of hrefs) {
     render.linkedStylesheets.add(href);
-    html += `<link rel="stylesheet" href="${escapeHtmlAttr(href)}" data-precedence="${STYLESHEET_PRECEDENCE}"${crossOrigin}/>`;
+    html += `<link rel="stylesheet" href="${escapeHtmlAttr(href)}" data-precedence="${STYLESHEET_PRECEDENCE}" crossorigin="${crossOrigin}"/>`;
   }
   return html;
 }

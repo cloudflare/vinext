@@ -1523,8 +1523,9 @@ describe("App Router Production server (startProdServer)", () => {
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
 
-        // As in Next.js, a client component's stylesheet only gets
-        // crossorigin when it's configured.
+        // Anonymous when unset, unlike Next.js: Vite's preload helper links a
+        // lazily imported component's stylesheet as anonymous, which would
+        // fail the CORS check on a no-cors copy the browser cached.
         const bannerHtml = await (await fetch(`${tmpBaseUrl}/cookie-notice-chunks`)).text();
         expect(bannerHtml).toContain('data-testid="consent-banner"');
         const clientStylesheets = (bannerHtml.match(/<link\b[^>]*>/g) ?? []).filter(
@@ -1534,11 +1535,7 @@ describe("App Router Production server (startProdServer)", () => {
         );
         expect(clientStylesheets).not.toEqual([]);
         for (const tag of clientStylesheets) {
-          if (configuredCrossOrigin) {
-            expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
-          } else {
-            expect(tag).not.toContain("crossorigin");
-          }
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
       } finally {
         assetPrefixServer?.close();
