@@ -2,7 +2,7 @@ import Link from "next/link";
 import { HmrSuspenseScrollRenderProbe } from "./render-probe";
 
 // Used by Playwright: app-router/hmr-suspense-scroll.spec.ts edits the marker
-// and suspendMs to push RSC updates.
+// and suspend to push RSC updates.
 const MARKER = "before edit";
 
 // No Suspense boundary of its own, so the layout's boundary is the nearest one.
@@ -22,7 +22,7 @@ export default function HmrSuspenseScrollPage() {
       <Link href="/hmr-suspense-scroll/target" data-testid="hmr-suspense-scroll-link">
         Target
       </Link>
-      <HmrSuspenseScrollRenderProbe marker={MARKER} suspendMs={0} />
+      <HmrSuspenseScrollRenderProbe marker={MARKER} suspend={false} />
       <SlowRows />
     </main>
   );

@@ -2,29 +2,22 @@
 
 import { use } from "react";
 
-const delays = new Map<string, Promise<void>>();
+const neverResolves = new Promise<never>(() => {});
 
 // Records every marker it renders, so the spec can tell when React has started
-// rendering an HMR update that has not committed yet. A positive suspendMs
-// keeps that render suspended on the client for a fixed time.
+// rendering an HMR update that has not committed yet. With suspend set, that
+// render stays suspended until something replaces it.
 export function HmrSuspenseScrollRenderProbe({
   marker,
-  suspendMs,
+  suspend,
 }: {
   marker: string;
-  suspendMs: number;
+  suspend: boolean;
 }) {
   if (typeof window !== "undefined") {
     const probe = window as Window & { __hmrSuspenseScrollRenders?: string[] };
     (probe.__hmrSuspenseScrollRenders ??= []).push(marker);
-    if (suspendMs > 0) {
-      let delay = delays.get(marker);
-      if (!delay) {
-        delay = new Promise((resolve) => setTimeout(resolve, suspendMs));
-        delays.set(marker, delay);
-      }
-      use(delay);
-    }
+    if (suspend) use(neverResolves);
   }
   return <p data-testid="hmr-suspense-scroll-marker">{marker}</p>;
 }

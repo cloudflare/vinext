@@ -6,8 +6,8 @@ import { waitForAppRouterHydration } from "../helpers";
 const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4174";
 const BEFORE_MARKER = '"before edit"';
 const AFTER_MARKER = '"after edit"';
-const NO_CLIENT_SUSPEND = "suspendMs={0}";
-const CLIENT_SUSPEND = "suspendMs={1500}";
+const NO_CLIENT_SUSPEND = "suspend={false}";
+const CLIENT_SUSPEND = "suspend={true}";
 
 type HmrRecord = {
   fallbackShown: boolean;
@@ -110,7 +110,7 @@ test("a link navigation during a suspended HMR update still commits", async ({ p
     );
 
     // The probe records the edited marker once React starts rendering the HMR
-    // update, then keeps that render suspended on the client.
+    // update, then keeps that render suspended until the navigation replaces it.
     await page.waitForFunction(() =>
       (
         window as Window & { __hmrSuspenseScrollRenders?: string[] }
@@ -124,6 +124,8 @@ test("a link navigation during a suspended HMR update still commits", async ({ p
       );
       const marker = document.querySelector('[data-testid="hmr-suspense-scroll-marker"]');
       if (!link?.checkVisibility() || marker?.textContent !== "before edit") return false;
+      // A full-document navigation would drop this.
+      (window as Window & { __hmrNavigationCanary?: boolean }).__hmrNavigationCanary = true;
       link.click();
       return true;
     });
@@ -131,6 +133,11 @@ test("a link navigation during a suspended HMR update still commits", async ({ p
 
     await expect(page.getByTestId("hmr-suspense-scroll-target")).toBeVisible();
     await expect(page).toHaveURL(`${BASE}/hmr-suspense-scroll/target`);
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __hmrNavigationCanary?: boolean }).__hmrNavigationCanary,
+      ),
+    ).toBe(true);
   } finally {
     await restorePage(original);
   }
