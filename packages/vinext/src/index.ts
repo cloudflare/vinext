@@ -3083,6 +3083,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__VINEXT_MANUAL_TRAILING_SLASH"] = JSON.stringify(
           nextConfig.skipTrailingSlashRedirect ? "true" : "false",
         );
+        // Pages client config-rule matching sees the locale root as the server
+        // does (`shouldRestoreLocaleRootTrailingSlash`).
+        defines["process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE"] = JSON.stringify(
+          nextConfig.skipProxyUrlNormalize ? "true" : "false",
+        );
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");

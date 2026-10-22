@@ -38,6 +38,7 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
+import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
   handleMetadataRouteRequest,
@@ -265,6 +266,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
     setNavigationContext: overrides.setNavigationContext ?? (() => {}),
     skipTrailingSlashRedirect: overrides.skipTrailingSlashRedirect,
+    skipProxyUrlNormalize: overrides.skipProxyUrlNormalize,
     staticParamsMap: overrides.staticParamsMap ?? {},
     trailingSlash: overrides.trailingSlash ?? false,
     validateDevRequestOrigin: overrides.validateDevRequestOrigin ?? (() => null),
@@ -302,6 +304,35 @@ function useSplitPolicyAdapter(): void {
 afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
 describe("createAppRscHandler", () => {
+  it.each([
+    ["/docs/", false, "/docs/other/"],
+    ["/docs/", true, null],
+    ["/docs", false, null],
+  ])(
+    "matches the i18n trailingSlash root redirect for raw %s (skipProxyUrlNormalize: %s)",
+    async (rawPathname, skipProxyUrlNormalize, location) => {
+      // resolve-routes.ts re-adds the root slash (`maybeAddTrailingSlash`)
+      // only when the raw request pathname, basePath included, ends with `/`
+      // and proxy URL normalization is on.
+      const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+      const handler = createHandler({
+        configRedirects: applyLocaleToRoutes(
+          [{ source: "/", destination: "/other/", permanent: false }],
+          i18nConfig,
+          "redirect",
+          { trailingSlash: true },
+        ),
+        i18nConfig,
+        skipProxyUrlNormalize,
+        trailingSlash: true,
+      });
+
+      const response = await handler(new Request(`https://example.test${rawPathname}`), null);
+
+      expect(response.headers.get("location")).toBe(location);
+    },
+  );
+
   // Ported from Next.js: test/e2e/invalid-static-asset-404-app
   // https://github.com/vercel/next.js/tree/canary/test/e2e/invalid-static-asset-404-app
   it.each(["", "/assets", "https://cdn.example.test/assets"])(

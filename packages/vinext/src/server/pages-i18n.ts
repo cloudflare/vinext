@@ -95,9 +95,9 @@ export function detectPathnameLocale(
  * `:locale`. After normalisation the request looks like `/en/to-sv` and
  * the rule matches with `:locale=en`.
  *
- * `restoreRootTrailingSlash` makes the root `/en/` rather than `/en`; header
- * callers compute it with `shouldRestoreLocaleRootTrailingSlash`. Redirect
- * and rewrite callers do not pass it yet.
+ * `restoreRootTrailingSlash` makes the root `/en/` rather than `/en`; config
+ * rule callers compute it with `shouldRestoreLocaleRootTrailingSlash` on the
+ * raw request pathname.
  *
  * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts

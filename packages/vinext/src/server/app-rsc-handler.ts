@@ -1152,38 +1152,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // arrives without a locale prefix before running config redirect / rewrite
   // / header matching. Mirrors resolve-routes.ts lines ~250-263.
   //
-  // Defined once here so the same helper is reused for the redirect match
-  // below, the middleware-redirect config header match further down, and the
-  // post-middleware rewrite matches. `i18nConfig` and `url.hostname` are
-  // request-scoped constants from this point on.
+  // `configMatchPathname` serves the redirect match below, the config header
+  // matches further down, and the post-middleware rewrite matches.
+  // `i18nConfig` and `url.hostname` are request-scoped constants from this
+  // point on.
   const matchPathname = (p: string): string =>
     normalizeDefaultLocalePathname(p, options.i18nConfig, { hostname: url.hostname });
-  // Header matching re-adds the root's trailing slash exactly where Next.js
+  // Config matching re-adds the root's trailing slash exactly where Next.js
   // does, so a root rule's `/:nextInternalLocale(...)/` source matches. A
   // `/_next/data` request was already rewritten to its page path, but its raw
-  // pathname ends in `.json`, so its slash is never restored.
+  // pathname ends in `.json`, so its slash is never restored. Rewritten
+  // pathnames are re-normalized without it.
   const restoreLocaleRootTrailingSlash =
     !pagesDataRequest &&
     shouldRestoreLocaleRootTrailingSlash(stripRscSuffix(url.pathname), options);
-  const headerMatchPathname = normalizeDefaultLocalePathname(
-    requestCleanPathname,
-    options.i18nConfig,
-    { hostname: url.hostname, restoreRootTrailingSlash: restoreLocaleRootTrailingSlash },
-  );
+  const configMatchPathname = (p: string, isRequestPathname: boolean): string =>
+    normalizeDefaultLocalePathname(p, options.i18nConfig, {
+      hostname: url.hostname,
+      restoreRootTrailingSlash: isRequestPathname && restoreLocaleRootTrailingSlash,
+    });
+  const requestConfigMatchPathname = configMatchPathname(requestCleanPathname, true);
 
   // Config sources match the request's raw encoded identity. Internal route
   // matching uses the normalized pathname separately, but decoding literal
   // source segments here would make aliases such as `/%72ewrite` match
   // `/rewrite`, unlike Next.js. Dynamic captures must likewise retain their
   // original percent-encoding for Location substitution.
-  const redirectPathname = matchPathname(requestCleanPathname);
   const configMatchers =
     HAS_CONFIG_REDIRECTS && options.configRedirects.length
       ? await import("../config/config-matchers.js")
       : null;
   const redirect = configMatchers
     ? configMatchers.matchRedirect(
-        redirectPathname,
+        requestConfigMatchPathname,
         options.configRedirects,
         preMiddlewareRequestContext,
         basePathState,
@@ -1306,7 +1307,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return applyConfigHeadersToMiddlewareRedirect(middlewareResult.response, {
         basePathState,
         configHeaders: options.configHeaders,
-        pathname: headerMatchPathname,
+        pathname: requestConfigMatchPathname,
         recordCacheability: dispatchResponseStage === undefined,
         requestContext: preMiddlewareRequestContext,
       });
@@ -1351,7 +1352,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolveResponseStageCachePolicy({
               basePathState,
               configHeaders: options.configHeaders,
-              pathname: headerMatchPathname,
+              pathname: requestConfigMatchPathname,
               requestContext: preMiddlewareRequestContext,
             }),
           ),
@@ -1646,13 +1647,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           resolvedUrl,
           url,
         ),
-        paramsPathname: matchPathname(
+        paramsPathname: configMatchPathname(
           cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+          cleanPathnameIsRequestPathname,
         ),
         rewrites: [rewrite],
         validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
       },
-      matchPathname(cleanPathname),
+      configMatchPathname(cleanPathname, cleanPathnameIsRequestPathname),
       dispatchResponseStage === undefined,
     );
     if (beforeFilesRewrite instanceof Response) return beforeFilesRewrite;
@@ -2453,13 +2455,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolvedUrl,
             url,
           ),
-          paramsPathname: matchPathname(
+          paramsPathname: configMatchPathname(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+            cleanPathnameIsRequestPathname,
           ),
           rewrites: [rewrite],
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
-        matchPathname(cleanPathname),
+        configMatchPathname(cleanPathname, cleanPathnameIsRequestPathname),
         dispatchResponseStage === undefined,
       );
       if (afterFilesRewrite instanceof Response) {
@@ -2518,13 +2521,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             resolvedUrl,
             url,
           ),
-          paramsPathname: matchPathname(
+          paramsPathname: configMatchPathname(
             cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+            cleanPathnameIsRequestPathname,
           ),
           rewrites: [rewrite],
           validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
         },
-        matchPathname(cleanPathname),
+        configMatchPathname(cleanPathname, cleanPathnameIsRequestPathname),
         dispatchResponseStage === undefined,
       );
       if (fallbackRewrite instanceof Response) {

@@ -1204,13 +1204,17 @@ function annotateCacheabilityProbeSafety(
 function configuredRulesAffectWarmPath(
   pathname: string,
   rules: ReadonlyArray<NextRewrite>,
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
 ): boolean {
   const canonicalPathname = normalizePathTrailingSlash(pathname, config.trailingSlash);
   const hostnames = [undefined, ...(config.i18n?.domains?.map((domain) => domain.domain) ?? [])];
+  const restoreRootTrailingSlash = shouldRestoreLocaleRootTrailingSlash(canonicalPathname, config);
   const matchPathnames = new Set(
     hostnames.map((hostname) =>
-      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, { hostname }),
+      normalizeDefaultLocalePathname(canonicalPathname, config.i18n, {
+        hostname,
+        restoreRootTrailingSlash,
+      }),
     ),
   );
   return rules.some((rule) =>
@@ -1232,7 +1236,7 @@ function configuredRewritesCanReplaceWarmPath(
   pathname: string,
   rewrites: ResolvedNextConfig["rewrites"],
   hasNonDynamicRoute: boolean,
-  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "trailingSlash">,
+  config: Pick<ResolvedNextConfig, "basePath" | "i18n" | "skipProxyUrlNormalize" | "trailingSlash">,
   include: (rewrite: NextRewrite) => boolean,
 ): boolean {
   const applicableRewrites = [

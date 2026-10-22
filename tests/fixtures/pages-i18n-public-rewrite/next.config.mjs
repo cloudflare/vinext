@@ -74,6 +74,31 @@ export default {
           destination: "/about",
           locale: false,
         },
+        // Used by E2E: pages-router-prod/i18n-client-config-locale.spec.ts —
+        // config rules match default-locale paths with the locale prefixed, on
+        // the client as on the server. Both sources are also real pages.
+        {
+          source: "/:locale/locale-false-page",
+          destination: "/about",
+          locale: false,
+        },
+        {
+          source: "/unprefixed-locale-false",
+          destination: "/about",
+          locale: false,
+        },
+        // Used by E2E: pages-router-prod/i18n-client-config-locale.spec.ts — a
+        // rewrite chain resolves the same page for a document request and a
+        // client navigation.
+        {
+          source: "/:locale/chain-start",
+          destination: "/chain-middle",
+          locale: false,
+        },
+        {
+          source: "/chain-middle",
+          destination: "/about",
+        },
       ],
       afterFiles: [
         {

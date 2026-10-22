@@ -441,14 +441,9 @@ export async function runPagesRequest(
   // Step 3: Build pre-middleware request context
   const reqCtx: RequestContext = requestContextFromRequest(request);
   const requestHostname = i18nConfig ? url.hostname : "";
-  const requestConfigMatchPathname = i18nConfig
-    ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
-        hostname: requestHostname,
-      })
-    : requestConfigPathname;
-  // Header matching re-adds the root's trailing slash exactly where Next.js
+  // Config matching re-adds the root's trailing slash exactly where Next.js
   // does, so a root rule's `/:nextInternalLocale(...)/` source matches.
-  const requestHeaderMatchPathname = i18nConfig
+  const requestConfigMatchPathname = i18nConfig
     ? normalizeDefaultLocalePathname(requestConfigPathname, i18nConfig, {
         hostname: requestHostname,
         restoreRootTrailingSlash: deps.restoreLocaleRootTrailingSlash,
@@ -513,7 +508,7 @@ export async function runPagesRequest(
     const matchedConfigHeaders: HeaderRecord = {};
     applyConfigHeadersToHeaderRecord(matchedConfigHeaders, {
       configHeaders,
-      pathname: requestHeaderMatchPathname,
+      pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
       middlewareHeaders: response.headers,
@@ -725,7 +720,7 @@ export async function runPagesRequest(
   if (configHeaders.length) {
     applyConfigHeadersToHeaderRecord(middlewareHeaders, {
       configHeaders,
-      pathname: requestHeaderMatchPathname,
+      pathname: requestConfigMatchPathname,
       requestContext: reqCtx,
       basePathState,
       recordCacheability: deps.recordCacheability,

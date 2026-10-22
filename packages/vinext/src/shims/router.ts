@@ -74,6 +74,7 @@ import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-p
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import {
   addLocalePrefix,
+  detectDomainLocale,
   getDomainLocaleUrl,
   getLocalePathPrefix,
   type DomainLocale,
@@ -110,6 +111,7 @@ import { clientRewriteAppendsParams } from "../client/client-rewrite-params.js";
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
 /** trailingSlash from next.config.js, injected by the plugin at build time */
 const __trailingSlash: boolean = process.env.__VINEXT_TRAILING_SLASH === "true";
+const __skipProxyUrlNormalize: boolean = process.env.__VINEXT_SKIP_PROXY_URL_NORMALIZE === "true";
 /** experimental.scrollRestoration from next.config.js, injected by the plugin at build time */
 const __scrollRestoration: boolean = process.env.__NEXT_SCROLL_RESTORATION === "true";
 
@@ -1797,7 +1799,15 @@ function hasClientAppRouteManifest(): boolean {
   );
 }
 
-function getClientConfigRouteContext(href: string): {
+/**
+ * `isNavigationHref` marks the URL being navigated to, as opposed to an
+ * intermediate rewrite-chain destination. Like the server, only that URL
+ * keeps the locale root's trailing slash.
+ */
+function getClientConfigRouteContext(
+  href: string,
+  isNavigationHref = false,
+): {
   basePathState: { basePath: string; hadBasePath: boolean };
   context: RequestContext;
   pathname: string;
@@ -1822,16 +1832,58 @@ function getClientConfigRouteContext(href: string): {
       host: parsed.hostname,
       query: parsed.searchParams,
     },
-    pathname,
+    pathname: normalizeClientConfigLocalePathname(
+      pathname,
+      parsed.hostname,
+      isNavigationHref && shouldRestoreClientLocaleRootTrailingSlash(parsed.pathname),
+    ),
     search: parsed.search,
   };
+}
+
+/**
+ * Match config rules against the locale-prefixed pathname, as the server does
+ * (`normalizeDefaultLocalePathname`) and as Next.js's client router does before
+ * resolving rewrites (`addLocale(asPath, locale)`). Without this, a
+ * default-locale URL such as `/about` misses `locale: false` rules written
+ * against `/:locale/about` and matches unprefixed `locale: false` rules the
+ * server never applies to it.
+ */
+function normalizeClientConfigLocalePathname(
+  pathname: string,
+  hostname: string,
+  restoreRootTrailingSlash: boolean,
+): string {
+  const locales = window.__VINEXT_LOCALES__;
+  if (!locales?.length) return pathname;
+  if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
+  if (getLocalePathPrefix(pathname, locales)) return pathname;
+
+  const defaultLocale =
+    detectDomainLocale(getDomainLocales(), hostname)?.defaultLocale ??
+    window.__VINEXT_DEFAULT_LOCALE__;
+  if (!defaultLocale) return pathname;
+  if (pathname === "/") {
+    return restoreRootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
+  return `/${defaultLocale}${pathname}`;
+}
+
+/**
+ * The server's `shouldRestoreLocaleRootTrailingSlash` for the browser
+ * pathname (basePath included): the root keeps its slash only when the URL
+ * itself ends with `/`, `trailingSlash` is on and `skipProxyUrlNormalize` is
+ * off.
+ */
+function shouldRestoreClientLocaleRootTrailingSlash(rawPathname: string): boolean {
+  return __trailingSlash && !__skipProxyUrlNormalize && rawPathname.endsWith("/");
 }
 
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return null;
 
-  const routeContext = getClientConfigRouteContext(href);
+  const routeContext = getClientConfigRouteContext(href, true);
   if (!routeContext) return null;
 
   const [{ matchClientRedirect }, { preserveRedirectDestinationQuery }] = await Promise.all([
@@ -1863,8 +1915,11 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
 async function applyClientConfigRewrite(
   href: string,
   rewrite: ClientRewrite,
+  isNavigationHref: boolean,
 ): Promise<{ href: string; kind: "rewrite" } | { kind: "document" } | null> {
-  const routeContext = getClientConfigRouteContext(href);
+  // Each destination in a rewrite chain is re-normalized, as the server does
+  // through `configSourcePathname()`.
+  const routeContext = getClientConfigRouteContext(href, isNavigationHref);
   if (!routeContext) return null;
 
   const { matchClientRewrite } = await import("../client/client-rewrite-matcher.js");
@@ -1907,9 +1962,19 @@ function isExternalClientConfigUrl(url: string): boolean {
   return /^[a-z][a-z0-9+.-]*:/i.test(url) || url.startsWith("//");
 }
 
+/**
+ * With i18n, rules match the locale-prefixed pathname, which reaches source
+ * shapes the simple matcher does not handle exactly as matchConfigPattern
+ * does. Leave those navigations to the full matcher.
+ */
+function usesFullClientConfigMatcher(): boolean {
+  return Boolean(window.__VINEXT_LOCALES__?.length);
+}
+
 function clientConfigRedirectCouldMatch(href: string): boolean {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return false;
+  if (usesFullClientConfigMatcher()) return true;
 
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return false;
@@ -1927,6 +1992,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
 function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolution {
   const rewrites = window.__VINEXT_CLIENT_REWRITES__;
   if (!rewrites) return null;
+  if (usesFullClientConfigMatcher()) return undefined;
 
   let currentHref = href;
   let matched = false;
@@ -2010,7 +2076,8 @@ async function resolveClientConfigRewrite(
   let currentHref = href;
   let matched = false;
   for (const rewrite of rewrites.beforeFiles) {
-    const result = await applyClientConfigRewrite(currentHref, rewrite);
+    if (rewrite.localeFallback) continue;
+    const result = await applyClientConfigRewrite(currentHref, rewrite, !matched);
     if (result?.kind === "document") return result;
     if (result?.kind !== "rewrite") continue;
     currentHref = result.href;

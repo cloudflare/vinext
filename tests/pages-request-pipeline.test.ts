@@ -7,6 +7,8 @@ import {
   type PagesRenderOptions,
 } from "../packages/vinext/src/server/pages-request-pipeline.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../packages/vinext/src/server/headers.js";
+import { applyLocaleToRoutes } from "../packages/vinext/src/config/config-matchers.js";
+import { shouldRestoreLocaleRootTrailingSlash } from "../packages/vinext/src/server/pages-i18n.js";
 import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
@@ -496,6 +498,44 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-rewrite")).toBe("/ssr-page-2");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/ssr-page-2");
   });
+
+  it.each([
+    ["/docs/", false, 307],
+    ["/docs/", true, 200],
+    ["/docs", false, 200],
+  ])(
+    "matches the i18n trailingSlash root redirect for raw %s (skipProxyUrlNormalize: %s)",
+    async (rawPathname, skipProxyUrlNormalize, status) => {
+      // resolve-routes.ts re-adds the root slash (`maybeAddTrailingSlash`)
+      // only when the raw request pathname, basePath included, ends with `/`
+      // and proxy URL normalization is on. Adapters compute that flag from the
+      // raw URL, which the basePath-stripped request no longer shows.
+      const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+      const configRedirects = applyLocaleToRoutes(
+        [{ source: "/", destination: "/other/", permanent: false }],
+        i18nConfig,
+        "redirect",
+        { trailingSlash: true },
+      );
+      const result = await runPagesRequest(
+        makeRequest("/"),
+        baseDeps({
+          i18nConfig,
+          trailingSlash: true,
+          restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(rawPathname, {
+            trailingSlash: true,
+            skipProxyUrlNormalize,
+          }),
+          configRedirects,
+          matchPageRoute: vi.fn().mockReturnValue({ route: { isDynamic: false, pattern: "/" } }),
+          renderPage: makeRenderPage(),
+        }),
+      );
+
+      const response = result.type === "response" ? result.response : null;
+      expect(response?.status ?? 200).toBe(status);
+    },
+  );
 
   it("locale-prefixes the final matched path on i18n data responses", async () => {
     const result = await runPagesRequest(

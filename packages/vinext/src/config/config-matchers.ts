@@ -1418,10 +1418,11 @@ export function applyLocaleToRoutes<T extends NextRedirect | NextRewrite | NextH
     }
     out.push(internalRoute);
 
-    // Retain the original unprefixed source as a redirect/rewrite fallback.
-    // See the docblock above for why this differs from upstream Next.js and
-    // why headers never get it.
-    if (type !== "header") out.push(r);
+    // Retain the original unprefixed source as a redirect/rewrite fallback,
+    // marked so the Pages Router client (which, like Next.js, matches the
+    // locale-prefixed pathname) can skip it. See the docblock above for why
+    // this differs from upstream Next.js and why headers never get it.
+    if (type !== "header") out.push({ ...r, localeFallback: true });
   }
   return out;
 }
