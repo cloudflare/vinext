@@ -709,7 +709,9 @@ describe("optimizeDeps.exclude for vinext", () => {
   const ssrExternalReactEntries = [
     "react",
     "react-dom",
+    "react-dom/server",
     "react-dom/server.edge",
+    "react-dom/static",
     "react-dom/static.edge",
     "react/jsx-runtime",
     "react/jsx-dev-runtime",

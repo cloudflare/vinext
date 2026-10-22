@@ -124,16 +124,6 @@ export type FontData = {
 
 type StaticPrerender = typeof import("react-dom/static").prerender;
 
-function isReactDevelopmentRuntime(): boolean {
-  if (process.env.NODE_ENV === "production") {
-    return false;
-  }
-  if (process.env.NODE_ENV === "development") {
-    return true;
-  }
-  return Function.prototype.toString.call(createReactElement).includes("getOwner");
-}
-
 function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPrerender } {
   return (
     typeof value === "object" &&
@@ -144,52 +134,12 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
 }
 
 async function loadStaticPrerender(): Promise<StaticPrerender> {
-  // Prefer the stable ESM entry in all environments. Future React dev builds
-  // may export prerender() here, so this is the first path we attempt.
+  // Every react-dom/static build exports prerender() from React 19.3, the
+  // minimum vinext supports.
   const staticRenderer: unknown = await import("react-dom/static");
   if (isStaticPrerenderModule(staticRenderer)) {
     return staticRenderer.prerender;
   }
-
-  // Fallback: React development builds historically did not export prerender()
-  // from the ESM entry, so reach into the CJS artifact. The path is fragile
-  // because it depends on React's internal file layout, but it is only used
-  // when the stable ESM entry does not provide prerender().
-  if (isReactDevelopmentRuntime()) {
-    try {
-      const [{ createRequire }, path] = await Promise.all([
-        import("node:module"),
-        // Native node:path is fine here: the resolved path is fed straight into
-        // a dynamic import() and never compared against pathslash-normalized
-        // ids, so forward-slash canonicalization buys nothing.
-        // oxlint-disable-next-line no-restricted-imports
-        import("node:path"),
-      ]);
-      const require = createRequire(import.meta.url);
-      const reactDomPackageJson = require.resolve("react-dom/package.json");
-      const reactDomDir = path.dirname(reactDomPackageJson);
-      const devRendererPath = path.join(reactDomDir, "cjs/react-dom-server.edge.development.js");
-      const devRenderer: unknown = await import(/* @vite-ignore */ devRendererPath);
-      if (isStaticPrerenderModule(devRenderer)) {
-        return devRenderer.prerender;
-      }
-      // Node.js ESM import of a CJS module wraps the exports in `default`.
-      const devRendererDefault =
-        typeof devRenderer === "object" &&
-        devRenderer !== null &&
-        "default" in devRenderer &&
-        devRenderer.default;
-      if (isStaticPrerenderModule(devRendererDefault)) {
-        return devRendererDefault.prerender;
-      }
-      throw new Error("react-dom development renderer did not expose prerender().");
-    } catch (error) {
-      throw new Error("[vinext] Failed to load React static development renderer.", {
-        cause: error,
-      });
-    }
-  }
-
   throw new Error("[vinext] react-dom/static did not expose prerender().");
 }
 
