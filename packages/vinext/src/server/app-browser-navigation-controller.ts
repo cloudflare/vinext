@@ -756,7 +756,13 @@ export function createAppBrowserNavigationController(
       targetHref: createSnapshotPathAndSearch(navigationSnapshot),
     });
     if (approval.approvedCommit) {
-      dispatchSynchronousVisibleCommit(approval.approvedCommit);
+      // Commit as a transition, like Next.js's hmrRefresh. An urgent update
+      // that suspends replaces revealed content with the nearest Suspense
+      // fallback, which shrinks the document and clamps the scroll position.
+      const approvedHmrCommit = approval.approvedCommit;
+      startTransition(() => {
+        dispatchVisibleCommit(approvedHmrCommit);
+      });
     } else if (approval.decision.disposition === "hard-navigate") {
       performHardNavigation(createSnapshotPathAndSearch(navigationSnapshot));
     }
@@ -846,12 +852,12 @@ export function createAppBrowserNavigationController(
       return;
     }
 
-    // This is intentionally distinct from dispatchSynchronousVisibleCommit
-    // below: that path's callers (HMR, history traversal) already run inside a
-    // synchronous event-handler/effect context where React flushes the plain
-    // setter itself, whereas the gesture commit fires after an `await` inside a
-    // held async transition and must be forced out with flushSync. Don't
-    // consolidate the two.
+    // This is intentionally distinct from dispatchVisibleCommit
+    // below: that helper leaves priority to its callers (history traversal
+    // calls it inside its own flushSync; HMR and same-URL action revalidation
+    // wrap it in startTransition), whereas the gesture commit fires after an
+    // `await` inside a held async transition and must be forced out here with
+    // flushSync. Don't consolidate the two.
     if (visibleCommitMode === "synchronous") {
       flushSync(() => {
         const committedState = captureCandidateState(
@@ -870,7 +876,8 @@ export function createAppBrowserNavigationController(
     });
   }
 
-  function dispatchSynchronousVisibleCommit(commit: ApprovedVisibleCommit): void {
+  /** Calls the setter directly; the caller chooses the update's priority. */
+  function dispatchVisibleCommit(commit: ApprovedVisibleCommit): void {
     const setter = getBrowserRouterStateSetter();
     setter(applyApprovedVisibleCommit(getBrowserRouterState(), commit));
   }
@@ -957,7 +964,7 @@ export function createAppBrowserNavigationController(
     }
 
     options.beforeCommit?.();
-    dispatchSynchronousVisibleCommit(approval.approvedCommit);
+    dispatchVisibleCommit(approval.approvedCommit);
     return true;
   }
 
@@ -1265,7 +1272,7 @@ export function createAppBrowserNavigationController(
       if (latestApproval.approvedCommit) {
         const approvedRevalidationCommit = latestApproval.approvedCommit;
         startTransition(() => {
-          dispatchSynchronousVisibleCommit(approvedRevalidationCommit);
+          dispatchVisibleCommit(approvedRevalidationCommit);
         });
         syncHistoryStatePreviousNextUrl(
           approvedRevalidationCommit.previousNextUrl,
