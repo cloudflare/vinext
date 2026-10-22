@@ -70,6 +70,9 @@ const projectServers = {
   "app-router": {
     testDir: "./tests/e2e",
     testMatch: ["**/app-router/**/*.spec.ts", "**/og-image.spec.ts"],
+    // Each write to a server component broadcasts rsc:update, and every open
+    // page refetches its route, so this spec must not run alongside others.
+    isolatedTestMatch: ["**/app-router/hmr-suspense-scroll.spec.ts"],
     testIgnore: [
       appRouterBrowserSpecificTests,
       "**/app-router/nextjs-compat/client-cache.spec.ts",
