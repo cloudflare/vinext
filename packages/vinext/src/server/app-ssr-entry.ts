@@ -3,7 +3,12 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
-import { preinitModule, preloadModule, type PreloadModuleOptions } from "react-dom";
+import {
+  preinitModule,
+  preloadModule,
+  type PreinitModuleOptions,
+  type PreloadModuleOptions,
+} from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
@@ -198,7 +203,7 @@ function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string)
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async=""></script>'
+    '" id="_R_" async="" fetchPriority="low"></script>'
   );
 }
 
@@ -345,7 +350,7 @@ function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | un
 
 function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="${pagesClientAssets.crossOrigin ?? ""}" />\n`;
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`;
 }
 
 function buildHeadInjectionHtml(
@@ -565,12 +570,18 @@ export async function handleSsr(
         let flightRoot: PromiseLike<AppWireElements> | null = null;
 
         function VinextFlightRoot(): ReactNode {
+          // Browsers fetch module scripts at high priority, ahead of the
+          // document's own content. Next.js loads these chunks with classic
+          // async scripts, which they fetch at low priority, and React
+          // already preloads the bootstrap module at low priority.
           for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
+            // React forwards fetchPriority; its types leave it out.
             preinitModule(moduleUrl, {
               as: "script",
               crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
               nonce: options?.scriptNonce,
-            });
+            } as PreinitModuleOptions);
           }
           // The browser entry imports the RouteManifest chunk as it boots.
           // Browsers fetch a dynamic import() at high priority, ahead of the

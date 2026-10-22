@@ -387,4 +387,40 @@ describe("App Router production SSR route client reference preloads", () => {
       expect(preload[0], route).toContain('fetchPriority="low"');
     }
   });
+
+  it("loads every module script at low priority, like Next.js's async scripts", async () => {
+    // Browsers fetch module scripts at high priority unless told otherwise.
+    // The shell-error document is built by hand, without React's hints.
+    for (const route of ["/", "/dynamic", "/streamed/also", "/shared/one", "/shell-error"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const lowPreloads = new Set(
+        modulepreloadTags(html)
+          .filter((tag) => tag.includes('fetchPriority="low"'))
+          .map((tag) => tag.match(/\bhref="([^"]+)"/)![1]!),
+      );
+      const scripts = (html.match(/<script\b[^>]*>/gi) ?? []).filter(
+        (tag) => tag.includes('type="module"') && tag.includes(" src="),
+      );
+      if (route === "/shell-error") {
+        // Only the bootstrap module script.
+        expect(html, route).toContain("__next_error__");
+        expect(scripts.length, route).toBe(1);
+      } else {
+        // React's bootstrap script and the client entry's preinitialized chunks.
+        expect(scripts.length, route).toBeGreaterThan(1);
+      }
+      for (const tag of scripts) {
+        const src = tag.match(/\bsrc="([^"]+)"/)![1]!;
+        // React's bootstrap module script reuses its low-priority preload.
+        expect(
+          tag.includes('fetchPriority="low"') || lowPreloads.has(src),
+          `${route}: ${tag}`,
+        ).toBe(true);
+      }
+      expect(
+        modulepreloadTags(html).filter((tag) => !tag.includes('fetchPriority="low"')),
+        route,
+      ).toEqual([]);
+    }
+  });
 });
