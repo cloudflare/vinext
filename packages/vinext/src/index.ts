@@ -250,6 +250,7 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import {
+  CLIENT_REFERENCE_REGISTRY_ID,
   createRouteClientReferencesFallbackPlugin,
   createRscClientReferenceLoadersPlugin,
 } from "./plugins/rsc-client-reference-loaders.js";
@@ -5911,7 +5912,9 @@ export const loadServerActionClient = ${
           }
           if (!chunk.isEntry) continue;
 
-          if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
+          if (isVirtualEntryFacade(chunk.facadeModuleId, CLIENT_REFERENCE_REGISTRY_ID)) {
+            manifest.appClientReferenceRegistry = chunk.fileName;
+          } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
             manifest.pagesClientEntry = chunk.fileName;
           } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_BROWSER_ENTRY)) {
             manifest.appBrowserEntry = chunk.fileName;
@@ -8788,6 +8791,7 @@ export const loadServerActionClient = ${
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
+              appClientReferenceRegistryModule: runtimeMetadata.appClientReferenceRegistryModule,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
               sharedChunks: runtimeMetadata.sharedChunks,

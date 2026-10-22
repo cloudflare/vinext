@@ -522,6 +522,7 @@ function installClientBuildManifestGlobals(
   setPagesClientAssets({
     appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
     appRouteManifestModule: metadata.appRouteManifestModule,
+    appClientReferenceRegistryModule: metadata.appClientReferenceRegistryModule,
     lazyChunks: metadata.lazyChunks,
     dynamicPreloads: metadata.dynamicPreloads,
     crossOrigin,
@@ -1807,6 +1808,7 @@ function installPagesClientAssets(options: {
     clientEntry: metadata.clientEntryFile,
     appBootstrapPreinitModules: metadata.appBootstrapPreinitModules,
     appRouteManifestModule: metadata.appRouteManifestModule,
+    appClientReferenceRegistryModule: metadata.appClientReferenceRegistryModule,
     ssrManifest: Object.keys(ssrManifest).length > 0 ? ssrManifest : undefined,
     sharedChunks: metadata.sharedChunks,
     cssGraph: metadata.cssGraph,

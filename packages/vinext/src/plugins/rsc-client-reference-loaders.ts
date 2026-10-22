@@ -19,6 +19,7 @@ import {
 } from "../build/client-reference-async.js";
 import { hasUserClientChunkGroups } from "../build/client-build-config.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
+import { CLIENT_REFERENCE_REGISTRY_GLOBAL } from "../client/browser-globals.js";
 import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
@@ -28,6 +29,10 @@ const RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX = `\0${CLIENT_REFERENCE_GROUP_PREFI
 const CLIENT_REFERENCES_ID_RE = /^\0virtual:vite-rsc\/client-references$/;
 const CLIENT_REFERENCE_GROUP_RE = /^virtual:vinext-client-reference-group-/;
 const RESOLVED_CLIENT_REFERENCE_GROUP_RE = /^\0virtual:vinext-client-reference-group-/;
+export const CLIENT_REFERENCE_REGISTRY_ID = "virtual:vinext-client-reference-registry";
+const RESOLVED_CLIENT_REFERENCE_REGISTRY_ID = `\0${CLIENT_REFERENCE_REGISTRY_ID}`;
+const CLIENT_REFERENCE_REGISTRY_RE = /^virtual:vinext-client-reference-registry$/;
+const RESOLVED_CLIENT_REFERENCE_REGISTRY_RE = /^\0virtual:vinext-client-reference-registry$/;
 
 // A null plan makes the App Router SSR entry preload every client reference.
 const NO_ROUTE_CLIENT_REFERENCES_EXPORT = "export const routeClientReferences = null;\n";
@@ -160,6 +165,52 @@ function generateClientReferenceLoaders(
 }
 
 /**
+ * The client build's client-references module. It keeps the loaders out of the
+ * App browser entry: the entry would otherwise grow with every client
+ * reference in the app, and any added reference would change its hash. The
+ * loaders live in their own chunk, which no module imports by file name, so
+ * the entry doesn't depend on its hash either. The document names the chunk
+ * (see server/app-ssr-entry.ts), and the first client reference imports it.
+ * A failed import fails the references waiting for it, which stay failed:
+ * @vitejs/plugin-rsc memoizes each reference's load. A reference requested
+ * later imports the chunk again, which browsers that don't cache a failed
+ * module fetch (whatwg/html#10327) can then load.
+ */
+export const LAZY_CLIENT_REFERENCES_MODULE = `let registry;
+function loadRegistry() {
+  return (registry ??= Promise.resolve()
+    .then(() => {
+      const name = ${JSON.stringify(CLIENT_REFERENCE_REGISTRY_GLOBAL)};
+      const url = Object.hasOwn(globalThis, name) ? globalThis[name] : undefined;
+      if (typeof url !== "string") {
+        throw new Error(
+          "[vinext] The document's inline script naming the client reference registry chunk did not run. App Router documents need their inline scripts: allow them with a CSP nonce or 'unsafe-inline'.",
+        );
+      }
+      return import(/* @vite-ignore */ url);
+    })
+    // Vite's preload helper resolves to undefined when an app prevents its
+    // vite:preloadError event, so reading the loaders can fail too.
+    .then((m) => m.default)
+    .catch((error) => {
+      registry = undefined;
+      throw error;
+    }));
+}
+export default new Proxy({}, {
+  get(_target, id) {
+    // Not a thenable. Reference keys are hashes, so none is named "then".
+    if (typeof id !== "string" || id === "then") return undefined;
+    return async () => {
+      const load = (await loadRegistry())[id];
+      if (!load) throw new Error(\`client reference not found '\${id}'\`);
+      return load();
+    };
+  },
+});
+`;
+
+/**
  * Re-export only each member's rendered exports, as live bindings, so unused
  * exports and their dependencies still tree-shake as they do with direct
  * loaders. A member without rendered exports is imported for its side effects.
@@ -265,6 +316,8 @@ export function createRscClientReferenceLoadersPlugin(
     preloads: ClientReferencePreloadPlan;
   } | null = null;
   const groupModules = new Map<string, string>();
+  // The client build's loaders, which its client-references module imports lazily.
+  let registryCode: string | null = null;
   // The SSR build's references that may stream, until renderChunk checks them.
   let asyncCandidates: AsyncReferenceCandidate[] = [];
   // Stands in for the plan's async references until the SSR graph is
@@ -301,7 +354,10 @@ export function createRscClientReferenceLoadersPlugin(
         routeSignatures = new Map();
         preloadPlan = null;
       }
-      if (this.environment.name === "client") groupModules.clear();
+      if (this.environment.name === "client") {
+        groupModules.clear();
+        registryCode = null;
+      }
     },
     buildEnd(error) {
       if (error || !routeOptions) return;
@@ -335,14 +391,18 @@ export function createRscClientReferenceLoadersPlugin(
       });
     },
     resolveId: {
-      filter: { id: CLIENT_REFERENCE_GROUP_RE },
+      filter: { id: [CLIENT_REFERENCE_GROUP_RE, CLIENT_REFERENCE_REGISTRY_RE] },
       handler(source) {
+        if (source === CLIENT_REFERENCE_REGISTRY_ID) {
+          return registryCode === null ? null : RESOLVED_CLIENT_REFERENCE_REGISTRY_ID;
+        }
         return groupModules.has(`\0${source}`) ? `\0${source}` : null;
       },
     },
     load: {
-      filter: { id: RESOLVED_CLIENT_REFERENCE_GROUP_RE },
+      filter: { id: [RESOLVED_CLIENT_REFERENCE_GROUP_RE, RESOLVED_CLIENT_REFERENCE_REGISTRY_RE] },
       handler(id) {
+        if (id === RESOLVED_CLIENT_REFERENCE_REGISTRY_ID) return registryCode;
         return groupModules.get(id) ?? null;
       },
     },
@@ -551,10 +611,18 @@ export function createRscClientReferenceLoadersPlugin(
           }
         }
 
-        return {
-          code: generateClientReferenceLoaders(metas, slots) + routeClientReferencesExport,
-          map: null,
-        };
+        const loaders = generateClientReferenceLoaders(metas, slots);
+        if (this.environment.name === "client" && this.environment.mode === "build") {
+          registryCode = loaders;
+          // Vite drops entry exports in app client builds; keep the loaders.
+          this.emitFile({
+            type: "chunk",
+            id: CLIENT_REFERENCE_REGISTRY_ID,
+            preserveSignature: "strict",
+          });
+          return { code: LAZY_CLIENT_REFERENCES_MODULE, map: null };
+        }
+        return { code: loaders + routeClientReferencesExport, map: null };
       },
     },
     async renderChunk(code, _chunk, _outputOptions, meta) {

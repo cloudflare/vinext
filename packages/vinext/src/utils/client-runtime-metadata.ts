@@ -26,6 +26,7 @@ type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
   appRouteManifestModule?: string;
+  appClientReferenceRegistryModule?: string;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
@@ -125,6 +126,9 @@ function collectAppBootstrapPreinitModules(
  *
  * - `appRouteManifestModule` — the App Router RouteManifest chunk, which the
  *   browser entry imports as it boots, preloaded during SSR.
+ * - `appClientReferenceRegistryModule` — the App Router client reference
+ *   loaders, which the document names and preloads, and which the browser
+ *   imports on its first client reference.
  * - `lazyChunks` — chunks only reachable through dynamic `import()`, excluded
  *   from modulepreload hints.
  * - `dynamicPreloads` — per-module JS/CSS files for rendered `next/dynamic()`
@@ -165,6 +169,17 @@ export function computeClientRuntimeMetadata(opts: {
     if (entry) metadata.clientEntryFile = entry;
   }
 
+  const appAssetUrl = (file: string): string => {
+    const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
+    return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
+  };
+  // Hydration needs it, so it doesn't depend on Vite's build manifest.
+  if (clientEntryManifest?.appClientReferenceRegistry) {
+    metadata.appClientReferenceRegistryModule = appAssetUrl(
+      clientEntryManifest.appClientReferenceRegistry,
+    );
+  }
+
   if (!buildManifest) return metadata;
 
   if (opts.includeClientEntry) {
@@ -177,10 +192,6 @@ export function computeClientRuntimeMetadata(opts: {
     );
   }
 
-  const appAssetUrl = (file: string): string => {
-    const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
-    return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
-  };
   metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
     buildManifest,
     clientEntryManifest?.appBrowserEntry,
@@ -189,7 +200,6 @@ export function computeClientRuntimeMetadata(opts: {
   if (clientEntryManifest?.appRouteManifest) {
     metadata.appRouteManifestModule = appAssetUrl(clientEntryManifest.appRouteManifest);
   }
-
   // `lazyChunks` and `dynamicPreloads` live in DIFFERENT key-spaces and must be
   // normalised differently:
   //

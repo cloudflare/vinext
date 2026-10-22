@@ -10,6 +10,8 @@ export type ClientEntryManifest = {
   appBrowserEntry?: string;
   /** The App Router RouteManifest chunk, which the browser entry imports as it boots. */
   appRouteManifest?: string;
+  /** The App Router client reference loaders, which the browser imports on its first client reference. */
+  appClientReferenceRegistry?: string;
 };
 
 export function readClientEntryManifest(clientDir: string): ClientEntryManifest | undefined {
@@ -29,6 +31,9 @@ export function readClientEntryManifest(clientDir: string): ClientEntryManifest 
     }
     if (typeof value.appRouteManifest === "string") {
       manifest.appRouteManifest = value.appRouteManifest;
+    }
+    if (typeof value.appClientReferenceRegistry === "string") {
+      manifest.appClientReferenceRegistry = value.appClientReferenceRegistry;
     }
 
     return manifest.pagesClientEntry || manifest.appBrowserEntry ? manifest : undefined;

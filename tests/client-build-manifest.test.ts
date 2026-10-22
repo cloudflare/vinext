@@ -733,6 +733,55 @@ describe("computeClientRuntimeMetadata", () => {
     );
   });
 
+  it("finds the App Router client reference registry chunk, with the asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+        },
+        "virtual:vinext-client-reference-registry": {
+          file: "_next/static/client-references.js",
+          isEntry: true,
+        },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appClientReferenceRegistry: "_next/static/client-references.js",
+      }),
+    );
+
+    const registryModule = (assetBase: string, assetPrefix: string) =>
+      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix })
+        .appClientReferenceRegistryModule;
+    expect(registryModule("/", "")).toBe("/_next/static/client-references.js");
+    expect(registryModule("/docs/", "")).toBe("/docs/_next/static/client-references.js");
+    expect(registryModule("/docs/", "/cdn")).toBe("/cdn/_next/static/client-references.js");
+    expect(registryModule("/docs/", "https://cdn.example.com/assets")).toBe(
+      "https://cdn.example.com/assets/_next/static/client-references.js",
+    );
+  });
+
+  it("finds the client reference registry chunk without a Vite build manifest", async () => {
+    await fsp.rm(path.join(clientDir, ".vite", "manifest.json"), { force: true });
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appClientReferenceRegistry: "_next/static/client-references.js",
+      }),
+    );
+
+    expect(
+      computeClientRuntimeMetadata({ clientDir, assetBase: "/", assetPrefix: "" })
+        .appClientReferenceRegistryModule,
+    ).toBe("/_next/static/client-references.js");
+  });
+
   it("applies base path to all paths", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),
