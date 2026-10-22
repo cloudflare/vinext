@@ -49,6 +49,7 @@ import { isAppClientReference } from "./app-render-dependency.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
+  resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   type AppPageFontPreload,
@@ -1089,7 +1090,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 return baseRevalidatedOnSsrError(error, undefined, undefined);
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
-              async renderShellSpecialError(error) {
+              resolveCaughtNotFoundBoundaries: (error) =>
+                resolveAppPageCaughtNotFoundBoundaries(
+                  error,
+                  rscErrorTracker.getCapturedSpecialErrors(error),
+                ),
+              async renderShellSpecialError(error, caughtDocument) {
                 const specialError = resolveAppPageShellSpecialError(
                   error,
                   rscErrorTracker.getCapturedSpecialErrors(error),
@@ -1110,6 +1116,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                       options.basePath,
                     ),
                     html: "",
+                    status: specialError.statusCode,
+                  };
+                }
+                if (caughtDocument) {
+                  return {
+                    headers: resolveAppPageSpecialErrorStoredHeaders(
+                      specialError,
+                      options.basePath,
+                    ),
+                    html: caughtDocument.html,
+                    linkHeader: caughtDocument.linkHeader,
                     status: specialError.statusCode,
                   };
                 }
@@ -1554,6 +1571,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         serveStreamingMetadata,
         interceptResult.interceptOpts,
         renderOptions?.isCacheCandidate === true,
+        renderOptions?.caughtDocument,
       );
     },
     renderToReadableStream: options.renderToReadableStream,
@@ -1761,6 +1779,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
   serveStreamingMetadata: boolean,
   intercept: AppPageDispatchInterceptOptions | null | undefined,
   isCacheCandidate = false,
+  caughtDocument?: Response,
 ): Promise<Response> {
   return buildAppPageSpecialErrorResponse({
     basePath: options.basePath,
@@ -1776,6 +1795,8 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
+      // Parallel slot not-found boundaries caught it in the page's own document.
+      if (caughtDocument) return Promise.resolve(caughtDocument);
       // A slot's signal is caught above the layout that renders it.
       if (
         specialError.kind === "http-access-fallback" &&

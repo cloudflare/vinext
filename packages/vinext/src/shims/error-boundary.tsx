@@ -12,6 +12,10 @@ import { handleAppNavigationFailure } from "../client/app-nav-failure-handler.js
 import { VINEXT_DEV_ERROR_RECOVERY_EVENT } from "../utils/dev-error-recovery-event.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { forbidden, notFound, unauthorized } from "./navigation-errors.js";
+import {
+  consumeCaughtNotFoundBoundary,
+  useCaughtNotFoundBoundary,
+} from "./caught-not-found-boundaries.js";
 
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
@@ -355,10 +359,13 @@ type NotFoundBoundaryProps = {
   fallback: React.ReactNode;
   children: React.ReactNode;
   resetKey?: string | null;
+  /** A parallel slot boundary's id, which the document may render caught. */
+  caughtId?: string;
 };
 
 type NotFoundBoundaryInnerProps = {
   pathname: string | null;
+  initiallyNotFound?: boolean;
 } & NotFoundBoundaryProps;
 
 type NotFoundBoundaryState = {
@@ -381,7 +388,11 @@ export class NotFoundBoundaryInner extends React.Component<
 > {
   constructor(props: NotFoundBoundaryInnerProps) {
     super(props);
-    this.state = { notFound: false, ...readBoundaryResetState(props) };
+    this.state = { notFound: props.initiallyNotFound === true, ...readBoundaryResetState(props) };
+  }
+
+  componentDidMount(): void {
+    if (this.props.initiallyNotFound === true) consumeCaughtNotFoundBoundary(this.props.caughtId);
   }
 
   static getDerivedStateFromProps(
@@ -435,10 +446,22 @@ export function HttpAccessFallbackPassthrough({ status }: { status: 401 | 403 | 
  * Wrapper that reads the current pathname and passes it to the inner class
  * component.
  */
-export function NotFoundBoundary({ fallback, children, resetKey }: NotFoundBoundaryProps) {
+export function NotFoundBoundary({
+  fallback,
+  children,
+  resetKey,
+  caughtId,
+}: NotFoundBoundaryProps) {
   const pathname = useErrorBoundaryPathname();
+  const initiallyNotFound = useCaughtNotFoundBoundary(caughtId);
   return (
-    <NotFoundBoundaryInner pathname={pathname} resetKey={resetKey} fallback={fallback}>
+    <NotFoundBoundaryInner
+      pathname={pathname}
+      resetKey={resetKey}
+      fallback={fallback}
+      caughtId={caughtId}
+      initiallyNotFound={initiallyNotFound}
+    >
       {children}
     </NotFoundBoundaryInner>
   );

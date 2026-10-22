@@ -283,6 +283,8 @@ type BuildAppPageRouteElementOptions<
     props: Readonly<Record<string, unknown>>,
     /** For a parallel slot's page or default: the layout that renders the slot. */
     slotLayoutIndex?: number,
+    /** The id of the slot's own not-found boundary that catches its notFound(). */
+    slotNotFoundBoundary?: string,
   ) => ReactNode;
   pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
@@ -299,13 +301,14 @@ function createSlotLayoutElement(
   LayoutComponent: AppPageComponent,
   props: Readonly<Record<string, unknown>>,
   slotLayoutIndex: number | undefined,
+  notFoundBoundary: string | undefined,
 ): ReactNode {
   if (slotLayoutIndex === undefined || isReactOwnedAppComponent(LayoutComponent)) {
     return <LayoutComponent {...props} />;
   }
   const SlotLayoutInvoker = () =>
     invokeAppComponentMappingErrors(LayoutComponent, props, (error) =>
-      tagAppPageSlotError(error, slotLayoutIndex),
+      tagAppPageSlotError(error, slotLayoutIndex, notFoundBoundary),
     );
   return <SlotLayoutInvoker />;
 }
@@ -1529,6 +1532,35 @@ export function buildAppPageElements<
       continue;
     }
 
+    // Each not-found.tsx in the slot's branch belongs to its own segment, so,
+    // as in Next.js, it catches notFound() from inside that segment's layout,
+    // and a layout's own notFound() reaches the boundary of the segment above.
+    const branchNotFounds = new Map<number, AppPageComponent>();
+    const slotNotFoundModules = hasSlotTreeOverride
+      ? slotOverride?.notFoundModules
+      : slot.notFounds;
+    const slotNotFoundTreePositions = hasSlotTreeOverride
+      ? slotOverride?.notFoundTreePositions
+      : slot.notFoundTreePositions;
+    for (const [index, notFoundModule] of (slotNotFoundModules ?? []).entries()) {
+      const component = getDefaultExport(notFoundModule);
+      const treePosition = slotNotFoundTreePositions?.[index];
+      if (component && treePosition !== undefined) branchNotFounds.set(treePosition, component);
+    }
+    // The id of the innermost of those boundaries above a component at
+    // `treePosition`, which catches its notFound() on the client. The document
+    // renders that boundary caught instead of the fallback above the layout
+    // rendering the slot.
+    const resolveSlotNotFoundBoundary = (treePosition: number): string | undefined => {
+      let caughtAt: number | undefined;
+      for (const position of branchNotFounds.keys()) {
+        if (position < treePosition && (caughtAt === undefined || position > caughtAt)) {
+          caughtAt = position;
+        }
+      }
+      return caughtAt === undefined ? undefined : `${slotId}:${caughtAt}`;
+    };
+
     let slotElement: ReactNode;
     if (prefetchSlotLoadingEntry) {
       const PrefetchSlotLoadingComponent = getDefaultExport(
@@ -1555,6 +1587,7 @@ export function buildAppPageElements<
             slotComponent!,
             slotProps,
             targetIndex >= 0 ? targetIndex : undefined,
+            resolveSlotNotFoundBoundary(Number.POSITIVE_INFINITY),
           )
         : (() => {
             const SlotComponent = slotComponent!;
@@ -1640,21 +1673,6 @@ export function buildAppPageElements<
     }
 
     const slotErrorComponent = getErrorBoundaryExport(slot.error);
-    // Each not-found.tsx in the slot's branch belongs to its own segment, so,
-    // as in Next.js, it catches notFound() from inside that segment's layout,
-    // and a layout's own notFound() reaches the boundary of the segment above.
-    const branchNotFounds = new Map<number, AppPageComponent>();
-    const slotNotFoundModules = hasSlotTreeOverride
-      ? slotOverride?.notFoundModules
-      : slot.notFounds;
-    const slotNotFoundTreePositions = hasSlotTreeOverride
-      ? slotOverride?.notFoundTreePositions
-      : slot.notFoundTreePositions;
-    for (const [index, notFoundModule] of (slotNotFoundModules ?? []).entries()) {
-      const component = getDefaultExport(notFoundModule);
-      const treePosition = slotNotFoundTreePositions?.[index];
-      if (component && treePosition !== undefined) branchNotFounds.set(treePosition, component);
-    }
     const branchTreePositions = Array.from(
       new Set([
         ...branchLayouts.keys(),
@@ -1710,6 +1728,7 @@ export function buildAppPageElements<
           <NotFoundBoundary
             resetKey={resolveAppPageTemplateStateKey(branchSegments, treePosition, slotParams)}
             fallback={<SlotNotFoundComponent />}
+            caughtId={`${slotId}:${treePosition}`}
           >
             {slotElement}
           </NotFoundBoundary>
@@ -1734,6 +1753,7 @@ export function buildAppPageElements<
             children: slotElement,
           }),
           targetIndex >= 0 ? targetIndex : undefined,
+          prefetchSlotLoadingEntry ? undefined : resolveSlotNotFoundBoundary(treePosition),
         );
       }
     }

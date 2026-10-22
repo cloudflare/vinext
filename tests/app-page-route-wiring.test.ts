@@ -35,6 +35,7 @@ import {
   resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
+import { resolveAppPageCaughtNotFoundBoundaries } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
@@ -2262,6 +2263,114 @@ describe("app page route wiring helpers", () => {
     expect(fallbackType(findElementByTypeName(intercepted, "NotFoundBoundary"))).toBe(
       InterceptNotFound,
     );
+  });
+
+  it("tags a slot's notFound() with the id of its own not-found boundary that catches it", async () => {
+    // The document renders that boundary caught, as the client does, instead
+    // of the fallback above the layout rendering the slot. A separate wiring
+    // instance passes the layout's dependency barrier through, so the walk
+    // sees the slot's elements.
+    vi.doMock("../packages/vinext/src/server/app-render-dependency.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      renderAfterAppDependencies: (children: ReactNode) => children,
+    }));
+    const wiringSpecifier = "../packages/vinext/src/server/app-page-route-wiring.js?slot-not-found";
+    const {
+      buildAppPageElements: buildElements,
+    }: typeof import("../packages/vinext/src/server/app-page-route-wiring.js") = await import(
+      /* @vite-ignore */ wiringSpecifier
+    );
+    vi.doUnmock("../packages/vinext/src/server/app-render-dependency.js");
+    function MembersLayout(): ReactNode {
+      notFound();
+    }
+    function SlotNotFound() {
+      return createElement("p", null, "slot not found");
+    }
+    function MembersNotFound() {
+      return createElement("p", null, "members not found");
+    }
+    const pageElements: { slotLayoutIndex?: number; slotNotFoundBoundary?: string }[] = [];
+    const buildSlotElements = (slotNotFounds: readonly number[]) =>
+      buildElements({
+        createPageElement(component, props, slotLayoutIndex, slotNotFoundBoundary) {
+          pageElements.push({ slotLayoutIndex, slotNotFoundBoundary });
+          return createElement(component, props);
+        },
+        element: createElement(PageProbe),
+        makeThenableParams(value) {
+          return Promise.resolve(value);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: [],
+          slots: {
+            modal: {
+              configLayouts: [{ default: MembersLayout }],
+              configLayoutTreePositions: [1],
+              default: null,
+              error: null,
+              layout: null,
+              layoutIndex: 0,
+              loading: null,
+              name: "modal",
+              notFound: null,
+              notFounds: slotNotFounds.map((position) => ({
+                default: position === 0 ? SlotNotFound : MembersNotFound,
+              })),
+              notFoundTreePositions: slotNotFounds,
+              page: { default: SlotPage },
+              routeSegments: ["members"],
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/members",
+        rootNotFoundModule: null,
+      });
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/");
+    const layoutNotFoundBoundaries = (slot: unknown) => {
+      // The members layout's notFound() reaches the boundary outside it.
+      const invoker = findElementByTypeName(slot, "SlotLayoutInvoker");
+      if (!invoker) throw new Error("expected the members layout's invoker");
+      try {
+        (invoker.type as () => unknown)();
+      } catch (error) {
+        const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+        return resolveAppPageCaughtNotFoundBoundaries(
+          Object.assign(new Error(digest), { digest }),
+          [error],
+        );
+      }
+      throw new Error("expected the members layout to throw");
+    };
+
+    const slot = buildSlotElements([0, 1])[modalSlotId];
+    // The page is caught by the innermost boundary, the members segment's.
+    expect(pageElements.at(-1)).toEqual({
+      slotLayoutIndex: 0,
+      slotNotFoundBoundary: `${modalSlotId}:1`,
+    });
+    expect(findElementByTypeName(slot, "NotFoundBoundary")?.props.caughtId).toBe(
+      `${modalSlotId}:0`,
+    );
+    expect(layoutNotFoundBoundaries(slot)).toEqual([`${modalSlotId}:0`]);
+
+    // Without a boundary above it, the members layout's notFound() is caught
+    // above the layout rendering the slot.
+    const membersOnly = buildSlotElements([1])[modalSlotId];
+    expect(pageElements.at(-1)?.slotNotFoundBoundary).toBe(`${modalSlotId}:1`);
+    expect(layoutNotFoundBoundaries(membersOnly)).toBeNull();
+    buildSlotElements([]);
+    expect(pageElements.at(-1)).toEqual({ slotLayoutIndex: 0, slotNotFoundBoundary: undefined });
   });
 
   it("uses intercepted override segments for named slot reset boundaries", async () => {

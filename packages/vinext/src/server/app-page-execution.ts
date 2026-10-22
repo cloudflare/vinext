@@ -71,7 +71,20 @@ export function tagAppPageMetadataError<T>(error: T): T {
  */
 const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLayoutIndex");
 
-export function tagAppPageSlotError<T>(error: T, layoutIndex: number): T {
+/**
+ * Marker holding the id of the slot's own not-found boundary that catches the
+ * slot's `notFound()` on the client, when one does. The document then renders
+ * that boundary caught (see `resolveAppPageCaughtNotFoundBoundaries`).
+ */
+const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
+  "vinext.appPage.slotErrorNotFoundBoundary",
+);
+
+export function tagAppPageSlotError<T>(
+  error: T,
+  layoutIndex: number,
+  notFoundBoundary?: string,
+): T {
   // Only an HTTP access fallback reads the tag. A thrown error can be shared
   // across slots, renders and requests (a module-scoped rejected promise), so
   // each throw gets its own tagged copy instead of marking the shared error.
@@ -85,6 +98,7 @@ export function tagAppPageSlotError<T>(error: T, layoutIndex: number): T {
     ...Object.getOwnPropertyDescriptors(source),
     stack: { value: Reflect.get(source, "stack"), configurable: true, writable: true },
     [APP_PAGE_SLOT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+    [APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY]: { value: notFoundBoundary },
   });
   return tagged as T;
 }
@@ -309,6 +323,35 @@ export function resolveAppPageShellSpecialError(
     }
   }
   return slotLayoutIndex === null ? specialError : { ...specialError, slotLayoutIndex };
+}
+
+/**
+ * The parallel slot not-found boundaries that catch the `notFound()` that
+ * rejected an SSR shell, or null when any copy the RSC render threw isn't
+ * caught inside its slot. On the client, each slot's own not-found boundary
+ * catches its signal while the rest of the route renders, as in Next.js,
+ * which sends an empty error shell and renders them in the browser.
+ */
+export function resolveAppPageCaughtNotFoundBoundaries(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): readonly string[] | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (specialError?.kind !== "http-access-fallback" || specialError.statusCode !== 404) {
+    return null;
+  }
+  if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
+  const boundaries = new Set<string>();
+  for (const rendered of renderedSpecialErrors) {
+    if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    const boundary: unknown =
+      rendered && typeof rendered === "object"
+        ? Reflect.get(rendered, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY)
+        : undefined;
+    if (typeof boundary !== "string") return null;
+    boundaries.add(boundary);
+  }
+  return Array.from(boundaries);
 }
 
 /**

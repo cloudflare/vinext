@@ -60,7 +60,13 @@ export type RenderAppPageCacheArtifactsOptions = {
    * Render the document of a special error that rejected the shell, or return
    * null to fail the render with it.
    */
-  renderShellSpecialError?: (error: unknown) => Promise<AppPageCacheSpecialErrorDocument | null>;
+  renderShellSpecialError?: (
+    error: unknown,
+    /** The page's own document, in which parallel slot boundaries caught it. */
+    caughtDocument?: { html: string; linkHeader?: string },
+  ) => Promise<AppPageCacheSpecialErrorDocument | null>;
+  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   renderToReadableStream: (
     element: AppPageRenderableElement,
     options: { onError: (error: unknown, requestInfo: unknown, errorContext: unknown) => unknown },
@@ -144,6 +150,7 @@ async function renderAppPageCacheArtifactsImpl(
         isStaticGeneration: true,
         isForceStatic: options.isForceStatic,
         preloadRoutePattern: options.route.pattern,
+        resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
         onSsrError:
           options.onSsrError && options.isCapturedRscError
             ? createAppPageSsrErrorHandler((error) => {
@@ -186,6 +193,17 @@ async function renderAppPageCacheArtifactsImpl(
       options.reactMaxHeadersLength,
     );
     html = await readStreamAsText(htmlStream);
+    const caughtShellError = isAppSsrRenderResult(htmlResult)
+      ? htmlResult.caughtShellError
+      : undefined;
+    if (caughtShellError !== undefined) {
+      await capturedRscDataRef.value?.catch(() => {});
+      specialErrorDocument =
+        (await options.renderShellSpecialError?.(caughtShellError, { html, linkHeader })) ?? null;
+      if (!specialErrorDocument) throw caughtShellError;
+      html = specialErrorDocument.html;
+      linkHeader = specialErrorDocument.linkHeader;
+    }
   }
 
   let rscData: ArrayBuffer | undefined;

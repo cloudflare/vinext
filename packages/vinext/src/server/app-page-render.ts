@@ -19,6 +19,7 @@ import {
 import {
   buildAppPageFontLinkHeader,
   readAppPageBinaryStream,
+  resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   resolveAppPageSpecialErrorStoredHeaders,
@@ -41,6 +42,7 @@ import {
   type AppPageResponseTiming,
 } from "./app-page-response.js";
 import {
+  buildAppPageHtmlDocumentResponse,
   buildAppPageLinkHeader,
   createAppPageFontData,
   createAppPageRscErrorTracker,
@@ -149,6 +151,11 @@ type AppPageSpecialErrorRenderOptions = {
    * candidate's render it must not carry the request's query.
    */
   isCacheCandidate?: boolean;
+  /**
+   * The page's own document, in which parallel slot boundaries caught the
+   * error, to send in place of a fallback page.
+   */
+  caughtDocument?: Response;
 };
 
 type PreparedAppPageElement =
@@ -1677,9 +1684,14 @@ async function renderAppPageLifecycleImpl(
         // Next.js's `self.__next_f` Flight transport, as the boundary's own
         // document does.
         mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
+        resolveCaughtNotFoundBoundaries: (error) =>
+          resolveAppPageCaughtNotFoundBoundaries(
+            error,
+            rscErrorTracker.getCapturedSpecialErrors(error),
+          ),
       });
     },
-    async renderSpecialErrorResponse(specialError) {
+    async renderSpecialErrorResponse(specialError, caughtDocument) {
       shellSpecialError = specialError;
       const mayPrerender = mayPrerenderShellSpecialError();
       if (mayStoreShellSpecialError() || mayPrerender) {
@@ -1702,6 +1714,19 @@ async function renderAppPageLifecycleImpl(
       }
       return options.renderPageSpecialError(specialError, {
         isCacheCandidate: isCacheCandidateHtmlRender,
+        ...(caughtDocument
+          ? {
+              caughtDocument: buildAppPageHtmlDocumentResponse(caughtDocument.htmlStream, {
+                clearRequestContext: options.clearRequestContext,
+                fontLinkHeader,
+                isEdgeRuntime: options.isEdgeRuntime,
+                middlewareHeaders: options.middlewareContext.headers,
+                reactLinkHeader: caughtDocument.linkHeader,
+                reactMaxHeadersLength: options.reactMaxHeadersLength,
+                status: specialError.statusCode,
+              }),
+            }
+          : {}),
       });
     },
     resolveSpecialError(error: unknown) {

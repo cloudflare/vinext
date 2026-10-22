@@ -33,6 +33,12 @@ export type AppSsrRenderResult = {
   capturedRscData: Promise<ArrayBuffer> | null;
   shellErrorRecovered?: boolean;
   /**
+   * The special error that rejected the shell, when parallel slot not-found
+   * boundaries caught it in a second render of the same payload. The document
+   * is that error's, with its status.
+   */
+  caughtShellError?: unknown;
+  /**
    * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
    * already capped to `reactMaxHeadersLength`. Empty/undefined when React
    * emitted no preload headers (or emission was disabled with `0`).
@@ -164,6 +170,8 @@ export type AppPageSsrHandler = {
        *  default `__next_error__` error-document shell (with the original
        *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+      resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
       getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
     },
@@ -217,6 +225,8 @@ type RenderAppPageHtmlStreamOptions = {
   isCacheCandidate?: boolean;
   /** Override the default shell-error recovery decision passed to handleSsr. */
   fallbackToErrorDocumentOnShellError?: boolean;
+  /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
+  resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
   initialDevServerError?: unknown;
   /** Report an SSR/Fizz render failure through instrumentation. */
@@ -253,8 +263,23 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
   onShellRendered?: () => void;
   renderErrorBoundaryResponse: (error: unknown) => Promise<Response | null>;
   renderHtmlStream: () => Promise<ReadableStream<Uint8Array> | AppSsrRenderResult>;
-  renderSpecialErrorResponse: (specialError: TSpecialError) => Promise<Response>;
+  /**
+   * The document of a special error that rejected the shell. With
+   * `caughtDocument`, parallel slot boundaries caught it in the page's own
+   * document, which that response sends.
+   */
+  renderSpecialErrorResponse: (
+    specialError: TSpecialError,
+    caughtDocument?: AppPageCaughtShellErrorDocument,
+  ) => Promise<Response>;
   resolveSpecialError: (error: unknown) => TSpecialError | null;
+};
+
+/** The page's document, rendered with the slot boundaries that caught its shell error. */
+export type AppPageCaughtShellErrorDocument = {
+  htmlStream: ReadableStream<Uint8Array>;
+  /** React-emitted preload `Link` header (already capped). */
+  linkHeader?: string;
 };
 
 type AppPageRscErrorTracker = {
@@ -321,6 +346,7 @@ export async function renderAppPageHtmlStream(
     fallbackToErrorDocumentOnShellError:
       options.fallbackToErrorDocumentOnShellError ??
       (options.waitForAllReady !== true && options.hasCustomGlobalError === false),
+    resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
   };
@@ -339,7 +365,21 @@ export async function renderAppPageHtmlResponse(
   options: RenderAppPageHtmlResponseOptions,
 ): Promise<Response> {
   const { htmlStream, linkHeader: reactLinkHeader } = await renderAppPageHtmlStream(options);
+  return buildAppPageHtmlDocumentResponse(htmlStream, { ...options, reactLinkHeader });
+}
 
+export function buildAppPageHtmlDocumentResponse(
+  htmlStream: ReadableStream<Uint8Array>,
+  options: {
+    clearRequestContext: () => void;
+    fontLinkHeader?: string;
+    isEdgeRuntime?: boolean;
+    middlewareHeaders?: Headers | null;
+    reactLinkHeader?: string;
+    reactMaxHeadersLength?: number;
+    status: number;
+  },
+): Response {
   // Defer clearRequestContext() until the stream is fully consumed by the HTTP
   // layer. Calling it synchronously here would race the lazy RSC/SSR pipeline:
   // components execute while the stream is being pulled, not when the handle
@@ -357,7 +397,7 @@ export async function renderAppPageHtmlResponse(
 
   mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders ?? null);
   const frameworkLinkHeader = buildAppPageLinkHeader(
-    reactLinkHeader,
+    options.reactLinkHeader,
     options.fontLinkHeader,
     options.reactMaxHeadersLength,
   );
@@ -385,8 +425,24 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       capturedRscData,
       linkHeader,
       shellErrorRecovered,
+      caughtShellError,
     } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
+    const caughtSpecialError =
+      caughtShellError === undefined ? null : options.resolveSpecialError(caughtShellError);
+    if (caughtSpecialError) {
+      return {
+        htmlStream: null,
+        response: await options.renderSpecialErrorResponse(caughtSpecialError, {
+          htmlStream,
+          linkHeader,
+        }),
+        metadataReady: resolvedMetadataReady,
+        renderComplete: renderComplete ?? resolvedMetadataReady,
+        capturedRscData: null,
+        shellErrorRecovered: false,
+      };
+    }
     return {
       htmlStream,
       response: null,

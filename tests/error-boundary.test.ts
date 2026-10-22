@@ -711,3 +711,34 @@ describe("HTTP access boundary reset", () => {
     }
   });
 });
+
+// Fizz has no error boundaries, so the document renders the parallel slot
+// boundaries that catch a slot's notFound() caught, from the same payload.
+describe("NotFoundBoundary caught in the document", () => {
+  it("renders its fallback when its id is caught, and its children otherwise", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
+    const { NotFoundBoundary } = await import("../packages/vinext/src/shims/error-boundary.js");
+    const { withCaughtNotFoundBoundaries } =
+      await import("../packages/vinext/src/shims/caught-not-found-boundaries.js");
+    const Boundary = NotFoundBoundary as React.ComponentType<{
+      caughtId?: string;
+      children?: React.ReactNode;
+      fallback: React.ReactNode;
+    }>;
+    const boundary = (caughtId?: string) =>
+      React.createElement(
+        Boundary,
+        { caughtId, fallback: React.createElement("p", null, "slot not found") },
+        React.createElement("p", null, "slot page"),
+      );
+    const render = (caughtId?: string) =>
+      renderToString(withCaughtNotFoundBoundaries(new Set(["slot:team:/:0"]), boundary(caughtId)));
+
+    expect(render("slot:team:/:0")).toContain("slot not found");
+    expect(render("slot:team:/:0")).not.toContain("slot page");
+    expect(render("slot:team:/:1")).toContain("slot page");
+    expect(render()).toContain("slot page");
+    expect(renderToString(boundary("slot:team:/:0"))).toContain("slot page");
+  });
+});

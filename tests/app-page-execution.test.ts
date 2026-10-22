@@ -4,6 +4,7 @@ import {
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
   probeAppPageLayouts,
+  resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
   tagAppPageSlotError,
@@ -146,6 +147,53 @@ describe("app page execution helpers", () => {
     expect(
       resolveAppPageShellSpecialError(redirect, [tagAppPageSlotError(redirect, 1)]),
     ).not.toHaveProperty("slotLayoutIndex");
+  });
+
+  it("resolves the slot not-found boundaries that catch a shell's notFound()", () => {
+    // On the client, a slot's own not-found boundary catches its notFound()
+    // while the rest of the route renders, so the document renders those
+    // boundaries caught when every copy the RSC render threw has one.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const teamSlot = tagAppPageSlotError(thrown(), 1, "slot:team:/:0");
+    const modalSlot = tagAppPageSlotError(thrown(), 0, "slot:modal:/:1");
+
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot])).toEqual(["slot:team:/:0"]);
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [
+        teamSlot,
+        modalSlot,
+        tagAppPageSlotError(thrown(), 1, "slot:team:/:0"),
+      ]),
+    ).toEqual(["slot:team:/:0", "slot:modal:/:1"]);
+    // A copy that no slot boundary catches, such as the page's or one from a
+    // slot without its own not-found, leaves the fallback above the layout.
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot, thrown()])).toBeNull();
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot, tagAppPageSlotError(thrown(), 1)]),
+    ).toBeNull();
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [])).toBeNull();
+    // A tagged copy of a tagged error keeps only its own boundary.
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [tagAppPageSlotError(teamSlot, 1)]),
+    ).toBeNull();
+    // Slots have only not-found boundaries, and a client component's signal
+    // never reached the RSC render.
+    const forbiddenDigest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const forbidden = Object.assign(new Error(forbiddenDigest), { digest: forbiddenDigest });
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(forbidden, [
+        tagAppPageSlotError(forbidden, 1, "slot:team:/:0"),
+      ]),
+    ).toBeNull();
+    let clientNotFound: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      clientNotFound = error;
+    }
+    expect(resolveAppPageCaughtNotFoundBoundaries(clientNotFound, [teamSlot])).toBeNull();
   });
 
   it("parses redirect and access-fallback digests", () => {

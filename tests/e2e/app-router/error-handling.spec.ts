@@ -462,6 +462,55 @@ test.describe("Not Found", () => {
     await expect(page.locator("#slot-own-team-nf")).toHaveCount(0);
   });
 
+  test("a parallel slot's own not-found catches its notFound() inside the slot in the document", async ({
+    page,
+    request,
+  }) => {
+    // Next.js sends a 404 error shell and renders the slot's own not-found in
+    // the browser, beside the rest of the route. The document renders it.
+    for (const [path, mainId] of [
+      ["team/missing", "slot-own-main"],
+      // A nested slot page without its own file is caught by the slot root's.
+      ["team/missing/members", "slot-own-main-members"],
+      // A nested slot layout's own notFound() skips the not-found inside it.
+      ["team/missing/roster", "slot-own-main-roster"],
+    ]) {
+      const response = await request.get(`${BASE}/nextjs-compat/not-found-slot-own/${path}`);
+      expect(response.status(), path).toBe(404);
+      const html = await response.text();
+      expect(html, path).toContain('id="slot-own-team-nf"');
+      expect(html, path).toContain(`id="${mainId}"`);
+      expect(html, path).toContain('<meta name="robots" content="noindex"');
+      expect(html, path).not.toContain('id="slot-own-segment-nf"');
+      expect(html, path).not.toContain('id="slot-own-root-nf"');
+      expect(html, path).not.toContain('id="slot-own-roster-nf"');
+    }
+
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      // The browser logs the document's own 404.
+      if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+        errors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/missing`);
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-main")).toBeVisible();
+    // The boundary hydrates caught, so React doesn't recover by client rendering.
+    expect(errors).toEqual([]);
+
+    // It clears when the slot renders again, and doesn't stick on a later visit.
+    await page.getByRole("link", { name: "Team ok" }).click();
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+    await expect(page.locator("#slot-own-team-nf")).toHaveCount(0);
+    await page.getByRole("link", { name: "Members missing" }).click();
+    await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
+    await page.goBack();
+    await expect(page.locator("#slot-own-team")).toHaveText("Team ok");
+  });
+
   test("a slot intercept below a slot segment keeps that segment's layout and not-found", async ({
     page,
   }) => {

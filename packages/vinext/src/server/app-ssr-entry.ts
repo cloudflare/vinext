@@ -28,6 +28,10 @@ import { notFoundResponse } from "./http-error-responses.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
+  CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
+  withCaughtNotFoundBoundaries,
+} from "vinext/shims/caught-not-found-boundaries";
+import {
   BeforeInteractiveContext,
   type BeforeInteractiveInlineScript,
 } from "vinext/shims/before-interactive-context";
@@ -463,6 +467,12 @@ export async function handleSsr(
      */
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
+    /**
+     * The parallel slot not-found boundaries that catch the error that
+     * rejected the shell, or null when none catches it. The document then
+     * renders again from the same payload with them caught.
+     */
+    resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
     dynamicStaleTimeSeconds?: number;
     getInitialNavigationCacheMetadata?: () => InitialNavigationCacheMetadata;
   },
@@ -751,6 +761,8 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
+        let caughtShellError: unknown;
+        let caughtNotFoundBoundaries: readonly string[] | null = null;
         let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
@@ -786,15 +798,42 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            if (
+            caughtNotFoundBoundaries = options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+            if (caughtNotFoundBoundaries && caughtNotFoundBoundaries.length > 0) {
+              // Fizz has no error boundaries, so a parallel slot's notFound()
+              // rejected the shell. Render the document again from the same
+              // decoded payload, with the slot boundaries that catch it on the
+              // client rendering their fallback. No server component runs again.
+              beforeInteractiveInlineScripts.length = 0;
+              clearServerInsertedHTML();
+              const caughtIds = new Set(caughtNotFoundBoundaries);
+              let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
+              try {
+                caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
+                  renderToReadableStream(
+                    withCaughtNotFoundBoundaries(caughtIds, ssrRoot),
+                    renderOptions,
+                  ),
+                );
+                if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
+              } catch {
+                void caughtHtmlStream?.cancel().catch(() => {});
+                throw error;
+              }
+              renderComplete = caughtHtmlStream.allReady;
+              shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
+              caughtShellError = error;
+              htmlStream = caughtHtmlStream;
+            } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
               options?.waitForAllReady === true ||
               typeof (error as { digest?: unknown } | null)?.digest === "string"
             ) {
               throw error;
+            } else {
+              shellErrorRecovered = true;
+              htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
             }
-            shellErrorRecovered = true;
-            htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
           }
         }
 
@@ -869,6 +908,12 @@ export async function handleSsr(
             options?.formState ?? null,
             insertedHTML +
               errorMetaHTML +
+              (caughtShellError === undefined
+                ? ""
+                : createInlineScriptTag(
+                    `self.${CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL}=${safeJsonStringify(caughtNotFoundBoundaries)}`,
+                    options?.scriptNonce,
+                  )) +
               getTraceMetaHTML() +
               initialDevServerErrorHTML +
               // The transform inlines Fizz's stylesheet links before it adds
@@ -932,6 +977,7 @@ export async function handleSsr(
           renderComplete,
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
+          ...(caughtShellError === undefined ? {} : { caughtShellError }),
           linkHeader: reactLinkHeader,
         };
       } catch (error) {

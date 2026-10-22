@@ -652,6 +652,7 @@ export async function buildPageElements<
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
     slotLayoutIndex?: number,
+    slotNotFoundBoundary?: string,
   ) => {
     if (searchParams && isAppClientReference(PageComponent)) {
       // Like Next.js's ClientPageRoot, a client page gets `searchParams` where
@@ -688,6 +689,7 @@ export async function buildPageElements<
         props,
         renderDependency,
         slotLayoutIndex,
+        slotNotFoundBoundary,
       ) as unknown as AppPageComponent,
     );
   };
@@ -697,6 +699,7 @@ export async function buildPageElements<
     props: Readonly<Record<string, unknown>>,
     renderDependency?: AppPageRenderDependency | null,
     slotLayoutIndex?: number,
+    slotNotFoundBoundary?: string,
   ) => {
     const PageInvoker = () => {
       const invocationProps: Record<string, unknown> = { ...props };
@@ -714,7 +717,7 @@ export async function buildPageElements<
           withUseCachePageMarker(PageComponent, invocationProps),
           slotLayoutIndex === undefined
             ? undefined
-            : (error) => tagAppPageSlotError(error, slotLayoutIndex),
+            : (error) => tagAppPageSlotError(error, slotLayoutIndex, slotNotFoundBoundary),
         );
         if (isPromiseLike(result)) {
           if (renderDependency) {
@@ -736,7 +739,7 @@ export async function buildPageElements<
             slotLayoutIndex === undefined
               ? undefined
               : (error: unknown) => {
-                  throw tagAppPageSlotError(error, slotLayoutIndex);
+                  throw tagAppPageSlotError(error, slotLayoutIndex, slotNotFoundBoundary);
                 },
           );
         }
@@ -761,7 +764,9 @@ export async function buildPageElements<
           throw error;
         }
         renderDependency?.release();
-        throw slotLayoutIndex === undefined ? error : tagAppPageSlotError(error, slotLayoutIndex);
+        throw slotLayoutIndex === undefined
+          ? error
+          : tagAppPageSlotError(error, slotLayoutIndex, slotNotFoundBoundary);
       }
     };
     return PageInvoker;
@@ -913,8 +918,8 @@ export async function buildPageElements<
           : null,
       renderElementWithMetadataOutlet:
         isSiblingIntercept && EffectivePageComponent ? createSiblingInterceptElement : null,
-      createPageElement(component, props, slotLayoutIndex) {
-        return createPageElement(component, props, null, slotLayoutIndex);
+      createPageElement(component, props, slotLayoutIndex, slotNotFoundBoundary) {
+        return createPageElement(component, props, null, slotLayoutIndex, slotNotFoundBoundary);
       },
       // Fall back to vinext's built-in default global error module so that
       // uncaught client render errors are caught by the route-level
