@@ -133,8 +133,8 @@ describe("Cloudflare CDN adapter build output", () => {
   });
 
   it("bundles React's edge Fizz build into the Worker", async () => {
-    // `react-dom/server` resolves through the workerd condition to
-    // server.edge. React's Node build writes HTML chunks with
+    // vinext resolves `react-dom/server` to server.edge in Cloudflare server
+    // environments. React's Node build writes HTML chunks with
     // TextEncoder#encodeInto and exports renderToPipeableStream; neither may
     // reach the Worker.
     const ssr = await fs.readFile(path.join(root, "dist/server/ssr/index.js"), "utf8");

@@ -1037,7 +1037,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
-      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
       expect(workerEnvConfig.optimizeDeps.include).toContain(
         "use-sync-external-store/with-selector",
       );
@@ -1052,6 +1052,56 @@ describe("optimizeDeps.exclude for vinext", () => {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 15000);
+
+  it("resolves React's edge Fizz entries in Cloudflare server environments", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const edgePlugin = plugins.find((p: any) => p.name === "vinext:cloudflare-react-dom-edge");
+    expect(mainPlugin).toBeDefined();
+    expect(edgePlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-cf-react-dom-edge-"));
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      const resolveIn = async (consumer: "client" | "server", id: string) => {
+        const resolve = vi.fn(async (target: string) => ({ id: target }));
+        const result = await (edgePlugin as any).resolveId.handler.call(
+          { environment: { config: { consumer } }, resolve },
+          id,
+          "/app/entry.ts",
+          {},
+        );
+        return { result, resolve };
+      };
+
+      // Without the Cloudflare plugin, React's exports map picks the build.
+      expect((await resolveIn("server", "react-dom/server")).result).toBeUndefined();
+
+      await (mainPlugin as any).config(
+        { root: tmpDir, build: {}, plugins: [{ name: "vite-plugin-cloudflare" }] },
+        { command: "build" },
+      );
+
+      for (const id of ["react-dom/server", "react-dom/static"]) {
+        const { result, resolve } = await resolveIn("server", id);
+        expect(result).toEqual({ id: `${id}.edge` });
+        expect(resolve).toHaveBeenCalledWith(`${id}.edge`, "/app/entry.ts", { skipSelf: true });
+      }
+      // Browser code keeps React's browser build.
+      expect((await resolveIn("client", "react-dom/server")).result).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 
   it("uses server package conditions in RSC and SSR environments", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;

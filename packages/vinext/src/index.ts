@@ -440,7 +440,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
 const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react",
   "react-dom",
-  "react-dom/server",
+  "react-dom/server.edge",
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
 ]);
@@ -4333,9 +4333,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // plugin-rsc pre-includes react-dom/server.edge and static.edge,
                 // but the SSR entry imports the condition-resolved entries so
                 // Node loads React's Node renderer. Where React is optimized
-                // (Cloudflare and Nitro dev), pre-include those so they are not
-                // discovered on the first request.
-                ...(userSsrExternal === true || externalizeSsrReactInDev
+                // (Nitro dev), pre-include those so they are not discovered on
+                // the first request. Cloudflare resolves them to the .edge
+                // entries (vinext:cloudflare-react-dom-edge).
+                ...(userSsrExternal === true || externalizeSsrReactInDev || hasCloudflarePlugin
                   ? {}
                   : { include: ["react-dom/server", "react-dom/static"] }),
                 entries: optimizeEntries,
@@ -5491,6 +5492,21 @@ export const loadServerActionClient = ${
           // consumed, so nulling the map is safe and prevents stale-map
           // confusion in tooling.
           return { code: nextCode, map: null };
+        },
+      },
+    },
+    {
+      // Workers render with React's edge Fizz build. React's exports map picks
+      // it for `react-dom/server` and `react-dom/static` under the `workerd`
+      // condition; resolve the .edge entries directly so the Worker does not
+      // depend on the Cloudflare plugin's condition list.
+      name: "vinext:cloudflare-react-dom-edge",
+      enforce: "pre",
+      resolveId: {
+        filter: { id: /^react-dom\/(?:server|static)$/ },
+        handler(id, importer, options) {
+          if (!hasCloudflarePlugin || this.environment?.config.consumer !== "server") return;
+          return this.resolve(`${id}.edge`, importer, { ...options, skipSelf: true });
         },
       },
     },
