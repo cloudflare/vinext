@@ -200,6 +200,7 @@ import {
   createRscRequestHeaders,
   createRscRequestUrl,
   formatRscRequestPath,
+  isRscCompatibilityIdCompatible,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
@@ -294,6 +295,16 @@ const MISSING_RSC_COMPATIBILITY_ID = "vinext:missing";
 let clientRscCompatibilityId: string | null = IS_STATIC_EXPORT
   ? null
   : MISSING_RSC_COMPATIBILITY_ID;
+
+/**
+ * Decoding a payload loads the chunks its client references name, so a
+ * payload this page can't navigate to is only decoded by the navigation that
+ * hard-navigates. Otherwise a prefetch after a deploy would load the new
+ * deployment's code and stylesheets into this page.
+ */
+function isRscResponseCompatible(compatibilityIdHeader: string | null | undefined): boolean {
+  return isRscCompatibilityIdCompatible(compatibilityIdHeader, clientRscCompatibilityId);
+}
 
 function setClientRscCompatibilityId(compatibilityId: string | null | undefined): void {
   if (IS_STATIC_EXPORT || !compatibilityId) return;
@@ -682,6 +693,12 @@ async function decodeSupplementalRefresh(
   response: Response,
   targetPathname: string,
 ): Promise<AppElements> {
+  // A refresh whose kept branch comes from another deployment fails, so a
+  // navigation hard-navigates and a server action keeps the current tree.
+  if (!isRscResponseCompatible(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER))) {
+    response.body?.cancel().catch(() => {});
+    throw new Error("[vinext] Refreshed another deployment's payload");
+  }
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(response)),
   );
@@ -730,6 +747,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     return false;
   }
   if (options.interceptionContext !== null) return false;
+  if (!isRscResponseCompatible(options.entry.snapshot.compatibilityIdHeader)) return false;
 
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
@@ -3085,8 +3103,12 @@ function bootstrapHydration(
       };
     },
     navigate: navigateRsc,
-    preparePrefetchResponse: (response) =>
-      decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response))),
+    preparePrefetchResponse: (response) => {
+      if (!isRscResponseCompatible(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER))) {
+        return Promise.reject(new Error("[vinext] Prefetched another deployment's payload"));
+      }
+      return decodeAppElementsPromise(createFromFetch<AppWireElements>(Promise.resolve(response)));
+    },
     claimCurrentHistoryTreeSnapshot: (historyUpdateMode, previousHistoryState) =>
       historyController.claimCurrentHistoryTreeSnapshot(historyUpdateMode, previousHistoryState),
     commitAppOwnedHistoryStateWrite: (historyUpdateMode, previousHistoryState) =>

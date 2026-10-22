@@ -250,7 +250,6 @@ import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js"
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
 import {
-  CLIENT_REFERENCE_REGISTRY_ID,
   createRouteClientReferencesFallbackPlugin,
   createRscClientReferenceLoadersPlugin,
 } from "./plugins/rsc-client-reference-loaders.js";
@@ -297,6 +296,7 @@ import {
 import { computeClientRuntimeMetadata } from "./utils/client-runtime-metadata.js";
 import {
   VINEXT_CLIENT_ENTRY_MANIFEST,
+  VINEXT_CLIENT_REFERENCE_SOURCES,
   type ClientEntryManifest,
 } from "./utils/client-entry-manifest.js";
 import {
@@ -341,6 +341,10 @@ import {
   getBuildBundlerOptions,
   withBuildBundlerOptions,
 } from "./build/client-build-config.js";
+import {
+  collectClientReferenceChunks,
+  collectClientReferenceSources,
+} from "./build/client-reference-chunks.js";
 import {
   markCssUrlAssetReferences,
   restoreDedupedCssAssetReferences,
@@ -1922,6 +1926,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
+  // The client build's client reference modules, with the keys each registers.
+  let clientReferenceModules: ReadonlyMap<string, readonly string[]> | null = null;
   let clientReferenceAlwaysRenderedFiles: string[] = [];
   let clientReferenceRoutelessFiles: string[] = [];
   const serverEntryKindsByEnvironment = new Map<string, Set<string>>();
@@ -5897,37 +5903,64 @@ export const loadServerActionClient = ${
       name: "vinext:client-entry-manifest",
       apply: "build",
 
-      generateBundle(_options, bundle) {
-        if (this.environment?.name !== "client") return;
+      // After vite:css-post, which removes chunks that hold only CSS and moves
+      // their stylesheets to the chunks that imported them.
+      generateBundle: {
+        order: "post",
+        handler(_options, bundle) {
+          if (this.environment?.name !== "client") return;
 
-        const manifest: ClientEntryManifest = {};
-        for (const chunk of Object.values(bundle)) {
-          if (chunk.type !== "chunk") continue;
+          const manifest: ClientEntryManifest = {};
+          for (const chunk of Object.values(bundle)) {
+            if (chunk.type !== "chunk") continue;
 
-          if (
-            chunk.isDynamicEntry &&
-            isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_ROUTE_MANIFEST)
-          ) {
-            manifest.appRouteManifest = chunk.fileName;
+            if (
+              chunk.isDynamicEntry &&
+              isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_ROUTE_MANIFEST)
+            ) {
+              manifest.appRouteManifest = chunk.fileName;
+            }
+            if (!chunk.isEntry) continue;
+
+            if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
+              manifest.pagesClientEntry = chunk.fileName;
+            } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_BROWSER_ENTRY)) {
+              manifest.appBrowserEntry = chunk.fileName;
+            }
           }
-          if (!chunk.isEntry) continue;
-
-          if (isVirtualEntryFacade(chunk.facadeModuleId, CLIENT_REFERENCE_REGISTRY_ID)) {
-            manifest.appClientReferenceRegistry = chunk.fileName;
-          } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
-            manifest.pagesClientEntry = chunk.fileName;
-          } else if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_BROWSER_ENTRY)) {
-            manifest.appBrowserEntry = chunk.fileName;
+          if (clientReferenceModules) {
+            const appBrowserEntry = manifest.appBrowserEntry
+              ? bundle[manifest.appBrowserEntry]
+              : undefined;
+            manifest.appClientReferenceChunks = collectClientReferenceChunks(
+              bundle,
+              clientReferenceModules,
+              appBrowserEntry?.type === "chunk" ? appBrowserEntry : undefined,
+              this.environment.config.build.modulePreload,
+            );
+            const sources = collectClientReferenceSources(
+              bundle,
+              (moduleId) => this.getModuleInfo(moduleId)?.importedIds,
+              // Vite keys its build manifest by the resolved root.
+              this.environment.config.root,
+            );
+            if (sources) {
+              this.emitFile({
+                type: "asset",
+                fileName: VINEXT_CLIENT_REFERENCE_SOURCES,
+                source: JSON.stringify(sources, null, 2) + "\n",
+              });
+            }
           }
-        }
 
-        if (!manifest.pagesClientEntry && !manifest.appBrowserEntry) return;
+          if (!manifest.pagesClientEntry && !manifest.appBrowserEntry) return;
 
-        this.emitFile({
-          type: "asset",
-          fileName: VINEXT_CLIENT_ENTRY_MANIFEST,
-          source: JSON.stringify(manifest, null, 2) + "\n",
-        });
+          this.emitFile({
+            type: "asset",
+            fileName: VINEXT_CLIENT_ENTRY_MANIFEST,
+            source: JSON.stringify(manifest, null, 2) + "\n",
+          });
+        },
       },
     },
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
@@ -8791,7 +8824,7 @@ export const loadServerActionClient = ${
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
-              appClientReferenceRegistryModule: runtimeMetadata.appClientReferenceRegistryModule,
+              appClientReferenceChunks: runtimeMetadata.appClientReferenceChunks,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
               sharedChunks: runtimeMetadata.sharedChunks,
@@ -9138,6 +9171,9 @@ export const loadServerActionClient = ${
     plugins.push(createRscReferenceValidationNormalizerPlugin());
     plugins.push(
       createRscClientReferenceLoadersPlugin({
+        onClientReferenceModules(modules) {
+          clientReferenceModules = modules;
+        },
         routes: {
           canonicalizeModuleId: canonicalize,
           getAlwaysRenderedFiles: () => clientReferenceAlwaysRenderedFiles,

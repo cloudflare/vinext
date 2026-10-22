@@ -103,7 +103,7 @@ const projectServers = {
       "app-router-prod/pages-res-revalidate.spec.ts",
       "app-router-prod/client-reference-groups.spec.ts",
       "app-router-prod/route-manifest-chunk.spec.ts",
-      "app-router-prod/client-reference-registry-chunk.spec.ts",
+      "app-router-prod/client-reference-flight-chunks.spec.ts",
       "app-router-prod/cookie-notice-chunk-names.spec.ts",
       "app-router-prod/same-origin-absolute-href-prefetch.spec.ts",
       "app-router-prod/middleware-external-rewrite-host.spec.ts",

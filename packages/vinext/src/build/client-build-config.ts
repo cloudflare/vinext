@@ -91,6 +91,14 @@ function getPackageName(id: string): string | null {
 }
 
 /**
+ * The App Router client build module that registers the client references
+ * whose modules are in the "vinext" chunk (see
+ * plugins/rsc-client-reference-loaders.ts). It joins that chunk, so it loads
+ * with the browser entry without adding to the entry's own chunk.
+ */
+export const RESOLVED_EAGER_CLIENT_REFERENCES_ID = "\0virtual:vinext-client-reference-eager";
+
+/**
  * Create a manualChunks function for client builds.
  *
  * Splits the client bundle into:
@@ -125,6 +133,7 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     //
     // `shimsDir` is slash-normalized with a trailing slash; the bundler-provided
     // id can carry native backslashes on Windows, so slash it before matching.
+    if (id === RESOLVED_EAGER_CLIENT_REFERENCES_ID) return "vinext";
     const slashedId = toSlash(id);
     if (slashedId.startsWith(shimsDir)) {
       if (preserveRouteBoundaries) {

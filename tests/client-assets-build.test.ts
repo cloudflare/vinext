@@ -59,8 +59,8 @@ describe("client asset sidecar builds", () => {
       const rscSidecar = await fs.readFile(path.join(rscOutDir, "vinext-client-assets.js"), "utf8");
       const ssrSidecar = await fs.readFile(path.join(ssrOutDir, "vinext-client-assets.js"), "utf8");
       expect(rscSidecar).toContain('"appBootstrapPreinitModules"');
-      // The document names the client reference loaders' chunk (#4179).
-      expect(rscSidecar).toContain('"appClientReferenceRegistryModule"');
+      // The RSC render names each client reference's chunks (#4179).
+      expect(rscSidecar).toContain('"appClientReferenceChunks"');
       expect(rscSidecar).not.toBe("export default {};\n");
       expect(ssrSidecar).toBe(rscSidecar);
 

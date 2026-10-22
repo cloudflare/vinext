@@ -102,6 +102,10 @@ const appRscResponseStagePath = resolveEntryPath(
   import.meta.url,
 );
 const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
+const appClientReferenceManifestPath = resolveEntryPath(
+  "../server/app-client-reference-manifest.js",
+  import.meta.url,
+);
 const isrCachePath = resolveEntryPath("../server/isr-cache.js", import.meta.url);
 const thenableParamsShimPath = resolveEntryPath("../shims/thenable-params.js", import.meta.url);
 const appPageElementBuilderPath = resolveEntryPath(
@@ -830,18 +834,11 @@ import ${JSON.stringify(appRouteRequestBuiltInsPath)};`
 import ${JSON.stringify(serverGlobalsPath)};
 import __cacheabilityManifest from "virtual:vinext-cacheability-manifest";
 export { __cacheabilityManifest };
-import {
-  renderToReadableStream as _renderToReadableStream,
-  ${
-    hasServerActions
-      ? `loadServerAction,
-  createTemporaryReferenceSet,`
-      : ""
-  }
-} from ${JSON.stringify(
-    hasServerActions ? "@vitejs/plugin-rsc/rsc" : "@vitejs/plugin-rsc/react/rsc",
-  )};
-import {
+${
+  hasServerActions
+    ? `import { loadServerAction, createTemporaryReferenceSet } from "@vitejs/plugin-rsc/rsc";\n`
+    : ""
+}import {
   createClientManifest as _createClientManifest,${
     hasServerActions
       ? `
@@ -849,7 +846,9 @@ import {
       : ""
   }
 } from "@vitejs/plugin-rsc/core/rsc";
+import { renderToReadableStream as _renderToReadableStream } from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
 import { prerender as _prerender } from "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge";
+import { createClientReferenceChunksManifest } from ${JSON.stringify(appClientReferenceManifestPath)};
 ${
   hasServerActions
     ? `// plugin-rsc's decoders fix an unscoped server manifest; React's own take the
@@ -863,9 +862,16 @@ import {
     : ""
 }import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
 
-const renderToReadableStream = createRscRenderer(_renderToReadableStream);
+// Each render takes a fresh client manifest: in development, its references
+// carry a new cache tag.
+const __withClientReferenceChunks = createClientReferenceChunksManifest(
+  __pagesClientAssets.appClientReferenceChunks,
+);
+const renderToReadableStream = createRscRenderer((model, options) =>
+  _renderToReadableStream(model, __withClientReferenceChunks(_createClientManifest()), options),
+);
 const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
-  _prerender(model, _createClientManifest(), options),
+  _prerender(model, __withClientReferenceChunks(_createClientManifest()), options),
 );
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";

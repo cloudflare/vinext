@@ -190,6 +190,30 @@ export function computeDynamicImportPreloads(
   return preloads;
 }
 
+/**
+ * Give a module the preloads of a chunk that loads it. The client build
+ * imports an App Router client reference through the module that registers it
+ * (see build/client-reference-chunks.ts), so the build manifest keys that
+ * module's chunk, not the reference's module a next/dynamic boundary names.
+ *
+ * @param aliases Module manifest key -> the file of the chunk that loads it.
+ */
+export function addDynamicImportPreloadAliases(
+  preloads: Record<string, string[]>,
+  buildManifest: Record<string, BuildManifestChunk>,
+  aliases: Record<string, string>,
+): void {
+  const keysByFile = new Map<string, string>();
+  for (const [key, chunk] of Object.entries(buildManifest)) {
+    keysByFile.set(chunk.file, normalizeManifestKey(key));
+  }
+  for (const [moduleKey, file] of Object.entries(aliases)) {
+    const key = keysByFile.get(file);
+    const files = key === undefined ? undefined : preloads[key];
+    if (files && !Object.hasOwn(preloads, moduleKey)) preloads[moduleKey] = files;
+  }
+}
+
 export function dynamicImportPreloadsWithBase(
   preloads: Record<string, string[]>,
   applyBase: (file: string) => string,

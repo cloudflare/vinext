@@ -733,7 +733,7 @@ describe("computeClientRuntimeMetadata", () => {
     );
   });
 
-  it("finds the App Router client reference registry chunk, with the asset prefix", async () => {
+  it("finds the App Router client reference chunks, with the asset prefix", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),
       JSON.stringify({
@@ -741,45 +741,63 @@ describe("computeClientRuntimeMetadata", () => {
           file: "_next/static/app-entry.js",
           isEntry: true,
         },
-        "virtual:vinext-client-reference-registry": {
-          file: "_next/static/client-references.js",
-          isEntry: true,
-        },
       }),
     );
     await fsp.writeFile(
       path.join(clientDir, "vinext-client-entry-manifest.json"),
       JSON.stringify({
         appBrowserEntry: "_next/static/app-entry.js",
-        appClientReferenceRegistry: "_next/static/client-references.js",
+        appClientReferenceChunks: {
+          references: { aaa: 0 },
+          modules: [
+            {
+              file: "_next/static/m.js",
+              imports: ["_next/static/d.js"],
+              css: ["_next/static/a.css"],
+            },
+          ],
+        },
       }),
     );
 
-    const registryModule = (assetBase: string, assetPrefix: string) =>
-      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix })
-        .appClientReferenceRegistryModule;
-    expect(registryModule("/", "")).toBe("/_next/static/client-references.js");
-    expect(registryModule("/docs/", "")).toBe("/docs/_next/static/client-references.js");
-    expect(registryModule("/docs/", "/cdn")).toBe("/cdn/_next/static/client-references.js");
-    expect(registryModule("/docs/", "https://cdn.example.com/assets")).toBe(
-      "https://cdn.example.com/assets/_next/static/client-references.js",
-    );
+    const referenceChunks = (assetBase: string, assetPrefix: string) =>
+      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix }).appClientReferenceChunks;
+    expect(referenceChunks("/", "")).toEqual({
+      references: { aaa: 0 },
+      modules: [
+        {
+          file: "/_next/static/m.js",
+          imports: ["/_next/static/d.js"],
+          css: ["/_next/static/a.css"],
+        },
+      ],
+    });
+    expect(referenceChunks("/docs/", "")!.modules[0]!.file).toBe("/docs/_next/static/m.js");
+    expect(referenceChunks("/docs/", "/cdn")!.modules[0]!.imports).toEqual([
+      "/cdn/_next/static/d.js",
+    ]);
+    expect(referenceChunks("/docs/", "https://cdn.example.com/assets")!.modules[0]!.css).toEqual([
+      "https://cdn.example.com/assets/_next/static/a.css",
+    ]);
   });
 
-  it("finds the client reference registry chunk without a Vite build manifest", async () => {
+  it("finds the client reference chunks without a Vite build manifest", async () => {
     await fsp.rm(path.join(clientDir, ".vite", "manifest.json"), { force: true });
     await fsp.writeFile(
       path.join(clientDir, "vinext-client-entry-manifest.json"),
       JSON.stringify({
         appBrowserEntry: "_next/static/app-entry.js",
-        appClientReferenceRegistry: "_next/static/client-references.js",
+        appClientReferenceChunks: {
+          references: { aaa: 0 },
+          modules: [{ file: "_next/static/m.js", imports: [], css: [] }],
+        },
       }),
     );
 
     expect(
       computeClientRuntimeMetadata({ clientDir, assetBase: "/", assetPrefix: "" })
-        .appClientReferenceRegistryModule,
-    ).toBe("/_next/static/client-references.js");
+        .appClientReferenceChunks?.modules[0]!.file,
+    ).toBe("/_next/static/m.js");
   });
 
   it("applies base path to all paths", async () => {

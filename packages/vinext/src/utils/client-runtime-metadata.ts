@@ -7,10 +7,12 @@ import {
 } from "./client-build-manifest.js";
 import {
   readClientEntryManifest,
+  readClientReferenceSources,
   findClientEntryFileFromVinextManifest,
   findPagesClientEntryFileFromVinextManifest,
 } from "./client-entry-manifest.js";
 import {
+  addDynamicImportPreloadAliases,
   computeLazyChunks,
   computeDynamicImportPreloads,
   dynamicImportPreloadsWithBase,
@@ -21,12 +23,13 @@ import {
   manifestFileWithAssetPrefix,
 } from "./manifest-paths.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
+import type { ClientReferenceChunks } from "./client-reference-chunks.js";
 
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
   appRouteManifestModule?: string;
-  appClientReferenceRegistryModule?: string;
+  appClientReferenceChunks?: ClientReferenceChunks;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
@@ -126,9 +129,8 @@ function collectAppBootstrapPreinitModules(
  *
  * - `appRouteManifestModule` — the App Router RouteManifest chunk, which the
  *   browser entry imports as it boots, preloaded during SSR.
- * - `appClientReferenceRegistryModule` — the App Router client reference
- *   loaders, which the document names and preloads, and which the browser
- *   imports on its first client reference.
+ * - `appClientReferenceChunks` — what each App Router client reference loads
+ *   in the browser, which the RSC render names in its Flight row.
  * - `lazyChunks` — chunks only reachable through dynamic `import()`, excluded
  *   from modulepreload hints.
  * - `dynamicPreloads` — per-module JS/CSS files for rendered `next/dynamic()`
@@ -173,11 +175,17 @@ export function computeClientRuntimeMetadata(opts: {
     const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
     return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
   };
-  // Hydration needs it, so it doesn't depend on Vite's build manifest.
-  if (clientEntryManifest?.appClientReferenceRegistry) {
-    metadata.appClientReferenceRegistryModule = appAssetUrl(
-      clientEntryManifest.appClientReferenceRegistry,
-    );
+  // Hydration needs them, so they don't depend on Vite's build manifest.
+  const referenceChunks = clientEntryManifest?.appClientReferenceChunks;
+  if (referenceChunks) {
+    metadata.appClientReferenceChunks = {
+      references: referenceChunks.references,
+      modules: referenceChunks.modules.map((module) => ({
+        file: appAssetUrl(module.file),
+        imports: module.imports.map(appAssetUrl),
+        css: module.css.map(appAssetUrl),
+      })),
+    };
   }
 
   if (!buildManifest) return metadata;
@@ -216,9 +224,13 @@ export function computeClientRuntimeMetadata(opts: {
   );
   if (lazyChunks.length > 0) metadata.lazyChunks = lazyChunks;
 
-  const dynamicPreloads = dynamicImportPreloadsWithBase(
-    computeDynamicImportPreloads(buildManifest),
-    (file) => manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix),
+  const dynamicImportPreloads = computeDynamicImportPreloads(buildManifest);
+  const clientReferenceSources = readClientReferenceSources(opts.clientDir);
+  if (clientReferenceSources) {
+    addDynamicImportPreloadAliases(dynamicImportPreloads, buildManifest, clientReferenceSources);
+  }
+  const dynamicPreloads = dynamicImportPreloadsWithBase(dynamicImportPreloads, (file) =>
+    manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix),
   );
   if (Object.keys(dynamicPreloads).length > 0) {
     metadata.dynamicPreloads = dynamicPreloads;

@@ -405,23 +405,24 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
-  it("loads the client reference loaders from a chunk the browser entry doesn't name", async () => {
-    // The loaders grow with every client component in the app (#4179). In the
-    // entry's static graph, every page would download them, and an added
-    // component would change the entry's hash. Naming their chunk in the
-    // entry would change the hash too.
+  it("names each client reference's chunks in its Flight row, not in the browser entry", async () => {
+    // The browser entry once held a loader per client component in the app
+    // (#4179): every page downloaded them all, and an added component changed
+    // the entry's hash. As in Next.js, each reference's Flight row names the
+    // chunks it loads instead.
     const clientDir = path.join(fixtureDir, "dist", "client");
-    const { appBrowserEntry, appClientReferenceRegistry } = JSON.parse(
+    const { appBrowserEntry, appClientReferenceChunks } = JSON.parse(
       fs.readFileSync(path.join(clientDir, "vinext-client-entry-manifest.json"), "utf8"),
-    ) as { appBrowserEntry: string; appClientReferenceRegistry?: string };
-    expect(appClientReferenceRegistry).toBeDefined();
-    const registryFile = appClientReferenceRegistry!;
-    // plugin-rsc's reference keys: `"6a092ae781cf":async()=>{...}`.
-    // The minifier drops the quotes of keys that start with a letter.
-    const loader = /[{,]"?[0-9a-f]{12}"?:async\(\)=>/g;
-    expect(
-      fs.readFileSync(path.join(clientDir, registryFile), "utf8").match(loader)?.length,
-    ).toBeGreaterThan(1);
+    ) as {
+      appBrowserEntry: string;
+      appClientReferenceChunks?: {
+        references: Record<string, number>;
+        modules: { file: string }[];
+      };
+    };
+    expect(appClientReferenceChunks).toBeDefined();
+    const moduleFiles = appClientReferenceChunks!.modules.map((module) => module.file);
+    expect(moduleFiles.length).toBeGreaterThan(1);
     const buildManifest = JSON.parse(
       fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf8"),
     ) as Record<string, { file: string; imports?: string[] }>;
@@ -436,31 +437,30 @@ describe("App Router production SSR route client reference preloads", () => {
       eager.add(chunk.file);
       queue.push(...(chunk.imports ?? []));
     }
-    expect(eager.has(registryFile)).toBe(false);
+    // plugin-rsc's reference loaders: `"6a092ae781cf":async()=>{...}`.
+    // The minifier drops the quotes of keys that start with a letter.
+    const loader = /[{,]"?[0-9a-f]{12}"?:async\(\)=>/;
     for (const file of eager) {
+      expect(moduleFiles, file).not.toContain(file);
       const code = fs.readFileSync(path.join(clientDir, file), "utf8");
-      expect(code.match(loader), file).toBeNull();
-      expect(code, file).not.toContain(path.posix.basename(registryFile));
+      expect(code, file).not.toMatch(loader);
+      for (const moduleFile of moduleFiles) {
+        expect(code, file).not.toContain(path.posix.basename(moduleFile));
+      }
     }
 
-    // The document names the chunk for the browser, and preloads it at low
-    // priority as it did the entry that held the loaders. The shell-error
-    // document is built by hand, without React's hints.
-    const href = `/${registryFile}`;
-    for (const route of ["/", "/streamed/also", "/shell-error"]) {
+    // The document's Flight data names the module chunk of each reference the
+    // page renders, which SSR modulepreloads.
+    for (const route of ["/", "/streamed/also"]) {
       const html = await (await fetch(`${baseUrl}${route}`)).text();
-      const script = `<script nonce="vinext-test-nonce">self["__VINEXT_CLIENT_REFERENCE_REGISTRY__"]=${JSON.stringify(href)}</script>`;
-      expect(html, route).toContain(script);
-      // It runs before the bootstrap script, which starts hydration.
-      const scriptIndex = html.indexOf(script);
-      expect(scriptIndex, route).toBeLessThan(html.indexOf("</head>"));
-      const bootstrapIndex = html.search(
-        new RegExp(`<script\\b[^>]*\\bsrc="/${appBrowserEntry.replaceAll(".", "\\.")}"`),
-      );
-      expect(bootstrapIndex, route).toBeGreaterThan(scriptIndex);
-      const preload = modulepreloadTags(html).filter((tag) => tag.includes(`href="${href}"`));
-      expect(preload, route).toHaveLength(1);
-      expect(preload[0], route).toContain('fetchPriority="low"');
+      expect(html, route).not.toContain("__VINEXT_CLIENT_REFERENCE_REGISTRY__");
+      const named = [...html.matchAll(/\\?"m\/([^"\\]+\.js)/g)].map((match) => match[1]!);
+      expect(named.length, route).toBeGreaterThan(0);
+      const preloads = modulepreloadHrefs(html);
+      for (const file of named) {
+        expect(moduleFiles, route).toContain(file);
+        expect(preloads, route).toContain(`/${file}`);
+      }
     }
   });
 

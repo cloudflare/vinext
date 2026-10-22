@@ -13,9 +13,6 @@ const framework = process.argv[2];
 const target = process.argv[3] ?? "client";
 // The Vite build manifest key of vinext's App Router browser entry.
 const APP_BROWSER_ENTRY_KEY = "virtual:vinext-app-browser-entry";
-// App Router documents modulepreload this chunk of client reference loaders
-// alongside the browser entry, so it counts toward the entry's bytes.
-const APP_CLIENT_REFERENCE_REGISTRY_KEY = "virtual:vinext-client-reference-registry";
 
 if (framework !== "vinext" && framework !== "nextjs") {
   console.error(
@@ -120,9 +117,6 @@ async function gzipClientEntryClosure(clientOutputPath) {
   }
 
   await visit(entryKey);
-  if (entryKey === APP_BROWSER_ENTRY_KEY && manifest[APP_CLIENT_REFERENCE_REGISTRY_KEY]) {
-    await visit(APP_CLIENT_REFERENCE_REGISTRY_KEY);
-  }
   return { gzipBytes, fileCount: visited.size };
 }
 

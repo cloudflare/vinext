@@ -33,9 +33,8 @@ describe("RSC Flight hint fix", () => {
     const code = generateRscEntry("/tmp/test/app", [route]);
     expect(code).toContain("_renderToReadableStream");
     expect(code).toContain("createRscRenderer");
-    expect(code).toContain(
-      "const renderToReadableStream = createRscRenderer(_renderToReadableStream",
-    );
+    expect(code).toContain("const renderToReadableStream = createRscRenderer(");
+    expect(code).toContain("_renderToReadableStream(model, ");
   });
 });
 // ── Client reference preloading (Issue #256) ─────────────────────────────────

@@ -87,10 +87,8 @@ import {
   runWithStreamedClientReferences,
   wrapClientReferenceRequire,
 } from "./app-streamed-client-references.js";
-import {
-  CLIENT_REFERENCE_REGISTRY_GLOBAL,
-  RSC_FORM_STATE_GLOBAL,
-} from "../client/browser-globals.js";
+import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
+import { ssrServerConsumerManifest } from "./app-client-reference-manifest.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
@@ -119,6 +117,14 @@ type SsrRenderOptions = RenderToReadableStreamOptions & {
  * the response-layer combine cap.
  */
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+
+/**
+ * plugin-rsc's SSR `createFromReadableStream` spreads these over its own
+ * options, whose type leaves out the consumer manifest.
+ */
+const SSR_FLIGHT_OPTIONS: NonNullable<Parameters<typeof createFromReadableStream>[1]> & {
+  serverConsumerManifest: typeof ssrServerConsumerManifest;
+} = { serverConsumerManifest: ssrServerConsumerManifest };
 
 export type FontPreload = {
   href: string;
@@ -345,17 +351,6 @@ function buildHeadInjectionHtml(
   const compatibilityScript = createNavigationRuntimeRscCompatibilityScript();
   const rscCompatibilityScript =
     compatibilityScript === "" ? "" : createInlineScriptTag(compatibilityScript, scriptNonce);
-  // The browser imports the client reference loaders from this URL; the
-  // entry doesn't name their chunk, so its hash doesn't change with them.
-  const clientReferenceRegistryScript = pagesClientAssets.appClientReferenceRegistryModule
-    ? createInlineScriptTag(
-        "self[" +
-          safeJsonStringify(CLIENT_REFERENCE_REGISTRY_GLOBAL) +
-          "]=" +
-          safeJsonStringify(pagesClientAssets.appClientReferenceRegistryModule),
-        scriptNonce,
-      )
-    : "";
   const formStateScript =
     formState === null
       ? ""
@@ -367,13 +362,8 @@ function buildHeadInjectionHtml(
   return (
     rscMetadataScript +
     rscCompatibilityScript +
-    clientReferenceRegistryScript +
     formStateScript +
     buildModulePreloadHtml(bootstrapPreloadUrl, scriptNonce) +
-    // The error shell has no VinextFlightRoot, which otherwise preloads it.
-    (bootstrapPreloadUrl
-      ? buildModulePreloadHtml(pagesClientAssets.appClientReferenceRegistryModule, scriptNonce)
-      : "") +
     insertedHTML +
     fontHTML
   );
@@ -582,20 +572,8 @@ export async function handleSsr(
               nonce: options?.scriptNonce,
             } as PreloadModuleOptions);
           }
-          // Hydration imports the client reference loaders on its first client
-          // reference. They used to be part of the entry, which loads at low
-          // priority too.
-          if (pagesClientAssets.appClientReferenceRegistryModule) {
-            // React forwards fetchPriority; its types leave it out.
-            preloadModule(pagesClientAssets.appClientReferenceRegistryModule, {
-              as: "script",
-              crossOrigin: assetCrossOrigin,
-              fetchPriority: "low",
-              nonce: options?.scriptNonce,
-            } as PreloadModuleOptions);
-          }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
+            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

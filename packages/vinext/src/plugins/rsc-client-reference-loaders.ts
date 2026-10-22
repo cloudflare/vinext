@@ -17,22 +17,30 @@ import {
   collectAsyncModules,
   createSideEffectsDeclarationCheck,
 } from "../build/client-reference-async.js";
-import { hasUserClientChunkGroups } from "../build/client-build-config.js";
+import {
+  hasUserClientChunkGroups,
+  RESOLVED_EAGER_CLIENT_REFERENCES_ID,
+} from "../build/client-build-config.js";
+import { resolveShimRuntimeModule } from "../entries/runtime-entry-module.js";
 import type { AppRoute } from "../routing/app-route-graph.js";
-import { CLIENT_REFERENCE_REGISTRY_GLOBAL } from "../client/browser-globals.js";
 import { magicStringTransformResult, omitUnusedBuildSourcemap } from "./transform-result.js";
 
 const CLIENT_REFERENCES_ID = "\0virtual:vite-rsc/client-references";
 const RESOLVED_ID_PROXY_PREFIX = "virtual:vite-rsc/resolved-id/";
 const CLIENT_REFERENCE_GROUP_PREFIX = "virtual:vinext-client-reference-group-";
 const RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX = `\0${CLIENT_REFERENCE_GROUP_PREFIX}`;
+// A client reference outside every group registers through its own module.
+// The id ends with the reference's file name, which names its chunk.
+const CLIENT_REFERENCE_MODULE_PREFIX = "virtual:vinext-client-reference-module/";
+/** Prefixes the module that registers one client reference outside every group. */
+export const RESOLVED_CLIENT_REFERENCE_MODULE_PREFIX = `\0${CLIENT_REFERENCE_MODULE_PREFIX}`;
 const CLIENT_REFERENCES_ID_RE = /^\0virtual:vite-rsc\/client-references$/;
-const CLIENT_REFERENCE_GROUP_RE = /^virtual:vinext-client-reference-group-/;
-const RESOLVED_CLIENT_REFERENCE_GROUP_RE = /^\0virtual:vinext-client-reference-group-/;
-export const CLIENT_REFERENCE_REGISTRY_ID = "virtual:vinext-client-reference-registry";
-const RESOLVED_CLIENT_REFERENCE_REGISTRY_ID = `\0${CLIENT_REFERENCE_REGISTRY_ID}`;
-const CLIENT_REFERENCE_REGISTRY_RE = /^virtual:vinext-client-reference-registry$/;
-const RESOLVED_CLIENT_REFERENCE_REGISTRY_RE = /^\0virtual:vinext-client-reference-registry$/;
+const CLIENT_REFERENCE_MODULE_RE =
+  /^virtual:vinext-client-reference-(?:group-|module\/)|^virtual:vinext-client-reference-(?:chunks|eager)$/;
+const RESOLVED_CLIENT_REFERENCE_MODULE_RE =
+  /^\0virtual:vinext-client-reference-(?:group-|module\/)|^\0virtual:vinext-client-reference-(?:chunks|eager)$/;
+const CLIENT_REFERENCE_CHUNKS_ID = "virtual:vinext-client-reference-chunks";
+export const RESOLVED_CLIENT_REFERENCE_CHUNKS_ID = `\0${CLIENT_REFERENCE_CHUNKS_ID}`;
 
 // A null plan makes the App Router SSR entry preload every client reference.
 const NO_ROUTE_CLIENT_REFERENCES_EXPORT = "export const routeClientReferences = null;\n";
@@ -114,119 +122,92 @@ function withResolvedIdProxy(resolvedId: string): string {
     : resolvedId;
 }
 
-type ClientReferenceGroupSlot = { groupId: string; index: number };
-
 function sortedRenderedExports(meta: RscClientReferenceMeta): string[] {
   return meta.renderedExports.slice().sort();
 }
 
-function groupExportName(slotIndex: number, exportIndex: number): string {
-  return `r${slotIndex}_${exportIndex}`;
-}
-
-function generateClientReferenceObject(
-  meta: RscClientReferenceMeta,
-  slot: ClientReferenceGroupSlot | undefined,
-): string {
-  // Keep exports lazy. In async or cyclic client module evaluation, eagerly
-  // copying module namespace values can observe an uninitialized binding.
+/**
+ * The exports of a client reference, read from the module namespace `binding`.
+ * Keep them lazy. In async or cyclic client module evaluation, eagerly copying
+ * module namespace values can observe an uninitialized binding.
+ */
+function generateClientReferenceObject(meta: RscClientReferenceMeta, binding: string): string {
   const exports = sortedRenderedExports(meta)
-    .map((name, exportIndex) => {
-      const value = slot
-        ? `m.${groupExportName(slot.index, exportIndex)}`
-        : `m[${JSON.stringify(name)}]`;
-      return `      get ${JSON.stringify(name)}() { return ${value}; },`;
-    })
+    .map(
+      (name) => `  get ${JSON.stringify(name)}() { return ${binding}[${JSON.stringify(name)}]; },`,
+    )
     .join("\n");
-
-  return exports ? `{\n${exports}\n    }` : "{}";
+  return exports ? `{\n${exports}\n}` : "{}";
 }
 
-function generateClientReferenceLoaders(
-  metas: RscClientReferenceMeta[],
-  slots: ReadonlyMap<RscClientReferenceMeta, ClientReferenceGroupSlot> = new Map(),
-): string {
+function generateClientReferenceLoaders(metas: RscClientReferenceMeta[]): string {
   const entries = metas
     .slice()
     .sort((a, b) => a.referenceKey.localeCompare(b.referenceKey))
-    .map((meta) => {
-      const slot = slots.get(meta);
-      const source = slot ? slot.groupId : withResolvedIdProxy(meta.importId);
-      return [
-        `  ${JSON.stringify(meta.referenceKey)}: async () => {`,
-        `    const m = await import(${JSON.stringify(source)});`,
-        `    return ${generateClientReferenceObject(meta, slot)};`,
-        `  },`,
-      ].join("\n");
-    })
+    .map((meta) =>
+      [
+        `${JSON.stringify(meta.referenceKey)}: async () => {`,
+        `  const m = await import(${JSON.stringify(withResolvedIdProxy(meta.importId))});`,
+        `  return ${generateClientReferenceObject(meta, "m")};`,
+        `},`,
+      ].join("\n"),
+    )
     .join("\n");
 
   return `export default {\n${entries}\n};\n`;
 }
 
 /**
- * The client build's client-references module. It keeps the loaders out of the
- * App browser entry: the entry would otherwise grow with every client
- * reference in the app, and any added reference would change its hash. The
- * loaders live in their own chunk, which no module imports by file name, so
- * the entry doesn't depend on its hash either. The document names the chunk
- * (see server/app-ssr-entry.ts), and the first client reference imports it.
- * A failed import fails the references waiting for it, which stay failed:
- * @vitejs/plugin-rsc memoizes each reference's load. A reference requested
- * later imports the chunk again, which browsers that don't cache a failed
- * module fetch (whatwg/html#10327) can then load.
+ * The client build's client-references module, which the App browser entry
+ * imports. It names no client reference chunk, so the entry neither grows nor
+ * changes its hash with the app's client references: each reference's Flight
+ * row names the chunks it loads (see shims/internal/client-reference-loader.ts).
  */
-export const LAZY_CLIENT_REFERENCES_MODULE = `let registry;
-function loadRegistry() {
-  return (registry ??= Promise.resolve()
-    .then(() => {
-      const name = ${JSON.stringify(CLIENT_REFERENCE_REGISTRY_GLOBAL)};
-      const url = Object.hasOwn(globalThis, name) ? globalThis[name] : undefined;
-      if (typeof url !== "string") {
-        throw new Error(
-          "[vinext] The document's inline script naming the client reference registry chunk did not run. App Router documents need their inline scripts: allow them with a CSP nonce or 'unsafe-inline'.",
-        );
-      }
-      return import(/* @vite-ignore */ url);
-    })
-    // Vite's preload helper resolves to undefined when an app prevents its
-    // vite:preloadError event, so reading the loaders can fail too.
-    .then((m) => m.default)
-    .catch((error) => {
-      registry = undefined;
-      throw error;
-    }));
+function generateBrowserClientReferencesModule(loaderPath: string, eager: boolean): string {
+  const eagerImport = eager
+    ? `import ${JSON.stringify(RESOLVED_EAGER_CLIENT_REFERENCES_ID.slice(1))};\n`
+    : "";
+  return `${eagerImport}export { clientReferences as default } from ${JSON.stringify(loaderPath)};\n`;
 }
-export default new Proxy({}, {
-  get(_target, id) {
-    // Not a thenable. Reference keys are hashes, so none is named "then".
-    if (typeof id !== "string" || id === "then") return undefined;
-    return async () => {
-      const load = (await loadRegistry())[id];
-      if (!load) throw new Error(\`client reference not found '\${id}'\`);
-      return load();
-    };
-  },
-});
-`;
 
 /**
- * Re-export only each member's rendered exports, as live bindings, so unused
- * exports and their dependencies still tree-shake as they do with direct
- * loaders. A member without rendered exports is imported for its side effects.
+ * A client build module that registers client references as it evaluates:
+ * a route group's members, the references in chunks every page loads, or one
+ * other reference outside every group. It imports
+ * only each member's rendered exports, so unused exports and their
+ * dependencies still tree-shake as they do with direct loaders. A member
+ * without rendered exports is imported for its side effects. The last member
+ * is imported last (see build/client-reference-chunks.ts).
  */
-function generateClientReferenceGroupModule(metas: readonly RscClientReferenceMeta[]): string {
-  const lines = metas.map((meta, slotIndex) => {
+function generateClientReferenceModule(
+  metas: readonly RscClientReferenceMeta[],
+  loaderPath: string,
+): string {
+  const imports = metas.map((meta, index) => {
     const source = JSON.stringify(withResolvedIdProxy(meta.importId));
-    const specifiers = sortedRenderedExports(meta).map((name, exportIndex) => {
-      const imported = /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
-      return `${imported} as ${groupExportName(slotIndex, exportIndex)}`;
-    });
-    return specifiers.length > 0
-      ? `export { ${specifiers.join(", ")} } from ${source};`
+    return meta.renderedExports.length > 0
+      ? `import * as m${index} from ${source};`
       : `import ${source};`;
   });
-  return `${lines.join("\n")}\n`;
+  const registrations = metas.map(
+    (meta, index) =>
+      `registerClientReference(${JSON.stringify(meta.referenceKey)}, ${generateClientReferenceObject(meta, `m${index}`)});`,
+  );
+  return [
+    `import { registerClientReference } from ${JSON.stringify(loaderPath)};`,
+    ...imports,
+    ...registrations,
+    "",
+  ].join("\n");
+}
+
+/**
+ * The browser never loads this module. Its dynamic imports make each client
+ * reference module a chunk of its own that only a Flight row names.
+ */
+function generateClientReferenceChunksModule(moduleIds: readonly string[]): string {
+  const imports = moduleIds.map((id) => `  () => import(${JSON.stringify(id.slice(1))}),`);
+  return `export default [\n${imports.join("\n")}\n];\n`;
 }
 
 /** A reference the SSR plan may stream, by its index in `references`. */
@@ -299,10 +280,16 @@ export function createRscClientReferenceLoadersPlugin(
   options: {
     routes?: RscClientReferenceRouteOptions;
     grouping?: RscClientReferenceGroupingOptions;
+    /**
+     * Receives the client build's client reference modules: each resolved
+     * module id with the keys of the references it registers.
+     */
+    onClientReferenceModules?: (modules: ReadonlyMap<string, readonly string[]>) => void;
   } = {},
 ): Plugin {
   const { routes: routeOptions } = options;
   const grouping = routeOptions && options.grouping;
+  const loaderPath = resolveShimRuntimeModule("internal/client-reference-loader");
   let rscApi: PluginApi | undefined;
   let root = "";
   let groupingEnabled = false;
@@ -315,9 +302,9 @@ export function createRscClientReferenceLoadersPlugin(
     referenceIds: ReadonlySet<string>;
     preloads: ClientReferencePreloadPlan;
   } | null = null;
-  const groupModules = new Map<string, string>();
-  // The client build's loaders, which its client-references module imports lazily.
-  let registryCode: string | null = null;
+  // The client build's client reference modules and the module that makes
+  // each a chunk, by resolved id.
+  const referenceModules = new Map<string, string>();
   // The SSR build's references that may stream, until renderChunk checks them.
   let asyncCandidates: AsyncReferenceCandidate[] = [];
   // Stands in for the plan's async references until the SSR graph is
@@ -355,8 +342,8 @@ export function createRscClientReferenceLoadersPlugin(
         preloadPlan = null;
       }
       if (this.environment.name === "client") {
-        groupModules.clear();
-        registryCode = null;
+        referenceModules.clear();
+        options.onClientReferenceModules?.(new Map());
       }
     },
     buildEnd(error) {
@@ -391,19 +378,15 @@ export function createRscClientReferenceLoadersPlugin(
       });
     },
     resolveId: {
-      filter: { id: [CLIENT_REFERENCE_GROUP_RE, CLIENT_REFERENCE_REGISTRY_RE] },
+      filter: { id: CLIENT_REFERENCE_MODULE_RE },
       handler(source) {
-        if (source === CLIENT_REFERENCE_REGISTRY_ID) {
-          return registryCode === null ? null : RESOLVED_CLIENT_REFERENCE_REGISTRY_ID;
-        }
-        return groupModules.has(`\0${source}`) ? `\0${source}` : null;
+        return referenceModules.has(`\0${source}`) ? `\0${source}` : null;
       },
     },
     load: {
-      filter: { id: [RESOLVED_CLIENT_REFERENCE_GROUP_RE, RESOLVED_CLIENT_REFERENCE_REGISTRY_RE] },
+      filter: { id: RESOLVED_CLIENT_REFERENCE_MODULE_RE },
       handler(id) {
-        if (id === RESOLVED_CLIENT_REFERENCE_REGISTRY_ID) return registryCode;
-        return groupModules.get(id) ?? null;
+        return referenceModules.get(id) ?? null;
       },
     },
     transform: {
@@ -448,7 +431,12 @@ export function createRscClientReferenceLoadersPlugin(
           meta.groupChunkId = id;
         }
 
-        const slots = new Map<RscClientReferenceMeta, ClientReferenceGroupSlot>();
+        const isClientBuild =
+          this.environment.name === "client" && this.environment.mode === "build";
+        // The client build's client reference modules, by resolved id, with the
+        // keys of the references each registers.
+        const moduleKeys = new Map<string, string[]>();
+        const grouped = new Set<RscClientReferenceMeta>();
         const referenceIds = new Set(metaEntries.map(([referenceId]) => referenceId));
         const referenceKeys = new Map(
           metaEntries.map(([referenceId, meta]) => [referenceId, meta.referenceKey]),
@@ -456,8 +444,7 @@ export function createRscClientReferenceLoadersPlugin(
         if (
           grouping &&
           groupingEnabled &&
-          this.environment.name === "client" &&
-          this.environment.mode === "build" &&
+          isClientBuild &&
           // Skip measuring when no two references share a signature.
           planClientReferenceGroups({
             referenceIds,
@@ -495,7 +482,6 @@ export function createRscClientReferenceLoadersPlugin(
             }),
           );
           const { external } = this.environment.config.build.rolldownOptions;
-          const moduleInfos = new Map<string, Rollup.ModuleInfo>();
           // Every reference's walk checks the modules it reaches, so shared
           // modules are checked once per reference. Cache the checks that depend
           // only on the id; externals are learned while the walk resolves.
@@ -528,7 +514,6 @@ export function createRscClientReferenceLoadersPlugin(
               // Pass the full resolution so package metadata such as
               // `sideEffects` is kept for modules this loads first.
               const info = await this.load(resolutions.get(moduleId) ?? { id: moduleId });
-              moduleInfos.set(moduleId, info);
               const { code, importedIds } = info;
               if (code === null) return { code, importedIds };
               const importedIdSet = new Set(importedIds);
@@ -578,19 +563,6 @@ export function createRscClientReferenceLoadersPlugin(
             isSideEffectFree: (moduleId) => packages.get(moduleId)?.moduleSideEffects === false,
             isExcluded: (moduleId) => externalIds.has(moduleId) || isExcludedById(moduleId),
           });
-          // A group re-exports its members' rendered exports statically, which
-          // fails the build when the browser module lacks one, for example when
-          // a package's `react-server` entry exports more than its browser
-          // entry. The direct loader reads exports lazily, so keep those there.
-          // CommonJS exports always resolve through rolldown's interop.
-          for (const [referenceId, meta] of metaEntries) {
-            const moduleId = references.get(referenceId);
-            const info = moduleId === undefined ? undefined : moduleInfos.get(moduleId);
-            if (!info || info.inputFormat === "cjs") continue;
-            if (meta.renderedExports.some((name) => !info.exports.includes(name))) {
-              costs.set(referenceId, null);
-            }
-          }
           const groups = planClientReferenceGroups({
             referenceIds,
             referenceKeys,
@@ -602,27 +574,68 @@ export function createRscClientReferenceLoadersPlugin(
           for (const group of groups) {
             const groupMetas = group.referenceIds.map((referenceId) => metaById.get(referenceId)!);
             const resolvedGroupId = `${RESOLVED_CLIENT_REFERENCE_GROUP_PREFIX}${group.key}`;
-            groupModules.set(resolvedGroupId, generateClientReferenceGroupModule(groupMetas));
-            groupMetas.forEach((meta, index) => {
+            referenceModules.set(
+              resolvedGroupId,
+              generateClientReferenceModule(groupMetas, loaderPath),
+            );
+            moduleKeys.set(
+              resolvedGroupId,
+              groupMetas.map((meta) => meta.referenceKey),
+            );
+            for (const meta of groupMetas) {
               // Asset deps for every member come from the shared group chunk.
               meta.groupChunkId = resolvedGroupId;
-              slots.set(meta, { groupId: resolvedGroupId.slice(1), index });
-            });
+              grouped.add(meta);
+            }
           }
         }
 
-        const loaders = generateClientReferenceLoaders(metas, slots);
-        if (this.environment.name === "client" && this.environment.mode === "build") {
-          registryCode = loaders;
-          // Vite drops entry exports in app client builds; keep the loaders.
+        if (isClientBuild) {
+          // With vinext's own chunk groups, references whose modules are in
+          // chunks every page loads, such as vinext's own client components,
+          // register as the browser entry loads, from a module in the vinext
+          // chunk. Their rows name no chunk.
+          const eager: RscClientReferenceMeta[] = [];
+          for (const [referenceId, meta] of metaEntries) {
+            if (grouped.has(meta)) continue;
+            if (grouping && groupingEnabled && grouping.isAlwaysLoadedClientModule(referenceId)) {
+              eager.push(meta);
+              continue;
+            }
+            // Named after the reference's file, without its extension, so
+            // chunk groups that match source extensions leave it alone.
+            const fileName = path.basename(meta.importId).replace(/\.[^.]*$/, "");
+            const moduleId = `${RESOLVED_CLIENT_REFERENCE_MODULE_PREFIX}${meta.referenceKey}/${fileName}`;
+            referenceModules.set(moduleId, generateClientReferenceModule([meta], loaderPath));
+            moduleKeys.set(moduleId, [meta.referenceKey]);
+            meta.groupChunkId = moduleId;
+          }
+          if (eager.length > 0) {
+            referenceModules.set(
+              RESOLVED_EAGER_CLIENT_REFERENCES_ID,
+              generateClientReferenceModule(eager, loaderPath),
+            );
+          }
+          referenceModules.set(
+            RESOLVED_CLIENT_REFERENCE_CHUNKS_ID,
+            generateClientReferenceChunksModule([...moduleKeys.keys()].sort()),
+          );
+          // Vite drops entry exports in app client builds; keep the imports.
           this.emitFile({
             type: "chunk",
-            id: CLIENT_REFERENCE_REGISTRY_ID,
+            id: CLIENT_REFERENCE_CHUNKS_ID,
             preserveSignature: "strict",
           });
-          return { code: LAZY_CLIENT_REFERENCES_MODULE, map: null };
+          options.onClientReferenceModules?.(moduleKeys);
+          return {
+            code: generateBrowserClientReferencesModule(loaderPath, eager.length > 0),
+            map: null,
+          };
         }
-        return { code: loaders + routeClientReferencesExport, map: null };
+        return {
+          code: generateClientReferenceLoaders(metas) + routeClientReferencesExport,
+          map: null,
+        };
       },
     },
     async renderChunk(code, _chunk, _outputOptions, meta) {

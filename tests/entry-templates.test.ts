@@ -2511,7 +2511,7 @@ describe("App Router entry templates", () => {
       hasServerActions: false,
     });
 
-    expect(code).toContain('from "@vitejs/plugin-rsc/react/rsc"');
+    expect(code).not.toContain('"@vitejs/plugin-rsc/rsc"');
     expect(code).not.toContain("app-server-action-execution.js");
     expect(code).not.toContain("decodeAction,");
     expect(code).not.toContain("decodeFormState,");
@@ -2602,9 +2602,7 @@ describe("App Router entry templates", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
 
     expect(code).toContain("createRscRenderer");
-    expect(code).toContain(
-      "const renderToReadableStream = createRscRenderer(_renderToReadableStream",
-    );
+    expect(code).toContain("const renderToReadableStream = createRscRenderer(");
     expect(code).not.toContain("const _hlFixRe =");
   });
 });
