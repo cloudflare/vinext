@@ -107,6 +107,35 @@ function loadHybridClientRouteOwnerModule(): Promise<HybridClientRouteOwnerModul
     }));
 }
 
+type AppRscCacheBustingModule = typeof import("../server/app-rsc-cache-busting.js");
+type AppPrefetchModules = [
+  typeof import("../server/app-elements.js"),
+  AppRscCacheBustingModule,
+  typeof import("./internal/app-prefetch-rsc-request.js"),
+  typeof import("../server/app-rsc-render-mode.js"),
+  typeof import("../server/headers.js"),
+];
+
+let appRscCacheBustingModulePromise: Promise<AppRscCacheBustingModule> | null = null;
+let appPrefetchModulesPromise: Promise<AppPrefetchModules> | null = null;
+
+// Production builds wrap each dynamic import() in Vite's preload helper, which
+// queries the document for a CSP nonce on every call. Cache the promises so
+// each Link prefetch reuses them instead of paying that DOM scan again.
+function loadAppRscCacheBustingModule(): Promise<AppRscCacheBustingModule> {
+  return (appRscCacheBustingModulePromise ??= import("../server/app-rsc-cache-busting.js"));
+}
+
+function loadAppPrefetchModules(): Promise<AppPrefetchModules> {
+  return (appPrefetchModulesPromise ??= Promise.all([
+    import("../server/app-elements.js"),
+    loadAppRscCacheBustingModule(),
+    import("./internal/app-prefetch-rsc-request.js"),
+    import("../server/app-rsc-render-mode.js"),
+    import("../server/headers.js"),
+  ]));
+}
+
 export type LinkProps<_RouteInferType = unknown> = {
   href: string | UrlObject;
   /** URL displayed in the browser (when href is a route pattern like /user/[id]) */
@@ -366,23 +395,21 @@ function prefetchUrl(
 
         const [
           navigation,
-          { AppElementsWire },
-          rscCacheBusting,
-          { resolveAppPrefetchRscRequest },
-          {
-            APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
-            APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-          },
-          headersModule,
+          [
+            { AppElementsWire },
+            rscCacheBusting,
+            { resolveAppPrefetchRscRequest },
+            {
+              APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+              APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+            },
+            headersModule,
+          ],
           hybridRouteOwner,
           routeManifestLoaded,
         ] = await Promise.all([
           loadNavigationModule(),
-          import("../server/app-elements.js"),
-          import("../server/app-rsc-cache-busting.js"),
-          import("./internal/app-prefetch-rsc-request.js"),
-          import("../server/app-rsc-render-mode.js"),
-          import("../server/headers.js"),
+          loadAppPrefetchModules(),
           HAS_PAGES_ROUTER || HAS_CLIENT_REWRITES ? loadHybridClientRouteOwnerModule() : null,
           // getPrefetchInterceptionContext below reads the RouteManifest.
           // Without it the prefetch would miss its interception context.
@@ -745,7 +772,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   const [
     { getPrefetchCache },
     { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
-  ] = await Promise.all([loadNavigationModule(), import("../server/app-rsc-cache-busting.js")]);
+  ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
 
   let target: URL;
   try {

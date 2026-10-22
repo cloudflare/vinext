@@ -1962,6 +1962,49 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("reuses the App Router prefetch module imports across prefetches", async () => {
+    // Production builds wrap each dynamic import() in Vite's preload helper,
+    // which scans the document for a CSP nonce on every call. Re-mocking the
+    // modules after the first prefetch makes a repeated import() observable.
+    const prefetchModuleSpecifiers = [
+      "../packages/vinext/src/server/app-elements.js",
+      "../packages/vinext/src/server/app-rsc-cache-busting.js",
+      "../packages/vinext/src/shims/internal/app-prefetch-rsc-request.js",
+      "../packages/vinext/src/server/app-rsc-render-mode.js",
+      "../packages/vinext/src/server/headers.js",
+    ];
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+    const { invalidatePrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks();
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+
+      const reimported = vi.fn();
+      for (const specifier of prefetchModuleSpecifiers) {
+        vi.doMock(specifier, async () => {
+          reimported(specifier);
+          return vi.importActual(specifier);
+        });
+      }
+
+      invalidatePrefetchCache();
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(2);
+      expect(reimported).not.toHaveBeenCalled();
+    } finally {
+      for (const specifier of prefetchModuleSpecifiers) vi.doUnmock(specifier);
+      result.restoreNodeEnv();
+    }
+  });
+
   it("defers a visible dynamic full-render Link to intent after the prefetch cache is invalidated", async () => {
     // A dynamically rendered route without a loading boundary prefetches a full
     // page render, and a search-param href prefetches the page with empty
