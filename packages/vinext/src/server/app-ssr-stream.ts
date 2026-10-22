@@ -323,6 +323,10 @@ export function createRscEmbedTransform(
  * HTML spec requires as="style" for <link rel="preload">.
  */
 export function fixPreloadAs(html: string): string {
+  // React's own stylesheet preloads already use as="style" (Flight hints are
+  // normalized in rsc-stream-hints.ts), so this rarely matches. Skip the tag
+  // scan and return the same string when there is nothing to replace.
+  if (!html.includes(' as="stylesheet"')) return html;
   return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) =>
     tag.replace(' as="stylesheet"', ' as="style"'),
   );
@@ -560,6 +564,50 @@ const HEAD_OPEN_RE = /<head\b[^>]*>/;
  * (see `createMoveSuffixStream` and `CLOSE_TAG`)
  */
 const DOCUMENT_CLOSE_SUFFIX = "</body></html>";
+const DOCUMENT_CLOSE_SUFFIX_BYTES = new TextEncoder().encode(DOCUMENT_CLOSE_SUFFIX);
+const HEAD_CLOSE_BYTES = new TextEncoder().encode("</head>");
+
+/**
+ * Whether `chunks` end partway through a UTF-8 character, i.e. whether a
+ * streaming TextDecoder may still be holding back their last bytes. Errs
+ * towards true: when the batch has too few bytes to tell, the previous
+ * batch's answer carries over.
+ */
+function endsWithIncompleteUtf8Character(
+  chunks: readonly Uint8Array[],
+  previousBatchEndedIncomplete: boolean,
+): boolean {
+  let continuationBytes = 0;
+  for (let chunkIndex = chunks.length - 1; chunkIndex >= 0; chunkIndex--) {
+    const chunk = chunks[chunkIndex];
+    for (let index = chunk.byteLength - 1; index >= 0; index--) {
+      const byte = chunk[index];
+      if ((byte & 0xc0) !== 0x80) {
+        const length = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+        return continuationBytes + 1 < length;
+      }
+      // A character has at most three continuation bytes.
+      if (++continuationBytes === 3) return false;
+    }
+  }
+  return previousBatchEndedIncomplete;
+}
+
+/**
+ * Find an ASCII `pattern` in UTF-8 `bytes`, starting at `from`. ASCII bytes
+ * never occur inside a multi-byte character, so every byte match is a match
+ * in the decoded text too.
+ */
+function indexOfAsciiBytes(bytes: Uint8Array, pattern: Uint8Array, from: number): number {
+  const last = bytes.byteLength - pattern.byteLength;
+  search: for (let index = from; index <= last; index++) {
+    for (let offset = 0; offset < pattern.byteLength; offset++) {
+      if (bytes[index + offset] !== pattern[offset]) continue search;
+    }
+    return index;
+  }
+  return -1;
+}
 
 /**
  * Create the tick-buffered HTML transform that injects RSC scripts between
@@ -604,6 +652,11 @@ export function createTickBufferedTransform(
   let preHeadInjected = false;
   let suffixStripped = false;
   let buffered: string[] = [];
+  // Fizz's bytes for `buffered`, kept so text the transform leaves unchanged
+  // can be forwarded without re-encoding it. Unused with inline CSS, which
+  // may rewrite any batch.
+  let bufferedBytes: Uint8Array[] = [];
+  let decoderMayHoldBytes = false;
   let pendingHtml = "";
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   // Computed once at transform creation: every flush is a hot path, so we
@@ -611,6 +664,52 @@ export function createTickBufferedTransform(
   // split-link boundary buffering and the inline-css link rewrite below.
   const hasInlineCssManifest =
     inlineCssManifest !== undefined && Object.keys(inlineCssManifest).length > 0;
+
+  /**
+   * Return this batch's bytes when they are exactly the UTF-8 encoding of its
+   * decoded text, so they can stand in for re-encoding that text. That needs
+   * the batch to start and end on character boundaries (the decoder holds no
+   * bytes across it) and to contain no invalid UTF-8, which the decoder would
+   * have replaced with U+FFFD.
+   */
+  const takeBufferedBytes = (html: string): Uint8Array | null => {
+    if (hasInlineCssManifest) return null;
+    const chunks = bufferedBytes;
+    bufferedBytes = [];
+    const startsMidCharacter = decoderMayHoldBytes;
+    decoderMayHoldBytes = endsWithIncompleteUtf8Character(chunks, decoderMayHoldBytes);
+    if (startsMidCharacter || decoderMayHoldBytes || html.includes("\uFFFD")) return null;
+    return chunks.length === 1 ? chunks[0] : concatUint8Arrays(chunks);
+  };
+
+  /**
+   * Byte form of `stripDocumentCloseSuffix(html.slice(htmlStart))` for a batch
+   * whose bytes encode `html`: returns the bytes from `byteStart` (the byte
+   * offset of `htmlStart`) with the first suffix removed.
+   */
+  const stripDocumentCloseSuffixBytes = (
+    bytes: Uint8Array,
+    byteStart: number,
+    html: string,
+    htmlStart: number,
+  ): Uint8Array => {
+    const rest = bytes.subarray(byteStart);
+    if (suffixStripped) return rest;
+    const index = html.indexOf(DOCUMENT_CLOSE_SUFFIX, htmlStart);
+    if (index === -1) return rest;
+    suffixStripped = true;
+    // UTF-8 never takes fewer bytes than UTF-16 code units, so the suffix's
+    // byte offset is at least this, and the first byte match from here is it.
+    const byteIndex = indexOfAsciiBytes(
+      bytes,
+      DOCUMENT_CLOSE_SUFFIX_BYTES,
+      byteStart + index - htmlStart,
+    );
+    const before = bytes.subarray(byteStart, byteIndex);
+    const after = bytes.subarray(byteIndex + DOCUMENT_CLOSE_SUFFIX_BYTES.byteLength);
+    // React writes the suffix last, so usually nothing follows it.
+    return after.byteLength === 0 ? before : concatUint8Arrays([before, after]);
+  };
 
   /**
    * Strip the first occurrence of `</body></html>` from `chunk` so it can be
@@ -657,16 +756,19 @@ export function createTickBufferedTransform(
    * the existing `</head>` injection path. In practice React Fizz emits the
    * opening shell as a single batch.
    */
-  const spliceAfterHeadOpen = (chunk: string): { chunk: string; spliced: boolean } => {
-    if (preHeadInjected) return { chunk, spliced: false };
+  const spliceAfterHeadOpen = (
+    chunk: string,
+  ): { chunk: string; spliced: boolean; insertionEnd: number } => {
+    if (preHeadInjected) return { chunk, spliced: false, insertionEnd: 0 };
     const insertion = readPreHeadInsertion();
-    if (!insertion) return { chunk, spliced: false };
+    if (!insertion) return { chunk, spliced: false, insertionEnd: 0 };
     const match = HEAD_OPEN_RE.exec(chunk);
-    if (!match) return { chunk, spliced: false };
+    if (!match) return { chunk, spliced: false, insertionEnd: 0 };
     const insertAt = match.index + match[0].length;
     return {
       chunk: chunk.slice(0, insertAt) + insertion + chunk.slice(insertAt),
       spliced: true,
+      insertionEnd: insertAt + insertion.length,
     };
   };
 
@@ -678,6 +780,7 @@ export function createTickBufferedTransform(
     const rawHtml = pendingHtml + buffered.join("");
     buffered = [];
     pendingHtml = "";
+    const rawBytes = takeBufferedBytes(rawHtml);
 
     const split =
       final || !hasInlineCssManifest
@@ -708,17 +811,38 @@ export function createTickBufferedTransform(
     }
 
     let working = inlineCssResult.html;
+    // While `working` is still Fizz's text, its bytes are forwarded instead of
+    // re-encoding it; only HTML the transform splices in is encoded.
+    const unchangedBytes = working === rawHtml ? rawBytes : null;
+    // Where Fizz's text resumes in `working` after a pre-head splice.
+    let rawTextStart = 0;
     if (!preHeadInjected) {
       const result = spliceAfterHeadOpen(working);
       if (result.spliced) {
         working = result.chunk;
         preHeadInjected = true;
+        rawTextStart = result.insertionEnd;
       }
     }
     if (!injected) {
       const headEnd = working.indexOf("</head>");
       if (headEnd !== -1) {
         const before = working.slice(0, headEnd);
+        if (unchangedBytes && headEnd >= rawTextStart) {
+          // Encode the head with its insertions; forward the bytes from
+          // `</head>` on. A text offset is a lower bound for its byte offset
+          // (see stripDocumentCloseSuffixBytes).
+          const rawHeadEnd = headEnd - (working.length - rawHtml.length);
+          const byteHeadEnd = indexOfAsciiBytes(unchangedBytes, HEAD_CLOSE_BYTES, rawHeadEnd);
+          controller.enqueue(
+            encoder.encode(before + readInlineCssPrependFallback() + readInsertion()),
+          );
+          controller.enqueue(
+            stripDocumentCloseSuffixBytes(unchangedBytes, byteHeadEnd, rawHtml, rawHeadEnd),
+          );
+          injected = true;
+          return;
+        }
         const after = stripDocumentCloseSuffix(working.slice(headEnd));
         controller.enqueue(
           encoder.encode(before + readInlineCssPrependFallback() + readInsertion() + after),
@@ -726,6 +850,11 @@ export function createTickBufferedTransform(
         injected = true;
         return;
       }
+    } else if (unchangedBytes && rawTextStart === 0) {
+      // Only after `</head>`: earlier batches stay on the text path, which
+      // drops a leading byte order mark the way the decoder does.
+      controller.enqueue(stripDocumentCloseSuffixBytes(unchangedBytes, 0, rawHtml, 0));
+      return;
     }
     working = stripDocumentCloseSuffix(working);
     controller.enqueue(encoder.encode(working));
@@ -734,6 +863,7 @@ export function createTickBufferedTransform(
   return new TransformStream<Uint8Array, Uint8Array>({
     transform(chunk, controller) {
       buffered.push(decoder.decode(chunk, { stream: true }));
+      if (!hasInlineCssManifest) bufferedBytes.push(chunk);
 
       if (timeoutId !== null) return;
 

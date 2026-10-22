@@ -754,6 +754,218 @@ describe("createTickBufferedTransform pre-head splice", () => {
   });
 });
 
+/**
+ * Pipe chunks through `createTickBufferedTransform`, one source tick per entry
+ * of `ticks`, with an RSC embed that emits a numbered script at every flush.
+ */
+async function runTickedTransform(
+  ticks: (string | Uint8Array)[][],
+  options: {
+    injectHTML?: string | (() => string);
+    injectAfterHeadOpenHTML?: string;
+    inlineCss?: Record<string, string>;
+  } = {},
+): Promise<Uint8Array[]> {
+  let flushes = 0;
+  const rscEmbed = {
+    flush: () => `<script>rsc(${++flushes})</script>`,
+    finalize: async () => "<script>done()</script>",
+    getRawBuffer: async () => new ArrayBuffer(0),
+  };
+  const encoder = new TextEncoder();
+  const source = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let index = 0;
+      const enqueueNext = (): void => {
+        const tick = ticks[index++];
+        if (tick === undefined) {
+          controller.close();
+          return;
+        }
+        for (const chunk of tick) {
+          controller.enqueue(typeof chunk === "string" ? encoder.encode(chunk) : chunk);
+        }
+        setTimeout(enqueueNext, 5);
+      };
+      enqueueNext();
+    },
+  });
+  const reader = source
+    .pipeThrough(
+      createTickBufferedTransform(
+        rscEmbed,
+        options.injectHTML,
+        options.injectAfterHeadOpenHTML,
+        options.inlineCss,
+      ),
+    )
+    .getReader();
+  const out: Uint8Array[] = [];
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) return out;
+    out.push(value);
+  }
+}
+
+/**
+ * Run `ticks` through the transform and through its text path, which an
+ * inline CSS manifest forces, and expect the same bytes from both.
+ */
+async function runTickedTransformMatchingTextPath(
+  ticks: (string | Uint8Array)[][],
+  options: { insertPerFlush?: boolean; injectAfterHeadOpenHTML?: string } = {},
+): Promise<string> {
+  const makeOptions = () => {
+    // Server-inserted HTML numbered per call, restarting for each run.
+    let insertions = 0;
+    return {
+      injectHTML: options.insertPerFlush ? () => `<style>s${++insertions}</style>` : undefined,
+      injectAfterHeadOpenHTML: options.injectAfterHeadOpenHTML,
+    };
+  };
+  const bytes = concatUint8Arrays(await runTickedTransform(ticks, makeOptions()));
+  const textPathBytes = concatUint8Arrays(
+    await runTickedTransform(ticks, {
+      ...makeOptions(),
+      inlineCss: { "/never-linked.css": "a{}" },
+    }),
+  );
+  expect(bytes).toEqual(textPathBytes);
+  return new TextDecoder().decode(bytes);
+}
+
+describe("createTickBufferedTransform byte pass-through", () => {
+  it("forwards Fizz's bytes after the head instead of re-encoding them", async () => {
+    const body = new TextEncoder().encode("<p>body</p>");
+    const out = await runTickedTransform([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      [body],
+      ["</body></html>"],
+    ]);
+
+    // The body batch is emitted as a view of the source chunk's buffer.
+    expect(out.some((chunk) => chunk.buffer === body.buffer)).toBe(true);
+    expect(new TextDecoder().decode(concatUint8Arrays(out))).toBe(
+      "<!DOCTYPE html><html><head></head><body><script>rsc(1)</script><p>body</p>" +
+        "<script>rsc(2)</script><script>rsc(3)</script><script>done()</script></body></html>",
+    );
+  });
+
+  it("keeps multi-byte characters split across chunks and ticks whole", async () => {
+    // "<p>caf" é " " ✓ " " 😀 "</p>": é is bytes 6-7, ✓ 9-11, 😀 13-16.
+    const bytes = new TextEncoder().encode("<p>café ✓ 😀</p>");
+    const out = await runTickedTransformMatchingTextPath([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      [bytes.subarray(0, 7), bytes.subarray(7, 9)],
+      [bytes.subarray(9, 15)],
+      [bytes.subarray(15), "</body></html>"],
+    ]);
+
+    expect(out).toBe(
+      "<!DOCTYPE html><html><head></head><body><script>rsc(1)</script><p>café " +
+        "<script>rsc(2)</script>✓ <script>rsc(3)</script>😀</p><script>rsc(4)</script>" +
+        "<script>done()</script></body></html>",
+    );
+  });
+
+  it("splices the head of a single-batch document whose text and byte offsets differ", async () => {
+    const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+    const html = new TextEncoder().encode(
+      "<!DOCTYPE html><html><head><title>Café ✓ 😀</title></head><body><p>ü</p></body></html>",
+    );
+    const out = await runTickedTransformMatchingTextPath([[concatUint8Arrays([bom, html])]], {
+      insertPerFlush: true,
+      injectAfterHeadOpenHTML: "<script>pre()</script>",
+    });
+
+    // The decoder drops the byte order mark, and so does the output.
+    expect(out).toBe(
+      "<!DOCTYPE html><html><head><script>pre()</script><title>Café ✓ 😀</title>" +
+        "<style>s1</style></head><body><p>ü</p><script>rsc(1)</script><style>s2</style>" +
+        "<script>done()</script></body></html>",
+    );
+  });
+
+  it("emits server-inserted HTML before each forwarded batch", async () => {
+    const out = await runTickedTransformMatchingTextPath(
+      [
+        ["<!DOCTYPE html><html><head><title>Café</title></head><body>"],
+        ["<p>ünïcødé</p>"],
+        ["</body></html>"],
+      ],
+      { insertPerFlush: true },
+    );
+
+    expect(out).toBe(
+      "<!DOCTYPE html><html><head><title>Café</title><style>s1</style></head><body>" +
+        "<script>rsc(1)</script><style>s2</style><p>ünïcødé</p><script>rsc(2)</script>" +
+        "<style>s3</style><script>rsc(3)</script><style>s4</style><script>done()</script>" +
+        "</body></html>",
+    );
+  });
+
+  it("moves a document close suffix split across chunks of one batch to the end", async () => {
+    const out = await runTickedTransformMatchingTextPath([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      ["<p>ü</p></bo", "dy></html>"],
+    ]);
+
+    expect(out).toBe(
+      "<!DOCTYPE html><html><head></head><body><script>rsc(1)</script><p>ü</p>" +
+        "<script>rsc(2)</script><script>done()</script></body></html>",
+    );
+  });
+
+  it("matches the text path for a document close suffix split across batches", async () => {
+    await runTickedTransformMatchingTextPath([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      ["<p>ü</p></bo"],
+      ["dy></html>"],
+    ]);
+  });
+
+  it('still rewrites a late preload with as="stylesheet"', async () => {
+    const out = await runTickedTransformMatchingTextPath([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      ['<link rel="preload" href="/late.css" as="stylesheet"/><p>ü</p>'],
+      ["</body></html>"],
+    ]);
+
+    expect(out).toContain('<link rel="preload" href="/late.css" as="style"/><p>ü</p>');
+  });
+
+  it("replaces invalid UTF-8 with U+FFFD like the text path", async () => {
+    const out = await runTickedTransformMatchingTextPath([
+      ["<!DOCTYPE html><html><head></head><body>"],
+      [new Uint8Array([0x3c, 0x70, 0x3e, 0xff, 0x3c, 0x2f, 0x70, 0x3e])],
+      ["</body></html>"],
+    ]);
+
+    expect(out).toContain("<p>\uFFFD</p>");
+  });
+
+  it("inlines a late stylesheet link when an inline CSS manifest is present", async () => {
+    const out = new TextDecoder().decode(
+      concatUint8Arrays(
+        await runTickedTransform(
+          [
+            ["<!DOCTYPE html><html><head></head><body>"],
+            ['<link rel="stylesheet" href="/late.css" data-precedence="default"/><p>ü</p>'],
+            ["</body></html>"],
+          ],
+          { inlineCss: { "/late.css": "p{color:red}" } },
+        ),
+      ),
+    );
+
+    expect(out).toContain(
+      '<style data-vinext-inline-css data-precedence="default" data-href="/late.css">' +
+        "p{color:red}</style><p>ü</p>",
+    );
+  });
+});
+
 describe("createTickBufferedTransform inline CSS", () => {
   it("replaces React stylesheet links with hoistable inline style tags", async () => {
     const out = await runTransform(
