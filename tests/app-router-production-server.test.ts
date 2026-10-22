@@ -2401,7 +2401,12 @@ describe("App Router Production server (startProdServer)", () => {
     const html = await response.text();
     // Count title elements like Next's cheerio assertion does: the inline RSC
     // payload scripts carry the same markup as text.
-    const markup = html.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, "");
+    const markup = html
+      .split("<script")
+      .map((part, index) =>
+        index === 0 ? part : part.slice(part.indexOf("</script>") + "</script>".length),
+      )
+      .join("");
     expect(markup.match(/<title>/g) ?? []).toHaveLength(1);
     expect(markup).toContain("<title>Streamed not-found metadata</title>");
 
