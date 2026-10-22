@@ -4656,9 +4656,10 @@ describe("app page route wiring helpers", () => {
       );
       if (!groupBoundary) throw new Error("Expected the built-in page inside the group layout");
       expect(findSlotById(groupBoundary.props.children, "layout:/(shop)/cart")).not.toBeNull();
-      // Built-in pages clear when the visible pathname changes.
-      expect(rootBoundary.props.resetKey).toBeUndefined();
-      expect(groupBoundary.props.resetKey).toBeUndefined();
+      // Like every access boundary, a built-in page clears when the visible
+      // pathname or the segment below it changes.
+      expect(rootBoundary.props.resetKey).toBe(JSON.stringify(["(shop)"]));
+      expect(groupBoundary.props.resetKey).toBe(JSON.stringify(["(shop)", "cart"]));
       const cartLayoutSlot = findSlotById(routeEntry, "layout:/(shop)/cart");
       if (!cartLayoutSlot) throw new Error("Expected the cart layout slot");
       expect(findElementByTypeName(cartLayoutSlot.props.children, boundaryTypeName)).toBeNull();
