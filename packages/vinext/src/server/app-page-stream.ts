@@ -276,7 +276,7 @@ type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
 };
 
 /** The page's document, rendered with the slot boundaries that caught its shell error. */
-export type AppPageCaughtShellErrorDocument = {
+type AppPageCaughtShellErrorDocument = {
   htmlStream: ReadableStream<Uint8Array>;
   /** React-emitted preload `Link` header (already capped). */
   linkHeader?: string;
