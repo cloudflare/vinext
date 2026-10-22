@@ -1,7 +1,7 @@
 /// <reference types="@vitejs/plugin-rsc/types" />
 
 import "./server-globals.js";
-import type { ReactNode } from "react";
+import type { ReactElement, ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
 import { preinitModule } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
@@ -766,21 +766,62 @@ export async function handleSsr(
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
+        // Fizz has no error boundaries, so a parallel slot's notFound() rejects
+        // the shell. The root to render the document again with, from the same
+        // payload, with the slot boundaries that catch it on the client
+        // rendering their fallback, or null when any copy isn't caught in its
+        // slot. No server component runs again.
+        const prepareCaughtNotFoundRoot = (error: unknown): ReactElement | null => {
+          const caughtNotFoundBoundaries =
+            options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+          if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
+          beforeInteractiveInlineScripts.length = 0;
+          clearServerInsertedHTML();
+          resetStreamedClientReferences(streamedReferences, routeReferences);
+          // Decode the payload again inside this render, so that it hints the
+          // client references' stylesheets and modules to this document, like
+          // the render it replaces.
+          const replayedRscStream = rscEmbed.replay();
+          if (replayedRscStream) {
+            ssrStream = replayedRscStream;
+            flightRoot = null;
+          }
+          const boundaries: CaughtNotFoundBoundaries = {
+            ids: new Set(caughtNotFoundBoundaries),
+            rendered: new Set(),
+          };
+          caughtBoundaries = boundaries;
+          return withCaughtNotFoundBoundaries(boundaries, ssrRoot);
+        };
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
-          const htmlAbortController = new AbortController();
-          const pendingHtml = runWithStreamedClientReferences(streamedReferences, () =>
-            prerender(ssrRoot, {
-              ...renderOptions,
-              signal: htmlAbortController.signal,
-            }),
-          );
-          // Known limitation: unlike Next.js, nothing waits for modules that are
-          // still loading. A next/dynamic() without `loading` whose import is
-          // pending here has no Suspense boundary of its own, so it suspends to
-          // the nearest one; with no loading.js above it, the shell is empty.
-          setTimeout(() => htmlAbortController.abort(), 0);
-          htmlStream = (await pendingHtml).prelude;
+          const prerenderFallbackShell = async (
+            root: ReactElement,
+          ): Promise<ReadableStream<Uint8Array>> => {
+            const htmlAbortController = new AbortController();
+            const pendingHtml = runWithStreamedClientReferences(streamedReferences, () =>
+              prerender(root, {
+                ...renderOptions,
+                signal: htmlAbortController.signal,
+              }),
+            );
+            // Known limitation: unlike Next.js, nothing waits for modules that
+            // are still loading. A next/dynamic() without `loading` whose import
+            // is pending here has no Suspense boundary of its own, so it
+            // suspends to the nearest one; with no loading.js above it, the
+            // shell is empty.
+            setTimeout(() => htmlAbortController.abort(), 0);
+            return (await pendingHtml).prelude;
+          };
+          try {
+            htmlStream = await prerenderFallbackShell(ssrRoot);
+          } catch (error) {
+            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            if (!caughtRoot) throw error;
+            // A slot's not-found boundary that throws replaces the 404.
+            htmlStream = await prerenderFallbackShell(caughtRoot);
+            caughtShellError = error;
+          }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
           try {
@@ -800,36 +841,12 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            const caughtNotFoundBoundaries =
-              options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
-            if (caughtNotFoundBoundaries && caughtNotFoundBoundaries.length > 0) {
-              // Fizz has no error boundaries, so a parallel slot's notFound()
-              // rejected the shell. Render the document again from the same
-              // decoded payload, with the slot boundaries that catch it on the
-              // client rendering their fallback. No server component runs again.
-              beforeInteractiveInlineScripts.length = 0;
-              clearServerInsertedHTML();
-              resetStreamedClientReferences(streamedReferences, routeReferences);
-              // Decode the payload again inside this render, so that it hints
-              // the client references' stylesheets and modules to this
-              // document, like the render it replaces.
-              const replayedRscStream = rscEmbed.replay();
-              if (replayedRscStream) {
-                ssrStream = replayedRscStream;
-                flightRoot = null;
-              }
-              const boundaries: CaughtNotFoundBoundaries = {
-                ids: new Set(caughtNotFoundBoundaries),
-                rendered: new Set(),
-              };
-              caughtBoundaries = boundaries;
+            const caughtRoot = prepareCaughtNotFoundRoot(error);
+            if (caughtRoot) {
               let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
               try {
                 caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
-                  renderToReadableStream(
-                    withCaughtNotFoundBoundaries(boundaries, ssrRoot),
-                    renderOptions,
-                  ),
+                  renderToReadableStream(caughtRoot, renderOptions),
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
               } catch (caughtRenderError) {
