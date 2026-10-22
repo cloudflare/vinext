@@ -732,13 +732,28 @@ describe("NotFoundBoundary caught in the document", () => {
         { caughtId, fallback: React.createElement("p", null, "slot not found") },
         React.createElement("p", null, "slot page"),
       );
-    const render = (caughtId?: string) =>
-      renderToString(withCaughtNotFoundBoundaries(new Set(["slot:team:/:0"]), boundary(caughtId)));
+    const caught = {
+      ids: new Set(["slot:team:/:0", "slot:team:/:1"]),
+      rendered: new Set<string>(),
+    };
+    const render = (element: React.ReactElement) =>
+      renderToString(withCaughtNotFoundBoundaries(caught, element));
 
-    expect(render("slot:team:/:0")).toContain("slot not found");
-    expect(render("slot:team:/:0")).not.toContain("slot page");
-    expect(render("slot:team:/:1")).toContain("slot page");
-    expect(render()).toContain("slot page");
+    expect(render(boundary("slot:team:/:0"))).toContain("slot not found");
+    expect(render(boundary("slot:team:/:0"))).not.toContain("slot page");
+    expect(render(boundary("slot:team:/:2"))).toContain("slot page");
+    expect(render(boundary())).toContain("slot page");
     expect(renderToString(boundary("slot:team:/:0"))).toContain("slot page");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
+
+    // A caught boundary inside another never renders, so its id isn't sent.
+    caught.rendered.clear();
+    const outer = React.createElement(
+      Boundary,
+      { caughtId: "slot:team:/:0", fallback: React.createElement("p", null, "outer not found") },
+      boundary("slot:team:/:1"),
+    );
+    expect(render(outer)).toContain("outer not found");
+    expect([...caught.rendered]).toEqual(["slot:team:/:0"]);
   });
 });

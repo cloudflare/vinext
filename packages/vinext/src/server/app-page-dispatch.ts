@@ -1090,11 +1090,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 return baseRevalidatedOnSsrError(error, undefined, undefined);
               },
               reactMaxHeadersLength: options.reactMaxHeadersLength,
-              resolveCaughtNotFoundBoundaries: (error) =>
-                resolveAppPageCaughtNotFoundBoundaries(
-                  error,
-                  rscErrorTracker.getCapturedSpecialErrors(error),
-                ),
+              // An RSC request regenerates only its RSC entry, so its shell's
+              // special error needs no document.
+              resolveCaughtNotFoundBoundaries: options.isRscRequest
+                ? undefined
+                : (error) =>
+                    resolveAppPageCaughtNotFoundBoundaries(
+                      error,
+                      rscErrorTracker.getCapturedSpecialErrors(error),
+                    ),
               async renderShellSpecialError(error, caughtDocument) {
                 const specialError = resolveAppPageShellSpecialError(
                   error,

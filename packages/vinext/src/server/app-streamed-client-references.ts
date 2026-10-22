@@ -157,6 +157,19 @@ export function createStreamedClientReferences(
   };
 }
 
+/**
+ * Forget the stylesheets a discarded render linked, so the render that
+ * replaces it links them again.
+ */
+export function resetStreamedClientReferences(
+  render: StreamedClientReferences | null,
+  route: RouteClientReferenceSet | undefined,
+): void {
+  if (!render) return;
+  render.unlinked = route?.references.filter((id) => render.streamed.has(id)) ?? [];
+  render.linkedStylesheets.clear();
+}
+
 /** Run a render, and the Flight stream it reads, with its streamed references. */
 export function runWithStreamedClientReferences<R>(
   render: StreamedClientReferences | null,

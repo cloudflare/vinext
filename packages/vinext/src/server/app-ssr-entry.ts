@@ -30,6 +30,7 @@ import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
   CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL,
   withCaughtNotFoundBoundaries,
+  type CaughtNotFoundBoundaries,
 } from "vinext/shims/caught-not-found-boundaries";
 import {
   BeforeInteractiveContext,
@@ -71,6 +72,7 @@ import {
 } from "./app-client-reference-preloader.js";
 import {
   createStreamedClientReferences,
+  resetStreamedClientReferences,
   renderStreamedStylesheets,
   runWithStreamedClientReferences,
   wrapClientReferenceRequire,
@@ -762,7 +764,7 @@ export async function handleSsr(
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
         let caughtShellError: unknown;
-        let caughtNotFoundBoundaries: readonly string[] | null = null;
+        let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
@@ -798,7 +800,8 @@ export async function handleSsr(
             htmlStream = streamingHtmlStream;
           } catch (error) {
             void streamingHtmlStream?.cancel().catch(() => {});
-            caughtNotFoundBoundaries = options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
+            const caughtNotFoundBoundaries =
+              options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
             if (caughtNotFoundBoundaries && caughtNotFoundBoundaries.length > 0) {
               // Fizz has no error boundaries, so a parallel slot's notFound()
               // rejected the shell. Render the document again from the same
@@ -806,12 +809,25 @@ export async function handleSsr(
               // client rendering their fallback. No server component runs again.
               beforeInteractiveInlineScripts.length = 0;
               clearServerInsertedHTML();
-              const caughtIds = new Set(caughtNotFoundBoundaries);
+              resetStreamedClientReferences(streamedReferences, routeReferences);
+              // Decode the payload again inside this render, so that it hints
+              // the client references' stylesheets and modules to this
+              // document, like the render it replaces.
+              const replayedRscStream = rscEmbed.replay();
+              if (replayedRscStream) {
+                ssrStream = replayedRscStream;
+                flightRoot = null;
+              }
+              const boundaries: CaughtNotFoundBoundaries = {
+                ids: new Set(caughtNotFoundBoundaries),
+                rendered: new Set(),
+              };
+              caughtBoundaries = boundaries;
               let caughtHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
               try {
                 caughtHtmlStream = await runWithStreamedClientReferences(streamedReferences, () =>
                   renderToReadableStream(
-                    withCaughtNotFoundBoundaries(caughtIds, ssrRoot),
+                    withCaughtNotFoundBoundaries(boundaries, ssrRoot),
                     renderOptions,
                   ),
                 );
@@ -909,10 +925,10 @@ export async function handleSsr(
             options?.formState ?? null,
             insertedHTML +
               errorMetaHTML +
-              (caughtShellError === undefined
+              (caughtBoundaries === null
                 ? ""
                 : createInlineScriptTag(
-                    `self.${CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL}=${safeJsonStringify(caughtNotFoundBoundaries)}`,
+                    `self.${CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL}=${safeJsonStringify([...caughtBoundaries.rendered])}`,
                     options?.scriptNonce,
                   )) +
               getTraceMetaHTML() +

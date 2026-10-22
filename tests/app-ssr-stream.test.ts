@@ -167,6 +167,33 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(finalScripts.match(/self\.__next_f=self\.__next_f\|\|\[\]/g)).toHaveLength(1);
   });
 
+  it("replays the stream from its start to a render that replaces one that read it", async () => {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(new TextEncoder().encode("first"));
+      },
+    });
+    const transform = createRscEmbedTransform(stream, { mirrorNextFlight: () => false });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const replayed = transform.replay();
+    streamController.enqueue(new TextEncoder().encode("second"));
+    streamController.close();
+
+    expect(await new Response(replayed).text()).toBe("firstsecond");
+    expect(await new Response(transform.replay()).text()).toBe("firstsecond");
+    expect(transform.flush()).toContain('.rsc.push("firstsecond")');
+  });
+
+  it("can't replay once the raw bytes are released", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]));
+    await transform.getRawBuffer();
+
+    expect(transform.replay()).toBeNull();
+  });
+
   it("starts mirroring mid-stream once asked, replaying the chunks already embedded", async () => {
     let streamController!: ReadableStreamDefaultController<Uint8Array>;
     const stream = new ReadableStream<Uint8Array>({

@@ -20,6 +20,14 @@ type RscEmbedTransform = {
   getRawBuffer(): Promise<ArrayBuffer>;
 };
 
+type ReplayableRscEmbedTransform = RscEmbedTransform & {
+  /**
+   * The embed stream again from its start, for a render that replaces one
+   * that already read it, or null once its bytes are released.
+   */
+  replay(): ReadableStream<Uint8Array> | null;
+};
+
 type RscEmbedTransformOptions = {
   /**
    * Mirror inline Flight chunks into Next.js's `self.__next_f` transport. A
@@ -171,7 +179,7 @@ function createNextFlightCleanupScript(): string {
 export function createRscEmbedTransform(
   embedStream: ReadableStream<Uint8Array>,
   optionsOrNonce: RscEmbedTransformOptions | string = {},
-): RscEmbedTransform {
+): ReplayableRscEmbedTransform {
   const options =
     typeof optionsOrNonce === "string" ? { scriptNonce: optionsOrNonce } : optionsOrNonce;
   const reader = embedStream.getReader();
@@ -181,8 +189,12 @@ export function createRscEmbedTransform(
   // that starts mid-stream.
   let embeddedRawChunkCount = 0;
   let rawBufferTaken = false;
+  let rawChunksReleased = false;
   let finalized = false;
   let reading = false;
+  let readDone = false;
+  let readError: { error: unknown } | null = null;
+  const replays: ReadableStreamDefaultController<Uint8Array>[] = [];
   let mirroredNextFlightBootstrap = false;
   const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
@@ -199,7 +211,10 @@ export function createRscEmbedTransform(
   function releaseRawChunks(): void {
     const mayStartMirror =
       typeof options.mirrorNextFlight === "function" && !mirroredNextFlightBootstrap && !finalized;
-    if (rawBufferTaken && !mayStartMirror) rawChunks.length = 0;
+    if (rawBufferTaken && !mayStartMirror) {
+      rawChunks.length = 0;
+      rawChunksReleased = true;
+    }
   }
 
   function startNextFlightMirror(): string {
@@ -228,12 +243,17 @@ export function createRscEmbedTransform(
         const result = await reader.read();
         if (result.done) break;
         rawChunks.push(result.value);
+        for (const replay of replays) replay.enqueue(result.value);
         pendingChunks.push(decodeChunk(result.value));
       }
+      readDone = true;
+      for (const replay of replays.splice(0)) replay.close();
     } catch (error) {
       if (process.env.NODE_ENV !== "production") {
         console.warn("[vinext] RSC embed stream read error:", error);
       }
+      readError = { error };
+      for (const replay of replays.splice(0)) replay.error(error);
       throw error;
     } finally {
       reading = false;
@@ -313,6 +333,26 @@ export function createRscEmbedTransform(
       rawBufferTaken = true;
       releaseRawChunks();
       return buffer.buffer;
+    },
+
+    replay(): ReadableStream<Uint8Array> | null {
+      if (rawChunksReleased) return null;
+      let replayController: ReadableStreamDefaultController<Uint8Array> | undefined;
+      return new ReadableStream<Uint8Array>({
+        start(controller) {
+          for (const chunk of rawChunks) controller.enqueue(chunk);
+          if (readError) controller.error(readError.error);
+          else if (readDone) controller.close();
+          else {
+            replayController = controller;
+            replays.push(controller);
+          }
+        },
+        cancel() {
+          const index = replayController ? replays.indexOf(replayController) : -1;
+          if (index !== -1) replays.splice(index, 1);
+        },
+      });
     },
   };
 }

@@ -5,7 +5,9 @@
  * from the same Flight payload, with the boundaries that would have caught it
  * on the client rendering their fallback (Next.js renders them in the browser
  * after an empty error shell). The browser reads the same ids from
- * `self.__VINEXT_CAUGHT_NOT_FOUND__`, so those boundaries hydrate caught.
+ * `self.__VINEXT_CAUGHT_NOT_FOUND__`, so those boundaries hydrate caught. Only
+ * the boundaries the document rendered are sent, since one inside another
+ * caught boundary never mounts to consume its id.
  *
  * Stored on a global symbol so duplicate module instances share one context,
  * and null in react-server, which has no createContext.
@@ -18,35 +20,45 @@ const CAUGHT_NOT_FOUND_BOUNDARIES_CONTEXT_KEY = Symbol.for(
 
 export const CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL = "__VINEXT_CAUGHT_NOT_FOUND__";
 
+/** The boundaries that caught, and those of them the document rendered. */
+export type CaughtNotFoundBoundaries = {
+  ids: ReadonlySet<string>;
+  rendered: Set<string>;
+};
+
 type CaughtNotFoundBoundariesGlobal = typeof globalThis & {
-  [CAUGHT_NOT_FOUND_BOUNDARIES_CONTEXT_KEY]?: React.Context<ReadonlySet<string> | null>;
+  [CAUGHT_NOT_FOUND_BOUNDARIES_CONTEXT_KEY]?: React.Context<CaughtNotFoundBoundaries | null>;
   [CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL]?: string[];
 };
 
-function getCaughtNotFoundBoundariesContext(): React.Context<ReadonlySet<string> | null> | null {
+function getCaughtNotFoundBoundariesContext(): React.Context<CaughtNotFoundBoundaries | null> | null {
   if (typeof React.createContext !== "function") return null;
   const globalState = globalThis as CaughtNotFoundBoundariesGlobal;
   globalState[CAUGHT_NOT_FOUND_BOUNDARIES_CONTEXT_KEY] ??=
-    React.createContext<ReadonlySet<string> | null>(null);
+    React.createContext<CaughtNotFoundBoundaries | null>(null);
   return globalState[CAUGHT_NOT_FOUND_BOUNDARIES_CONTEXT_KEY];
 }
 
 export const CaughtNotFoundBoundariesContext = getCaughtNotFoundBoundariesContext();
 
 export function withCaughtNotFoundBoundaries(
-  ids: ReadonlySet<string>,
+  boundaries: CaughtNotFoundBoundaries,
   children: React.ReactElement,
 ): React.ReactElement {
   return CaughtNotFoundBoundariesContext
-    ? React.createElement(CaughtNotFoundBoundariesContext.Provider, { value: ids }, children)
+    ? React.createElement(CaughtNotFoundBoundariesContext.Provider, { value: boundaries }, children)
     : children;
 }
 
 /** Whether the boundary with this id caught a notFound() in the document. */
 export function useCaughtNotFoundBoundary(id: string | undefined): boolean {
-  const serverIds = React.useContext(CaughtNotFoundBoundariesContext!);
+  const serverBoundaries = React.useContext(CaughtNotFoundBoundariesContext!);
   if (id === undefined) return false;
-  if (typeof window === "undefined") return serverIds?.has(id) === true;
+  if (typeof window === "undefined") {
+    if (serverBoundaries?.ids.has(id) !== true) return false;
+    serverBoundaries.rendered.add(id);
+    return true;
+  }
   return (
     (globalThis as CaughtNotFoundBoundariesGlobal)[CAUGHT_NOT_FOUND_BOUNDARIES_GLOBAL]?.includes(
       id,
