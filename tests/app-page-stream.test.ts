@@ -458,6 +458,41 @@ describe("app page stream helpers", () => {
     await expect(result.response?.text()).resolves.toBe("special");
   });
 
+  it("sends a shell's special error with the document slot boundaries caught it in", async () => {
+    const notFoundError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+    const renderSpecialErrorResponse = vi.fn(
+      async (_specialError: unknown, caughtDocument?: { htmlStream: ReadableStream<Uint8Array> }) =>
+        new Response(caughtDocument?.htmlStream, { status: 404 }),
+    );
+
+    const result = await renderAppPageHtmlStreamWithRecovery({
+      async renderErrorBoundaryResponse() {
+        throw new Error("should not render an error boundary");
+      },
+      async renderHtmlStream() {
+        return {
+          htmlStream: createStream(["<html>caught</html>"]),
+          metadataReady: Promise.resolve(),
+          capturedRscData: null,
+          caughtShellError: notFoundError,
+          linkHeader: "</a.css>; rel=preload; as=style",
+        };
+      },
+      renderSpecialErrorResponse,
+      resolveSpecialError(error) {
+        return error === notFoundError ? { kind: "http-access-fallback", statusCode: 404 } : null;
+      },
+    });
+
+    expect(renderSpecialErrorResponse).toHaveBeenCalledWith(
+      { kind: "http-access-fallback", statusCode: 404 },
+      expect.objectContaining({ linkHeader: "</a.css>; rel=preload; as=style" }),
+    );
+    expect(result.htmlStream).toBeNull();
+    expect(result.response?.status).toBe(404);
+    await expect(result.response?.text()).resolves.toBe("<html>caught</html>");
+  });
+
   it("falls back to the error boundary response for non-special SSR failures", async () => {
     const ssrError = new Error("boom");
     const renderErrorBoundaryResponse = vi.fn(

@@ -775,21 +775,21 @@ export async function handleSsr(
           const caughtNotFoundBoundaries =
             options?.resolveCaughtNotFoundBoundaries?.(error) ?? null;
           if (!caughtNotFoundBoundaries || caughtNotFoundBoundaries.length === 0) return null;
-          beforeInteractiveInlineScripts.length = 0;
-          clearServerInsertedHTML();
-          resetStreamedClientReferences(streamedReferences, routeReferences);
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like
           // the render it replaces. A fallback shell's stays open, as its SSR
           // stream does, so the references its aborted prerender omitted stay
-          // suspended.
+          // suspended. Without the payload's bytes, the shell's error goes on
+          // to the fallback above the slot's layout.
           const replayedRscStream = rscEmbed.replay({
             keepOpen: pprFallbackShellSignal !== undefined,
           });
-          if (replayedRscStream) {
-            ssrStream = replayedRscStream;
-            flightRoot = null;
-          }
+          if (!replayedRscStream) return null;
+          ssrStream = replayedRscStream;
+          flightRoot = null;
+          beforeInteractiveInlineScripts.length = 0;
+          clearServerInsertedHTML();
+          resetStreamedClientReferences(streamedReferences, routeReferences);
           const boundaries: CaughtNotFoundBoundaries = {
             ids: new Set(caughtNotFoundBoundaries),
             rendered: new Set(),
