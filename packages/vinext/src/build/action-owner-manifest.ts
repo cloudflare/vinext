@@ -74,6 +74,8 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
         ...intercept.layoutPaths,
         ...(intercept.loadingPaths ?? []),
         intercept.notFoundPath,
+        intercept.forbiddenPath,
+        intercept.unauthorizedPath,
       ]),
     ]),
     ...route.siblingIntercepts.flatMap((intercept) => [
@@ -81,6 +83,8 @@ export function actionOwnerRouteEntryIds(route: ActionOwnerRoute): string[] {
       ...intercept.layoutPaths,
       ...(intercept.loadingPaths ?? []),
       intercept.notFoundPath,
+      intercept.forbiddenPath,
+      intercept.unauthorizedPath,
     ]),
   ].filter((value): value is string => typeof value === "string");
 }

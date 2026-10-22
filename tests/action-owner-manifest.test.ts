@@ -288,6 +288,8 @@ describe("server action owner manifest", () => {
             layoutPaths: ["/app/(.)modal/layout.tsx"],
             loadingPaths: ["/app/(.)modal/loading.tsx"],
             notFoundPath: "/app/(.)modal/not-found.tsx",
+            forbiddenPath: "/app/(.)modal/forbidden.tsx",
+            unauthorizedPath: "/app/(.)modal/unauthorized.tsx",
             pagePath: "/app/(.)modal/page.tsx",
             params: [],
             sourceMatchPattern: "/dashboard",
@@ -329,6 +331,8 @@ describe("server action owner manifest", () => {
       "/app/(.)modal/layout.tsx",
       "/app/(.)modal/loading.tsx",
       "/app/(.)modal/not-found.tsx",
+      "/app/(.)modal/forbidden.tsx",
+      "/app/(.)modal/unauthorized.tsx",
     ]);
   });
 });

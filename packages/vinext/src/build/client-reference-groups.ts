@@ -58,6 +58,8 @@ function interceptEntryIds(intercept: ClientReferenceGroupIntercept): string[] {
     ...intercept.layoutPaths,
     ...(intercept.loadingPaths ?? []),
     intercept.notFoundPath,
+    intercept.forbiddenPath,
+    intercept.unauthorizedPath,
   ].filter((value): value is string => typeof value === "string");
 }
 
