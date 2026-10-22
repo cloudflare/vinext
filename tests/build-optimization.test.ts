@@ -1074,10 +1074,10 @@ describe("optimizeDeps.exclude for vinext", () => {
     await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
 
     try {
-      const resolveIn = async (consumer: "client" | "server", id: string) => {
+      const resolveIn = async (consumer: "client" | "server", id: string, name = "ssr") => {
         const resolve = vi.fn(async (target: string) => ({ id: target }));
         const result = await (edgePlugin as any).resolveId.handler.call(
-          { environment: { config: { consumer } }, resolve },
+          { environment: { name, config: { consumer } }, resolve },
           id,
           "/app/entry.ts",
           {},
@@ -1098,7 +1098,13 @@ describe("optimizeDeps.exclude for vinext", () => {
         expect(result).toEqual({ id: `${id}.edge` });
         expect(resolve).toHaveBeenCalledWith(`${id}.edge`, "/app/entry.ts", { skipSelf: true });
       }
-      // Browser code keeps React's browser build.
+      // The Pages Router Worker environment is named after the Worker.
+      expect((await resolveIn("server", "react-dom/server", "my_worker")).result).toEqual({
+        id: "react-dom/server.edge",
+      });
+      // Server Components keep React's react-server entries, and browser code
+      // keeps React's browser build.
+      expect((await resolveIn("server", "react-dom/server", "rsc")).result).toBeUndefined();
       expect((await resolveIn("client", "react-dom/server")).result).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});

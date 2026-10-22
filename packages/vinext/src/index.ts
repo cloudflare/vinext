@@ -5499,13 +5499,20 @@ export const loadServerActionClient = ${
       // Workers render with React's edge Fizz build. React's exports map picks
       // it for `react-dom/server` and `react-dom/static` under the `workerd`
       // condition; resolve the .edge entries directly so the Worker does not
-      // depend on the Cloudflare plugin's condition list.
+      // depend on the Cloudflare plugin's condition list. The RSC environment
+      // keeps React's react-server entries, which reject these APIs.
       name: "vinext:cloudflare-react-dom-edge",
       enforce: "pre",
       resolveId: {
         filter: { id: /^react-dom\/(?:server|static)$/ },
         handler(id, importer, options) {
-          if (!hasCloudflarePlugin || this.environment?.config.consumer !== "server") return;
+          if (
+            !hasCloudflarePlugin ||
+            this.environment?.config.consumer !== "server" ||
+            this.environment.name === "rsc"
+          ) {
+            return;
+          }
           return this.resolve(`${id}.edge`, importer, { ...options, skipSelf: true });
         },
       },
