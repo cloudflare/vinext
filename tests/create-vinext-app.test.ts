@@ -120,6 +120,64 @@ afterEach(() => {
 });
 
 describe("createVinextApp", () => {
+  describe("package manager version detection", () => {
+    function setPackageManagerCommand(packageManager: string, exitCode = 0): void {
+      const binDir = path.join(tmpDir, "package manager bin");
+      fs.mkdirSync(binDir);
+      const isWindows = process.platform === "win32";
+      const command = isWindows
+        ? `@echo off\r\nif not "%~1"=="--version" exit /b 2\r\necho 11.1.1\r\nexit /b ${exitCode}\r\n`
+        : `#!/bin/sh\n[ "$1" = "--version" ] || exit 2\necho 11.1.1\nexit ${exitCode}\n`;
+      fs.writeFileSync(path.join(binDir, `${packageManager}${isWindows ? ".cmd" : ""}`), command, {
+        mode: 0o755,
+      });
+      vi.stubEnv("PATH", binDir);
+    }
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    // Next.js also uses a shell-based probe to pin package manager versions:
+    // https://github.com/vercel/next.js/blob/canary/packages/create-next-app/helpers/get-pkg-manager.ts
+    it.each(["npm", "pnpm", "yarn", "bun"] as const)(
+      "pins the %s version from its command, including Windows .cmd launchers",
+      async (packageManager) => {
+        const appPath = path.join(tmpDir, "version-app");
+        setPackageManagerCommand(packageManager);
+
+        await withQuietConsole(() =>
+          createVinextApp({
+            appPath,
+            packageManager,
+            install: false,
+            git: false,
+            initOptions: nodeInitOptions,
+          }),
+        );
+
+        expect(readPkg(appPath).packageManager).toBe(`${packageManager}@11.1.1`);
+      },
+    );
+
+    it("keeps the package manager name when its version command fails", async () => {
+      const appPath = path.join(tmpDir, "failed-version-app");
+      setPackageManagerCommand("pnpm", 1);
+
+      await withQuietConsole(() =>
+        createVinextApp({
+          appPath,
+          packageManager: "pnpm",
+          install: false,
+          git: false,
+          initOptions: nodeInitOptions,
+        }),
+      );
+
+      expect(readPkg(appPath).packageManager).toBe("pnpm");
+    });
+  });
+
   it("does not enable ISR when Cloudflare caching is declined", async () => {
     const appPath = path.join(tmpDir, "no-cache-app");
 
