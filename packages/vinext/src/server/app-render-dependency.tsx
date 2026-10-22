@@ -58,18 +58,24 @@ export function isReactOwnedAppComponent(component: unknown): boolean {
   );
 }
 
+/**
+ * `mapError` replaces an error thrown by a CSS-wrapped export's inner
+ * component, which renders after this call returns. The caller maps the
+ * errors this call throws or rejects with.
+ */
 export function invokeAppComponent(
   component: ComponentType<Record<string, unknown>>,
   props: Readonly<Record<string, unknown>>,
+  mapError?: (error: unknown) => unknown,
 ): ReactNode | Promise<ReactNode> {
   const candidate = component as AppDependencyComponent;
 
   if (candidate.$$typeof === REACT_MEMO && candidate.type) {
-    return invokeAppComponent(candidate.type, props);
+    return invokeAppComponent(candidate.type, props, mapError);
   }
 
   if (candidate.$$typeof === REACT_LAZY && candidate._init) {
-    return invokeAppComponent(candidate._init(candidate._payload), props);
+    return invokeAppComponent(candidate._init(candidate._payload), props, mapError);
   }
 
   if (candidate.$$typeof === REACT_FORWARD_REF && candidate.render) {
@@ -84,7 +90,28 @@ export function invokeAppComponent(
     props: Readonly<Record<string, unknown>>,
   ) => ReactNode | Promise<ReactNode>;
   const result = ServerComponent(props);
-  return isPromiseLike(result) ? result : invokeCssWrappedComponent(result, props);
+  return isPromiseLike(result) ? result : invokeCssWrappedComponent(result, props, mapError);
+}
+
+/**
+ * `invokeAppComponent()`, with every error the component throws or rejects
+ * with replaced by `mapError(error)`, including its CSS-wrapped inner one's.
+ */
+export function invokeAppComponentMappingErrors(
+  component: ComponentType<Record<string, unknown>>,
+  props: Readonly<Record<string, unknown>>,
+  mapError: (error: unknown) => unknown,
+): ReactNode | Promise<ReactNode> {
+  try {
+    const result = invokeAppComponent(component, props, mapError);
+    return isPromiseLike(result)
+      ? Promise.resolve(result).catch((error: unknown) => {
+          throw mapError(error);
+        })
+      : result;
+  } catch (error) {
+    throw mapError(error);
+  }
 }
 
 /**
@@ -128,6 +155,7 @@ function isElementOfProps(
 function invokeCssWrappedComponent(
   result: ReactNode,
   props: Readonly<Record<string, unknown>>,
+  mapError: ((error: unknown) => unknown) | undefined,
 ): ReactNode {
   if (
     !isValidElement<{ children?: unknown }>(result) ||
@@ -154,7 +182,9 @@ function invokeCssWrappedComponent(
   // The element's props, so the component gets its defaultProps as before.
   const componentProps = inner.props;
   function CssWrappedComponent() {
-    return invokeAppComponent(component, componentProps);
+    return mapError
+      ? invokeAppComponentMappingErrors(component, componentProps, mapError)
+      : invokeAppComponent(component, componentProps);
   }
   CssWrappedComponent.displayName = component.displayName ?? component.name;
   return createElement(Fragment, null, css, createElement(CssWrappedComponent));

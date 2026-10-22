@@ -625,6 +625,9 @@ export async function buildPageElements<
         const result = invokeAppComponent(
           PageComponent,
           withUseCachePageMarker(PageComponent, invocationProps),
+          slotLayoutIndex === undefined
+            ? undefined
+            : (error) => tagAppPageSlotError(error, slotLayoutIndex),
         );
         if (isPromiseLike(result)) {
           if (renderDependency) {

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   createAppRenderDependency,
   invokeAppComponent,
+  invokeAppComponentMappingErrors,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
 } from "../packages/vinext/src/server/app-render-dependency.js";
@@ -257,6 +258,40 @@ describe("app render dependency helpers", () => {
     expect(result.props.children[1].props).toEqual({});
     await renderHtml(result);
     expect(receivedTheme).toEqual({ mode: "dark" });
+  });
+
+  it("maps the errors a CSS-wrapped component's inner component throws or rejects with", async () => {
+    const thrown = new Error("thrown");
+    const rejected = new Error("rejected");
+    const mapError = (error: unknown) => ({ mapped: error });
+    function SyncPage(): never {
+      throw thrown;
+    }
+    async function AsyncPage(): Promise<never> {
+      throw rejected;
+    }
+    const wrapCss = (Page: (props: Record<string, unknown>) => unknown) =>
+      function CssWrapper(wrapperProps: Record<string, unknown>) {
+        return createElement(
+          Fragment,
+          null,
+          "css",
+          createElement(Page as (props: Record<string, unknown>) => null, wrapperProps),
+        );
+      };
+    const invokeInner = (Page: (props: Record<string, unknown>) => unknown) => {
+      const result = invokeAppComponentMappingErrors(wrapCss(Page), {}, mapError);
+      if (!isValidElement<{ children: [unknown, ReactElement] }>(result)) {
+        throw new Error("expected an element");
+      }
+      const Inner = result.props.children[1].type as () => unknown;
+      return Inner();
+    };
+
+    expect(() => invokeInner(SyncPage)).toThrow(
+      expect.objectContaining({ mapped: thrown }) as unknown as Error,
+    );
+    await expect(invokeInner(AsyncPage)).rejects.toEqual({ mapped: rejected });
   });
 
   it("keeps a keyed element in the fragment as rendered", () => {

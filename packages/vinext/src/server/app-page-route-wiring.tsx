@@ -44,7 +44,7 @@ import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import {
   createAppRenderDependency,
-  invokeAppComponent,
+  invokeAppComponentMappingErrors,
   isReactOwnedAppComponent,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
@@ -53,7 +53,6 @@ import {
   type AppRenderDependency,
 } from "./app-render-dependency.js";
 import { tagAppPageSlotError } from "./app-page-execution.js";
-import { isPromiseLike } from "../utils/promise.js";
 import {
   resolveAppPageBranchParams,
   resolveAppPageSegmentParamScopeKeys,
@@ -299,18 +298,10 @@ function createSlotLayoutElement(
   if (slotLayoutIndex === undefined || isReactOwnedAppComponent(LayoutComponent)) {
     return <LayoutComponent {...props} />;
   }
-  const SlotLayoutInvoker = () => {
-    try {
-      const result = invokeAppComponent(LayoutComponent, props);
-      return isPromiseLike(result)
-        ? Promise.resolve(result).catch((error: unknown) => {
-            throw tagAppPageSlotError(error, slotLayoutIndex);
-          })
-        : result;
-    } catch (error) {
-      throw tagAppPageSlotError(error, slotLayoutIndex);
-    }
-  };
+  const SlotLayoutInvoker = () =>
+    invokeAppComponentMappingErrors(LayoutComponent, props, (error) =>
+      tagAppPageSlotError(error, slotLayoutIndex),
+    );
   return <SlotLayoutInvoker />;
 }
 
