@@ -2177,6 +2177,12 @@ describe("Link prefetch scheduling", () => {
       expect(runtime.functions.pingVisibleLinks).toBe(pingVisibleLinks);
       expect(runtime.functions.navigate).toBe(result.navigate);
 
+      // A malformed function table is replaced with a valid runtime.
+      Reflect.set(runtime, "functions", null);
+      expect(() => result.mountAnotherLink("/products/1")).not.toThrow();
+      const recovered = Reflect.get(window, runtimeKey) as NavigationRuntime;
+      expect(recovered.functions.pingVisibleLinks).toBe(pingVisibleLinks);
+
       // So does a replacement runtime.
       const replacement = createTestNavigationRuntime(vi.fn(), null);
       Reflect.set(window, runtimeKey, replacement);

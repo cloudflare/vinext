@@ -852,10 +852,15 @@ function registerVisibleLinkPing(): void {
   // Registering validates the whole navigation runtime and copies its function
   // table, so skip it while the runtime that already holds this ping is still
   // the one installed on window, instead of repeating it for every Link mount.
+  // A malformed table still goes through registration, which replaces the
+  // runtime with a valid one.
+  const functions: unknown = visibleLinkPingRuntime?.functions;
   if (
     visibleLinkPingRuntime !== null &&
     Reflect.get(window, NAVIGATION_RUNTIME_KEY) === visibleLinkPingRuntime &&
-    visibleLinkPingRuntime.functions.pingVisibleLinks === pingVisibleLinkPrefetches
+    typeof functions === "object" &&
+    functions !== null &&
+    Reflect.get(functions, "pingVisibleLinks") === pingVisibleLinkPrefetches
   ) {
     return;
   }
