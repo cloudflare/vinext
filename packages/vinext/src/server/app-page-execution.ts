@@ -19,7 +19,7 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
-import { isThrownNavigationError } from "vinext/shims/navigation-errors";
+import { isHTTPAccessFallbackError, isThrownNavigationError } from "vinext/shims/navigation-errors";
 
 export type { LayoutFlags };
 
@@ -72,25 +72,21 @@ export function tagAppPageMetadataError<T>(error: T): T {
 const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLayoutIndex");
 
 export function tagAppPageSlotError<T>(error: T, layoutIndex: number): T {
-  // Slots can share one thrown error, so the tag keeps the outermost layout.
-  const taggedLayoutIndex = getAppPageSlotErrorLayoutIndex(error);
-  if (
-    error &&
-    typeof error === "object" &&
-    (taggedLayoutIndex === null || layoutIndex < taggedLayoutIndex)
-  ) {
-    try {
-      Object.defineProperty(error, APP_PAGE_SLOT_ERROR_LAYOUT_INDEX, {
-        value: layoutIndex,
-        enumerable: false,
-        configurable: true,
-        writable: false,
-      });
-    } catch {
-      // A frozen error keeps the page's fallback, as before.
-    }
-  }
-  return error;
+  // Only an HTTP access fallback reads the tag. A thrown error can be shared
+  // across slots, renders and requests (a module-scoped rejected promise), so
+  // each throw gets its own tagged copy instead of marking the shared error.
+  if (!isHTTPAccessFallbackError(error)) return error;
+  const source = error as object;
+  const tagged = Object.setPrototypeOf(
+    new Error(String(Reflect.get(source, "message"))),
+    Object.getPrototypeOf(source),
+  );
+  Object.defineProperties(tagged, {
+    ...Object.getOwnPropertyDescriptors(source),
+    stack: { value: Reflect.get(source, "stack"), configurable: true, writable: true },
+    [APP_PAGE_SLOT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+  });
+  return tagged as T;
 }
 
 function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {

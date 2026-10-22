@@ -117,17 +117,29 @@ describe("app page execution helpers", () => {
       kind: "http-access-fallback",
       statusCode: 404,
     });
-    // Slots can share one thrown error, such as a module-scoped rejected
-    // promise, so its tag keeps the outermost slot's layout.
-    const shared = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 2);
-    expect(tagAppPageSlotError(shared, 3)).toBe(shared);
-    expect(resolveAppPageShellSpecialError(decoded, [shared])).toMatchObject({
-      slotLayoutIndex: 2,
+    // Slots, renders and requests can share one thrown error, such as a
+    // module-scoped rejected promise, so each throw tags its own copy.
+    const shared = Object.freeze(Object.assign(new Error(digest), { digest }));
+    const fromRootSlot = tagAppPageSlotError(shared, 0);
+    expect(fromRootSlot).not.toBe(shared);
+    expect(fromRootSlot).toBeInstanceOf(Error);
+    expect(fromRootSlot).toMatchObject({ digest, message: digest, stack: shared.stack });
+    expect(resolveAppPageShellSpecialError(decoded, [shared])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
     });
-    expect(tagAppPageSlotError(shared, 0)).toBe(shared);
-    expect(resolveAppPageShellSpecialError(decoded, [shared, shared])).toMatchObject({
-      slotLayoutIndex: 0,
-    });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [tagAppPageSlotError(shared, 2)]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        tagAppPageSlotError(shared, 3),
+        tagAppPageSlotError(shared, 1),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 1 });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [tagAppPageSlotError(fromRootSlot, 2)]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
 
     const redirectDigest = "NEXT_REDIRECT;replace;%2Ftarget;307";
     const redirect = Object.assign(new Error(redirectDigest), { digest: redirectDigest });
