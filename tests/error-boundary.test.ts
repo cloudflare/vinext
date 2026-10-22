@@ -291,7 +291,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     });
   });
 
-  it("keeps caught errors when the semantic reset key is unchanged", () => {
+  it("resets caught errors when the pathname changes under an unchanged reset key", () => {
     expect(ErrorBoundaryInner).not.toBeNull();
     if (!ErrorBoundaryInner) {
       throw new Error("Expected ErrorBoundaryInner export");
@@ -318,7 +318,7 @@ describe("ErrorBoundary digest classification (actual class)", () => {
     );
 
     expect(state).toEqual({
-      error: { thrownValue: error },
+      error: null,
       previousPathname: "/products/next",
       previousResetKey: "product-a",
     });

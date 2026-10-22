@@ -88,25 +88,13 @@ function readBoundaryResetState(props: BoundaryResetProps): BoundaryResetState {
   };
 }
 
-function shouldResetBoundary(
-  nextResetState: BoundaryResetState,
-  previousResetState: BoundaryResetState,
-): boolean {
-  const nextResetKey = normalizeBoundaryResetKey(nextResetState.previousResetKey);
-  const previousResetKey = normalizeBoundaryResetKey(previousResetState.previousResetKey);
-
-  if (nextResetKey !== null || previousResetKey !== null) {
-    return nextResetKey !== previousResetKey;
-  }
-
-  return nextResetState.previousPathname !== previousResetState.previousPathname;
-}
-
-// Next.js's HTTPAccessFallbackErrorBoundary clears on any visible pathname
-// change, and its LayoutRouter remounts it when the segment below it changes.
-// The reset key stands in for that remount, so either change clears it.
+// Next.js's ErrorBoundary and HTTPAccessFallbackErrorBoundary clear on any
+// visible pathname change, and its LayoutRouter remounts them when the segment
+// below them changes. The reset key stands in for that remount, so either
+// change clears them.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/error-boundary.tsx
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/http-access-fallback/error-boundary.tsx
-function shouldResetAccessBoundary(
+function shouldResetSegmentBoundary(
   nextResetState: BoundaryResetState,
   previousResetState: BoundaryResetState,
 ): boolean {
@@ -268,7 +256,7 @@ export class ErrorBoundaryInner extends React.Component<
     if (state.error && handleAppNavigationFailure(state.error.thrownValue)) {
       return { error: null, ...nextResetState };
     }
-    if (state.error && shouldResetBoundary(nextResetState, state)) {
+    if (state.error && shouldResetSegmentBoundary(nextResetState, state)) {
       return { error: null, ...nextResetState };
     }
     return {
@@ -401,7 +389,7 @@ export class NotFoundBoundaryInner extends React.Component<
     state: NotFoundBoundaryState,
   ): NotFoundBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.notFound && shouldResetAccessBoundary(nextResetState, state)) {
+    if (state.notFound && shouldResetSegmentBoundary(nextResetState, state)) {
       return { notFound: false, ...nextResetState };
     }
     return { notFound: state.notFound, ...nextResetState };
@@ -490,7 +478,7 @@ export class ForbiddenBoundaryInner extends React.Component<
     state: ForbiddenBoundaryState,
   ): ForbiddenBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.forbidden && shouldResetAccessBoundary(nextResetState, state)) {
+    if (state.forbidden && shouldResetSegmentBoundary(nextResetState, state)) {
       return { forbidden: false, ...nextResetState };
     }
     return { forbidden: state.forbidden, ...nextResetState };
@@ -562,7 +550,7 @@ export class UnauthorizedBoundaryInner extends React.Component<
     state: UnauthorizedBoundaryState,
   ): UnauthorizedBoundaryState | null {
     const nextResetState = readBoundaryResetState(props);
-    if (state.unauthorized && shouldResetAccessBoundary(nextResetState, state)) {
+    if (state.unauthorized && shouldResetSegmentBoundary(nextResetState, state)) {
       return { unauthorized: false, ...nextResetState };
     }
     return { unauthorized: state.unauthorized, ...nextResetState };
