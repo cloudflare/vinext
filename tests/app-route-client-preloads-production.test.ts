@@ -16,6 +16,20 @@ function unrelatedClientEvaluated(): boolean | undefined {
   return (globalThis as ClientEvaluationMarker).__vinextUnrelatedClientEvaluated;
 }
 
+/** A response's first chunk and its whole body. */
+async function readStream(url: string): Promise<{ first: string; html: string }> {
+  const response = await fetch(url);
+  expect(response.status).toBe(200);
+  const reader = response.body!.getReader();
+  const decoder = new TextDecoder();
+  const first = decoder.decode((await reader.read()).value, { stream: true });
+  let html = first;
+  for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
+    html += decoder.decode(chunk.value, { stream: true });
+  }
+  return { first, html };
+}
+
 // SSR loads only the client references of the route it renders, and waits for
 // them before rendering, so the first request after `vinext start` renders
 // the same document as every later one.
@@ -124,18 +138,7 @@ describe("App Router production SSR route client reference preloads", () => {
       (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).map(
         (tag) => tag.match(/\bhref="([^"]+)"/)![1],
       );
-    const read = async () => {
-      const response = await fetch(`${baseUrl}/streamed`);
-      expect(response.status).toBe(200);
-      const reader = response.body!.getReader();
-      const decoder = new TextDecoder();
-      const first = decoder.decode((await reader.read()).value, { stream: true });
-      let html = first;
-      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
-        html += decoder.decode(chunk.value, { stream: true });
-      }
-      return { first, html };
-    };
+    const read = () => readStream(`${baseUrl}/streamed`);
 
     const cold = await read();
     // The shell carries the fallback; the panel streams in once it loads.
@@ -170,6 +173,25 @@ describe("App Router production SSR route client reference preloads", () => {
     expect(panelIndex).toBeGreaterThanOrEqual(0);
     expect(badgeIndex).toBeGreaterThan(panelIndex);
     expect(new Set(hrefs).size).toBe(hrefs.length);
+  });
+
+  it("streams a client component importing a top-level-await module from a package without sideEffects", async () => {
+    const cold = await readStream(`${baseUrl}/side-effects/undeclared`);
+
+    expect(cold.first).toContain('data-testid="side-effects-fallback"');
+    expect(cold.first).not.toContain('data-testid="side-effects-label"');
+    expect(cold.html).toContain('data-testid="side-effects-label"');
+  });
+
+  it("waits for a client component importing a top-level-await module from a sideEffects: false package", async () => {
+    // The emitted output can't tell whether Rolldown dropped this import of a
+    // module its package declares free of side effects, so the build doesn't
+    // count that module's await, and the render waits for the component.
+    // Next.js streams it; this pins the conservative fallback.
+    const cold = await readStream(`${baseUrl}/side-effects/declared`);
+
+    expect(cold.first).toContain('data-testid="side-effects-label"');
+    expect(cold.first).not.toContain('data-testid="side-effects-fallback"');
   });
 
   it("loads another route's client code on that route's first request", async () => {

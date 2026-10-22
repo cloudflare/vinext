@@ -227,8 +227,9 @@ function renderSsrErrorDocumentShell(
 }
 
 // Streamed references load through a wrapped loader, which must see every
-// load from the first.
-if (routeClientReferences?.async.length) {
+// load from the first. The build fills `async` in as chunks render; should it
+// ever not (a plugin rewrote the placeholder first), nothing streams.
+if (Array.isArray(routeClientReferences?.async) && routeClientReferences.async.length > 0) {
   const { async, references } = routeClientReferences;
   wrapClientReferenceRequireForStreaming(
     new Set(async.map((index) => references[index]!)),
