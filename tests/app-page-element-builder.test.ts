@@ -35,6 +35,7 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
+import { NotFoundBoundary } from "../packages/vinext/src/shims/error-boundary.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
@@ -201,6 +202,21 @@ function findElementOfType(
     if (found) return found;
   }
   return null;
+}
+
+function countElementsWithIdPrefix(node: unknown, prefix: string): number {
+  if (Array.isArray(node)) {
+    return node.reduce<number>(
+      (count, child) => count + countElementsWithIdPrefix(child, prefix),
+      0,
+    );
+  }
+  if (!React.isValidElement<Record<string, unknown>>(node)) return 0;
+  const own = typeof node.props.id === "string" && node.props.id.startsWith(prefix) ? 1 : 0;
+  return Object.values(node.props).reduce<number>(
+    (count, value) => count + countElementsWithIdPrefix(value, prefix),
+    own,
+  );
 }
 
 /** Resolve promise props the way Flight does while serializing them. */
@@ -971,6 +987,62 @@ describe("buildPageElements", () => {
       "(..)(..)hoge",
       "page",
     ]);
+  });
+
+  it("wraps a sibling intercepting page in its own not-found boundary at that file's segment", async () => {
+    // Next.js renders app/feed/(.)photo/[id]/not-found.tsx for the
+    // intercepting page's notFound(), inside the (.)photo layout, not the
+    // source route's not-found.
+    function InterceptLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return React.createElement("section", null, children);
+    }
+    function InterceptNotFound(): React.ReactNode {
+      return React.createElement("p", null, "Intercept not found");
+    }
+    const build = async (layoutTreePosition: number, notFoundTreePosition: number) => {
+      const layoutSegments = ["(.)photo", "[id]"].slice(0, layoutTreePosition);
+      const result = await buildPageElements(
+        createBaseOptions({
+          route: createSyntheticRoute({
+            notFound: createSyntheticPageModule(() => null),
+            page: createSyntheticPageModule(() => null),
+            routeSegments: ["feed"],
+            pattern: "/feed",
+          }),
+          routePath: "/feed/photo/1",
+          opts: {
+            interceptBranchSegments: ["(.)photo", "[id]"],
+            interceptLayouts: [createSyntheticPageModule(InterceptLayout)],
+            interceptLayoutSegments: [layoutSegments],
+            interceptNotFound: createSyntheticPageModule(InterceptNotFound),
+            interceptNotFoundTreePosition: notFoundTreePosition,
+            interceptPage: createSyntheticPageModule(() => null),
+            interceptParams: { id: "1" },
+            interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+            interceptSourcePageSegments: ["feed", "(.)photo", "[id]"],
+          },
+        }),
+      );
+      const pageEntry = (result as Record<string, unknown>)["page:/feed/photo/1"];
+      const boundary = findElementOfType(pageEntry, NotFoundBoundary);
+      const layout = findElementOfType(pageEntry, InterceptLayout);
+      if (!boundary || !layout) throw new Error("Expected the boundary and the intercept layout");
+      expect((boundary.props.fallback as React.ReactElement).type).toBe(InterceptNotFound);
+      // The head's error outlet renders beside the intercepting page, so the
+      // boundary also catches its generateMetadata() notFound(), and the
+      // source route's boundaries don't see it.
+      const outletPrefix = "__vinext_streaming_metadata_outlet:";
+      expect(countElementsWithIdPrefix(boundary.props.children, outletPrefix)).toBe(1);
+      expect(countElementsWithIdPrefix(Object.values(result), outletPrefix)).toBe(1);
+      return { boundary, layout };
+    };
+
+    // Beside the page, below the (.)photo layout: the layout stays.
+    const beside = await build(1, 2);
+    expect(findElementOfType(beside.layout.props.children, NotFoundBoundary)).toBe(beside.boundary);
+    // At (.)photo, above a layout in [id]: that layout is replaced.
+    const above = await build(2, 1);
+    expect(findElementOfType(above.boundary.props.children, InterceptLayout)).toBe(above.layout);
   });
 
   it("keys sibling interception pages by target graph and bound params", async () => {

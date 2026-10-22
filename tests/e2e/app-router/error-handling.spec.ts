@@ -302,6 +302,59 @@ test.describe("Not Found", () => {
       ),
     ).toBe(true);
   });
+
+  test("a sibling intercepting page's notFound() renders the not-found beside it", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
+
+    // Like Next.js, the intercepting route's own not-found catches the signal
+    // inside its layout, ahead of the source segment's not-found.
+    await page.getByRole("link", { name: "Missing item" }).click();
+    await expect(page).toHaveURL(/\/not-found-sibling-intercept\/item\/missing$/);
+    await expect(page.locator("#not-found-sibling-intercept-intercept-nf")).toBeVisible();
+    await expect(
+      page.locator(
+        "#not-found-sibling-intercept-intercept-layout #not-found-sibling-intercept-intercept-nf",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
+
+    // It clears when the intercepted navigation moves on to another item.
+    await page.getByRole("link", { name: "Item 1" }).click();
+    await expect(page.locator("#not-found-sibling-intercept-intercepted")).toHaveText(
+      "Intercepted item: 1",
+    );
+    await expect(page.locator("#not-found-sibling-intercept-intercept-nf")).toHaveCount(0);
+
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
+  });
+
+  test("a sibling intercepting page's generateMetadata() notFound() renders the not-found beside it", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+    await waitForAppRouterHydration(page);
+
+    // Next.js renders the page's metadata outlet inside the page segment, so
+    // the intercepting route's own not-found catches its generateMetadata().
+    await page.getByRole("link", { name: "Metadata not found" }).click();
+    await expect(page).toHaveURL(/\/not-found-sibling-intercept\/item\/metadata-missing$/);
+    await expect(
+      page.locator(
+        "#not-found-sibling-intercept-intercept-layout #not-found-sibling-intercept-intercept-nf",
+      ),
+    ).toBeVisible();
+    await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
+  });
 });
 
 test.describe("Forbidden & Unauthorized", () => {

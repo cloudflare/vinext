@@ -245,6 +245,12 @@ type BuildAppPageRouteElementOptions<
   TErrorModule extends AppPageErrorModule = AppPageErrorModule,
 > = {
   element: ReactNode;
+  /**
+   * Builds the page element around the head's error outlet, in place of
+   * `element`, for a page whose own boundaries must catch its
+   * generateMetadata() errors, such as a sibling intercepting route's.
+   */
+  renderElementWithMetadataOutlet?: ((metadataOutlet: ReactNode) => ReactNode) | null;
   globalErrorModule?: TErrorModule | null;
   layoutParamAccess?: AppLayoutParamAccessTracker;
   makeThenableParams: MakeThenableParams;
@@ -1298,12 +1304,20 @@ export function buildAppPageElements<
   // inside the route boundary; that duplication is an intentional transport
   // artifact, not two independently selected loading conventions.
   const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
+  const streamingMetadataOutlet = createAppPageStreamingMetadataOutlet(
+    streamingMetadataOutletId,
+    options.streamingMetadataOutletSuspended,
+  );
+  const renderElementWithMetadataOutlet = options.renderElementWithMetadataOutlet;
+  const pageContent = renderElementWithMetadataOutlet
+    ? renderElementWithMetadataOutlet(streamingMetadataOutlet)
+    : options.element;
   const pageElement = PageLoadingComponent ? (
     <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
-      {options.element}
+      {pageContent}
     </Suspense>
   ) : (
-    options.element
+    pageContent
   );
   elements[pageElementId] = isPrefetchLoadingShell
     ? null
@@ -1709,10 +1723,7 @@ export function buildAppPageElements<
       >
         <Slot id={pageElementId} />
       </LayoutSegmentProvider>
-      {createAppPageStreamingMetadataOutlet(
-        streamingMetadataOutletId,
-        options.streamingMetadataOutletSuspended,
-      )}
+      {renderElementWithMetadataOutlet ? null : streamingMetadataOutlet}
     </>
   );
 
