@@ -19,6 +19,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <Link href={`${BASE}/slow/hello`}>Slow item</Link>
         <Link href={`${BASE}/team`}>Team</Link>
         <Link href={`${BASE}/team/roster`}>Roster</Link>
+        <Link href={`${BASE}/crew`}>Crew</Link>
       </nav>
       {children}
     </div>

@@ -376,6 +376,28 @@ test.describe("Not Found", () => {
     await expect(page.locator("#not-found-layout-segment-team")).toHaveCount(0);
     await expect(page.locator("#not-found-layout-segment-team-nf")).toHaveCount(0);
   });
+
+  test("a parallel slot's layout notFound() renders the same boundary in the document and on navigation", async ({
+    page,
+  }) => {
+    // The slot's layout throws above its own not-found.tsx and inside the crew
+    // layout, so the [lang] boundary above the crew layout catches it.
+    const response = await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/crew`);
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-crew")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-crew-nf")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-roles-nf")).toHaveCount(0);
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Crew", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-crew")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-crew-nf")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-roles-nf")).toHaveCount(0);
+  });
 });
 
 test.describe("Forbidden & Unauthorized", () => {

@@ -44,12 +44,16 @@ import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation
 import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import {
   createAppRenderDependency,
+  invokeAppComponent,
+  isReactOwnedAppComponent,
   registerAppElementRenderDependencies,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
   type AppPageRenderDependency,
   type AppRenderDependency,
 } from "./app-render-dependency.js";
+import { tagAppPageSlotError } from "./app-page-execution.js";
+import { isPromiseLike } from "../utils/promise.js";
 import {
   resolveAppPageBranchParams,
   resolveAppPageSegmentParamScopeKeys,
@@ -280,6 +284,35 @@ type BuildAppPageRouteElementOptions<
   searchParams?: unknown;
   slotOverrides?: Readonly<Record<string, AppPageSlotOverride<TModule>>> | null;
 };
+
+/**
+ * A parallel slot's layout, whose notFound(), forbidden() and unauthorized()
+ * are caught above the layout that renders the slot, as its page's are. Next.js
+ * attaches the slot's own boundaries inside that layout, so they never catch it.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+function createSlotLayoutElement(
+  LayoutComponent: AppPageComponent,
+  props: Readonly<Record<string, unknown>>,
+  slotLayoutIndex: number | undefined,
+): ReactNode {
+  if (slotLayoutIndex === undefined || isReactOwnedAppComponent(LayoutComponent)) {
+    return <LayoutComponent {...props} />;
+  }
+  const SlotLayoutInvoker = () => {
+    try {
+      const result = invokeAppComponent(LayoutComponent, props);
+      return isPromiseLike(result)
+        ? Promise.resolve(result).catch((error: unknown) => {
+            throw tagAppPageSlotError(error, slotLayoutIndex);
+          })
+        : result;
+    } catch (error) {
+      throw tagAppPageSlotError(error, slotLayoutIndex);
+    }
+  };
+  return <SlotLayoutInvoker />;
+}
 
 /**
  * A page's head as Flight renders it. `metadata` and `viewport` hold the tags
@@ -1668,15 +1701,13 @@ export function buildAppPageElements<
       const layoutEntriesAtPosition = branchLayouts.get(treePosition) ?? [];
       for (let layoutIndex = layoutEntriesAtPosition.length - 1; layoutIndex >= 0; layoutIndex--) {
         const layoutEntry = layoutEntriesAtPosition[layoutIndex];
-        const LayoutComponent = layoutEntry.component;
-        slotElement = (
-          <LayoutComponent
-            {...withUseCacheLayoutMarker(LayoutComponent, {
-              params: options.makeThenableParams(layoutEntry.params),
-            })}
-          >
-            {slotElement}
-          </LayoutComponent>
+        slotElement = createSlotLayoutElement(
+          layoutEntry.component,
+          withUseCacheLayoutMarker(layoutEntry.component, {
+            params: options.makeThenableParams(layoutEntry.params),
+            children: slotElement,
+          }),
+          targetIndex >= 0 ? targetIndex : undefined,
         );
       }
     }

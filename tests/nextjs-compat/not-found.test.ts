@@ -350,6 +350,22 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // A slot's own layout is no different: the slot's not-found.tsx and the
+  // segment's sit inside the layout rendering the slot, so neither catches it.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it("notFound() from a parallel slot's layout is caught above the slot's layout", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/not-found-layout-segment/en/crew",
+    );
+    expect(res.status).toBe(404);
+    expect(html).toContain("Not Found (segment without layout)");
+    expect(html).toContain('id="not-found-layout-segment-layout"');
+    expect(html).not.toContain("Not Found (crew boundary)");
+    expect(html).not.toContain("Not Found (roles slot)");
+    expect(html).not.toContain('id="not-found-layout-segment-crew"');
+  });
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before
