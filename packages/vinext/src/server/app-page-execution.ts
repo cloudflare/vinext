@@ -72,7 +72,13 @@ export function tagAppPageMetadataError<T>(error: T): T {
 const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLayoutIndex");
 
 export function tagAppPageSlotError<T>(error: T, layoutIndex: number): T {
-  if (error && typeof error === "object" && !(APP_PAGE_SLOT_ERROR_LAYOUT_INDEX in error)) {
+  // Slots can share one thrown error, so the tag keeps the outermost layout.
+  const taggedLayoutIndex = getAppPageSlotErrorLayoutIndex(error);
+  if (
+    error &&
+    typeof error === "object" &&
+    (taggedLayoutIndex === null || layoutIndex < taggedLayoutIndex)
+  ) {
     try {
       Object.defineProperty(error, APP_PAGE_SLOT_ERROR_LAYOUT_INDEX, {
         value: layoutIndex,

@@ -117,10 +117,16 @@ describe("app page execution helpers", () => {
       kind: "http-access-fallback",
       statusCode: 404,
     });
-    // The first tag is the slot that threw it.
-    expect(tagAppPageSlotError(fromInnerSlot, 0)).toBe(fromInnerSlot);
-    expect(resolveAppPageShellSpecialError(decoded, [fromInnerSlot])).toMatchObject({
+    // Slots can share one thrown error, such as a module-scoped rejected
+    // promise, so its tag keeps the outermost slot's layout.
+    const shared = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 2);
+    expect(tagAppPageSlotError(shared, 3)).toBe(shared);
+    expect(resolveAppPageShellSpecialError(decoded, [shared])).toMatchObject({
       slotLayoutIndex: 2,
+    });
+    expect(tagAppPageSlotError(shared, 0)).toBe(shared);
+    expect(resolveAppPageShellSpecialError(decoded, [shared, shared])).toMatchObject({
+      slotLayoutIndex: 0,
     });
 
     const redirectDigest = "NEXT_REDIRECT;replace;%2Ftarget;307";
