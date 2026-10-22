@@ -1587,7 +1587,8 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
  * layout renders: the boundary above the layout catches it. With
  * `insideLayout`, the layout re-renders around its own segment's boundary
  * instead. Without a segment boundary, Next.js' built-in not-found,
- * forbidden or unauthorized page renders inside the root layout.
+ * forbidden or unauthorized page renders inside the root layout, or without
+ * it when the root layout, or a slot beside it outside `insideLayout`, threw.
  */
 function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
