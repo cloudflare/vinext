@@ -273,6 +273,8 @@ type BuildAppPageRouteElementOptions<
   createPageElement?: (
     component: AppPageComponent,
     props: Readonly<Record<string, unknown>>,
+    /** For a parallel slot's page or default: the layout that renders the slot. */
+    slotLayoutIndex?: number,
   ) => ReactNode;
   pageRenderDependency?: AppPageRenderDependency | null;
   searchParams?: unknown;
@@ -1515,8 +1517,14 @@ export function buildAppPageElements<
       if (slotOverride?.props) {
         Object.assign(slotProps, slotOverride.props);
       }
+      // The slot's notFound(), forbidden() and unauthorized() are caught above
+      // its layout, so the server's fallback needs to know which one.
       slotElement = options.createPageElement
-        ? options.createPageElement(slotComponent!, slotProps)
+        ? options.createPageElement(
+            slotComponent!,
+            slotProps,
+            targetIndex >= 0 ? targetIndex : undefined,
+          )
         : (() => {
             const SlotComponent = slotComponent!;
             return <SlotComponent {...slotProps} />;

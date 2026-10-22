@@ -6,6 +6,7 @@ import {
   probeAppPageLayouts,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
+  tagAppPageSlotError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
@@ -88,6 +89,45 @@ describe("app page execution helpers", () => {
       kind: "http-access-fallback",
       statusCode: 404,
     });
+  });
+
+  it("resolves a shell's access fallback a parallel slot threw to the outermost slot's layout", () => {
+    // Next.js attaches HTTP access fallback boundaries only to each segment's
+    // `children`, so a slot's notFound() is caught above its layout, which is
+    // never below the boundary that catches the page's.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const fromInnerSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 2);
+    const fromOuterSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 1);
+    const fromPage = Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromInnerSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      slotLayoutIndex: 2,
+    });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [fromPage, fromInnerSlot, fromOuterSlot]),
+    ).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      slotLayoutIndex: 1,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // The first tag is the slot that threw it.
+    expect(tagAppPageSlotError(fromInnerSlot, 0)).toBe(fromInnerSlot);
+    expect(resolveAppPageShellSpecialError(decoded, [fromInnerSlot])).toMatchObject({
+      slotLayoutIndex: 2,
+    });
+
+    const redirectDigest = "NEXT_REDIRECT;replace;%2Ftarget;307";
+    const redirect = Object.assign(new Error(redirectDigest), { digest: redirectDigest });
+    expect(
+      resolveAppPageShellSpecialError(redirect, [tagAppPageSlotError(redirect, 1)]),
+    ).not.toHaveProperty("slotLayoutIndex");
   });
 
   it("parses redirect and access-fallback digests", () => {

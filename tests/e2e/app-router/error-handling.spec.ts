@@ -355,6 +355,27 @@ test.describe("Not Found", () => {
     ).toBeVisible();
     await expect(page.locator("#not-found-sibling-intercept-source-nf")).toHaveCount(0);
   });
+
+  test("a parallel slot's notFound() renders the same boundary in the document and on navigation", async ({
+    page,
+  }) => {
+    // Next.js attaches not-found boundaries only to each segment's `children`,
+    // so the [lang] boundary above the team layout catches the @members slot's
+    // signal, not the route's deepest boundary (team/not-found.tsx).
+    const response = await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/team`);
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-team")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-team-nf")).toHaveCount(0);
+
+    await page.goto(`${BASE}/nextjs-compat/not-found-layout-segment/en/shop/hello`);
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Team", exact: true }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-team")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-team-nf")).toHaveCount(0);
+  });
 });
 
 test.describe("Forbidden & Unauthorized", () => {

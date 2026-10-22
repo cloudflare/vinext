@@ -331,6 +331,25 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain('id="not-found-layout-segment-shop"');
   });
 
+  // Next.js attaches not-found boundaries only to each segment's `children`,
+  // so a parallel slot's notFound() is caught by the boundary above the
+  // layout rendering the slot, not by the route's deepest one (team/), as it
+  // is on client navigation. Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["page", "/nextjs-compat/not-found-layout-segment/en/team"],
+    ["default", "/nextjs-compat/not-found-layout-segment/en/team/roster"],
+  ])(
+    "notFound() from a parallel slot's %s is caught above the slot's layout",
+    async (_, pathname) => {
+      const { res, html } = await fetchHtml(baseUrl, pathname);
+      expect(res.status).toBe(404);
+      expect(html).toContain("Not Found (segment without layout)");
+      expect(html).toContain('id="not-found-layout-segment-layout"');
+      expect(html).not.toContain("Not Found (team boundary)");
+      expect(html).not.toContain('id="not-found-layout-segment-team"');
+    },
+  );
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

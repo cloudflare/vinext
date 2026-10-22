@@ -6,6 +6,7 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { tagAppPageSlotError } from "../packages/vinext/src/server/app-page-execution.js";
 import {
   DEFAULT_FORBIDDEN_MODULE,
   DEFAULT_NOT_FOUND_MODULE,
@@ -1102,6 +1103,148 @@ describe("app page dispatch", () => {
           boundaryModule: builtInModule,
           layouts: layouts.slice(0, renderedLayoutCount),
         }),
+        null,
+      );
+    },
+  );
+
+  it.each([
+    // A slot's notFound() is caught above the layout that renders the slot,
+    // as Next.js attaches the boundaries only to each segment's `children`.
+    { name: "a parallel slot", slotLayoutIndex: 1, boundaryIndex: 0, renderedLayoutCount: 1 },
+    // A slot beside the root layout keeps it: Next.js re-renders the root
+    // layout around the root segment's not-found.
+    {
+      name: "a root layout's parallel slot",
+      slotLayoutIndex: 0,
+      boundaryIndex: 0,
+      renderedLayoutCount: 1,
+    },
+    // The page's is caught by the route's deepest boundary.
+    { name: "the page", slotLayoutIndex: null, boundaryIndex: 1, renderedLayoutCount: 2 },
+  ])(
+    "renders the boundary catching $name's notFound() that rejected the shell",
+    async ({ boundaryIndex, renderedLayoutCount, slotLayoutIndex }) => {
+      const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+      const boundaries = [{ default: () => null }, { default: () => null }];
+      const layouts = [{ default: () => null }, { default: () => null }];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [0, 1],
+        routeSegments: ["dashboard"],
+        segmentNotFounds: boundaries,
+        segmentNotFoundTreePositions: [0, 1],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        cleanPathname: "/dashboard",
+        // The RSC render reports the error the slot or page threw, and SSR
+        // rejects its shell with the error decoded from the Flight digest.
+        renderToReadableStream(_element, { onError }) {
+          const thrown = Object.assign(new Error(digest), { digest });
+          onError(
+            slotLayoutIndex === null ? thrown : tagAppPageSlotError(thrown, slotLayoutIndex),
+            undefined,
+            undefined,
+          );
+          return createStream(["flight"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        params: {},
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: boundaries[boundaryIndex],
+          // The head takes the deepest boundary file's metadata, as Next.js's does.
+          ...(slotLayoutIndex === null ? {} : { headBoundaryModule: boundaries[1] }),
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it.each([
+    { statusCode: 403, kind: "forbidden", layout: "server" },
+    { statusCode: 401, kind: "unauthorized", layout: "server" },
+    { statusCode: 403, kind: "forbidden", layout: "client" },
+    { statusCode: 401, kind: "unauthorized", layout: "client" },
+  ] as const)(
+    "handles a root layout's parallel slot's $kind() under a $layout root layout",
+    async ({ kind, layout, statusCode }) => {
+      // Next.js re-renders a server root layout with a named slot around its
+      // not-found only, so the root segment's forbidden or unauthorized file
+      // can't catch the slot's signal, and the built-in page renders without
+      // the root layout. A client root layout re-renders around all three.
+      const digest = `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`;
+      const boundaries = [{ default: () => null }];
+      const layouts = [
+        {
+          default:
+            layout === "client"
+              ? Object.assign(() => null, { $$typeof: Symbol.for("react.client.reference") })
+              : () => null,
+        },
+      ];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [0],
+        routeSegments: ["dashboard"],
+        ...(kind === "forbidden"
+          ? { segmentForbiddens: boundaries, segmentForbiddenTreePositions: [0] }
+          : { segmentUnauthorizeds: boundaries, segmentUnauthorizedTreePositions: [0] }),
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>fallback</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        cleanPathname: "/dashboard",
+        renderToReadableStream(_element, { onError }) {
+          onError(
+            tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 0),
+            undefined,
+            undefined,
+          );
+          return createStream(["flight"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        params: {},
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining(
+          layout === "server"
+            ? {
+                boundaryModule:
+                  kind === "forbidden" ? DEFAULT_FORBIDDEN_MODULE : DEFAULT_UNAUTHORIZED_MODULE,
+                layouts: [],
+              }
+            : { boundaryModule: boundaries[0], layouts },
+        ),
         null,
       );
     },

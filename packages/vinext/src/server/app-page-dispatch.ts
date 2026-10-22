@@ -45,6 +45,7 @@ import {
   resolveAppPageParentHttpAccessBoundary,
 } from "./app-page-boundary.js";
 import { getDefaultHttpAccessFallbackModule } from "./default-http-access-fallback-modules.js";
+import { isAppClientReference } from "./app-render-dependency.js";
 import {
   resolveAppPageSpecialErrorStoredHeaders,
   buildAppPageSpecialErrorResponse,
@@ -1571,70 +1572,102 @@ async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
-      const { route } = options;
-      const layoutTreePositions = route.layoutTreePositions ?? [];
-      const boundaryModules =
-        statusCode === 403
-          ? route.segmentForbiddens
-          : statusCode === 401
-            ? route.segmentUnauthorizeds
-            : route.segmentNotFounds;
-      const boundaryTreePositions =
-        statusCode === 403
-          ? route.segmentForbiddenTreePositions
-          : statusCode === 401
-            ? route.segmentUnauthorizedTreePositions
-            : route.segmentNotFoundTreePositions;
-      const layoutTreePosition = layoutTreePositions[layoutIndex];
-      const boundary =
-        layoutTreePosition === undefined
-          ? null
-          : resolveAppPageLayoutHttpAccessBoundary({
-              boundaryModules: boundaryModules ?? [],
-              boundaryTreePositions: boundaryTreePositions ?? [],
-              layoutTreePosition,
-            });
-      // Without a segment boundary, Next.js renders its built-in not-found,
-      // forbidden or unauthorized page.
-      const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
-      if (!boundaryModule) return Promise.resolve(null);
-      // The boundary replaces its segment's children, so layouts below its
-      // segment do not render around it. It never renders above the root layout.
-      const boundaryTreePosition = Math.max(
-        boundary?.treePosition ?? 0,
-        resolveAppPageRootHttpAccessBoundaryTreePosition(
-          route.routeSegments,
-          layoutTreePositions,
-          layoutTreePosition,
-        ),
-      );
-      // Next.js takes the head from the route's deepest boundary file, which
-      // can sit below the one that catches the error.
-      const headBoundary = resolveAppPageLayoutHttpAccessBoundary({
-        boundaryModules: boundaryModules ?? [],
-        boundaryTreePositions: boundaryTreePositions ?? [],
-        layoutTreePosition: Number.POSITIVE_INFINITY,
+      return renderLayoutBoundaryFallback(options, statusCode, layoutIndex, {
+        // Every layout above the throwing one still contributes metadata.
+        headLayouts: options.route.layouts.slice(0, layoutIndex),
       });
-      return options.renderHttpAccessFallbackPage(
-        statusCode,
-        {
-          boundaryComponent: boundaryModule.default,
-          boundaryModule,
-          headBoundaryModule: headBoundary?.module ?? boundaryModule,
-          // Every layout above the throwing one still contributes metadata.
-          headLayouts: route.layouts.slice(0, layoutIndex),
-          layouts: route.layouts.filter(
-            (_, index) =>
-              index < layoutIndex && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
-          ),
-          matchedParams: options.params,
-        },
-        null,
-      );
     },
     request: options.request,
     specialError,
   });
+}
+
+/**
+ * The fallback for a special error a layout threw, or a parallel slot that
+ * layout renders: the boundary above the layout catches it. With
+ * `insideLayout`, the layout re-renders around its own segment's boundary
+ * instead. Without a segment boundary, Next.js' built-in not-found,
+ * forbidden or unauthorized page renders inside the root layout.
+ */
+function renderLayoutBoundaryFallback<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
+  layoutIndex: number,
+  fallbackOptions: {
+    headLayouts: readonly AppPageModule[];
+    insideLayout?: boolean;
+    intercept?: AppPageDispatchInterceptOptions | null;
+    isCacheCandidate?: boolean;
+  },
+): Promise<Response | null> {
+  const { route } = options;
+  const layoutTreePositions = route.layoutTreePositions ?? [];
+  const boundaryModules =
+    statusCode === 403
+      ? route.segmentForbiddens
+      : statusCode === 401
+        ? route.segmentUnauthorizeds
+        : route.segmentNotFounds;
+  const boundaryTreePositions =
+    statusCode === 403
+      ? route.segmentForbiddenTreePositions
+      : statusCode === 401
+        ? route.segmentUnauthorizedTreePositions
+        : route.segmentNotFoundTreePositions;
+  const insideLayout = fallbackOptions.insideLayout === true;
+  const ownLayoutTreePosition = layoutTreePositions[layoutIndex];
+  // Inside the layout, its own segment's boundary catches too.
+  const layoutTreePosition =
+    ownLayoutTreePosition === undefined || !insideLayout
+      ? ownLayoutTreePosition
+      : ownLayoutTreePosition + 1;
+  const renderedLayoutCount = insideLayout ? layoutIndex + 1 : layoutIndex;
+  const boundary =
+    layoutTreePosition === undefined
+      ? null
+      : resolveAppPageLayoutHttpAccessBoundary({
+          boundaryModules: boundaryModules ?? [],
+          boundaryTreePositions: boundaryTreePositions ?? [],
+          layoutTreePosition,
+        });
+  // Without a segment boundary, Next.js renders its built-in not-found,
+  // forbidden or unauthorized page.
+  const boundaryModule = boundary?.module ?? getDefaultHttpAccessFallbackModule(statusCode);
+  if (!boundaryModule) return Promise.resolve(null);
+  // The boundary replaces its segment's children, so layouts below its
+  // segment do not render around it. It never renders above the root layout.
+  const boundaryTreePosition = Math.max(
+    boundary?.treePosition ?? 0,
+    resolveAppPageRootHttpAccessBoundaryTreePosition(
+      route.routeSegments,
+      layoutTreePositions,
+      layoutTreePosition,
+    ),
+  );
+  // Next.js takes the head from the route's deepest boundary file, which
+  // can sit below the one that catches the error.
+  const headBoundary = resolveAppPageLayoutHttpAccessBoundary({
+    boundaryModules: boundaryModules ?? [],
+    boundaryTreePositions: boundaryTreePositions ?? [],
+    layoutTreePosition: Number.POSITIVE_INFINITY,
+  });
+  return options.renderHttpAccessFallbackPage(
+    statusCode,
+    {
+      boundaryComponent: boundaryModule.default,
+      boundaryModule,
+      headBoundaryModule: headBoundary?.module ?? boundaryModule,
+      headLayouts: fallbackOptions.headLayouts,
+      ...(fallbackOptions.intercept ? { intercept: fallbackOptions.intercept } : {}),
+      ...(fallbackOptions.isCacheCandidate ? { isCacheCandidate: true } : {}),
+      layouts: route.layouts.filter(
+        (_, index) =>
+          index < renderedLayoutCount && (layoutTreePositions[index] ?? 0) <= boundaryTreePosition,
+      ),
+      matchedParams: options.params,
+    },
+    null,
+  );
 }
 
 /**
@@ -1724,6 +1757,26 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
     renderFallbackPage(statusCode) {
+      // A slot's signal is caught above the layout that renders it.
+      if (
+        specialError.kind === "http-access-fallback" &&
+        specialError.slotLayoutIndex !== undefined
+      ) {
+        return renderLayoutBoundaryFallback(options, statusCode, specialError.slotLayoutIndex, {
+          // Every layout on the route still contributes metadata.
+          headLayouts: options.route.layouts,
+          // Next.js re-renders a root layout that has a named slot around the
+          // root segment's not-found, keeping the document's <html> and <body>
+          // (`isRootLayoutWithChildrenSlotAndAtLeastOneMoreSlot`). A server
+          // root layout gets that fallback for not-found only, so forbidden and
+          // unauthorized bubble above it; a client one gets all three.
+          insideLayout:
+            specialError.slotLayoutIndex === 0 &&
+            (statusCode === 404 || isAppClientReference(options.route.layouts[0]?.default)),
+          intercept,
+          isCacheCandidate,
+        });
+      }
       const pageBoundaryFallback = renderPageSegmentBoundaryFallback(
         options,
         statusCode,
