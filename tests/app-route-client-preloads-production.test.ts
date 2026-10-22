@@ -354,6 +354,19 @@ describe("App Router production SSR route client reference preloads", () => {
     expect((globalThis as SharedEvaluationMarker).__vinextSharedClientEvaluated).toBe(true);
   });
 
+  it("links client components' stylesheets without crossorigin, as Next.js does when it's unset", async () => {
+    // The shell links /streamed's panel stylesheet ahead of the badge's, and
+    // /streamed/also's in the head; the rest link as the render reads them.
+    for (const route of ["/", "/streamed", "/streamed/also", "/layout-streamed/nested"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const stylesheets = (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).filter(
+        (tag) => tag.includes('data-precedence="vite-rsc/client-reference"'),
+      );
+      expect(stylesheets.length, route).toBeGreaterThan(0);
+      for (const tag of stylesheets) expect(tag, route).not.toContain("crossorigin");
+    }
+  });
+
   it("hints every script once, with the CSP nonce", async () => {
     // plugin-rsc hints a client component's scripts without the nonce, which
     // the fixture's `script-src 'nonce-…'` policy blocks.

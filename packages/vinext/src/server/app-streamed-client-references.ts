@@ -1,7 +1,7 @@
 /**
  * Stream the client references an SSR render may show before they load, and
- * hint every client reference's scripts with the render's CSP nonce and the
- * configured crossOrigin.
+ * link every client reference's scripts with the render's CSP nonce and the
+ * configured crossOrigin, and its stylesheets with the configured crossOrigin.
  *
  * A render waits for its route's client references before it starts, except
  * those whose modules evaluate asynchronously (top-level await). Like Next.js,
@@ -21,6 +21,9 @@
  * `crossOrigin: "use-credentials"` the browser fetches the module the page
  * then imports without credentials. React keeps the first hint for each
  * script, so a render with either hints them first, with both, as Next.js does.
+ * plugin-rsc also links its stylesheets as anonymous whatever the config,
+ * where Next.js links them with the configured crossOrigin, and without one
+ * when unset; a render links them first too.
  */
 import * as ReactDOM from "react-dom";
 import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
@@ -37,7 +40,7 @@ type ClientReferenceLoader = () => Promise<unknown>;
 export type StreamedClientReferences = {
   /** The render's CSP nonce for the scripts it hints. */
   nonce: string | undefined;
-  /** next.config's crossOrigin for the scripts it hints. */
+  /** next.config's crossOrigin for the assets it links; "" when unset. */
   crossOrigin: AssetCrossOrigin;
   streamed: ReadonlySet<string>;
   /** Each of the route's references' position in import order. */
@@ -74,6 +77,16 @@ function linkScripts(deps: AssetDeps, render: StreamedClientReferences): void {
   for (const href of deps.js) ReactDOM.preloadModule(href, options);
 }
 
+// Like Next.js, a stylesheet only gets crossorigin when it's configured.
+function linkStylesheets(hrefs: readonly string[], render: StreamedClientReferences): void {
+  const options: ReactDOM.PreinitOptions = {
+    as: "style",
+    crossOrigin: render.crossOrigin || undefined,
+    precedence: STYLESHEET_PRECEDENCE,
+  };
+  for (const href of hrefs) ReactDOM.preinit(href, options);
+}
+
 /**
  * Before reference `id` links its stylesheets, link those of the streamed
  * references that come before it in import order.
@@ -82,14 +95,9 @@ function linkStreamedStylesheetsBefore(render: StreamedClientReferences, id: str
   const position = render.positions.get(id);
   if (position === undefined) return;
   while (render.unlinked.length > 0 && render.positions.get(render.unlinked[0]!)! < position) {
-    for (const href of referenceDeps.get(render.unlinked.shift()!)?.css ?? []) {
-      render.linkedStylesheets.add(href);
-      ReactDOM.preinit(href, {
-        as: "style",
-        crossOrigin: "anonymous",
-        precedence: STYLESHEET_PRECEDENCE,
-      });
-    }
+    const hrefs = referenceDeps.get(render.unlinked.shift()!)?.css ?? [];
+    for (const href of hrefs) render.linkedStylesheets.add(href);
+    linkStylesheets(hrefs, render);
   }
 }
 
@@ -137,9 +145,12 @@ export function wrapClientReferenceRequire(
                   return Reflect.get(exports as object, key);
                 }
                 linkStreamedStylesheetsBefore(render, id);
-                // plugin-rsc hints the module's scripts as it's read, after this.
+                // plugin-rsc links the module's assets as it's read, after this.
                 const deps = referenceDeps.get(id);
-                if (hintsScripts(render) && deps && key in target) linkScripts(deps, render);
+                if (deps && key in target) {
+                  linkStylesheets(deps.css, render);
+                  if (hintsScripts(render)) linkScripts(deps, render);
+                }
               }
               return Reflect.get(target, key, receiver);
             },
@@ -157,9 +168,9 @@ export function createStreamedClientReferences(
   route: RouteClientReferenceSet | undefined,
   nonce: string | undefined,
   crossOrigin: AssetCrossOrigin,
-): StreamedClientReferences | null {
+): StreamedClientReferences {
   const streamed = new Set(route?.streamed);
-  const render: StreamedClientReferences = {
+  return {
     nonce,
     crossOrigin,
     streamed,
@@ -167,33 +178,35 @@ export function createStreamedClientReferences(
     unlinked: route?.references.filter((id) => streamed.has(id)) ?? [],
     linkedStylesheets: new Set(),
   };
-  return streamed.size > 0 || hintsScripts(render) ? render : null;
 }
 
 /** Run a render, and the Flight stream it reads, with its streamed references. */
 export function runWithStreamedClientReferences<R>(
-  render: StreamedClientReferences | null,
+  render: StreamedClientReferences,
   fn: () => R,
 ): R {
-  return render ? renderStorage.run(render, fn) : fn();
+  return renderStorage.run(render, fn);
 }
 
 /**
  * The `<head>` links of the streamed stylesheets a render's shell left
  * unlinked, those of streamed references after every reference it rendered.
  */
-export function renderStreamedStylesheets(render: StreamedClientReferences | null): string {
-  if (!render) return "";
+export function renderStreamedStylesheets(render: StreamedClientReferences): string {
   const hrefs = new Set<string>();
   for (const id of render.unlinked.splice(0)) {
     for (const href of referenceDeps.get(id)?.css ?? []) {
       if (!render.linkedStylesheets.has(href)) hrefs.add(href);
     }
   }
+  // React writes "" for anonymous.
+  const crossOrigin = render.crossOrigin
+    ? ` crossorigin="${render.crossOrigin === "use-credentials" ? "use-credentials" : ""}"`
+    : "";
   let html = "";
   for (const href of hrefs) {
     render.linkedStylesheets.add(href);
-    html += `<link rel="stylesheet" href="${escapeHtmlAttr(href)}" data-precedence="${STYLESHEET_PRECEDENCE}" crossorigin=""/>`;
+    html += `<link rel="stylesheet" href="${escapeHtmlAttr(href)}" data-precedence="${STYLESHEET_PRECEDENCE}"${crossOrigin}/>`;
   }
   return html;
 }

@@ -1522,6 +1522,24 @@ describe("App Router Production server (startProdServer)", () => {
           expect(tag).not.toContain('as="style"');
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
+
+        // As in Next.js, a client component's stylesheet only gets
+        // crossorigin when it's configured.
+        const bannerHtml = await (await fetch(`${tmpBaseUrl}/cookie-notice-chunks`)).text();
+        expect(bannerHtml).toContain('data-testid="consent-banner"');
+        const clientStylesheets = (bannerHtml.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\brel="stylesheet"/.test(tag) &&
+            tag.includes('data-precedence="vite-rsc/client-reference"'),
+        );
+        expect(clientStylesheets).not.toEqual([]);
+        for (const tag of clientStylesheets) {
+          if (configuredCrossOrigin) {
+            expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+          } else {
+            expect(tag).not.toContain("crossorigin");
+          }
+        }
       } finally {
         assetPrefixServer?.close();
         setPagesClientAssets(previousPagesClientAssets);
