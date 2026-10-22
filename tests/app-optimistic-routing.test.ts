@@ -658,14 +658,101 @@ describe("App Router optimistic routing", () => {
           canCommitOptimisticRouteTemplate({
             currentElements,
             currentLayoutIds: [rootLayoutId, sharedLayoutId],
-            currentParams: { projectId },
+            currentParams: { projectId: "alpha" },
             routeManifest,
             targetRouteParams: encodedPayload.routeParams,
             targetUrlParts: encodedPayload.urlParts,
-            template: encodedPayload.template,
+            template,
           }),
-      ).toBe(false);
+      ).toBe(true);
     }
+  });
+
+  it("does not commit a layout-identity loading shell over a same-slug [slug] layout", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sectionLayoutId = AppElementsWire.encodeLayoutId("/layout-identity");
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/layout-identity/[slug]");
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sectionLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/layout-identity/alpha",
+      }),
+      [rootLayoutId]: createElement("div", null, "root"),
+      [sectionLayoutId]: createElement("div", null, "section"),
+      [sharedLayoutId]: createElement("section", { "data-testid": "shared-layout" }, "shared"),
+    };
+    const loadingShellElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        interceptionContext: null,
+        layoutIds: [rootLayoutId, sectionLayoutId, sharedLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/layout-identity/alpha/child",
+      }),
+      [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+      [rootLayoutId]: createElement("div", null, "root"),
+      [sectionLayoutId]: createElement("div", null, "section"),
+      "page:/layout-identity/:slug/child": null,
+      "route:/layout-identity/alpha/child": createElement("p", null, "Loading"),
+    };
+    const routeManifest = manifest(
+      [
+        route({
+          id: "route:/layout-identity/:slug/child",
+          isDynamic: true,
+          paramNames: ["slug"],
+          pattern: "/layout-identity/:slug/child",
+          patternParts: ["layout-identity", ":slug", "child"],
+        }),
+      ],
+      [],
+      [
+        {
+          id: sharedLayoutId,
+          paramNames: ["slug"],
+          patternParts: ["layout-identity", ":slug"],
+          rootBoundaryId: null,
+          treePath: "/layout-identity/[slug]",
+        },
+      ],
+    );
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: loadingShellElements,
+      href: "/layout-identity/alpha/child",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) {
+      throw new Error("Expected optimistic route template");
+    }
+
+    expect(template.omittedLayoutIds).toEqual([sharedLayoutId]);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sectionLayoutId, sharedLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug: "alpha" },
+        targetUrlParts: ["layout-identity", "alpha", "child"],
+        template,
+      }),
+    ).toBe(false);
+    expect(
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId, sectionLayoutId, sharedLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug: "beta" },
+        targetUrlParts: ["layout-identity", "beta", "child"],
+        template,
+      }),
+    ).toBe(true);
   });
 
   it("preserves raw encoded catch-all params in optimistic payloads", () => {

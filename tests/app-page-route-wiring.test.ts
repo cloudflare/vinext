@@ -40,6 +40,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
+import { mergeElements } from "../packages/vinext/src/shims/slot.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -4023,6 +4024,240 @@ describe("app page route wiring helpers", () => {
 
     expect(html).toContain("slot:de");
     expect(html).not.toContain("slot:en");
+  });
+
+  // #2940 stopped an optimistic loading shell from unmounting a shared
+  // `[slug]` layout. The leftover remount (#1523 / layout-identity e2e) was
+  // the authoritative payload wrapping that same layout in ancestor
+  // loading. These cases are the e2e fixture plus the #2940 identities.
+  describe("shared layout identity under ancestor loading", () => {
+    function SharedSlugLayout(props: Record<string, unknown>) {
+      return createElement(
+        "section",
+        { "data-testid": "shared-layout" },
+        readChildren(props.children),
+      );
+    }
+    function ItemLayout(props: Record<string, unknown>) {
+      return createElement(
+        "div",
+        { "data-testid": "item-layout-value" },
+        readChildren(props.children),
+      );
+    }
+    function ParentPage() {
+      return createElement("h1", { "data-testid": "page-title" }, "Parent page");
+    }
+    function ChildPage() {
+      return createElement("h1", { "data-testid": "page-title" }, "Child page");
+    }
+    function ItemPage() {
+      return createElement("h1", { "data-testid": "page-title" }, "Item page");
+    }
+    function AncestorLoading() {
+      return createElement("p", { "data-testid": "loading-fallback" }, "Loading…");
+    }
+    function AsideParent() {
+      return createElement("p", { "data-testid": "aside-content" }, "aside: alpha parent");
+    }
+    function AsideItem() {
+      return createElement("p", { "data-testid": "aside-content" }, "aside: alpha / first");
+    }
+
+    const sharedLayoutId = AppElementsWire.encodeLayoutId("/layout-identity/[slug]");
+    const itemLayoutId = AppElementsWire.encodeLayoutId("/layout-identity/[slug]/items/[item]");
+    const asideSlotId = AppElementsWire.encodeSlotId("aside", "/layout-identity");
+
+    type FixtureModule = { default: (props: Record<string, unknown>) => ReactElement };
+    const buildRoute = (options: {
+      element: ReactElement;
+      layoutTreePositions?: readonly number[];
+      layouts?: readonly FixtureModule[];
+      loadings?: readonly (FixtureModule | null)[];
+      loadingTreePositions?: readonly number[];
+      matchedParams?: AppPageParams;
+      renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+      routePath: string;
+      routeSegments: readonly string[];
+      slotPage?: FixtureModule;
+    }) =>
+      buildAppPageElements({
+        element: options.element,
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: options.matchedParams ?? { slug: "alpha" },
+        route: {
+          error: null,
+          errors: [null, null, null, null],
+          layoutTreePositions: options.layoutTreePositions ?? [0, 1, 2],
+          layouts: options.layouts ?? [
+            { default: RootLayout },
+            { default: GroupLayout },
+            { default: SharedSlugLayout },
+          ],
+          loading: null,
+          loadings: options.loadings ?? [null, { default: AncestorLoading }, null],
+          loadingTreePositions: options.loadingTreePositions ?? [0, 1, 2],
+          notFound: null,
+          notFounds: [null, null, null, null],
+          routeSegments: options.routeSegments,
+          slots: options.slotPage
+            ? {
+                aside: {
+                  default: null,
+                  error: null,
+                  layout: null,
+                  layoutIndex: 1,
+                  loading: null,
+                  name: "aside",
+                  ownerTreePosition: 1,
+                  page: options.slotPage,
+                  routeSegments: ["[slug]"],
+                },
+              }
+            : null,
+          templateTreePositions: [],
+          templates: [],
+        },
+        renderMode: options.renderMode,
+        routePath: options.routePath,
+        rootNotFoundModule: null,
+      });
+
+    const parent = () =>
+      buildRoute({
+        element: createElement(ParentPage),
+        routePath: "/layout-identity/alpha",
+        routeSegments: ["layout-identity", "[slug]"],
+      });
+    const child = () =>
+      buildRoute({
+        element: createElement(ChildPage),
+        routePath: "/layout-identity/alpha/child",
+        routeSegments: ["layout-identity", "[slug]", "child"],
+      });
+    const item = () =>
+      buildRoute({
+        element: createElement(ItemPage),
+        layoutTreePositions: [0, 1, 2, 4],
+        layouts: [
+          { default: RootLayout },
+          { default: GroupLayout },
+          { default: SharedSlugLayout },
+          { default: ItemLayout },
+        ],
+        loadings: [null, { default: AncestorLoading }, null, null],
+        loadingTreePositions: [0, 1, 2, 4],
+        matchedParams: { item: "first", slug: "alpha" },
+        routePath: "/layout-identity/alpha/items/first",
+        routeSegments: ["layout-identity", "[slug]", "items", "[item]"],
+      });
+
+    it("does not wrap the shared [slug] layout Flight entry on a real navigation", () => {
+      const elements = parent();
+      expect(elements[sharedLayoutId]).toBeDefined();
+      expect(findSuspenseWithFallback(elements[sharedLayoutId], "AncestorLoading")).toBeNull();
+    });
+
+    it("keeps the ancestor loading boundary on the route entry for first paint", () => {
+      const elements = parent();
+      expect(containsElementType(elements["route:/layout-identity/alpha"], AncestorLoading)).toBe(
+        true,
+      );
+    });
+
+    it("omits the shared [slug] layout from a loading-shell prefetch", () => {
+      const loadingShell = buildRoute({
+        element: createElement(ChildPage),
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        routePath: "/layout-identity/alpha/child",
+        routeSegments: ["layout-identity", "[slug]", "child"],
+      });
+      expect(loadingShell[sharedLayoutId]).toBeUndefined();
+      expect(loadingShell[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    });
+
+    it("reuses the same [slug] layout identity across a static child segment", () => {
+      const fromParent = parent();
+      const toChild = child();
+      expect(
+        AppElementsWire.readMetadata(fromParent).bfcacheSegmentIdentities[sharedLayoutId],
+      ).toBe(AppElementsWire.readMetadata(toChild).bfcacheSegmentIdentities[sharedLayoutId]);
+      expect(containsElementType(toChild[sharedLayoutId], AncestorLoading)).toBe(false);
+    });
+
+    it("reuses the same [slug] layout identity across a nested dynamic segment", () => {
+      const fromParent = parent();
+      const toItem = item();
+      expect(
+        AppElementsWire.readMetadata(fromParent).bfcacheSegmentIdentities[sharedLayoutId],
+      ).toBe(AppElementsWire.readMetadata(toItem).bfcacheSegmentIdentities[sharedLayoutId]);
+      expect(toItem[itemLayoutId]).toBeDefined();
+      expect(findSuspenseWithFallback(toItem[sharedLayoutId], "AncestorLoading")).toBeNull();
+    });
+
+    it("reuses the same [slug] layout identity when navigating back to the parent", () => {
+      const fromItem = item();
+      const toParent = parent();
+      expect(AppElementsWire.readMetadata(fromItem).bfcacheSegmentIdentities[sharedLayoutId]).toBe(
+        AppElementsWire.readMetadata(toParent).bfcacheSegmentIdentities[sharedLayoutId],
+      );
+    });
+
+    it("reuses the same [slug] layout identity when a parallel slot changes", () => {
+      const fromParent = buildRoute({
+        element: createElement(ParentPage),
+        routePath: "/layout-identity/alpha",
+        routeSegments: ["layout-identity", "[slug]"],
+        slotPage: { default: AsideParent },
+      });
+      const toItem = buildRoute({
+        element: createElement(ItemPage),
+        layoutTreePositions: [0, 1, 2, 4],
+        layouts: [
+          { default: RootLayout },
+          { default: GroupLayout },
+          { default: SharedSlugLayout },
+          { default: ItemLayout },
+        ],
+        loadings: [null, { default: AncestorLoading }, null, null],
+        loadingTreePositions: [0, 1, 2, 4],
+        matchedParams: { item: "first", slug: "alpha" },
+        routePath: "/layout-identity/alpha/items/first",
+        routeSegments: ["layout-identity", "[slug]", "items", "[item]"],
+        slotPage: { default: AsideItem },
+      });
+      expect(fromParent[asideSlotId]).toBeDefined();
+      expect(toItem[asideSlotId]).toBeDefined();
+      expect(fromParent[asideSlotId]).not.toBe(toItem[asideSlotId]);
+      expect(
+        AppElementsWire.readMetadata(fromParent).bfcacheSegmentIdentities[sharedLayoutId],
+      ).toBe(AppElementsWire.readMetadata(toItem).bfcacheSegmentIdentities[sharedLayoutId]);
+    });
+
+    it("mints a new [slug] layout identity when the slug itself changes", () => {
+      const alpha = parent();
+      const beta = buildRoute({
+        element: createElement(ParentPage),
+        matchedParams: { slug: "beta" },
+        routePath: "/layout-identity/beta",
+        routeSegments: ["layout-identity", "[slug]"],
+      });
+      expect(AppElementsWire.readMetadata(alpha).bfcacheSegmentIdentities[sharedLayoutId]).not.toBe(
+        AppElementsWire.readMetadata(beta).bfcacheSegmentIdentities[sharedLayoutId],
+      );
+    });
+
+    it("preserves the previous [slug] layout element when the planner asks to keep it", () => {
+      const fromParent = parent();
+      const toChild = child();
+      const merged = mergeElements(fromParent, toChild, {
+        preserveElementIds: [sharedLayoutId],
+      });
+      expect(merged[sharedLayoutId]).toBe(fromParent[sharedLayoutId]);
+      expect(merged[sharedLayoutId]).not.toBe(toChild[sharedLayoutId]);
+    });
   });
 
   it("preserves parent-before-child execution under an ancestor loading boundary", async () => {

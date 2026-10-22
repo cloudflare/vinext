@@ -11,9 +11,9 @@ const readLayoutHandle = (page: Page) =>
 // segments below that layout. The layout must stay mounted: its DOM node keeps
 // its identity and the client state it owns survives.
 //
-// vinext currently discards the layout subtree on these navigations. The trigger
-// is the `loading.tsx` boundary above the shared layout — with that file removed
-// from the fixture, every assertion below passes.
+// The trigger that used to discard this layout was an ancestor `loading.tsx`
+// wrapping the layout's own Flight entry. #2940 already refused the optimistic
+// loading shell; the real payload must still keep this layout mounted.
 test.describe("App Router shared layout identity", () => {
   test("navigates without a full document load", async ({ page }) => {
     await page.goto(PARENT);

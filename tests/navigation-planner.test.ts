@@ -1316,6 +1316,76 @@ describe("navigationPlanner root-boundary decisions", () => {
     expect(decision.proposal.preserveElementIds).toEqual(["layout:/", "layout:/blog"]);
   });
 
+  it("preserves the shared [slug] layout across layout-identity child and item navigations", () => {
+    const sharedLayoutIds = [
+      "layout:/",
+      "layout:/layout-identity",
+      "layout:/layout-identity/[slug]",
+    ];
+    const itemLayoutIds = [...sharedLayoutIds, "layout:/layout-identity/[slug]/items/[item]"];
+    const asideSlot = createSlotBinding(
+      "slot:aside:/layout-identity",
+      "layout:/layout-identity",
+      "active",
+    );
+    const routeManifest = createTestRouteManifest([
+      {
+        layoutIds: sharedLayoutIds,
+        pattern: "/layout-identity/:slug",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [asideSlot],
+      },
+      {
+        layoutIds: sharedLayoutIds,
+        pattern: "/layout-identity/:slug/child",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [asideSlot],
+      },
+      {
+        layoutIds: itemLayoutIds,
+        pattern: "/layout-identity/:slug/items/:item",
+        rootBoundaryId: "root-boundary:/",
+        slotBindings: [asideSlot],
+      },
+    ]);
+
+    const parentSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(null, [], [], [asideSlot]),
+      displayUrl: "https://example.com/layout-identity/alpha",
+      matchedUrl: "/layout-identity/alpha",
+      routeId: "route:/layout-identity/:slug",
+    };
+    const childSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(null, [], [], [asideSlot]),
+      displayUrl: "https://example.com/layout-identity/alpha/child",
+      matchedUrl: "/layout-identity/alpha/child",
+      routeId: "route:/layout-identity/:slug/child",
+    };
+    const itemSnapshot: RouteSnapshot = {
+      ...createRouteSnapshot(null, [], [], [asideSlot]),
+      displayUrl: "https://example.com/layout-identity/alpha/items/first",
+      matchedUrl: "/layout-identity/alpha/items/first",
+      routeId: "route:/layout-identity/:slug/items/:item",
+    };
+
+    for (const [currentSnapshot, targetSnapshot] of [
+      [parentSnapshot, childSnapshot],
+      [parentSnapshot, itemSnapshot],
+      [itemSnapshot, parentSnapshot],
+    ] as const) {
+      const decision = planFlightResponseFromSnapshots({
+        currentSnapshot,
+        routeManifest,
+        targetSnapshot,
+      });
+      expect(decision.kind).toBe("proposeCommit");
+      if (decision.kind !== "proposeCommit") {
+        throw new Error("Expected proposeCommit decision");
+      }
+      expect(decision.proposal.preserveElementIds).toEqual(sharedLayoutIds);
+    }
+  });
+
   it("uses manifest target slot bindings while keeping visible snapshot as content proof", () => {
     const childrenSlot = "slot:children:/dashboard";
     const modalSlot = "slot:modal:/dashboard";
