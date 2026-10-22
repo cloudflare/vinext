@@ -1118,6 +1118,50 @@ describe("Link locale handling", () => {
     expect(html).toContain('href="/id"');
   });
 
+  it("renders App Router Links without reading the browser location when no locales are configured", () => {
+    const locationReads: string[] = [];
+    const location = {
+      get pathname() {
+        locationReads.push("pathname");
+        return "/current";
+      },
+      get hostname() {
+        locationReads.push("hostname");
+        return "example.com";
+      },
+    };
+    const cases = [
+      { href: "/", expected: "/" },
+      { href: "/user?id=1", expected: "/user?id=1" },
+      { href: "/a/b/#c", expected: "/a/b#c" },
+      { href: "https://example.com/x", expected: "https://example.com/x" },
+      { href: "//cdn.example.com/x", expected: "//cdn.example.com/x" },
+    ];
+    const render = (href: string) =>
+      ReactDOMServer.renderToString(React.createElement(Link, { href }, "x"));
+
+    for (const window of [
+      { location },
+      { location, __VINEXT_LOCALES__: [], __NEXT_DATA__: { domainLocales: [] } },
+    ]) {
+      (globalThis as any).window = window;
+      for (const { href, expected } of cases) {
+        expect(render(href), href).toContain(`href="${expected}"`);
+      }
+    }
+    expect(locationReads).toEqual([]);
+
+    // Configured locales and domain locales still resolve from the location.
+    (globalThis as any).window = {
+      location,
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: { domainLocales: [{ domain: "example.com", defaultLocale: "id" }] },
+    };
+    expect(render("/about")).toContain('href="/id/about"');
+    expect(locationReads).toEqual(expect.arrayContaining(["pathname", "hostname"]));
+  });
+
   it("locale string prepends locale prefix", () => {
     // When locale is a non-default locale string, it prepends /{locale}
     // Note: default locale check uses __VINEXT_DEFAULT_LOCALE__ which is undefined in tests

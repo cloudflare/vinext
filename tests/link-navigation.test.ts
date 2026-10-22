@@ -22,6 +22,10 @@ import {
 } from "../packages/vinext/src/server/headers.js";
 import type { VinextLinkPrefetchRoute } from "../packages/vinext/src/client/vinext-next-data.js";
 import type { RouteManifest } from "../packages/vinext/src/routing/app-route-graph.js";
+import type {
+  NavigationRuntime,
+  NavigationRuntimeNavigate,
+} from "../packages/vinext/src/client/navigation-runtime.js";
 
 type CapturedEffect = () => void | (() => void);
 
@@ -455,6 +459,16 @@ describe("Link prefetch pure decisions", () => {
 
     for (const testCase of cases) {
       expect(getLinkPrefetchHref(testCase.input), testCase.name).toBe(testCase.expected);
+    }
+
+    // Link's mount effect only calls getLinkPrefetchHref() (and reads the
+    // window origin) for absolute hrefs, relying on relative ones round-tripping.
+    for (const href of ["/", "/local?q=1#h", "/docs/path", "?q=1", "#h", "relative/path"]) {
+      for (const basePath of ["", "/docs"]) {
+        for (const currentOrigin of ["https://example.com", undefined]) {
+          expect(getLinkPrefetchHref({ href, basePath, currentOrigin }), href).toBe(href);
+        }
+      }
     }
   });
 });
@@ -1597,10 +1611,26 @@ async function renderIsolatedLink(options: {
       effect();
     }
 
+    // Mounts one more Link from the same module instance and runs its effects.
+    const mountAnotherLink = (href: string): void => {
+      const firstEffect = effects.length;
+      capturedAnchorProps = undefined;
+      ReactDOMServer.renderToString(
+        React.createElement(IsolatedLink, { href, ...options.props }, "target"),
+      );
+      // The render above reassigns capturedAnchorProps through captureAnchor.
+      const anotherAnchorProps = capturedAnchorProps as CapturedAnchorProps | undefined;
+      anotherAnchorProps?.ref?.({ href } as HTMLAnchorElement);
+      for (const effect of effects.slice(firstEffect)) {
+        effect();
+      }
+    };
+
     return {
       anchor,
       capturedAnchorProps,
       fetch,
+      mountAnotherLink,
       navigate,
       pagePrefetchLinks,
       restoreNodeEnv,
@@ -2118,6 +2148,42 @@ describe("Link prefetch scheduling", () => {
       expect(renderModeOf(result.fetch.mock.calls[1])).toBe(
         APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
       );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("registers the visible-link ping once per navigation runtime", async () => {
+    stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+    const runtimeKey = Symbol.for("vinext.navigationRuntime");
+    const runtime = Reflect.get(window, runtimeKey) as NavigationRuntime;
+
+    try {
+      const functions = runtime.functions;
+      const pingVisibleLinks = functions.pingVisibleLinks;
+      expect(pingVisibleLinks).toBeTypeOf("function");
+
+      // Another Link on the same runtime leaves the registered table alone.
+      result.mountAnotherLink("/intent-prefetch-target");
+      expect(runtime.functions).toBe(functions);
+
+      // A function table replaced without the ping gets it back.
+      runtime.functions = { navigate: result.navigate as NavigationRuntimeNavigate };
+      result.mountAnotherLink("/touch-prefetch-target");
+      expect(runtime.functions.pingVisibleLinks).toBe(pingVisibleLinks);
+      expect(runtime.functions.navigate).toBe(result.navigate);
+
+      // So does a replacement runtime.
+      const replacement = createTestNavigationRuntime(vi.fn(), null);
+      Reflect.set(window, runtimeKey, replacement);
+      result.mountAnotherLink("/blog/hello");
+      const installed = Reflect.get(window, runtimeKey) as NavigationRuntime;
+      expect(installed).toBe(replacement);
+      expect(installed.functions.pingVisibleLinks).toBe(pingVisibleLinks);
     } finally {
       result.restoreNodeEnv();
     }
