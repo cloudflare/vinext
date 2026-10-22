@@ -11,8 +11,13 @@ import {
 } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
-import type { RenderToReadableStreamOptions } from "react-dom/server";
-import { renderToReadableStream, renderToStaticMarkup } from "react-dom/server.edge";
+// Resolved per environment: React's Node build on Node and the edge build under
+// workerd/edge-light, matching how Next.js loads `react-dom/server`.
+import {
+  renderToReadableStream,
+  renderToStaticMarkup,
+  type RenderToReadableStreamOptions,
+} from "react-dom/server";
 import clientReferences, { routeClientReferences } from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
@@ -117,7 +122,7 @@ export type FontData = {
   preloads?: FontPreload[];
 };
 
-type StaticPrerender = typeof import("react-dom/static.edge").prerender;
+type StaticPrerender = typeof import("react-dom/static").prerender;
 
 function isReactDevelopmentRuntime(): boolean {
   if (process.env.NODE_ENV === "production") {
@@ -141,7 +146,7 @@ function isStaticPrerenderModule(value: unknown): value is { prerender: StaticPr
 async function loadStaticPrerender(): Promise<StaticPrerender> {
   // Prefer the stable ESM entry in all environments. Future React dev builds
   // may export prerender() here, so this is the first path we attempt.
-  const staticRenderer: unknown = await import("react-dom/static.edge");
+  const staticRenderer: unknown = await import("react-dom/static");
   if (isStaticPrerenderModule(staticRenderer)) {
     return staticRenderer.prerender;
   }
@@ -185,7 +190,7 @@ async function loadStaticPrerender(): Promise<StaticPrerender> {
     }
   }
 
-  throw new Error("[vinext] react-dom/static.edge did not expose prerender().");
+  throw new Error("[vinext] react-dom/static did not expose prerender().");
 }
 
 function createUtf8Stream(html: string): ReadableStream<Uint8Array> {

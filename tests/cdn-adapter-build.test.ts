@@ -132,6 +132,17 @@ describe("Cloudflare CDN adapter build output", () => {
     expect(workerClosure).toContain("enterSpan");
   });
 
+  it("bundles React's edge Fizz build into the Worker", async () => {
+    // `react-dom/server` resolves through the workerd condition to
+    // server.edge. React's Node build writes HTML chunks with
+    // TextEncoder#encodeInto and exports renderToPipeableStream; neither may
+    // reach the Worker.
+    const ssr = await fs.readFile(path.join(root, "dist/server/ssr/index.js"), "utf8");
+    expect(ssr).toContain("$RC");
+    expect(ssr).not.toContain("encodeInto");
+    expect(ssr).not.toContain("renderToPipeableStream");
+  });
+
   it("emits the pregenerated-paths sidecar only in the response-stage closure", async () => {
     const sidecarName = "__vinext_pregenerated_concrete_paths.js";
     const serverDir = path.join(root, "dist/server");

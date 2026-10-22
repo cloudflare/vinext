@@ -339,7 +339,7 @@ export type CreatePagesPageHandlerOptions = {
   getFontStyles: () => string[];
   /** Combined font preloads. */
   getFontPreloads: () => Array<{ href: string; type: string }>;
-  /** `renderToReadableStream` from `react-dom/server.edge`. */
+  /** `renderToReadableStream` from `react-dom/server`. */
   renderToReadableStream: (element: ReactNode) => Promise<ReadableStream<Uint8Array>>;
   /** `safeJsonStringify` from `vinext/html`. */
   safeJsonStringify: (value: unknown) => string;

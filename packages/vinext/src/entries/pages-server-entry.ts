@@ -493,7 +493,7 @@ export async function runMiddleware(request, ctx) {
   return `
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream } from "react-dom/server";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";

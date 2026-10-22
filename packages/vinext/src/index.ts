@@ -440,7 +440,7 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE = Object.freeze([
 const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react",
   "react-dom",
-  "react-dom/server.edge",
+  "react-dom/server",
   "react/jsx-runtime",
   "react/jsx-dev-runtime",
 ]);
@@ -4330,6 +4330,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     ? SSR_EXTERNAL_REACT_ENTRIES
                     : [],
                 ),
+                // plugin-rsc pre-includes react-dom/server.edge and static.edge,
+                // but the SSR entry imports the condition-resolved entries so
+                // Node loads React's Node renderer. Where React is optimized
+                // (Cloudflare and Nitro dev), pre-include those so they are not
+                // discovered on the first request.
+                ...(userSsrExternal === true || externalizeSsrReactInDev
+                  ? {}
+                  : { include: ["react-dom/server", "react-dom/static"] }),
                 entries: optimizeEntries,
                 ...depOptimizeNodeEnvOptions,
               },

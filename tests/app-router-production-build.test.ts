@@ -232,6 +232,14 @@ describe("App Router Production build", () => {
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare:workers");
     expect(readAllJs(path.join(outDir, "server"))).not.toContain("cloudflare-workers");
 
+    // The Node server renders HTML with React's Node Fizz build, as Next.js
+    // does: the SSR bundle imports the condition-resolved entries, which Node
+    // resolves to server.node / static.node, instead of the edge build.
+    const ssrJs = readAllJs(path.join(outDir, "server", "ssr"));
+    expect(ssrJs).toMatch(/from\s*["'`]react-dom\/server["'`]/);
+    expect(ssrJs).not.toContain("react-dom/server.edge");
+    expect(ssrJs).not.toContain("react-dom/static.edge");
+
     // Asset manifest should be generated
     expect(fs.existsSync(path.join(outDir, "server", "__vite_rsc_assets_manifest.js"))).toBe(true);
 

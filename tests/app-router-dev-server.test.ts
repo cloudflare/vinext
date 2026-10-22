@@ -2272,10 +2272,9 @@ describe("App Router integration", () => {
     // explicitly included to prevent late discovery, re-optimisation
     // cascades and "Invalid hook call" errors during dev.
     //
-    // SSR: react-dom/server.edge is used for both renderToReadableStream
-    // (static import) and renderToStaticMarkup (dynamic import) in the
-    // SSR entry. It's included by @vitejs/plugin-rsc, so vinext doesn't
-    // need to add it explicitly.
+    // SSR: @vitejs/plugin-rsc includes react-dom/server.edge. This Node dev
+    // server externalizes React, so the SSR entry's `react-dom/server`
+    // import loads React's Node build natively instead.
     //
     // Client: react, react-dom, and react-dom/client are framework deps
     // used for hydration that aren't in user source files.

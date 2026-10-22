@@ -46,7 +46,7 @@ import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream } from "react-dom/server";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,

@@ -1037,7 +1037,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain("already-included");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react");
       expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom");
-      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server.edge");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("react-dom/server");
       expect(workerEnvConfig.optimizeDeps.include).toContain(
         "use-sync-external-store/with-selector",
       );
