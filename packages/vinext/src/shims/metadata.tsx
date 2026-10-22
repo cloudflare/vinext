@@ -208,7 +208,11 @@ export type Metadata = {
     images?: string | URL | SocialImageDescriptor | Array<string | URL | SocialImageDescriptor>;
     videos?: OGVideo | OGVideo[];
     audio?: OGAudio | OGAudio[];
+    emails?: string | string[];
+    phoneNumbers?: string | string[];
+    faxNumbers?: string | string[];
     locale?: string;
+    alternateLocale?: string | string[];
     type?: string;
     publishedTime?: string;
     modifiedTime?: string;
@@ -1185,6 +1189,18 @@ export function MetadataHead({
           );
         if (audio.type)
           elements.push(<meta key={key++} property="og:audio:type" content={audio.type} />);
+      }
+    }
+    const ogListTags = [
+      ["og:email", og.emails],
+      ["og:phone_number", og.phoneNumbers],
+      ["og:fax_number", og.faxNumbers],
+      ["og:locale:alternate", og.alternateLocale],
+    ] as const;
+    for (const [property, value] of ogListTags) {
+      if (!value) continue;
+      for (const content of Array.isArray(value) ? value : [value]) {
+        elements.push(<meta key={key++} property={property} content={content} />);
       }
     }
   }

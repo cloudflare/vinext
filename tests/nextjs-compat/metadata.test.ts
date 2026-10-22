@@ -227,6 +227,42 @@ describe("Next.js compat: metadata", () => {
     ]);
   });
 
+  // ── OpenGraph contact and alternate locale lists ─────────────
+  // Next.js accepts a single string or an array for each field. Expected tags
+  // were captured from next@16.2.7.
+
+  function ogListTags(html: string): string[] {
+    return Array.from(
+      html.matchAll(
+        /<meta\s+property="(og:(?:email|phone_number|fax_number|locale:alternate))"\s+content="([^"]*)"/g,
+      ),
+      (match) => `${match[1]}=${match[2]}`,
+    );
+  }
+
+  it("should render og:email, og:phone_number, og:fax_number and og:locale:alternate lists", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-contact");
+    expect(ogListTags(html)).toEqual([
+      "og:email=a@example.com",
+      "og:email=b@example.com",
+      "og:phone_number=+1 555 0100",
+      "og:phone_number=+1 555 0101",
+      "og:fax_number=+1 555 0199",
+      "og:locale:alternate=fr_FR",
+      "og:locale:alternate=de_DE",
+    ]);
+  });
+
+  it("should render single og:email, og:phone_number, og:fax_number and og:locale:alternate values", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-opengraph-contact/single");
+    expect(ogListTags(html)).toEqual([
+      "og:email=a@example.com",
+      "og:phone_number=+1 555 0100",
+      "og:fax_number=+1 555 0199",
+      "og:locale:alternate=fr_FR",
+    ]);
+  });
+
   // ── Twitter ──────────────────────────────────────────────────
   // Next.js: 'should support twitter card summary_large_image'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L308-L323
