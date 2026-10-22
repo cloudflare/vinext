@@ -1137,7 +1137,9 @@ export function createAppBrowserNavigationController(
           commitEffect.publish({ releaseSnapshot: snapshotRenderIds.delete(renderId) });
         },
       });
-      claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId);
+      claimAppRouterScrollIntentForCommit(options.scrollIntent, renderId, {
+        parallelSlotOwned: approvedCommit.interception !== null,
+      });
       // The render snapshot gives hooks this navigation's URL while it renders.
       // A retired URL is not becoming visible, so hooks read the current one.
       if (!isRetiredNavigationUrl(options.navId, options.targetHref)) {
