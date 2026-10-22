@@ -67,6 +67,37 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     void consoleErrors;
   });
 
+  test("renders a client component that awaits at its top level", async ({
+    page,
+    request,
+    consoleErrors,
+  }) => {
+    // The build streams this component: its load runs through the SSR
+    // entry's wrapped client reference loader.
+    const stylesheets = (html: string) =>
+      (html.match(/<link\b[^>]*\brel="stylesheet"[^>]*>/g) ?? []).map(
+        (tag) => tag.match(/\bhref="([^"]+)"/)![1],
+      );
+    const documents: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const response = await request.get(`${BASE_URL}/top-level-await`);
+      expect(response.status()).toBe(200);
+      const html = await response.text();
+      expect(html).toContain('data-testid="top-level-await-panel"');
+      // A component that fails on the server leaves a client-rendered
+      // boundary (`<!--$!-->`) carrying the error digest.
+      expect(html).not.toContain("<!--$!-->");
+      documents.push(html);
+    }
+    expect(stylesheets(documents[0]!)).toHaveLength(1);
+    expect(stylesheets(documents[1]!)).toEqual(stylesheets(documents[0]!));
+
+    await page.goto(`${BASE_URL}/top-level-await`);
+    await expect(page.getByTestId("top-level-await-panel")).toHaveCSS("color", "rgb(0, 128, 0)");
+
+    void consoleErrors;
+  });
+
   test("preserves request.cf in App Router route handlers without ISR caching", async ({
     request,
   }) => {
