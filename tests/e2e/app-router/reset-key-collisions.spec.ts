@@ -42,11 +42,20 @@ test.describe("route reset key collisions", () => {
     await expect(page.getByTestId("docs-guide-page")).toHaveText("Docs guide a");
 
     await triggerError(page, "docs");
+    await page.evaluate(() => {
+      (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker = true;
+    });
 
     await page.getByTestId("to-docs-guide-b").click();
 
     await expect(page.getByTestId("docs-guide-page")).toHaveText("Docs guide b");
     await expect(page.getByTestId("docs-error-boundary")).not.toBeAttached();
+    // A full document load would recreate the boundary.
+    expect(
+      await page.evaluate(
+        () => (window as Window & { __clientNavMarker?: boolean }).__clientNavMarker,
+      ),
+    ).toBe(true);
   });
 
   test("static branches with the same leaf segment remount route loading", async ({ page }) => {
