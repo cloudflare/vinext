@@ -512,6 +512,7 @@ export async function handleSsr(
     const streamedReferences = createStreamedClientReferences(
       routeReferences,
       options?.scriptNonce,
+      assetCrossOrigin,
     );
     await clientReferencePreloader.preload(
       routeReferences?.references,

@@ -1,6 +1,7 @@
 /**
  * Stream the client references an SSR render may show before they load, and
- * hint every client reference's scripts with the render's CSP nonce.
+ * hint every client reference's scripts with the render's CSP nonce and the
+ * configured crossOrigin.
  *
  * A render waits for its route's client references before it starts, except
  * those whose modules evaluate asynchronously (top-level await). Like Next.js,
@@ -16,14 +17,17 @@
  * Flight stream names it.
  *
  * plugin-rsc hints a client module's scripts without the render's nonce, which
- * a nonce-based CSP blocks. React keeps the first hint for each script, so a
- * render with a nonce hints them first, with the nonce, as Next.js does.
+ * a nonce-based CSP blocks, and always as anonymous, so under
+ * `crossOrigin: "use-credentials"` the browser fetches the module the page
+ * then imports without credentials. React keeps the first hint for each
+ * script, so a render with either hints them first, with both, as Next.js does.
  */
 import * as ReactDOM from "react-dom";
 import { setOnClientReference } from "@vitejs/plugin-rsc/ssr";
 import { getOrCreateAls } from "vinext/shims/internal/als-registry";
 import type { RouteClientReferenceSet } from "./app-client-reference-preloader.js";
 import { escapeHtmlAttr } from "./html.js";
+import type { AssetCrossOrigin } from "./pages-client-assets.js";
 
 type AssetDeps = { js: string[]; css: string[] };
 type ClientReferenceRequire = (id: string) => Promise<unknown>;
@@ -33,6 +37,8 @@ type ClientReferenceLoader = () => Promise<unknown>;
 export type StreamedClientReferences = {
   /** The render's CSP nonce for the scripts it hints. */
   nonce: string | undefined;
+  /** next.config's crossOrigin for the scripts it hints. */
+  crossOrigin: AssetCrossOrigin;
   streamed: ReadonlySet<string>;
   /** Each of the route's references' position in import order. */
   positions: ReadonlyMap<string, number>;
@@ -50,15 +56,20 @@ const STYLESHEET_PRECEDENCE = "vite-rsc/client-reference";
 const referenceDeps = new Map<string, AssetDeps>();
 const renderStorage = getOrCreateAls<StreamedClientReferences>("vinext.streamedClientReferences");
 
+// plugin-rsc's own hints carry neither.
+function hintsScripts(render: StreamedClientReferences): boolean {
+  return !!render.nonce || render.crossOrigin === "use-credentials";
+}
+
 // Mirrors plugin-rsc's preloadDeps(), which leaves the client entry's own
 // scripts at the default priority; the render has preinitialized those already.
-function linkScripts(deps: AssetDeps, nonce: string | undefined): void {
+function linkScripts(deps: AssetDeps, render: StreamedClientReferences): void {
   // React copies every option onto the link; its types leave out fetchPriority.
   const options = {
     as: "script",
-    crossOrigin: "",
+    crossOrigin: render.crossOrigin,
     fetchPriority: "low",
-    nonce,
+    nonce: render.nonce,
   } as ReactDOM.PreloadModuleOptions;
   for (const href of deps.js) ReactDOM.preloadModule(href, options);
 }
@@ -109,7 +120,7 @@ export function wrapClientReferenceRequire(
     const render = renderStorage.getStore();
     if (render?.streamed.has(id)) {
       const deps = referenceDeps.get(id);
-      if (deps) linkScripts(deps, render.nonce);
+      if (deps) linkScripts(deps, render);
     }
     let loading = loads.get(id);
     if (!loading) {
@@ -128,7 +139,7 @@ export function wrapClientReferenceRequire(
                 linkStreamedStylesheetsBefore(render, id);
                 // plugin-rsc hints the module's scripts as it's read, after this.
                 const deps = referenceDeps.get(id);
-                if (render.nonce && deps && key in target) linkScripts(deps, render.nonce);
+                if (hintsScripts(render) && deps && key in target) linkScripts(deps, render);
               }
               return Reflect.get(target, key, receiver);
             },
@@ -145,16 +156,18 @@ export function wrapClientReferenceRequire(
 export function createStreamedClientReferences(
   route: RouteClientReferenceSet | undefined,
   nonce: string | undefined,
+  crossOrigin: AssetCrossOrigin,
 ): StreamedClientReferences | null {
   const streamed = new Set(route?.streamed);
-  if (streamed.size === 0 && !nonce) return null;
-  return {
+  const render: StreamedClientReferences = {
     nonce,
+    crossOrigin,
     streamed,
     positions: new Map(route?.references.map((id, index) => [id, index])),
     unlinked: route?.references.filter((id) => streamed.has(id)) ?? [],
     linkedStylesheets: new Set(),
   };
+  return streamed.size > 0 || hintsScripts(render) ? render : null;
 }
 
 /** Run a render, and the Flight stream it reads, with its streamed references. */

@@ -1454,25 +1454,36 @@ describe("App Router Production server (startProdServer)", () => {
         );
 
         const html = await res.text();
-        // Client-reference script hints leave `as` out and keep plugin-rsc's crossOrigin.
-        const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
-          (tag) =>
-            /\bfetchpriority="low"/i.test(tag) &&
-            tag.includes('as="script"') &&
-            tag.includes('nonce="vinext-test-nonce"') &&
-            tag.includes("https://cdn.example.com/_next/static/chunks/"),
-        );
+        const lowPriorityScriptPreloads = (page: string) =>
+          (page.match(/<link\b[^>]*>/g) ?? []).filter(
+            (tag) =>
+              /\bfetchpriority="low"/i.test(tag) &&
+              tag.includes("https://cdn.example.com/_next/static/chunks/"),
+          );
+        const dynamicScriptPreloads = lowPriorityScriptPreloads(html);
 
-        expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+        // next/dynamic's links, and client references' hints, which leave `as` out.
+        expect(dynamicScriptPreloads.filter((tag) => tag.includes('as="script"'))).not.toEqual([]);
+        expect(dynamicScriptPreloads.filter((tag) => !tag.includes('as="script"'))).not.toEqual([]);
         for (const tag of dynamicScriptPreloads) {
           expect(tag).toMatch(
             /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
           );
+          expect(tag).toContain('nonce="vinext-test-nonce"');
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
 
-        // @vitejs/plugin-rsc owns additional client-reference hints. This parity port covers
-        // the bootstrap and next/dynamic assets emitted by vinext in this PR.
+        // Without a nonce too.
+        const unnoncedHtml = await (await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic`)).text();
+        const unnoncedScriptPreloads = lowPriorityScriptPreloads(unnoncedHtml);
+        expect(unnoncedScriptPreloads.length).toBe(dynamicScriptPreloads.length);
+        for (const tag of unnoncedScriptPreloads) {
+          expect(tag).not.toContain("nonce=");
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        // Client-reference stylesheets keep plugin-rsc's crossOrigin. This
+        // parity port covers the scripts and next/dynamic assets.
         const cdnAssetScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
           tag.includes('src="https://cdn.example.com/_next/static/'),
         );
