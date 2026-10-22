@@ -99,7 +99,6 @@ import {
   readTrustedPrerenderRouteParamsFromHeaders,
   serializePrerenderRouteParamsHeader,
 } from "./prerender-route-params.js";
-import { seedMemoryCacheFromPrerender as seedMemoryCacheFromPrerenderFallback } from "./seed-cache.js";
 import { installSocketErrorBackstop } from "./socket-error-backstop.js";
 import {
   trustProxy,
@@ -1658,6 +1657,14 @@ function resolveAppRouterHandler(
 }
 
 type AppRouterPrerenderSeeder = (serverDir: string) => Promise<number>;
+
+// Loaded on demand: seed-cache imports React, which picks its development or
+// production build when first loaded, so it must not load before
+// startProdServer has chosen NODE_ENV.
+async function seedMemoryCacheFromPrerenderFallback(serverDir: string): Promise<number> {
+  const { seedMemoryCacheFromPrerender } = await import("./seed-cache.js");
+  return seedMemoryCacheFromPrerender(serverDir);
+}
 type AppRouterPrerenderSeederExport = (serverDir: string) => unknown;
 
 function isAppRouterPrerenderSeederExport(value: unknown): value is AppRouterPrerenderSeederExport {
