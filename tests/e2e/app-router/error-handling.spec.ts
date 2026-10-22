@@ -379,6 +379,29 @@ test.describe("Not Found", () => {
 });
 
 test.describe("Forbidden & Unauthorized", () => {
+  for (const { kind, link } of [
+    { kind: "forbidden", link: "Forbidden item" },
+    { kind: "unauthorized", link: "Unauthorized item" },
+  ]) {
+    test(`a sibling intercepting page's ${kind}() renders the ${kind} beside it`, async ({
+      page,
+    }) => {
+      await page.goto(`${BASE}/nextjs-compat/not-found-sibling-intercept`);
+      await waitForAppRouterHydration(page);
+
+      // Like Next.js, the intercepting route's own boundary catches the signal
+      // inside its layout, ahead of the source segment's.
+      await page.getByRole("link", { name: link }).click();
+      await expect(page).toHaveURL(new RegExp(`/not-found-sibling-intercept/item/${kind}$`));
+      await expect(
+        page.locator(
+          `#not-found-sibling-intercept-intercept-layout #not-found-sibling-intercept-intercept-${kind}`,
+        ),
+      ).toBeVisible();
+      await expect(page.locator(`#not-found-sibling-intercept-source-${kind}`)).toHaveCount(0);
+    });
+  }
+
   test("forbidden() returns 403 status", async ({ page }) => {
     const response = await page.goto(`${BASE}/forbidden-test`);
     expect(response?.status()).toBe(403);

@@ -1635,6 +1635,39 @@ describe("matchAppRoute - URL matching", () => {
     });
   });
 
+  it("records a sibling intercept's own forbidden and unauthorized boundaries", async () => {
+    await withTempDir("vinext-app-sibling-intercept-access-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const sourceDir = path.join(appDir, "feed");
+      const interceptDir = path.join(sourceDir, "(.)photo");
+
+      await mkdir(path.join(interceptDir, "[id]"), { recursive: true });
+      await mkdir(path.join(sourceDir, "photo", "[id]"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "[id]", "unauthorized.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(sourceDir, "photo", "[id]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const sourceRoute = routes.find((route) => route.pattern === "/feed");
+      const intercept = sourceRoute?.siblingIntercepts.find(
+        (candidate) => candidate.targetPattern === "/feed/photo/:id",
+      );
+
+      // Positions count from the source segment: (.)photo is 1, [id] is 2.
+      expect(intercept?.forbiddenPath).toBe(canonical(path.join(interceptDir, "forbidden.tsx")));
+      expect(intercept?.forbiddenTreePosition).toBe(1);
+      expect(intercept?.unauthorizedPath).toBe(
+        canonical(path.join(interceptDir, "[id]", "unauthorized.tsx")),
+      );
+      expect(intercept?.unauthorizedTreePosition).toBe(2);
+    });
+  });
+
   it("discovers intercept layout chains inside parallel slots", async () => {
     // Ported from Next.js:
     // test/e2e/app-dir/interception-dynamic-segment/interception-dynamic-segment.test.ts

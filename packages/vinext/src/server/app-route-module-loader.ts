@@ -43,6 +43,10 @@ type LazyLoadableIntercept = {
   __pageLoader?: LazyModuleThunk | null;
   notFound?: unknown;
   __loadNotFound?: LazyModuleThunk | null;
+  forbidden?: unknown;
+  __loadForbidden?: LazyModuleThunk | null;
+  unauthorized?: unknown;
+  __loadUnauthorized?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
@@ -52,6 +56,10 @@ type LazyLoadableIntercept = {
     pageLoading?: Promise<unknown> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    forbidden?: unknown;
+    forbiddenLoading?: Promise<unknown> | null;
+    unauthorized?: unknown;
+    unauthorizedLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -173,8 +181,8 @@ function pushArrayLoads(
 async function hydrateInterceptModule(
   intercept: LazyLoadableIntercept,
   loader: LazyModuleThunk | null | undefined,
-  field: "page" | "notFound",
-  loadingField: "pageLoading" | "notFoundLoading",
+  field: "page" | "notFound" | "forbidden" | "unauthorized",
+  loadingField: "pageLoading" | "notFoundLoading" | "forbiddenLoading" | "unauthorizedLoading",
 ): Promise<void> {
   const loadState = intercept.__loadState;
   const cached = loadState?.[field];
@@ -214,6 +222,24 @@ export function loadAppInterceptPage(intercept: LazyLoadableIntercept): Promise<
 /** Hydrate an intercepting route's not-found boundary onto `intercept.notFound`. */
 export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Promise<void> {
   return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
+}
+
+/**
+ * Hydrate a sibling intercepting route's forbidden and unauthorized boundaries
+ * onto `intercept.forbidden` and `intercept.unauthorized`.
+ */
+export async function loadAppInterceptAccessFallbacks(
+  intercept: LazyLoadableIntercept,
+): Promise<void> {
+  await Promise.all([
+    hydrateInterceptModule(intercept, intercept.__loadForbidden, "forbidden", "forbiddenLoading"),
+    hydrateInterceptModule(
+      intercept,
+      intercept.__loadUnauthorized,
+      "unauthorized",
+      "unauthorizedLoading",
+    ),
+  ]);
 }
 
 export function loadAppInterceptLayouts(

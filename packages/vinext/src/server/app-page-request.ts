@@ -6,6 +6,7 @@ import { notFoundResponse } from "./http-error-responses.js";
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import {
   loadAppInterceptLayouts,
+  loadAppInterceptAccessFallbacks,
   loadAppInterceptNotFound,
   loadAppInterceptPage,
 } from "./app-route-module-loader.js";
@@ -94,11 +95,21 @@ type AppPageInterceptMatch<TPage = unknown> = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  forbidden?: unknown;
+  __loadForbidden?: (() => Promise<unknown>) | null;
+  forbiddenTreePosition?: number | null;
+  unauthorized?: unknown;
+  __loadUnauthorized?: (() => Promise<unknown>) | null;
+  unauthorizedTreePosition?: number | null;
   __loadState?: {
     page: TPage;
     pageLoading: Promise<TPage> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
+    forbidden?: unknown;
+    forbiddenLoading?: Promise<unknown> | null;
+    unauthorized?: unknown;
+    unauthorizedLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
   slotId?: string | null;
@@ -730,6 +741,7 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
 
   await loadAppInterceptPage(intercept);
   await loadAppInterceptNotFound(intercept);
+  await loadAppInterceptAccessFallbacks(intercept);
   if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
     await loadAppInterceptLayouts(intercept);
   }

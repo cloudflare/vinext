@@ -35,7 +35,11 @@ import {
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
-import { NotFoundBoundary } from "../packages/vinext/src/shims/error-boundary.js";
+import {
+  ForbiddenBoundary,
+  NotFoundBoundary,
+  UnauthorizedBoundary,
+} from "../packages/vinext/src/shims/error-boundary.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
@@ -1043,6 +1047,64 @@ describe("buildPageElements", () => {
     // At (.)photo, above a layout in [id]: that layout is replaced.
     const above = await build(2, 1);
     expect(findElementOfType(above.boundary.props.children, InterceptLayout)).toBe(above.layout);
+  });
+
+  it("wraps a sibling intercepting page in its own forbidden and unauthorized boundaries", async () => {
+    // Next.js renders app/feed/(.)photo/[id]/forbidden.tsx and
+    // unauthorized.tsx for the intercepting page's forbidden() and
+    // unauthorized(), inside the (.)photo layout, in its per-segment order:
+    // Unauthorized > Forbidden > NotFound > page.
+    function InterceptLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return React.createElement("section", null, children);
+    }
+    function InterceptNotFound(): React.ReactNode {
+      return React.createElement("p", null, "Intercept not found");
+    }
+    function InterceptForbidden(): React.ReactNode {
+      return React.createElement("p", null, "Intercept forbidden");
+    }
+    function InterceptUnauthorized(): React.ReactNode {
+      return React.createElement("p", null, "Intercept unauthorized");
+    }
+    const result = await buildPageElements(
+      createBaseOptions({
+        route: createSyntheticRoute({
+          forbidden: createSyntheticPageModule(() => null),
+          page: createSyntheticPageModule(() => null),
+          routeSegments: ["feed"],
+          pattern: "/feed",
+          unauthorized: createSyntheticPageModule(() => null),
+        }),
+        routePath: "/feed/photo/1",
+        opts: {
+          interceptBranchSegments: ["(.)photo", "[id]"],
+          interceptForbidden: createSyntheticPageModule(InterceptForbidden),
+          interceptForbiddenTreePosition: 2,
+          interceptLayouts: [createSyntheticPageModule(InterceptLayout)],
+          interceptLayoutSegments: [["(.)photo"]],
+          interceptNotFound: createSyntheticPageModule(InterceptNotFound),
+          interceptNotFoundTreePosition: 2,
+          interceptPage: createSyntheticPageModule(() => null),
+          interceptParams: { id: "1" },
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          interceptSourcePageSegments: ["feed", "(.)photo", "[id]"],
+          interceptUnauthorized: createSyntheticPageModule(InterceptUnauthorized),
+          interceptUnauthorizedTreePosition: 2,
+        },
+      }),
+    );
+    const pageEntry = (result as Record<string, unknown>)["page:/feed/photo/1"];
+    const layout = findElementOfType(pageEntry, InterceptLayout);
+    if (!layout) throw new Error("Expected the intercept layout");
+    const unauthorized = findElementOfType(layout.props.children, UnauthorizedBoundary);
+    if (!unauthorized) throw new Error("Expected the unauthorized boundary inside the layout");
+    expect((unauthorized.props.fallback as React.ReactElement).type).toBe(InterceptUnauthorized);
+    const forbidden = findElementOfType(unauthorized.props.children, ForbiddenBoundary);
+    if (!forbidden) throw new Error("Expected the forbidden boundary inside unauthorized");
+    expect((forbidden.props.fallback as React.ReactElement).type).toBe(InterceptForbidden);
+    const notFound = findElementOfType(forbidden.props.children, NotFoundBoundary);
+    if (!notFound) throw new Error("Expected the not-found boundary inside forbidden");
+    expect((notFound.props.fallback as React.ReactElement).type).toBe(InterceptNotFound);
   });
 
   it("keys sibling interception pages by target graph and bound params", async () => {

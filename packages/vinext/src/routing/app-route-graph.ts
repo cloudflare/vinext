@@ -56,6 +56,14 @@ type InterceptingRoute = {
   notFoundBranchSegments?: string[];
   /** Tree position relative to the normalized interception branch. */
   notFoundTreePosition?: number | null;
+  /** Nearest forbidden convention inside a sibling interception branch. */
+  forbiddenPath?: string | null;
+  /** Tree position relative to the normalized interception branch. */
+  forbiddenTreePosition?: number | null;
+  /** Nearest unauthorized convention inside a sibling interception branch. */
+  unauthorizedPath?: string | null;
+  /** Tree position relative to the normalized interception branch. */
+  unauthorizedTreePosition?: number | null;
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -1181,7 +1189,7 @@ function discoverSlotSubRoutes(
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
         const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
-        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage, matcher);
+        const notFoundBoundary = findSlotBoundary(slot.ownerDir, subPage, "not-found", matcher);
         return withSlotLoadingEntries(
           {
             ...slot,
@@ -1396,7 +1404,12 @@ function discoverSlotSubRoutes(
           subPage ?? null,
           matcher,
         );
-        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage ?? null, matcher);
+        const notFoundBoundary = findSlotBoundary(
+          slot.ownerDir,
+          subPage ?? null,
+          "not-found",
+          matcher,
+        );
         return withSlotLoadingEntries(
           {
             ...slot,
@@ -1633,14 +1646,15 @@ function withSlotLoadingEntries<TSlot extends ParallelSlot>(
   };
 }
 
-function findSlotNotFoundBoundary(
+function findSlotBoundary(
   slotDir: string,
   pagePath: string | null,
+  fileName: "not-found" | "forbidden" | "unauthorized",
   matcher: ValidFileMatcher,
 ): { path: string | null; treePosition: number | null } {
   let dir = pagePath ? path.dirname(pagePath) : slotDir;
   while (dir === slotDir || dir.startsWith(`${slotDir}${path.sep}`)) {
-    const boundaryPath = findFile(dir, "not-found", matcher);
+    const boundaryPath = findFile(dir, fileName, matcher);
     if (boundaryPath) {
       const relativeDir = path.relative(slotDir, dir);
       return {
@@ -2514,7 +2528,7 @@ function discoverParallelSlots(
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     const loadingEntries = findSlotLoadingEntries(slotDir, pagePath, matcher);
-    const notFoundBoundary = findSlotNotFoundBoundary(slotDir, pagePath, matcher);
+    const notFoundBoundary = findSlotBoundary(slotDir, pagePath, "not-found", matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir)}`,
@@ -2879,11 +2893,25 @@ function collectInterceptingPages(
     );
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
-      const notFoundBoundary = findSlotNotFoundBoundary(
+      const notFoundBoundary = findSlotBoundary(
         slotRootDir ?? interceptRoot,
         page,
+        "not-found",
         matcher,
       );
+      // Only a sibling intercept renders its own forbidden and unauthorized
+      // boundaries. Its branch starts one position below the source segment.
+      const findSiblingBoundary = (fileName: "forbidden" | "unauthorized") => {
+        const boundary = slotRootDir
+          ? null
+          : findSlotBoundary(interceptRoot, page, fileName, matcher);
+        return {
+          path: boundary?.path ?? null,
+          treePosition: boundary?.treePosition == null ? null : boundary.treePosition + 1,
+        };
+      };
+      const forbiddenBoundary = findSiblingBoundary("forbidden");
+      const unauthorizedBoundary = findSiblingBoundary("unauthorized");
       const slotParentSegments = slotRootDir
         ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
         : [];
@@ -2914,6 +2942,10 @@ function collectInterceptingPages(
             : slotRootDir
               ? notFoundBoundary.treePosition
               : notFoundBoundary.treePosition + 1,
+        forbiddenPath: forbiddenBoundary.path,
+        forbiddenTreePosition: forbiddenBoundary.treePosition,
+        unauthorizedPath: unauthorizedBoundary.path,
+        unauthorizedTreePosition: unauthorizedBoundary.treePosition,
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

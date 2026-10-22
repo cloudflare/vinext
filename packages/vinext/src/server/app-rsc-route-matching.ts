@@ -89,6 +89,12 @@ type AppRscSiblingInterceptForMatching = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  forbidden?: unknown;
+  __loadForbidden?: (() => Promise<unknown>) | null;
+  forbiddenTreePosition?: number | null;
+  unauthorized?: unknown;
+  __loadUnauthorized?: (() => Promise<unknown>) | null;
+  unauthorizedTreePosition?: number | null;
   params: readonly string[];
 };
 
@@ -115,6 +121,10 @@ type AppRscInterceptLoadState = {
   pageLoading: Promise<unknown> | null;
   notFound: unknown;
   notFoundLoading: Promise<unknown> | null;
+  forbidden?: unknown;
+  forbiddenLoading?: Promise<unknown> | null;
+  unauthorized?: unknown;
+  unauthorizedLoading?: Promise<unknown> | null;
   interceptLayoutsLoading: Promise<readonly unknown[]> | null;
 };
 
@@ -141,6 +151,12 @@ type AppRscInterceptLookupEntry = {
   notFound: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  forbidden?: unknown;
+  __loadForbidden?: (() => Promise<unknown>) | null;
+  forbiddenTreePosition?: number | null;
+  unauthorized?: unknown;
+  __loadUnauthorized?: (() => Promise<unknown>) | null;
+  unauthorizedTreePosition?: number | null;
   __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
@@ -576,11 +592,21 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           notFound: intercept.notFound,
           __loadNotFound: intercept.__loadNotFound,
           notFoundTreePosition: intercept.notFoundTreePosition,
+          forbidden: intercept.forbidden,
+          __loadForbidden: intercept.__loadForbidden,
+          forbiddenTreePosition: intercept.forbiddenTreePosition,
+          unauthorized: intercept.unauthorized,
+          __loadUnauthorized: intercept.__loadUnauthorized,
+          unauthorizedTreePosition: intercept.unauthorizedTreePosition,
           __loadState: {
             page: intercept.page,
             pageLoading: null,
             notFound: intercept.notFound,
             notFoundLoading: null,
+            forbidden: intercept.forbidden,
+            forbiddenLoading: null,
+            unauthorized: intercept.unauthorized,
+            unauthorizedLoading: null,
             interceptLayoutsLoading: null,
           },
           params: intercept.params,

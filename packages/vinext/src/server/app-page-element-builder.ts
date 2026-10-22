@@ -5,7 +5,11 @@ import {
   withUseCacheLayoutMarker,
 } from "vinext/shims/internal/app-page-props-cache-key";
 import { ClientPageRoot } from "vinext/shims/client-page-root";
-import { NotFoundBoundary } from "vinext/shims/error-boundary";
+import {
+  ForbiddenBoundary,
+  NotFoundBoundary,
+  UnauthorizedBoundary,
+} from "vinext/shims/error-boundary";
 import {
   collectAppPageSearchParams,
   hasAppPageDynamicMetadata,
@@ -142,6 +146,10 @@ export type AppPageInterceptOptions<TModule extends AppPageModule = AppPageModul
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: TModule | null;
   interceptNotFoundTreePosition?: number | null;
+  interceptForbidden?: TModule | null;
+  interceptForbiddenTreePosition?: number | null;
+  interceptUnauthorized?: TModule | null;
+  interceptUnauthorizedTreePosition?: number | null;
   interceptPage?: TModule | null;
   interceptParams?: AppPageParams | null;
   interceptSlotId?: string | null;
@@ -715,18 +723,24 @@ export async function buildPageElements<
       const treePosition = opts?.interceptLoadingTreePositions?.[index];
       if (treePosition !== undefined) loadingIndexesByTreePosition.set(treePosition, index);
     }
-    // The intercepting route's nearest not-found.tsx belongs to its own
-    // segment, as in Next.js, so it catches the intercepting page's notFound()
-    // inside that segment's layout, before the source route's boundaries.
-    const NotFoundComponent = opts?.interceptNotFound?.default;
-    const notFoundTreePosition = NotFoundComponent
-      ? (opts?.interceptNotFoundTreePosition ?? null)
-      : null;
+    // The intercepting route's nearest not-found.tsx, forbidden.tsx and
+    // unauthorized.tsx belong to its own segments, as in Next.js, so they
+    // catch the intercepting page's signals inside that segment's layout,
+    // before the source route's boundaries. Innermost first, in Next.js's
+    // per-segment order: NotFound, then Forbidden, then Unauthorized.
+    const accessBoundaries = [
+      [opts?.interceptNotFound, opts?.interceptNotFoundTreePosition, NotFoundBoundary],
+      [opts?.interceptForbidden, opts?.interceptForbiddenTreePosition, ForbiddenBoundary],
+      [opts?.interceptUnauthorized, opts?.interceptUnauthorizedTreePosition, UnauthorizedBoundary],
+    ] as const;
+    const accessBoundaryTreePositions = accessBoundaries.flatMap(([module, treePosition]) =>
+      module?.default && treePosition != null ? [treePosition] : [],
+    );
     const treePositions = Array.from(
       new Set([
         ...layoutIndexesByTreePosition.keys(),
         ...loadingIndexesByTreePosition.keys(),
-        ...(notFoundTreePosition === null ? [] : [notFoundTreePosition]),
+        ...accessBoundaryTreePositions,
       ]),
     ).sort((left, right) => left - right);
 
@@ -738,9 +752,11 @@ export async function buildPageElements<
       if (LoadingComponent) {
         element = createElement(Suspense, { fallback: createElement(LoadingComponent) }, element);
       }
-      if (NotFoundComponent && treePosition === notFoundTreePosition) {
-        element = createElement(NotFoundBoundary, {
-          fallback: createElement(NotFoundComponent),
+      for (const [module, boundaryTreePosition, AccessBoundary] of accessBoundaries) {
+        const FallbackComponent = module?.default;
+        if (!FallbackComponent || boundaryTreePosition !== treePosition) continue;
+        element = createElement(AccessBoundary, {
+          fallback: createElement(FallbackComponent),
           // oxlint-disable-next-line react/no-children-prop
           children: element,
         });

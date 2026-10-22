@@ -251,6 +251,8 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       // their layout chains into the entry's top-level evaluation.
       imports.getLazyLoaderVar(ir.pagePath);
       if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+      if (ir.forbiddenPath) imports.getLazyLoaderVar(ir.forbiddenPath);
+      if (ir.unauthorizedPath) imports.getLazyLoaderVar(ir.unauthorizedPath);
       for (const layoutPath of ir.layoutPaths) {
         imports.getLazyLoaderVar(layoutPath);
       }
@@ -315,6 +317,12 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       notFound: null,
       __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
       notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
+      forbidden: null,
+      __loadForbidden: ${ir.forbiddenPath ? imports.getLazyLoaderVar(ir.forbiddenPath) : "null"},
+      forbiddenTreePosition: ${ir.forbiddenTreePosition ?? "null"},
+      unauthorized: null,
+      __loadUnauthorized: ${ir.unauthorizedPath ? imports.getLazyLoaderVar(ir.unauthorizedPath) : "null"},
+      unauthorizedTreePosition: ${ir.unauthorizedTreePosition ?? "null"},
       params: ${JSON.stringify(ir.params)},
     }`,
     );
