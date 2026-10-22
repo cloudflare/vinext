@@ -346,8 +346,9 @@ const RSC_RUNTIME_DONE_SCRIPT = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true`;
  * Throws on partial or malformed embeds (chunks present but no done marker,
  * tampered chunk JSON, etc.) — those are real vinext-internal regressions.
  *
- * Safe regex usage: safeJsonStringify (used by createRscEmbedTransform) escapes
- * all '<' and '>' in the embedded JSON, preventing false </script> matches.
+ * Safe regex usage: scriptSafeJsonStringify (used by createRscEmbedTransform)
+ * escapes every '<' that begins "</script" (case-insensitive) in the embedded
+ * JSON, preventing false </script> matches.
  */
 export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array | null {
   const scriptPattern = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;

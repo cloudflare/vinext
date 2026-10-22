@@ -3,6 +3,7 @@ import {
   escapeHtmlAttr,
   htmlTokenListContains,
   safeJsonStringify,
+  scriptSafeJsonStringify,
 } from "./html.js";
 import {
   bytesToBase64,
@@ -125,7 +126,9 @@ export function createNavigationRuntimeRenderedSearchScript(search: string): str
 }
 
 function createNavigationRuntimeRscChunkScript(chunk: RscEmbeddedChunk): string {
-  return navigationRuntimeRscBootstrapExpression() + ".rsc.push(" + safeJsonStringify(chunk) + ")";
+  return (
+    navigationRuntimeRscBootstrapExpression() + ".rsc.push(" + scriptSafeJsonStringify(chunk) + ")"
+  );
 }
 
 function createNavigationRuntimeRscDoneScript(metadata?: InitialNavigationCacheMetadata): string {
