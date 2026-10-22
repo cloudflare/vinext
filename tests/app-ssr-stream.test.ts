@@ -187,6 +187,22 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(transform.flush()).toContain('.rsc.push("firstsecond")');
   });
 
+  it("keeps a replay open after the last byte when asked", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]), {
+      mirrorNextFlight: () => false,
+    });
+    await transform.finalize();
+
+    const reader = transform.replay({ keepOpen: true })!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("chunk");
+    const next = await Promise.race([
+      reader.read().then(() => "read"),
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 10)),
+    ]);
+    expect(next).toBe("pending");
+    await reader.cancel();
+  });
+
   it("can't replay once the raw bytes are released", async () => {
     const transform = createRscEmbedTransform(createTextStream(["chunk"]));
     await transform.getRawBuffer();

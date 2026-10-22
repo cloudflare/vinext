@@ -780,8 +780,12 @@ export async function handleSsr(
           resetStreamedClientReferences(streamedReferences, routeReferences);
           // Decode the payload again inside this render, so that it hints the
           // client references' stylesheets and modules to this document, like
-          // the render it replaces.
-          const replayedRscStream = rscEmbed.replay();
+          // the render it replaces. A fallback shell's stays open, as its SSR
+          // stream does, so the references its aborted prerender omitted stay
+          // suspended.
+          const replayedRscStream = rscEmbed.replay({
+            keepOpen: pprFallbackShellSignal !== undefined,
+          });
           if (replayedRscStream) {
             ssrStream = replayedRscStream;
             flightRoot = null;
