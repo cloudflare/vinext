@@ -1720,7 +1720,9 @@ async function renderAppPageLifecycleImpl(
                 clearRequestContext: options.clearRequestContext,
                 fontLinkHeader,
                 isEdgeRuntime: options.isEdgeRuntime,
-                middlewareHeaders: options.middlewareContext.headers,
+                // buildAppPageSpecialErrorResponse() merges the middleware
+                // headers into the fallback page it returns.
+                middlewareHeaders: null,
                 reactLinkHeader: caughtDocument.linkHeader,
                 reactMaxHeadersLength: options.reactMaxHeadersLength,
                 status: specialError.statusCode,

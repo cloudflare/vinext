@@ -816,9 +816,10 @@ export async function handleSsr(
                   ),
                 );
                 if (options?.waitForAllReady === true) await caughtHtmlStream.allReady;
-              } catch {
+              } catch (caughtRenderError) {
+                // A slot's not-found boundary that throws replaces the 404.
                 void caughtHtmlStream?.cancel().catch(() => {});
-                throw error;
+                throw caughtRenderError;
               }
               renderComplete = caughtHtmlStream.allReady;
               shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
