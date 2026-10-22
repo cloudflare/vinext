@@ -3,6 +3,7 @@ export type AssetCrossOrigin = "" | "anonymous" | "use-credentials";
 export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
+  appRouteManifestModule?: string;
   ssrManifest?: Record<string, string[]>;
   /**
    * Shared Pages chunk files (framework, vinext runtime, client entry) keyed on

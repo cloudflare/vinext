@@ -667,6 +667,38 @@ describe("computeClientRuntimeMetadata", () => {
     ).toEqual(["/cdn/_next/static/shared.js", "/cdn/_next/static/runtime.js"]);
   });
 
+  it("finds the App Router RouteManifest chunk, with the asset prefix", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-app-browser-entry": {
+          file: "_next/static/app-entry.js",
+          isEntry: true,
+          dynamicImports: ["virtual:vinext-app-route-manifest"],
+        },
+        "virtual:vinext-app-route-manifest": {
+          file: "_next/static/route-manifest.js",
+          isDynamicEntry: true,
+        },
+      }),
+    );
+    await fsp.writeFile(
+      path.join(clientDir, "vinext-client-entry-manifest.json"),
+      JSON.stringify({
+        appBrowserEntry: "_next/static/app-entry.js",
+        appRouteManifest: "_next/static/route-manifest.js",
+      }),
+    );
+
+    const routeManifestModule = (assetBase: string, assetPrefix: string) =>
+      computeClientRuntimeMetadata({ clientDir, assetBase, assetPrefix }).appRouteManifestModule;
+    expect(routeManifestModule("/", "")).toBe("/_next/static/route-manifest.js");
+    expect(routeManifestModule("/docs/", "")).toBe("/docs/_next/static/route-manifest.js");
+    expect(routeManifestModule("/docs/", "https://cdn.example.com/assets")).toBe(
+      "https://cdn.example.com/assets/_next/static/route-manifest.js",
+    );
+  });
+
   it("applies base path to all paths", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),

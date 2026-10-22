@@ -8,6 +8,8 @@ export const VINEXT_CLIENT_ENTRY_MANIFEST = "vinext-client-entry-manifest.json";
 export type ClientEntryManifest = {
   pagesClientEntry?: string;
   appBrowserEntry?: string;
+  /** The App Router RouteManifest chunk, which the browser entry imports as it boots. */
+  appRouteManifest?: string;
 };
 
 export function readClientEntryManifest(clientDir: string): ClientEntryManifest | undefined {
@@ -24,6 +26,9 @@ export function readClientEntryManifest(clientDir: string): ClientEntryManifest 
     }
     if (typeof value.appBrowserEntry === "string") {
       manifest.appBrowserEntry = value.appBrowserEntry;
+    }
+    if (typeof value.appRouteManifest === "string") {
+      manifest.appRouteManifest = value.appRouteManifest;
     }
 
     return manifest.pagesClientEntry || manifest.appBrowserEntry ? manifest : undefined;

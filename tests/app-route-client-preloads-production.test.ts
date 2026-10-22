@@ -375,4 +375,16 @@ describe("App Router production SSR route client reference preloads", () => {
       }
     }
   });
+
+  it("preloads the RouteManifest chunk the browser entry imports, at low priority", async () => {
+    // A dynamic import() is fetched at high priority; the preload keeps the
+    // browser entry's import of the manifest off the document's bandwidth.
+    const href = clientFileHref(".js", '"routes":[');
+    for (const route of ["/", "/streamed/also"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      const preload = modulepreloadTags(html).filter((tag) => tag.includes(`href="${href}"`));
+      expect(preload, route).toHaveLength(1);
+      expect(preload[0], route).toContain('fetchPriority="low"');
+    }
+  });
 });

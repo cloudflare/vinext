@@ -24,6 +24,7 @@ import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
+  appRouteManifestModule?: string;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
@@ -108,6 +109,8 @@ function collectAppBootstrapPreinitModules(
  * Read the client build manifest and compute runtime metadata used by
  * Cloudflare worker entry injection and Node production server startup.
  *
+ * - `appRouteManifestModule` — the App Router RouteManifest chunk, which the
+ *   browser entry imports as it boots, preloaded during SSR.
  * - `lazyChunks` — chunks only reachable through dynamic `import()`, excluded
  *   from modulepreload hints.
  * - `dynamicPreloads` — per-module JS/CSS files for rendered `next/dynamic()`
@@ -160,14 +163,18 @@ export function computeClientRuntimeMetadata(opts: {
     );
   }
 
+  const appAssetUrl = (file: string): string => {
+    const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
+    return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
+  };
   metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
     buildManifest,
     clientEntryManifest?.appBrowserEntry,
-    (file) => {
-      const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
-      return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
-    },
+    appAssetUrl,
   );
+  if (clientEntryManifest?.appRouteManifest) {
+    metadata.appRouteManifestModule = appAssetUrl(clientEntryManifest.appRouteManifest);
+  }
 
   // `lazyChunks` and `dynamicPreloads` live in DIFFERENT key-spaces and must be
   // normalised differently:

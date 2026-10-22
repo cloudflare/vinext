@@ -5870,7 +5870,15 @@ export const loadServerActionClient = ${
 
         const manifest: ClientEntryManifest = {};
         for (const chunk of Object.values(bundle)) {
-          if (chunk.type !== "chunk" || !chunk.isEntry) continue;
+          if (chunk.type !== "chunk") continue;
+
+          if (
+            chunk.isDynamicEntry &&
+            isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_APP_ROUTE_MANIFEST)
+          ) {
+            manifest.appRouteManifest = chunk.fileName;
+          }
+          if (!chunk.isEntry) continue;
 
           if (isVirtualEntryFacade(chunk.facadeModuleId, VIRTUAL_CLIENT_ENTRY)) {
             manifest.pagesClientEntry = chunk.fileName;
@@ -8748,6 +8756,7 @@ export const loadServerActionClient = ${
             pagesClientAssetsModule = buildPagesClientAssetsModule({
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
+              appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
               sharedChunks: runtimeMetadata.sharedChunks,

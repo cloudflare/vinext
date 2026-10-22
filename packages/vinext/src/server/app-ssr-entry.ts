@@ -3,7 +3,7 @@
 import "./server-globals.js";
 import type { ReactNode } from "react";
 import type { ReactFormState } from "react-dom/client";
-import { preinitModule } from "react-dom";
+import { preinitModule, preloadModule, type PreloadModuleOptions } from "react-dom";
 import { Fragment, createElement as createReactElement, use } from "react";
 import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import type { RenderToReadableStreamOptions } from "react-dom/server";
@@ -570,6 +570,19 @@ export async function handleSsr(
               crossOrigin: assetCrossOrigin,
               nonce: options?.scriptNonce,
             });
+          }
+          // The browser entry imports the RouteManifest chunk as it boots.
+          // Browsers fetch a dynamic import() at high priority, ahead of the
+          // document's own content; the import reuses this low-priority
+          // preload instead.
+          if (pagesClientAssets.appRouteManifestModule) {
+            // React forwards fetchPriority; its types leave it out.
+            preloadModule(pagesClientAssets.appRouteManifestModule, {
+              as: "script",
+              crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
+              nonce: options?.scriptNonce,
+            } as PreloadModuleOptions);
           }
           if (!flightRoot) {
             flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
