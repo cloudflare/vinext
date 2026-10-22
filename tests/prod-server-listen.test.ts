@@ -84,3 +84,41 @@ describe("production server listen failures", () => {
     expect(result.stderr).toContain("EADDRINUSE");
   }, 20_000);
 });
+
+describe("production server NODE_ENV", () => {
+  // The server bundles import React from node_modules, which picks its
+  // development or production build from NODE_ENV when it is first loaded.
+  async function renderNodeEnv(nodeEnv: string | undefined): Promise<string> {
+    const previous = process.env.NODE_ENV;
+    if (nodeEnv === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+    else Reflect.set(process.env, "NODE_ENV", nodeEnv);
+    cleanups.push(() => {
+      if (previous === undefined) Reflect.deleteProperty(process.env, "NODE_ENV");
+      else Reflect.set(process.env, "NODE_ENV", previous);
+    });
+
+    const root = createProject("app");
+    fs.writeFileSync(
+      path.join(root, "dist/server/index.js"),
+      "const nodeEnv = String(process.env.NODE_ENV);\nexport default () => new Response(nodeEnv);",
+    );
+    const { server } = await startProdServer({
+      outDir: path.join(root, "dist"),
+      port: 0,
+      host: "127.0.0.1",
+      silent: true,
+    });
+    cleanups.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("server has no TCP address");
+    return (await fetch(`http://127.0.0.1:${address.port}/`)).text();
+  }
+
+  it("defaults to production before loading the server bundle, like `vinext start`", async () => {
+    expect(await renderNodeEnv(undefined)).toBe("production");
+  });
+
+  it("keeps an explicit NODE_ENV", async () => {
+    expect(await renderNodeEnv("staging")).toBe("staging");
+  });
+});
