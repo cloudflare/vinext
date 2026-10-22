@@ -1,7 +1,7 @@
 // @ts-nocheck
 // The isolated fixture borrows the E2E workspace dependencies at server startup.
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 
 export default defineConfig({

@@ -15,7 +15,7 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
 
-import { definePlugin, defineRule, type Context, type ESTree } from "@oxlint/plugins";
+import { definePlugin, defineRule, type Context, type ESTree } from "vite-plus/lint/plugins";
 
 const STRIP_EXT_RE = /\.(?:m?js|c?js|tsx?|jsx)$/;
 

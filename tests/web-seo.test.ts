@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { createBenchmarkMetadata } from "../apps/web/app/benchmarks/metadata";
 import robots from "../apps/web/app/robots";
 import sitemap from "../apps/web/app/sitemap";

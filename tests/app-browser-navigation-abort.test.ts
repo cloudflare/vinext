@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { createAppBrowserNavigationAbortCoordinator } from "../packages/vinext/src/server/app-browser-navigation-abort.js";
 
 describe("app browser navigation abort coordinator", () => {

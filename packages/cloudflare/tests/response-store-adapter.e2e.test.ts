@@ -9,7 +9,7 @@ import {
   type MiniflareOptions,
   type Request as MiniflareRequest,
 } from "miniflare";
-import { afterEach, beforeEach, describe, test } from "vitest";
+import { afterEach, beforeEach, describe, test } from "vite-plus/test";
 import { createRscRequestUrl } from "vinext/internal/server/app-rsc-cache-busting";
 import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "vinext/internal/server/headers";
 

@@ -13,7 +13,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { definePlugin, defineRule, type Context, type Node } from "@oxlint/plugins";
+import { definePlugin, defineRule, type Context, type Node } from "vite-plus/lint/plugins";
 
 const VINEXT_SOURCE_SEGMENT = "/packages/vinext/src/";
 const VINEXT_SOURCE_ROOT = "packages/vinext/src";

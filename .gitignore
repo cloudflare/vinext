@@ -72,3 +72,4 @@ next-env.d.ts
 # Leaked temp fixtures from the oxlint prefer-shared-utils rule test
 # (normally cleaned up in afterEach; ignore so a crashed run can't commit them).
 __lint_rule_fixtures__-*
+.vitest/
