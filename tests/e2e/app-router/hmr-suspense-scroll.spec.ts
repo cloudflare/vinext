@@ -4,8 +4,10 @@ import { expect, test } from "@playwright/test";
 import { waitForAppRouterHydration } from "../helpers";
 
 const BASE = process.env.VINEXT_E2E_BASE_URL ?? "http://localhost:4174";
-const BEFORE_MARKER = ">before edit<";
-const AFTER_MARKER = ">after edit<";
+const BEFORE_MARKER = '"before edit"';
+const AFTER_MARKER = '"after edit"';
+const NO_CLIENT_SUSPEND = "suspendMs={0}";
+const CLIENT_SUSPEND = "suspendMs={1500}";
 
 type HmrRecord = {
   fallbackShown: boolean;
@@ -18,11 +20,13 @@ const pagePath = path.resolve(
   "tests/fixtures/app-basic/app/hmr-suspense-scroll/page.tsx",
 );
 
-// Restore a known state, so an interrupted earlier run cannot leave the edited
-// marker behind as this run's baseline.
+// Restore a known state, so an interrupted earlier run cannot leave its edits
+// behind as this run's baseline.
 async function readOriginalPage(): Promise<string> {
   const current = await fs.readFile(pagePath, "utf8");
-  const original = current.replace(AFTER_MARKER, BEFORE_MARKER);
+  const original = current
+    .replace(AFTER_MARKER, BEFORE_MARKER)
+    .replace(CLIENT_SUSPEND, NO_CLIENT_SUSPEND);
   if (original !== current) await fs.writeFile(pagePath, original);
   return original;
 }
@@ -100,16 +104,30 @@ test("a link navigation during a suspended HMR update still commits", async ({ p
     await waitForAppRouterHydration(page);
     await expect(page.getByTestId("hmr-suspense-scroll-marker")).toHaveText("before edit");
 
-    // The page renders a second after the HMR response starts streaming, so
-    // the update is still suspended when the link is clicked.
-    const hmrResponse = page.waitForResponse(
-      (response) =>
-        new URL(response.url()).pathname === "/hmr-suspense-scroll" &&
-        response.request().headers()["rsc"] === "1",
+    await fs.writeFile(
+      pagePath,
+      original.replace(BEFORE_MARKER, AFTER_MARKER).replace(NO_CLIENT_SUSPEND, CLIENT_SUSPEND),
     );
-    await fs.writeFile(pagePath, original.replace(BEFORE_MARKER, AFTER_MARKER));
-    await hmrResponse;
-    await page.getByTestId("hmr-suspense-scroll-link").click();
+
+    // The probe records the edited marker once React starts rendering the HMR
+    // update, then keeps that render suspended on the client.
+    await page.waitForFunction(() =>
+      (
+        window as Window & { __hmrSuspenseScrollRenders?: string[] }
+      ).__hmrSuspenseScrollRenders?.includes("after edit"),
+    );
+    // Check and click in one task, without auto-waiting, so the click lands on
+    // the still-visible current page while the update is suspended.
+    const clickedWhileSuspended = await page.evaluate(() => {
+      const link = document.querySelector<HTMLAnchorElement>(
+        '[data-testid="hmr-suspense-scroll-link"]',
+      );
+      const marker = document.querySelector('[data-testid="hmr-suspense-scroll-marker"]');
+      if (!link?.checkVisibility() || marker?.textContent !== "before edit") return false;
+      link.click();
+      return true;
+    });
+    expect(clickedWhileSuspended).toBe(true);
 
     await expect(page.getByTestId("hmr-suspense-scroll-target")).toBeVisible();
     await expect(page).toHaveURL(`${BASE}/hmr-suspense-scroll/target`);
