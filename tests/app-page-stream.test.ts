@@ -406,15 +406,68 @@ describe("app page stream helpers", () => {
     expect(seen).toEqual(["outer tracing", "inner render", "source render"]);
   });
 
-  it("runs every coalesced flush callback when one throws", async () => {
-    const outerFlush = vi.fn();
+  it("passes a cleanup failure to the outer layers like separate wrappers would", async () => {
+    const calls: string[] = [];
     const inner = deferUntilStreamConsumed(createStream([]), () => {
       throw new Error("cleanup failed");
     });
-    const outer = deferUntilStreamConsumed(inner, outerFlush);
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
 
     await expect(outer.getReader().read()).rejects.toThrow("cleanup failed");
-    expect(outerFlush).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual(["outer error cleanup failed", "outer flush"]);
+  });
+
+  it("passes an error replaced by an inner error callback to the outer layers", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("source failed"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      () => {
+        throw new Error("error handler failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("error handler failed");
+    expect(calls).toEqual(["inner flush", "outer error error handler failed", "outer flush"]);
+  });
+
+  it("adds a separate layer to a wrapper that was read and released", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["a", "b"]), () => calls.push("inner"));
+    const reader = inner.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).not.toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("b");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("does not read an empty source before the consumer does", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream([]), () => calls.push("inner"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([]);
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("");
+    expect(calls).toEqual(["inner", "outer"]);
   });
 
   it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {
