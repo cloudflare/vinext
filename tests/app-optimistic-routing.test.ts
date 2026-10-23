@@ -847,11 +847,33 @@ describe("App Router optimistic routing", () => {
     const pageWithPendingFallback = learn({
       [pageId]: pendingFallback(createElement(PendingLoading)),
     });
+    // A layout renders its output above the boundary too, down to its own
+    // Suspense boundaries, and a client component the elements in its props.
+    const PendingClient = lazy(() => () => "Nav");
+    const layoutId = "layout:/";
+    const layoutWith = (output: ReactNode) =>
+      learn({ [layoutId]: createElement("div", null, output, shell[layoutId] as ReactNode) });
+    const layoutWithPendingClient = layoutWith(
+      createElement("header", null, createElement("nav", null, createElement(PendingClient))),
+    );
+    const layoutWithPendingProp = layoutWith(
+      createElement(Slot, { id: "x", fallback: createElement(PendingClient) } as never),
+    );
+    const layoutWithPendingSuspense = layoutWith(
+      createElement(Suspense, { fallback: null }, createElement(PendingClient)),
+    );
     for (const target of [blogRouteStateKey("post-3"), post4]) {
       expect(createOptimisticRouteElements(routeWithPendingFallback, target)).toBeNull();
       expect(createOptimisticRouteElements(pageWithPendingFallback, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPendingClient, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPendingProp, target)).toBeNull();
+      // The layout's own boundary shows its fallback instead.
+      expect(createOptimisticRouteElements(layoutWithPendingSuspense, target)).not.toBeNull();
     }
     resolved = true;
+    expect(
+      createOptimisticRouteElements(layoutWithPendingClient, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
     expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).not.toBeNull();
     expect(
       createOptimisticRouteElements(routeWithPendingFallback, blogRouteStateKey("post-3")),
@@ -891,6 +913,7 @@ describe("App Router optimistic routing", () => {
     };
     // A client loading.tsx, as the page boundary's fallback.
     const Loading = deferred(() => "Loading");
+    const Nav = deferred(() => "Nav");
     const elements = {
       ...shell,
       [pageId]: deferred(
@@ -900,6 +923,8 @@ describe("App Router optimistic routing", () => {
           null,
         ),
       ),
+      // A client component in a layout's output.
+      "layout:/": createElement("div", null, createElement("nav", null, createElement(Nav))),
       // A row inside a row, around a client component type.
       [routeId]: deferred(
         createElement(
@@ -925,6 +950,7 @@ describe("App Router optimistic routing", () => {
     expect(readSuspense(payload![pageId]).key).toBe(post4);
     // The fallback's module has loaded, so the shell commits for its own URL.
     expect(Reflect.get(Loading, "_init")()).toBeTypeOf("function");
+    expect(Reflect.get(Nav, "_init")()).toBeTypeOf("function");
     expect(createOptimisticRouteElements(template, blogRouteStateKey("post-3"))).not.toBeNull();
   });
 

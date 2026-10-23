@@ -476,13 +476,19 @@ function readLazy(value: unknown, onPending?: (thrown: unknown) => void): unknow
   }
 }
 
-// Reads what a commit renders above the shell's mirrored boundary: the whole
-// chain with `descend`, else the top element and its type, and the fallback of
-// any loading boundary read, which the commit shows. Calls `onPending` with
-// what each unread lazy throws, or undefined past the depth limit.
+// How much of a row the commit renders above the shell's mirrored boundary:
+// the route's whole chain, a layout's or template's output outside its own
+// Suspense boundaries, which show their fallback instead, or the top element
+// and its type.
+type ShellRowRead = "chain" | "output" | "top";
+
+// Reads what a commit renders above the shell's mirrored boundary, and the
+// fallback of any Suspense boundary read, which the commit shows. Calls
+// `onPending` with what each unread lazy throws, or undefined past the depth
+// limit.
 function visitUnreadLazies(
   value: unknown,
-  descend: boolean,
+  read: ShellRowRead,
   onPending: (thrown: unknown) => void,
   depth = 0,
 ): void {
@@ -492,7 +498,7 @@ function visitUnreadLazies(
   }
   const resolved = readLazy(value, onPending);
   if (Array.isArray(resolved)) {
-    for (const entry of resolved) visitUnreadLazies(entry, descend, onPending, depth + 1);
+    for (const entry of resolved) visitUnreadLazies(entry, read, onPending, depth + 1);
     return;
   }
   if (!isValidElement(resolved)) return;
@@ -501,22 +507,29 @@ function visitUnreadLazies(
   if (!isUnknownRecord(props)) return;
   // A client loading.tsx is a lazy type until its module loads.
   if (type === Suspense) {
-    visitUnreadLazies(Reflect.get(props, "fallback"), true, onPending, depth + 1);
+    const fallback = Reflect.get(props, "fallback");
+    visitUnreadLazies(fallback, read === "output" ? read : "chain", onPending, depth + 1);
+    if (read === "output") return;
   }
-  if (descend) {
-    visitUnreadLazies(Reflect.get(props, "children"), descend, onPending, depth + 1);
+  if (read === "chain") {
+    visitUnreadLazies(Reflect.get(props, "children"), read, onPending, depth + 1);
+  } else if (read === "output") {
+    // A client component renders the elements it is passed in any prop.
+    for (const key of Object.keys(props)) {
+      visitUnreadLazies(props[key], read, onPending, depth + 1);
+    }
   }
 }
 
 function forEachShellRow(
   elements: Readonly<Record<string, unknown>>,
-  visit: (value: unknown, descend: boolean) => void,
+  visit: (value: unknown, read: ShellRowRead) => void,
 ): void {
   for (const id of Object.keys(elements)) {
     const kind = AppElementsWire.parseElementKey(id)?.kind;
-    if (kind === "route" || kind === "layout" || kind === "template" || kind === "page") {
-      visit(elements[id], kind === "route");
-    }
+    if (kind === "route") visit(elements[id], "chain");
+    else if (kind === "layout" || kind === "template") visit(elements[id], "output");
+    else if (kind === "page") visit(elements[id], "top");
   }
 }
 
@@ -535,11 +548,11 @@ export async function settleOptimisticRouteRows(elements: AppElements): Promise<
     timer = setTimeout(() => resolve("timeout"), SETTLE_OPTIMISTIC_ROUTE_ROWS_TIMEOUT_MS);
   });
   try {
-    // Each pass reads a level deeper, as deep as the rebinding walks.
+    // Each pass reads a level deeper.
     for (let pass = 0; pass <= MAX_REBIND_DEPTH; pass++) {
       const pending: PromiseLike<unknown>[] = [];
-      forEachShellRow(elements, (value, descend) =>
-        visitUnreadLazies(value, descend, (thrown) => {
+      forEachShellRow(elements, (value, read) =>
+        visitUnreadLazies(value, read, (thrown) => {
           // A pending lazy throws its thenable; a failed one throws its error.
           if (isUnknownRecord(thrown) && typeof Reflect.get(thrown, "then") === "function") {
             pending.push(thrown as unknown as PromiseLike<unknown>);
@@ -828,8 +841,8 @@ export function createOptimisticRouteElements(
     // unread fallback. The page entries read are the ones committed: the page
     // is left out of the shell, so only its entry's boundary is read.
     let unread = false;
-    forEachShellRow(elements, (value, descend) =>
-      visitUnreadLazies(value, descend, () => {
+    forEachShellRow(elements, (value, read) =>
+      visitUnreadLazies(value, read, () => {
         unread = true;
       }),
     );

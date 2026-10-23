@@ -2205,6 +2205,7 @@ describe("app page route wiring helpers", () => {
     const buildElements = (
       renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined,
       hasLoadingBoundary: boolean,
+      pageRenderDependency: ReturnType<typeof createAppPageRenderDependency> | null = null,
     ) =>
       buildAppPageElements({
         element: createElement(PageProbe),
@@ -2213,6 +2214,7 @@ describe("app page route wiring helpers", () => {
         },
         matchedParams: {},
         metadataPlacement: "body",
+        pageRenderDependency,
         resolveHead: createResolvedHead,
         route: {
           error: null,
@@ -2248,6 +2250,20 @@ describe("app page route wiring helpers", () => {
     const full = buildElements(undefined, false);
     expect(Object.hasOwn(full, bodyId)).toBe(true);
     expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
+
+    // The metadata outlet belongs to the page segment, which a loading shell
+    // stops above, even one that mirrors the page entry's boundary.
+    const outletId = "__vinext_streaming_metadata_outlet:route:/dashboard";
+    const mirroringShell = buildElements(
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      true,
+      createAppPageRenderDependency(),
+    );
+    expect(
+      findSuspenseWithFallback(mirroringShell["page:/dashboard"], "RouteLoadingProbe"),
+    ).not.toBeNull();
+    expect(findSlotById(mirroringShell["route:/dashboard"], outletId)).toBeNull();
+    expect(findSlotById(full["route:/dashboard"], outletId)).not.toBeNull();
   });
 
   it("treats a nested slot loading boundary as the loading shell when the slot override only carries params", async () => {

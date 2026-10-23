@@ -1358,14 +1358,13 @@ export function buildAppPageElements<
     rendersRouteBoundaries && options.pageRenderDependency
       ? getDefaultExport(pageLoadingModule)
       : null;
+  // As in Next.js, the outlet belongs to the page segment, which a loading
+  // shell stops above, so the shell's route entry leaves it out too.
   const streamingMetadataOutlet = createAppPageStreamingMetadataOutlet(
     isPrefetchLoadingShell ? null : streamingMetadataOutletId,
     options.streamingMetadataOutletSuspended,
   );
-  // The shell leaves the page out, so its outlet stays in the route entry.
-  const renderElementWithMetadataOutlet = isPrefetchLoadingShell
-    ? null
-    : options.renderElementWithMetadataOutlet;
+  const renderElementWithMetadataOutlet = options.renderElementWithMetadataOutlet;
   const pageContent = renderElementWithMetadataOutlet
     ? renderElementWithMetadataOutlet(streamingMetadataOutlet)
     : options.element;
