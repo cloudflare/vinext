@@ -513,7 +513,7 @@ describe("app page stream helpers", () => {
     ]);
   });
 
-  it("cancels the inner layers and the source when an outer start callback throws", async () => {
+  it("cancels the inner layers and the source before an outer layer sees a start failure", async () => {
     const calls: string[] = [];
     const source = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -529,25 +529,31 @@ describe("app page stream helpers", () => {
       onCancel: (reason) => calls.push(`inner cancel ${(reason as Error).message}`),
       onFlush: () => calls.push("inner flush"),
     });
-    const outer = observeStreamConsumption(inner, {
+    const middle = observeStreamConsumption(inner, {
       onStart() {
-        calls.push("outer start");
+        calls.push("middle start");
         throw new Error("start failed");
       },
+      onError: (error) => calls.push(`middle error ${(error as Error).message}`),
+      onFlush: () => calls.push("middle flush"),
+    });
+    const outer = observeStreamConsumption(middle, {
+      onStart: () => calls.push("outer start"),
       onError: (error) => calls.push(`outer error ${(error as Error).message}`),
       onFlush: () => calls.push("outer flush"),
     });
 
     await expect(outer.getReader().read()).rejects.toThrow("start failed");
-    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(calls).toEqual([
       "inner start",
-      "outer start",
-      "outer error start failed",
-      "outer flush",
+      "middle start",
+      "middle error start failed",
+      "middle flush",
       "inner cancel start failed",
       "inner flush",
       "source cancel start failed",
+      "outer error start failed",
+      "outer flush",
     ]);
   });
 

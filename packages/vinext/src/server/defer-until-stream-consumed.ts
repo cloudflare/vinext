@@ -81,10 +81,14 @@ export function observeStreamConsumption(
   const layers = [layer];
   let started = false;
   let settled = false;
-  // Runs the flush and error callbacks of the layers from `first` outward.
-  const finish = (sourceFailure: Failure | undefined, first = 0): Failure | undefined => {
+  // Runs the flush and error callbacks of the layers from `first` up to `end`.
+  const finish = (
+    sourceFailure: Failure | undefined,
+    first = 0,
+    end = layers.length,
+  ): Failure | undefined => {
     let failure = sourceFailure;
-    for (const current of layers.slice(first)) {
+    for (const current of layers.slice(first, end)) {
       current.runInCreationContext(() => {
         const reportedError = failure !== undefined;
         try {
@@ -174,15 +178,16 @@ export function observeStreamConsumption(
                   started = true;
                   const startFailure = start();
                   if (startFailure) {
-                    // The failing layer and those outside it see the error,
-                    // and the failing layer cancels the layers inside it,
-                    // which already passed the chunk on, and the source.
+                    // As a separate wrapper would, the failing layer sees
+                    // the error, cancels the layers inside it (which already
+                    // passed the chunk on) and the source, and then its
+                    // error reaches the layers outside it.
                     settled = true;
-                    const failure = finish(startFailure, startFailure.index);
-                    cancelLayers(startFailure.error, startFailure.index);
-                    layer
-                      .runInCreationContext(() => reader.cancel(startFailure.error))
-                      .catch(() => {});
+                    const { error, index } = startFailure;
+                    let failure = finish({ error }, index, index + 1);
+                    cancelLayers(error, index);
+                    layer.runInCreationContext(() => reader.cancel(error)).catch(() => {});
+                    failure = finish(failure, index + 1);
                     controller.error(failure?.error);
                     return;
                   }
