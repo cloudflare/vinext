@@ -404,6 +404,32 @@ describe("normalizeReactFlightPreloadHints stream", () => {
     expect(cancelled.locked).toBe(false);
   });
 
+  it("passes on a close or error that follows the last chunk without another read", async () => {
+    for (const ending of ["close", "error"] as const) {
+      let control!: ReadableStreamDefaultController<Uint8Array>;
+      const source = new ReadableStream<Uint8Array>(
+        {
+          start(controller) {
+            control = controller;
+            controller.enqueue(new TextEncoder().encode('0:["page"]\n'));
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      const reader = normalizeReactFlightPreloadHints(source).getReader();
+      expect((await reader.read()).done).toBe(false);
+
+      const failure = new Error("render failed");
+      if (ending === "close") control.close();
+      else control.error(failure);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(source.locked).toBe(false);
+      if (ending === "close") await expect(reader.closed).resolves.toBeUndefined();
+      else await expect(reader.closed).rejects.toBe(failure);
+    }
+  });
+
   it("reads and cancels the source in the async context that created the stream", async () => {
     const als = new AsyncLocalStorage<string>();
     const seen: string[] = [];

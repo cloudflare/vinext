@@ -311,7 +311,9 @@ export function normalizeReactFlightPreloadHints(
   const runInCreationContext = AsyncLocalStorage.snapshot();
   let target!: ReadableStreamDefaultController<Uint8Array>;
   let enqueued = 0;
-  let cancelled = false;
+  let reading = false;
+  // Done, errored or cancelled.
+  let settled = false;
   // As the pipe did, unlock the source once it is done, errored or cancelled.
   const release = (): void => {
     try {
@@ -326,6 +328,35 @@ export function normalizeReactFlightPreloadHints(
       target.enqueue(chunk);
     },
   };
+  const finish = (): void => {
+    settled = true;
+    try {
+      flush(sink);
+      target.close();
+    } catch (error) {
+      target.error(error);
+    }
+    release();
+  };
+  const fail = (error: unknown): void => {
+    settled = true;
+    void runInCreationContext(() => reader.cancel(error))
+      .catch(() => {})
+      .finally(release);
+  };
+  // The source can close or error after its last chunk while the consumer
+  // isn't reading. Pass that on without waiting for another read, as the pipe
+  // did. A read in progress sees it itself.
+  reader.closed.then(
+    () => {
+      if (!reading && !settled) finish();
+    },
+    (error: unknown) => {
+      if (reading || settled) return;
+      fail(error);
+      target.error(error);
+    },
+  );
   return new ReadableStream<Uint8Array>(
     {
       start(controller) {
@@ -336,27 +367,30 @@ export function normalizeReactFlightPreloadHints(
         try {
           // A chunk may end inside a row that is carried to the next one, so
           // keep reading until something is forwarded.
-          while (enqueued === 0) {
-            const result = await runInCreationContext(() => reader.read());
-            if (cancelled) return;
+          while (enqueued === 0 && !settled) {
+            reading = true;
+            let result: ReadableStreamReadResult<Uint8Array>;
+            try {
+              result = await runInCreationContext(() => reader.read());
+            } finally {
+              reading = false;
+            }
+            if (settled) return;
             if (result.done) {
-              flush(sink);
-              target.close();
-              release();
+              finish();
               return;
             }
             transform(result.value, sink);
           }
         } catch (error) {
-          void runInCreationContext(() => reader.cancel(error))
-            .catch(() => {})
-            .finally(release);
+          if (settled) return;
+          fail(error);
           throw error;
         }
       },
       // Runs before the cancellation reaches the source stream.
       cancel(reason) {
-        cancelled = true;
+        settled = true;
         onCancel?.(reason);
         return runInCreationContext(() => reader.cancel(reason)).finally(release);
       },
