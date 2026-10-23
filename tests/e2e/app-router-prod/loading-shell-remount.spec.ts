@@ -89,7 +89,9 @@ async function navigate(
   return page.evaluate(() => Reflect.get(window, "__skeletonMounts").mounted);
 }
 
-for (const group of ["slow-layout", "slow-page"]) {
+// client-page/b is a client page, so neither render gives its page entry a
+// loading boundary of its own.
+for (const group of ["slow-layout", "slow-page", "client-page"]) {
   test(`${group}: a navigation mounts one loading.tsx fallback`, async ({ page }) => {
     await trackSkeletonMounts(page);
     const base = `/loading-shell-remount/${group}`;
@@ -165,6 +167,29 @@ test("dynamic route: a shell is keyed for the URL it commits", async ({ page }) 
       showsLoading: false,
     }),
   ).toBe(0);
+});
+
+test("dynamic client page: a shell is keyed for the URL it commits", async ({ page }) => {
+  // Two navigations, each behind the 800ms layout.
+  test.slow();
+  await trackSkeletonMounts(page);
+  const base = "/loading-shell-remount/client-page-dynamic";
+  await page.goto(`${base}/1`);
+  await waitForAppRouterHydration(page);
+  await prefetchLoadingShell(page, `${base}/2`);
+
+  // /3 has no shell of its own, so /2's, whose boundaries are all in the route
+  // entry, is keyed for /3 from the route state it carries. /2 then commits
+  // its own.
+  for (const id of ["3", "2"]) {
+    expect(
+      await navigate(page, {
+        heading: `client-page-dynamic ${id}`,
+        href: `${base}/${id}`,
+        showsLoading: true,
+      }),
+    ).toBe(1);
+  }
 });
 
 test("dynamic layout: a URL commits the shell prefetched for it", async ({ page }) => {

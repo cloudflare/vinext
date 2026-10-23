@@ -1,18 +1,20 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   createElement,
+  Fragment,
   isValidElement,
   Suspense,
   type ComponentProps,
   type ReactNode,
 } from "react";
-import { ErrorBoundary } from "vinext/shims/error-boundary";
+import { ErrorBoundary, RedirectBoundary } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { Slot } from "vinext/shims/slot";
 import {
   AppElementsWire,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -200,6 +202,7 @@ function createBlogMirroredLoadingShellElements(slug: string): AppElements {
       routeId,
     }),
     [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+    [APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY]: key,
     [pageId]: createElement(Suspense, { fallback: createElement("p", null, "Loading"), key }, null),
     [routeId]: createElement(
       "main",
@@ -954,6 +957,97 @@ describe("App Router optimistic routing", () => {
     expect(
       createOptimisticRouteElements(routeWithPendingType("blog"), blogRouteStateKey("post-3")),
     ).not.toBeNull();
+  });
+
+  it("keys a client page shell for another URL", () => {
+    // A client page's entry has no loading boundary of its own in either
+    // render, so the shell's boundaries are all in the route entry.
+    const routeId = routeElementId("post-3");
+    const pageId = AppElementsWire.encodePageId("/blog/post-3", null);
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const key = blogRouteStateKey("post-3");
+    const route = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading"), key },
+      createElement(
+        RedirectBoundary,
+        { resetKey: key } as unknown as ComponentProps<typeof RedirectBoundary>,
+        "Page slot",
+      ),
+    );
+    let resolved = false;
+    const learn = (pending: boolean) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...shell,
+          [pageId]: null,
+          [routeId]: pending
+            ? ({
+                $$typeof: Symbol.for("react.lazy"),
+                _init: () => {
+                  if (!resolved) throw new Promise(() => {});
+                  return route;
+                },
+                _payload: {},
+              } as unknown as AppElements[string])
+            : route,
+        },
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const post4 = blogRouteStateKey("post-4");
+
+    const template = learn(false);
+    expect(template.routeStateKey).toBe(key);
+    const payload = createOptimisticRouteElements(template, post4)!;
+    const boundary = readSuspense(payload[routeId]);
+    expect(boundary.key).toBe(post4);
+    expect(Reflect.get(readChild(boundary) as object, "props").resetKey).toBe(post4);
+
+    // Until the route entry is read, the shell can't be keyed for another URL.
+    const pendingRoute = learn(true);
+    expect(createOptimisticRouteElements(pendingRoute, post4)).toBeNull();
+    resolved = true;
+    expect(readSuspense(createOptimisticRouteElements(pendingRoute, post4)![routeId]).key).toBe(
+      post4,
+    );
+  });
+
+  it("commits a shell that doesn't mirror the route's boundaries as it is", () => {
+    // It stops above the route's own loading.tsx, so it carries no route state
+    // to key and nothing in it needs to be read first.
+    const routeId = AppElementsWire.encodeRouteId("/blog/post-1", null);
+    const pending = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init: () => {
+        throw new Promise(() => {});
+      },
+      _payload: {},
+    } as unknown as ReactNode;
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...createBlogLoadingShellElements(),
+        [routeId]: createElement(Fragment, null, pending, createElement("p", null, "Loading")),
+      },
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    expect(template.routeStateKey).toBeNull();
+    const payload = createOptimisticRouteElements(template, blogRouteStateKey("post-2"));
+    expect(payload?.[routeId]).toBe(template.elements[routeId]);
   });
 
   it("reads the rows a shell rebinds before it is learned", async () => {

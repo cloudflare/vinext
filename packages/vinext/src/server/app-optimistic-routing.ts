@@ -32,6 +32,7 @@ import {
   AppElementsWire,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
@@ -468,21 +469,12 @@ function OptimisticRouteSegment(): null {
   throw OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER;
 }
 
-// A loading shell that renders the route's own boundaries keys the page
-// entry's boundary by the route state the server rendered, which a rewrite can
-// make differ from the state of the visible URL.
-function getPageBoundaryKey(
-  elements: AppElements,
-  pageElementIds: readonly string[],
-): string | null {
-  if (elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] !== "LoadingBoundary") return null;
-  for (const pageElementId of pageElementIds) {
-    const pageElement = readResolvedLazy(elements[pageElementId]);
-    if (isValidElement(pageElement) && pageElement.type === Suspense && pageElement.key !== null) {
-      return pageElement.key;
-    }
-  }
-  return null;
+// A loading shell that renders the route's own boundaries keys them by the
+// route state the server rendered, which a rewrite can make differ from the
+// state of the visible URL.
+function getShellRouteStateKey(elements: AppElements): string | null {
+  const key = elements[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY];
+  return typeof key === "string" ? key : null;
 }
 
 export function createOptimisticRouteTemplate(options: {
@@ -540,7 +532,7 @@ export function createOptimisticRouteTemplate(options: {
         : [],
     pageElementIds,
     routeId: match.route.id,
-    routeStateKey: getPageBoundaryKey(options.elements, pageElementIds),
+    routeStateKey: getShellRouteStateKey(options.elements),
     urlRouteStateKey: resolveUrlRouteStateKey(match, urlParts.raw),
   };
 }
@@ -701,11 +693,6 @@ export async function settleOptimisticRouteRows(elements: AppElements): Promise<
   } finally {
     clearTimeout(timer);
   }
-}
-
-function readResolvedLazy(value: unknown): unknown {
-  const resolved = readLazy(value);
-  return resolved === PENDING_LAZY ? value : resolved;
 }
 
 // Pairs each segment key of one route state key with the other's, where they
@@ -959,23 +946,22 @@ export function createOptimisticRouteElements(
     // Its boundary can't be mirrored, and a bare suspender in its place would
     // be replaced by the real payload's boundary, remounting the fallback.
     if (isLoadingShell && pageElement === PENDING_LAZY) return null;
-    // A loading shell that stops at the route's own loading.tsx carries the
-    // page entry's loading boundary. Suspend inside it: the real payload
-    // renders that same keyed boundary, so React keeps the fallback element
-    // the optimistic commit mounted.
+    // A loading shell that stops at the route's own loading.tsx mirrors the
+    // full render's boundaries: the page entry's own, for a page with one,
+    // inside the route entry's. Suspend inside them: the real payload renders
+    // the same keyed boundaries, so React keeps the fallback element the
+    // optimistic commit mounted.
     elements[pageElementId] =
       isLoadingShell && isValidElement(pageElement) && pageElement.type === Suspense
         ? cloneElement(pageElement, undefined, createElement(OptimisticRouteSegment))
         : createElement(OptimisticRouteSegment);
   }
-  // A page entry still pending when the template was learned is read again.
-  const routeStateKey =
-    template.routeStateKey ?? getPageBoundaryKey(template.elements, template.pageElementIds);
+  const routeStateKey = template.routeStateKey;
   if (routeStateKey !== null) {
     // A row left unread when settling gave up would suspend, or throw, above
     // the boundary the shell mirrors, without its fallback, and so would an
     // unread fallback. The page entries read are the ones committed: the page
-    // is left out of the shell, so only its entry's boundary is read.
+    // is left out of the shell, so only its entry's boundary, if any, is read.
     let unread = false;
     forEachShellRow(elements, (value, read) =>
       visitUnreadLazies(value, read, () => {

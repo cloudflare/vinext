@@ -14,6 +14,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1488,6 +1489,8 @@ describe("app page route wiring helpers", () => {
     });
 
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+    // It stops above the route's own boundaries, so carries no route state.
+    expect(elements[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY]).toBeUndefined();
     const html = await renderRouteEntry(elements, "route:/dashboard/slow");
     expect(html).toContain("Route loading");
     expect(html).not.toContain("Page");
@@ -1650,6 +1653,7 @@ describe("app page route wiring helpers", () => {
     // ancestor's.
     const routeStateKey = resolveAppPagePatternStateKey(["blog", ":slug"], { slug: "hello" });
     expect(shellPage.key).toBe(routeStateKey);
+    expect(shell[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY]).toBe(routeStateKey);
     const template: OptimisticRouteTemplate = {
       elements: shell,
       mountedSlotsHeader: null,
@@ -1675,11 +1679,22 @@ describe("app page route wiring helpers", () => {
     const rekeyedPage = rekeyed["page:/blog/hello"];
     expect(isValidElement(rekeyedPage) && rekeyedPage.key).toBe(otherRouteStateKey);
 
-    // Without a render dependency (client and class pages) the page entry has
-    // no boundary of its own, so the shell keeps the plain loading fallback.
+    // Without a render dependency (client and class pages) neither render gives the page
+    // entry a boundary of its own, and the shell mirrors the route entry's.
     const clientShell = build(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, null);
     expect(clientShell["page:/blog/hello"]).toBeNull();
-    expect(findSlotPath(clientShell["route:/blog/hello"], "page:/blog/hello")).toBeNull();
+    const clientShellPath = findSlotPath(clientShell["route:/blog/hello"], "page:/blog/hello");
+    expect(clientShellPath).toEqual(findSlotPath(fullRoute, "page:/blog/hello"));
+    expect(clientShell[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY]).toBe(routeStateKey);
+    const clientRekeyed = createOptimisticRouteElements(
+      { ...template, elements: clientShell },
+      otherRouteStateKey,
+    )!;
+    expect(findSlotPath(clientRekeyed["route:/blog/hello"], "page:/blog/hello")).toEqual(
+      clientShellPath?.map((entry) =>
+        entry === routeBoundary ? `Symbol(react.suspense)#${otherRouteStateKey}` : entry,
+      ),
+    );
   });
 
   it("keys a shell committed for another URL as the target's full render", async () => {
