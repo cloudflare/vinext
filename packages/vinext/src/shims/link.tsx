@@ -199,6 +199,9 @@ type LinkStatusContextValue = {
 };
 
 const LinkStatusContext = createContext<LinkStatusContextValue>({ pending: false });
+// What a server-rendered Link provides: never pending, and, like the client's
+// per-link value, a different object from the context's default.
+const SERVER_LINK_STATUS: LinkStatusContextValue = { pending: false };
 
 /**
  * useLinkStatus returns the pending state of the enclosing <Link>.
@@ -1149,8 +1152,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   );
 
   // On the server, everything below only allocates: effects never run, event
-  // handlers and refs are not rendered, and no navigation can be pending, so
-  // `useLinkStatus()` reads the context's default `{ pending: false }`. Pages
+  // handlers and refs are not rendered, and no navigation can be pending. Pages
   // render many links, so skip straight to the markup. The client never takes
   // this branch, so its renders always call every hook, and a server render
   // never renders the same Link again with different props. legacyBehavior
@@ -1160,9 +1162,11 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- the early return below never happens on the client. */
   if (isServer && !legacyBehavior && !isDangerous) {
     return (
-      <a href={fullHref} {...anchorProps}>
-        {children}
-      </a>
+      <LinkStatusContext.Provider value={SERVER_LINK_STATUS}>
+        <a href={fullHref} {...anchorProps}>
+          {children}
+        </a>
+      </LinkStatusContext.Provider>
     );
   }
 

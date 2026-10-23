@@ -373,17 +373,25 @@ describe("useLinkStatus", () => {
     ReactDOMServer.renderToString(React.createElement(TestComponent));
   });
 
-  it("returns { pending: false } inside a server-rendered Link", () => {
-    const statuses: unknown[] = [];
-    function Status() {
-      statuses.push(useLinkStatus());
-      return React.createElement("span", null, "status");
+  it("returns { pending: false } inside a server-rendered Link, from the Link's own provider", () => {
+    let outside: unknown;
+    let inside: unknown;
+    function Outside() {
+      outside = useLinkStatus();
+      return React.createElement(
+        Link,
+        { href: "/about" },
+        React.createElement(function Inside() {
+          inside = useLinkStatus();
+          return React.createElement("span", null, "status");
+        }),
+      );
     }
-    const html = ReactDOMServer.renderToString(
-      React.createElement(Link, { href: "/about" }, React.createElement(Status)),
-    );
+    const html = ReactDOMServer.renderToString(React.createElement(Outside));
     expect(html).toBe('<a href="/about"><span>status</span></a>');
-    expect(statuses).toEqual([{ pending: false }]);
+    expect(inside).toEqual({ pending: false });
+    // As on the client, a Link provides its own value rather than the default.
+    expect(inside).not.toBe(outside);
   });
 });
 
