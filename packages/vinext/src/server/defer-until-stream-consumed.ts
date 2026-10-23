@@ -94,6 +94,14 @@ export function deferUntilStreamConsumed(
   };
 
   const reader = stream.getReader();
+  // As the pipe did, unlock the source once it is done, errored or cancelled.
+  const release = () => {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released.
+    }
+  };
   const wrapped = new ReadableStream<Uint8Array>(
     {
       pull(controller) {
@@ -108,6 +116,7 @@ export function deferUntilStreamConsumed(
               }
               if (settled) return;
               settled = true;
+              release();
               const failure = finish(undefined);
               if (failure) controller.error(failure.error);
               else controller.close();
@@ -115,6 +124,7 @@ export function deferUntilStreamConsumed(
             (error: unknown) => {
               if (settled) return;
               settled = true;
+              release();
               controller.error(finish({ error })?.error);
             },
           );
@@ -142,12 +152,14 @@ export function deferUntilStreamConsumed(
             });
           }
         }
-        const cancelled = layer.runInCreationContext(() => reader.cancel(reason));
+        const cancelled = layer.runInCreationContext(() => reader.cancel(reason)).finally(release);
         if (!failure) return cancelled;
+        // A callback's failure takes precedence over the source's.
         const { error } = failure;
-        return cancelled.then(() => {
+        const fail = () => {
           throw error;
-        });
+        };
+        return cancelled.then(fail, fail);
       },
     },
     { highWaterMark: 0 },

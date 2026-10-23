@@ -594,6 +594,62 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["outer cancel", "inner cancel", "inner flush", "source cancel"]);
   });
 
+  it("keeps a callback's failure when cancelling the source also fails", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("source cancel failed");
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(
+      source,
+      () => {},
+      undefined,
+      () => {
+        throw new Error("cancel handler failed");
+      },
+    );
+
+    await expect(wrapped.cancel("gone")).rejects.toThrow("cancel handler failed");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it is done", async () => {
+    const source = createStream(["page"]);
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    await expect(new Response(wrapped).text()).resolves.toBe("page");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it errors", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    await expect(wrapped.getReader().read()).rejects.toThrow("boom");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it is cancelled", async () => {
+    let resolveCancel!: () => void;
+    const source = new ReadableStream<Uint8Array>({
+      cancel: () =>
+        new Promise<void>((resolve) => {
+          resolveCancel = resolve;
+        }),
+    });
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    const cancelled = wrapped.cancel("gone");
+    expect(source.locked).toBe(true);
+    resolveCancel();
+    await cancelled;
+    expect(source.locked).toBe(false);
+  });
+
   it("reuses an unread wrapper from another copy of the module", async () => {
     // The RSC and SSR environments load separate copies of the module.
     vi.resetModules();
