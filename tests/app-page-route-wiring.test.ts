@@ -292,6 +292,26 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
   );
 }
 
+/**
+ * Count the Suspense boundaries each entry adds itself. Entries render behind
+ * dependency barriers, so each is rendered alone, in the given order (parents
+ * first), with its <Slot>s left empty.
+ */
+async function countEntrySuspenseBoundaries(
+  elements: AppElements,
+  ids: readonly string[],
+): Promise<Record<string, number>> {
+  const { ElementsContext } = await import("../packages/vinext/src/shims/slot.js");
+  const boundaries: Record<string, number> = {};
+  for (const id of ids) {
+    const html = await renderHtml(
+      createElement(ElementsContext.Provider, { value: {} }, readChildren(elements[id])),
+    );
+    boundaries[id] = html.split("<!--$-->").length - 1;
+  }
+  return boundaries;
+}
+
 async function renderRouteDocument(
   elements: AppElements,
   routeId: string,
@@ -5188,6 +5208,192 @@ describe("app page route wiring helpers", () => {
     expect(findSuspenseWithFallback(parentBoundary?.props.children, "LeafLoading")).not.toBeNull();
     expect(findSlotById(parentBoundary?.props.children, "layout:/parent/slow")).not.toBeNull();
     expect(countSuspenseWithFallback(routeEntry, "LeafLoading")).toBe(1);
+  });
+
+  it("repeats an ancestor loading boundary only in the outermost entry below it", async () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading");
+    }
+    function LangLayout(props: Record<string, unknown>): ReactNode {
+      return createElement("div", null, readChildren(props.children));
+    }
+    function LangTemplate(props: Record<string, unknown>): ReactNode {
+      return createElement("div", null, readChildren(props.children));
+    }
+    function TestingLayout(props: Record<string, unknown>): ReactNode {
+      return createElement(
+        "section",
+        null,
+        readChildren(props.children),
+        createElement("aside", null, readChildren(props.sidebar)),
+      );
+    }
+
+    const pageRenderDependency = createAppPageRenderDependency();
+    pageRenderDependency.release();
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: { lang: "en" },
+      pageRenderDependency,
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [1, 2],
+        layouts: [{ default: LangLayout }, { default: TestingLayout }],
+        loading: null,
+        loadings: [{ default: RootLoading }],
+        loadingTreePositions: [0],
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["[lang]", "testing"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 1,
+            loading: null,
+            name: "sidebar",
+            ownerTreePosition: 2,
+            page: { default: SlotPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [1],
+        templates: [{ default: LangTemplate }],
+      },
+      routePath: "/en/testing",
+      rootNotFoundModule: null,
+    });
+
+    const boundaries = await countEntrySuspenseBoundaries(elements, [
+      "page:/en/testing",
+      "layout:/[lang]",
+      "template:/[lang]",
+      "layout:/[lang]/testing",
+      AppElementsWire.encodeSlotId("sidebar", "/[lang]/testing"),
+    ]);
+
+    // Next.js renders the root loading.tsx as one boundary around [lang]. The
+    // [lang] layout entry repeats it; entries rendered inside that layout must
+    // not, or one still pending as the outer boundary completes streams the
+    // fallback a second time.
+    expect(boundaries).toEqual({
+      "page:/en/testing": 0,
+      "layout:/[lang]": 1,
+      "template:/[lang]": 0,
+      "layout:/[lang]/testing": 0,
+      [AppElementsWire.encodeSlotId("sidebar", "/[lang]/testing")]: 0,
+    });
+  });
+
+  it("keeps an ancestor loading boundary on a slot passed to a layout above a template", async () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading");
+    }
+    function Layout(props: Record<string, unknown>): ReactNode {
+      return createElement(
+        "div",
+        null,
+        readChildren(props.children),
+        createElement("aside", null, readChildren(props.sidebar)),
+      );
+    }
+    function Template(props: Record<string, unknown>): ReactNode {
+      return createElement("div", null, readChildren(props.children));
+    }
+
+    // app/loading.tsx, app/foo/template.tsx and a layoutless foo/bar/@sidebar,
+    // which renders as a prop of the root layout: the template wraps only the
+    // children branch, so the slot entry carries the boundary itself.
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: Layout }],
+        loading: null,
+        loadings: [{ default: RootLoading }],
+        loadingTreePositions: [0],
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["foo", "bar"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            ownerTreePosition: 2,
+            page: { default: SlotPage },
+            routeSegments: [],
+          },
+        },
+        templateTreePositions: [1],
+        templates: [{ default: Template }],
+      },
+      routePath: "/foo/bar",
+      rootNotFoundModule: null,
+    });
+
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    const boundaries = await countEntrySuspenseBoundaries(elements, [
+      "layout:/",
+      "template:/foo",
+      slotId,
+    ]);
+
+    expect(boundaries).toEqual({ "layout:/": 0, "template:/foo": 1, [slotId]: 1 });
+  });
+
+  it("keeps an ancestor loading boundary below a layout module without a default export", async () => {
+    function RootLoading() {
+      return createElement("p", null, "Loading");
+    }
+    function Layout(props: Record<string, unknown>): ReactNode {
+      return createElement("div", null, readChildren(props.children));
+    }
+
+    // The foo layout module never renders, so the foo/bar layout is the
+    // outermost entry below app/loading.tsx.
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [1, 2],
+        layouts: [{}, { default: Layout }],
+        loading: null,
+        loadings: [{ default: RootLoading }],
+        loadingTreePositions: [0],
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["foo", "bar"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/foo/bar",
+      rootNotFoundModule: null,
+    });
+
+    expect(await countEntrySuspenseBoundaries(elements, ["layout:/foo/bar"])).toEqual({
+      "layout:/foo/bar": 1,
+    });
   });
 
   it("threads route state reset keys into loading, error, and not-found boundaries", () => {

@@ -1017,6 +1017,37 @@ export function buildAppPageElements<
   for (const errorEntry of errorEntries) {
     errorEntriesByTreePosition.set(errorEntry.treePosition, errorEntry);
   }
+  // Next.js renders a loading.tsx as one Suspense boundary around everything
+  // below its segment. vinext repeats that boundary inside the value of the
+  // outermost flat-record entry under it, but not in deeper entries: they
+  // already render inside it, and a second boundary there streams the
+  // fallback again when a deeper entry is still pending as the outer boundary
+  // completes. Per segment, a layout renders outside its template and the
+  // parallel slots passed to it, and all of them outside the segment's page.
+  // A slot's position is that of the layout it is passed to, not its owner:
+  // templates between the two wrap only the children branch.
+  const isOutermostEntryBelowLoading = (
+    loadingTreePosition: number,
+    treePosition: number,
+    kind: "layout" | "template" | "slot" | "page",
+  ): boolean => {
+    const enclosesEntry = (entryTreePosition: number, sameSegmentEncloses: boolean): boolean =>
+      entryTreePosition > loadingTreePosition &&
+      (entryTreePosition < treePosition ||
+        (sameSegmentEncloses && entryTreePosition === treePosition));
+    return (
+      !layoutEntries.some(
+        (entry) =>
+          getDefaultExport(entry.layoutModule) &&
+          enclosesEntry(entry.treePosition, kind !== "layout"),
+      ) &&
+      !templateEntries.some(
+        (entry) =>
+          getDefaultExport(entry.templateModule) &&
+          enclosesEntry(entry.treePosition, kind === "page"),
+      )
+    );
+  };
   const layoutIndicesByTreePosition = new Map<number, number>();
   for (let index = 0; index < layoutEntries.length; index++) {
     layoutIndicesByTreePosition.set(layoutEntries[index].treePosition, index);
@@ -1336,8 +1367,18 @@ export function buildAppPageElements<
   // record itself is serialized, so the page entry needs its own boundary to
   // expose the fallback. Once <Slot> reconnects the entries this is nested
   // inside the route boundary; that duplication is an intentional transport
-  // artifact, not two independently selected loading conventions.
-  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
+  // artifact, not two independently selected loading conventions. A layout or
+  // template between the loading segment and the page carries the boundary
+  // instead (see isOutermostEntryBelowLoading).
+  const pageLoadingEntry = loadingEntries.find(
+    (entry) => entry.loadingModule === pageLoadingModule,
+  );
+  const PageLoadingComponent =
+    pageRenderDependency &&
+    (!pageLoadingEntry ||
+      isOutermostEntryBelowLoading(pageLoadingEntry.treePosition, routeSegments.length, "page"))
+      ? getDefaultExport(pageLoadingModule)
+      : null;
   const streamingMetadataOutlet = createAppPageStreamingMetadataOutlet(
     streamingMetadataOutletId,
     options.streamingMetadataOutletSuspended,
@@ -1382,7 +1423,15 @@ export function buildAppPageElements<
     );
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(templateEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
-    if (ancestorLoadingComponent && ancestorLoadingEntry) {
+    if (
+      ancestorLoadingComponent &&
+      ancestorLoadingEntry &&
+      isOutermostEntryBelowLoading(
+        ancestorLoadingEntry.treePosition,
+        templateEntry.treePosition,
+        "template",
+      )
+    ) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
       const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
       templateElement = (
@@ -1452,7 +1501,15 @@ export function buildAppPageElements<
     );
     const ancestorLoadingEntry = findNearestAncestorLoadingEntry(layoutEntry.treePosition);
     const ancestorLoadingComponent = getDefaultExport(ancestorLoadingEntry?.loadingModule);
-    if (ancestorLoadingComponent && ancestorLoadingEntry) {
+    if (
+      ancestorLoadingComponent &&
+      ancestorLoadingEntry &&
+      isOutermostEntryBelowLoading(
+        ancestorLoadingEntry.treePosition,
+        layoutEntry.treePosition,
+        "layout",
+      )
+    ) {
       const AncestorLoadingComponent = ancestorLoadingComponent;
       const loadingResetKey = resolveRouteSegmentResetKey(ancestorLoadingEntry.treePosition);
       layoutElement = (
@@ -1784,7 +1841,17 @@ export function buildAppPageElements<
       ? undefined
       : findNearestLoadingEntryAtOrAbove(ownerTreePosition);
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
-    if (ownerLoadingComponent && ownerLoadingEntry) {
+    const slotLayoutTreePosition = layoutEntries[targetIndex]?.treePosition;
+    if (
+      ownerLoadingComponent &&
+      ownerLoadingEntry &&
+      (slotLayoutTreePosition === undefined ||
+        isOutermostEntryBelowLoading(
+          ownerLoadingEntry.treePosition,
+          slotLayoutTreePosition,
+          "slot",
+        ))
+    ) {
       const OwnerLoadingComponent = ownerLoadingComponent;
       const ownerResetKey = resolveRouteSegmentResetKey(ownerLoadingEntry.treePosition);
       slotElement = (
