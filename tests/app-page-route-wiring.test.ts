@@ -4591,35 +4591,44 @@ describe("app page route wiring helpers", () => {
     function PageNotFound() {
       return createElement("p", null, "page not found");
     }
-    const elements = buildAppPageElements({
-      element: createElement(PageProbe),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
-        loading: null,
-        notFound: { default: PageNotFound },
-        notFounds: [null],
-        routeSegments: ["reports"],
-        slots: {},
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/reports",
-      rootNotFoundModule: null,
-    });
-    const boundaries: ReactElement<Record<string, unknown>>[] = [];
-    findElement(elements["route:/reports"], (element) => {
-      if (getElementTypeName(element.type) === "NotFoundBoundary") {
-        boundaries.push(element as ReactElement<Record<string, unknown>>);
-      }
-      return false;
-    });
+    const collectNotFoundBoundaries = (
+      siblingIntercept: boolean,
+      segmentNotFound: boolean,
+    ): ReactElement<Record<string, unknown>>[] => {
+      const elements = buildAppPageElements({
+        element: siblingIntercept ? null : createElement(PageProbe),
+        renderElementWithMetadataOutlet: siblingIntercept ? () => createElement(PageProbe) : null,
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: { default: PageNotFound },
+          notFounds: [segmentNotFound ? { default: PageNotFound } : null],
+          notFoundTreePosition: segmentNotFound ? 0 : null,
+          routeSegments: ["reports"],
+          slots: {},
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/reports",
+        rootNotFoundModule: null,
+      });
+      const boundaries: ReactElement<Record<string, unknown>>[] = [];
+      findElement(elements["route:/reports"], (element) => {
+        if (getElementTypeName(element.type) === "NotFoundBoundary") {
+          boundaries.push(element as ReactElement<Record<string, unknown>>);
+        }
+        return false;
+      });
+      return boundaries;
+    };
+    const boundaries = collectNotFoundBoundaries(false, false);
     const pageBoundary = boundaries.find(
       (boundary) =>
         getElementTypeName((boundary.props.fallback as ReactElement).type) === "PageNotFound",
@@ -4629,6 +4638,25 @@ describe("app page route wiring helpers", () => {
     expect(
       boundaries.filter((boundary) => boundary.props.caughtId === APP_PAGE_NOT_FOUND_BOUNDARY_ID),
     ).toHaveLength(1);
+    // When the segment owns the not-found, its boundary carries the id instead.
+    expect(
+      collectNotFoundBoundaries(false, true).filter(
+        (boundary) => boundary.props.caughtId === APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+      ),
+    ).toHaveLength(1);
+
+    // A sibling intercept page brings its own boundaries and renders only for
+    // an RSC navigation, which never replays a caught document, so neither the
+    // source route's page-level nor its segment boundary carries the id.
+    for (const segmentNotFound of [false, true]) {
+      const interceptBoundaries = collectNotFoundBoundaries(true, segmentNotFound);
+      expect(interceptBoundaries.length).toBeGreaterThan(0);
+      expect(
+        interceptBoundaries.filter(
+          (boundary) => boundary.props.caughtId === APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+        ),
+      ).toEqual([]);
+    }
   });
 
   it("clears the built-in not-found boundary on the visible pathname, not the route", () => {

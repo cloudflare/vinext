@@ -1999,10 +1999,16 @@ export function buildAppPageElements<
   // The boundary that catches the page's own notFound(), the page-level one or
   // else the deepest segment's, carries an id so that a document whose slot
   // boundaries catch their slots' signals renders it caught beside them.
+  // A sibling intercept page brings its own boundaries and renders only for
+  // an RSC navigation, which never replays a caught document, so the source
+  // route's boundaries carry no id then.
+  const identifiesPageNotFoundCatcher = !renderElementWithMetadataOutlet;
   const isPageNotFoundCaughtAtPage =
-    notFoundComponent !== null && notFoundOwnerTreePosition === null;
+    identifiesPageNotFoundCatcher &&
+    notFoundComponent !== null &&
+    notFoundOwnerTreePosition === null;
   let pageNotFoundCatcherTreePosition: number | null = null;
-  if (!isPageNotFoundCaughtAtPage) {
+  if (identifiesPageNotFoundCatcher && !isPageNotFoundCaughtAtPage) {
     for (const treePosition of notFoundBoundaries.keys()) {
       if (
         pageNotFoundCatcherTreePosition === null ||
