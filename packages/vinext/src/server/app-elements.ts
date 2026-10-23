@@ -2,6 +2,9 @@ import { normalizeMountedSlotsHeader } from "./app-mounted-slots-header.js";
 import { AppElementsWire, UNMATCHED_SLOT, type AppElements } from "./app-elements-wire.js";
 
 export const APP_PREFETCH_LOADING_SHELL_MARKER_KEY = "__prefetchLoadingShell";
+// The route state key a loading shell that mirrors the route's own boundaries
+// keys them by.
+export const APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY = "__prefetchLoadingShellRouteState";
 
 export {
   AppElementsWire,

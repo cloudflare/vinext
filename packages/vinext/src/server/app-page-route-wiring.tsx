@@ -3,6 +3,7 @@ import {
   AppElementsWire,
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
@@ -1323,12 +1324,9 @@ export function buildAppPageElements<
   // boundaries a full render puts around the page, with the page itself left
   // out. The optimistic commit suspends inside them, so the full payload
   // reconciles with the fallback the shell committed instead of mounting a new
-  // one. It needs the page entry's own keyed boundary, which only pages with a
-  // render dependency get: the browser reads the route state key from it, and
-  // the route entry may still be an unresolved Flight reference there.
+  // one.
   const prefetchShellMirrorsRouteBoundaries =
     shouldRenderPrefetchLoadingShell &&
-    Boolean(options.pageRenderDependency) &&
     prefetchLoadingEntry !== null &&
     prefetchLoadingEntry.treePosition >= routeSegments.length &&
     routeLoadingComponent !== null &&
@@ -1340,6 +1338,11 @@ export function buildAppPageElements<
     // diagnostics can recognize this as a loading-boundary response without
     // requiring source text to appear in client component references.
     elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY] = "LoadingBoundary";
+  }
+  if (prefetchShellMirrorsRouteBoundaries) {
+    // The browser keys the shell's boundaries for another URL from this. A
+    // rewrite can make it differ from the visible URL's route state.
+    elements[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY] = routeResetKey;
   }
 
   const pageLoadingModule = resolveAppPageLoadingModuleAtOrAbove(
@@ -1838,10 +1841,10 @@ export function buildAppPageElements<
 
   if (!rendersRouteBoundaries) {
     // A shell that does not mirror the route's boundaries (it stops above the
-    // route's own loading.tsx, or the page has no render dependency) renders
-    // its loading fallback, if any, in place of the route branch. It does not mount
-    // AppRouterScrollTarget, so the scroll/focus effect belongs to the real
-    // render that replaces this shell (handled in the else branch below).
+    // route's own loading.tsx) renders its loading fallback, if any, in place
+    // of the route branch. It does not mount AppRouterScrollTarget, so the
+    // scroll/focus effect belongs to the real render that replaces this shell
+    // (handled in the else branch below).
     if (prefetchLoadingComponent === null) {
       routeChildren = null;
     } else {
