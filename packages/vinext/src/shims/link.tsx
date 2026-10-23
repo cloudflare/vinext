@@ -22,6 +22,7 @@ import React, {
 import type { UrlObject } from "node:url";
 import {
   getNavigationRuntime,
+  isNavigationRuntimeFunctions,
   loadNavigationRuntimeRouteManifest,
   NAVIGATION_RUNTIME_KEY,
   registerNavigationRuntimeFunctions,
@@ -316,7 +317,9 @@ let validatedNavigationRuntimeFunctions: unknown = null;
  * holds the runtime that last passed it with the same bootstrap and function
  * table objects. Registering either replaces that object, so a replaced or
  * malformed runtime, bootstrap or table falls through to full validation.
- * Chunks streamed into the held bootstrap in place are not revalidated.
+ * The function table is still checked on every call, since it is cheap and
+ * can be edited in place; chunks streamed into the held bootstrap are not
+ * revalidated.
  */
 function hasLinkAppNavigationRuntime(): boolean {
   if (typeof window === "undefined") return false;
@@ -327,7 +330,8 @@ function hasLinkAppNavigationRuntime(): boolean {
     runtime.bootstrap === validatedNavigationRuntimeBootstrap &&
     runtime.functions === validatedNavigationRuntimeFunctions
   ) {
-    return typeof runtime.functions.navigate === "function";
+    const functions: unknown = runtime.functions;
+    return isNavigationRuntimeFunctions(functions) && typeof functions.navigate === "function";
   }
   const validated = getNavigationRuntime();
   validatedNavigationRuntime = validated;

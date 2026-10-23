@@ -159,7 +159,7 @@ function readRuntimeWindow(): Window | null {
   return window;
 }
 
-function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
+export function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&

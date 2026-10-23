@@ -2301,6 +2301,47 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("rejects a navigation runtime whose cached function table is broken in place", async () => {
+    // An earlier Pages Router suite mocks this module without restoring it.
+    vi.doUnmock("../packages/vinext/src/client/pages-router-link-navigation.js");
+    const pagesRouter = {
+      push: vi.fn(() => Promise.resolve(true)),
+      reload: vi.fn(),
+      replace: vi.fn(() => Promise.resolve(true)),
+    };
+    const result = await renderIsolatedLink({
+      href: "/target",
+      nodeEnv: "production",
+      props: { prefetch: false },
+      windowOverrides: { next: { router: pagesRouter } },
+    });
+
+    try {
+      // The render above validated and cached this runtime. Breaking another
+      // capability on the same table invalidates it for full validation, so
+      // the click must not take the App Router branch.
+      const runtime = Reflect.get(window, Symbol.for("vinext.navigationRuntime"));
+      Reflect.set((runtime as NavigationRuntime).functions, "loadRouteManifest", null);
+      const onClick = result.capturedAnchorProps.onClick;
+      if (onClick === undefined) {
+        throw new Error("Expected rendered Link anchor to expose an onClick handler");
+      }
+      await onClick({
+        button: 0,
+        currentTarget: { hasAttribute: () => false, target: "" },
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      });
+
+      expect(result.navigate).not.toHaveBeenCalled();
+      expect(pagesRouter.push).toHaveBeenCalledTimes(1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches a deferred Link on a later ping whose prefetch inputs changed", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({ href: "/products/1", nodeEnv: "production" });
