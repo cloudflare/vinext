@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it } from "vite-plus/test";
 import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import {
@@ -336,6 +337,80 @@ describe("RSC stream hint helpers", () => {
 
     expect(scripts).toContain('.rsc.push([3,"/w=="])');
     expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
+  });
+});
+
+describe("normalizeReactFlightPreloadHints stream", () => {
+  it("does not read the source before the consumer asks for a chunk", async () => {
+    let pulls = 0;
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          controller.enqueue(new TextEncoder().encode('0:["page"]\n'));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const stream = normalizeReactFlightPreloadHints(source);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pulls).toBe(0);
+
+    await expect(readStream(stream)).resolves.toBe('0:["page"]\n');
+    expect(pulls).toBe(1);
+  });
+
+  it("keeps reading until a chunk completes a carried hint row", async () => {
+    const reader = normalizeReactFlightPreloadHints(
+      streamFromChunks(['0:HL["/a.css",', '"stylesheet"]\n']),
+    ).getReader();
+
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe(
+      normalizedStyleHint('0:HL["/a.css","stylesheet"]\n'),
+    );
+    expect((await reader.read()).done).toBe(true);
+  });
+
+  it("errors with the source's error", async () => {
+    const failure = new Error("render failed");
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(failure);
+      },
+    });
+    await expect(readStream(normalizeReactFlightPreloadHints(source))).rejects.toBe(failure);
+  });
+
+  it("reads and cancels the source in the async context that created the stream", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const body = new Response('0:["page"]\n').body!.getReader();
+    const source = new ReadableStream<Uint8Array>(
+      {
+        async pull(controller) {
+          const { done, value } = await body.read();
+          seen.push(`read ${als.getStore()}`);
+          if (done) controller.close();
+          else controller.enqueue(value);
+        },
+        cancel() {
+          seen.push(`cancel ${als.getStore()}`);
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    // As in a render, the source is created before an await and wrapped after it.
+    const stream = await als.run("render", async () => {
+      await Promise.resolve();
+      return normalizeReactFlightPreloadHints(source);
+    });
+
+    const reader = stream.getReader();
+    expect((await reader.read()).done).toBe(false);
+    await reader.cancel("gone");
+    expect(seen).toEqual(["read render", "cancel render"]);
   });
 });
 
