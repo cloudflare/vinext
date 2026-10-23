@@ -2849,6 +2849,12 @@ describe("Link prefetch scheduling", () => {
             await replacement?.pending;
             expect(Array.from(getPrefetchCache().values())).not.toContain(entry);
             expect(replacement?.cacheForNavigation).toBe(true);
+            // The replacement renders the page, not another shell.
+            const replacementHeaders = new Headers(
+              (result.fetch.mock.calls.at(-1)?.[1] as RequestInit | undefined)?.headers,
+            );
+            expect(replacementHeaders.get("next-router-prefetch")).toBeNull();
+            expect(replacementHeaders.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBeNull();
           } else {
             expect(entry).toMatchObject({ cacheForNavigation: true, expiresAt });
           }

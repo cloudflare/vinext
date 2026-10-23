@@ -528,7 +528,9 @@ function prefetchUrl(
         const headers = createAppPrefetchRequestHeaders({
           interceptionContext,
           fetchPriority: priority,
-          prefetchKind: mode === "full" ? "full" : "auto",
+          // The hover upgrade's payload request is a full prefetch too; only
+          // its first, loading-shell request is not.
+          prefetchKind: mode === "full" || mode === "full-after-shell" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
             ? hasSearchAgnosticShell
               ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
