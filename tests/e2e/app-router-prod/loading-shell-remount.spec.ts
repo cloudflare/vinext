@@ -43,7 +43,13 @@ async function prefetchLoadingShell(page: Page, href: string): Promise<void> {
 
 async function navigate(
   page: Page,
-  options: { heading: string; href: string; showsLoading: boolean },
+  options: {
+    heading: string;
+    href: string;
+    showsLoading: boolean;
+    // Checks what the shell committed while the request is held.
+    whileHeld?: () => Promise<void>;
+  },
 ): Promise<number> {
   await page.evaluate(() => {
     Reflect.get(window, "__skeletonMounts").mounted = 0;
@@ -74,6 +80,7 @@ async function navigate(
     await expect(page.locator("[data-skeleton]")).toHaveCount(0);
     await expect(heading).toHaveText(previousHeading);
   }
+  await options.whileHeld?.();
   release();
   await expect(heading).toHaveText(options.heading, { timeout: 10_000 });
   await page.unroute(matcher);
@@ -122,12 +129,14 @@ test("dynamic route: a shell is keyed for the URL it commits", async ({ page }) 
 
   // /3 has no shell of its own, so the route's one, learned from the mounted
   // /2 page, is keyed for /3. It must not suspend inside /2's revealed
-  // boundary, and the real payload reuses the fallback it mounts.
+  // boundary, and the real payload reuses the fallback it mounts. The layout
+  // reads /3's segments.
   expect(
     await navigate(page, {
       heading: "slow-layout-dynamic 3",
       href: `${base}/3`,
       showsLoading: true,
+      whileHeld: () => expect(page.locator("#selected-segments")).toHaveText("(g)/3"),
     }),
   ).toBe(1);
 

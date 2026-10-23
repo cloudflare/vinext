@@ -6,6 +6,7 @@ import {
   RedirectBoundary,
   UnauthorizedBoundary,
 } from "vinext/shims/error-boundary";
+import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { Slot } from "vinext/shims/slot";
 import { isUnknownRecord } from "../utils/record.js";
 import { stripBasePath } from "../utils/base-path.js";
@@ -35,6 +36,7 @@ import {
   type AppElements,
 } from "./app-elements.js";
 import {
+  APP_PAGE_SEGMENT_KEY,
   canonicalizeAppPageParams,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
@@ -474,29 +476,47 @@ function readLazy(value: unknown, onPending?: (thrown: unknown) => void): unknow
   }
 }
 
-function collectPendingLazies(
+// Reads what a commit renders above the shell's mirrored boundary: the whole
+// chain with `descend`, else the top element and its type, and the fallback of
+// any loading boundary read, which the commit shows. Calls `onPending` with
+// what each unread lazy throws, or undefined past the depth limit.
+function visitUnreadLazies(
   value: unknown,
   descend: boolean,
-  pending: PromiseLike<unknown>[],
+  onPending: (thrown: unknown) => void,
   depth = 0,
 ): void {
-  if (depth > MAX_REBIND_DEPTH) return;
-  const onPending = (thrown: unknown) => {
-    // A pending lazy throws its thenable; a failed one throws its error.
-    if (isUnknownRecord(thrown) && typeof Reflect.get(thrown, "then") === "function") {
-      pending.push(thrown as unknown as PromiseLike<unknown>);
-    }
-  };
+  if (depth > MAX_REBIND_DEPTH) {
+    onPending(undefined);
+    return;
+  }
   const resolved = readLazy(value, onPending);
   if (Array.isArray(resolved)) {
-    for (const entry of resolved) collectPendingLazies(entry, descend, pending, depth + 1);
+    for (const entry of resolved) visitUnreadLazies(entry, descend, onPending, depth + 1);
     return;
   }
   if (!isValidElement(resolved)) return;
-  readLazy(resolved.type, onPending);
+  const type = readLazy(resolved.type, onPending);
   const props = Reflect.get(resolved, "props");
-  if (descend && isUnknownRecord(props)) {
-    collectPendingLazies(Reflect.get(props, "children"), descend, pending, depth + 1);
+  if (!isUnknownRecord(props)) return;
+  // A client loading.tsx is a lazy type until its module loads.
+  if (type === Suspense) {
+    visitUnreadLazies(Reflect.get(props, "fallback"), true, onPending, depth + 1);
+  }
+  if (descend) {
+    visitUnreadLazies(Reflect.get(props, "children"), descend, onPending, depth + 1);
+  }
+}
+
+function forEachShellRow(
+  elements: Readonly<Record<string, unknown>>,
+  visit: (value: unknown, descend: boolean) => void,
+): void {
+  for (const id of Object.keys(elements)) {
+    const kind = AppElementsWire.parseElementKey(id)?.kind;
+    if (kind === "route" || kind === "layout" || kind === "template" || kind === "page") {
+      visit(elements[id], kind === "route");
+    }
   }
 }
 
@@ -518,12 +538,14 @@ export async function settleOptimisticRouteRows(elements: AppElements): Promise<
     // Each pass reads a level deeper, as deep as the rebinding walks.
     for (let pass = 0; pass <= MAX_REBIND_DEPTH; pass++) {
       const pending: PromiseLike<unknown>[] = [];
-      for (const id of Object.keys(elements)) {
-        const kind = AppElementsWire.parseElementKey(id)?.kind;
-        if (kind === "route" || kind === "layout" || kind === "template" || kind === "page") {
-          collectPendingLazies(elements[id], kind === "route", pending);
-        }
-      }
+      forEachShellRow(elements, (value, descend) =>
+        visitUnreadLazies(value, descend, (thrown) => {
+          // A pending lazy throws its thenable; a failed one throws its error.
+          if (isUnknownRecord(thrown) && typeof Reflect.get(thrown, "then") === "function") {
+            pending.push(thrown as unknown as PromiseLike<unknown>);
+          }
+        }),
+      );
       if (pending.length === 0) return;
       if ((await Promise.race([Promise.allSettled(pending), timeout])) === "timeout") return;
     }
@@ -574,6 +596,78 @@ function createSegmentKeyMap(fromKey: string, toKey: string): Map<string, string
   return segmentKeys;
 }
 
+// What a segment's key gives `useSelectedLayoutSegment()`, as the server
+// resolves a LayoutSegmentProvider's segments: a param's value (a dynamic
+// segment's key is `name|value|type`), or null for an empty optional
+// catch-all, which is left out. A param's name may contain `|`, but its value
+// is URL-encoded, so the key is read from its end.
+function readSegmentValue(segmentKey: string): string | null {
+  const param = /^.+\|([^|]*)\|(d|c|oc)$/s.exec(segmentKey);
+  if (param === null) return segmentKey;
+  return param[2] === "oc" && param[1] === "" ? null : param[1];
+}
+
+// Pairs each changed segment value of one route state key with the other's,
+// for the segment maps of layout segment providers, which list the values
+// below their layout, route groups included. Returns null when a changed value
+// can't be told apart from another segment's, or an optional catch-all gains
+// or loses its segments, which shifts a map's positions.
+function createSegmentValueMap(fromKey: string, toKey: string): Map<string, string> | null {
+  let from: unknown;
+  let to: unknown;
+  try {
+    from = JSON.parse(fromKey);
+    to = JSON.parse(toKey);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(from) || !Array.isArray(to) || from.length !== to.length) return null;
+  const segmentValues = new Map<string, string>();
+  // The page's provider lists the page's own segment, which a param can be
+  // spelled like.
+  const unchanged = new Set<string>([APP_PAGE_SEGMENT_KEY]);
+  for (let index = 0; index < from.length; index++) {
+    const segmentKey: unknown = from[index];
+    const targetSegmentKey: unknown = to[index];
+    if (typeof segmentKey !== "string" || typeof targetSegmentKey !== "string") return null;
+    const value = readSegmentValue(segmentKey);
+    const targetValue = readSegmentValue(targetSegmentKey);
+    if (value === targetValue) {
+      if (value !== null) unchanged.add(value);
+      continue;
+    }
+    // A route group is spelled like this, and route state keys leave groups out.
+    if (value === null || targetValue === null || /^\(.*\)$/s.test(value)) return null;
+    const paired = segmentValues.get(value);
+    if (paired !== undefined && paired !== targetValue) return null;
+    segmentValues.set(value, targetValue);
+  }
+  for (const value of unchanged) {
+    if (segmentValues.has(value)) return null;
+  }
+  return segmentValues;
+}
+
+// The `children` segments of a layout segment provider's map, for the target.
+// Named slots' segments are bound to params of their own, and a shell with
+// slot identities is not rebound.
+function rebindSegmentMap(
+  segmentMap: unknown,
+  segmentValues: ReadonlyMap<string, string>,
+): unknown {
+  if (!isUnknownRecord(segmentMap)) return segmentMap;
+  const children = Reflect.get(segmentMap, "children");
+  if (!Array.isArray(children)) return segmentMap;
+  let changed = false;
+  const reboundChildren = children.map((segment: unknown) => {
+    const rebound = typeof segment === "string" ? segmentValues.get(segment) : undefined;
+    if (rebound === undefined) return segment;
+    changed = true;
+    return rebound;
+  });
+  return changed ? { ...segmentMap, children: reboundChildren } : segmentMap;
+}
+
 // Element keys and segment identities are built from segment keys, bare or
 // nested in JSON arrays: route, template and slot state keys, and identity
 // tuples. Swaps the mapped ones and keeps the encoding otherwise.
@@ -610,15 +704,21 @@ const RESET_KEY_BOUNDARY_TYPES: ReadonlySet<unknown> = new Set([
   UnauthorizedBoundary,
 ]);
 
+type SegmentRebinding = {
+  keys: ReadonlyMap<string, string>;
+  values: ReadonlyMap<string, string>;
+};
+
 // Rebinds the keys of vinext's boundaries along the children chain: loading
 // boundaries, the slots of templates, and the reset keys of error,
 // access-fallback and redirect boundaries, which keep a caught fallback until
-// their reset key changes. With `descend` false, only the top element is
-// rebound, so the app's output below it keeps its keys and props. Flags
-// `incomplete` when part of the chain can't be read.
+// their reset key changes. Layout segment providers get the target's segments.
+// With `descend` false, only the top element is rebound, so the app's output
+// below it keeps its keys and props. Flags `incomplete` when part of the chain
+// can't be read.
 function rebindElementKeys(
   value: unknown,
-  segmentKeys: ReadonlyMap<string, string>,
+  rebinding: SegmentRebinding,
   descend: boolean,
   incomplete: { found: boolean },
   depth = 0,
@@ -637,7 +737,7 @@ function rebindElementKeys(
   if (Array.isArray(resolved)) {
     let changed = false;
     const entries = resolved.map((entry) => {
-      const rebound = rebindElementKeys(entry, segmentKeys, descend, incomplete, depth + 1);
+      const rebound = rebindElementKeys(entry, rebinding, descend, incomplete, depth + 1);
       if (rebound !== entry) changed = true;
       return rebound;
     });
@@ -650,35 +750,47 @@ function rebindElementKeys(
   if (!isUnknownRecord(elementProps)) return value;
   const children = Reflect.get(elementProps, "children");
   const reboundChildren = descend
-    ? rebindElementKeys(children, segmentKeys, descend, incomplete, depth + 1)
+    ? rebindElementKeys(children, rebinding, descend, incomplete, depth + 1)
     : children;
   const type = readLazy(element.type);
   if (type === PENDING_LAZY) {
     // A key or reset key that names a changed segment may belong to one of
     // vinext's boundaries.
+    // So may a segment map that names one.
     const resetKey = Reflect.get(elementProps, "resetKey");
+    const segmentMap = Reflect.get(elementProps, "segmentMap");
     if (
-      (element.key !== null && rebindSegmentKeys(element.key, segmentKeys) !== element.key) ||
-      (typeof resetKey === "string" && rebindSegmentKeys(resetKey, segmentKeys) !== resetKey)
+      (element.key !== null && rebindSegmentKeys(element.key, rebinding.keys) !== element.key) ||
+      (typeof resetKey === "string" && rebindSegmentKeys(resetKey, rebinding.keys) !== resetKey) ||
+      rebindSegmentMap(segmentMap, rebinding.values) !== segmentMap
     ) {
       incomplete.found = true;
     }
   }
   const key =
     element.key !== null && (type === Suspense || type === Slot)
-      ? rebindSegmentKeys(element.key, segmentKeys)
+      ? rebindSegmentKeys(element.key, rebinding.keys)
       : element.key;
   const resetKey = Reflect.get(elementProps, "resetKey");
   const reboundResetKey =
     typeof resetKey === "string" && RESET_KEY_BOUNDARY_TYPES.has(type)
-      ? rebindSegmentKeys(resetKey, segmentKeys)
+      ? rebindSegmentKeys(resetKey, rebinding.keys)
       : resetKey;
-  if (reboundChildren === children && key === element.key && reboundResetKey === resetKey) {
+  const segmentMap = Reflect.get(elementProps, "segmentMap");
+  const reboundSegmentMap =
+    type === LayoutSegmentProvider ? rebindSegmentMap(segmentMap, rebinding.values) : segmentMap;
+  if (
+    reboundChildren === children &&
+    key === element.key &&
+    reboundResetKey === resetKey &&
+    reboundSegmentMap === segmentMap
+  ) {
     return value;
   }
   const props: Record<string, unknown> = {};
   if (key !== element.key) props.key = key;
   if (reboundResetKey !== resetKey) props.resetKey = reboundResetKey;
+  if (reboundSegmentMap !== segmentMap) props.segmentMap = reboundSegmentMap;
   return reboundChildren === children
     ? cloneElement(element, props)
     : cloneElement(element, props, reboundChildren as ReactNode);
@@ -707,6 +819,22 @@ export function createOptimisticRouteElements(
         ? cloneElement(pageElement, undefined, createElement(OptimisticRouteSegment))
         : createElement(OptimisticRouteSegment);
   }
+  // A page entry still pending when the template was learned is read again.
+  const routeStateKey =
+    template.routeStateKey ?? getPageBoundaryKey(template.elements, template.pageElementIds);
+  if (routeStateKey !== null) {
+    // A row left unread when settling gave up would suspend, or throw, above
+    // the boundary the shell mirrors, without its fallback, and so would an
+    // unread fallback. The page entries read are the ones committed: the page
+    // is left out of the shell, so only its entry's boundary is read.
+    let unread = false;
+    forEachShellRow(elements, (value, descend) =>
+      visitUnreadLazies(value, descend, () => {
+        unread = true;
+      }),
+    );
+    if (unread) return null;
+  }
   if (
     !isLoadingShell ||
     // The target is the URL the shell was rendered for, so its real payload
@@ -715,9 +843,6 @@ export function createOptimisticRouteElements(
   ) {
     return elements;
   }
-  // A page entry still pending when the template was learned is read again.
-  const routeStateKey =
-    template.routeStateKey ?? getPageBoundaryKey(template.elements, template.pageElementIds);
   if (routeStateKey === null || targetRouteStateKey === routeStateKey) return elements;
 
   // The shell is keyed for the URL it was learned from, which may be the
@@ -727,7 +852,8 @@ export function createOptimisticRouteElements(
   // boundary the payload then reuses, and a search-only change keeps the
   // mounted one, as in Next.js.
   const segmentKeys = createSegmentKeyMap(routeStateKey, targetRouteStateKey);
-  if (segmentKeys === null) return null;
+  const segmentValues = createSegmentValueMap(routeStateKey, targetRouteStateKey);
+  if (segmentKeys === null || segmentValues === null) return null;
   // Segment identities key their slots. The shell renders nothing of the URL
   // in page and template entries (the page is left out, and templates only
   // receive children), so those name the target too. Layouts are rendered
@@ -757,7 +883,7 @@ export function createOptimisticRouteElements(
     if (kind === "route" || kind === "layout" || kind === "template" || pageElementIds.has(id)) {
       elements[id] = rebindElementKeys(
         elements[id],
-        segmentKeys,
+        { keys: segmentKeys, values: segmentValues },
         kind === "route",
         incomplete,
       ) as AppElementValue;

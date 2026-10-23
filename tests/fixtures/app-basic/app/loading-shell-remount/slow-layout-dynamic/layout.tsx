@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { sleep } from "../sleep";
+import { SelectedSegments } from "./selected-segments";
 
 // The spec prefetches loading shells itself, so it controls which URL each
 // optimistic template is learned from.
@@ -19,6 +20,7 @@ export default async function SlowLayout({ children }: { children: ReactNode }) 
           </Link>
         ))}
       </nav>
+      <SelectedSegments />
       {children}
     </div>
   );

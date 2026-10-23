@@ -7,6 +7,7 @@ import {
   type ReactNode,
 } from "react";
 import { ErrorBoundary } from "vinext/shims/error-boundary";
+import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { Slot } from "vinext/shims/slot";
 import {
   AppElementsWire,
@@ -421,6 +422,11 @@ describe("App Router optimistic routing", () => {
       _init: (payload: unknown) => payload,
       _payload: Slot,
     } as unknown as typeof Slot;
+    const lazyProvider = {
+      $$typeof: Symbol.for("react.lazy"),
+      _init: (payload: unknown) => payload,
+      _payload: LayoutSegmentProvider,
+    } as unknown as typeof LayoutSegmentProvider;
     const SegmentError = () => createElement("p", null, "Error");
     const rootLayoutIdentity = deriveBfcacheSegmentIdentity({
       boundSegmentKey: "",
@@ -454,20 +460,28 @@ describe("App Router optimistic routing", () => {
           [routeId]: {
             $$typeof: Symbol.for("react.lazy"),
             _init: (payload: unknown) => payload,
+            // The root layout's segment provider lists the segments below it.
             _payload: createElement(
-              lazySlot,
-              { id: "template:/blog", key: groupTemplateKey("post-3") },
+              lazyProvider,
+              {
+                providerId: "layout:/",
+                segmentMap: { children: ["(shop)", "blog", "post-3"] },
+                // Children are passed as the third argument.
+              } as unknown as ComponentProps<typeof LayoutSegmentProvider>,
               createElement(
-                ErrorBoundary,
-                {
-                  fallback: SegmentError,
-                  resetKey: slugSegmentKey("post-3"),
-                  // Children are passed as the third argument.
-                } as unknown as ComponentProps<typeof ErrorBoundary>,
+                lazySlot,
+                { id: "template:/blog", key: groupTemplateKey("post-3") },
                 createElement(
-                  Suspense,
-                  { fallback: loadingFallback, key: slugSegmentKey("post-3") },
-                  readChild(shell[routeId]) as ReactNode,
+                  ErrorBoundary,
+                  {
+                    fallback: SegmentError,
+                    resetKey: slugSegmentKey("post-3"),
+                  } as unknown as ComponentProps<typeof ErrorBoundary>,
+                  createElement(
+                    Suspense,
+                    { fallback: loadingFallback, key: slugSegmentKey("post-3") },
+                    readChild(shell[routeId]) as ReactNode,
+                  ),
                 ),
               ),
             ),
@@ -517,7 +531,13 @@ describe("App Router optimistic routing", () => {
     // The real payload for post-4 renders these keys, so it reuses the
     // boundaries the optimistic commit mounts.
     if (payload === null) throw new Error("Expected optimistic payload");
-    const routeElement = payload.elements[routeId];
+    const provider = payload.elements[routeId];
+    if (!isValidElement<{ segmentMap?: unknown }>(provider)) {
+      throw new Error("Expected an element");
+    }
+    // useSelectedLayoutSegment() reads the target's segments.
+    expect(provider.props.segmentMap).toEqual({ children: ["(shop)", "blog", "post-4"] });
+    const routeElement = readChild(provider);
     if (!isValidElement(routeElement)) throw new Error("Expected an element");
     const errorBoundary = readChild(routeElement);
     if (!isValidElement<{ resetKey?: unknown }>(errorBoundary)) {
@@ -681,6 +701,79 @@ describe("App Router optimistic routing", () => {
     expect(createOptimisticRouteElements(template, fromKey)).not.toBeNull();
   });
 
+  it("keys segment maps for the target only where it can tell segments apart", () => {
+    const learn = (fromKey: string, segments: string[] = []) => {
+      const pageId = AppElementsWire.encodePageId("/blog/learned", null);
+      const routeId = "route:/blog/learned";
+      const fallback = createElement("p", null, "Loading");
+      const template: OptimisticRouteTemplate = {
+        elements: {
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: ["layout:/"],
+            rootLayoutTreePath: "/",
+            routeId,
+          }),
+          [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+          [pageId]: createElement(Suspense, { fallback, key: fromKey }, null),
+          [routeId]: createElement(
+            LayoutSegmentProvider,
+            {
+              providerId: "layout:/",
+              segmentMap: { children: segments },
+              // Children are passed as the third argument.
+            } as unknown as ComponentProps<typeof LayoutSegmentProvider>,
+            createElement(Suspense, { fallback, key: fromKey }, "Page slot"),
+          ),
+        },
+        mountedSlotsHeader: null,
+        omittedBfcacheSegmentIds: [],
+        omittedLayoutIds: [],
+        pageElementIds: [pageId],
+        routeId: "route:/blog/:slug",
+        routeStateKey: fromKey,
+        urlRouteStateKey: fromKey,
+      };
+      return template;
+    };
+    const readSegments = (elements: AppElements | null) => {
+      const provider = elements?.["route:/blog/learned"];
+      if (!isValidElement<{ segmentMap?: { children?: unknown } }>(provider)) {
+        throw new Error("Expected the segment provider");
+      }
+      return provider.props.segmentMap?.children;
+    };
+    const blogKey = blogRouteStateKey("post-4");
+    expect(
+      readSegments(
+        createOptimisticRouteElements(
+          learn(blogRouteStateKey("post-3"), ["blog", "post-3"]),
+          blogKey,
+        ),
+      ),
+    ).toEqual(["blog", "post-4"]);
+    // A param's name may contain `|`; its value is URL-encoded.
+    const pipeKey = (value: string) => resolveAppPageRouteStateKey(["[a|b]"], { "a|b": value });
+    expect(
+      readSegments(createOptimisticRouteElements(learn(pipeKey("one"), ["one"]), pipeKey("two"))),
+    ).toEqual(["two"]);
+    // Learned from /blog/blog: a segment map's "blog" may be either segment.
+    expect(createOptimisticRouteElements(learn(blogRouteStateKey("blog")), blogKey)).toBeNull();
+    // A param spelled like the page's own segment, which its provider lists.
+    expect(createOptimisticRouteElements(learn(blogRouteStateKey("__PAGE__")), blogKey)).toBeNull();
+    // A param spelled like a route group, which segment maps list.
+    expect(createOptimisticRouteElements(learn(blogRouteStateKey("(shop)")), blogKey)).toBeNull();
+    // An optional catch-all that gains segments shifts a segment map's
+    // positions.
+    const shopKey = (rest: string[]) =>
+      resolveAppPageRouteStateKey(["shop", "[[...rest]]"], { rest });
+    expect(createOptimisticRouteElements(learn(shopKey([])), shopKey(["a"]))).toBeNull();
+    expect(createOptimisticRouteElements(learn(shopKey(["a"])), shopKey([]))).toBeNull();
+    expect(createOptimisticRouteElements(learn(shopKey(["a"])), shopKey(["b", "c"]))).not.toBe(
+      null,
+    );
+  });
+
   it("does not commit a shell while what it mirrors or rebinds is pending", () => {
     const routeManifest = blogManifest();
     const routeId = routeElementId("post-3");
@@ -726,17 +819,49 @@ describe("App Router optimistic routing", () => {
     );
     resolved = null;
 
-    expect(
-      createOptimisticRouteElements(learn({ [routeId]: lazy(() => shell[routeId]) }), post4),
-    ).toBeNull();
-    // A pending type is read only for an element keyed by a changed segment.
+    // A route row settling gave up on would suspend above the mirrored
+    // boundary, for the learned URL too.
+    const pendingRoute = learn({ [routeId]: lazy(() => shell[routeId]) });
+    expect(createOptimisticRouteElements(pendingRoute, post4)).toBeNull();
+    expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).toBeNull();
+    // So would a boundary in the route chain whose module hasn't loaded,
+    // whatever it is keyed by.
     const PendingBoundary = lazy(() => Slot);
     const routeWithPendingType = (key: string) =>
       learn({
         [routeId]: createElement(PendingBoundary, { id: "x", key }, shell[routeId] as ReactNode),
       });
     expect(createOptimisticRouteElements(routeWithPendingType(slugSegmentKey), post4)).toBeNull();
-    expect(createOptimisticRouteElements(routeWithPendingType("blog"), post4)).not.toBeNull();
+    expect(createOptimisticRouteElements(routeWithPendingType("blog"), post4)).toBeNull();
+    expect(
+      createOptimisticRouteElements(routeWithPendingType("blog"), blogRouteStateKey("post-3")),
+    ).toBeNull();
+    // A client loading.tsx is a lazy type until its module loads, which the
+    // commit renders as the mirrored boundaries' fallback.
+    const PendingLoading = lazy(() => () => "Loading");
+    const pendingFallback = (fallback: ReactNode) =>
+      createElement(Suspense, { fallback, key: blogRouteStateKey("post-3") }, null);
+    const routeWithPendingFallback = learn({
+      [routeId]: createElement("main", null, pendingFallback(createElement(PendingLoading))),
+    });
+    const pageWithPendingFallback = learn({
+      [pageId]: pendingFallback(createElement(PendingLoading)),
+    });
+    for (const target of [blogRouteStateKey("post-3"), post4]) {
+      expect(createOptimisticRouteElements(routeWithPendingFallback, target)).toBeNull();
+      expect(createOptimisticRouteElements(pageWithPendingFallback, target)).toBeNull();
+    }
+    resolved = true;
+    expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(routeWithPendingFallback, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(pageWithPendingFallback, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(routeWithPendingType("blog"), blogRouteStateKey("post-3")),
+    ).not.toBeNull();
   });
 
   it("reads the rows a shell rebinds before it is learned", async () => {
@@ -764,9 +889,17 @@ describe("App Router optimistic routing", () => {
         _payload: {},
       } as unknown as T;
     };
+    // A client loading.tsx, as the page boundary's fallback.
+    const Loading = deferred(() => "Loading");
     const elements = {
       ...shell,
-      [pageId]: deferred(shell[pageId]),
+      [pageId]: deferred(
+        createElement(
+          Suspense,
+          { fallback: createElement(Loading), key: blogRouteStateKey("post-3") },
+          null,
+        ),
+      ),
       // A row inside a row, around a client component type.
       [routeId]: deferred(
         createElement(
@@ -790,6 +923,9 @@ describe("App Router optimistic routing", () => {
     const post4 = blogRouteStateKey("post-4");
     const payload = createOptimisticRouteElements(template, post4);
     expect(readSuspense(payload![pageId]).key).toBe(post4);
+    // The fallback's module has loaded, so the shell commits for its own URL.
+    expect(Reflect.get(Loading, "_init")()).toBeTypeOf("function");
+    expect(createOptimisticRouteElements(template, blogRouteStateKey("post-3"))).not.toBeNull();
   });
 
   it("gives up a shell whose rows don't resolve rather than hold the navigation", async () => {
