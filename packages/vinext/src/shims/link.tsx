@@ -94,6 +94,7 @@ const isServer = typeof window === "undefined";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type NavigationModule = typeof import("./navigation.js");
+type PrefetchCacheEntry = import("./navigation.js").PrefetchCacheEntry;
 type HybridClientRouteOwnerModule = typeof import("./internal/hybrid-client-route-owner.js");
 
 let loadedNavigationModule: NavigationModule | null = null;
@@ -475,6 +476,7 @@ function prefetchUrl(
           hasPrefetchCacheEntryForNavigation,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
+          promotePrefetchCacheEntryForNavigation,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -567,7 +569,7 @@ function prefetchUrl(
           return;
         }
         if (autoPrefetch.cacheForNavigation) {
-          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext, mountedSlotsHeader);
         }
         const owned = createOwnedLinkPrefetch(owner);
         const fetchFullRscPayload = () =>
@@ -664,8 +666,14 @@ function prefetchUrl(
           });
         };
         // A visible Link that reuses a pending request becomes one of its owners.
-        const onReuse = (entry: { fetchPromise?: Promise<Response> }) =>
+        // A full prefetch that joins a pending automatic one must not be left
+        // with a learning-only result if that page renders dynamically.
+        const onReuse = (entry: PrefetchCacheEntry, matchedCacheKey: string) => {
           joinOwnedLinkPrefetch(entry.fetchPromise, owner);
+          if (autoPrefetch.dynamicStaleTime === "full-prefetch") {
+            promotePrefetchCacheEntryForNavigation(matchedCacheKey, entry);
+          }
+        };
         const hasExactNavigationCacheEntry =
           autoPrefetch.cacheForNavigation &&
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {

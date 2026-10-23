@@ -698,8 +698,8 @@ export function hasPrefetchCacheEntryForNavigation(
     additionalRscUrls?: readonly string[];
     notifyInvalidation?: boolean;
     onInvalidate?: () => void;
-    /** Called with the matched entry when it is reused. */
-    onReuse?: (entry: PrefetchCacheEntry) => void;
+    /** Called with the matched entry, and the key it was found under, when it is reused. */
+    onReuse?: (entry: PrefetchCacheEntry, cacheKey: string) => void;
     /** Whether an in-flight entry counts as reusable. Defaults to true. */
     reusePending?: boolean;
   } = {},
@@ -723,7 +723,7 @@ export function hasPrefetchCacheEntryForNavigation(
     // cache key — the match may be a normalized `_rsc` variant or an alias, so
     // an exact-key lookup after this call could silently miss it.
     attachPrefetchInvalidationToEntry(match.cacheKey, match.entry, options.onInvalidate);
-    options.onReuse?.(match.entry);
+    options.onReuse?.(match.entry, match.cacheKey);
     return true;
   }
 
@@ -1044,6 +1044,7 @@ function deletePrefetchCacheEntry(
 export function discardLearningOnlyPrefetchCacheEntry(
   rscUrl: string,
   interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
 ): boolean {
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
@@ -1059,6 +1060,8 @@ export function discardLearningOnlyPrefetchCacheEntry(
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    // Another slot context's entry is not the one being replaced.
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     superseded.push([cacheKey, entry]);
   }
@@ -3129,11 +3132,18 @@ const _appRouter: AppRouterInstance = {
         // The gate attaches onInvalidate to whichever entry it matches — the
         // match may live under a normalized `_rsc` variant or rendered-path
         // alias, not this call's exact cache key.
-        discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+        discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext, mountedSlotsHeader);
         if (
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
             additionalRscUrls,
             onInvalidate: options?.onInvalidate,
+            // A full prefetch that joins a pending automatic one must not be
+            // left with a learning-only result if that page renders dynamically.
+            onReuse:
+              policy.dynamicStaleTime === "full-prefetch"
+                ? (entry, matchedCacheKey) =>
+                    promotePrefetchCacheEntryForNavigation(matchedCacheKey, entry)
+                : undefined,
           })
         ) {
           return;
