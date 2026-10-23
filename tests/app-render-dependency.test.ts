@@ -87,6 +87,17 @@ describe("app render dependency helpers", () => {
     expect(body).not.toContain("page:en");
   });
 
+  it("keeps the entry behind its barrier out of the barrier's props", () => {
+    // Development Flight serializes a server component's props as debug info
+    // before rendering it, which would render the entry before its
+    // dependencies release.
+    const barrier = renderAfterAppDependencies(createElement("p", null, "page"), [
+      createAppRenderDependency(),
+    ]);
+    if (!isValidElement(barrier)) throw new Error("Expected a barrier element");
+    expect(barrier.props).toEqual({});
+  });
+
   it("releases a dependency after an async component produces its Flight result", async () => {
     // Run the real helper through React Flight in a react-server subprocess.
     // React DOM schedules the old fragment-sibling barrier differently and did
