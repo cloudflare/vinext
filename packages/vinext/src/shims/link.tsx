@@ -199,9 +199,6 @@ type LinkStatusContextValue = {
 };
 
 const LinkStatusContext = createContext<LinkStatusContextValue>({ pending: false });
-// What a server-rendered Link provides: never pending, and, like the client's
-// per-link value, a different object from the context's default.
-const SERVER_LINK_STATUS: LinkStatusContextValue = { pending: false };
 
 /**
  * useLinkStatus returns the pending state of the enclosing <Link>.
@@ -1162,7 +1159,8 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- the early return below never happens on the client. */
   if (isServer && !legacyBehavior && !isDangerous) {
     return (
-      <LinkStatusContext.Provider value={SERVER_LINK_STATUS}>
+      // Like the client's per-link value: never pending, and its own object.
+      <LinkStatusContext.Provider value={{ pending: false }}>
         <a href={fullHref} {...anchorProps}>
           {children}
         </a>

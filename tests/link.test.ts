@@ -374,24 +374,31 @@ describe("useLinkStatus", () => {
   });
 
   it("returns { pending: false } inside a server-rendered Link, from the Link's own provider", () => {
-    let outside: unknown;
-    let inside: unknown;
+    const outside: unknown[] = [];
+    const inside: unknown[] = [];
+    function Inside() {
+      inside.push(useLinkStatus());
+      return React.createElement("span", null, "status");
+    }
     function Outside() {
-      outside = useLinkStatus();
+      outside.push(useLinkStatus());
       return React.createElement(
-        Link,
-        { href: "/about" },
-        React.createElement(function Inside() {
-          inside = useLinkStatus();
-          return React.createElement("span", null, "status");
-        }),
+        React.Fragment,
+        null,
+        React.createElement(Link, { href: "/about" }, React.createElement(Inside)),
+        React.createElement(Link, { href: "/blog" }, React.createElement(Inside)),
       );
     }
     const html = ReactDOMServer.renderToString(React.createElement(Outside));
-    expect(html).toBe('<a href="/about"><span>status</span></a>');
-    expect(inside).toEqual({ pending: false });
-    // As on the client, a Link provides its own value rather than the default.
-    expect(inside).not.toBe(outside);
+    expect(html).toBe(
+      '<a href="/about"><span>status</span></a><a href="/blog"><span>status</span></a>',
+    );
+    expect(inside).toEqual([{ pending: false }, { pending: false }]);
+    // As on the client, each Link provides its own value rather than the
+    // default or a value shared with other Links.
+    expect(inside[0]).not.toBe(outside[0]);
+    expect(inside[1]).not.toBe(outside[0]);
+    expect(inside[0]).not.toBe(inside[1]);
   });
 });
 
