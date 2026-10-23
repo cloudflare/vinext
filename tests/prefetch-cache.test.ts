@@ -318,6 +318,8 @@ describe("prefetch cache eviction", () => {
     navigation.appRouterInstance.prefetch("/dashboard?tab=usage");
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
 
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(navigation.getPrefetchCache().size).toBe(2);
     for (const [, init] of fetch.mock.calls) {
       const headers = new Headers(init?.headers);
       expect(headers.get("next-router-prefetch")).toBe("1");
