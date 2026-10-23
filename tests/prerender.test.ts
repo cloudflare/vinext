@@ -311,6 +311,21 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
     expect(decodeExtractedPayload(html)).toBe("0:[]\n");
   });
 
+  it("does not end a script at an end tag whose name only starts with script", () => {
+    // Browsers keep "</scriptx>" inside the script, so the chunk-looking text
+    // after it is still part of this page script.
+    const chunkScript = runtimeRscChunkScript("9:injected\n");
+    const injected = chunkScript.slice("<script>".length, -"</script>".length);
+    const html =
+      "<html><body>" +
+      `<script>window.template="</scriptx><script>${injected}</script>` +
+      runtimeRscChunkScript("0:[]\n") +
+      runtimeRscDoneScript() +
+      "</body></html>";
+
+    expect(decodeExtractedPayload(html)).toBe("0:[]\n");
+  });
+
   it("rejects chunk scripts with trailing code after the payload push", () => {
     const html =
       "<html><body>" +

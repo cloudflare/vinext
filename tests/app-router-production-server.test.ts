@@ -2993,9 +2993,7 @@ describe("App Router Production server (startProdServer)", () => {
     const capturedScopeValue = "closure-captured-bound-arg-vinext";
     expect(html).not.toContain(capturedScopeValue);
     const encryptedBoundArgs = [
-      ...new Set(
-        [...html.matchAll(/[0-9a-f]+:"([A-Za-z0-9+/=]{64,})"/g)].map((match) => match[1]),
-      ),
+      ...new Set([...html.matchAll(/[0-9a-f]+:"([A-Za-z0-9+/=]{64,})"/g)].map((match) => match[1])),
     ];
     expect(encryptedBoundArgs).toHaveLength(2);
     const encryptedCaptureEnvelopes = encryptedBoundArgs.map((encrypted) => ({
