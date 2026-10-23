@@ -506,11 +506,18 @@ function visitUnreadLazies(
     return;
   }
   if (!isValidElement(resolved)) {
+    if (read !== "output") return;
     // A client component renders the elements nested in a prop's plain
     // objects too. Flight's own objects, a promise's chunk say, aren't plain.
     const prototype = Object.getPrototypeOf(resolved);
-    if (read === "output" && (prototype === Object.prototype || prototype === null)) {
+    if (prototype === Object.prototype || prototype === null) {
       for (const entry of Object.values(resolved)) visit(entry, read);
+    } else if (resolved instanceof Set || resolved instanceof Map) {
+      // Flight keeps both, and React renders their entries as children.
+      for (const entry of resolved) visit(entry, read);
+    } else if (Symbol.iterator in resolved && !ArrayBuffer.isView(resolved)) {
+      // React renders an iterator's entries too, but reading one consumes it.
+      onPending(undefined);
     }
     return;
   }

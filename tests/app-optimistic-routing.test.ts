@@ -862,6 +862,12 @@ describe("App Router optimistic routing", () => {
     const layoutWithPendingRegion = layoutWith(
       createElement(Slot, { id: "x", regions: { nav: createElement(PendingClient) } } as never),
     );
+    const layoutWithPendingSet = layoutWith(
+      createElement("div", null, new Set([createElement(PendingClient)]) as never),
+    );
+    const layoutWithIterator = layoutWith(
+      createElement("div", null, [createElement("p", { key: "p" })].values() as never),
+    );
     const layoutWithPendingSuspense = layoutWith(
       createElement(Suspense, { fallback: null }, createElement(PendingClient)),
     );
@@ -876,6 +882,9 @@ describe("App Router optimistic routing", () => {
       expect(createOptimisticRouteElements(layoutWithPendingClient, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingProp, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingRegion, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPendingSet, target)).toBeNull();
+      // Reading an iterator's entries would consume them before React does.
+      expect(createOptimisticRouteElements(layoutWithIterator, target)).toBeNull();
       expect(createOptimisticRouteElements(slotWithPendingLoading, target)).toBeNull();
       // The layout's own boundary shows its fallback instead.
       expect(createOptimisticRouteElements(layoutWithPendingSuspense, target)).not.toBeNull();
@@ -886,6 +895,9 @@ describe("App Router optimistic routing", () => {
     ).not.toBeNull();
     expect(
       createOptimisticRouteElements(slotWithPendingLoading, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(layoutWithPendingSet, blogRouteStateKey("post-3")),
     ).not.toBeNull();
     expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).not.toBeNull();
     expect(
