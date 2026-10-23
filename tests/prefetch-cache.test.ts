@@ -357,7 +357,10 @@ describe("prefetch cache eviction", () => {
     await waitForPrefetchSetup(
       () => navigation.getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded",
     );
-    expect(navigation.getPrefetchCache().get(cacheKey)?.cacheForNavigation).toBe(false);
+    expect(navigation.getPrefetchCache().get(cacheKey)).toMatchObject({
+      cacheForNavigation: false,
+      outcome: "cache-seeded",
+    });
 
     navigation.appRouterInstance.prefetch("/dashboard");
     await settlePrefetchSetup();
