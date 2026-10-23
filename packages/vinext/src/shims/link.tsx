@@ -315,10 +315,10 @@ let validatedNavigationRuntimeFunctions: unknown = null;
  * prefetch. Full validation walks the whole navigation runtime, including every
  * inline RSC chunk still held by the bootstrap, so skip it while window still
  * holds the runtime that last passed it with the same bootstrap and function
- * table objects. Registering either replaces that object, so a replaced or
- * malformed runtime, bootstrap or table falls through to full validation.
- * The function table is still checked on every call, since it is cheap and
- * can be edited in place; chunks streamed into the held bootstrap are not
+ * table objects. Registering either replaces that object, and a replaced
+ * runtime, bootstrap or table falls through to full validation. A table edited
+ * in place keeps its identity, so the function table is still checked on every
+ * call (it is cheap); chunks streamed into the held bootstrap are not
  * revalidated.
  */
 function hasLinkAppNavigationRuntime(): boolean {
