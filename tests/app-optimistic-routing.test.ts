@@ -651,13 +651,10 @@ describe("App Router optimistic routing", () => {
     expect(readSuspense(own[pageId]).key).toBe(blogRouteStateKey("post-9"));
     expect(readSuspense(readChild(own[routeId])).key).toBe(blogRouteStateKey("post-9"));
 
-    // Committed for the URL it was rewritten to, it keeps them too.
-    const rewritten = createOptimisticRouteElements(template, blogRouteStateKey("post-9"))!;
-    expect(readSuspense(rewritten[pageId]).key).toBe(blogRouteStateKey("post-9"));
-
-    // Another URL may be rewritten to post-9 too, or not, so the shell can't
-    // be keyed for its real payload.
+    // Another URL may be rewritten to post-9 too, or not, and so may the URL
+    // it was rewritten to, so the shell can't be keyed for its real payload.
     expect(createOptimisticRouteElements(template, blogRouteStateKey("post-2"))).toBeNull();
+    expect(createOptimisticRouteElements(template, blogRouteStateKey("post-9"))).toBeNull();
   });
 
   it("does not commit a shell whose segment keys can't be rebound", () => {

@@ -904,10 +904,11 @@ export function createOptimisticRouteElements(
   ) {
     return elements;
   }
-  if (routeStateKey === null || targetRouteStateKey === routeStateKey) return elements;
+  if (routeStateKey === null) return elements;
   // A shell learned through a rewrite renders a route state its URL doesn't
-  // name. The target's real payload may be rewritten to that state too, so
-  // which state to key the shell for can't be told from the target's URL.
+  // name. Another target's real payload may be rewritten to that state too,
+  // or elsewhere, even the URL it names, so which state to key the shell for
+  // can't be told from the target's URL.
   if (routeStateKey !== template.urlRouteStateKey) return null;
 
   // The shell is keyed for the URL it was learned from, which may be the
