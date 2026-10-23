@@ -291,6 +291,43 @@ describe("prefetch cache eviction", () => {
     expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
   });
 
+  it("automatic router.prefetch never renders the page of a dynamically rendered route", async () => {
+    // Next.js's automatic prefetch of a route it renders dynamically sends only
+    // the route tree when there is no loading boundary, search params or not.
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        patternParts: ["dashboard"],
+        isDynamic: false,
+        rendersDynamically: true,
+      },
+    ];
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn() },
+    };
+
+    navigation.appRouterInstance.prefetch("/dashboard");
+    navigation.appRouterInstance.prefetch("/dashboard?tab=usage");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 2);
+
+    for (const [, init] of fetch.mock.calls) {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("next-router-prefetch")).toBe("1");
+      expect(headers.get("x-vinext-rsc-render-mode")).toBe("prefetch-loading-shell");
+    }
+    for (const entry of navigation.getPrefetchCache().values()) {
+      expect(entry.cacheForNavigation).toBe(false);
+    }
+  });
+
   it("router.prefetch waits for the route manifest and resolves interception from the call-time URL", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>

@@ -5353,10 +5353,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   }),
                 )
               : [];
-            // Only production viewport prefetches read whether a route is
-            // rendered dynamically, and Cache Components segment config
-            // can't say (see `rendersDynamically`), so neither classifies
-            // routes.
+            // Routes are classified only for production builds, and Cache
+            // Components segment config can't say whether a route renders
+            // dynamically (see `rendersDynamically`).
             const classifyDynamicRoutes =
               this.environment.config.command === "build" && !nextConfig?.cacheComponents;
             const readMdxEsm =

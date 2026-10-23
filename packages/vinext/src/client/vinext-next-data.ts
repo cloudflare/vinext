@@ -15,10 +15,11 @@ export type VinextLinkPrefetchRoute = {
   patternParts: string[];
   /**
    * The route's segment config rules out static generation, so Next.js
-   * renders it on every request. Read at build time. Never set with Cache
-   * Components: segment config doesn't decide what renders dynamically there,
-   * so a full prefetch of a dynamic route keeps re-rendering its page after
-   * each invalidation (Next.js re-prefetches its static shell instead).
+   * renders it on every request, and its automatic prefetch never renders the
+   * page. Read at build time. Never set with Cache Components: segment config
+   * doesn't decide what renders dynamically there, so an automatic prefetch of
+   * a dynamic route without a loading boundary still renders its page
+   * (Next.js prefetches its static shell instead).
    */
   rendersDynamically?: true;
   requiresDynamicNavigationRequest?: boolean;

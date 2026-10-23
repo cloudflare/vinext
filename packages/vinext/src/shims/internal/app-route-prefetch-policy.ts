@@ -45,16 +45,11 @@ export type AppRoutePrefetchPolicy = {
   fallbackTtl: "dynamic" | "static";
   prefetchShellFirst: boolean;
   /**
-   * How a re-prefetch after a whole-cache invalidation replaces a prefetch
-   * that renders the page of a route Next.js renders dynamically
-   * (`rendersDynamically`): the full navigation payload or, for an href with
-   * search params, the page with empty search params. The caller applies it
-   * only to such a request. An automatic Next.js prefetch of such a route
-   * stops at the route tree or the nearest loading boundary instead.
-   *  - "skip": no loading boundary, so nothing is fetched until intent.
-   *  - "loading-shell": fetch the route's loading shell.
+   * The route renders dynamically (`rendersDynamically`), so the prefetch
+   * never renders its page: an href with search params fetches the loading
+   * shell instead of the page with empty search params.
    */
-  invalidationPrefetch?: "loading-shell" | "skip";
+  rendersDynamically?: true;
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
@@ -131,24 +126,32 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
     (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
       (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
+  // Next.js's automatic prefetch of a route it renders dynamically never
+  // renders the page. It stops at the nearest loading boundary below the shared
+  // layout, or sends only the route tree when there is none
+  // (`walkTreeWithFlightRouterState`), and keeps that for `staleTimes.static`.
+  // The loading shell is vinext's equivalent. A full prefetch would render the
+  // page for a payload that is only fresh for `staleTimes.dynamic` (0 by
+  // default).
+  const rendersDynamically = route.rendersDynamically === true;
   const cacheForNavigation =
     !hasSearchParams &&
     !hasCacheComponentsLearningOnlyDynamicPath &&
     (requiresRouteTreePrefetch ||
-      (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true));
+      (!route.canPrefetchLoadingShell &&
+        route.requiresDynamicNavigationRequest !== true &&
+        !rendersDynamically));
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
-    // commit loading.js immediately. Dynamic routes without loading-shell
-    // fallbacks can be cached for navigation unless their active parallel
-    // branches must be derived from the click-time target tree.
+    // commit loading.js immediately. Other routes that may be static can be
+    // cached for navigation unless their active parallel branches must be
+    // derived from the click-time target tree.
     cacheForNavigation,
     dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
     fallbackTtl: "static",
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
-    ...(route.rendersDynamically === true
-      ? { invalidationPrefetch: route.canPrefetchLoadingShell ? "loading-shell" : "skip" }
-      : {}),
+    ...(rendersDynamically ? { rendersDynamically: true } : {}),
     ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };

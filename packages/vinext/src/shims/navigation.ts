@@ -1141,7 +1141,7 @@ export function invalidatePrefetchCache(): void {
     fireRetainedPrefetchInvalidation(retained);
   }
   if (!isServer) {
-    getNavigationRuntime()?.functions.pingVisibleLinks?.("cache-invalidation");
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
 }
 
@@ -3046,7 +3046,7 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         headers.set(
           VINEXT_RSC_RENDER_MODE_HEADER,
-          hasSearchParams
+          hasSearchParams && policy.rendersDynamically !== true
             ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
             : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );

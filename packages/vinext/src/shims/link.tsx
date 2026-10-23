@@ -367,9 +367,6 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
  * Pages Router fallback prefetches use `requestIdleCallback` (or `setTimeout`
  * fallback) to avoid blocking the main thread during initial page load.
  *
- * `afterInvalidation` marks a re-prefetch that follows a whole-cache
- * invalidation; see `invalidationPrefetch`.
- *
  * `owner` is the visible Link behind a viewport prefetch; see
  * `OwnedLinkPrefetch`.
  */
@@ -379,7 +376,6 @@ function prefetchUrl(
   priority: "low" | "high" = "low",
   pagesRouteHref?: string,
   locale?: string | false,
-  afterInvalidation = false,
   owner?: LinkPrefetchInstance,
 ): void {
   if (typeof window === "undefined") return;
@@ -517,16 +513,11 @@ function prefetchUrl(
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
         const isAutomaticSearchParamShell =
           mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
-        // Only a request that renders the page is replaced: the full
-        // navigation payload or a search-param href's dynamic shell.
-        const invalidationPrefetch =
-          afterInvalidation && (autoPrefetch.cacheForNavigation || isAutomaticSearchParamShell)
-            ? autoPrefetch.invalidationPrefetch
-            : undefined;
-        if (invalidationPrefetch === "skip") return;
+        // A prefetch never renders the page of a route that renders
+        // dynamically, so its search-param href fetches the loading shell.
         const hasSearchAgnosticShell =
           isAutomaticSearchParamShell &&
-          (invalidationPrefetch === "loading-shell" ||
+          (autoPrefetch.rendersDynamically === true ||
             hasSearchAgnosticPrefetchShellForRoute(
               await createRscRequestUrl(fullHref, new Headers()),
               interceptionContext,
@@ -879,8 +870,6 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
  */
 let sharedObserver: IntersectionObserver | null = null;
 type LinkPrefetchInstance = {
-  /** A cache-invalidation ping queued this link (see `invalidationPrefetch`). */
-  queuedByInvalidation: boolean;
   href: string;
   isVisible: boolean;
   locale?: string | false;
@@ -1029,18 +1018,8 @@ function drainVisibleAppPrefetchQueue(): void {
     const instance = visibleAppPrefetchQueue.pop();
     if (!instance) return;
     instance.queuedViewportPrefetch = false;
-    const afterInvalidation = instance.queuedByInvalidation;
-    instance.queuedByInvalidation = false;
     if (!instance.isVisible || instance.routerMode !== "app") continue;
-    prefetchUrl(
-      instance.href,
-      instance.mode,
-      "low",
-      instance.pagesRouteHref,
-      undefined,
-      afterInvalidation,
-      instance,
-    );
+    prefetchUrl(instance.href, instance.mode, "low", instance.pagesRouteHref, undefined, instance);
   }
 }
 
@@ -1056,7 +1035,6 @@ function scheduleVisibleAppPrefetch(instance: LinkPrefetchInstance): void {
 function setVisibleLinkPrefetch(instance: LinkPrefetchInstance, isVisible: boolean): void {
   instance.isVisible = isVisible;
   if (isVisible) {
-    instance.queuedByInvalidation = false;
     visibleLinkPrefetches.add(instance);
     if (instance.routerMode === "pages" && instance.viewportPrefetched) return;
     if (instance.routerMode === "app") {
@@ -1095,33 +1073,9 @@ function registerVisibleLinkPing(): void {
   });
 }
 
-/**
- * Next.js re-prefetches every visible link after a cache invalidation
- * (`pingVisibleLinks` in `client/components/links.ts`). For a route it renders
- * dynamically, its automatic prefetch stops at the route tree or the nearest
- * loading boundary, but vinext's can render the page. Repeating that for
- * every visible link on each revalidating Server Action or `router.refresh()`
- * costs a full server render per link (#4083), so those links fetch at most
- * their loading shell and otherwise wait for intent (hover, touch) or their
- * next viewport entry. A click fetches fresh data either way.
- *
- * Only routes whose segment config makes them dynamic are known at build
- * time; a route that becomes dynamic while rendering, through request APIs
- * such as `cookies()` or uncached fetches (including under
- * `fetchCache = "force-no-store"`), keeps its full re-prefetch. An
- * intercepted link follows its target route's config, not the intercepting
- * page's.
- *
- * This applies to the prefetches the ping queues: a later ping without a cause
- * (its prefetch inputs changed) prefetches every visible link that has no fresh
- * entry once that queue has drained.
- */
-function pingVisibleLinkPrefetches(cause?: "cache-invalidation"): void {
+function pingVisibleLinkPrefetches(): void {
   for (const instance of visibleLinkPrefetches) {
     if (instance.isVisible && instance.routerMode === "app") {
-      if (cause === "cache-invalidation" && !instance.queuedViewportPrefetch) {
-        instance.queuedByInvalidation = true;
-      }
       scheduleVisibleAppPrefetch(instance);
     }
   }
@@ -1454,7 +1408,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
               basePath: __basePath,
               currentOrigin: window.location.origin,
             }) ?? undefined),
-      queuedByInvalidation: false,
       queuedViewportPrefetch: false,
       routerMode: prefetchRouterMode,
       viewportPrefetched: false,

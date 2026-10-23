@@ -89,12 +89,7 @@ export type NavigationRuntimeFunctions = {
    * through the runtime to avoid a circular import with shims/navigation.ts.
    */
   notifyLinkNavigationStart?: () => void;
-  /**
-   * Re-prefetch visible links whose prefetch inputs or cache entries changed.
-   * `"cache-invalidation"` marks a ping that follows a whole-cache
-   * invalidation (a revalidating Server Action or `router.refresh()`).
-   */
-  pingVisibleLinks?: (cause?: "cache-invalidation") => void;
+  pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,

@@ -501,7 +501,7 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
-  it("tells invalidation re-prefetches how to replace a dynamically rendered page", () => {
+  it("never renders the page of a dynamically rendered route in an automatic prefetch", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {
       location: {
@@ -540,21 +540,32 @@ describe("Link App Router prefetch mode", () => {
     };
 
     try {
-      const invalidationPrefetch = (href: string) =>
-        resolveAutoAppRoutePrefetch(href).invalidationPrefetch;
-      // Routes whose segment config rules out static generation: without a
-      // loading boundary, nothing replaces a page render.
-      expect(invalidationPrefetch("/dashboard")).toBe("skip");
-      expect(invalidationPrefetch("/dashboard?tab=usage")).toBe("skip");
-      expect(invalidationPrefetch("/products/1")).toBe("skip");
-      expect(invalidationPrefetch("/products/1?tab=reviews")).toBe("skip");
-      expect(invalidationPrefetch("/teams/vercel/dashboard?tab=members")).toBe("skip");
-      // A route with a loading boundary falls back to its loading shell.
-      expect(invalidationPrefetch("/blog/hello?ref=home")).toBe("loading-shell");
-      expect(invalidationPrefetch("/blog/hello")).toBe("loading-shell");
-      // Statically generated routes are unchanged.
-      expect(invalidationPrefetch("/about")).toBeUndefined();
-      expect(invalidationPrefetch("/posts/hello")).toBeUndefined();
+      // Like Next.js's automatic prefetch, a route whose segment config rules
+      // out static generation never has its page rendered: it prefetches a
+      // learning-only loading shell, fresh for the static period, whether or
+      // not it has a loading boundary.
+      for (const href of [
+        "/dashboard",
+        "/dashboard?tab=usage",
+        "/products/1",
+        "/products/1?tab=reviews",
+        "/blog/hello",
+        "/blog/hello?ref=home",
+        "/teams/vercel/dashboard?tab=members",
+      ]) {
+        expect(resolveAutoAppRoutePrefetch(href)).toMatchObject({
+          cacheForNavigation: false,
+          dynamicStaleTime: "ignore",
+          rendersDynamically: true,
+          shouldPrefetch: true,
+        });
+      }
+      // Routes that may be statically generated keep their full prefetch.
+      for (const href of ["/about", "/posts/hello"]) {
+        const policy = resolveAutoAppRoutePrefetch(href);
+        expect(policy.cacheForNavigation).toBe(true);
+        expect(policy.rendersDynamically).toBeUndefined();
+      }
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;

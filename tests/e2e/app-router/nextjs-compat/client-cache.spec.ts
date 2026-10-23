@@ -256,52 +256,68 @@ test.describe("Next.js compat: client cache", () => {
     );
   });
 
+  test("auto prefetch of a dynamic page without loading never renders the page (#4083)", async ({
+    page,
+  }) => {
+    // Next.js's automatic prefetch of a route it renders dynamically stops at
+    // the route tree when no loading.js is below the shared layout, and keeps
+    // it for staleTimes.static. Hovers don't fetch again; the click fetches the
+    // page because staleTimes.dynamic is 0.
+    const target = "/nextjs-compat/client-cache-full-render/1";
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBe(1);
+    expect(requestsFor(requests, target)[0]?.partial).toBe(true);
+
+    for (let hover = 0; hover < 3; hover++) {
+      await page.hover("#client-cache-full-render-auto");
+      await page.mouse.move(0, 0);
+      await advanceTime(page, 2_000);
+    }
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(1);
+
+    await page.click("#client-cache-full-render-auto");
+    await expect(page.locator("#client-cache-full-render-id")).toHaveText("1");
+    expect(requestsFor(requests, target).map((request) => request.partial)).toEqual([true, false]);
+  });
+
   for (const { name, selector } of [
     { name: "a revalidatePath Server Action", selector: "#client-cache-revalidate-action" },
     { name: "router.refresh()", selector: "#client-cache-invalidate" },
   ]) {
-    test(`${name} defers dynamic full-render link prefetches to intent (#4083)`, async ({
+    test(`${name} re-prefetches visible links without rendering a dynamic page (#4083)`, async ({
       page,
     }) => {
-      const fullRenderTarget = "/nextjs-compat/client-cache-full-render/1";
-      const otherLinkTargets = [
+      const dynamicTarget = "/nextjs-compat/client-cache-full-render/1";
+      const linkTargets = [
         `${ROOT}/0`,
         `${ROOT}/1`,
         `${ROOT}/default-stale/1`,
         `${ROOT}/no-loading/1`,
+        dynamicTarget,
         "/nextjs-compat/client-cache-late-dynamic",
         "/nextjs-compat/client-cache-static-param/1",
       ];
       const requests = trackRscRequests(page);
       await openHome(page);
-      // The automatic prefetch of a dynamic route without a loading boundary
-      // or parallel slots renders the whole page.
-      await expect
-        .poll(() => requestsFor(requests, fullRenderTarget).filter((r) => !r.partial).length)
-        .toBe(1);
       // Let every initial prefetch go out so later requests are re-prefetches.
-      for (const pathname of otherLinkTargets) {
+      for (const pathname of linkTargets) {
         await expect.poll(() => requestsFor(requests, pathname).length).toBeGreaterThan(0);
       }
 
       requests.length = 0;
       await page.click(selector);
 
-      // The other visible links are re-prefetched after the invalidation, as in
-      // Next.js, including the statically generated dynamic page. Re-running
-      // the force-dynamic page's full-render prefetch would cost a server render
-      // per visible link on every invalidation, so it waits for intent. Wait
-      // for every other re-prefetch, then allow time for any request still in
-      // the prefetch fetch queue before asserting the full render never went
-      // out.
-      for (const pathname of otherLinkTargets) {
+      // Every visible link is re-prefetched after the invalidation, as in
+      // Next.js. The force-dynamic page's re-prefetch is its route shell, never
+      // a render of the page.
+      for (const pathname of linkTargets) {
         await expect.poll(() => requestsFor(requests, pathname).length).toBeGreaterThan(0);
       }
       await page.waitForTimeout(500);
-      expect(requestsFor(requests, fullRenderTarget)).toEqual([]);
+      expect(requestsFor(requests, dynamicTarget).every((request) => request.partial)).toBe(true);
 
-      await page.hover("#client-cache-full-render-auto");
-      await expect.poll(() => requestsFor(requests, fullRenderTarget).length).toBe(1);
       await page.click("#client-cache-full-render-auto");
       await expect(page.locator("#client-cache-full-render-id")).toHaveText("1");
     });
