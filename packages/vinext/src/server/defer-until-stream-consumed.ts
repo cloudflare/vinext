@@ -110,16 +110,17 @@ export function observeStreamConsumption(
     return failure;
   };
 
+  // As with separate layers, a chunk never reaches the layers outside one whose
+  // start callback threw.
   const start = (): Failure | undefined => {
-    let failure: Failure | undefined;
     for (const current of layers) {
       try {
         current.runInCreationContext(() => current.onStart?.());
       } catch (error) {
-        failure ??= { error };
+        return { error };
       }
     }
-    return failure;
+    return undefined;
   };
 
   const reader = stream.getReader();
@@ -139,6 +140,8 @@ export function observeStreamConsumption(
           .runInCreationContext(() => reader.read())
           .then(
             ({ done, value }) => {
+              // The consumer may have cancelled while the read was settling.
+              if (settled) return;
               if (!done) {
                 if (!started) {
                   started = true;
@@ -152,7 +155,6 @@ export function observeStreamConsumption(
                 controller.enqueue(value);
                 return;
               }
-              if (settled) return;
               settled = true;
               release();
               const failure = finish(undefined);

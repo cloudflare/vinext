@@ -468,6 +468,51 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["outer start", "inner flush", "outer flush"]);
   });
 
+  it("does not run start callbacks once the consumer has cancelled", async () => {
+    const calls: string[] = [];
+    const stream = observeStreamConsumption(createStream(["page"]), {
+      onStart: () => calls.push("start"),
+      onCancel: () => calls.push("cancel"),
+      onFlush: () => calls.push("flush"),
+    });
+    const reader = stream.getReader();
+    // Once the stream has started, a read pulls at once. The source read
+    // settles straight away, but its callback runs after the cancel.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const read = reader.read();
+    await reader.cancel("gone");
+    await read;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(["cancel", "flush"]);
+  });
+
+  it("does not run outer start callbacks after an inner one throws", async () => {
+    const calls: string[] = [];
+    const inner = observeStreamConsumption(createStream(["page"]), {
+      onStart() {
+        calls.push("inner start");
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`inner error ${(error as Error).message}`),
+      onFlush: () => calls.push("inner flush"),
+    });
+    const outer = observeStreamConsumption(inner, {
+      onStart: () => calls.push("outer start"),
+      onError: (error) => calls.push(`outer error ${(error as Error).message}`),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    expect(outer).toBe(inner);
+    await expect(outer.getReader().read()).rejects.toThrow("start failed");
+    expect(calls).toEqual([
+      "inner start",
+      "inner error start failed",
+      "inner flush",
+      "outer error start failed",
+      "outer flush",
+    ]);
+  });
+
   it("errors the stream and still runs the flush callbacks when a start callback throws", async () => {
     const calls: string[] = [];
     const stream = observeStreamConsumption(createStream(["page"]), {
