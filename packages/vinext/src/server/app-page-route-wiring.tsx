@@ -4,6 +4,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
+  APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
   normalizeAppElementsSlotBindings,
@@ -1494,6 +1495,7 @@ export function buildAppPageElements<
     ]);
   }
 
+  const mirroredSlotIds: string[] = [];
   for (const slotPlan of segmentPlan.slots) {
     const {
       branchSegments,
@@ -1553,6 +1555,11 @@ export function buildAppPageElements<
 
     const slotComponent = resolvedOverrideOrPageComponent ?? resolvedDefaultComponent;
     const overrideOrPageComponent = resolvedOverrideOrPageComponent;
+    // A mirroring shell carries the route's own loading boundary, which the
+    // full render puts around a slot of the layout at that segment, without
+    // the slot, for the full render to reuse.
+    const mirrorsOwnerLoading =
+      isOwnedAtRoutePrefetchCutoff && prefetchShellMirrorsRouteBoundaries && Boolean(slotComponent);
 
     if (!slotComponent && !isOwnedAtRoutePrefetchCutoff) {
       elements[slotId] = AppElementsWire.unmatchedSlotValue;
@@ -1589,7 +1596,9 @@ export function buildAppPageElements<
     };
 
     let slotElement: ReactNode;
-    if (prefetchSlotLoadingEntry) {
+    if (mirrorsOwnerLoading) {
+      slotElement = null;
+    } else if (prefetchSlotLoadingEntry) {
       const PrefetchSlotLoadingComponent = getDefaultExport(
         prefetchSlotLoadingEntry.loadingModule,
       )!;
@@ -1807,9 +1816,10 @@ export function buildAppPageElements<
     // child slot, not only the flattened `children` branch. The slot payload is
     // serialized as a separate element entry, so the boundary must wrap this
     // entry directly rather than only the <Slot> placeholder in routeChildren.
-    const ownerLoadingEntry = isPrefetchLoadingShell
-      ? undefined
-      : findNearestLoadingEntryAtOrAbove(ownerTreePosition);
+    const ownerLoadingEntry =
+      !isPrefetchLoadingShell || mirrorsOwnerLoading
+        ? findNearestLoadingEntryAtOrAbove(ownerTreePosition)
+        : undefined;
     const ownerLoadingComponent = getDefaultExport(ownerLoadingEntry?.loadingModule);
     if (ownerLoadingComponent && ownerLoadingEntry) {
       const OwnerLoadingComponent = ownerLoadingComponent;
@@ -1819,12 +1829,16 @@ export function buildAppPageElements<
           {slotElement}
         </Suspense>
       );
+      if (mirrorsOwnerLoading) mirroredSlotIds.push(slotId);
     }
 
     elements[slotId] = renderAfterAppDependencies(slotElement, [
       ...(pageRenderDependency ? [pageRenderDependency] : []),
       ...(targetIndex >= 0 ? (slotDependenciesByLayoutIndex[targetIndex] ?? []) : []),
     ]);
+  }
+  if (mirroredSlotIds.length > 0) {
+    elements[APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY] = mirroredSlotIds;
   }
 
   let routeChildren: ReactNode = (

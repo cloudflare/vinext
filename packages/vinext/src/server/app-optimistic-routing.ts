@@ -33,6 +33,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
+  APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY,
   type AppElementValue,
   type AppElements,
 } from "./app-elements.js";
@@ -477,6 +478,12 @@ function getShellRouteStateKey(elements: AppElements): string | null {
   return typeof key === "string" ? key : null;
 }
 
+// The slot entries in which such a shell renders the route's loading boundary.
+function getShellSlotIds(elements: Readonly<Record<string, unknown>>): string[] {
+  const ids = elements[APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY];
+  return Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [];
+}
+
 export function createOptimisticRouteTemplate(options: {
   allowLoadingShell?: boolean;
   basePath: string;
@@ -542,19 +549,27 @@ const ignoreSettled = (): void => {};
 const MAX_REBIND_DEPTH = 100;
 
 // Flight decodes a deferred row as a lazy element, and a client component's
-// type as a lazy until its module loads. Once resolved, the lazy reads
-// synchronously; otherwise its initializer throws and this returns
-// PENDING_LAZY.
+// type as a lazy until its module loads. A row can resolve to another lazy:
+// Flight wraps an element whose props still wait on another row in one. Once
+// resolved, each lazy reads synchronously; otherwise its initializer throws
+// and this returns PENDING_LAZY.
 function readLazy(value: unknown, onPending?: (thrown: unknown) => void): unknown {
-  if (!isUnknownRecord(value) || Reflect.get(value, "$$typeof") !== REACT_LAZY_TYPE) return value;
-  const init = Reflect.get(value, "_init");
-  if (typeof init !== "function") return value;
-  try {
-    return init(Reflect.get(value, "_payload"));
-  } catch (thrown) {
-    onPending?.(thrown);
-    return PENDING_LAZY;
+  let current = value;
+  for (let depth = 0; depth <= MAX_REBIND_DEPTH; depth++) {
+    if (!isUnknownRecord(current) || Reflect.get(current, "$$typeof") !== REACT_LAZY_TYPE) {
+      return current;
+    }
+    const init = Reflect.get(current, "_init");
+    if (typeof init !== "function") return current;
+    try {
+      current = init(Reflect.get(current, "_payload"));
+    } catch (thrown) {
+      onPending?.(thrown);
+      return PENDING_LAZY;
+    }
   }
+  onPending?.(undefined);
+  return PENDING_LAZY;
 }
 
 // How much of a row the commit renders above the shell's mirrored boundary:
@@ -961,7 +976,8 @@ export function createOptimisticRouteElements(
     // A row left unread when settling gave up would suspend, or throw, above
     // the boundary the shell mirrors, without its fallback, and so would an
     // unread fallback. The page entries read are the ones committed: the page
-    // is left out of the shell, so only its entry's boundary, if any, is read.
+    // is left out of the shell, so only its entry's boundary, if any, is
+    // read, as for mirrored slots, which the shell renders without the slot.
     let unread = false;
     forEachShellRow(elements, (value, read) =>
       visitUnreadLazies(value, read, () => {
@@ -969,6 +985,25 @@ export function createOptimisticRouteElements(
       }),
     );
     if (unread) return null;
+    // A shell that mirrors the route's boundaries also carries the route's
+    // loading boundary around each slot of the layout at that segment, without
+    // the slot. Suspend inside it too, for the real payload to reuse.
+    for (const id of getShellSlotIds(template.elements)) {
+      const slotEntry = readLazy(elements[id]);
+      // Behind the layouts' dependency barrier, a keyless server component,
+      // Flight renders the keyed boundary in an array.
+      const inArray = Array.isArray(slotEntry) && slotEntry.length === 1;
+      const slotElement = inArray ? readLazy(slotEntry[0]) : slotEntry;
+      if (slotElement === PENDING_LAZY) return null;
+      if (isValidElement(slotElement) && slotElement.type === Suspense) {
+        const boundary = cloneElement(
+          slotElement,
+          undefined,
+          createElement(OptimisticRouteSegment),
+        );
+        elements[id] = inArray ? [boundary] : boundary;
+      }
+    }
   }
   if (
     !isLoadingShell ||
@@ -1015,12 +1050,19 @@ export function createOptimisticRouteElements(
     identities[id] = rebound;
   }
   // Route entries hold vinext's boundary chain, so all of it is rebound.
-  // Page, layout and template entries are the app's output inside a loading
-  // boundary at most, so only that boundary is.
+  // Page, layout, template and mirrored slot entries are the app's output
+  // inside a loading boundary at most, so only that boundary is.
+  const slotIds = new Set(getShellSlotIds(template.elements));
   const incomplete = { found: false };
   for (const id of Object.keys(elements)) {
     const kind = AppElementsWire.parseElementKey(id)?.kind;
-    if (kind === "route" || kind === "layout" || kind === "template" || pageElementIds.has(id)) {
+    if (
+      kind === "route" ||
+      kind === "layout" ||
+      kind === "template" ||
+      pageElementIds.has(id) ||
+      slotIds.has(id)
+    ) {
       elements[id] = rebindElementKeys(
         elements[id],
         { keys: segmentKeys, values: segmentValues },

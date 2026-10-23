@@ -15,6 +15,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
+  APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -1017,6 +1018,131 @@ describe("App Router optimistic routing", () => {
     );
   });
 
+  it("does not commit a shell with a row nested in lazies past the walk", () => {
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const routeId = routeElementId("post-3");
+    const learn = (depth: number) => {
+      let row: unknown = shell[routeId];
+      for (let i = 0; i < depth; i++) {
+        const inner = row;
+        row = { $$typeof: Symbol.for("react.lazy"), _init: () => inner, _payload: {} };
+      }
+      return createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: { ...shell, [routeId]: row as AppElements[string] },
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      })!;
+    };
+    const key = blogRouteStateKey("post-3");
+    expect(createOptimisticRouteElements(learn(2), key)).not.toBeNull();
+    expect(createOptimisticRouteElements(learn(102), key)).toBeNull();
+  });
+
+  it("suspends inside a slot's mirrored loading boundary", () => {
+    // app/blog/[slug]/@sidebar: the route's own loading.tsx wraps the slot of
+    // the layout at its segment, which the shell carries without the slot.
+    const shell = createBlogMirroredLoadingShellElements("post-3");
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
+    const otherSlotId = AppElementsWire.encodeSlotId("modal", "/");
+    const boundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading"), key: "" },
+      null,
+    );
+    const appBoundary = createElement(Suspense, { fallback: null }, "Modal");
+    let resolved = false;
+    const learn = (slot: unknown) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...shell,
+          [APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY]: [slotId],
+          [slotId]: slot as AppElements[string],
+          // Another slot whose boundary is the app's own.
+          [otherSlotId]: appBoundary,
+        },
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const key = blogRouteStateKey("post-3");
+
+    const committed = createOptimisticRouteElements(learn(boundary), key)!;
+    const slot = readSuspense(committed[slotId]);
+    expect(slot.key).toBe("");
+    expect(slot.props.fallback).toBe(boundary.props.fallback);
+    const suspender = slot.props.children;
+    expect(isValidElement(suspender) && (suspender.type as { name?: string }).name).toBe(
+      "OptimisticRouteSegment",
+    );
+    expect(committed[otherSlotId]).toBe(appBoundary);
+
+    // Committed for another URL, a boundary keyed by the learned URL's route
+    // state is keyed for the target, as its real payload renders it.
+    const post4 = blogRouteStateKey("post-4");
+    const keyedBoundary = createElement(
+      Suspense,
+      { fallback: createElement("p", null, "Loading"), key },
+      null,
+    );
+    const rebound = createOptimisticRouteElements(learn(keyedBoundary), post4)!;
+    expect(readSuspense(rebound[slotId]).key).toBe(post4);
+    const reboundInArray = createOptimisticRouteElements(learn([keyedBoundary]), post4)![slotId];
+    expect(readSuspense((reboundInArray as unknown[])[0]).key).toBe(post4);
+
+    // Until the slot entry is read, its boundary can't be mirrored. Behind the
+    // layouts' barrier, the row resolves to the boundary's own, which Flight
+    // renders in an array, as a server component's result.
+    const lazy = (value: () => unknown) => ({
+      $$typeof: Symbol.for("react.lazy"),
+      _init: value,
+      _payload: {},
+    });
+    const pending = learn(
+      lazy(() =>
+        lazy(() => {
+          if (!resolved) throw new Promise(() => {});
+          return [boundary];
+        }),
+      ),
+    );
+    expect(createOptimisticRouteElements(pending, key)).toBeNull();
+    resolved = true;
+    const inArray = createOptimisticRouteElements(pending, key)![slotId];
+    expect(Array.isArray(inArray) && inArray.length).toBe(1);
+    const mirrored = readSuspense((inArray as unknown[])[0]);
+    expect(mirrored.key).toBe("");
+    expect(isValidElement(mirrored.props.children)).toBe(true);
+
+    // A shell that doesn't mirror the route's boundaries keeps the slot as it is.
+    const plain = createElement(Suspense, { fallback: null, key: "" }, null);
+    const unmirrored = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...createBlogLoadingShellElements(),
+        [APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY]: [slotId],
+        [slotId]: plain,
+      },
+      href: "/blog/post-1.rsc",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: blogManifest(),
+    })!;
+    expect(createOptimisticRouteElements(unmirrored, blogRouteStateKey("post-1"))![slotId]).toBe(
+      plain,
+    );
+  });
+
   it("commits a shell that doesn't mirror the route's boundaries as it is", () => {
     // It stops above the route's own loading.tsx, so it carries no route state
     // to key and nothing in it needs to be read first.
@@ -1049,6 +1175,7 @@ describe("App Router optimistic routing", () => {
 
   it("reads the rows a shell rebinds before it is learned", async () => {
     const routeId = routeElementId("post-3");
+    const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
     const pageId = AppElementsWire.encodePageId("/blog/post-3", null);
     const shell = createBlogMirroredLoadingShellElements("post-3");
     // Flight parses a row when it is first read, and a row that renders a
@@ -1109,6 +1236,11 @@ describe("App Router optimistic routing", () => {
           deferred(shell[routeId]) as ReactNode,
         ),
       ),
+      // A slot's loading boundary, behind a lazy that waits on another row.
+      [APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY]: [slotId],
+      [slotId]: deferred(
+        deferred(createElement(Suspense, { fallback: createElement("p"), key: "" }, null)),
+      ),
     } as AppElements;
     await settleOptimisticRouteRows(elements);
     const template = createOptimisticRouteTemplate({
@@ -1129,6 +1261,10 @@ describe("App Router optimistic routing", () => {
     expect(Reflect.get(Nav, "_init")()).toBeTypeOf("function");
     expect(region.status).toBe("fulfilled");
     expect(createOptimisticRouteElements(template, blogRouteStateKey("post-3"))).not.toBeNull();
+    const slot = readSuspense(
+      createOptimisticRouteElements(template, blogRouteStateKey("post-3"))![slotId],
+    );
+    expect(isValidElement(slot.props.children)).toBe(true);
   });
 
   it("gives up a shell whose rows don't resolve rather than hold the navigation", async () => {

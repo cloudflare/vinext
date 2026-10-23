@@ -74,7 +74,7 @@ async function navigate(
   await page.click(`nav a[href="${options.href}"]`);
   if (options.showsLoading) {
     // Only the optimistic shell can mount a fallback while the request is held.
-    await expect(page.locator("[data-skeleton]")).toBeVisible();
+    await expect(page.locator("[data-skeleton]").first()).toBeVisible();
   } else {
     await page.waitForTimeout(300);
     await expect(page.locator("[data-skeleton]")).toHaveCount(0);
@@ -110,6 +110,30 @@ for (const group of ["slow-layout", "slow-page", "client-page"]) {
     expect(mounted).toBe(1);
   });
 }
+
+test("slot: the route's loading.tsx mounts one fallback around its layout's slot", async ({
+  page,
+}) => {
+  await trackSkeletonMounts(page);
+  const base = "/loading-shell-remount/slot";
+  const prefetch = page.waitForResponse((response) =>
+    isLoadingShellPrefetch(response, `${base}/b`),
+  );
+  await page.goto(`${base}/a`);
+  await waitForAppRouterHydration(page);
+  await (await prefetch).finished();
+
+  // One fallback around the page and one around the @side slot, which the
+  // real payload reuses while the slot is still loading.
+  const mounted = await navigate(page, {
+    heading: "slot b",
+    href: `${base}/b`,
+    showsLoading: true,
+    whileHeld: () => expect(page.locator("aside [data-skeleton]")).toBeVisible(),
+  });
+  expect(mounted).toBe(2);
+  await expect(page.locator("#side")).toHaveText("side");
+});
 
 test("dynamic route: a shell is keyed for the URL it commits", async ({ page }) => {
   // Five navigations, each behind the 800ms layout.

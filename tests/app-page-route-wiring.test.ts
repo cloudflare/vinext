@@ -4,6 +4,7 @@ import {
   Fragment,
   createElement,
   isValidElement,
+  Suspense,
   type ComponentType,
   type ReactElement,
   type ReactNode,
@@ -15,6 +16,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY,
+  APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
   AppElementsWire,
@@ -1695,6 +1697,121 @@ describe("app page route wiring helpers", () => {
         entry === routeBoundary ? `Symbol(react.suspense)#${otherRouteStateKey}` : entry,
       ),
     );
+  });
+
+  it("renders the route's loading boundary around a slot where the full render does", async () => {
+    // app/blog/[slug]/{layout,loading,page}.tsx and @sidebar/page.tsx: the
+    // route's own loading.tsx wraps the slot of the layout at its segment too.
+    // Both renders wait for the layouts above, behind a barrier the browser
+    // receives resolved, so a separate wiring instance passes it through.
+    vi.doMock("../packages/vinext/src/server/app-render-dependency.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      renderAfterAppDependencies: (children: ReactNode) => children,
+    }));
+    try {
+      const wiringSpecifier = "../packages/vinext/src/server/app-page-route-wiring.js?slot";
+      const {
+        buildAppPageElements: buildElements,
+      }: typeof import("../packages/vinext/src/server/app-page-route-wiring.js") = await import(
+        /* @vite-ignore */ wiringSpecifier
+      );
+      const build = (renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined) =>
+        buildElements({
+          element: createElement(PageProbe),
+          makeThenableParams(params) {
+            return Promise.resolve(params);
+          },
+          matchedParams: { slug: "hello" },
+          renderMode,
+          route: {
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 2],
+            layouts: [{ default: RootLayout }, { default: RootLayout }],
+            loading: { default: RouteLoadingProbe },
+            loadings: [{ default: RouteLoadingProbe }],
+            loadingTreePositions: [2],
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["blog", "[slug]"],
+            slots: {
+              sidebar: {
+                default: null,
+                error: null,
+                layout: null,
+                layoutIndex: 1,
+                loading: null,
+                name: "sidebar",
+                ownerTreePosition: 2,
+                page: { default: SlotPage },
+                routeSegments: [],
+              },
+            },
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: "/blog/hello",
+          rootNotFoundModule: null,
+        });
+
+      const shell = build(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      const full = build(undefined);
+      const slotId = AppElementsWire.encodeSlotId("sidebar", "/blog/[slug]");
+      const shellSlot = shell[slotId];
+      const fullSlot = full[slotId];
+      if (!isValidElement<InspectableElementProps>(shellSlot)) {
+        throw new Error("Expected the shell to carry the slot's loading boundary");
+      }
+      if (!isValidElement<InspectableElementProps>(fullSlot)) {
+        throw new Error("Expected the full render to wrap the slot in its loading boundary");
+      }
+      expect(shellSlot.type).toBe(Suspense);
+      expect(shellSlot.type).toBe(fullSlot.type);
+      expect(shellSlot.key).toBe(fullSlot.key);
+      expect(findSuspenseWithFallback(shellSlot, "RouteLoadingProbe")).toBe(shellSlot);
+      expect(findSuspenseWithFallback(fullSlot, "RouteLoadingProbe")).toBe(fullSlot);
+      expect(shellSlot.props.children).toBeNull();
+      expect(containsElementType(fullSlot, SlotPage)).toBe(true);
+      // The shell names the slot entries it renders the boundary in.
+      expect(shell[APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY]).toEqual([slotId]);
+      expect(full[APP_PREFETCH_LOADING_SHELL_SLOT_IDS_KEY]).toBeUndefined();
+
+      // The optimistic commit suspends inside it, so the full render's slot
+      // reuses the fallback it mounted.
+      const routeStateKey = shell[APP_PREFETCH_LOADING_SHELL_ROUTE_STATE_KEY];
+      if (typeof routeStateKey !== "string") throw new Error("Expected the shell's route state");
+      const committed = createOptimisticRouteElements(
+        {
+          // As Flight decodes it: the barrier, a keyless server component, puts
+          // its keyed result in an array.
+          elements: { ...shell, [slotId]: [shellSlot] },
+          mountedSlotsHeader: null,
+          omittedBfcacheSegmentIds: [],
+          omittedLayoutIds: [],
+          pageElementIds: ["page:/blog/hello"],
+          routeId: "route:/blog/:slug",
+          routeStateKey,
+          urlRouteStateKey: routeStateKey,
+        },
+        routeStateKey,
+      )!;
+      const committedEntry = committed[slotId];
+      if (!Array.isArray(committedEntry) || committedEntry.length !== 1) {
+        throw new Error("Expected the committed slot entry in an array");
+      }
+      const committedSlot: unknown = committedEntry[0];
+      if (!isValidElement<InspectableElementProps>(committedSlot)) {
+        throw new Error("Expected the committed slot boundary");
+      }
+      expect(committedSlot.key).toBe(fullSlot.key);
+      expect(findSuspenseWithFallback(committedSlot, "RouteLoadingProbe")).toBe(committedSlot);
+      const suspender = committedSlot.props.children;
+      expect(isValidElement(suspender) && getElementTypeName(suspender.type)).toBe(
+        "OptimisticRouteSegment",
+      );
+    } finally {
+      vi.doUnmock("../packages/vinext/src/server/app-render-dependency.js");
+    }
   });
 
   it("keys a shell committed for another URL as the target's full render", async () => {
