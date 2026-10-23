@@ -53,11 +53,16 @@ import {
   buildPageElements as buildResolvedPageElements,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
 import { createNextBfcacheIdMap } from "../packages/vinext/src/server/app-bfcache-identity.js";
-import type { AppPageSemanticSegment } from "../packages/vinext/src/server/app-page-segment-state.js";
+import {
+  resolveAppPagePatternStateKey,
+  type AppPageSemanticSegment,
+} from "../packages/vinext/src/server/app-page-segment-state.js";
 import { createAppPageRenderDependency } from "../packages/vinext/src/server/app-render-dependency.js";
 import {
   canCommitOptimisticRouteTemplate,
+  createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 import type {
@@ -200,6 +205,43 @@ function findSlotById(node: unknown, id: string): ReactElement<Record<string, un
   return match as ReactElement<Record<string, unknown>> | null;
 }
 
+// Element types and keys from the root down to the slot with this id. React
+// keeps a mounted subtree only while this chain is the same between renders.
+function findSlotPath(node: unknown, id: string): string[] | null {
+  if (Array.isArray(node)) {
+    for (const [index, child] of node.entries()) {
+      const path = findSlotPath(child, id);
+      if (path) return [`[${index}]`, ...path];
+    }
+    return null;
+  }
+  if (!isValidElement<InspectableElementProps>(node)) return null;
+
+  const signature = `${getElementTypeName(node.type)}#${node.key ?? ""}`;
+  if (getElementTypeName(node.type) === "Slot" && node.props.id === id) return [signature];
+  for (const [prop, value] of Object.entries(node.props)) {
+    const path = findSlotPath(value, id);
+    if (path) return [signature, prop, ...path];
+  }
+  return null;
+}
+
+// Keyed elements in a tree, in order, as `type#key`.
+function collectElementKeys(node: unknown): string[] {
+  if (Array.isArray(node)) return node.flatMap((child) => collectElementKeys(child));
+  if (!isValidElement<InspectableElementProps>(node)) return [];
+  const own = node.key === null ? [] : [`${getElementTypeName(node.type)}#${node.key}`];
+  return [...own, ...Object.values(node.props).flatMap((value) => collectElementKeys(value))];
+}
+
+function collectResetKeys(node: unknown): string[] {
+  if (Array.isArray(node)) return node.flatMap((child) => collectResetKeys(child));
+  if (!isValidElement<InspectableElementProps>(node)) return [];
+  const { resetKey } = node.props;
+  const own = typeof resetKey === "string" ? [`${getElementTypeName(node.type)}#${resetKey}`] : [];
+  return [...own, ...Object.values(node.props).flatMap((value) => collectResetKeys(value))];
+}
+
 function findSuspenseWithFallback(
   node: unknown,
   fallbackTypeName: string,
@@ -290,6 +332,41 @@ async function renderRouteEntry(elements: AppElements, routeId: string): Promise
       createElement(Slot, { id: routeId }),
     ),
   );
+}
+
+// Renders a loading shell the way the browser commits it optimistically: the
+// page entries stay suspended, so only the HTML up to their boundaries streams.
+async function renderOptimisticRouteEntry(
+  elements: AppElements,
+  routeId: string,
+  pageId: string,
+): Promise<string> {
+  const { ElementsContext, Slot } = await import("../packages/vinext/src/shims/slot.js");
+  const { renderToReadableStream } = await import("react-dom/server.edge");
+  const optimisticElements = createOptimisticRouteElements(
+    {
+      elements,
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: [pageId],
+      routeId,
+      routeStateKey: "",
+      urlRouteStateKey: "",
+    },
+    "",
+  )!;
+  const controller = new AbortController();
+  const stream = await renderToReadableStream(
+    createElement(
+      ElementsContext.Provider,
+      { value: optimisticElements },
+      createElement(Slot, { id: routeId }),
+    ),
+    { onError() {}, signal: controller.signal },
+  );
+  controller.abort();
+  return readStream(stream);
 }
 
 async function renderRouteDocument(
@@ -1378,7 +1455,7 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["page:/dashboard"]).toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
-    const html = await renderRouteEntry(elements, "route:/dashboard");
+    const html = await renderOptimisticRouteEntry(elements, "route:/dashboard", "page:/dashboard");
 
     expect(html).toContain("Route loading");
     expect(html).not.toContain("Page");
@@ -1493,9 +1570,216 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    const html = await renderRouteEntry(elements, "route:/prefetch-auto/slug");
+    const html = await renderOptimisticRouteEntry(
+      elements,
+      "route:/prefetch-auto/slug",
+      "page:/prefetch-auto/slug",
+    );
     expect(html).toContain("Nested loading");
     expect(html).not.toContain("Root loading");
+  });
+
+  it("renders a route loading shell's boundaries where the full render renders them", () => {
+    // Regression test for cloudflare/vinext#4075: the full payload must
+    // reconcile with the boundaries the optimistic shell committed, or React
+    // replaces the shell's fallback with a newly mounted one.
+    function RootLoading(): ReactNode {
+      return createElement("p", null, "Root loading");
+    }
+    const build = (
+      renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined,
+      pageRenderDependency: ReturnType<typeof createAppPageRenderDependency> | null,
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { slug: "hello" },
+        pageRenderDependency,
+        renderMode,
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: { default: RouteLoadingProbe },
+          loadings: [{ default: RootLoading }, { default: RouteLoadingProbe }],
+          loadingTreePositions: [0, 2],
+          notFound: null,
+          notFounds: [null],
+          routeSegments: ["blog", "[slug]"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/blog/hello",
+        rootNotFoundModule: null,
+      });
+
+    const shell = build(
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      createAppPageRenderDependency(),
+    );
+    const full = build(undefined, createAppPageRenderDependency());
+    // Without a page dependency the full route entry is not behind a barrier,
+    // so its element tree is inspectable. The dependency does not change it.
+    const fullRoute = build(undefined, null)["route:/blog/hello"];
+
+    const shellPath = findSlotPath(shell["route:/blog/hello"], "page:/blog/hello");
+    expect(shellPath).not.toBeNull();
+    expect(shellPath).toEqual(findSlotPath(fullRoute, "page:/blog/hello"));
+    expect(shellPath?.join(" ")).toContain("AppRouterScrollTarget");
+
+    const shellPage = shell["page:/blog/hello"];
+    const fullPage = full["page:/blog/hello"];
+    if (!isValidElement<InspectableElementProps>(shellPage)) {
+      throw new Error("Expected the shell to carry the page loading boundary");
+    }
+    if (!isValidElement<InspectableElementProps>(fullPage)) {
+      throw new Error("Expected the full render to wrap the page in its loading boundary");
+    }
+    expect(shellPage.type).toBe(fullPage.type);
+    expect(shellPage.key).toBe(fullPage.key);
+    expect(findSuspenseWithFallback(shellPage, "RouteLoadingProbe")).toBe(shellPage);
+    expect(shellPage.props.children).toBeNull();
+    expect(containsElementType(shellPage, PageProbe)).toBe(false);
+
+    // The browser computes a target's route state key from its URL, which
+    // matches the server's. A template committed for another route state is
+    // keyed for the target in the route's own boundaries and keeps the shared
+    // ancestor's.
+    const routeStateKey = resolveAppPagePatternStateKey(["blog", ":slug"], { slug: "hello" });
+    expect(shellPage.key).toBe(routeStateKey);
+    const template: OptimisticRouteTemplate = {
+      elements: shell,
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: ["page:/blog/hello"],
+      routeId: "route:/blog/:slug",
+      routeStateKey,
+      urlRouteStateKey: routeStateKey,
+    };
+    const kept = createOptimisticRouteElements(template, routeStateKey)!;
+    expect(findSlotPath(kept["route:/blog/hello"], "page:/blog/hello")).toEqual(shellPath);
+    const otherRouteStateKey = resolveAppPagePatternStateKey(["blog", ":slug"], { slug: "other" });
+    const rekeyed = createOptimisticRouteElements(template, otherRouteStateKey)!;
+    const routeBoundary = `Symbol(react.suspense)#${routeStateKey}`;
+    expect(shellPath).toContain(routeBoundary);
+    expect(shellPath).toContain("Symbol(react.suspense)#blog");
+    expect(findSlotPath(rekeyed["route:/blog/hello"], "page:/blog/hello")).toEqual(
+      shellPath?.map((entry) =>
+        entry === routeBoundary ? `Symbol(react.suspense)#${otherRouteStateKey}` : entry,
+      ),
+    );
+    const rekeyedPage = rekeyed["page:/blog/hello"];
+    expect(isValidElement(rekeyedPage) && rekeyedPage.key).toBe(otherRouteStateKey);
+
+    // Without a render dependency (client and class pages) the page entry has
+    // no boundary of its own, so the shell keeps the plain loading fallback.
+    const clientShell = build(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL, null);
+    expect(clientShell["page:/blog/hello"]).toBeNull();
+    expect(findSlotPath(clientShell["route:/blog/hello"], "page:/blog/hello")).toBeNull();
+  });
+
+  it("keys a shell committed for another URL as the target's full render", async () => {
+    // app/loading.tsx, app/error.tsx, app/not-found.tsx and
+    // app/[id]/loading.tsx: the root loading, error and not-found boundaries
+    // are keyed by the [id] segment alone, the route's by its state. The
+    // browser receives entries as Flight renders them, so a separate wiring
+    // instance passes the dependency barriers through.
+    vi.doMock("../packages/vinext/src/server/app-render-dependency.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      renderAfterAppDependencies: (children: ReactNode) => children,
+      renderAppComponentWithDependencyBarrier: (
+        component: ComponentType<Record<string, unknown>>,
+        props: Record<string, unknown>,
+      ) => createElement(component, props),
+    }));
+    try {
+      const wiringSpecifier = "../packages/vinext/src/server/app-page-route-wiring.js?rebind";
+      const {
+        buildAppPageElements: buildElements,
+      }: typeof import("../packages/vinext/src/server/app-page-route-wiring.js") = await import(
+        /* @vite-ignore */ wiringSpecifier
+      );
+      const RootLoading = () => createElement("p", null, "Root loading");
+      const IdLayout = (props: Record<string, unknown>): ReactNode =>
+        createElement("section", null, readChildren(props.children));
+      const rootError = { default: () => createElement("p", null, "Error") };
+      const rootNotFound = { default: () => createElement("p", null, "Not found") };
+      const build = (
+        id: string,
+        options: {
+          idLayout?: boolean;
+          renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL;
+        },
+      ) =>
+        buildElements({
+          element: createElement(PageProbe),
+          makeThenableParams(params) {
+            // As Flight decodes a fulfilled promise.
+            return Object.assign(Promise.resolve(params), { status: "fulfilled", value: params });
+          },
+          matchedParams: { id },
+          pageRenderDependency: createAppPageRenderDependency(),
+          route: {
+            error: rootError,
+            errors: options.idLayout ? [rootError, null] : [rootError],
+            layoutTreePositions: options.idLayout ? [0, 1] : [0],
+            layouts: options.idLayout
+              ? [{ default: RootLayout }, { default: IdLayout }]
+              : [{ default: RootLayout }],
+            loading: { default: RouteLoadingProbe },
+            loadings: [{ default: RootLoading }, { default: RouteLoadingProbe }],
+            loadingTreePositions: [0, 1],
+            notFound: rootNotFound,
+            notFounds: options.idLayout ? [rootNotFound, null] : [rootNotFound],
+            routeSegments: ["[id]"],
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: `/${id}`,
+          rootNotFoundModule: null,
+          ...(options.renderMode ? { renderMode: options.renderMode } : {}),
+        });
+
+      const routeStateKey = (id: string) => resolveAppPagePatternStateKey([":id"], { id });
+      const learn = (idLayout: boolean): OptimisticRouteTemplate => ({
+        elements: build("2", { idLayout, renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL }),
+        mountedSlotsHeader: null,
+        omittedBfcacheSegmentIds: [],
+        omittedLayoutIds: [],
+        pageElementIds: ["page:/2"],
+        routeId: "route:/:id",
+        routeStateKey: routeStateKey("2"),
+        urlRouteStateKey: routeStateKey("2"),
+      });
+      const optimistic = createOptimisticRouteElements(learn(false), routeStateKey("3"))!;
+      const full = build("3", {});
+
+      const routeKeys = collectElementKeys(full["route:/3"]);
+      expect(routeKeys).toContain(`Symbol(react.suspense)#${JSON.parse(routeStateKey("3"))[0]}`);
+      expect(collectElementKeys(optimistic["route:/2"])).toEqual(routeKeys);
+      expect(findSlotPath(optimistic["route:/2"], "page:/2")).toEqual(
+        findSlotPath(full["route:/3"], "page:/3"),
+      );
+      // A boundary showing /2's fallback must reset when the shell commits.
+      const resetKeys = collectResetKeys(full["route:/3"]);
+      expect(resetKeys).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^ErrorBoundary#.*id\|3\|d/),
+          expect.stringMatching(/^NotFoundBoundary#.*id\|3\|d/),
+        ]),
+      );
+      expect(collectResetKeys(optimistic["route:/2"])).toEqual(resetKeys);
+
+      // app/[id]/layout.tsx is rendered with /2's params, so a shell learned
+      // from /2 is not committed for /3.
+      expect(createOptimisticRouteElements(learn(true), routeStateKey("3"))).toBeNull();
+    } finally {
+      vi.doUnmock("../packages/vinext/src/server/app-render-dependency.js");
+    }
   });
 
   it("reaches every loading-shell component in the full render", async () => {
@@ -1922,6 +2206,7 @@ describe("app page route wiring helpers", () => {
     const buildElements = (
       renderMode: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL | undefined,
       hasLoadingBoundary: boolean,
+      pageRenderDependency: ReturnType<typeof createAppPageRenderDependency> | null = null,
     ) =>
       buildAppPageElements({
         element: createElement(PageProbe),
@@ -1930,6 +2215,7 @@ describe("app page route wiring helpers", () => {
         },
         matchedParams: {},
         metadataPlacement: "body",
+        pageRenderDependency,
         resolveHead: createResolvedHead,
         route: {
           error: null,
@@ -1965,6 +2251,20 @@ describe("app page route wiring helpers", () => {
     const full = buildElements(undefined, false);
     expect(Object.hasOwn(full, bodyId)).toBe(true);
     expect(findSlotById(full["route:/dashboard"], bodyId)).not.toBeNull();
+
+    // The metadata outlet belongs to the page segment, which a loading shell
+    // stops above, even one that mirrors the page entry's boundary.
+    const outletId = "__vinext_streaming_metadata_outlet:route:/dashboard";
+    const mirroringShell = buildElements(
+      APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      true,
+      createAppPageRenderDependency(),
+    );
+    expect(
+      findSuspenseWithFallback(mirroringShell["page:/dashboard"], "RouteLoadingProbe"),
+    ).not.toBeNull();
+    expect(findSlotById(mirroringShell["route:/dashboard"], outletId)).toBeNull();
+    expect(findSlotById(full["route:/dashboard"], outletId)).not.toBeNull();
   });
 
   it("treats a nested slot loading boundary as the loading shell when the slot override only carries params", async () => {

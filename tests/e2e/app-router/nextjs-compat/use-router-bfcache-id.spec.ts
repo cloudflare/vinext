@@ -42,9 +42,7 @@ function waitForServerActionResponse(page: Page, pathname: string) {
 }
 
 test.describe("Next.js compat: useRouter().bfcacheId", () => {
-  test("replaces a prefetched dynamic layout shell with authoritative cross-param state", async ({
-    page,
-  }) => {
+  test("does not commit another param's dynamic layout shell", async ({ page }) => {
     const rscRequests: string[] = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -96,8 +94,13 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
     try {
       await page.getByTestId("no-prefetch-y").click();
       await yRequestBlocked;
-      await expect(visibleTestId(page, "server-group")).toHaveText("x");
-      const detachedLayoutBfcacheId = await visibleTestId(page, "layout-bfcache-id").textContent();
+      // The route's shell was learned from /x/1, and its [group] layout was
+      // rendered with x. Committing it for /y/1 would show x's layout and
+      // state, so the current page stays up until /y/1's payload arrives, as
+      // Next.js does for a URL it has not prefetched.
+      await page.waitForTimeout(300);
+      await expect(page.getByRole("heading", { name: "useRouter bfcacheId" })).toBeVisible();
+      await expect(page.locator('[data-testid="server-group"]:visible')).toHaveCount(0);
 
       yRequestGate.release?.();
       yRequestGate.release = null;
@@ -113,7 +116,6 @@ test.describe("Next.js compat: useRouter().bfcacheId", () => {
       const yLayoutBfcacheId = await visibleTestId(page, "layout-bfcache-id").textContent();
       expect(yLayoutBfcacheId).toMatch(/^_b_\d+_$/);
       expect(yLayoutBfcacheId).not.toBe(xLayoutBfcacheId);
-      expect(yLayoutBfcacheId).not.toBe(detachedLayoutBfcacheId);
     } finally {
       yRequestGate.release?.();
     }

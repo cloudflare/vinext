@@ -217,6 +217,7 @@ import {
   getOptimisticRouteTemplateKey,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
+  settleOptimisticRouteRows,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import {
@@ -718,6 +719,7 @@ function parsePrefetchCacheKey(cacheKey: string): {
 }
 
 async function learnOptimisticRouteTemplateFromPrefetch(options: {
+  cacheGeneration: number;
   cacheKey: string;
   entry: PrefetchCacheEntry & { snapshot: CachedRscResponse };
   interceptionContext: string | null;
@@ -734,6 +736,7 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
   );
+  await settleOptimisticRouteRows(elements);
   const template = createOptimisticRouteTemplate({
     allowLoadingShell: options.entry.optimisticRouteShell === true,
     basePath: __basePath,
@@ -744,6 +747,8 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     routeManifest: options.routeManifest,
   });
   if (template === null) return false;
+  // The caches were cleared while the prefetch decoded, so it is stale.
+  if (options.cacheGeneration !== clientNavigationCacheGeneration) return false;
 
   optimisticRouteTemplates.set(
     getOptimisticRouteTemplateKey({
@@ -775,7 +780,9 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
     if (!isSettledPrefetchCacheEntry(entry)) continue;
     if (entry.prefetchKind === "route-tree") continue;
 
-    const promise = learnOptimisticRouteTemplateFromPrefetch({
+    const cacheGeneration = clientNavigationCacheGeneration;
+    const promise: Promise<void> = learnOptimisticRouteTemplateFromPrefetch({
+      cacheGeneration,
       cacheKey,
       entry,
       interceptionContext: options.interceptionContext,
@@ -783,10 +790,14 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
       routeManifest: options.routeManifest,
     })
       .then((learned) => {
-        if (learned) optimisticRouteTemplateSources.add(sourceKey);
+        if (!learned || cacheGeneration !== clientNavigationCacheGeneration) return;
+        optimisticRouteTemplateSources.add(sourceKey);
       })
       .finally(() => {
-        optimisticRouteTemplateLearning.delete(sourceKey);
+        // A cache clear may have let a newer learner take this source.
+        if (optimisticRouteTemplateLearning.get(sourceKey) === promise) {
+          optimisticRouteTemplateLearning.delete(sourceKey);
+        }
       });
     optimisticRouteTemplateLearning.set(sourceKey, promise);
     learning.push(promise);

@@ -1319,6 +1319,21 @@ export function buildAppPageElements<
   pageRenderDependency?.setResultDependencies(pageDependencies);
 
   const routeLoadingComponent = getDefaultExport(options.route.loading);
+  // A loading shell that stops at the route's own loading.tsx renders the
+  // boundaries a full render puts around the page, with the page itself left
+  // out. The optimistic commit suspends inside them, so the full payload
+  // reconciles with the fallback the shell committed instead of mounting a new
+  // one. It needs the page entry's own keyed boundary, which only pages with a
+  // render dependency get: the browser reads the route state key from it, and
+  // the route entry may still be an unresolved Flight reference there.
+  const prefetchShellMirrorsRouteBoundaries =
+    shouldRenderPrefetchLoadingShell &&
+    Boolean(options.pageRenderDependency) &&
+    prefetchLoadingEntry !== null &&
+    prefetchLoadingEntry.treePosition >= routeSegments.length &&
+    routeLoadingComponent !== null &&
+    prefetchLoadingComponent === routeLoadingComponent;
+  const rendersRouteBoundaries = !isPrefetchLoadingShell || prefetchShellMirrorsRouteBoundaries;
   if (shouldRenderPrefetchLoadingShell) {
     // Client loading components serialize as module references in Flight. Keep
     // a durable marker in the shell payload so external router tests and
@@ -1337,9 +1352,16 @@ export function buildAppPageElements<
   // expose the fallback. Once <Slot> reconnects the entries this is nested
   // inside the route boundary; that duplication is an intentional transport
   // artifact, not two independently selected loading conventions.
-  const PageLoadingComponent = pageRenderDependency ? getDefaultExport(pageLoadingModule) : null;
+  // A mirroring shell carries this boundary without the page, for the full
+  // render to reuse.
+  const PageLoadingComponent =
+    rendersRouteBoundaries && options.pageRenderDependency
+      ? getDefaultExport(pageLoadingModule)
+      : null;
+  // As in Next.js, the outlet belongs to the page segment, which a loading
+  // shell stops above, so the shell's route entry leaves it out too.
   const streamingMetadataOutlet = createAppPageStreamingMetadataOutlet(
-    streamingMetadataOutletId,
+    isPrefetchLoadingShell ? null : streamingMetadataOutletId,
     options.streamingMetadataOutletSuspended,
   );
   const renderElementWithMetadataOutlet = options.renderElementWithMetadataOutlet;
@@ -1348,13 +1370,15 @@ export function buildAppPageElements<
     : options.element;
   const pageElement = PageLoadingComponent ? (
     <Suspense key={routeResetKey} fallback={<PageLoadingComponent />}>
-      {pageContent}
+      {isPrefetchLoadingShell ? null : pageContent}
     </Suspense>
   ) : (
     pageContent
   );
   elements[pageElementId] = isPrefetchLoadingShell
-    ? null
+    ? PageLoadingComponent
+      ? pageElement
+      : null
     : pageRenderDependency
       ? pageElement
       : renderAfterAppDependencies(pageElement, pageDependencies);
@@ -1812,11 +1836,12 @@ export function buildAppPageElements<
     </>
   );
 
-  if (isPrefetchLoadingShell) {
-    // A prefetch loading shell is a cached payload, not a committed navigation,
-    // so it intentionally does not mount AppRouterScrollTarget — the scroll/focus
-    // effect belongs to the real render that replaces this shell (handled in the
-    // else branch below).
+  if (!rendersRouteBoundaries) {
+    // A shell that does not mirror the route's boundaries (it stops above the
+    // route's own loading.tsx, or the page has no render dependency) renders
+    // its loading fallback, if any, in place of the route branch. It does not mount
+    // AppRouterScrollTarget, so the scroll/focus effect belongs to the real
+    // render that replaces this shell (handled in the else branch below).
     if (prefetchLoadingComponent === null) {
       routeChildren = null;
     } else {
@@ -1862,9 +1887,10 @@ export function buildAppPageElements<
     // above the LoadingBoundary for the same reason: the handler must stay
     // committed while the loading.js fallback renders, so the default-navigation
     // scroll fires against the loading boundary's DOM (`should apply scroll when
-    // loading.js is used`) and again when the final content commits — rather than
-    // relying on a raw post-navigation scrollTo fallback that only runs after the
-    // streamed content resolves.
+    // loading.js is used`) — rather than relying on a raw post-navigation
+    // scrollTo fallback that only runs after the streamed content resolves. When
+    // a mirrored loading shell commits first, its fallback uses up the scroll
+    // intent, so the final content does not scroll again, as in Next.js.
     routeChildren = <AppRouterScrollTarget>{routeChildren}</AppRouterScrollTarget>;
   }
 
@@ -2005,7 +2031,7 @@ export function buildAppPageElements<
     // its ordering relative to page access/error boundaries and scroll handling
     // remains unchanged. Ancestor segment boundaries are inserted here so they
     // can suspend while a child layout entry renders.
-    if (!isPrefetchLoadingShell && treePosition < routeSegments.length) {
+    if (rendersRouteBoundaries && treePosition < routeSegments.length) {
       const segmentLoadingComponent = getDefaultExport(loadingEntry?.loadingModule);
       if (segmentLoadingComponent) {
         const SegmentLoadingComponent = segmentLoadingComponent;
