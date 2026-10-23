@@ -502,6 +502,28 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["inner", "outer"]);
   });
 
+  it("throws on a locked wrapper that has not been read yet", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const reader = inner.getReader();
+
+    expect(() => deferUntilStreamConsumed(inner, () => calls.push("outer"))).toThrow(TypeError);
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    expect(calls).toEqual(["inner"]);
+  });
+
+  it("reuses a wrapper that was locked and released without being read", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    inner.getReader().releaseLock();
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
   it("does not read an empty source before the consumer does", async () => {
     const calls: string[] = [];
     const inner = deferUntilStreamConsumed(createStream([]), () => calls.push("inner"));

@@ -50,8 +50,10 @@ export function deferUntilStreamConsumed(
     onCancel,
     runInCreationContext: AsyncLocalStorage.snapshot(),
   };
+  // A locked wrapper is left to `getReader()` below, which throws on it as
+  // `pipeThrough()` did.
   const unread = unreadWrappers.get(stream);
-  if (unread) {
+  if (unread && !stream.locked) {
     unread.push(layer);
     return stream;
   }
