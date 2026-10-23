@@ -9,7 +9,6 @@ import type { AppRoute } from "../routing/app-router.js";
 import { patternsStructurallyEquivalent, type RouteManifest } from "../routing/app-route-graph.js";
 import { toBrowserRouteManifestWire } from "../routing/browser-route-manifest.js";
 import { hashRoutePatternParts } from "../routing/hashed-route-patterns.js";
-import { matchRoutePatternRaw } from "../routing/route-pattern.js";
 import type { NextRewrite } from "../config/next-config.js";
 
 /**
@@ -191,19 +190,27 @@ export function toLinkPrefetchRoutes(
 }
 
 /**
- * Whether a URL the client matches to the route can be one the intercept
- * targets: `/foo/:id` also intercepts a static `/foo/static` route. The client
- * checks the URL against the intercept's own target pattern.
+ * Whether some URL matches both the intercept's target and the route:
+ * `/foo/:id` also intercepts a static `/foo/static` route, and `/:name/static`
+ * crosses `/foo/:id` at `/foo/static`. A catch-all counts as overlapping; the
+ * client checks the URL against the intercept's own target pattern anyway.
  */
 function interceptTargetMayMatchRoute(
   targetPatternParts: readonly string[],
   routePatternParts: readonly string[],
 ): boolean {
-  return (
-    patternsStructurallyEquivalent(targetPatternParts, routePatternParts) ||
-    matchRoutePatternRaw(routePatternParts, targetPatternParts) !== null ||
-    matchRoutePatternRaw(targetPatternParts, routePatternParts) !== null
-  );
+  const isParam = (part: string) => part.startsWith(":");
+  const isCatchAll = (part: string) => isParam(part) && (part.endsWith("+") || part.endsWith("*"));
+  for (let index = 0; ; index++) {
+    const target = targetPatternParts[index];
+    const route = routePatternParts[index];
+    if (target === undefined || route === undefined) {
+      const rest = target ?? route;
+      return rest === undefined || (isCatchAll(rest) && rest.endsWith("*"));
+    }
+    if (isCatchAll(target) || isCatchAll(route)) return true;
+    if (!isParam(target) && !isParam(route) && target !== route) return false;
+  }
 }
 
 /**
@@ -211,7 +218,8 @@ function interceptTargetMayMatchRoute(
  * are listed on each route that shares the slot. The intercepted response also
  * renders branches of its source route that the intercepting page's tree
  * doesn't cover, such as other slots, so a source route that renders
- * dynamically makes the intercept dynamic too.
+ * dynamically makes the intercept dynamic too. The client also counts the
+ * descendant route an interception context resolves to.
  */
 function collectClassifiedIntercepts(
   routes: readonly AppRoute[],

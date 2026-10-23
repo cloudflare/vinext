@@ -634,6 +634,13 @@ describe("Link App Router prefetch mode", () => {
           rendersDynamically: true,
           intercepts: [{ sourcePatternParts: ["feed"], targetPatternParts: ["posts", ":id"] }],
         },
+        { canPrefetchLoadingShell: false, patternParts: ["feed"], isDynamic: false },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["feed", "recent"],
+          isDynamic: false,
+          rendersDynamically: true,
+        },
         {
           canPrefetchLoadingShell: false,
           patternParts: ["tags", ":id"],
@@ -682,6 +689,10 @@ describe("Link App Router prefetch mode", () => {
         dynamicStaleTime: "learning-only",
       });
       expect(resolveAutoAppRoutePrefetch("/posts/1").cacheForNavigation).toBe(false);
+      // The intercepted response renders the dynamic route the context resolves to.
+      expect(resolveAutoAppRoutePrefetch("/posts/1", "/feed/recent").cacheForNavigation).toBe(
+        false,
+      );
       // Of several matching intercepting pages, any dynamic one counts.
       expect(resolveAutoAppRoutePrefetch("/tags/1", "/feed").cacheForNavigation).toBe(false);
       expect(resolveAutoAppRoutePrefetch("/tags/1", "/about").cacheForNavigation).toBe(true);

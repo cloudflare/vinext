@@ -657,6 +657,10 @@ describe("App Router generated manifest construction", () => {
       write("board/@modal/default.tsx");
       write("board/@modal/(..)cards/[id]/page.tsx", gsp);
       write("cards/[id]/page.tsx", gsp);
+      // An intercept target that crosses a route at `/foo/crossed/x`.
+      write("feed/@modal/(..)[name]/crossed/x/page.tsx");
+      write("[name]/crossed/x/page.tsx", gsp);
+      write("foo/[id]/x/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -695,6 +699,7 @@ describe("App Router generated manifest construction", () => {
       expect(summarize("feed/:slug")).toEqual([undefined, [["feed", "feed/:slug", true]]]);
       // The intercepted response also renders the dynamic source route's branches.
       expect(summarize("cards/:id")).toEqual([undefined, [["board", "cards/:id", true]]]);
+      expect(summarize("foo/:id/x")).toEqual([undefined, [["feed", ":name/crossed/x", true]]]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {

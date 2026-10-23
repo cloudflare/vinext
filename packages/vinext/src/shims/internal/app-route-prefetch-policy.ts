@@ -10,7 +10,11 @@
  * mirrors the layering of `internal/app-route-detection.ts`.
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import {
+  createRouteTrieCache,
+  matchRouteWithTrie,
+  matchRouteWithTrieRawPathname,
+} from "../../routing/route-matching.js";
 import { matchRoutePatternPrefix, matchRoutePatternRaw } from "../../routing/route-pattern.js";
 import { splitPathSegments } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
@@ -90,9 +94,12 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
  * Whether the page the href renders is dynamic. Under an interception context
  * that one of the route's intercepting pages matches, that page renders
  * instead, and Next.js classifies it as its own route. When several match,
- * any dynamic one counts.
+ * any dynamic one counts. The intercepted response also renders the route the
+ * context resolves to, which can be a dynamic descendant of the intercept's
+ * source, so that route counts too.
  */
 function resolveRendersDynamically(
+  routes: VinextLinkPrefetchRoute[],
   route: VinextLinkPrefetchRoute,
   interceptionContext: string | null,
   pathname: string,
@@ -109,7 +116,11 @@ function resolveRendersDynamically(
         matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
     );
     if (matching.length > 0) {
-      return matching.some((intercept) => intercept.rendersDynamically === true);
+      return (
+        matching.some((intercept) => intercept.rendersDynamically === true) ||
+        matchRouteWithTrieRawPathname(interceptionContext, routes, linkPrefetchRouteTrieCache)
+          ?.route.rendersDynamically === true
+      );
     }
   }
   return route.rendersDynamically === true;
@@ -173,6 +184,7 @@ export function resolveAutoAppRoutePrefetch(
   // page for a payload that is only fresh for `staleTimes.dynamic` (0 by
   // default).
   const rendersDynamically = resolveRendersDynamically(
+    routes,
     route,
     interceptionContext,
     routeUrl.pathname,
