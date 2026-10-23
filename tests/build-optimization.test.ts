@@ -181,7 +181,6 @@ describe("clientManualChunks", () => {
 
   it("keeps shared vinext shims in the runtime chunk", () => {
     expect(clientManualChunks("/vinext/shims/link.js")).toBe("vinext");
-    expect(clientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
     expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
   });
 
@@ -199,6 +198,38 @@ describe("clientManualChunks", () => {
     // The Pages client entry imports these, so they stay in the runtime chunk.
     expect(clientManualChunks("/vinext/shims/router.ts")).toBe("vinext");
     expect(clientManualChunks("/vinext/shims/head.ts")).toBe("vinext");
+  });
+
+  it("gives the App Router runtime its own chunk in Pages Router builds", () => {
+    for (const shim of [
+      "app-router-scroll-state.ts",
+      "internal/app-prefetch-rsc-request.ts",
+      "internal/navigation-untracked.ts",
+      "internal/pages-router-accessor.ts",
+      "navigation.ts",
+      "navigation-context-state.ts",
+      "navigation-errors.ts",
+      "ppr-fallback-shell.ts",
+      "readonly-url-search-params.ts",
+      "unrecognized-action-error.ts",
+    ]) {
+      expect(clientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext-app-router");
+      expect(appClientManualChunks(`/vinext/shims/${shim}`)).toBe("vinext");
+    }
+    // next/error imports next/navigation, so it loads only with the pages that use it.
+    expect(clientManualChunks("/vinext/shims/error.tsx")).toBeUndefined();
+    // The Pages router lazily loads config matchers through this module's imports.
+    expect(clientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.ts")).toBe(
+      "vinext",
+    );
+  });
+
+  it("keeps the shared client instrumentation state in the runtime chunk", () => {
+    // Both client entries import it, and so does next/navigation: outside
+    // "vinext", the navigation chunk would import the entry chunk.
+    expect(clientManualChunks("/vinext/client/instrumentation-client-state.js")).toBe("vinext");
+    expect(appClientManualChunks("/vinext/client/instrumentation-client-state.js")).toBe("vinext");
+    expect(clientManualChunks("/vinext/client/instrumentation-client.js")).toBeUndefined();
   });
 
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
@@ -236,9 +267,7 @@ describe("createClientManualChunks (installed layout)", () => {
   it("groups shims under node_modules into the vinext chunk", () => {
     const chunks = createClientManualChunks(installedShimsDir);
     expect(chunks("/app/node_modules/vinext/dist/shims/slot.js")).toBe("vinext");
-    expect(chunks("/app/node_modules/vinext/dist/shims/navigation-context-state.js")).toBe(
-      "vinext",
-    );
+    expect(chunks("/app/node_modules/vinext/dist/shims/internal/router-context.js")).toBe("vinext");
     expect(chunks("/app/node_modules/vinext/dist/shims/slot.js?v=abc")).toBe("vinext");
   });
 

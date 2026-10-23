@@ -46,6 +46,27 @@ const PAGE_OWNED_CLIENT_SHIMS = new Set([
   "offline",
   "script",
   "web-vitals",
+  // next/error imports next/navigation. The router still loads it lazily for
+  // the default error page.
+  "error",
+]);
+
+// The App Router runtime behind next/navigation. A Pages-only build gives it a
+// chunk of its own, which loads only with the pages that import next/navigation
+// or next/error. In "vinext" it, and its server/ dependencies, would load on
+// every page; left to graph-based chunking, Link's lazy App Router imports
+// would split it into many small chunks.
+const PAGES_APP_ROUTER_RUNTIME_SHIMS = new Set([
+  "app-router-scroll-state",
+  "internal/app-prefetch-rsc-request",
+  "internal/navigation-untracked",
+  "internal/pages-router-accessor",
+  "navigation",
+  "navigation-context-state",
+  "navigation-errors",
+  "ppr-fallback-shell",
+  "readonly-url-search-params",
+  "unrecognized-action-error",
 ]);
 
 // Next.js emits CSS under `static/css/` as `[contenthash].css` and CSS url()
@@ -115,6 +136,7 @@ function getPackageName(id: string): string | null {
  * Splits the client bundle into:
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
  * - "vinext"    — shared vinext runtime shims
+ * - "vinext-app-router" — the App Router runtime, in Pages Router builds
  *
  * Route-owned (App Router) or page-owned (Pages Router) client shims and all
  * other vendor code are left to the bundler's graph-based chunking so they
@@ -136,6 +158,9 @@ function getPackageName(id: string): string | null {
  *   and route-specific code stays in route chunks.
  */
 export function createClientManualChunks(shimsDir: string, preserveRouteBoundaries = false) {
+  // Both client entries import this hook state, and so does next/navigation.
+  // Keep it in "vinext" so a navigation chunk never imports the entry chunk.
+  const instrumentationStatePrefix = path.join(shimsDir, "../client/instrumentation-client-state.");
   return function clientManualChunks(id: string): string | undefined {
     // Check the shims prefix before the node_modules branch: for an installed
     // copy the shims live under <app>/node_modules/vinext/dist/shims/, so the
@@ -154,8 +179,12 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
         ? ROUTE_OWNED_CLIENT_SHIMS
         : PAGE_OWNED_CLIENT_SHIMS;
       if (ownedShims.has(shimName)) return undefined;
+      if (!preserveRouteBoundaries && PAGES_APP_ROUTER_RUNTIME_SHIMS.has(shimName)) {
+        return "vinext-app-router";
+      }
       return "vinext";
     }
+    if (slashedId.startsWith(instrumentationStatePrefix)) return "vinext";
 
     // React framework — always loaded, shared across all pages.
     // Isolating React into its own chunk is the single highest-value

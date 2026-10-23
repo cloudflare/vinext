@@ -112,6 +112,30 @@ test.describe("Pages Router Production Build", () => {
     );
   });
 
+  test("only pages that use next/navigation load the App Router runtime", async ({
+    page,
+    request,
+  }) => {
+    // A string literal that ships only with the App Router navigation runtime.
+    const appRouterMarker = "Unknown requested navigation work";
+    const loadsAppRouterRuntime = async (path: string): Promise<boolean> => {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+      const urls = await page.evaluate(() =>
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => new URL(name).pathname.endsWith(".js")),
+      );
+      const scripts = await Promise.all(urls.map(async (url) => (await request.get(url)).text()));
+      return scripts.some((code) => code.includes(appRouterMarker));
+    };
+
+    expect(await loadsAppRouterRuntime("/about")).toBe(false);
+    expect(await loadsAppRouterRuntime("/nav-compat/hello?q=1")).toBe(true);
+    await expect(page.locator("#use-params")).toHaveText('{"slug":"hello"}');
+  });
+
   test("SSR page renders with getServerSideProps data", async ({ page }) => {
     const response = await page.goto(`${BASE}/ssr`);
     expect(response?.status()).toBe(200);
