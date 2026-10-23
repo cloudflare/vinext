@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageLinkHeader,
@@ -359,6 +360,50 @@ describe("app page stream helpers", () => {
     expect(outer).not.toBe(inner);
     await expect(new Response(outer).text()).resolves.toBe("page");
     expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("runs each layer's callbacks in the async context that added it", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const inner = als.run("render", () =>
+      deferUntilStreamConsumed(createStream(["page"]), () => seen.push(`inner ${als.getStore()}`)),
+    );
+    const outer = als.run("tracing", () =>
+      deferUntilStreamConsumed(inner, () => seen.push(`outer ${als.getStore()}`)),
+    );
+
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(seen).toEqual(["inner render", "outer tracing"]);
+  });
+
+  it("cancels the source in the async context that created the wrapper", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        seen.push(`source ${als.getStore()}`);
+      },
+    });
+    const inner = als.run("render", () =>
+      deferUntilStreamConsumed(
+        source,
+        () => {},
+        undefined,
+        () => seen.push(`inner ${als.getStore()}`),
+      ),
+    );
+    const outer = als.run("tracing", () =>
+      deferUntilStreamConsumed(
+        inner,
+        () => {},
+        undefined,
+        () => seen.push(`outer ${als.getStore()}`),
+      ),
+    );
+
+    await outer.cancel("gone");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen).toEqual(["outer tracing", "inner render", "source render"]);
   });
 
   it("runs every coalesced flush callback when one throws", async () => {

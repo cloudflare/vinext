@@ -1,13 +1,16 @@
-type DeferredStreamCallbacks = {
+import { AsyncLocalStorage } from "node:async_hooks";
+
+type DeferredStreamLayer = {
   onFlush: () => void;
   onError?: (error: unknown) => void;
   onCancel?: (reason: unknown) => void;
+  runInCreationContext: <T>(callback: () => T) => T;
 };
 
 // Wrappers this module returned, keyed to the callbacks they run. Workers and
 // Node keep a stream's identity through `new Response(stream).body`, so a
 // wrapper often comes straight back in for another layer of cleanup.
-const deferredStreams = new WeakMap<ReadableStream<Uint8Array>, DeferredStreamCallbacks[]>();
+const deferredStreams = new WeakMap<ReadableStream<Uint8Array>, DeferredStreamLayer[]>();
 
 /**
  * Defers cleanup until the downstream consumer drains or cancels the stream.
@@ -20,7 +23,10 @@ const deferredStreams = new WeakMap<ReadableStream<Uint8Array>, DeferredStreamCa
  * cost a pipe, two more streams and their promise hops per chunk.
  *
  * The callbacks run in the order separate layers would run them: flush and
- * error callbacks innermost first, cancel callbacks outermost first.
+ * error callbacks innermost first, cancel callbacks outermost first. As with
+ * the pipe, each layer's callbacks run in the async context that added them:
+ * cleanup reads and clears request-scoped state, while the consumer (the
+ * runtime sending the body) reads from outside that scope.
  */
 export function deferUntilStreamConsumed(
   stream: ReadableStream<Uint8Array>,
@@ -28,23 +34,29 @@ export function deferUntilStreamConsumed(
   onError?: (error: unknown) => void,
   onCancel?: (reason: unknown) => void,
 ): ReadableStream<Uint8Array> {
+  const layer: DeferredStreamLayer = {
+    onFlush,
+    onError,
+    onCancel,
+    runInCreationContext: AsyncLocalStorage.snapshot(),
+  };
   const existing = deferredStreams.get(stream);
   if (existing && !stream.locked) {
-    existing.push({ onFlush, onError, onCancel });
+    existing.push(layer);
     return stream;
   }
 
-  const layers: DeferredStreamCallbacks[] = [{ onFlush, onError, onCancel }];
+  const layers = [layer];
   let settled = false;
-  const settle = (run: (layer: DeferredStreamCallbacks) => void, outermostFirst = false) => {
+  const settle = (run: (layer: DeferredStreamLayer) => void, outermostFirst = false) => {
     if (settled) return;
     settled = true;
     const ordered = outermostFirst ? [...layers].reverse() : layers;
     // A throwing callback must not skip the cleanup of the other layers.
     let failure: { error: unknown } | undefined;
-    for (const layer of ordered) {
+    for (const current of ordered) {
       try {
-        run(layer);
+        current.runInCreationContext(() => run(current));
       } catch (error) {
         failure ??= { error };
       }
@@ -58,27 +70,27 @@ export function deferUntilStreamConsumed(
       return reader.read().then(
         ({ done, value }) => {
           if (done) {
-            settle((layer) => layer.onFlush());
+            settle((current) => current.onFlush());
             controller.close();
           } else {
             controller.enqueue(value);
           }
         },
         (error) => {
-          settle((layer) => {
-            layer.onError?.(error);
-            layer.onFlush();
+          settle((current) => {
+            current.onError?.(error);
+            current.onFlush();
           });
           controller.error(error);
         },
       );
     },
     cancel(reason) {
-      settle((layer) => {
-        layer.onCancel?.(reason);
-        layer.onFlush();
+      settle((current) => {
+        current.onCancel?.(reason);
+        current.onFlush();
       }, true);
-      return reader.cancel(reason);
+      return layer.runInCreationContext(() => reader.cancel(reason));
     },
   });
   deferredStreams.set(wrapped, layers);
