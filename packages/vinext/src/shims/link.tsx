@@ -832,25 +832,41 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   if (typeof window === "undefined") return;
   if (!hasLinkAppNavigationRuntime()) return;
   const [
-    { getPrefetchCache, promotePrefetchCacheEntryForNavigation },
+    {
+      getMountedSlotsHeader,
+      getPrefetchCache,
+      getPrefetchInterceptionContext,
+      promotePrefetchCacheEntryForNavigation,
+    },
     { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
   ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
 
   let target: URL;
+  const fullHref = toCanonicalBrowserNavigationHref(
+    href,
+    window.location.href,
+    __basePath,
+    __trailingSlash,
+  );
   try {
-    target = new URL(
-      toCanonicalBrowserNavigationHref(href, window.location.href, __basePath, __trailingSlash),
-      window.location.href,
-    );
+    target = new URL(fullHref, window.location.href);
   } catch {
     return;
   }
+  // Only the variants this Link's navigation would consume.
+  const interceptionContext = getPrefetchInterceptionContext(fullHref);
+  const mountedSlotsHeader = getMountedSlotsHeader();
 
   for (const [cacheKey, entry] of getPrefetchCache()) {
     if (entry.optimisticRouteShell === true) continue;
     if (entry.prefetchKind === "route-tree") continue;
+    if ((entry.mountedSlotsHeader ?? null) !== mountedSlotsHeader) continue;
 
-    const [rscUrl] = cacheKey.split("\0", 1);
+    const separatorIndex = cacheKey.indexOf("\0");
+    const rscUrl = separatorIndex === -1 ? cacheKey : cacheKey.slice(0, separatorIndex);
+    const cacheKeyInterceptionContext =
+      separatorIndex === -1 ? null : cacheKey.slice(separatorIndex + 1);
+    if (cacheKeyInterceptionContext !== interceptionContext) continue;
     let cached: URL;
     try {
       cached = parseRscRequestPath(rscUrl);

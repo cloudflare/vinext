@@ -3585,6 +3585,54 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("promotes only prefetch entries from the hovered Link's interception and slot context", async () => {
+    stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/photos/1",
+      nodeEnv: "production",
+      props: { unstable_dynamicOnHover: true },
+    });
+    const { createRscRequestHeaders, createRscRequestUrl } =
+      await import("../packages/vinext/src/server/app-rsc-cache-busting.js");
+    const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+    const targetRscUrl = await createRscRequestUrl("/photos/1", createRscRequestHeaders());
+    const createEntry = (mountedSlotsHeader: string | null) => ({
+      cacheForNavigation: false,
+      mountedSlotsHeader,
+      outcome: "cache-seeded" as const,
+      snapshot: {
+        buffer: new TextEncoder().encode("flight").buffer,
+        contentType: "text/x-component",
+        mountedSlotsHeader,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: targetRscUrl,
+      },
+      timestamp: Date.now(),
+    });
+    const interceptedKey = `${targetRscUrl}\0/feed`;
+    // Mounted slots change only the cache-busting `_rsc` value.
+    const otherSlotsUrl = new URL(targetRscUrl, "http://localhost");
+    otherSlotsUrl.searchParams.set("_rsc", "slots");
+    const otherSlotsKey = `${otherSlotsUrl.pathname}${otherSlotsUrl.search}`;
+    expect(otherSlotsKey).not.toBe(targetRscUrl);
+
+    try {
+      getPrefetchCache().set(targetRscUrl, createEntry(null));
+      getPrefetchCache().set(interceptedKey, createEntry(null));
+      getPrefetchCache().set(otherSlotsKey, createEntry("modal"));
+
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+
+      expect(getPrefetchCache().get(targetRscUrl)?.cacheForNavigation).toBe(true);
+      expect(getPrefetchCache().get(interceptedKey)?.cacheForNavigation).toBe(false);
+      expect(getPrefetchCache().get(otherSlotsKey)?.cacheForNavigation).toBe(false);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches on touch intent in production while preserving the user handler", async () => {
     rscCacheBustingDigestDelayMs = 25;
     const userOnTouchStart = vi.fn();
