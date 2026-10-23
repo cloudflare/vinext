@@ -450,6 +450,72 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["outer error cleanup failed", "outer flush"]);
   });
 
+  it("passes a layer's own cleanup failure to its error callback", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(
+      createStream([]),
+      () => {
+        calls.push("inner flush");
+        throw new Error("cleanup failed");
+      },
+      (error) => calls.push(`inner error ${(error as Error).message}`),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(calls).toEqual([
+      "inner flush",
+      "inner error cleanup failed",
+      "outer error cleanup failed",
+      "outer flush",
+    ]);
+  });
+
+  it("passes an error thrown while reporting a cleanup failure to the outer layers", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(
+      createStream([]),
+      () => {
+        throw new Error("cleanup failed");
+      },
+      () => {
+        throw new Error("report failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("report failed");
+    expect(calls).toEqual(["outer error report failed", "outer flush"]);
+  });
+
+  it("does not report a cleanup failure to a layer that already saw the stream's error", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(
+      source,
+      () => {
+        calls.push("flush");
+        throw new Error("cleanup failed");
+      },
+      (error) => calls.push(`error ${(error as Error).message}`),
+    );
+
+    await expect(wrapped.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(calls).toEqual(["error boom", "flush"]);
+  });
+
   it("passes an error replaced by an inner error callback to the outer layers", async () => {
     const calls: string[] = [];
     const source = new ReadableStream<Uint8Array>({
