@@ -1,3 +1,5 @@
+import { isPagesClientEntryChunk } from "./client-build-manifest.js";
+
 /**
  * Build-manifest chunk metadata used to compute lazy chunks.
  */
@@ -25,6 +27,11 @@ export type BuildManifestChunk = {
  * Algorithm: Starting from all entry chunks in the build manifest, walk the
  * static `imports` tree (breadth-first). Any chunk file NOT reached by this
  * walk is only reachable through `dynamicImports` and is therefore "lazy".
+ *
+ * The Pages Router client entry `import()`s every page and `_app`, but the
+ * HTML for a page renders that page and `_app`, so their chunks are roots of
+ * the walk too: Next.js emits their scripts in the initial HTML. Their own
+ * dynamic imports (next/dynamic, React.lazy) stay lazy.
  *
  * @param buildManifest - Vite's build manifest (manifest.json), which is a
  *   Record<string, ManifestChunk> where each chunk has `file`, `imports`,
@@ -67,6 +74,13 @@ export function computeLazyChunks(buildManifest: Record<string, BuildManifestChu
     // Follow only static imports — NOT dynamicImports
     if (chunk.imports) {
       for (const imp of chunk.imports) {
+        if (!visited.has(imp)) {
+          queue.push(imp);
+        }
+      }
+    }
+    if (isPagesClientEntryChunk(key, chunk)) {
+      for (const imp of chunk.dynamicImports ?? []) {
         if (!visited.has(imp)) {
           queue.push(imp);
         }

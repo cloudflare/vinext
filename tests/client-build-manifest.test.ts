@@ -607,6 +607,40 @@ describe("computeClientRuntimeMetadata", () => {
     ]);
   });
 
+  it("collects the Pages client entry's whole static import graph as shared chunks", async () => {
+    await fsp.writeFile(
+      path.join(clientDir, ".vite", "manifest.json"),
+      JSON.stringify({
+        "virtual:vinext-client-entry": {
+          file: "_next/static/chunks/entry.js",
+          src: "virtual:vinext-client-entry",
+          isEntry: true,
+          imports: ["_runtime.js"],
+          dynamicImports: ["pages/about.tsx"],
+        },
+        "_runtime.js": {
+          file: "_next/static/chunks/runtime.js",
+          name: "rolldown-runtime",
+          imports: ["_helpers.js"],
+        },
+        "_helpers.js": { file: "_next/static/chunks/helpers.js" },
+        "pages/about.tsx": { file: "_next/static/chunks/about.js", isDynamicEntry: true },
+      }),
+    );
+
+    const result = computeClientRuntimeMetadata({
+      clientDir,
+      assetBase: "/",
+      assetPrefix: "",
+      includeClientEntry: "pages-client-entry",
+    });
+
+    expect(result.sharedChunks).toEqual([
+      "_next/static/chunks/runtime.js",
+      "_next/static/chunks/helpers.js",
+    ]);
+  });
+
   it("computes App Router bootstrap module preinitialization from the browser entry imports", async () => {
     await fsp.writeFile(
       path.join(clientDir, ".vite", "manifest.json"),

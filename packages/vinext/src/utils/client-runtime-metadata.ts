@@ -3,6 +3,7 @@ import {
   readClientBuildManifest,
   findClientEntryFile,
   findPagesClientEntryFile,
+  isPagesClientEntryChunk,
 } from "./client-build-manifest.js";
 import {
   readClientEntryManifest,
@@ -41,10 +42,23 @@ function collectSharedChunkFiles(
   applyBase: (file: string) => string,
 ): string[] | undefined {
   const files = new Set<string>();
-  for (const chunk of Object.values(buildManifest)) {
+  const visitedKeys = new Set<string>();
+  // Every Pages document runs the client entry, so it needs the entry's whole
+  // static import graph, whatever the chunks in it are named.
+  const addStaticImports = (key: string) => {
+    for (const importedKey of buildManifest[key]?.imports ?? []) {
+      if (visitedKeys.has(importedKey)) continue;
+      visitedKeys.add(importedKey);
+      const importedFile = buildManifest[importedKey]?.file;
+      if (importedFile?.endsWith(".js")) files.add(applyBase(importedFile));
+      addStaticImports(importedKey);
+    }
+  };
+  for (const [key, chunk] of Object.entries(buildManifest)) {
     if (chunk.file.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
       files.add(applyBase(chunk.file));
     }
+    if (isPagesClientEntryChunk(key, chunk)) addStaticImports(key);
   }
   return files.size > 0 ? [...files] : undefined;
 }

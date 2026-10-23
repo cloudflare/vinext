@@ -2680,6 +2680,47 @@ describe("computeLazyChunks", () => {
     expect(lazy).not.toContain("assets/main.js");
   });
 
+  it("treats Pages Router page and _app chunks as eager, keeping their dynamic imports lazy", () => {
+    const manifest = {
+      "virtual:vinext-client-entry": {
+        file: "assets/entry.js",
+        src: "virtual:vinext-client-entry",
+        isEntry: true,
+        dynamicImports: ["pages/index.tsx", "pages/_app.tsx"],
+      },
+      "pages/index.tsx": {
+        file: "assets/index.js",
+        isDynamicEntry: true,
+        imports: ["_shared.js"],
+        dynamicImports: ["components/heavy.tsx"],
+      },
+      "pages/_app.tsx": {
+        file: "assets/app.js",
+        isDynamicEntry: true,
+      },
+      "_shared.js": {
+        file: "assets/shared.js",
+      },
+      "components/heavy.tsx": {
+        file: "assets/heavy.js",
+        isDynamicEntry: true,
+      },
+      "virtual:vinext-app-browser-entry": {
+        file: "assets/app-browser-entry.js",
+        isEntry: true,
+        dynamicImports: ["components/client-reference.tsx"],
+      },
+      "components/client-reference.tsx": {
+        file: "assets/client-reference.js",
+        isDynamicEntry: true,
+      },
+    };
+    expect(computeLazyChunks(manifest).sort()).toEqual([
+      "assets/client-reference.js",
+      "assets/heavy.js",
+    ]);
+  });
+
   it("returns empty array for empty manifest", () => {
     expect(computeLazyChunks({})).toEqual([]);
   });
@@ -2757,8 +2798,9 @@ describe("computeLazyChunks", () => {
   it("handles realistic mermaid-like scenario", () => {
     // Simulates: client entry -> page (dynamic) -> streamdown (static from page)
     //            streamdown -> mermaid (dynamic via React.lazy)
-    // The page itself is dynamic from the entry (vinext pattern), but
-    // mermaid is dynamic from streamdown — mermaid should be lazy
+    // The page is a route loader of the Pages client entry, so it and its
+    // static imports are eager, but mermaid is dynamic from streamdown — mermaid
+    // should be lazy
     const manifest = {
       "virtual:vinext-client-entry": {
         file: "assets/vinext-client-entry-abc.js",
@@ -2794,12 +2836,10 @@ describe("computeLazyChunks", () => {
     const lazy = computeLazyChunks(manifest);
     // Mermaid should be lazy — only reachable through dynamic imports
     expect(lazy).toContain("assets/mermaid-NOHMQCX5.js");
-    // Pages are dynamic from entry — they should also be lazy
-    expect(lazy).toContain("assets/index-page.js");
-    expect(lazy).toContain("assets/about-page.js");
-    // streamdown is statically imported by a page, but the page itself is
-    // dynamic from entry — so streamdown is also lazy
-    expect(lazy).toContain("assets/streamdown-chunk.js");
+    // Page chunks and their static imports load with the page's HTML
+    expect(lazy).not.toContain("assets/index-page.js");
+    expect(lazy).not.toContain("assets/about-page.js");
+    expect(lazy).not.toContain("assets/streamdown-chunk.js");
     // Framework and entry should NOT be lazy
     expect(lazy).not.toContain("assets/vinext-client-entry-abc.js");
     expect(lazy).not.toContain("assets/framework-xyz.js");
@@ -3424,6 +3464,50 @@ describe("augmentSsrManifestFromBundle", () => {
     ]);
   });
 
+  it("lists transitive static imports and records the Pages entry's import graph as shared", () => {
+    const bundle = {
+      "assets/entry.js": {
+        type: "chunk" as const,
+        fileName: "assets/entry.js",
+        isEntry: true,
+        facadeModuleId: "\0virtual:vinext-client-entry",
+        imports: ["assets/runtime.js"],
+        modules: { "\0virtual:vinext-client-entry": {} },
+      },
+      "assets/runtime.js": {
+        type: "chunk" as const,
+        fileName: "assets/runtime.js",
+        imports: ["assets/helpers.js"],
+        modules: { "/app/lib/runtime.ts": {} },
+      },
+      "assets/helpers.js": {
+        type: "chunk" as const,
+        fileName: "assets/helpers.js",
+        imports: ["assets/runtime.js"],
+        modules: { "/app/lib/helpers.ts": {} },
+      },
+      "assets/about.js": {
+        type: "chunk" as const,
+        fileName: "assets/about.js",
+        imports: ["assets/runtime.js"],
+        modules: { "/app/pages/about.tsx": {} },
+      },
+    };
+
+    const augmented = _augmentSsrManifestFromBundle({}, bundle, "/app");
+
+    expect(augmented["pages/about.tsx"]).toEqual([
+      "assets/about.js",
+      "assets/runtime.js",
+      "assets/helpers.js",
+    ]);
+    expect(augmented[SSR_MANIFEST_SHARED_CHUNKS_KEY]).toEqual([
+      "assets/entry.js",
+      "assets/runtime.js",
+      "assets/helpers.js",
+    ]);
+  });
+
   it("records shared runtime chunks by chunk name for hash-only file names", () => {
     const bundle = {
       "_next/static/chunks/aB3_x-9Z.js": {
@@ -3733,13 +3817,13 @@ describe("collectAssetTags lazy chunk filtering", () => {
 
     const tags = simulateAssetTagFiltering(ssrFiles, lazyChunks);
 
-    // Entry and framework should have modulepreload + script tags
+    // Entry, framework and the rendered page chunk should have modulepreload + script tags
     expect(tags).toContain('<link rel="modulepreload" href="/assets/entry.js" />');
     expect(tags).toContain('<script type="module" src="/assets/entry.js" crossorigin></script>');
     expect(tags).toContain('<link rel="modulepreload" href="/assets/framework.js" />');
+    expect(tags).toContain('<link rel="modulepreload" href="/assets/page-index.js" />');
 
-    // Page chunk and mermaid are lazy — should have NO tags at all
-    expect(tags.join("\n")).not.toContain("page-index.js");
+    // Mermaid is lazy — should have NO tags at all
     expect(tags.join("\n")).not.toContain("mermaid-big.js");
   });
 
@@ -3910,6 +3994,11 @@ describe("collectAssetTags lazy chunk filtering", () => {
       "virtual:vinext-client-entry": {
         file: "cdn/_next/static/chunks/entry-abc.js",
         isEntry: true,
+        dynamicImports: ["pages/index.tsx"],
+      },
+      "pages/index.tsx": {
+        file: "cdn/_next/static/chunks/page-index.js",
+        isDynamicEntry: true,
         dynamicImports: ["src/widget.tsx"],
       },
       "src/widget.tsx": {

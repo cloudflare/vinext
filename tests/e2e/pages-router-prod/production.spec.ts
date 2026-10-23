@@ -51,6 +51,35 @@ test.describe("Pages Router Production Build", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("initial HTML preloads every script the page loads to hydrate", async ({ page }) => {
+    // Next.js emits the scripts of `_app` and the page in the document, so the
+    // browser fetches them in parallel with the client entry instead of after it.
+    const response = await page.goto(`${BASE}/about`);
+    const html = await response!.text();
+    await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+    const preloaded = new Set(
+      (html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? []).map(
+        (tag) => new URL(tag.match(/\bhref="([^"]+)"/)![1], BASE).pathname,
+      ),
+    );
+    const { appModuleUrl, pageModuleUrl } = await page.evaluate(
+      () => (window as any).__NEXT_DATA__.__vinext,
+    );
+    expect(preloaded).toContain(appModuleUrl);
+    expect(preloaded).toContain(pageModuleUrl);
+
+    const loadedBeforeHydration = await page.evaluate(() => {
+      const hydratedAt = (window as any).__NEXT_HYDRATED_AT as number;
+      return performance
+        .getEntriesByType("resource")
+        .filter((entry) => entry.startTime <= hydratedAt)
+        .map((entry) => new URL(entry.name).pathname)
+        .filter((pathname) => pathname.endsWith(".js"));
+    });
+    expect(loadedBeforeHydration.length).toBeGreaterThan(0);
+    expect(loadedBeforeHydration.filter((pathname) => !preloaded.has(pathname))).toEqual([]);
+  });
+
   test("SSR page renders with getServerSideProps data", async ({ page }) => {
     const response = await page.goto(`${BASE}/ssr`);
     expect(response?.status()).toBe(200);
