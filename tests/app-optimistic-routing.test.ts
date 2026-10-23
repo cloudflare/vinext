@@ -868,6 +868,16 @@ describe("App Router optimistic routing", () => {
     const layoutWithIterator = layoutWith(
       createElement("div", null, [createElement("p", { key: "p" })].values() as never),
     );
+    // React renders a promise's value once it has fulfilled. Flight decodes
+    // one with its status.
+    const promised = (promise: Promise<unknown>, status: string, value?: ReactNode) =>
+      layoutWith(createElement("div", null, Object.assign(promise, { status, value }) as never));
+    const layoutWithPendingPromise = promised(new Promise(() => {}), "pending");
+    const layoutWithPromisedClient = promised(
+      Promise.resolve(),
+      "fulfilled",
+      createElement(PendingClient),
+    );
     const layoutWithPendingSuspense = layoutWith(
       createElement(Suspense, { fallback: null }, createElement(PendingClient)),
     );
@@ -883,6 +893,8 @@ describe("App Router optimistic routing", () => {
       expect(createOptimisticRouteElements(layoutWithPendingProp, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingRegion, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingSet, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPendingPromise, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPromisedClient, target)).toBeNull();
       // Reading an iterator's entries would consume them before React does.
       expect(createOptimisticRouteElements(layoutWithIterator, target)).toBeNull();
       expect(createOptimisticRouteElements(slotWithPendingLoading, target)).toBeNull();
@@ -899,6 +911,12 @@ describe("App Router optimistic routing", () => {
     expect(
       createOptimisticRouteElements(layoutWithPendingSet, blogRouteStateKey("post-3")),
     ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(layoutWithPromisedClient, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(layoutWithPendingPromise, blogRouteStateKey("post-3")),
+    ).toBeNull();
     expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).not.toBeNull();
     expect(
       createOptimisticRouteElements(routeWithPendingFallback, blogRouteStateKey("post-3")),
@@ -939,6 +957,16 @@ describe("App Router optimistic routing", () => {
     // A client loading.tsx, as the page boundary's fallback.
     const Loading = deferred(() => "Loading");
     const Nav = deferred(() => "Nav");
+    // A promise a layout renders, which Flight decodes with its status, and
+    // which settles after the rows above have loaded.
+    const region = Object.assign(new Promise<void>((resolve) => setTimeout(resolve, 10)), {
+      status: "pending",
+      value: undefined as ReactNode,
+    });
+    void region.then(() => {
+      region.status = "fulfilled";
+      region.value = "Region";
+    });
     const elements = {
       ...shell,
       [pageId]: deferred(
@@ -949,7 +977,12 @@ describe("App Router optimistic routing", () => {
         ),
       ),
       // A client component in a layout's output.
-      "layout:/": createElement("div", null, createElement("nav", null, createElement(Nav))),
+      "layout:/": createElement(
+        "div",
+        null,
+        createElement("nav", null, createElement(Nav)),
+        region as never,
+      ),
       // A row inside a row, around a client component type.
       [routeId]: deferred(
         createElement(
@@ -976,6 +1009,7 @@ describe("App Router optimistic routing", () => {
     // The fallback's module has loaded, so the shell commits for its own URL.
     expect(Reflect.get(Loading, "_init")()).toBeTypeOf("function");
     expect(Reflect.get(Nav, "_init")()).toBeTypeOf("function");
+    expect(region.status).toBe("fulfilled");
     expect(createOptimisticRouteElements(template, blogRouteStateKey("post-3"))).not.toBeNull();
   });
 

@@ -458,6 +458,7 @@ export function createOptimisticRouteTemplate(options: {
 }
 
 const PENDING_LAZY: unique symbol = Symbol("vinext.pendingLazy");
+const ignoreSettled = (): void => {};
 const MAX_REBIND_DEPTH = 100;
 
 // Flight decodes a deferred row as a lazy element, and a client component's
@@ -507,6 +508,33 @@ function visitUnreadLazies(
   }
   if (!isValidElement(resolved)) {
     if (read !== "output") return;
+    if (typeof Reflect.get(resolved, "then") === "function") {
+      // React renders a promise's value once it has fulfilled. Flight decodes
+      // one with its status, and parses its row when it is first awaited, as
+      // React awaits it. Any other promise is tracked as React tracks it.
+      const thenable = resolved as PromiseLike<unknown>;
+      if (typeof Reflect.get(thenable, "status") !== "string") {
+        Reflect.set(thenable, "status", "pending");
+        thenable.then(
+          (value) => {
+            if (Reflect.get(thenable, "status") !== "pending") return;
+            Reflect.set(thenable, "status", "fulfilled");
+            Reflect.set(thenable, "value", value);
+          },
+          (reason: unknown) => {
+            if (Reflect.get(thenable, "status") !== "pending") return;
+            Reflect.set(thenable, "status", "rejected");
+            Reflect.set(thenable, "reason", reason);
+          },
+        );
+      } else if (Reflect.get(thenable, "status") !== "fulfilled") {
+        thenable.then(ignoreSettled, ignoreSettled);
+      }
+      const status = Reflect.get(thenable, "status");
+      if (status === "fulfilled") visit(Reflect.get(thenable, "value"), read);
+      else onPending(status === "rejected" ? Reflect.get(thenable, "reason") : thenable);
+      return;
+    }
     // A client component renders the elements nested in a prop's plain
     // objects too. Flight's own objects, a promise's chunk say, aren't plain.
     const prototype = Object.getPrototypeOf(resolved);

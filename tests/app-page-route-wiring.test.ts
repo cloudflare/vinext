@@ -1718,7 +1718,8 @@ describe("app page route wiring helpers", () => {
         buildElements({
           element: createElement(PageProbe),
           makeThenableParams(params) {
-            return Promise.resolve(params);
+            // As Flight decodes a fulfilled promise.
+            return Object.assign(Promise.resolve(params), { status: "fulfilled", value: params });
           },
           matchedParams: { id },
           pageRenderDependency: createAppPageRenderDependency(),
