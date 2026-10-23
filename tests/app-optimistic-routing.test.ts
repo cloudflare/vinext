@@ -859,20 +859,33 @@ describe("App Router optimistic routing", () => {
     const layoutWithPendingProp = layoutWith(
       createElement(Slot, { id: "x", fallback: createElement(PendingClient) } as never),
     );
+    const layoutWithPendingRegion = layoutWith(
+      createElement(Slot, { id: "x", regions: { nav: createElement(PendingClient) } } as never),
+    );
     const layoutWithPendingSuspense = layoutWith(
       createElement(Suspense, { fallback: null }, createElement(PendingClient)),
     );
+    // A layout renders its named slots' entries too, a client loading.tsx
+    // in one, say.
+    const slotWithPendingLoading = learn({
+      [AppElementsWire.encodeSlotId("sidebar", "/")]: createElement(PendingLoading),
+    });
     for (const target of [blogRouteStateKey("post-3"), post4]) {
       expect(createOptimisticRouteElements(routeWithPendingFallback, target)).toBeNull();
       expect(createOptimisticRouteElements(pageWithPendingFallback, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingClient, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingProp, target)).toBeNull();
+      expect(createOptimisticRouteElements(layoutWithPendingRegion, target)).toBeNull();
+      expect(createOptimisticRouteElements(slotWithPendingLoading, target)).toBeNull();
       // The layout's own boundary shows its fallback instead.
       expect(createOptimisticRouteElements(layoutWithPendingSuspense, target)).not.toBeNull();
     }
     resolved = true;
     expect(
       createOptimisticRouteElements(layoutWithPendingClient, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(slotWithPendingLoading, blogRouteStateKey("post-3")),
     ).not.toBeNull();
     expect(createOptimisticRouteElements(pendingRoute, blogRouteStateKey("post-3"))).not.toBeNull();
     expect(
