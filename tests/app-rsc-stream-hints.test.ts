@@ -383,6 +383,27 @@ describe("normalizeReactFlightPreloadHints stream", () => {
     await expect(readStream(normalizeReactFlightPreloadHints(source))).rejects.toBe(failure);
   });
 
+  it("unlocks the source once it is done, errored or cancelled", async () => {
+    const done = streamFromChunks(['0:["page"]\n']);
+    await readStream(normalizeReactFlightPreloadHints(done));
+    expect(done.locked).toBe(false);
+
+    const errored = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("render failed"));
+      },
+    });
+    await expect(readStream(normalizeReactFlightPreloadHints(errored))).rejects.toThrow(
+      "render failed",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(errored.locked).toBe(false);
+
+    const cancelled = streamFromChunks(['0:["page"]\n']);
+    await normalizeReactFlightPreloadHints(cancelled).cancel("gone");
+    expect(cancelled.locked).toBe(false);
+  });
+
   it("reads and cancels the source in the async context that created the stream", async () => {
     const als = new AsyncLocalStorage<string>();
     const seen: string[] = [];

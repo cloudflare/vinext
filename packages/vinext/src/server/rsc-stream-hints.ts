@@ -311,6 +311,15 @@ export function normalizeReactFlightPreloadHints(
   const runInCreationContext = AsyncLocalStorage.snapshot();
   let target!: ReadableStreamDefaultController<Uint8Array>;
   let enqueued = 0;
+  let cancelled = false;
+  // As the pipe did, unlock the source once it is done, errored or cancelled.
+  const release = (): void => {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Already released.
+    }
+  };
   const sink: ChunkSink = {
     enqueue(chunk) {
       enqueued++;
@@ -329,22 +338,27 @@ export function normalizeReactFlightPreloadHints(
           // keep reading until something is forwarded.
           while (enqueued === 0) {
             const result = await runInCreationContext(() => reader.read());
+            if (cancelled) return;
             if (result.done) {
               flush(sink);
               target.close();
+              release();
               return;
             }
             transform(result.value, sink);
           }
         } catch (error) {
-          runInCreationContext(() => reader.cancel(error)).catch(() => {});
+          void runInCreationContext(() => reader.cancel(error))
+            .catch(() => {})
+            .finally(release);
           throw error;
         }
       },
       // Runs before the cancellation reaches the source stream.
       cancel(reason) {
+        cancelled = true;
         onCancel?.(reason);
-        return runInCreationContext(() => reader.cancel(reason));
+        return runInCreationContext(() => reader.cancel(reason)).finally(release);
       },
     },
     { highWaterMark: 0 },
