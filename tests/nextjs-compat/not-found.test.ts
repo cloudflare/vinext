@@ -406,6 +406,27 @@ describe("Next.js compat: not-found", () => {
     },
   );
 
+  // A layout's or a template's notFound() beside the slot's is caught above
+  // the layout rendering the slot, so the not-found above it renders alone.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["layout", "team/gone", "team"],
+    ["template", "tmpl", "tmpl"],
+  ])(
+    "notFound() from a %s and a slot with its own not-found is caught above the slot's layout",
+    async (_thrower, path, segment) => {
+      const { res, html } = await fetchHtml(baseUrl, `/nextjs-compat/not-found-slot-own/${path}`);
+      expect(res.status).toBe(404);
+      expect(html).toContain('id="slot-own-layout"');
+      expect(html).toContain('id="slot-own-root-nf"');
+      expect(html).not.toContain(`id="slot-own-${segment}-layout"`);
+      expect(html).not.toContain('id="slot-own-segment-nf"');
+      expect(html).not.toContain('id="slot-own-tmpl-segment-nf"');
+      expect(html).not.toContain('id="slot-own-team-nf"');
+      expect(html).not.toContain('id="slot-own-tmpl-members-nf"');
+    },
+  );
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

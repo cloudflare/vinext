@@ -8,6 +8,7 @@ import {
   resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
+  tagAppPagePageError,
   tagAppPageSlotError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
@@ -156,20 +157,31 @@ describe("app page execution helpers", () => {
     const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
     const decoded = Object.assign(new Error(digest), { digest });
     const thrown = () => Object.assign(new Error(digest), { digest });
+    const fromPage = () => tagAppPagePageError(thrown());
     const caughtInSlot = tagAppPageSlotError(thrown(), 1, "slot:members:/team:0");
 
-    expect(resolveAppPageShellSpecialError(decoded, [thrown(), caughtInSlot])).toEqual({
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage(), caughtInSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [caughtInSlot])).toEqual({
       kind: "http-access-fallback",
       statusCode: 404,
     });
     // Another slot without its own not-found is still caught above its layout.
     expect(
       resolveAppPageShellSpecialError(decoded, [
-        thrown(),
+        fromPage(),
         caughtInSlot,
         tagAppPageSlotError(thrown(), 2),
       ]),
     ).toMatchObject({ slotLayoutIndex: 2 });
+    // A layout's or a template's notFound(), which no page or slot tag marks,
+    // is caught above the layout rendering the slot, so the slot's copy keeps
+    // that fallback.
+    expect(resolveAppPageShellSpecialError(decoded, [thrown(), caughtInSlot])).toMatchObject({
+      slotLayoutIndex: 1,
+    });
     // Slots have only not-found boundaries, so a slot's forbidden() is still
     // caught above its layout.
     const forbiddenDigest = "NEXT_HTTP_ERROR_FALLBACK;403";
@@ -229,27 +241,46 @@ describe("app page execution helpers", () => {
 
   it("renders the page's not-found boundary caught beside the slot boundaries", () => {
     // Next.js catches the page's notFound() with the page's boundary while a
-    // slot's own not-found catches the slot's, and the client shows both. A
-    // copy no slot threw is the page's, as it is for the page's fallback.
+    // slot's own not-found catches the slot's, and the client shows both.
     const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
     const decoded = Object.assign(new Error(digest), { digest });
     const thrown = () => Object.assign(new Error(digest), { digest });
+    const fromPage = () => tagAppPagePageError(thrown());
     const teamSlot = tagAppPageSlotError(thrown(), 1, "slot:team:/:0");
 
-    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown(), teamSlot])).toEqual([
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage(), teamSlot])).toEqual([
       APP_PAGE_NOT_FOUND_BOUNDARY_ID,
       "slot:team:/:0",
     ]);
     // Without a slot's, the page's own fallback renders, as before.
-    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown()])).toBeNull();
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage()])).toBeNull();
     // A slot that no boundary of its own catches still leaves the fallback.
     expect(
       resolveAppPageCaughtNotFoundBoundaries(decoded, [
-        thrown(),
+        fromPage(),
         teamSlot,
         tagAppPageSlotError(thrown(), 1),
       ]),
     ).toBeNull();
+    // A copy no tag marks may come from a component the page renders, which
+    // the page's boundary catches. A layout's or a template's renders outside
+    // the caught boundaries, so the document's render throws it again and
+    // takes the fallback, which keeps it above the slot's layout.
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown(), teamSlot])).toEqual([
+      APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+      "slot:team:/:0",
+    ]);
+    expect(resolveAppPageShellSpecialError(decoded, [thrown(), teamSlot])).toMatchObject({
+      slotLayoutIndex: 1,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage(), teamSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // A page tag is a copy, as a slot's is.
+    const shared = Object.freeze(thrown());
+    expect(tagAppPagePageError(shared)).not.toBe(shared);
+    expect(tagAppPagePageError(shared)).toMatchObject({ digest, message: digest });
   });
 
   it("parses redirect and access-fallback digests", () => {

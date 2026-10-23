@@ -570,6 +570,31 @@ test.describe("Not Found", () => {
     }
   });
 
+  test("a layout's or a template's notFound() beside a slot's is caught above that layout", async ({
+    page,
+  }) => {
+    const cases = [
+      { link: "Team gone", path: "team/gone", layout: "#slot-own-team-layout" },
+      { link: "Template", path: "tmpl", layout: "#slot-own-tmpl-layout" },
+    ];
+    for (const { path, layout } of cases) {
+      const response = await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/${path}`);
+      expect(response?.status(), path).toBe(404);
+      await waitForAppRouterHydration(page);
+      await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+      await expect(page.locator(layout)).toHaveCount(0);
+    }
+
+    for (const { link, path, layout } of cases) {
+      await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
+      await waitForAppRouterHydration(page);
+      await page.getByRole("link", { name: link, exact: true }).click();
+      await expect(page).toHaveURL(new RegExp(`/${path}$`));
+      await expect(page.locator("#slot-own-layout #slot-own-root-nf")).toBeVisible();
+      await expect(page.locator(layout)).toHaveCount(0);
+    }
+  });
+
   test("a slot intercept below a slot segment keeps that segment's layout and not-found", async ({
     page,
   }) => {

@@ -80,11 +80,14 @@ const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
   "vinext.appPage.slotErrorNotFoundBoundary",
 );
 
-export function tagAppPageSlotError<T>(
-  error: T,
-  layoutIndex: number,
-  notFoundBoundary?: string,
-): T {
+/**
+ * Marker we tag onto an error the route's page component threw, so that the
+ * document's fallback can tell it from one a layout or a template threw,
+ * which no slot tag marks either.
+ */
+const APP_PAGE_PAGE_ERROR = Symbol.for("vinext.appPage.pageError");
+
+function tagAppPageHttpAccessFallbackError<T>(error: T, tags: PropertyDescriptorMap): T {
   // Only an HTTP access fallback reads the tag. A thrown error can be shared
   // across slots, renders and requests (a module-scoped rejected promise), so
   // each throw gets its own tagged copy instead of marking the shared error.
@@ -97,10 +100,28 @@ export function tagAppPageSlotError<T>(
   Object.defineProperties(tagged, {
     ...Object.getOwnPropertyDescriptors(source),
     stack: { value: Reflect.get(source, "stack"), configurable: true, writable: true },
+    ...tags,
+  });
+  return tagged as T;
+}
+
+export function tagAppPageSlotError<T>(
+  error: T,
+  layoutIndex: number,
+  notFoundBoundary?: string,
+): T {
+  return tagAppPageHttpAccessFallbackError(error, {
     [APP_PAGE_SLOT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
     [APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY]: { value: notFoundBoundary },
   });
-  return tagged as T;
+}
+
+export function tagAppPagePageError<T>(error: T): T {
+  return tagAppPageHttpAccessFallbackError(error, { [APP_PAGE_PAGE_ERROR]: { value: true } });
+}
+
+function isAppPagePageError(error: unknown): boolean {
+  return !!error && typeof error === "object" && Reflect.get(error, APP_PAGE_PAGE_ERROR) === true;
 }
 
 function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
@@ -310,7 +331,9 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * client component threw during SSR is the page's, since generateMetadata()
  * runs only in the RSC render. A notFound() / forbidden() / unauthorized()
  * a parallel slot's page threw is caught above the layout rendering it,
- * unless the slot's own not-found catches its notFound().
+ * unless the slot's own not-found catches its notFound() and every other copy
+ * is the page's or another slot's. A copy neither threw, such as a template's,
+ * keeps the fallback above that layout.
  */
 export function resolveAppPageShellSpecialError(
   error: unknown,
@@ -330,9 +353,15 @@ export function resolveAppPageShellSpecialError(
   // outermost slot's replaces the page's when both threw. A slot's own
   // not-found boundary catches its notFound() inside the slot, leaving that
   // layout and the page's boundary in place.
+  const skipsSlotCaughtNotFound =
+    specialError.statusCode === 404 &&
+    renderedSpecialErrors.every(
+      (rendered) =>
+        isAppPagePageError(rendered) || getAppPageSlotErrorLayoutIndex(rendered) !== null,
+    );
   let slotLayoutIndex: number | null = null;
   for (const rendered of renderedSpecialErrors) {
-    if (specialError.statusCode === 404 && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
+    if (skipsSlotCaughtNotFound && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
       continue;
     }
     const layoutIndex = getAppPageSlotErrorLayoutIndex(rendered);
@@ -349,8 +378,12 @@ export function resolveAppPageShellSpecialError(
  * caught inside its slot. On the client, each slot's own not-found boundary
  * catches its signal while the rest of the route renders, as in Next.js,
  * which sends an empty error shell and renders them in the browser. A copy
- * no slot threw is the page's, as for the page's fallback, and is caught by
- * the page's boundary beside them; without a slot's, that fallback renders.
+ * no slot threw is caught by the page's boundary beside them when the page
+ * threw it, including from a component the page renders, which nothing tags.
+ * One a layout or a template threw renders outside the caught boundaries, so
+ * the document's render from the same payload throws it again and takes the
+ * fallback, which keeps it above the slot's layout (see
+ * `resolveAppPageShellSpecialError`). Without a slot's, that fallback renders.
  */
 export function resolveAppPageCaughtNotFoundBoundaries(
   error: unknown,

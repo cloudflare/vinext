@@ -41,6 +41,12 @@ import {
   UnauthorizedBoundary,
 } from "../packages/vinext/src/shims/error-boundary.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageShellSpecialError,
+  tagAppPageSlotError,
+} from "../packages/vinext/src/server/app-page-execution.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 
 // ---------------------------------------------------------------------------
@@ -1447,6 +1453,76 @@ describe("buildPageElements", () => {
     expect(record[APP_ROUTE_KEY]).toBe("route:/hello");
     expect(Object.prototype.hasOwnProperty.call(record, "page:/hello")).toBe(true);
     expect(Object.prototype.hasOwnProperty.call(record, "route:/hello")).toBe(true);
+  });
+
+  it("tags the route page's notFound() as the page's, apart from a layout's", async () => {
+    // When a slot's own not-found catches the slot's notFound(), the
+    // document's fallback keeps the layout rendering the slot for the page's
+    // own copy. An untagged one, such as a layout's or a template's, is
+    // caught above that layout.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const caughtInSlot = tagAppPageSlotError(
+      Object.assign(new Error(digest), { digest }),
+      0,
+      "slot:team:/:0",
+    );
+    const thrownByPage = async (page: () => unknown) => {
+      const result = await buildPageElements(
+        createBaseOptions({
+          route: createSyntheticRoute({
+            page: createSyntheticPageModule(page),
+            layouts: [],
+            routeSegments: ["hello"],
+            pattern: "/hello",
+          }),
+          routePath: "/hello",
+        }),
+      );
+      const invoker = (function find(node: unknown): React.ReactElement | null {
+        if (!React.isValidElement<Record<string, unknown>>(node)) return null;
+        if (typeof node.type === "function" && node.type.name === "PageInvoker") return node;
+        for (const value of Object.values(node.props)) {
+          const found = find(value);
+          if (found) return found;
+        }
+        return null;
+      })((result as Record<string, unknown>)["page:/hello"]);
+      if (!invoker) throw new Error("expected the page's invoker");
+      try {
+        await (invoker.type as () => unknown)();
+      } catch (error) {
+        return error;
+      }
+      throw new Error("expected the page to throw");
+    };
+
+    for (const page of [
+      () => notFound(),
+      async () => {
+        await Promise.resolve();
+        notFound();
+      },
+    ]) {
+      const fromPage = await thrownByPage(page);
+      expect(resolveAppPageShellSpecialError(decoded, [fromPage, caughtInSlot])).toEqual({
+        kind: "http-access-fallback",
+        statusCode: 404,
+      });
+      expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage, caughtInSlot])).toEqual([
+        APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+        "slot:team:/:0",
+      ]);
+    }
+    let fromLayout: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      fromLayout = error;
+    }
+    expect(resolveAppPageShellSpecialError(decoded, [fromLayout, caughtInSlot])).toMatchObject({
+      slotLayoutIndex: 0,
+    });
   });
 
   it("keys rewritten page elements by the matched route rather than the visible pathname", async () => {

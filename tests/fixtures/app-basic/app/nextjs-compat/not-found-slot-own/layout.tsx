@@ -30,6 +30,8 @@ export default function Layout({
         <Link href={`${BASE}/team/both`}>Team both</Link>
         <Link href={`${BASE}/team/late`}>Team late</Link>
         <Link href={`${BASE}/panel`}>Panel default</Link>
+        <Link href={`${BASE}/team/gone`}>Team gone</Link>
+        <Link href={`${BASE}/tmpl`}>Template</Link>
       </nav>
       {children}
       <aside id="slot-own-modal">{modal}</aside>
