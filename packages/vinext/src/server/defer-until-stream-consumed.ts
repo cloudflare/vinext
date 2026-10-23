@@ -53,8 +53,10 @@ export function deferUntilStreamConsumed(
  * callbacks run innermost first, and a layer sees the error an inner layer's
  * callback threw as its stream error, or the error its own flush callback
  * threw. Cancel callbacks run outermost first. A layer whose error or cancel
- * callback throws doesn't run its flush callback.
- * As with the pipe, each layer's callbacks run in the async context that
+ * callback throws doesn't run its flush callback. When a start callback
+ * throws, that layer and the layers outside it see the error, and the layers
+ * inside it are cancelled with it. As with the pipe, each layer's callbacks
+ * run in the async context that
  * added them, and the source is read and cancelled in the context of the
  * first layer. Cleanup reads and clears request-scoped state, and spans the
  * source starts while producing chunks need their request parent, but the
@@ -79,9 +81,10 @@ export function observeStreamConsumption(
   const layers = [layer];
   let started = false;
   let settled = false;
-  const finish = (sourceFailure: Failure | undefined): Failure | undefined => {
+  // Runs the flush and error callbacks of the layers from `first` outward.
+  const finish = (sourceFailure: Failure | undefined, first = 0): Failure | undefined => {
     let failure = sourceFailure;
-    for (const current of layers) {
+    for (const current of layers.slice(first)) {
       current.runInCreationContext(() => {
         const reportedError = failure !== undefined;
         try {
@@ -110,14 +113,38 @@ export function observeStreamConsumption(
     return failure;
   };
 
-  // As with separate layers, a chunk never reaches the layers outside one whose
-  // start callback threw.
-  const start = (): Failure | undefined => {
-    for (const current of layers) {
+  // Runs the cancel and flush callbacks of the layers inside `end`, outermost
+  // first, and returns the first failure.
+  const cancelLayers = (reason: unknown, end: number): Failure | undefined => {
+    let failure: Failure | undefined;
+    for (const current of layers.slice(0, end).reverse()) {
+      current.runInCreationContext(() => {
+        try {
+          current.onCancel?.(reason);
+        } catch (error) {
+          // As with the pipe, the layer stops there. The other layers and the
+          // source are still cancelled.
+          failure ??= { error };
+          return;
+        }
+        try {
+          current.onFlush?.();
+        } catch (error) {
+          failure ??= { error };
+        }
+      });
+    }
+    return failure;
+  };
+
+  // Returns the first layer whose start callback threw. As with separate
+  // layers, the chunk never reaches the layers outside it.
+  const start = (): (Failure & { index: number }) | undefined => {
+    for (const [index, current] of layers.entries()) {
       try {
         current.runInCreationContext(() => current.onStart?.());
       } catch (error) {
-        return { error };
+        return { error, index };
       }
     }
     return undefined;
@@ -145,10 +172,18 @@ export function observeStreamConsumption(
               if (!done) {
                 if (!started) {
                   started = true;
-                  const failure = start();
-                  if (failure) {
+                  const startFailure = start();
+                  if (startFailure) {
+                    // The failing layer and those outside it see the error,
+                    // and the failing layer cancels the layers inside it,
+                    // which already passed the chunk on, and the source.
                     settled = true;
-                    controller.error(finish(failure)?.error);
+                    const failure = finish(startFailure, startFailure.index);
+                    cancelLayers(startFailure.error, startFailure.index);
+                    layer
+                      .runInCreationContext(() => reader.cancel(startFailure.error))
+                      .catch(() => {});
+                    controller.error(failure?.error);
                     return;
                   }
                 }
@@ -174,23 +209,7 @@ export function observeStreamConsumption(
         let failure: Failure | undefined;
         if (!settled) {
           settled = true;
-          for (const current of [...layers].reverse()) {
-            current.runInCreationContext(() => {
-              try {
-                current.onCancel?.(reason);
-              } catch (error) {
-                // As with the pipe, the layer stops there. The other layers
-                // and the source are still cancelled.
-                failure ??= { error };
-                return;
-              }
-              try {
-                current.onFlush?.();
-              } catch (error) {
-                failure ??= { error };
-              }
-            });
-          }
+          failure = cancelLayers(reason, layers.length);
         }
         const cancelled = layer.runInCreationContext(() => reader.cancel(reason)).finally(release);
         if (!failure) return cancelled;

@@ -513,6 +513,44 @@ describe("app page stream helpers", () => {
     ]);
   });
 
+  it("cancels the inner layers and the source when an outer start callback throws", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("page"));
+      },
+      cancel(reason) {
+        calls.push(`source cancel ${(reason as Error).message}`);
+      },
+    });
+    const inner = observeStreamConsumption(source, {
+      onStart: () => calls.push("inner start"),
+      onError: () => calls.push("inner error"),
+      onCancel: (reason) => calls.push(`inner cancel ${(reason as Error).message}`),
+      onFlush: () => calls.push("inner flush"),
+    });
+    const outer = observeStreamConsumption(inner, {
+      onStart() {
+        calls.push("outer start");
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`outer error ${(error as Error).message}`),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    await expect(outer.getReader().read()).rejects.toThrow("start failed");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([
+      "inner start",
+      "outer start",
+      "outer error start failed",
+      "outer flush",
+      "inner cancel start failed",
+      "inner flush",
+      "source cancel start failed",
+    ]);
+  });
+
   it("errors the stream and still runs the flush callbacks when a start callback throws", async () => {
     const calls: string[] = [];
     const stream = observeStreamConsumption(createStream(["page"]), {
