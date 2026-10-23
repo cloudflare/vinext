@@ -507,7 +507,6 @@ function visitUnreadLazies(
     return;
   }
   if (!isValidElement(resolved)) {
-    if (read !== "output") return;
     if (typeof Reflect.get(resolved, "then") === "function") {
       // React renders a promise's value once it has fulfilled. Flight decodes
       // one with its status, and parses its row when it is first awaited, as
@@ -539,7 +538,7 @@ function visitUnreadLazies(
     // objects too. Flight's own objects, a promise's chunk say, aren't plain.
     const prototype = Object.getPrototypeOf(resolved);
     if (prototype === Object.prototype || prototype === null) {
-      for (const entry of Object.values(resolved)) visit(entry, read);
+      if (read === "output") for (const entry of Object.values(resolved)) visit(entry, read);
     } else if (resolved instanceof Set || resolved instanceof Map) {
       // Flight keeps both, and React renders their entries as children.
       for (const entry of resolved) visit(entry, read);
@@ -552,9 +551,10 @@ function visitUnreadLazies(
   const type = readLazy(resolved.type, onPending);
   const props = Reflect.get(resolved, "props");
   if (!isUnknownRecord(props)) return;
-  // A client loading.tsx is a lazy type until its module loads.
+  // A client loading.tsx is a lazy type until its module loads. A fallback is
+  // the app's output, in the route's chain too.
   if (type === Suspense) {
-    visit(Reflect.get(props, "fallback"), read);
+    visit(Reflect.get(props, "fallback"), "output");
     if (read === "output") return;
   }
   if (read === "chain") {

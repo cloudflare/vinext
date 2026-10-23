@@ -847,6 +847,24 @@ describe("App Router optimistic routing", () => {
     const pageWithPendingFallback = learn({
       [pageId]: pendingFallback(createElement(PendingLoading)),
     });
+    // A loading.tsx that renders a pending promise, or a client component in
+    // a Set, in the route's mirrored boundary.
+    const routeWithPromisedFallback = learn({
+      [routeId]: createElement(
+        "main",
+        null,
+        pendingFallback(createElement("div", null, new Promise(() => {}) as never)),
+      ),
+    });
+    const routeWithSetFallback = learn({
+      [routeId]: createElement(
+        "main",
+        null,
+        pendingFallback(
+          createElement("div", null, new Set([createElement(PendingLoading)]) as never),
+        ),
+      ),
+    });
     // A layout renders its output above the boundary too, down to its own
     // Suspense boundaries, and a client component the elements in its props.
     const PendingClient = lazy(() => () => "Nav");
@@ -889,6 +907,8 @@ describe("App Router optimistic routing", () => {
     for (const target of [blogRouteStateKey("post-3"), post4]) {
       expect(createOptimisticRouteElements(routeWithPendingFallback, target)).toBeNull();
       expect(createOptimisticRouteElements(pageWithPendingFallback, target)).toBeNull();
+      expect(createOptimisticRouteElements(routeWithPromisedFallback, target)).toBeNull();
+      expect(createOptimisticRouteElements(routeWithSetFallback, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingClient, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingProp, target)).toBeNull();
       expect(createOptimisticRouteElements(layoutWithPendingRegion, target)).toBeNull();
@@ -923,6 +943,9 @@ describe("App Router optimistic routing", () => {
     ).not.toBeNull();
     expect(
       createOptimisticRouteElements(pageWithPendingFallback, blogRouteStateKey("post-3")),
+    ).not.toBeNull();
+    expect(
+      createOptimisticRouteElements(routeWithSetFallback, blogRouteStateKey("post-3")),
     ).not.toBeNull();
     expect(
       createOptimisticRouteElements(routeWithPendingType("blog"), blogRouteStateKey("post-3")),
