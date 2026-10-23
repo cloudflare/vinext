@@ -17,6 +17,7 @@ import {
   markFullyBufferedBody,
   preserveFullyBufferedBodyMetadata,
 } from "../server/fully-buffered-response.js";
+import { deferUntilStreamConsumed } from "../server/defer-until-stream-consumed.js";
 
 import type {
   CacheState,
@@ -301,13 +302,8 @@ export function closeAfterResponseWithBody(
     return response;
   }
 
-  const passthrough = new TransformStream<Uint8Array, Uint8Array>();
-  void response.body.pipeTo(passthrough.writable).then(
-    () => void closeAfterResponse(ctx),
-    () => void closeAfterResponse(ctx),
-  );
-
-  const wrapped = new Response(passthrough.readable, {
+  const body = deferUntilStreamConsumed(response.body, () => void closeAfterResponse(ctx));
+  const wrapped = new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,

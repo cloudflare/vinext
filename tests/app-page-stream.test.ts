@@ -9,7 +9,10 @@ import {
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
 } from "../packages/vinext/src/server/app-page-stream.js";
-import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import {
+  deferUntilStreamConsumed,
+  observeStreamConsumption,
+} from "../packages/vinext/src/server/defer-until-stream-consumed.js";
 import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
@@ -433,6 +436,50 @@ describe("app page stream helpers", () => {
     // The runtime reads the response body from outside the request's context.
     await expect(new Response(wrapped).text()).resolves.toBe("page");
     expect(seen).toEqual(["source render", "source render"]);
+  });
+
+  it("runs start callbacks when the consumer reads the first chunk, without reading ahead", async () => {
+    const calls: string[] = [];
+    let pulls = 0;
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          if (pulls === 1) controller.enqueue(new TextEncoder().encode("page"));
+          else controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const inner = deferUntilStreamConsumed(source, () => calls.push("inner flush"));
+    const outer = observeStreamConsumption(inner, {
+      onStart: () => calls.push("outer start"),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    expect(outer).toBe(inner);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pulls).toBe(0);
+
+    const reader = outer.getReader();
+    await reader.read();
+    expect(calls).toEqual(["outer start"]);
+    await reader.read();
+    expect(calls).toEqual(["outer start", "inner flush", "outer flush"]);
+  });
+
+  it("errors the stream and still runs the flush callbacks when a start callback throws", async () => {
+    const calls: string[] = [];
+    const stream = observeStreamConsumption(createStream(["page"]), {
+      onStart() {
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`error ${(error as Error).message}`),
+      onFlush: () => calls.push("flush"),
+    });
+
+    await expect(stream.getReader().read()).rejects.toThrow("start failed");
+    expect(calls).toEqual(["error start failed", "flush"]);
   });
 
   it("passes a cleanup failure to the outer layers like separate wrappers would", async () => {

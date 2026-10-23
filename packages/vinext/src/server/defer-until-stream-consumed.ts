@@ -1,9 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
-type DeferredStreamLayer = {
-  onFlush: () => void;
+export type StreamConsumptionCallbacks = {
+  /** Runs once when the consumer reads the first chunk. */
+  onStart?: () => void;
+  /** Runs once when the stream ends, errors or is cancelled. */
+  onFlush?: () => void;
   onError?: (error: unknown) => void;
   onCancel?: (reason: unknown) => void;
+};
+
+type StreamConsumptionLayer = StreamConsumptionCallbacks & {
   runInCreationContext: <T>(callback: () => T) => T;
 };
 
@@ -16,11 +22,25 @@ type Failure = { error: unknown };
 // copy of this module and wrap the same HTML stream, so they share one map.
 const UNREAD_WRAPPERS_KEY = Symbol.for("vinext.deferUntilStreamConsumed.unreadWrappers");
 const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAPPERS_KEY] ??=
-  new WeakMap()) as WeakMap<ReadableStream<Uint8Array>, DeferredStreamLayer[]>;
+  new WeakMap()) as WeakMap<ReadableStream<Uint8Array>, StreamConsumptionLayer[]>;
 
 /**
  * Defers cleanup until the downstream consumer drains or cancels the stream.
  * `onCancel` runs before the cancellation reaches the source stream.
+ */
+export function deferUntilStreamConsumed(
+  stream: ReadableStream<Uint8Array>,
+  onFlush: () => void,
+  onError?: (error: unknown) => void,
+  onCancel?: (reason: unknown) => void,
+): ReadableStream<Uint8Array> {
+  return observeStreamConsumption(stream, { onFlush, onError, onCancel });
+}
+
+/**
+ * Runs the callbacks as the downstream consumer reads the stream: `onStart`
+ * when it reads the first chunk, the others when the stream ends, errors or
+ * is cancelled.
  *
  * The wrapper reads the source directly instead of piping it through an
  * identity `TransformStream`, and a wrapper that is wrapped again before
@@ -29,7 +49,7 @@ const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAP
  * cost a pipe, two more streams and their promise hops per chunk. Nothing is
  * read ahead of the consumer, so an unread wrapper is still untouched.
  *
- * The callbacks run as separate layers would run them. Flush and error
+ * The callbacks run as separate layers would run them. Start, flush and error
  * callbacks run innermost first, and a layer sees the error an inner layer's
  * callback threw as its stream error, or the error its own flush callback
  * threw. Cancel callbacks run outermost first. A layer whose error or cancel
@@ -40,16 +60,12 @@ const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAP
  * source starts while producing chunks need their request parent, but the
  * consumer (the runtime sending the body) reads from outside that scope.
  */
-export function deferUntilStreamConsumed(
+export function observeStreamConsumption(
   stream: ReadableStream<Uint8Array>,
-  onFlush: () => void,
-  onError?: (error: unknown) => void,
-  onCancel?: (reason: unknown) => void,
+  callbacks: StreamConsumptionCallbacks,
 ): ReadableStream<Uint8Array> {
-  const layer: DeferredStreamLayer = {
-    onFlush,
-    onError,
-    onCancel,
+  const layer: StreamConsumptionLayer = {
+    ...callbacks,
     runInCreationContext: AsyncLocalStorage.snapshot(),
   };
   // A locked wrapper is left to `getReader()` below, which throws on it as
@@ -61,6 +77,7 @@ export function deferUntilStreamConsumed(
   }
 
   const layers = [layer];
+  let started = false;
   let settled = false;
   const finish = (sourceFailure: Failure | undefined): Failure | undefined => {
     let failure = sourceFailure;
@@ -76,7 +93,7 @@ export function deferUntilStreamConsumed(
           return;
         }
         try {
-          current.onFlush();
+          current.onFlush?.();
         } catch (error) {
           failure = { error };
           // As with the pipe, a layer whose flush throws sees that error,
@@ -89,6 +106,18 @@ export function deferUntilStreamConsumed(
           }
         }
       });
+    }
+    return failure;
+  };
+
+  const start = (): Failure | undefined => {
+    let failure: Failure | undefined;
+    for (const current of layers) {
+      try {
+        current.runInCreationContext(() => current.onStart?.());
+      } catch (error) {
+        failure ??= { error };
+      }
     }
     return failure;
   };
@@ -111,6 +140,15 @@ export function deferUntilStreamConsumed(
           .then(
             ({ done, value }) => {
               if (!done) {
+                if (!started) {
+                  started = true;
+                  const failure = start();
+                  if (failure) {
+                    settled = true;
+                    controller.error(finish(failure)?.error);
+                    return;
+                  }
+                }
                 controller.enqueue(value);
                 return;
               }
@@ -145,7 +183,7 @@ export function deferUntilStreamConsumed(
                 return;
               }
               try {
-                current.onFlush();
+                current.onFlush?.();
               } catch (error) {
                 failure ??= { error };
               }
