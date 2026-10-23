@@ -764,6 +764,22 @@ describe("app page head resolution", () => {
 
     expect(await resolveTitle(null)).toBe("Parent not found");
     expect(await resolveTitle({})).toBe("Slot not found");
+
+    // An intercepted page rendered into the slot is a real segment below the
+    // slot root, so the slot root's not-found still applies without a slot page.
+    const slotNotFound: Record<string, unknown> = { metadata: { title: "Slot not found" } };
+    expect(
+      resolveActiveParallelRouteHeadInputs({
+        interceptPage: {},
+        interceptSlotKey: "panel",
+        layoutTreePositions: [0],
+        params: {},
+        routeSegments: ["panel"],
+        slots: {
+          panel: { layoutIndex: 0, notFound: slotNotFound, notFoundTreePosition: 0, page: null },
+        },
+      }),
+    ).toEqual([expect.objectContaining({ notFoundModule: slotNotFound })]);
   });
 
   it("keeps slot-root layout head inputs for intercepted slots", () => {

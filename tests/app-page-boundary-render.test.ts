@@ -388,6 +388,8 @@ describe("app page boundary render helpers", () => {
           name: "mirrored",
           notFound: slotNotFound,
           notFoundTreePosition: 3,
+          // The slot's page renders, so its own not-found supplies the head.
+          page: { default: () => null },
           routeSegments: ["distinct", "[name]", "[...catchAll]"],
           slotParamNames: ["name", "catchAll"],
           slotPatternParts: ["distinct", ":name", ":catchAll+"],
