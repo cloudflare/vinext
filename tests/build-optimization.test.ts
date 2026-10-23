@@ -185,6 +185,22 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/navigation.js")).toBe("vinext");
   });
 
+  it("leaves Pages Router page-owned client shims to the pages that import them", () => {
+    expect(clientManualChunks("/vinext/shims/dynamic.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/dynamic-preload-chunks.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/form.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image-config.ts")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/image-props.js")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/legacy-image.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/offline.ts")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/script.tsx")).toBeUndefined();
+    expect(clientManualChunks("/vinext/shims/web-vitals.ts")).toBeUndefined();
+    // The Pages client entry imports these, so they stay in the runtime chunk.
+    expect(clientManualChunks("/vinext/shims/router.ts")).toBe("vinext");
+    expect(clientManualChunks("/vinext/shims/head.ts")).toBe("vinext");
+  });
+
   it("leaves App Router route-owned client shims behind their dynamic boundaries", () => {
     expect(appClientManualChunks("/vinext/shims/app-router-tree-context.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/compat-router.js")).toBeUndefined();

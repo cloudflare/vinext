@@ -29,6 +29,25 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "web-vitals",
 ]);
 
+// Shims that only pages import: the Pages client entry and router never do.
+// Pages builds leave them to graph-based chunking so they load with the pages
+// that use them, instead of with the shared "vinext" chunk on every page. The
+// shims the entry imports stay in "vinext", so page chunks never import the
+// entry chunk. `image-config` is listed because a group also takes in its
+// modules' dependencies, so it would keep ipaddr.js in "vinext".
+const PAGE_OWNED_CLIENT_SHIMS = new Set([
+  "dynamic",
+  "dynamic-preload-chunks",
+  "form",
+  "image",
+  "image-config",
+  "image-props",
+  "legacy-image",
+  "offline",
+  "script",
+  "web-vitals",
+]);
+
 // Next.js emits CSS under `static/css/` as `[contenthash].css` and CSS url()
 // dependencies (images, fonts, …) under `static/media/` as
 // `[name].[hash:8][ext]`. Mirror that layout so migrated apps keep stable,
@@ -97,8 +116,9 @@ function getPackageName(id: string): string | null {
  * - "framework" — React, ReactDOM, and scheduler (loaded on every page)
  * - "vinext"    — shared vinext runtime shims
  *
- * Route-owned client shims and all other vendor code are left to the bundler's
- * graph-based chunking so they stay behind their client-reference boundaries.
+ * Route-owned (App Router) or page-owned (Pages Router) client shims and all
+ * other vendor code are left to the bundler's graph-based chunking so they
+ * load only where they're used.
  *
  * Why not split every npm package into its own chunk?
  * - Per-package splitting (`vendor-X`) creates 50-200+ chunks for a
@@ -127,12 +147,13 @@ export function createClientManualChunks(shimsDir: string, preserveRouteBoundari
     // id can carry native backslashes on Windows, so slash it before matching.
     const slashedId = toSlash(id);
     if (slashedId.startsWith(shimsDir)) {
-      if (preserveRouteBoundaries) {
-        const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
-        const extensionIndex = relativeId.lastIndexOf(".");
-        const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
-        if (ROUTE_OWNED_CLIENT_SHIMS.has(shimName)) return undefined;
-      }
+      const relativeId = slashedId.slice(shimsDir.length).split("?", 1)[0] ?? "";
+      const extensionIndex = relativeId.lastIndexOf(".");
+      const shimName = extensionIndex === -1 ? relativeId : relativeId.slice(0, extensionIndex);
+      const ownedShims = preserveRouteBoundaries
+        ? ROUTE_OWNED_CLIENT_SHIMS
+        : PAGE_OWNED_CLIENT_SHIMS;
+      if (ownedShims.has(shimName)) return undefined;
       return "vinext";
     }
 

@@ -80,6 +80,38 @@ test.describe("Pages Router Production Build", () => {
     expect(loadedBeforeHydration.filter((pathname) => !preloaded.has(pathname))).toEqual([]);
   });
 
+  test("pages load next/dynamic and next/form only where they use them", async ({
+    page,
+    request,
+  }) => {
+    // String literals that ship only with the next/dynamic and next/form shims.
+    const dynamicMarker = "DynamicClientSSRFalse";
+    const formMarker = "application/x-www-form-urlencoded";
+    const loadedScripts = async (path: string): Promise<string[]> => {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+      const urls = await page.evaluate(() =>
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => new URL(name).pathname.endsWith(".js")),
+      );
+      return Promise.all(urls.map(async (url) => (await request.get(url)).text()));
+    };
+
+    const aboutScripts = await loadedScripts("/about");
+    expect(aboutScripts.length).toBeGreaterThan(0);
+    expect(aboutScripts.some((code) => code.includes(dynamicMarker))).toBe(false);
+    expect(aboutScripts.some((code) => code.includes(formMarker))).toBe(false);
+
+    expect(
+      (await loadedScripts("/dynamic-page")).some((code) => code.includes(dynamicMarker)),
+    ).toBe(true);
+    expect((await loadedScripts("/form-test")).some((code) => code.includes(formMarker))).toBe(
+      true,
+    );
+  });
+
   test("SSR page renders with getServerSideProps data", async ({ page }) => {
     const response = await page.goto(`${BASE}/ssr`);
     expect(response?.status()).toBe(200);
