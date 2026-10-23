@@ -20,8 +20,8 @@ function escapeRegExp(value: string): string {
  * Returns true when the config both imports the package and invokes
  * `cloudflare(...)` in the plugin list.
  */
-export function viteConfigHasCloudflarePlugin(root: string): boolean {
-  const configPath = findViteConfigPath(root);
+export function viteConfigHasCloudflarePlugin(root: string, configFile?: string): boolean {
+  const configPath = configFile ?? findViteConfigPath(root);
   if (!configPath) return false;
 
   try {
@@ -95,8 +95,8 @@ function cacheFieldAssigned(cacheBlock: string, field: "cdn" | "data"): boolean 
  * an unreadable or absent config is treated as configured so a deploy is never
  * blocked on a false negative.
  */
-export function viteConfigHasCacheAdapter(root: string): boolean {
-  const configPath = findViteConfigPath(root);
+export function viteConfigHasCacheAdapter(root: string, configFile?: string): boolean {
+  const configPath = configFile ?? findViteConfigPath(root);
   if (!configPath) return true;
 
   let content: string;
@@ -149,8 +149,8 @@ export function resolveCdnAdapterConfig(
   };
 }
 
-export function viteConfigHasImageAdapter(root: string): boolean {
-  const configPath = findViteConfigPath(root);
+export function viteConfigHasImageAdapter(root: string, configFile?: string): boolean {
+  const configPath = configFile ?? findViteConfigPath(root);
   if (!configPath) return true;
 
   try {

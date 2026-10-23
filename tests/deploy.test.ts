@@ -14,6 +14,7 @@ import {
   getZeroPercentStagingTraffic,
   isCfCliInstalled,
   parseDeployArgs,
+  resolveViteConfigFile,
   projectRequiresRouteCacheabilityProbeManifest,
   resolveCfBin,
   resolvePrerenderOutputDirs,
@@ -876,6 +877,28 @@ describe("parseDeployArgs", () => {
     );
 
     expect(cliSource).toMatch(/config:\s*parsed\.config/);
+  });
+
+  it("forwards the Vite config file through the deploy CLI", () => {
+    const cliSource = fs.readFileSync(
+      path.join(process.cwd(), "packages/cloudflare/src/cli.ts"),
+      "utf-8",
+    );
+
+    expect(cliSource).toContain("viteConfig: parsed.viteConfig");
+  });
+
+  it("parses --vite-config separately from the Wrangler --config", () => {
+    expect(parseDeployArgs([]).viteConfig).toBeUndefined();
+    const parsed = parseDeployArgs(["--vite-config", " vite.web.config.ts ", "--config", "w.json"]);
+    expect(parsed.viteConfig).toBe("vite.web.config.ts");
+    expect(parsed.config).toBe("w.json");
+  });
+
+  it("resolves the Vite config file against the project root", () => {
+    expect(resolveViteConfigFile("/app", undefined)).toBeUndefined();
+    expect(resolveViteConfigFile("/app", "vite.web.config.ts")).toBe("/app/vite.web.config.ts");
+    expect(resolveViteConfigFile("/app", "/abs/vite.config.ts")).toBe("/abs/vite.config.ts");
   });
 
   it("forwards phase-specific warmup budgets through the deploy CLI", () => {
@@ -2950,6 +2973,22 @@ describe("isPackageResolvable", () => {
 // ─── viteConfigHasCloudflarePlugin ───────────────────────────────────────────
 
 describe("viteConfigHasCloudflarePlugin", () => {
+  it("checks an explicit config file instead of the root vite.config", () => {
+    writeFile(tmpDir, "vite.config.ts", "export default {};");
+    writeFile(
+      tmpDir,
+      "vite.web.config.ts",
+      `
+import { cloudflare } from "@cloudflare/vite-plugin";
+export default { plugins: [cloudflare()] };
+`,
+    );
+    expect(viteConfigHasCloudflarePlugin(tmpDir)).toBe(false);
+    expect(viteConfigHasCloudflarePlugin(tmpDir, path.join(tmpDir, "vite.web.config.ts"))).toBe(
+      true,
+    );
+  });
+
   it("returns true when vite.config.ts imports @cloudflare/vite-plugin", () => {
     writeFile(
       tmpDir,
