@@ -11,7 +11,7 @@
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
-import { matchRoutePatternPrefix } from "../../routing/route-pattern.js";
+import { matchRoutePatternPrefix, matchRoutePatternRaw } from "../../routing/route-pattern.js";
 import { splitPathSegments } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
@@ -95,10 +95,16 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
 function resolveRendersDynamically(
   route: VinextLinkPrefetchRoute,
   interceptionContext: string | null,
+  pathname: string,
 ): boolean {
-  if (interceptionContext !== null && route.intercepts) {
+  if (
+    interceptionContext !== null &&
+    route.intercepts &&
     // Raw segments, as the server's intercept gate matches the still-encoded
-    // source: `/%61dmin` doesn't claim an `/admin` intercept.
+    // target and source: `/%70hotos/1` isn't `/photos/:id`, and `/%61dmin`
+    // doesn't claim an `/admin` intercept.
+    matchRoutePatternRaw(splitPathSegments(pathname), route.patternParts) !== null
+  ) {
     const contextParts = splitPathSegments(interceptionContext);
     const matching = route.intercepts.filter((intercept) =>
       matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
@@ -167,7 +173,11 @@ export function resolveAutoAppRoutePrefetch(
   // The loading shell is vinext's equivalent. A full prefetch would render the
   // page for a payload that is only fresh for `staleTimes.dynamic` (0 by
   // default).
-  const rendersDynamically = resolveRendersDynamically(route, interceptionContext);
+  const rendersDynamically = resolveRendersDynamically(
+    route,
+    interceptionContext,
+    routeUrl.pathname,
+  );
   const cacheForNavigation =
     !hasSearchParams &&
     !hasCacheComponentsLearningOnlyDynamicPath &&
