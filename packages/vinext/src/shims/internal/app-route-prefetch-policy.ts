@@ -97,17 +97,16 @@ function resolveRendersDynamically(
   interceptionContext: string | null,
   pathname: string,
 ): boolean {
-  if (
-    interceptionContext !== null &&
-    route.intercepts &&
+  if (interceptionContext !== null && route.intercepts) {
     // Raw segments, as the server's intercept gate matches the still-encoded
     // target and source: `/%70hotos/1` isn't `/photos/:id`, and `/%61dmin`
     // doesn't claim an `/admin` intercept.
-    matchRoutePatternRaw(splitPathSegments(pathname), route.patternParts) !== null
-  ) {
+    const pathParts = splitPathSegments(pathname);
     const contextParts = splitPathSegments(interceptionContext);
-    const matching = route.intercepts.filter((intercept) =>
-      matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
+    const matching = route.intercepts.filter(
+      (intercept) =>
+        matchRoutePatternRaw(pathParts, intercept.targetPatternParts) !== null &&
+        matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
     );
     if (matching.length > 0) {
       return matching.some((intercept) => intercept.rendersDynamically === true);

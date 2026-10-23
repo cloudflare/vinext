@@ -650,6 +650,13 @@ describe("App Router generated manifest construction", () => {
       write("gallery/page.tsx");
       write("gallery/(.)items/[id]/page.tsx", `${forceDynamic}${page}`);
       write("gallery/items/[id]/page.tsx", gsp);
+      // A static route that the `/photos/:id` intercept also matches.
+      write("photos/featured/page.tsx");
+      // A source route that renders dynamically.
+      write("board/page.tsx", `${forceDynamic}${page}`);
+      write("board/@modal/default.tsx");
+      write("board/@modal/(..)cards/[id]/page.tsx", gsp);
+      write("cards/[id]/page.tsx", gsp);
 
       const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
       const classifier = {
@@ -667,26 +674,27 @@ describe("App Router generated manifest construction", () => {
       );
       const summarize = (pattern: string) => {
         const route = byPattern.get(pattern);
-        return [route?.rendersDynamically, route?.intercepts];
+        return [
+          route?.rendersDynamically,
+          route?.intercepts?.map((intercept) => [
+            intercept.sourcePatternParts.join("/"),
+            intercept.targetPatternParts.join("/"),
+            intercept.rendersDynamically,
+          ]),
+        ];
       };
-      expect(summarize("photos/:id")).toEqual([
-        undefined,
-        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
-      ]);
-      expect(summarize("posts/:id")).toEqual([true, [{ sourcePatternParts: ["feed"] }]]);
-      expect(summarize("tags/:id")).toEqual([
-        undefined,
-        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
-      ]);
+      expect(summarize("photos/:id")).toEqual([undefined, [["feed", "photos/:id", true]]]);
+      expect(summarize("photos/featured")).toEqual([undefined, [["feed", "photos/:id", true]]]);
+      expect(summarize("posts/:id")).toEqual([true, [["feed", "posts/:id", undefined]]]);
+      expect(summarize("tags/:id")).toEqual([undefined, [["feed", "tags/:id", true]]]);
       expect(summarize("gallery/items/:id")).toEqual([
         undefined,
-        [{ sourcePatternParts: ["gallery"], rendersDynamically: true }],
+        [["gallery", "gallery/items/:id", true]],
       ]);
       // The marker folder's own dynamic segment counts.
-      expect(summarize("feed/:slug")).toEqual([
-        undefined,
-        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
-      ]);
+      expect(summarize("feed/:slug")).toEqual([undefined, [["feed", "feed/:slug", true]]]);
+      // The intercepted response also renders the dynamic source route's branches.
+      expect(summarize("cards/:id")).toEqual([undefined, [["board", "cards/:id", true]]]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
     } finally {

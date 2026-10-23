@@ -590,22 +590,61 @@ describe("Link App Router prefetch mode", () => {
           canPrefetchLoadingShell: false,
           patternParts: ["photos", ":id"],
           isDynamic: true,
-          intercepts: [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", ":id"],
+              rendersDynamically: true,
+            },
+          ],
+        },
+        {
+          // A static route that the `/photos/:id` intercept also matches.
+          canPrefetchLoadingShell: false,
+          patternParts: ["photos", "featured"],
+          isDynamic: false,
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", ":id"],
+              rendersDynamically: true,
+            },
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", "other"],
+            },
+          ],
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["videos", "featured"],
+          isDynamic: false,
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["videos", "other"],
+              rendersDynamically: true,
+            },
+          ],
         },
         {
           canPrefetchLoadingShell: false,
           patternParts: ["posts", ":id"],
           isDynamic: true,
           rendersDynamically: true,
-          intercepts: [{ sourcePatternParts: ["feed"] }],
+          intercepts: [{ sourcePatternParts: ["feed"], targetPatternParts: ["posts", ":id"] }],
         },
         {
           canPrefetchLoadingShell: false,
           patternParts: ["tags", ":id"],
           isDynamic: true,
           intercepts: [
-            { sourcePatternParts: [] },
-            { sourcePatternParts: ["feed"], rendersDynamically: true },
+            { sourcePatternParts: [], targetPatternParts: ["tags", ":id"] },
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["tags", ":id"],
+              rendersDynamically: true,
+            },
           ],
         },
       ],
@@ -629,6 +668,14 @@ describe("Link App Router prefetch mode", () => {
       // The server matches the still-encoded target, so `/%70hotos/1` renders
       // the target page, not the modal.
       expect(resolveAutoAppRoutePrefetch("/%70hotos/1", "/feed").cacheForNavigation).toBe(true);
+      // Only intercepts whose target matches the URL apply.
+      expect(resolveAutoAppRoutePrefetch("/photos/featured", "/feed").cacheForNavigation).toBe(
+        false,
+      );
+      expect(resolveAutoAppRoutePrefetch("/photos/featured").cacheForNavigation).toBe(true);
+      expect(resolveAutoAppRoutePrefetch("/videos/featured", "/feed").cacheForNavigation).toBe(
+        true,
+      );
       // `● /feed/(..)posts/[id]`: the modal is static even though the target is not.
       expect(resolveAutoAppRoutePrefetch("/posts/1", "/feed")).toMatchObject({
         cacheForNavigation: true,
