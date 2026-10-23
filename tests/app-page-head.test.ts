@@ -6,6 +6,7 @@ import {
   resolveAppPageHead,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
+import { resolveHttpAccessFallbackMetadata } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
 
 describe("app page head resolution", () => {
   it("prepares viewport independently while generated metadata is pending", async () => {
@@ -715,6 +716,7 @@ describe("app page head resolution", () => {
             layoutIndex: 0,
             notFound: slotNotFound,
             notFoundTreePosition: 1,
+            page: {},
             routeSegments: ["[member]", "[slug]"],
           },
         },
@@ -725,6 +727,43 @@ describe("app page head resolution", () => {
         notFoundParams: { locale: "en", member: "alice" },
       }),
     ]);
+  });
+
+  it("takes the not-found head from a slot's own file only when its page renders", async () => {
+    // Next.js renders an unmatched slot's default.tsx as a `__DEFAULT__`
+    // segment without the slot directory's files, so its not-found.tsx never
+    // supplies the head; the route's not-found does. A slot page's own does.
+    const resolveTitle = async (page: Record<string, unknown> | null) => {
+      const metadata = await resolveHttpAccessFallbackMetadata<Record<string, unknown>>({
+        boundaryModule: { metadata: { title: "Parent not found" } },
+        boundaryParams: {},
+        errorConvention: "not-found",
+        layoutModules: [{ metadata: { title: "Root layout" } }],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        parallelBranches: resolveActiveParallelRouteHeadInputs({
+          layoutTreePositions: [0],
+          params: {},
+          routeSegments: ["panel"],
+          slots: {
+            panel: {
+              layoutIndex: 0,
+              notFound: { metadata: { title: "Slot not found" } },
+              notFoundTreePosition: 0,
+              page,
+              routeSegments: page ? [] : null,
+            },
+          },
+        }),
+        params: {},
+        routePath: "/panel",
+        routeSegments: ["panel"],
+      });
+      return metadata?.title;
+    };
+
+    expect(await resolveTitle(null)).toBe("Parent not found");
+    expect(await resolveTitle({})).toBe("Slot not found");
   });
 
   it("keeps slot-root layout head inputs for intercepted slots", () => {

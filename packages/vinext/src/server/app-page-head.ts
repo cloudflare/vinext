@@ -305,7 +305,10 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
         ...(slot.routeSegments ? {} : { moduleRouteSegments }),
         routeSegments: slotRouteSegments,
       },
-      ...(slot.notFound
+      // An unmatched slot renders its default.tsx as Next.js's `__DEFAULT__`
+      // segment, which carries none of the slot directory's files, so the
+      // slot's not-found never supplies the fallback's head.
+      ...(slot.notFound && slot.page
         ? {
             notFoundModule: slot.notFound,
             notFoundModuleRouteSegments: [

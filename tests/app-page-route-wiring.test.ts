@@ -35,7 +35,10 @@ import {
   resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
-import { resolveAppPageCaughtNotFoundBoundaries } from "../packages/vinext/src/server/app-page-execution.js";
+import {
+  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+  resolveAppPageCaughtNotFoundBoundaries,
+} from "../packages/vinext/src/server/app-page-execution.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_EMPTY,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
@@ -4526,6 +4529,7 @@ describe("app page route wiring helpers", () => {
     expect(getElementTypeName((notFoundBoundary.props.fallback as ReactElement).type)).toBe(
       "DefaultNotFound",
     );
+    expect(notFoundBoundary.props.caughtId).toBe(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
     expect(
       findSlotById(
         notFoundBoundary.props.children,
@@ -4578,6 +4582,53 @@ describe("app page route wiring helpers", () => {
     );
     expect(findSlotById(rootNotFoundBoundary.props.children, "layout:/dashboard")).not.toBeNull();
     expect(findElementByTypeName(nestedLayoutSlot.props.children, "NotFoundBoundary")).toBeNull();
+    // It catches the page's notFound(), so the document can render it caught
+    // beside a slot's own boundary.
+    expect(rootNotFoundBoundary.props.caughtId).toBe(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+  });
+
+  it("ids the page-level not-found boundary that catches the page's notFound()", () => {
+    function PageNotFound() {
+      return createElement("p", null, "page not found");
+    }
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: { default: PageNotFound },
+        notFounds: [null],
+        routeSegments: ["reports"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/reports",
+      rootNotFoundModule: null,
+    });
+    const boundaries: ReactElement<Record<string, unknown>>[] = [];
+    findElement(elements["route:/reports"], (element) => {
+      if (getElementTypeName(element.type) === "NotFoundBoundary") {
+        boundaries.push(element as ReactElement<Record<string, unknown>>);
+      }
+      return false;
+    });
+    const pageBoundary = boundaries.find(
+      (boundary) =>
+        getElementTypeName((boundary.props.fallback as ReactElement).type) === "PageNotFound",
+    );
+    expect(pageBoundary?.props.caughtId).toBe(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+    // No other boundary carries the id.
+    expect(
+      boundaries.filter((boundary) => boundary.props.caughtId === APP_PAGE_NOT_FOUND_BOUNDARY_ID),
+    ).toHaveLength(1);
   });
 
   it("clears the built-in not-found boundary on the visible pathname, not the route", () => {

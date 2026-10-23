@@ -524,6 +524,7 @@ test.describe("Not Found", () => {
     await expect(page.locator("#slot-own-panel-layout")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-nf")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-segment-nf")).toHaveCount(0);
+    await expect(page).not.toHaveTitle("Not Found (panel slot)");
 
     await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
     await waitForAppRouterHydration(page);
@@ -539,13 +540,24 @@ test.describe("Not Found", () => {
     // The team segment's not-found catches the page's inside the team layout,
     // and the slot's own not-found catches the slot's. "late" throws the
     // page's from below a Suspense boundary.
+    const errors: string[] = [];
+    page.on("console", (message) => {
+      // The browser logs the document's own 404.
+      if (message.type() === "error" && !message.text().startsWith("Failed to load resource")) {
+        errors.push(message.text());
+      }
+    });
+    page.on("pageerror", (error) => errors.push(error.message));
     for (const id of ["both", "late"]) {
       const response = await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/${id}`);
       expect(response?.status(), id).toBe(404);
       await waitForAppRouterHydration(page);
       await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
+      await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
       await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
     }
+    // Both boundaries hydrate caught, so React doesn't recover by client rendering.
+    expect(errors).toEqual([]);
 
     await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
     await waitForAppRouterHydration(page);

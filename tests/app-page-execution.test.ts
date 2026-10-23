@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
@@ -198,9 +199,8 @@ describe("app page execution helpers", () => {
         tagAppPageSlotError(thrown(), 1, "slot:team:/:0"),
       ]),
     ).toEqual(["slot:team:/:0", "slot:modal:/:1"]);
-    // A copy that no slot boundary catches, such as the page's or one from a
-    // slot without its own not-found, leaves the fallback above the layout.
-    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot, thrown()])).toBeNull();
+    // A copy from a slot without its own not-found leaves the fallback above
+    // the layout.
     expect(
       resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot, tagAppPageSlotError(thrown(), 1)]),
     ).toBeNull();
@@ -225,6 +225,31 @@ describe("app page execution helpers", () => {
       clientNotFound = error;
     }
     expect(resolveAppPageCaughtNotFoundBoundaries(clientNotFound, [teamSlot])).toBeNull();
+  });
+
+  it("renders the page's not-found boundary caught beside the slot boundaries", () => {
+    // Next.js catches the page's notFound() with the page's boundary while a
+    // slot's own not-found catches the slot's, and the client shows both. A
+    // copy no slot threw is the page's, as it is for the page's fallback.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const teamSlot = tagAppPageSlotError(thrown(), 1, "slot:team:/:0");
+
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown(), teamSlot])).toEqual([
+      APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+      "slot:team:/:0",
+    ]);
+    // Without a slot's, the page's own fallback renders, as before.
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown()])).toBeNull();
+    // A slot that no boundary of its own catches still leaves the fallback.
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [
+        thrown(),
+        teamSlot,
+        tagAppPageSlotError(thrown(), 1),
+      ]),
+    ).toBeNull();
   });
 
   it("parses redirect and access-fallback digests", () => {

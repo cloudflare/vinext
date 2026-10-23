@@ -109,6 +109,12 @@ function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
   return typeof layoutIndex === "number" ? layoutIndex : null;
 }
 
+/**
+ * The id of the not-found boundary that catches the route page's notFound():
+ * the page-level boundary, or the segment one it passes the signal up to.
+ */
+export const APP_PAGE_NOT_FOUND_BOUNDARY_ID = "page";
+
 function getAppPageSlotErrorNotFoundBoundary(error: unknown): string | null {
   if (!error || typeof error !== "object") return null;
   const boundary: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY);
@@ -342,7 +348,9 @@ export function resolveAppPageShellSpecialError(
  * rejected an SSR shell, or null when any copy the RSC render threw isn't
  * caught inside its slot. On the client, each slot's own not-found boundary
  * catches its signal while the rest of the route renders, as in Next.js,
- * which sends an empty error shell and renders them in the browser.
+ * which sends an empty error shell and renders them in the browser. A copy
+ * no slot threw is the page's, as for the page's fallback, and is caught by
+ * the page's boundary beside them; without a slot's, that fallback renders.
  */
 export function resolveAppPageCaughtNotFoundBoundaries(
   error: unknown,
@@ -354,13 +362,20 @@ export function resolveAppPageCaughtNotFoundBoundaries(
   }
   if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
   const boundaries = new Set<string>();
+  let caughtInSlot = false;
   for (const rendered of renderedSpecialErrors) {
     if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
     const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
-    if (boundary === null) return null;
-    boundaries.add(boundary);
+    if (boundary !== null) {
+      caughtInSlot = true;
+      boundaries.add(boundary);
+    } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
+      boundaries.add(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+    } else {
+      return null;
+    }
   }
-  return Array.from(boundaries);
+  return caughtInSlot ? Array.from(boundaries) : null;
 }
 
 /**
