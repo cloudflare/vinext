@@ -832,7 +832,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
   if (typeof window === "undefined") return;
   if (!hasLinkAppNavigationRuntime()) return;
   const [
-    { getPrefetchCache },
+    { getPrefetchCache, promotePrefetchCacheEntryForNavigation },
     { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
   ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
 
@@ -859,7 +859,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
     }
     stripRscCacheBustingSearchParam(cached);
     if (stripRscSuffix(cached.pathname) === target.pathname && cached.search === target.search) {
-      entry.cacheForNavigation = true;
+      promotePrefetchCacheEntryForNavigation(cacheKey, entry);
     }
   }
 }

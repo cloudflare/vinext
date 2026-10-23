@@ -354,7 +354,13 @@ export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
+  /**
+   * Set while a full prefetch would be kept as learning-only if its page
+   * renders dynamically. A hover upgrade turns it into a full prefetch.
+   */
+  dynamicStaleTime?: "learning-only" | "full-prefetch";
   expiresAt?: number;
+  fallbackTtlMs?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
@@ -1068,6 +1074,28 @@ export function discardLearningOnlyPrefetchCacheEntry(
   return superseded.length > 0;
 }
 
+/**
+ * Make a prefetch reusable by a navigation, as an `unstable_dynamicOnHover`
+ * hover does. One kept as learning-only because its page rendered dynamically
+ * becomes a full prefetch and takes the full-prefetch lifetime.
+ */
+export function promotePrefetchCacheEntryForNavigation(
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  entry.cacheForNavigation = true;
+  if (entry.dynamicStaleTime !== "learning-only") return;
+  entry.dynamicStaleTime = "full-prefetch";
+  if (entry.snapshot === undefined) return;
+  entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+    entry.timestamp,
+    entry.snapshot,
+    entry.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
+    "full-prefetch",
+  );
+  schedulePrefetchInvalidation(cacheKey, entry);
+}
+
 function invalidatePrefetchCacheEntry(cacheKey: string): void {
   const cache = getPrefetchCache();
   const entry = cache.get(cacheKey);
@@ -1564,6 +1592,10 @@ export function prefetchRscResponse(
     searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
+  if (behavior.dynamicStaleTime === "learning-only" && behavior.searchAgnosticShell !== true) {
+    entry.dynamicStaleTime = "learning-only";
+    entry.fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
+  }
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.fetchPromise = fetchPromise;
 
@@ -1584,7 +1616,8 @@ export function prefetchRscResponse(
         const dynamicStaleTime =
           behavior.searchAgnosticShell === true
             ? "ignore"
-            : (behavior.dynamicStaleTime ??
+            : (entry.dynamicStaleTime ??
+              behavior.dynamicStaleTime ??
               (behavior.optimisticRouteShell === true ? "ignore" : "verbatim"));
         if (
           dynamicStaleTime === "learning-only" &&

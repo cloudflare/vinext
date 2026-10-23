@@ -2791,6 +2791,57 @@ describe("Link prefetch scheduling", () => {
       }
     }
   });
+  it("upgrades a learning-only full prefetch to a full prefetch on unstable_dynamicOnHover intent", async () => {
+    for (const settledBeforeHover of [true, false]) {
+      for (const [dynamicStaleTime, expiresAt] of [
+        ["0", 1_300_000],
+        ["30", 1_030_000],
+      ] as const) {
+        vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", dynamicStaleTime);
+        vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");
+        vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+        const observer = stubIntersectionObserver();
+
+        const result = await renderIsolatedLink({
+          href: "/clothing/1",
+          nodeEnv: "production",
+          props: { unstable_dynamicOnHover: true },
+        });
+        let respond!: () => void;
+        result.fetch.mockReturnValueOnce(
+          new Promise<Response>((resolve) => {
+            respond = () =>
+              resolve(
+                createFlightResponse("", {
+                  [VINEXT_DYNAMIC_STALE_TIME_HEADER]: dynamicStaleTime,
+                }),
+              );
+          }),
+        );
+
+        try {
+          observer.dispatchIntersectingEntry(result.anchor);
+          await waitForFetchCalls(result.fetch, 1);
+          const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+          const entry = Array.from(getPrefetchCache().values())[0];
+          if (settledBeforeHover) {
+            respond();
+            await entry?.pending;
+            expect(entry?.cacheForNavigation).toBe(false);
+          }
+
+          result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+          await flushPrefetchTasks();
+          respond();
+          await entry?.pending;
+
+          expect(entry).toMatchObject({ cacheForNavigation: true, expiresAt });
+        } finally {
+          result.restoreNodeEnv();
+        }
+      }
+    }
+  });
   it("full-prefetches visible dynamic links when prefetch is explicitly true", async () => {
     const observer = stubIntersectionObserver();
 
