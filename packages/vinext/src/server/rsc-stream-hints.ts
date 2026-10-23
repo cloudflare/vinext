@@ -77,9 +77,12 @@ function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
 }
 
 // A plain loop is intentional: V8's Uint8Array.prototype.indexOf measured
-// ~2.7x slower than this JIT-compiled loop for short Flight row scans.
+// ~2.7x slower than this JIT-compiled loop for short Flight row scans, and ~4x
+// slower for whole-row scans in workerd and Node 26. Reading `byteLength` once
+// rather than per byte made this transform ~1.6x faster on Node 24.
 function indexOfByte(bytes: Uint8Array, byte: number, from: number): number {
-  for (let index = from; index < bytes.byteLength; index++) {
+  const length = bytes.byteLength;
+  for (let index = from; index < length; index++) {
     if (bytes[index] === byte) return index;
   }
   return -1;
