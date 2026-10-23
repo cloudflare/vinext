@@ -1,14 +1,16 @@
 import {
   createInlineScriptTag,
+  createNonceAttribute,
   escapeHtmlAttr,
   htmlTokenListContains,
   safeJsonStringify,
-  scriptSafeJsonStringify,
 } from "./html.js";
 import {
   bytesToBase64,
   concatUint8Arrays,
+  escapeRscDataBlockText,
   RSC_EMBEDDED_BINARY_CHUNK,
+  RSC_EMBEDDED_ESCAPED_TEXT_CHUNK,
   type RscEmbeddedChunk,
 } from "./app-rsc-embedded-chunks.js";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
@@ -136,8 +138,43 @@ export function createNavigationRuntimeRenderedSearchScript(search: string): str
 }
 
 function createNavigationRuntimeRscChunkScript(chunk: RscEmbeddedChunk): string {
+  return navigationRuntimeRscBootstrapExpression() + ".rsc.push(" + safeJsonStringify(chunk) + ")";
+}
+
+export const RSC_DATA_BLOCK_TYPE = "vinext/rsc";
+
+function createNavigationRuntimeRscDataBlockScript(chunk: string): string {
+  // The script runs right after its data block is parsed, so text streams in
+  // as it arrives. The instanceof check keeps a clobbered
+  // `document.currentScript` (e.g. <img name="currentScript">) from pushing
+  // the text of page content instead.
   return (
-    navigationRuntimeRscBootstrapExpression() + ".rsc.push(" + scriptSafeJsonStringify(chunk) + ")"
+    "(e=>e instanceof HTMLScriptElement&&" +
+    navigationRuntimeRscBootstrapExpression() +
+    ".rsc.push(" +
+    chunk +
+    "))(document.currentScript.previousSibling)"
+  );
+}
+
+export const RSC_DATA_BLOCK_TEXT_SCRIPT = createNavigationRuntimeRscDataBlockScript("e.text");
+export const RSC_DATA_BLOCK_ESCAPED_TEXT_SCRIPT = createNavigationRuntimeRscDataBlockScript(
+  "[" + RSC_EMBEDDED_ESCAPED_TEXT_CHUNK + ",e.text]",
+);
+
+/**
+ * Embed Flight text as a non-executed data block rather than a JS string
+ * literal: the browser neither compiles nor runs the payload, and the server
+ * skips JSON-escaping it.
+ */
+function createNavigationRuntimeRscTextChunkTags(text: string, nonce?: string): string {
+  const escaped = escapeRscDataBlockText(text);
+  return (
+    `<script type="${RSC_DATA_BLOCK_TYPE}"${createNonceAttribute(nonce)}>${escaped}</script>` +
+    createInlineScriptTag(
+      escaped === text ? RSC_DATA_BLOCK_TEXT_SCRIPT : RSC_DATA_BLOCK_ESCAPED_TEXT_SCRIPT,
+      nonce,
+    )
   );
 }
 
@@ -311,10 +348,13 @@ export function createRscEmbedTransform(
 
       let scripts = mirrorScripts;
       for (const chunk of embeddedChunks) {
-        scripts += createInlineScriptTag(
-          createNavigationRuntimeRscChunkScript(chunk),
-          options.scriptNonce,
-        );
+        scripts +=
+          typeof chunk === "string"
+            ? createNavigationRuntimeRscTextChunkTags(chunk, options.scriptNonce)
+            : createInlineScriptTag(
+                createNavigationRuntimeRscChunkScript(chunk),
+                options.scriptNonce,
+              );
         if (mirroredNextFlightBootstrap) {
           scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
         }

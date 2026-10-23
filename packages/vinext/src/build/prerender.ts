@@ -30,6 +30,7 @@ import {
   concatUint8Arrays,
   decodeRscEmbeddedChunk,
   RSC_EMBEDDED_BINARY_CHUNK,
+  RSC_EMBEDDED_ESCAPED_TEXT_CHUNK,
   type RscEmbeddedChunk,
 } from "../server/app-rsc-embedded-chunks.js";
 import { NoOpCacheHandler, setCacheHandler, getCacheHandler } from "vinext/shims/cache-handler";
@@ -39,7 +40,12 @@ import { createValidFileMatcher, findFileWithExtensions } from "../routing/file-
 import { normalizeStaticPathsEntry, type StaticPathsEntry } from "../routing/route-pattern.js";
 import { extractLocaleFromUrl } from "../server/pages-i18n.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
+import {
+  navigationRuntimeRscBootstrapExpression,
+  RSC_DATA_BLOCK_ESCAPED_TEXT_SCRIPT,
+  RSC_DATA_BLOCK_TEXT_SCRIPT,
+  RSC_DATA_BLOCK_TYPE,
+} from "../server/app-ssr-stream.js";
 import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
@@ -333,6 +339,7 @@ const RSC_LEGACY_CHUNK_FULL_PREFIX = `${RSC_LEGACY_CHUNK_SCRIPT_PREFIX}self.__VI
 const RSC_RUNTIME_BOOTSTRAP_EXPRESSION = navigationRuntimeRscBootstrapExpression();
 const RSC_RUNTIME_CHUNK_FULL_PREFIX = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.rsc.push(`;
 const RSC_RUNTIME_DONE_SCRIPT = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true`;
+const RSC_DATA_BLOCK_ATTRIBUTES_PREFIX = ` type="${RSC_DATA_BLOCK_TYPE}"`;
 
 /**
  * Reconstruct the RSC payload from a prerender HTML response by parsing the
@@ -346,18 +353,41 @@ const RSC_RUNTIME_DONE_SCRIPT = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true`;
  * Throws on partial or malformed embeds (chunks present but no done marker,
  * tampered chunk JSON, etc.) — those are real vinext-internal regressions.
  *
- * Safe regex usage: scriptSafeJsonStringify (used by createRscEmbedTransform)
- * escapes every '<' that begins "</script" (case-insensitive) in the embedded
- * JSON, preventing false </script> matches.
+ * Safe regex usage: createRscEmbedTransform escapes every '<' that begins
+ * "</script" (case-insensitive) in its data blocks and chunk JSON, preventing
+ * false </script> matches.
  */
 export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array | null {
-  const scriptPattern = /<script(?:\s[^>]*)?>([\s\S]*?)<\/script>/gi;
+  const scriptPattern = /<script(\s[^>]*)?>([\s\S]*?)<\/script>/gi;
   const chunks: Uint8Array[] = [];
   let sawDone = false;
+  // Text of the data block just before, which the next script pushes.
+  let dataBlockText: string | null = null;
   let match: RegExpExecArray | null;
 
   while ((match = scriptPattern.exec(html)) !== null) {
-    const script = (match[1] ?? "").trim().replace(/;$/, "");
+    // A data block also carries the page's script nonce, if any.
+    if (match[1]?.startsWith(RSC_DATA_BLOCK_ATTRIBUTES_PREFIX)) {
+      dataBlockText = match[2] ?? "";
+      continue;
+    }
+    const script = (match[2] ?? "").trim().replace(/;$/, "");
+    const blockText = dataBlockText;
+    dataBlockText = null;
+
+    if (script === RSC_DATA_BLOCK_TEXT_SCRIPT || script === RSC_DATA_BLOCK_ESCAPED_TEXT_SCRIPT) {
+      if (blockText === null) {
+        throw new Error("[vinext] Malformed prerender RSC embed: chunk script without data block");
+      }
+      chunks.push(
+        decodeRscEmbeddedChunk(
+          script === RSC_DATA_BLOCK_TEXT_SCRIPT
+            ? blockText
+            : [RSC_EMBEDDED_ESCAPED_TEXT_CHUNK, blockText],
+        ),
+      );
+      continue;
+    }
 
     if (
       script === RSC_RUNTIME_DONE_SCRIPT ||

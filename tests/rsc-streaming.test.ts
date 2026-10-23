@@ -548,18 +548,18 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     const transform = createTickBufferedTransform(rscEmbed);
     const output = await collectStream(htmlStream.pipeThrough(transform));
 
-    // Extract RSC script contents to verify ordering
-    const scriptRegex = /\.rsc\.push\(([^)]+)\)/g;
+    // Extract RSC data block contents to verify ordering
+    const dataBlockRegex = /<script type="vinext\/rsc">([\s\S]*?)<\/script>/g;
     const matches: string[] = [];
     let match;
-    while ((match = scriptRegex.exec(output)) !== null) {
+    while ((match = dataBlockRegex.exec(output)) !== null) {
       matches.push(match[1]);
     }
 
-    // Adjacent text chunks share one script without changing Flight row order.
+    // Adjacent text chunks share one data block without changing Flight row order.
     expect(matches).toHaveLength(1);
 
-    const chunk = JSON.parse(matches[0]);
+    const chunk = matches[0];
     const layoutIndex = chunk.indexOf('0:D{"name":"layout"}');
     const pageIndex = chunk.indexOf('1:D{"name":"page"}');
     const elementIndex = chunk.indexOf('2:["$","div"');
@@ -651,11 +651,11 @@ describe("Tick-buffered RSC streaming (behavioral)", () => {
     expect(openScripts).toBe(closeScripts);
     expect(output).not.toContain("<!--");
     expect(output).not.toContain("alert(1)</script>");
-    expect(output).toContain("\\u003c/script>\\u003cscript>alert(1)\\u003c/script>\\u003c!--");
+    expect(output).toContain("\uE0002/script>\uE0002script>alert(1)\uE0002/script>\uE0002!--");
 
     // Other markup is left as-is so compression can match it against the SSR
     // HTML.
-    expect(output).toContain("<p>a &amp; b</p>\\u003c/SCRIPT>");
+    expect(output).toContain("<p>a &amp; b</p>\uE0002/SCRIPT>");
 
     // The payload decodes back byte-for-byte.
     const payload = extractRscPayloadFromPrerenderedHtml(output);

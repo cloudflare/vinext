@@ -5,7 +5,9 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import {
   concatUint8Arrays,
   decodeRscEmbeddedChunk,
+  escapeRscDataBlockText,
   type RscEmbeddedChunk,
+  unescapeRscDataBlockText,
 } from "../packages/vinext/src/server/app-rsc-embedded-chunks.js";
 import {
   createNavigationRuntimeRscCompatibilityScript,
@@ -112,6 +114,93 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
   });
 }
 
+class FakeScriptElement {
+  constructor(readonly text: string) {}
+}
+
+/**
+ * Run the scripts in `html` (a run of <script> elements) as a browser parses
+ * them: CR and CRLF become LF, a script's content ends at the first "</script"
+ * followed by a tag-name terminator, NUL becomes U+FFFD, and the previous
+ * script element is the `previousSibling` of `document.currentScript`.
+ */
+function runEmbedScripts(html: string, globals: Record<string, unknown> = {}) {
+  const document = { currentScript: null as { previousSibling: FakeScriptElement } | null };
+  const context = createContext({ ...globals, document, HTMLScriptElement: FakeScriptElement });
+  const input = html.replace(/\r\n?/g, "\n");
+  const startTagRe = /<script(\s[^>]*)?>/y;
+  const endTagRe = /<\/script[\t\n\f />]/gi;
+  let previous: FakeScriptElement | null = null;
+  let index = 0;
+  while (index < input.length) {
+    startTagRe.lastIndex = index;
+    const startTag = startTagRe.exec(input);
+    expect(startTag).not.toBeNull();
+    endTagRe.lastIndex = startTagRe.lastIndex;
+    const endTag = endTagRe.exec(input);
+    expect(endTag).not.toBeNull();
+    const content = input.slice(startTagRe.lastIndex, endTag!.index);
+    // "<!--" or "<script" would move the parser into an escaped state that
+    // ends the element elsewhere.
+    expect(content).not.toMatch(/<!--|<script/i);
+    const text = content.replace(/\0/g, "\uFFFD");
+    if (!startTag![1]?.includes(" type=")) {
+      document.currentScript = { previousSibling: previous! };
+      runInContext(text, context);
+    }
+    previous = new FakeScriptElement(text);
+    index = input.indexOf(">", endTag!.index) + 1;
+  }
+}
+
+function readEmbeddedRscBytes(self: Record<PropertyKey, unknown>): Uint8Array {
+  const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
+    bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
+  };
+  return concatUint8Arrays(navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk));
+}
+
+describe("RSC data block escaping", () => {
+  const samples = [
+    "",
+    "plain",
+    "<p>a &amp; b</p>",
+    "</script>",
+    "</SCRIPT >",
+    "<script>",
+    "<ScRiPt src=x>",
+    "<!-- comment -->",
+    "a\r\nb",
+    "a\rb",
+    "\r",
+    "\r\r\n",
+    "\0",
+    "a\0b",
+    "\uE000",
+    "\uE0000",
+    "\uE000\uE0001\uE0003",
+    "é ✓ 😀 \uFEFF",
+    "1:T2c,</script><!--\r\n\0\uE000 😀 </sCrIpT\r",
+  ];
+
+  it("round-trips text exactly", () => {
+    for (const sample of samples) {
+      expect(unescapeRscDataBlockText(escapeRscDataBlockText(sample))).toBe(sample);
+    }
+  });
+
+  it("leaves nothing that the HTML parser would end, re-mode or rewrite", () => {
+    for (const sample of samples) {
+      expect(escapeRscDataBlockText(sample)).not.toMatch(/<!--|<\/?script|[\r\0]/i);
+    }
+  });
+
+  it("returns text that needs no escaping as is", () => {
+    const text = '0:["$","p",null,{"children":"<b>a</b> -> b"}]\n';
+    expect(escapeRscDataBlockText(text)).toBe(text);
+  });
+});
+
 function createNoopRscEmbedTransform() {
   return {
     flush: () => "",
@@ -134,17 +223,56 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const finalScripts = await transform.finalize();
     expect(finalScripts).toContain('Symbol.for("vinext.navigationRuntime")');
     expect(finalScripts).toContain(".done=true");
-    expect(finalScripts).toContain('.rsc.push("chunk1chunk2")');
+    expect(finalScripts).toContain('<script type="vinext/rsc">chunk1chunk2</script>');
   });
 
-  it("coalesces adjacent text chunks into one inline Flight script", async () => {
+  it("coalesces adjacent text chunks into one Flight data block", async () => {
     const transform = createRscEmbedTransform(createTextStream(Array(1_000).fill("chunk")));
 
     const finalScripts = await transform.finalize();
 
     expect(finalScripts.match(/\.rsc\.push\(/g)).toHaveLength(1);
-    expect(finalScripts.match(/<script/g)).toHaveLength(2);
-    expect(finalScripts).toContain(`.rsc.push("${"chunk".repeat(1_000)}")`);
+    expect(finalScripts.match(/<script/g)).toHaveLength(3);
+    expect(finalScripts).toContain(`<script type="vinext/rsc">${"chunk".repeat(1_000)}</script>`);
+  });
+
+  it("embeds Flight text as raw data blocks that decode to the exact bytes", async () => {
+    const flightChunks = [
+      new TextEncoder().encode('0:["$","div",null,{"children":"$1"}]\n'),
+      new TextEncoder().encode("1:T2c,</script><!--\r\n\0\uE000 😀 </sCrIpT\r"),
+      new Uint8Array([0xff]),
+      new TextEncoder().encode("2:T5,a\rb\r\n"),
+    ];
+    const transform = createRscEmbedTransform(createByteStream(flightChunks), {
+      scriptNonce: "test-nonce",
+    });
+
+    const finalScripts = await transform.finalize();
+    const self: Record<PropertyKey, unknown> = {};
+    runEmbedScripts(finalScripts, { self });
+
+    expect(readEmbeddedRscBytes(self)).toEqual(concatUint8Arrays(flightChunks));
+    expect(finalScripts).not.toContain('.rsc.push("');
+    expect(finalScripts.match(/<script type="vinext\/rsc"/g)).toHaveLength(2);
+    for (const tag of finalScripts.match(/<script\b[^>]*>/g)!) {
+      expect(tag).toContain(' nonce="test-nonce"');
+    }
+  });
+
+  it("does not push the text of page content when document.currentScript is clobbered", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["chunk"]));
+    const finalScripts = await transform.finalize();
+    const self: Record<PropertyKey, unknown> = {};
+    const context = createContext({
+      self,
+      HTMLScriptElement: FakeScriptElement,
+      // As with <a>0:injected</a><img name="currentScript">.
+      document: { currentScript: { previousSibling: { text: "0:injected\n" } } },
+    });
+
+    runInContext(finalScripts.match(/<script>(.*?)<\/script>/)![1], context);
+
+    expect(self[Symbol.for("vinext.navigationRuntime")]).toBeUndefined();
   });
 
   it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
@@ -184,7 +312,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     expect(await new Response(replayed).text()).toBe("firstsecond");
     expect(await new Response(transform.replay()).text()).toBe("firstsecond");
-    expect(transform.flush()).toContain('.rsc.push("firstsecond")');
+    expect(transform.flush()).toContain('<script type="vinext/rsc">firstsecond</script>');
   });
 
   it("keeps a replay open after the last byte when asked", async () => {
@@ -326,15 +454,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
         listeners.set(name, listener);
       },
     };
-    const context = createContext({ self });
-    const runScripts = (html: string) => {
-      const scriptSources = html
-        .slice("<script>".length, -"</script>".length)
-        .split("</script><script>");
-      for (const scriptSource of scriptSources) {
-        runInContext(scriptSource, context);
-      }
-    };
+    const runScripts = (html: string) => runEmbedScripts(html, { self });
 
     runScripts(firstScripts);
     const received = [...self.__next_f!];
@@ -439,21 +559,9 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const transform = createRscEmbedTransform(createByteStream(flightChunks));
     const finalScripts = await transform.finalize();
     const self: Record<PropertyKey, unknown> = {};
-    const context = createContext({ self });
+    runEmbedScripts(finalScripts, { self });
 
-    for (const scriptSource of finalScripts
-      .slice("<script>".length, -"</script>".length)
-      .split("</script><script>")) {
-      runInContext(scriptSource, context);
-    }
-
-    const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
-      bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
-    };
-    const embeddedChunks = navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk);
-    const embeddedBytes = concatUint8Arrays(embeddedChunks);
-
-    expect(embeddedBytes).toEqual(expectedBytes);
+    expect(readEmbeddedRscBytes(self)).toEqual(expectedBytes);
   });
 
   it("preserves binary boundaries while coalescing adjacent text chunks", async () => {
@@ -467,9 +575,11 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     );
 
     const finalScripts = await transform.finalize();
-    const firstIndex = finalScripts.indexOf('.rsc.push("first")');
+    const firstIndex = finalScripts.indexOf('<script type="vinext/rsc">first</script>');
     const binaryIndex = finalScripts.indexOf('.rsc.push([3,"/w=="])');
-    const remainingTextIndex = finalScripts.indexOf('.rsc.push("secondthird")');
+    const remainingTextIndex = finalScripts.indexOf(
+      '<script type="vinext/rsc">secondthird</script>',
+    );
 
     expect(firstIndex).toBeGreaterThanOrEqual(0);
     expect(binaryIndex).toBeGreaterThan(firstIndex);

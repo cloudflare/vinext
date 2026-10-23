@@ -41,26 +41,6 @@ export function safeJsonStringify(data: unknown): string {
   return json.replace(HTML_UNSAFE_JSON_CHARS_RE, escapeHtmlUnsafeJsonChar);
 }
 
-/**
- * Minimal escaping for JSON that is only ever embedded as the content of a
- * classic inline <script> element. The HTML spec only forbids "<!--",
- * "<script" and "</script" (ASCII case-insensitive) in script content, so
- * only a '<' that begins one of those is escaped; '>' and '&' have no
- * meaning there.
- * https://html.spec.whatwg.org/multipage/scripting.html#restrictions-for-contents-of-script-elements
- *
- * Used for the large RSC payload chunks: leaving markup such as "<p>" intact
- * lets compression match it against the identical SSR markup. Do not use
- * this for values that can land outside a script element.
- */
-const SCRIPT_UNSAFE_JSON_CHARS_RE = /<(?=!--|\/?script)|[\u2028\u2029]/gi;
-
-export function scriptSafeJsonStringify(data: unknown): string {
-  const json = JSON.stringify(data);
-  if (json === undefined) throw new TypeError("Cannot serialize value as JSON");
-  return json.replace(SCRIPT_UNSAFE_JSON_CHARS_RE, escapeHtmlUnsafeJsonChar);
-}
-
 export function escapeHtmlAttr(value: string): string {
   return value
     .replace(/&/g, "&amp;")

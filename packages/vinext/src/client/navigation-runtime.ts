@@ -13,7 +13,7 @@ type NavigationRuntimeSnapshot = {
   searchParams: [string, string][];
 };
 
-export type NavigationRuntimeRscChunk = string | [3, string];
+export type NavigationRuntimeRscChunk = string | [3 | 4, string];
 
 export type NavigationRuntimeRscBootstrap = {
   /** The server's App Router RSC compatibility ID for this page. */
@@ -181,7 +181,10 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
 function isNavigationRuntimeRscChunk(value: unknown): value is NavigationRuntimeRscChunk {
   if (typeof value === "string") return true;
   return (
-    Array.isArray(value) && value.length === 2 && value[0] === 3 && typeof value[1] === "string"
+    Array.isArray(value) &&
+    value.length === 2 &&
+    (value[0] === 3 || value[0] === 4) &&
+    typeof value[1] === "string"
   );
 }
 

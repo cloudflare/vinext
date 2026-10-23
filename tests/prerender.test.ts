@@ -34,6 +34,7 @@ import {
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
+import { createRscEmbedTransform } from "../packages/vinext/src/server/app-ssr-stream.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 import {
   getAppRouteOutputPath,
@@ -241,6 +242,48 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
 
     expect(payload).toEqual(
       new Uint8Array([...new TextEncoder().encode("0:text\n"), 255, 0, 1, 2, 3]),
+    );
+  });
+
+  it("reconstructs RSC text from the embed transform's data blocks", async () => {
+    const flightChunks = [
+      new TextEncoder().encode("0:T1c,</script><!--\r\n\0\uE000 😀\n"),
+      new Uint8Array([0xff]),
+      new TextEncoder().encode('1:["$","p",null,{"children":"<b>b</b>"}]\n'),
+    ];
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        start(controller) {
+          for (const chunk of flightChunks) controller.enqueue(chunk);
+          controller.close();
+        },
+      }),
+      { scriptNonce: "nonce" },
+    );
+    const html = "<html><body>" + (await transform.finalize()) + "</body></html>";
+
+    expect(html).toContain('<script type="vinext/rsc" nonce="nonce">');
+    expect(extractRscPayloadFromPrerenderedHtml(html)).toEqual(
+      new Uint8Array(Buffer.concat(flightChunks)),
+    );
+  });
+
+  it("rejects a data block chunk script without its data block", async () => {
+    const transform = createRscEmbedTransform(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode("0:[]\n"));
+          controller.close();
+        },
+      }),
+    );
+    const html = (await transform.finalize()).replace(
+      /<script type="vinext\/rsc">[\s\S]*?<\/script>/,
+      "",
+    );
+
+    expect(() => extractRscPayloadFromPrerenderedHtml(html)).toThrow(
+      "[vinext] Malformed prerender RSC embed: chunk script without data block",
     );
   });
 
