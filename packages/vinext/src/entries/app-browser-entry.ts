@@ -1,5 +1,6 @@
 import { resolveClientRuntimeModule, resolveRuntimeEntryModule } from "./runtime-entry-module.js";
 import type {
+  VinextLinkPrefetchIntercept,
   VinextLinkPrefetchRoute,
   VinextPagesLinkPrefetchRoute,
 } from "../client/vinext-next-data.js";
@@ -26,11 +27,11 @@ export function generateBrowserEntry(
     fallback: [],
   },
   locales: readonly string[] = [],
-  isRenderedDynamically?: (route: AppRoute) => boolean,
+  classifier?: AppRouteDynamicRenderClassifier,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  const prefetchRoutes = toLinkPrefetchRoutes(routes, isRenderedDynamically);
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, classifier);
   // Route handlers only feed hybrid App/Pages ownership. An App-only client
   // learns a handler URL from its non-Flight response (a prefetch miss, then a
   // document navigation), like Next.js, so it gets none (issue #3624).
@@ -89,6 +90,18 @@ function splitPatternParts(pattern: string): string[] {
   return pattern.split("/").filter(Boolean);
 }
 
+type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
+
+/** Reads, at build time, which App pages Next.js renders on every request. */
+export type AppRouteDynamicRenderClassifier = {
+  route(route: AppRoute): boolean;
+  /**
+   * `layoutPaths` holds the layouts above the intercepting page outside its
+   * own branch: the source route's, and the slot's.
+   */
+  intercept(intercept: AppRouteIntercept, layoutPaths: readonly string[]): boolean;
+};
+
 function interceptTargetsRoute(interceptTargetPattern: string, route: AppRoute): boolean {
   return patternsStructurallyEquivalent(
     splitPatternParts(interceptTargetPattern),
@@ -140,11 +153,12 @@ export function toLinkPrefetchRoute(
 
 /**
  * Project App routes together so sibling-intercept loading is applied to its
- * target route. `isRenderedDynamically` reads each route's segment config.
+ * target route. `classifier` reads each route's segment config, and each
+ * intercepting page's, which applies to its target route.
  */
 export function toLinkPrefetchRoutes(
   routes: readonly AppRoute[],
-  isRenderedDynamically?: (route: AppRoute) => boolean,
+  classifier?: AppRouteDynamicRenderClassifier,
 ): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
@@ -154,16 +168,59 @@ export function toLinkPrefetchRoutes(
       }
     }
   }
+  const intercepts = classifier ? collectClassifiedIntercepts(routes, classifier) : [];
 
-  return routes.filter(isLinkPrefetchRoute).map((route) =>
-    toLinkPrefetchRoute(
+  return routes.filter(isLinkPrefetchRoute).map((route) => {
+    const prefetchRoute = toLinkPrefetchRoute(
       route,
       siblingInterceptLoadingTargets.some((targetParts) =>
         patternsStructurallyEquivalent(targetParts, route.patternParts),
       ),
-      isRenderedDynamically?.(route) ?? false,
-    ),
-  );
+      classifier?.route(route) ?? false,
+    );
+    const routeIntercepts = intercepts
+      .filter(({ targetParts }) => patternsStructurallyEquivalent(targetParts, route.patternParts))
+      .map(({ intercept }) => intercept);
+    return routeIntercepts.length > 0
+      ? { ...prefetchRoute, intercepts: routeIntercepts }
+      : prefetchRoute;
+  });
+}
+
+/**
+ * Every intercepting page once, with its classification. A slot's intercepts
+ * are listed on each route that shares the slot.
+ */
+function collectClassifiedIntercepts(
+  routes: readonly AppRoute[],
+  classifier: AppRouteDynamicRenderClassifier,
+): { intercept: VinextLinkPrefetchIntercept; targetParts: string[] }[] {
+  const seen = new Set<string>();
+  const results: { intercept: VinextLinkPrefetchIntercept; targetParts: string[] }[] = [];
+  const add = (intercept: AppRouteIntercept, layoutPaths: readonly string[]) => {
+    const key = `${intercept.sourceMatchPattern}\0${intercept.pagePath}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const rendersDynamically = classifier.intercept(intercept, [
+      ...layoutPaths,
+      ...intercept.layoutPaths,
+    ]);
+    results.push({
+      intercept: {
+        sourcePatternParts: splitPatternParts(intercept.sourceMatchPattern),
+        ...(rendersDynamically ? { rendersDynamically: true } : {}),
+      },
+      targetParts: splitPatternParts(intercept.targetPattern),
+    });
+  };
+  for (const route of routes) {
+    for (const slot of route.parallelSlots) {
+      const slotLayoutPaths = slot.layoutPath ? [...route.layouts, slot.layoutPath] : route.layouts;
+      for (const intercept of slot.interceptingRoutes) add(intercept, slotLayoutPaths);
+    }
+    for (const intercept of route.siblingIntercepts) add(intercept, route.layouts);
+  }
+  return results;
 }
 
 /**

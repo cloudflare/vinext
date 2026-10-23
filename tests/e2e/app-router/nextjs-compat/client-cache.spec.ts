@@ -308,6 +308,47 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
   });
 
+  test("an intercepted auto prefetch of a dynamic intercepting page is never reused", async ({
+    page,
+  }) => {
+    // Next.js builds `ƒ /nextjs-compat/client-cache-intercept/(..)client-cache-intercept-static/[id]`
+    // as its own route: without generateStaticParams the modal renders on every
+    // request, so the prefetch from its source only learns the route and the
+    // click fetches it, though the target page is static.
+    const target = "/nextjs-compat/client-cache-intercept-static/1";
+    const requests = trackRscRequests(page);
+    await page.goto("/nextjs-compat/client-cache-intercept");
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+    expect(requestsFor(requests, target).every((request) => request.partial)).toBe(true);
+
+    await page.click("#client-cache-intercept-static-link");
+    await expect(page.locator("#client-cache-intercept-dynamic-modal")).toBeVisible();
+    expect(requestsFor(requests, target)).toHaveLength(prefetched + 1);
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+  });
+
+  test("an intercepted auto prefetch of a static intercepting page is reused", async ({ page }) => {
+    // `● .../(..)client-cache-intercept-dynamic/[id]`: generateStaticParams
+    // makes the modal static, so its full prefetch serves the click, though the
+    // target page is dynamic.
+    const target = "/nextjs-compat/client-cache-intercept-dynamic/1";
+    const requests = trackRscRequests(page);
+    await page.goto("/nextjs-compat/client-cache-intercept");
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+
+    await page.click("#client-cache-intercept-dynamic-link");
+    await expect(page.locator("#client-cache-intercept-static-modal")).toHaveText("1");
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(prefetched);
+  });
+
   for (const { name, selector } of [
     { name: "a revalidatePath Server Action", selector: "#client-cache-revalidate-action" },
     { name: "router.refresh()", selector: "#client-cache-invalidate" },

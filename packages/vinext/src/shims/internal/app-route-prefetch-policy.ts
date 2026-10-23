@@ -11,6 +11,8 @@
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import { matchRoutePatternPrefix } from "../../routing/route-pattern.js";
+import { splitPathnameForRouteMatch } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -84,7 +86,36 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
 
-export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolicy {
+/**
+ * Whether the page the href renders is dynamic. Under an interception context
+ * that one of the route's intercepting pages matches, that page renders
+ * instead, and Next.js classifies it as its own route. When several match,
+ * any dynamic one counts.
+ */
+function resolveRendersDynamically(
+  route: VinextLinkPrefetchRoute,
+  interceptionContext: string | null,
+): boolean {
+  if (interceptionContext !== null && route.intercepts) {
+    const contextParts = splitPathnameForRouteMatch(interceptionContext);
+    const matching = route.intercepts.filter((intercept) =>
+      matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
+    );
+    if (matching.length > 0) {
+      return matching.some((intercept) => intercept.rendersDynamically === true);
+    }
+  }
+  return route.rendersDynamically === true;
+}
+
+/**
+ * `interceptionContext` is the prefetch's interception context
+ * (`getPrefetchInterceptionContext`).
+ */
+export function resolveAutoAppRoutePrefetch(
+  href: string,
+  interceptionContext: string | null = null,
+): AppRoutePrefetchPolicy {
   if (typeof window === "undefined") return NO_APP_ROUTE_PREFETCH;
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
@@ -134,7 +165,7 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
   // The loading shell is vinext's equivalent. A full prefetch would render the
   // page for a payload that is only fresh for `staleTimes.dynamic` (0 by
   // default).
-  const rendersDynamically = route.rendersDynamically === true;
+  const rendersDynamically = resolveRendersDynamically(route, interceptionContext);
   const cacheForNavigation =
     !hasSearchParams &&
     !hasCacheComponentsLearningOnlyDynamicPath &&

@@ -507,7 +507,7 @@ function prefetchUrl(
         const mountedSlotsHeader = getMountedSlotsHeader();
         const autoPrefetch =
           mode === "auto"
-            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref)
+            ? resolveAutoAppRoutePrefetch(prefetchPolicyHref, interceptionContext)
             : resolveFullAppRoutePrefetch();
         if (!autoPrefetch.shouldPrefetch) return;
 

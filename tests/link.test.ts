@@ -578,6 +578,71 @@ describe("Link App Router prefetch mode", () => {
     }
   });
 
+  it("classifies an intercepted prefetch by the intercepting page under its interception context", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/feed",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["photos", ":id"],
+          isDynamic: true,
+          intercepts: [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["posts", ":id"],
+          isDynamic: true,
+          rendersDynamically: true,
+          intercepts: [{ sourcePatternParts: ["feed"] }],
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["tags", ":id"],
+          isDynamic: true,
+          intercepts: [
+            { sourcePatternParts: [] },
+            { sourcePatternParts: ["feed"], rendersDynamically: true },
+          ],
+        },
+      ],
+    };
+
+    try {
+      // `ƒ /feed/(..)photos/[id]`: under /feed the modal renders dynamically,
+      // so only the route is learned, whatever the target page is.
+      expect(resolveAutoAppRoutePrefetch("/photos/1", "/feed")).toMatchObject({
+        cacheForNavigation: false,
+        rendersDynamically: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/photos/1", "/feed/latest").cacheForNavigation).toBe(
+        false,
+      );
+      // Without a matching context the target page renders.
+      for (const context of [null, "/feedback", "/elsewhere"]) {
+        expect(resolveAutoAppRoutePrefetch("/photos/1", context).cacheForNavigation).toBe(true);
+      }
+      // `● /feed/(..)posts/[id]`: the modal is static even though the target is not.
+      expect(resolveAutoAppRoutePrefetch("/posts/1", "/feed")).toMatchObject({
+        cacheForNavigation: true,
+        dynamicStaleTime: "learning-only",
+      });
+      expect(resolveAutoAppRoutePrefetch("/posts/1").cacheForNavigation).toBe(false);
+      // Of several matching intercepting pages, any dynamic one counts.
+      expect(resolveAutoAppRoutePrefetch("/tags/1", "/feed").cacheForNavigation).toBe(false);
+      expect(resolveAutoAppRoutePrefetch("/tags/1", "/about").cacheForNavigation).toBe(true);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
   it("shell-prefetches dynamic routes that require fresh navigation and routes with loading boundaries", () => {
     const originalWindow = globalThis.window;
     (globalThis as any).window = {

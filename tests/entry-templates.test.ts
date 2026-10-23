@@ -17,7 +17,10 @@ import {
   toLinkPrefetchRoutes,
 } from "../packages/vinext/src/entries/app-browser-entry.js";
 import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-manifest.js";
-import { isAppPageRouteRenderedDynamically } from "../packages/vinext/src/build/app-page-static-eligibility.js";
+import {
+  isAppInterceptRenderedDynamically,
+  isAppPageRouteRenderedDynamically,
+} from "../packages/vinext/src/build/app-page-static-eligibility.js";
 import {
   generateAppRequestRscEntry,
   generateAppResponseRscEntry,
@@ -597,9 +600,10 @@ describe("App Router generated manifest construction", () => {
         ),
       ];
 
-      const prefetchRoutes = toLinkPrefetchRoutes(routes, (route) =>
-        isAppPageRouteRenderedDynamically(route, null),
-      );
+      const prefetchRoutes = toLinkPrefetchRoutes(routes, {
+        route: (route) => isAppPageRouteRenderedDynamically(route, null),
+        intercept: () => false,
+      });
       expect(
         prefetchRoutes.map(({ patternParts, rendersDynamically }) => [
           patternParts.join("/"),
@@ -615,6 +619,71 @@ describe("App Router generated manifest construction", () => {
       expect(toLinkPrefetchRoutes(routes).some((route) => route.rendersDynamically)).toBe(false);
     } finally {
       fs.rmSync(appDir, { force: true, recursive: true });
+    }
+  });
+
+  it("classifies each intercepting page as its own route for its target", async () => {
+    // Next.js builds an intercepting page as its own route: `ƒ /feed/(..)photos/[id]`
+    // without generateStaticParams, `●` with it, whatever its target is.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-intercept-classification-"));
+    const appDir = path.join(tmpDir, "app");
+    const page = "export default function Page() { return null; }\n";
+    const gsp = `export function generateStaticParams() { return []; }\n${page}`;
+    const forceDynamic = `export const dynamic = "force-dynamic";\n`;
+    const write = (relativePath: string, source = page) => {
+      fs.mkdirSync(path.dirname(path.join(appDir, relativePath)), { recursive: true });
+      fs.writeFileSync(path.join(appDir, relativePath), source);
+    };
+    try {
+      write("layout.tsx", "export default function Layout({ children }) { return children; }\n");
+      write("feed/page.tsx");
+      write("feed/@modal/default.tsx");
+      write("feed/@modal/(..)photos/[id]/page.tsx");
+      write("photos/[id]/page.tsx", gsp);
+      write("feed/@modal/(..)posts/[id]/page.tsx", gsp);
+      write("posts/[id]/page.tsx", `${forceDynamic}${page}`);
+      write("feed/@modal/(..)tags/layout.tsx", `${forceDynamic}${page}`);
+      write("feed/@modal/(..)tags/[id]/page.tsx", gsp);
+      write("tags/[id]/page.tsx", gsp);
+      write("gallery/page.tsx");
+      write("gallery/(.)items/[id]/page.tsx", `${forceDynamic}${page}`);
+      write("gallery/items/[id]/page.tsx", gsp);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const classifier = {
+        route: (route: AppRoute) => isAppPageRouteRenderedDynamically(route, null),
+        intercept: (
+          intercept: AppRoute["siblingIntercepts"][number],
+          layoutPaths: readonly string[],
+        ) => isAppInterceptRenderedDynamically(intercept, layoutPaths, null),
+      };
+      const byPattern = new Map(
+        toLinkPrefetchRoutes(graph.routes, classifier).map((route) => [
+          route.patternParts.join("/"),
+          route,
+        ]),
+      );
+      const summarize = (pattern: string) => {
+        const route = byPattern.get(pattern);
+        return [route?.rendersDynamically, route?.intercepts];
+      };
+      expect(summarize("photos/:id")).toEqual([
+        undefined,
+        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
+      ]);
+      expect(summarize("posts/:id")).toEqual([true, [{ sourcePatternParts: ["feed"] }]]);
+      expect(summarize("tags/:id")).toEqual([
+        undefined,
+        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
+      ]);
+      expect(summarize("gallery/items/:id")).toEqual([
+        undefined,
+        [{ sourcePatternParts: ["gallery"], rendersDynamically: true }],
+      ]);
+      expect(summarize("feed")).toEqual([undefined, undefined]);
+      expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { force: true, recursive: true });
     }
   });
 

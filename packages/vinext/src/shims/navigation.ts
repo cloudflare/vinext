@@ -3086,7 +3086,7 @@ const _appRouter: AppRouterInstance = {
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
-          : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
+          : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref, interceptionContext);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
       const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
       // The call-time header snapshot defaults to AUTO/learning semantics.
