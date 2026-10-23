@@ -445,6 +445,21 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["inner flush", "outer error error handler failed", "outer flush"]);
   });
 
+  it("reuses an unread wrapper from another copy of the module", async () => {
+    // The RSC and SSR environments load separate copies of the module.
+    const copy =
+      (await import("../packages/vinext/src/server/defer-until-stream-consumed.js?second-environment")) as typeof import("../packages/vinext/src/server/defer-until-stream-consumed.js");
+    expect(copy.deferUntilStreamConsumed).not.toBe(deferUntilStreamConsumed);
+
+    const calls: string[] = [];
+    const inner = copy.deferUntilStreamConsumed(createStream(["page"]), () => calls.push("ssr"));
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("rsc"));
+
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["ssr", "rsc"]);
+  });
+
   it("adds a separate layer to a wrapper that was read and released", async () => {
     const calls: string[] = [];
     const inner = deferUntilStreamConsumed(createStream(["a", "b"]), () => calls.push("inner"));

@@ -12,8 +12,11 @@ type Failure = { error: unknown };
 // Wrappers this module returned that nothing has read or cancelled yet, keyed
 // to the callbacks they run. Workers and Node keep a stream's identity through
 // `new Response(stream).body`, so a wrapper often comes straight back in for
-// another layer of cleanup.
-const unreadWrappers = new WeakMap<ReadableStream<Uint8Array>, DeferredStreamLayer[]>();
+// another layer of cleanup. The RSC and SSR environments each load their own
+// copy of this module and wrap the same HTML stream, so they share one map.
+const UNREAD_WRAPPERS_KEY = Symbol.for("vinext.deferUntilStreamConsumed.unreadWrappers");
+const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAPPERS_KEY] ??=
+  new WeakMap()) as WeakMap<ReadableStream<Uint8Array>, DeferredStreamLayer[]>;
 
 /**
  * Defers cleanup until the downstream consumer drains or cancels the stream.
