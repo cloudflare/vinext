@@ -267,6 +267,111 @@ describe("app page stream helpers", () => {
     expect(onFlush).toHaveBeenCalledTimes(1);
   });
 
+  it("runs flush callbacks only after the consumer reads the end of the stream", async () => {
+    const onFlush = vi.fn();
+    const reader = deferUntilStreamConsumed(createStream(["a", "b"]), onFlush).getReader();
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("a");
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("b");
+    expect(onFlush).not.toHaveBeenCalled();
+
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    expect(onFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses an unread wrapper and runs its callbacks in layered order", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const outer = deferUntilStreamConsumed(new Response(inner).body ?? inner, () =>
+      calls.push("outer"),
+    );
+
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("runs coalesced error callbacks innermost first", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      () => calls.push("inner error"),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      () => calls.push("outer error"),
+    );
+
+    expect(outer).toBe(inner);
+    await expect(outer.getReader().read()).rejects.toThrow("boom");
+    expect(calls).toEqual(["inner error", "inner flush", "outer error", "outer flush"]);
+  });
+
+  it("runs coalesced cancel callbacks outermost first before cancelling the source", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        calls.push(`source ${String(reason)}`);
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      undefined,
+      (reason) => calls.push(`inner cancel ${String(reason)}`),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      undefined,
+      (reason) => calls.push(`outer cancel ${String(reason)}`),
+    );
+
+    await outer.cancel("gone");
+    expect(calls).toEqual([
+      "outer cancel gone",
+      "outer flush",
+      "inner cancel gone",
+      "inner flush",
+      "source gone",
+    ]);
+  });
+
+  it("adds a separate layer when the wrapper is already being read", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const innerReader = inner.getReader();
+    const passthrough = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const { done, value } = await innerReader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+    });
+    const outer = deferUntilStreamConsumed(passthrough, () => calls.push("outer"));
+
+    expect(outer).not.toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("runs every coalesced flush callback when one throws", async () => {
+    const outerFlush = vi.fn();
+    const inner = deferUntilStreamConsumed(createStream([]), () => {
+      throw new Error("cleanup failed");
+    });
+    const outer = deferUntilStreamConsumed(inner, outerFlush);
+
+    await expect(outer.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(outerFlush).toHaveBeenCalledTimes(1);
+  });
+
   it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {
     const clearRequestContext = vi.fn();
 
