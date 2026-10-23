@@ -2754,35 +2754,43 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("honors a zero response stale time for automatic dynamic full prefetches", async () => {
-    vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", "0");
-    vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");
-    vi.spyOn(Date, "now").mockReturnValue(1_000_000);
-    const observer = stubIntersectionObserver();
+  it("keeps an automatic full prefetch whose page rendered dynamically as learning-only", async () => {
+    // Next.js prefetches only the route tree of a page it renders dynamically,
+    // keeps it for the static period, and fetches the page on navigation,
+    // whatever staleTimes.dynamic is.
+    for (const dynamicStaleTime of ["0", "30"]) {
+      vi.stubEnv("__NEXT_CLIENT_ROUTER_DYNAMIC_STALETIME", dynamicStaleTime);
+      vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "300");
+      vi.spyOn(Date, "now").mockReturnValue(1_000_000);
+      const observer = stubIntersectionObserver();
 
-    const result = await renderIsolatedLink({
-      href: "/clothing/1",
-      nodeEnv: "production",
-    });
-    result.fetch.mockResolvedValueOnce(
-      createFlightResponse("", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: "0" }),
-    );
+      const result = await renderIsolatedLink({
+        href: "/clothing/1",
+        nodeEnv: "production",
+      });
+      result.fetch.mockResolvedValueOnce(
+        createFlightResponse("", { [VINEXT_DYNAMIC_STALE_TIME_HEADER]: dynamicStaleTime }),
+      );
 
-    try {
-      observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
+      try {
+        observer.dispatchIntersectingEntry(result.anchor);
+        await waitForFetchCalls(result.fetch, 1);
 
-      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
-      const entry = Array.from(getPrefetchCache().values())[0];
-      await entry?.pending;
+        const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+        const entry = Array.from(getPrefetchCache().values())[0];
+        await entry?.pending;
 
-      expect(entry?.cacheForNavigation).toBe(true);
-      expect(entry?.expiresAt).toBe(1_000_000);
-    } finally {
-      result.restoreNodeEnv();
+        expect(entry?.cacheForNavigation).toBe(false);
+        expect(entry?.expiresAt).toBe(1_300_000);
+
+        result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+        await flushPrefetchTasks();
+        expect(result.fetch).toHaveBeenCalledTimes(1);
+      } finally {
+        result.restoreNodeEnv();
+      }
     }
   });
-
   it("full-prefetches visible dynamic links when prefetch is explicitly true", async () => {
     const observer = stubIntersectionObserver();
 

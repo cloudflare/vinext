@@ -39,9 +39,10 @@ export type AppRoutePrefetchPolicy = {
    * How the dynamic stale-time signal affects this prefetch. Navigation data
    * takes it verbatim, explicit full prefetches fall back to the static window
    * only when it is zero, and loading shells ignore it because their contents
-   * are static.
+   * are static. "learning-only" keeps a dynamic render out of navigation reuse
+   * and holds it for the static window instead.
    */
-  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore";
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore" | "learning-only";
   fallbackTtl: "dynamic" | "static";
   prefetchShellFirst: boolean;
   /**
@@ -148,7 +149,16 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     // cached for navigation unless their active parallel branches must be
     // derived from the click-time target tree.
     cacheForNavigation,
-    dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
+    // Without Cache Components, Next.js's automatic prefetch of a route it
+    // renders dynamically never carries the page (see above). A full prefetch
+    // of a route that turns out dynamic while rendering, which the build can't
+    // classify, is kept the same way: never reused by a navigation, and fresh
+    // for the static period.
+    dynamicStaleTime: !cacheForNavigation
+      ? "ignore"
+      : String(process.env.__NEXT_CACHE_COMPONENTS) === "true"
+        ? "verbatim"
+        : "learning-only",
     fallbackTtl: "static",
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
     ...(rendersDynamically ? { rendersDynamically: true } : {}),

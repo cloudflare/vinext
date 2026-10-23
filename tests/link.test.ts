@@ -560,10 +560,13 @@ describe("Link App Router prefetch mode", () => {
           shouldPrefetch: true,
         });
       }
-      // Routes that may be statically generated keep their full prefetch.
+      // Routes that may be statically generated keep their full prefetch. If
+      // the page turns out dynamic while rendering, the prefetch is kept as
+      // learning-only for the static period.
       for (const href of ["/about", "/posts/hello"]) {
         const policy = resolveAutoAppRoutePrefetch(href);
         expect(policy.cacheForNavigation).toBe(true);
+        expect(policy.dynamicStaleTime).toBe("learning-only");
         expect(policy.rendersDynamically).toBeUndefined();
       }
     } finally {

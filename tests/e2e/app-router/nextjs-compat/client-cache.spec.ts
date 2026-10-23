@@ -282,6 +282,32 @@ test.describe("Next.js compat: client cache", () => {
     expect(requestsFor(requests, target).map((request) => request.partial)).toEqual([true, false]);
   });
 
+  test("auto prefetch of a page that renders dynamically at runtime is never reused (#4083)", async ({
+    page,
+  }) => {
+    // Next.js would have prefetched only the route tree, kept it for
+    // staleTimes.static, and fetched the page on click.
+    const target = "/nextjs-compat/client-cache-runtime-dynamic";
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+
+    for (let hover = 0; hover < 3; hover++) {
+      await page.hover("#client-cache-runtime-dynamic-auto");
+      await page.mouse.move(0, 0);
+      await advanceTime(page, 2_000);
+    }
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(prefetched);
+
+    await page.click("#client-cache-runtime-dynamic-auto");
+    await expect(page.locator("#client-cache-runtime-dynamic-random")).toBeVisible();
+    expect(requestsFor(requests, target)).toHaveLength(prefetched + 1);
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+  });
+
   for (const { name, selector } of [
     { name: "a revalidatePath Server Action", selector: "#client-cache-revalidate-action" },
     { name: "router.refresh()", selector: "#client-cache-invalidate" },

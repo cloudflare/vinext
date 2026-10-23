@@ -559,15 +559,15 @@ function prefetchUrl(
         if (navigationEpoch !== linkPrefetchNavigationEpoch) return;
         const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
         const prefetched = getPrefetchedUrls();
-        if (autoPrefetch.cacheForNavigation) {
-          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
-        }
-        if (
-          !autoPrefetch.cacheForNavigation &&
-          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
-        ) {
+        // The exact request is still fresh as a learning-only prefetch,
+        // including a full prefetch kept that way because its page rendered
+        // dynamically.
+        if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
           joinOwnedLinkPrefetch(getPrefetchCache().get(cacheKey)?.fetchPromise, owner);
           return;
+        }
+        if (autoPrefetch.cacheForNavigation) {
+          discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
         }
         const owned = createOwnedLinkPrefetch(owner);
         const fetchFullRscPayload = () =>
