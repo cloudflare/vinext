@@ -75,15 +75,14 @@ export function validateCloudflarePlatformSetup(
   // Programmatic callers skip parseNameArg, so validate the name here too.
   if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
   if (!cloudflare.legacyWrangler) {
-    const existingWrangler = [
-      "wrangler.toml",
-      "wrangler.json",
-      "wrangler.jsonc",
-      RESPONSE_STORE_WRANGLER_CONFIG,
-    ].find((name) => fs.existsSync(path.join(context.root, name)));
+    const existingWrangler = cloudflare.ignoreWranglerConfig
+      ? undefined
+      : ["wrangler.toml", "wrangler.json", "wrangler.jsonc", RESPONSE_STORE_WRANGLER_CONFIG].find(
+          (name) => fs.existsSync(path.join(context.root, name)),
+        );
     if (existingWrangler) {
       throw new Error(
-        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
+        `Cloudflare init cannot replace an existing Wrangler config (${existingWrangler}). Migrate its bindings to cloudflare.config.ts first, use --ignore-wrangler-config if it belongs to another Worker, or use --legacy-wrangler-cloudflare-init to keep the Wrangler setup.`,
       );
     }
     const typedConfigPath = path.join(context.root, "cloudflare.config.ts");
