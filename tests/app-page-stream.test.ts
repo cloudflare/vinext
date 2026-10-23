@@ -537,7 +537,61 @@ describe("app page stream helpers", () => {
     );
 
     await expect(outer.getReader().read()).rejects.toThrow("error handler failed");
-    expect(calls).toEqual(["inner flush", "outer error error handler failed", "outer flush"]);
+    expect(calls).toEqual(["outer error error handler failed", "outer flush"]);
+  });
+
+  it("passes on the error callback's failure when the flush callback would also throw", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("source failed"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => {
+        calls.push("inner flush");
+        throw new Error("cleanup failed");
+      },
+      () => {
+        throw new Error("error handler failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("error handler failed");
+    expect(calls).toEqual(["outer error error handler failed", "outer flush"]);
+  });
+
+  it("skips a layer's flush callback when its cancel callback throws", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        calls.push("source cancel");
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      undefined,
+      () => calls.push("inner cancel"),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      undefined,
+      () => {
+        calls.push("outer cancel");
+        throw new Error("cancel handler failed");
+      },
+    );
+
+    await expect(outer.cancel("gone")).rejects.toThrow("cancel handler failed");
+    expect(calls).toEqual(["outer cancel", "inner cancel", "inner flush", "source cancel"]);
   });
 
   it("reuses an unread wrapper from another copy of the module", async () => {

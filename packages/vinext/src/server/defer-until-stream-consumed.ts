@@ -32,7 +32,8 @@ const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAP
  * The callbacks run as separate layers would run them. Flush and error
  * callbacks run innermost first, and a layer sees the error an inner layer's
  * callback threw as its stream error, or the error its own flush callback
- * threw. Cancel callbacks run outermost first.
+ * threw. Cancel callbacks run outermost first. A layer whose error or cancel
+ * callback throws doesn't run its flush callback.
  * As with the pipe, each layer's callbacks run in the async context that
  * added them, and the source is read and cancelled in the context of the
  * first layer. Cleanup reads and clears request-scoped state, and spans the
@@ -69,7 +70,10 @@ export function deferUntilStreamConsumed(
         try {
           if (failure) current.onError?.(failure.error);
         } catch (error) {
+          // As with the pipe, the layer stops there, and the outer layers see
+          // this error.
           failure = { error };
+          return;
         }
         try {
           current.onFlush();
@@ -125,7 +129,10 @@ export function deferUntilStreamConsumed(
               try {
                 current.onCancel?.(reason);
               } catch (error) {
+                // As with the pipe, the layer stops there. The other layers
+                // and the source are still cancelled.
                 failure ??= { error };
+                return;
               }
               try {
                 current.onFlush();
