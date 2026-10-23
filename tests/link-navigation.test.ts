@@ -2835,7 +2835,23 @@ describe("Link prefetch scheduling", () => {
           respond();
           await entry?.pending;
 
-          expect(entry).toMatchObject({ cacheForNavigation: true, expiresAt });
+          if (settledBeforeHover) {
+            // Like Next.js's FetchStrategy.Full upgrade, the page that
+            // rendered dynamically is fetched again rather than reused.
+            expect(entry?.cacheForNavigation).toBe(false);
+            const replacement = await vi.waitFor(() => {
+              const next = Array.from(getPrefetchCache().values()).find(
+                (candidate) => candidate !== entry && candidate.prefetchKind === "navigation",
+              );
+              expect(next).toBeDefined();
+              return next;
+            });
+            await replacement?.pending;
+            expect(Array.from(getPrefetchCache().values())).not.toContain(entry);
+            expect(replacement?.cacheForNavigation).toBe(true);
+          } else {
+            expect(entry).toMatchObject({ cacheForNavigation: true, expiresAt });
+          }
         } finally {
           result.restoreNodeEnv();
         }

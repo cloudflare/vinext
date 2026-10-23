@@ -563,8 +563,11 @@ function prefetchUrl(
         const prefetched = getPrefetchedUrls();
         // The exact request is still fresh as a learning-only prefetch,
         // including a full prefetch kept that way because its page rendered
-        // dynamically.
-        if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
+        // dynamically. A full prefetch replaces that one below.
+        if (
+          autoPrefetch.dynamicStaleTime !== "full-prefetch" &&
+          hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+        ) {
           joinOwnedLinkPrefetch(getPrefetchCache().get(cacheKey)?.fetchPromise, owner);
           return;
         }

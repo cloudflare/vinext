@@ -1079,15 +1079,21 @@ export function discardLearningOnlyPrefetchCacheEntry(
 
 /**
  * Make a prefetch reusable by a navigation, as an `unstable_dynamicOnHover`
- * hover does. One kept as learning-only because its page rendered dynamically
- * becomes a full prefetch and takes the full-prefetch lifetime.
+ * hover does. A pending one that would be kept as learning-only becomes a full
+ * prefetch and takes the full-prefetch lifetime. One already kept as
+ * learning-only because its page rendered dynamically is left for the full
+ * prefetch to replace: Next.js refetches it with `FetchStrategy.Full`, so the
+ * page reflects the cookies and headers at hover time.
  */
 export function promotePrefetchCacheEntryForNavigation(
   cacheKey: string,
   entry: PrefetchCacheEntry,
 ): void {
-  entry.cacheForNavigation = true;
-  if (entry.dynamicStaleTime !== "learning-only") return;
+  if (entry.dynamicStaleTime !== "learning-only") {
+    entry.cacheForNavigation = true;
+    return;
+  }
+  if (entry.cacheForNavigation === false) return;
   entry.dynamicStaleTime = "full-prefetch";
   if (entry.snapshot === undefined) return;
   entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
@@ -3121,8 +3127,12 @@ const _appRouter: AppRouterInstance = {
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
       // The exact request is still fresh as a learning-only prefetch, including
-      // a full prefetch kept that way because its page rendered dynamically.
-      if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
+      // a full prefetch kept that way because its page rendered dynamically. A
+      // full prefetch replaces that one below.
+      if (
+        policy.dynamicStaleTime !== "full-prefetch" &&
+        hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+      ) {
         attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
         return;
       }
