@@ -263,8 +263,8 @@ describe("app page stream helpers", () => {
     // Reading the errored stream triggers the error handler.
     await expect(reader.read()).rejects.toThrow("stream error");
 
-    // The idempotent once() guard prevents double invocation — even if
-    // some code path triggered cleanup again, onFlush fires exactly once.
+    // The wrapper settles once, so onFlush fires exactly once even if some
+    // code path tried to clean up again.
     expect(onFlush).toHaveBeenCalledTimes(1);
   });
 
