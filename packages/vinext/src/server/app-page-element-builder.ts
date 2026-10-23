@@ -86,13 +86,9 @@ type SiblingInterceptPageOutcome =
  */
 function createSiblingInterceptPageSlot(
   invokePage: () => React.ReactNode | Promise<React.ReactNode>,
-  hasPageLoadingBoundary: boolean,
+  releaseRenderDependency: () => void,
 ): { Outlet: AppPageComponent; Starter: AppPageComponent } {
   let outcome: SiblingInterceptPageOutcome | null = null;
-  let settle!: () => void;
-  const settled = new Promise<void>((resolve) => {
-    settle = resolve;
-  });
   function Starter(): null {
     try {
       const result = invokePage();
@@ -102,18 +98,16 @@ function createSiblingInterceptPageSlot(
     } catch (error) {
       if (!isAppRenderSuspension(error)) {
         outcome = { error };
-      } else if (hasPageLoadingBoundary) {
-        // The page's loading UI lives inside the intercepting layouts, so the
-        // outlet retries the page under it. The page has already released its
-        // render dependency for that UI.
-        outcome = { suspended: true };
       } else {
-        // Without loading UI, React retries the page here, ahead of the
-        // layouts, which releases its render dependency once it renders.
-        throw error;
+        // Like Next.js, which reads the page's data only inside the
+        // intercepting layouts' children, the outlet retries a use()
+        // suspension there, under their Suspense boundaries and loading UI.
+        // A layout that never renders its children never retries the page, so
+        // release its render dependency here, as loading UI does.
+        void Promise.resolve().then(releaseRenderDependency);
+        outcome = { suspended: true };
       }
     }
-    settle();
     return null;
   }
   function readOutcome(
@@ -123,9 +117,9 @@ function createSiblingInterceptPageSlot(
     return "result" in current ? current.result : invokePage();
   }
   function Outlet(): React.ReactNode | Promise<React.ReactNode> {
-    // The starter suspends only without loading UI, so it never settles as
-    // suspended after the outlet has rendered.
-    return outcome ? readOutcome(outcome) : settled.then(() => readOutcome(outcome!));
+    // The starter renders ahead of the layouts and never suspends, so it has
+    // settled the outcome by the time the outlet renders.
+    return outcome ? readOutcome(outcome) : invokePage();
   }
   return {
     Outlet: Outlet as unknown as AppPageComponent,
@@ -793,7 +787,7 @@ export async function buildPageElements<
       pageRenderDependency && opts?.interceptLayouts?.some((layoutModule) => layoutModule?.default)
         ? createSiblingInterceptPageSlot(
             createPageInvoker(EffectivePageComponent, pageProps, pageRenderDependency),
-            hasPageLoadingBoundary,
+            pageRenderDependency.release,
           )
         : null;
     let element: ReturnType<typeof createElement> = createElement(

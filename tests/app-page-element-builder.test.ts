@@ -1234,6 +1234,61 @@ describe("buildPageElements", () => {
       expect(rendered).toBe(true);
       expect(await finished).toContain("item");
     });
+
+    // A synchronous intercepting page that suspends with use(), without
+    // loading UI.
+    function createSuspendingPage(): { page: unknown; resolve: () => void } {
+      let resolve!: () => void;
+      const pageData = new Promise<string>((resolvePageData) => {
+        resolve = () => resolvePageData("photo");
+      });
+      function InterceptPage(): React.ReactNode {
+        return React.createElement("p", null, React.use(pageData));
+      }
+      return { page: createSyntheticPageModule(InterceptPage), resolve };
+    }
+
+    it("renders the layout's Suspense fallback while the page suspends without loading UI", async () => {
+      // Like Next.js, which reads the page's data only inside the layout's
+      // children, the layout and its own fallback render while it suspends.
+      function InterceptLayout(props: Record<string, unknown>): React.ReactNode {
+        return React.createElement(
+          "aside",
+          null,
+          "intercept shell",
+          React.createElement(
+            React.Suspense,
+            { fallback: "layout spinner" },
+            props.children as React.ReactNode,
+          ),
+        );
+      }
+      const { page, resolve } = createSuspendingPage();
+      const { errors, finished, rendered } = await renderSourceLayoutBeside(InterceptLayout, {
+        interceptPage: page,
+      });
+      resolve();
+      expect(rendered).toBe(true);
+      const html = await finished;
+      expect(html).toContain("intercept shell");
+      expect(html).toContain("layout spinner");
+      expect(html).toContain("photo");
+      expect(errors).toHaveLength(0);
+    });
+
+    it("lets the source layouts render when the layout leaves out its suspending page", async () => {
+      function InterceptLayout(): React.ReactNode {
+        return React.createElement("aside", null, "intercept shell");
+      }
+      const { page, resolve } = createSuspendingPage();
+      const { errors, finished, rendered } = await renderSourceLayoutBeside(InterceptLayout, {
+        interceptPage: page,
+      });
+      resolve();
+      expect(rendered).toBe(true);
+      expect(await finished).toContain("intercept shell");
+      expect(errors).toHaveLength(0);
+    });
   });
 
   it("suspends a sibling intercepting page under its intercepting loading UI", async () => {
