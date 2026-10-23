@@ -2238,6 +2238,69 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("validates the navigation runtime once per runtime instead of on every Link render", async () => {
+    // A shallow Link only viewport-prefetches under the App Router, so
+    // observe() calls show which router each Link resolved.
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+      props: { shallow: true },
+    });
+    const runtimeKey = Symbol.for("vinext.navigationRuntime");
+    // Full validation reads the RSC bootstrap's chunk list once.
+    const createCountedRscBootstrap = () => {
+      let reads = 0;
+      const bootstrap = {};
+      Object.defineProperty(bootstrap, "rsc", {
+        enumerable: true,
+        get() {
+          reads += 1;
+          return [];
+        },
+      });
+      return { bootstrap, reads: () => reads };
+    };
+
+    try {
+      expect(observer.observe).toHaveBeenCalledTimes(1);
+      const runtime = Reflect.get(window, runtimeKey) as NavigationRuntime;
+
+      // A registered bootstrap is validated by the next Link only.
+      const counted = createCountedRscBootstrap();
+      runtime.bootstrap = { routeManifest: null, rsc: undefined };
+      Reflect.set(runtime.bootstrap, "rsc", counted.bootstrap);
+      result.mountAnotherLink("/intent-prefetch-target");
+      result.mountAnotherLink("/touch-prefetch-target");
+      expect(counted.reads()).toBe(1);
+      expect(observer.observe).toHaveBeenCalledTimes(3);
+
+      // A replacement runtime is validated again, and Links follow it.
+      const replacementCounted = createCountedRscBootstrap();
+      const replacement = createTestNavigationRuntime(undefined);
+      Reflect.set(replacement.bootstrap, "rsc", replacementCounted.bootstrap);
+      Reflect.set(window, runtimeKey, replacement);
+      result.mountAnotherLink("/blog/hello");
+      expect(replacementCounted.reads()).toBe(1);
+      expect(observer.observe).toHaveBeenCalledTimes(3);
+
+      // A malformed function table goes through full validation.
+      Reflect.set(replacement, "functions", null);
+      expect(() => result.mountAnotherLink("/products/1")).not.toThrow();
+      expect(replacementCounted.reads()).toBe(2);
+      expect(observer.observe).toHaveBeenCalledTimes(3);
+
+      // So does the valid table that replaces it, once for the render and
+      // once for the mount registering the visible-link ping on it.
+      Reflect.set(replacement, "functions", { navigate: result.navigate });
+      result.mountAnotherLink("/clothing/shirt");
+      expect(replacementCounted.reads()).toBe(4);
+      expect(observer.observe).toHaveBeenCalledTimes(4);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("re-prefetches a deferred Link on a later ping whose prefetch inputs changed", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({ href: "/products/1", nodeEnv: "production" });
