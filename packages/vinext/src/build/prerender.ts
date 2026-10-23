@@ -358,7 +358,7 @@ const RSC_DATA_BLOCK_ATTRIBUTES_PREFIX = ` type="${RSC_DATA_BLOCK_TYPE}"`;
  * false </script> matches.
  */
 export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array | null {
-  const scriptPattern = /<script(\s[^>]*)?>([\s\S]*?)<\/script>/gi;
+  const scriptPattern = /<script(\s[^>]*)?>([\s\S]*?)<\/script[^>]*>/gi;
   const chunks: Uint8Array[] = [];
   let sawDone = false;
   // Text of the data block just before, which the next script pushes.

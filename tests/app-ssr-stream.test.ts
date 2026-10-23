@@ -128,7 +128,7 @@ function runEmbedScripts(html: string, globals: Record<string, unknown> = {}) {
   const document = { currentScript: null as { previousSibling: FakeScriptElement } | null };
   const context = createContext({ ...globals, document, HTMLScriptElement: FakeScriptElement });
   const input = html.replace(/\r\n?/g, "\n");
-  const startTagRe = /<script(\s[^>]*)?>/y;
+  const startTagRe = /<script(\s[^>]*)?>/iy;
   const endTagRe = /<\/script[\t\n\f />]/gi;
   let previous: FakeScriptElement | null = null;
   let index = 0;
@@ -254,7 +254,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(readEmbeddedRscBytes(self)).toEqual(concatUint8Arrays(flightChunks));
     expect(finalScripts).not.toContain('.rsc.push("');
     expect(finalScripts.match(/<script type="vinext\/rsc"/g)).toHaveLength(2);
-    for (const tag of finalScripts.match(/<script\b[^>]*>/g)!) {
+    for (const tag of finalScripts.match(/<script\b[^>]*>/gi)!) {
       expect(tag).toContain(' nonce="test-nonce"');
     }
   });
@@ -270,7 +270,8 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       document: { currentScript: { previousSibling: { text: "0:injected\n" } } },
     });
 
-    runInContext(finalScripts.match(/<script>(.*?)<\/script>/)![1], context);
+    const pushScript = finalScripts.slice(finalScripts.indexOf("<script>") + "<script>".length);
+    runInContext(pushScript.slice(0, pushScript.indexOf("</script>")), context);
 
     expect(self[Symbol.for("vinext.navigationRuntime")]).toBeUndefined();
   });
