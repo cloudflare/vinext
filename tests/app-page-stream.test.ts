@@ -486,6 +486,38 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["cancel", "flush"]);
   });
 
+  it("stops when a start callback cancels the stream", async () => {
+    for (const throwsAfterCancel of [false, true]) {
+      const calls: string[] = [];
+      let reader!: ReadableStreamDefaultReader<Uint8Array>;
+      const inner = observeStreamConsumption(createStream(["page"]), {
+        onStart() {
+          calls.push("inner start");
+          void reader.cancel("gone");
+          if (throwsAfterCancel) throw new Error("start failed");
+        },
+        onCancel: () => calls.push("inner cancel"),
+        onFlush: () => calls.push("inner flush"),
+      });
+      const outer = observeStreamConsumption(inner, {
+        onStart: () => calls.push("outer start"),
+        onCancel: () => calls.push("outer cancel"),
+        onFlush: () => calls.push("outer flush"),
+      });
+      reader = outer.getReader();
+
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls).toEqual([
+        "inner start",
+        "outer cancel",
+        "outer flush",
+        "inner cancel",
+        "inner flush",
+      ]);
+    }
+  });
+
   it("does not run outer start callbacks after an inner one throws", async () => {
     const calls: string[] = [];
     const inner = observeStreamConsumption(createStream(["page"]), {

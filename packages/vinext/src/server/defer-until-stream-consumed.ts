@@ -56,11 +56,11 @@ export function deferUntilStreamConsumed(
  * callback throws doesn't run its flush callback. When a start callback
  * throws, that layer and the layers outside it see the error, and the layers
  * inside it are cancelled with it. As with the pipe, each layer's callbacks
- * run in the async context that
- * added them, and the source is read and cancelled in the context of the
- * first layer. Cleanup reads and clears request-scoped state, and spans the
- * source starts while producing chunks need their request parent, but the
- * consumer (the runtime sending the body) reads from outside that scope.
+ * run in the async context that added them, and the source is read and
+ * cancelled in the context of the first layer. Cleanup reads and clears
+ * request-scoped state, and spans the source starts while producing chunks
+ * need their request parent, but the consumer (the runtime sending the body)
+ * reads from outside that scope.
  */
 export function observeStreamConsumption(
   stream: ReadableStream<Uint8Array>,
@@ -150,6 +150,8 @@ export function observeStreamConsumption(
       } catch (error) {
         return { error, index };
       }
+      // A start callback may have cancelled the stream.
+      if (settled) return undefined;
     }
     return undefined;
   };
@@ -177,6 +179,9 @@ export function observeStreamConsumption(
                 if (!started) {
                   started = true;
                   const startFailure = start();
+                  // A start callback cancelled the stream, which already
+                  // ran every layer's cancel and flush callbacks.
+                  if (settled) return;
                   if (startFailure) {
                     // As a separate wrapper would, the failing layer sees
                     // the error, cancels the layers inside it (which already
