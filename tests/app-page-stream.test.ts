@@ -603,6 +603,28 @@ describe("app page stream helpers", () => {
     expect(calls).toEqual(["error start failed", "flush"]);
   });
 
+  it("unlocks the source once a start failure has cancelled it", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("page"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const stream = observeStreamConsumption(source, {
+      onStart() {
+        throw new Error("start failed");
+      },
+    });
+
+    await expect(stream.getReader().read()).rejects.toThrow("start failed");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
+    expect(source.locked).toBe(false);
+  });
+
   it("passes a cleanup failure to the outer layers like separate wrappers would", async () => {
     const calls: string[] = [];
     const inner = deferUntilStreamConsumed(createStream([]), () => {

@@ -191,7 +191,10 @@ export function observeStreamConsumption(
                     const { error, index } = startFailure;
                     let failure = finish({ error }, index, index + 1);
                     cancelLayers(error, index);
-                    layer.runInCreationContext(() => reader.cancel(error)).catch(() => {});
+                    layer
+                      .runInCreationContext(() => reader.cancel(error))
+                      .catch(() => {})
+                      .finally(release);
                     failure = finish(failure, index + 1);
                     controller.error(failure?.error);
                     return;
