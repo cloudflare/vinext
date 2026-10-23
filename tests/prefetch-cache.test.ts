@@ -388,6 +388,43 @@ describe("prefetch cache eviction", () => {
     expect(onInvalidate).toHaveBeenCalledTimes(1);
   });
 
+  it("router.prefetch reuses its policy and RSC request module imports across calls", async () => {
+    // Production builds wrap each dynamic import() in Vite's preload helper,
+    // which scans the document for a CSP nonce on every call. Re-mocking the
+    // modules after the first prefetch makes a repeated import() observable.
+    const prefetchModuleSpecifiers = [
+      "../packages/vinext/src/shims/internal/app-route-prefetch-policy.js",
+      "../packages/vinext/src/shims/internal/app-prefetch-rsc-request.js",
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+
+    try {
+      appRouterInstance.prefetch("/dashboard");
+      await waitForPrefetchSetup(() => getPrefetchCache().size > 0);
+      expect(fetch).toHaveBeenCalledTimes(1);
+
+      const reimported = vi.fn();
+      for (const specifier of prefetchModuleSpecifiers) {
+        vi.doMock(specifier, async () => {
+          reimported(specifier);
+          return vi.importActual(specifier);
+        });
+      }
+
+      invalidatePrefetchCache();
+      appRouterInstance.prefetch("/dashboard");
+      await waitForPrefetchSetup(() => getPrefetchCache().size > 0);
+
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(reimported).not.toHaveBeenCalled();
+    } finally {
+      for (const specifier of prefetchModuleSpecifiers) vi.doUnmock(specifier);
+    }
+  });
+
   it("router.prefetch preserves onInvalidate callbacks attached to an already-prefetched URL", async () => {
     const fetch = vi.fn(
       async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),

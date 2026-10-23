@@ -125,6 +125,25 @@ export async function preloadHybridClientRouteOwner(): Promise<void> {
   hybridClientRouteOwnerModule = await hybridClientRouteOwnerModulePromise;
 }
 
+type AppRouterPrefetchModules = [
+  typeof import("./internal/app-route-prefetch-policy.js"),
+  typeof import("./internal/app-prefetch-rsc-request.js"),
+];
+let appRouterPrefetchModulesPromise: Promise<AppRouterPrefetchModules> | null = null;
+
+// Dynamic import keeps the policy module and its route-trie dependencies off
+// the startup path of every next/navigation consumer. Production builds wrap
+// each dynamic import() in Vite's preload helper, which queries the document
+// for a CSP nonce on every call when the target chunk has dependencies, so
+// cache the promise and let each router.prefetch() reuse it (mirrors Link's
+// loadAppPrefetchModules()).
+function loadAppRouterPrefetchModules(): Promise<AppRouterPrefetchModules> {
+  return (appRouterPrefetchModulesPromise ??= Promise.all([
+    import("./internal/app-route-prefetch-policy.js"),
+    import("./internal/app-prefetch-rsc-request.js"),
+  ]));
+}
+
 export function resolveLoadedHybridClientRewriteHref(
   href: string,
   basePath: string,
@@ -3002,15 +3021,10 @@ const _appRouter: AppRouterInstance = {
         ? resolveLoadedHybridClientRewriteHref(fullHref, __basePath)
         : null;
       const kind = options?.kind === "full" ? "full" : "auto";
-      // Dynamic import keeps the policy module and its route-trie
-      // dependencies off the startup path of every next/navigation consumer.
       const [
         { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
         { resolveAppPrefetchRscRequest },
-      ] = await Promise.all([
-        import("./internal/app-route-prefetch-policy.js"),
-        import("./internal/app-prefetch-rsc-request.js"),
-      ]);
+      ] = await loadAppRouterPrefetchModules();
       if (setup.cancelled) return;
       const policy =
         kind === "full"
