@@ -166,6 +166,12 @@ export const RSC_DATA_BLOCK_ESCAPED_TEXT_SCRIPT = createNavigationRuntimeRscData
  * Embed Flight text as a non-executed data block rather than a JS string
  * literal: the browser neither compiles nor runs the payload, and the server
  * skips JSON-escaping it.
+ *
+ * The content is raw text only in HTML context; inside <svg> or <math> the
+ * parser would read it as markup. The tick-buffered transform emits these only
+ * between React's flushes, and React closes everything a flush opens below
+ * <body>: a boundary completed inside foreign content arrives as a closed,
+ * hidden <svg> or <math> segment.
  */
 function createNavigationRuntimeRscTextChunkTags(text: string, nonce?: string): string {
   const escaped = escapeRscDataBlockText(text);

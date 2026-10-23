@@ -1,7 +1,8 @@
 import { createContext, runInContext } from "node:vm";
 import { describe, it, expect, vi } from "vite-plus/test";
-import { createElement, Suspense, use } from "react";
+import { createElement, type ReactNode, Suspense, use } from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream as renderToReadableStreamNode } from "react-dom/server.node";
 import {
   concatUint8Arrays,
   decodeRscEmbeddedChunk,
@@ -742,6 +743,110 @@ async function renderFastSuspenseDocument(waitBeforePipe: boolean): Promise<stri
     stream.pipeThrough(createTickBufferedTransform(createNoopRscEmbedTransform())),
   ).text();
 }
+
+function createForeignContentSuspenseDocument() {
+  const delays = new Map<number, Promise<void>>();
+  function Delayed({ ms, children }: { ms: number; children?: ReactNode }) {
+    if (!delays.has(ms)) delays.set(ms, new Promise((resolve) => setTimeout(resolve, ms)));
+    use(delays.get(ms)!);
+    return children;
+  }
+  // Long enough that React writes the shell and each segment as several chunks.
+  const filler = "x".repeat(3000);
+  const boundaries = (tag: string, count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      createElement(
+        Suspense,
+        { key: index, fallback: createElement(tag, null, "…") },
+        createElement(
+          Delayed,
+          { ms: 2 + index * 3 },
+          createElement(tag, null, `${index}${filler}`),
+        ),
+      ),
+    );
+  return createElement(
+    "html",
+    null,
+    createElement("head"),
+    createElement(
+      "body",
+      null,
+      createElement(
+        "svg",
+        null,
+        createElement("text", null, filler),
+        createElement("g", null, boundaries("text", 8)),
+      ),
+      createElement("math", null, createElement("mi", null, filler), boundaries("mi", 8)),
+    ),
+  );
+}
+
+function createDelayedFlightStream(rows: number): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    async start(controller) {
+      for (let index = 0; index < rows; index++) {
+        controller.enqueue(
+          new TextEncoder().encode(`${index}:["$","p",null,{"children":"<b>a</b> &amp; b"}]\n`),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 1));
+      }
+      controller.close();
+    },
+  });
+}
+
+/** Script start tags that open while an <svg> or <math> element is open. */
+function countScriptsInForeignContent(html: string): { scripts: number; inForeignContent: number } {
+  const tagRe = /<(\/?)(svg|math|script)\b[^>]*>/gi;
+  let depth = 0;
+  let scripts = 0;
+  let inForeignContent = 0;
+  let match: RegExpExecArray | null;
+  while ((match = tagRe.exec(html)) !== null) {
+    if (match[2].toLowerCase() !== "script") {
+      depth += match[1] ? -1 : 1;
+      continue;
+    }
+    scripts++;
+    if (depth > 0) inForeignContent++;
+    tagRe.lastIndex = html.toLowerCase().indexOf("</script", tagRe.lastIndex) + 1;
+  }
+  expect(depth).toBe(0);
+  return { scripts, inForeignContent };
+}
+
+describe("RSC data blocks and foreign content", () => {
+  it("detects scripts inside foreign content", () => {
+    expect(
+      countScriptsInForeignContent(
+        '<svg><g><script type="vinext/rsc"><svg></script><script>x</script></g></svg><script></script>',
+      ),
+    ).toEqual({ scripts: 3, inForeignContent: 2 });
+  });
+
+  for (const [build, render] of [
+    ["edge", renderToReadableStream],
+    ["node", renderToReadableStreamNode],
+  ] as const) {
+    it(`are emitted outside <svg> and <math> while boundaries inside them stream (${build} Fizz)`, async () => {
+      const html = await render(createForeignContentSuspenseDocument());
+      const output = await new Response(
+        html.pipeThrough(
+          createTickBufferedTransform(createRscEmbedTransform(createDelayedFlightStream(30))),
+        ),
+      ).text();
+
+      // React sends boundaries completed inside foreign content as closed,
+      // hidden <svg> and <math> segments.
+      expect(output).toContain('<svg aria-hidden="true" style="display:none" id="S:');
+      expect(output).toContain('<math aria-hidden="true" style="display:none" id="S:');
+      expect(output.match(/<script type="vinext\/rsc">/g)!.length).toBeGreaterThan(1);
+      expect(countScriptsInForeignContent(output).inForeignContent).toBe(0);
+    });
+  }
+});
 
 describe("dynamic App SSR stream pull scheduling", () => {
   it("waits one React render task before pulling dynamic HTML streams", async () => {
