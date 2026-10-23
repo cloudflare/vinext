@@ -1592,10 +1592,15 @@ export function buildAppPageElements<
     // Each not-found.tsx in the slot's branch belongs to its own segment, so,
     // as in Next.js, it catches notFound() from inside that segment's layout,
     // and a layout's own notFound() reaches the boundary of the segment above.
+    // An unmatched slot renders its default.tsx as Next.js's `__DEFAULT__`
+    // segment, which carries none of the slot directory's files, so the
+    // default's notFound() is caught above the layout rendering the slot.
     const branchNotFounds = new Map<number, AppPageComponent>();
-    const slotNotFoundModules = hasSlotTreeOverride
-      ? slotOverride?.notFoundModules
-      : slot.notFounds;
+    const slotNotFoundModules = !overrideOrPageComponent
+      ? undefined
+      : hasSlotTreeOverride
+        ? slotOverride?.notFoundModules
+        : slot.notFounds;
     const slotNotFoundTreePositions = hasSlotTreeOverride
       ? slotOverride?.notFoundTreePositions
       : slot.notFoundTreePositions;

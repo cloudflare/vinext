@@ -366,6 +366,40 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain('id="not-found-layout-segment-crew"');
   });
 
+  // An unmatched slot renders its default.tsx as Next.js's `__DEFAULT__`
+  // segment, which carries none of the slot directory's files, so the slot's
+  // own not-found.tsx doesn't catch the default's notFound(). Observed in
+  // Next.js 16.2.7, webpack and Turbopack.
+  it("notFound() from a parallel slot's default is caught above the slot's layout, not by the slot's not-found", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-slot-own/panel");
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="slot-own-layout"');
+    expect(html).toContain('id="slot-own-root-nf"');
+    expect(html).not.toContain('id="slot-own-panel-layout"');
+    expect(html).not.toContain('id="slot-own-panel-nf"');
+    expect(html).not.toContain('id="slot-own-panel-segment-nf"');
+  });
+
+  // When the page throws too, its notFound() is caught by its segment's
+  // not-found inside the layout rendering the slot, while the slot's own
+  // not-found catches the slot's. That layout stays, also when the page's
+  // signal is below a Suspense boundary and only the slot's rejects the shell.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each(["both", "late"])(
+    "notFound() from a page and a slot with its own not-found keeps the slot's layout (%s)",
+    async (id) => {
+      const { res, html } = await fetchHtml(
+        baseUrl,
+        `/nextjs-compat/not-found-slot-own/team/${id}`,
+      );
+      expect(res.status).toBe(404);
+      expect(html).toContain('id="slot-own-layout"');
+      expect(html).toContain('id="slot-own-team-layout"');
+      expect(html).toContain('id="slot-own-segment-nf"');
+      expect(html).not.toContain('id="slot-own-root-nf"');
+    },
+  );
+
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,
   // the layout's notFound() should take precedence (layouts render before

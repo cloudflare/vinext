@@ -109,6 +109,12 @@ function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
   return typeof layoutIndex === "number" ? layoutIndex : null;
 }
 
+function getAppPageSlotErrorNotFoundBoundary(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const boundary: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY);
+  return typeof boundary === "string" ? boundary : null;
+}
+
 export type AppPageSpecialError =
   | {
       kind: "redirect";
@@ -297,7 +303,8 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * that digest. When the page threw one too, the page's decides. An error a
  * client component threw during SSR is the page's, since generateMetadata()
  * runs only in the RSC render. A notFound() / forbidden() / unauthorized()
- * a parallel slot's page threw is caught above the layout rendering it.
+ * a parallel slot's page threw is caught above the layout rendering it,
+ * unless the slot's own not-found catches its notFound().
  */
 export function resolveAppPageShellSpecialError(
   error: unknown,
@@ -314,9 +321,14 @@ export function resolveAppPageShellSpecialError(
   if (fromMetadata) return { ...specialError, fromMetadata: true };
   if (specialError.kind !== "http-access-fallback") return specialError;
   // The boundary above a slot's layout is never below the page's, so the
-  // outermost slot's replaces the page's when both threw.
+  // outermost slot's replaces the page's when both threw. A slot's own
+  // not-found boundary catches its notFound() inside the slot, leaving that
+  // layout and the page's boundary in place.
   let slotLayoutIndex: number | null = null;
   for (const rendered of renderedSpecialErrors) {
+    if (specialError.statusCode === 404 && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
+      continue;
+    }
     const layoutIndex = getAppPageSlotErrorLayoutIndex(rendered);
     if (layoutIndex !== null && (slotLayoutIndex === null || layoutIndex < slotLayoutIndex)) {
       slotLayoutIndex = layoutIndex;
@@ -344,11 +356,8 @@ export function resolveAppPageCaughtNotFoundBoundaries(
   const boundaries = new Set<string>();
   for (const rendered of renderedSpecialErrors) {
     if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
-    const boundary: unknown =
-      rendered && typeof rendered === "object"
-        ? Reflect.get(rendered, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY)
-        : undefined;
-    if (typeof boundary !== "string") return null;
+    const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
+    if (boundary === null) return null;
     boundaries.add(boundary);
   }
   return Array.from(boundaries);

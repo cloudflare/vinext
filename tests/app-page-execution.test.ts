@@ -149,6 +149,37 @@ describe("app page execution helpers", () => {
     ).not.toHaveProperty("slotLayoutIndex");
   });
 
+  it("leaves a slot's notFound() its own not-found catches out of the slot's layout", () => {
+    // Next.js catches that copy inside the slot, so the layout rendering the
+    // slot stays, and the page's own notFound() goes to the page's boundary.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const caughtInSlot = tagAppPageSlotError(thrown(), 1, "slot:members:/team:0");
+
+    expect(resolveAppPageShellSpecialError(decoded, [thrown(), caughtInSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // Another slot without its own not-found is still caught above its layout.
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        thrown(),
+        caughtInSlot,
+        tagAppPageSlotError(thrown(), 2),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
+    // Slots have only not-found boundaries, so a slot's forbidden() is still
+    // caught above its layout.
+    const forbiddenDigest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const forbidden = Object.assign(new Error(forbiddenDigest), { digest: forbiddenDigest });
+    expect(
+      resolveAppPageShellSpecialError(forbidden, [
+        tagAppPageSlotError(forbidden, 1, "slot:members:/team:0"),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 1 });
+  });
+
   it("resolves the slot not-found boundaries that catch a shell's notFound()", () => {
     // On the client, a slot's own not-found boundary catches its notFound()
     // while the rest of the route renders, so the document renders those

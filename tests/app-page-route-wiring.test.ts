@@ -2393,6 +2393,98 @@ describe("app page route wiring helpers", () => {
     expect(pageElements.at(-1)).toEqual({ slotLayoutIndex: 0, slotNotFoundBoundary: undefined });
   });
 
+  it("leaves an unmatched slot's default.tsx outside the slot's not-found boundaries", async () => {
+    // Next.js renders an unmatched slot as a `__DEFAULT__` segment carrying
+    // only the default page, so the slot directory's not-found.tsx never
+    // catches the default's notFound(): it is caught above the layout
+    // rendering the slot, on the client and in the document.
+    vi.doMock("../packages/vinext/src/server/app-render-dependency.js", async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      renderAfterAppDependencies: (children: ReactNode) => children,
+    }));
+    const wiringSpecifier =
+      "../packages/vinext/src/server/app-page-route-wiring.js?slot-default-not-found";
+    const {
+      buildAppPageElements: buildElements,
+    }: typeof import("../packages/vinext/src/server/app-page-route-wiring.js") = await import(
+      /* @vite-ignore */ wiringSpecifier
+    );
+    vi.doUnmock("../packages/vinext/src/server/app-render-dependency.js");
+    function SlotDefault(): ReactNode {
+      notFound();
+    }
+    function SlotNotFound() {
+      return createElement("p", null, "slot not found");
+    }
+    const pageElements: {
+      component: unknown;
+      slotLayoutIndex?: number;
+      slotNotFoundBoundary?: string;
+    }[] = [];
+    const buildSlotElements = (page: AppPageModule | null) =>
+      buildElements({
+        createPageElement(component, props, slotLayoutIndex, slotNotFoundBoundary) {
+          pageElements.push({ component, slotLayoutIndex, slotNotFoundBoundary });
+          return createElement(component, props);
+        },
+        element: createElement(PageProbe),
+        makeThenableParams(value) {
+          return Promise.resolve(value);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null],
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null],
+          routeSegments: [],
+          slots: {
+            modal: {
+              default: { default: SlotDefault },
+              error: null,
+              layout: null,
+              layoutIndex: 0,
+              loading: null,
+              name: "modal",
+              notFound: { default: SlotNotFound },
+              notFoundTreePosition: 0,
+              notFounds: [{ default: SlotNotFound }],
+              notFoundTreePositions: [0],
+              page,
+              routeSegments: page ? [] : null,
+            },
+          },
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/",
+        rootNotFoundModule: null,
+      });
+    const modalSlotId = AppElementsWire.encodeSlotId("modal", "/");
+
+    const defaultSlot = buildSlotElements(null)[modalSlotId];
+    expect(pageElements.at(-1)).toEqual({
+      component: SlotDefault,
+      slotLayoutIndex: 0,
+      slotNotFoundBoundary: undefined,
+    });
+    expect(findElementByTypeName(defaultSlot, "NotFoundBoundary")).toBeNull();
+
+    // The slot's page is still caught by the slot's own boundary.
+    const pageSlot = buildSlotElements({ default: SlotPage })[modalSlotId];
+    expect(pageElements.at(-1)).toEqual({
+      component: SlotPage,
+      slotLayoutIndex: 0,
+      slotNotFoundBoundary: `${modalSlotId}:0`,
+    });
+    expect(findElementByTypeName(pageSlot, "NotFoundBoundary")?.props.caughtId).toBe(
+      `${modalSlotId}:0`,
+    );
+  });
+
   it("uses intercepted override segments for named slot reset boundaries", async () => {
     function SlotError() {
       return createElement("div", null, "slot error");

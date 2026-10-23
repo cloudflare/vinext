@@ -27,6 +27,9 @@ export default function Layout({
         <Link href={`${BASE}/team/ok/roster/player/missing`}>Player missing</Link>
         <Link href={`${BASE}/item/ok`}>Item ok</Link>
         <Link href={`${BASE}/item/missing`}>Item missing</Link>
+        <Link href={`${BASE}/team/both`}>Team both</Link>
+        <Link href={`${BASE}/team/late`}>Team late</Link>
+        <Link href={`${BASE}/panel`}>Panel default</Link>
       </nav>
       {children}
       <aside id="slot-own-modal">{modal}</aside>
