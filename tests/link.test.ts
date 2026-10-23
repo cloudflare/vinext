@@ -372,6 +372,69 @@ describe("useLinkStatus", () => {
     }
     ReactDOMServer.renderToString(React.createElement(TestComponent));
   });
+
+  it("returns { pending: false } inside a server-rendered Link", () => {
+    const statuses: unknown[] = [];
+    function Status() {
+      statuses.push(useLinkStatus());
+      return React.createElement("span", null, "status");
+    }
+    const html = ReactDOMServer.renderToString(
+      React.createElement(Link, { href: "/about" }, React.createElement(Status)),
+    );
+    expect(html).toBe('<a href="/about"><span>status</span></a>');
+    expect(statuses).toEqual([{ pending: false }]);
+  });
+});
+
+describe("Link server render", () => {
+  it("renders the anchor with its props and without handlers or refs", () => {
+    const ref = React.createRef<HTMLAnchorElement>();
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        {
+          href: "/about?x=1#top",
+          className: "nav",
+          target: "_self",
+          "aria-label": "About",
+          onClick: () => {},
+          onMouseEnter: () => {},
+          prefetch: false,
+          replace: true,
+          scroll: false,
+          ref,
+        },
+        "About",
+      ),
+    );
+    expect(html).toBe(
+      '<a href="/about?x=1#top" class="nav" target="_self" aria-label="About">About</a>',
+    );
+    expect(ref.current).toBeNull();
+  });
+
+  it("renders legacyBehavior and dangerous hrefs through the full component", () => {
+    const legacy = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true },
+        React.createElement("a", { className: "legacy" }, "About"),
+      ),
+    );
+    expect(legacy).toBe('<a class="legacy" href="/about">About</a>');
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const dangerous = ReactDOMServer.renderToString(
+        // oxlint-disable-next-line no-script-url
+        React.createElement(Link, { href: "javascript:alert(1)", className: "x" }, "x"),
+      );
+      expect(dangerous).toBe('<a class="x">x</a>');
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("Link App Router prefetch mode", () => {

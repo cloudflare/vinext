@@ -84,6 +84,7 @@ type NavigateEvent = {
 };
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
+const isServer = typeof window === "undefined";
 const HAS_CLIENT_REWRITES = process.env.__VINEXT_HAS_CLIENT_REWRITES !== "false";
 
 type NavigationModule = typeof import("./navigation.js");
@@ -1147,6 +1148,24 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     __trailingSlash,
   );
 
+  // On the server, everything below only allocates: effects never run, event
+  // handlers and refs are not rendered, and no navigation can be pending, so
+  // `useLinkStatus()` reads the context's default `{ pending: false }`. Pages
+  // render many links, so skip straight to the markup. The client never takes
+  // this branch, so its renders always call every hook, and a server render
+  // never renders the same Link again with different props. legacyBehavior
+  // passes the handlers to the child, which a custom child component can
+  // observe, and a dangerous href warns in development, so both keep the full
+  // path.
+  /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks -- the early return below never happens on the client. */
+  if (isServer && !legacyBehavior && !isDangerous) {
+    return (
+      <a href={fullHref} {...anchorProps}>
+        {children}
+      </a>
+    );
+  }
+
   // Track pending state for useLinkStatus()
   const [pending, setPending] = useState(false);
   const mountedRef = useRef(true);
@@ -1662,6 +1681,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       </a>
     </LinkStatusContext.Provider>
   );
+  /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 });
 
 export default Link;
