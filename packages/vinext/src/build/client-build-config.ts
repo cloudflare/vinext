@@ -18,6 +18,9 @@ const ROUTE_OWNED_CLIENT_SHIMS = new Set([
   "dynamic-preload-chunks",
   "form",
   "image",
+  // Only image-props imports it. A group also takes in its modules'
+  // dependencies, so in "vinext" it would load ipaddr.js on every page.
+  "image-config",
   "image-props",
   "internal/hybrid-client-route-owner",
   "layout-segment-context",

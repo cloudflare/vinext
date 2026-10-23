@@ -239,6 +239,7 @@ describe("clientManualChunks", () => {
     expect(appClientManualChunks("/vinext/shims/link.js")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/router.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image.tsx?client")).toBeUndefined();
+    expect(appClientManualChunks("/vinext/shims/image-config.ts")).toBeUndefined();
     expect(appClientManualChunks("/vinext/shims/image-props.js")).toBeUndefined();
     expect(
       appClientManualChunks("/vinext/shims/internal/hybrid-client-route-owner.js"),
