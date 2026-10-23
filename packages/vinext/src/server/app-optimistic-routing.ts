@@ -76,12 +76,100 @@ const routeTrieCache = new WeakMap<BrowserRouteManifest, OptimisticRouteTrieNode
 const OPTIMISTIC_ROUTE_SEGMENT_SUSPENSE_TRIGGER = new Promise<never>(() => {});
 const REACT_LAZY_TYPE = Symbol.for("react.lazy");
 
+// With `urlRouteStateKey`, keys the template learned from that URL. Without
+// it, keys the route's latest template, which other URLs of the route reuse.
 export function getOptimisticRouteTemplateKey(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeId: string;
+  urlRouteStateKey?: string | null;
 }): string {
-  return `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
+  const key = `${options.routeId}\0${options.interceptionContext ?? ""}\0${options.mountedSlotsHeader ?? ""}`;
+  return options.urlRouteStateKey == null ? key : `${key}\0${options.urlRouteStateKey}`;
+}
+
+// A prefetch a template was learned from, keyed by its source key.
+type OptimisticRouteTemplateSource = {
+  cacheKey: string;
+  entry: WeakRef<object>;
+  urlTemplateKey: string;
+};
+
+// The templates learned for each URL. A URL's template lasts as long as the
+// prefetch it was learned from stays in the prefetch cache, and is held by
+// that prefetch's entry, so it is freed with the entry however the cache
+// drops it. The route's template, its latest one, lasts until the caches are
+// cleared, as before, and is reused for any URL of the route without one of
+// its own, the URL it was learned from included.
+export type OptimisticUrlRouteTemplates = {
+  // The source of each URL's latest template, by the URL's template key.
+  owners: Map<string, string>;
+  sources: Map<string, OptimisticRouteTemplateSource>;
+  templates: WeakMap<object, OptimisticRouteTemplate>;
+};
+
+export function createOptimisticUrlRouteTemplates(): OptimisticUrlRouteTemplates {
+  return { owners: new Map(), sources: new Map(), templates: new WeakMap() };
+}
+
+export function setOptimisticUrlRouteTemplate(
+  urlTemplates: OptimisticUrlRouteTemplates,
+  options: {
+    cacheKey: string;
+    entry: object;
+    sourceKey: string;
+    template: OptimisticRouteTemplate;
+    urlTemplateKey: string;
+  },
+): void {
+  urlTemplates.templates.set(options.entry, options.template);
+  urlTemplates.sources.set(options.sourceKey, {
+    cacheKey: options.cacheKey,
+    entry: new WeakRef(options.entry),
+    urlTemplateKey: options.urlTemplateKey,
+  });
+  urlTemplates.owners.set(options.urlTemplateKey, options.sourceKey);
+}
+
+function readLiveSourceEntry(
+  source: OptimisticRouteTemplateSource,
+  prefetchCache: ReadonlyMap<string, object>,
+): object | undefined {
+  const entry = source.entry.deref();
+  return entry !== undefined && prefetchCache.get(source.cacheKey) === entry ? entry : undefined;
+}
+
+// A URL's template, while the prefetch it was learned from is still the one
+// in the cache.
+export function readOptimisticUrlRouteTemplate(
+  urlTemplates: OptimisticUrlRouteTemplates,
+  prefetchCache: ReadonlyMap<string, object>,
+  urlTemplateKey: string,
+): OptimisticRouteTemplate | undefined {
+  const sourceKey = urlTemplates.owners.get(urlTemplateKey);
+  const source = sourceKey === undefined ? undefined : urlTemplates.sources.get(sourceKey);
+  const entry = source === undefined ? undefined : readLiveSourceEntry(source, prefetchCache);
+  return entry === undefined ? undefined : urlTemplates.templates.get(entry);
+}
+
+// Forgets each source that has left the cache or been replaced, so a new
+// prefetch at its key is learned again. Once a URL's latest template's source
+// goes, forgets the URL's other live sources too, so the next learning pass
+// relearns its template from one of them.
+export function pruneOptimisticUrlRouteTemplates(
+  urlTemplates: OptimisticUrlRouteTemplates,
+  prefetchCache: ReadonlyMap<string, object>,
+): void {
+  const { owners, sources } = urlTemplates;
+  for (const [sourceKey, source] of sources) {
+    if (readLiveSourceEntry(source, prefetchCache) !== undefined) continue;
+    sources.delete(sourceKey);
+    if (owners.get(source.urlTemplateKey) !== sourceKey) continue;
+    owners.delete(source.urlTemplateKey);
+    for (const [siblingKey, sibling] of sources) {
+      if (sibling.urlTemplateKey === source.urlTemplateKey) sources.delete(siblingKey);
+    }
+  }
 }
 
 export function getOptimisticPrefetchSourceKey(options: {
@@ -1047,7 +1135,7 @@ export function resolveOptimisticNavigationPayload(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
-  templates: ReadonlyMap<string, OptimisticRouteTemplate>;
+  templates: Pick<ReadonlyMap<string, OptimisticRouteTemplate>, "get">;
 }): OptimisticNavigationPayload | null {
   if (options.interceptionContext !== null) return null;
 
@@ -1061,13 +1149,19 @@ export function resolveOptimisticNavigationPayload(options: {
   });
   if (match === null) return null;
 
-  const template = options.templates.get(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: match.route.id,
-    }),
-  );
+  const targetRouteStateKey = resolveUrlRouteStateKey(match, urlParts.raw);
+  const templateKey = {
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    routeId: match.route.id,
+  };
+  // A shell learned from the target itself was rendered for its params, as
+  // Next.js commits a URL's own prefetched shell. Other URLs of the route
+  // reuse its latest one, keyed for them.
+  const template =
+    options.templates.get(
+      getOptimisticRouteTemplateKey({ ...templateKey, urlRouteStateKey: targetRouteStateKey }),
+    ) ?? options.templates.get(getOptimisticRouteTemplateKey(templateKey));
   if (template === undefined) return null;
   if (template.mountedSlotsHeader !== options.mountedSlotsHeader) return null;
 
@@ -1077,10 +1171,7 @@ export function resolveOptimisticNavigationPayload(options: {
     routeManifest: options.routeManifest,
     urlParts: urlParts.normalized,
   });
-  const elements = createOptimisticRouteElements(
-    template,
-    resolveUrlRouteStateKey(match, urlParts.raw),
-  );
+  const elements = createOptimisticRouteElements(template, targetRouteStateKey);
   if (elements === null) return null;
   return {
     elements,

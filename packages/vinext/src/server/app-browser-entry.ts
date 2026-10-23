@@ -213,10 +213,14 @@ import {
 import {
   canCommitOptimisticRouteTemplate,
   createOptimisticRouteTemplate,
+  createOptimisticUrlRouteTemplates,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  pruneOptimisticUrlRouteTemplates,
+  readOptimisticUrlRouteTemplate,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
+  setOptimisticUrlRouteTemplate,
   settleOptimisticRouteRows,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
@@ -301,8 +305,12 @@ function setClientRscCompatibilityId(compatibilityId: string | null | undefined)
   clientRscCompatibilityId = compatibilityId;
 }
 const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
-const optimisticRouteTemplateSources = new Set<string>();
-const optimisticRouteTemplateLearning = new Map<string, Promise<void>>();
+const optimisticUrlRouteTemplates = createOptimisticUrlRouteTemplates();
+// The prefetch entry each source is being learned from.
+const optimisticRouteTemplateLearning = new Map<
+  string,
+  { entry: object; promise: Promise<void> }
+>();
 
 function claimInitialAppRouterBootstrap(): boolean {
   if (window.__VINEXT_RSC_ROOT__ || window.__VINEXT_RSC_BOOTSTRAP_STATE__) {
@@ -569,7 +577,8 @@ function clearVisitedResponseCache(): void {
 function clearPrefetchState(): void {
   invalidatePrefetchCache();
   optimisticRouteTemplates.clear();
-  optimisticRouteTemplateSources.clear();
+  optimisticUrlRouteTemplates.owners.clear();
+  optimisticUrlRouteTemplates.sources.clear();
   optimisticRouteTemplateLearning.clear();
 }
 
@@ -725,13 +734,14 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
-}): Promise<boolean> {
+  sourceKey: string;
+}): Promise<void> {
   const source = parsePrefetchCacheKey(options.cacheKey);
-  if (source.interceptionContext !== options.interceptionContext) return false;
+  if (source.interceptionContext !== options.interceptionContext) return;
   if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
-    return false;
+    return;
   }
-  if (options.interceptionContext !== null) return false;
+  if (options.interceptionContext !== null) return;
 
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
@@ -746,19 +756,30 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     mountedSlotsHeader: options.mountedSlotsHeader,
     routeManifest: options.routeManifest,
   });
-  if (template === null) return false;
+  if (template === null) return;
   // The caches were cleared while the prefetch decoded, so it is stale.
-  if (options.cacheGeneration !== clientNavigationCacheGeneration) return false;
+  if (options.cacheGeneration !== clientNavigationCacheGeneration) return;
+  // It left the cache or was replaced while it decoded. A replacement is
+  // learned in its own right.
+  if (getPrefetchCache().get(options.cacheKey) !== options.entry) return;
 
-  optimisticRouteTemplates.set(
-    getOptimisticRouteTemplateKey({
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeId: template.routeId,
-    }),
+  const templateKey = {
+    interceptionContext: options.interceptionContext,
+    mountedSlotsHeader: options.mountedSlotsHeader,
+    routeId: template.routeId,
+  };
+  optimisticRouteTemplates.set(getOptimisticRouteTemplateKey(templateKey), template);
+  const urlTemplateKey = getOptimisticRouteTemplateKey({
+    ...templateKey,
+    urlRouteStateKey: template.urlRouteStateKey,
+  });
+  setOptimisticUrlRouteTemplate(optimisticUrlRouteTemplates, {
+    cacheKey: options.cacheKey,
+    entry: options.entry,
+    sourceKey: options.sourceKey,
     template,
-  );
-  return true;
+    urlTemplateKey,
+  });
 }
 
 async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
@@ -768,43 +789,67 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
 }): Promise<void> {
   if (options.routeManifest === null) return;
 
-  const learning: Promise<void>[] = [...optimisticRouteTemplateLearning.values()];
-  for (const [cacheKey, entry] of getPrefetchCache()) {
-    const sourceKey = getOptimisticPrefetchSourceKey({
-      cacheKey,
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-    });
-    if (optimisticRouteTemplateSources.has(sourceKey)) continue;
-    if (optimisticRouteTemplateLearning.has(sourceKey)) continue;
-    if (!isSettledPrefetchCacheEntry(entry)) continue;
-    if (entry.prefetchKind === "route-tree") continue;
+  // The cache can change while learning runs. A prefetch that replaces one the
+  // first pass saw, such as one being learned, is learned in another pass, so
+  // the navigation waiting for this can use it. Prefetches that only settle
+  // meanwhile are left to the next navigation, rather than holding this one.
+  const scanned = new Map<string, PrefetchCacheEntry>();
+  for (let pass = 0; ; pass++) {
+    pruneOptimisticUrlRouteTemplates(optimisticUrlRouteTemplates, getPrefetchCache());
+    // The first pass also waits for learners other navigations started, as one
+    // may be learning the target.
+    const learning =
+      pass === 0 ? [...optimisticRouteTemplateLearning.values()].map(({ promise }) => promise) : [];
+    for (const [cacheKey, entry] of getPrefetchCache()) {
+      if (pass === 0) {
+        scanned.set(cacheKey, entry);
+      } else {
+        const previous = scanned.get(cacheKey);
+        if (previous === undefined || previous === entry) continue;
+      }
+      const sourceKey = getOptimisticPrefetchSourceKey({
+        cacheKey,
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+      });
+      if (optimisticUrlRouteTemplates.sources.has(sourceKey)) continue;
+      // A replaced entry's learner won't publish, so its replacement is learned
+      // alongside it.
+      const inFlight = optimisticRouteTemplateLearning.get(sourceKey);
+      if (inFlight?.entry === entry) {
+        if (pass > 0) {
+          scanned.set(cacheKey, entry);
+          learning.push(inFlight.promise);
+        }
+        continue;
+      }
+      if (!isSettledPrefetchCacheEntry(entry)) continue;
+      if (entry.prefetchKind === "route-tree") continue;
 
-    const cacheGeneration = clientNavigationCacheGeneration;
-    const promise: Promise<void> = learnOptimisticRouteTemplateFromPrefetch({
-      cacheGeneration,
-      cacheKey,
-      entry,
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeManifest: options.routeManifest,
-    })
-      .then((learned) => {
-        if (!learned || cacheGeneration !== clientNavigationCacheGeneration) return;
-        optimisticRouteTemplateSources.add(sourceKey);
-      })
-      .finally(() => {
-        // A cache clear may have let a newer learner take this source.
-        if (optimisticRouteTemplateLearning.get(sourceKey) === promise) {
+      scanned.set(cacheKey, entry);
+      const cacheGeneration = clientNavigationCacheGeneration;
+      const promise: Promise<void> = learnOptimisticRouteTemplateFromPrefetch({
+        cacheGeneration,
+        cacheKey,
+        entry,
+        interceptionContext: options.interceptionContext,
+        mountedSlotsHeader: options.mountedSlotsHeader,
+        routeManifest: options.routeManifest,
+        sourceKey,
+      }).finally(() => {
+        // A cache clear or a replaced entry may have let a newer learner take
+        // this source.
+        if (optimisticRouteTemplateLearning.get(sourceKey)?.promise === promise) {
           optimisticRouteTemplateLearning.delete(sourceKey);
         }
       });
-    optimisticRouteTemplateLearning.set(sourceKey, promise);
-    learning.push(promise);
-  }
+      optimisticRouteTemplateLearning.set(sourceKey, { entry, promise });
+      learning.push(promise);
+    }
 
-  if (learning.length === 0) return;
-  await Promise.allSettled(learning);
+    if (learning.length === 0) return;
+    await Promise.allSettled(learning);
+  }
 }
 
 function createActionInitiationSnapshot() {
@@ -2631,7 +2676,17 @@ function bootstrapHydration(
               interceptionContext: requestInterceptionContext,
               mountedSlotsHeader,
               routeManifest,
-              templates: optimisticRouteTemplates,
+              templates: {
+                // A URL's template is checked against the cache when it is
+                // read, as the cache may have changed while learning ran.
+                get: (key) =>
+                  optimisticRouteTemplates.get(key) ??
+                  readOptimisticUrlRouteTemplate(
+                    optimisticUrlRouteTemplates,
+                    getPrefetchCache(),
+                    key,
+                  ),
+              },
             });
 
             if (

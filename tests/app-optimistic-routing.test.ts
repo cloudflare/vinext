@@ -19,11 +19,15 @@ import {
   canCommitOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  createOptimisticUrlRouteTemplates,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   matchOptimisticRouteManifestRoute,
+  pruneOptimisticUrlRouteTemplates,
+  readOptimisticUrlRouteTemplate,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
+  setOptimisticUrlRouteTemplate,
   settleOptimisticRouteRows,
   type OptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
@@ -1072,6 +1076,179 @@ describe("App Router optimistic routing", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("commits the shell learned from the target URL itself", () => {
+    const routeManifest = blogManifest();
+    // The leaf layout is rendered into each shell with its URL's slug.
+    const learn = (slug: string) => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: {
+          ...createBlogMirroredLoadingShellElements(slug),
+          [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: {
+            [AppElementsWire.encodePageId(`/blog/${slug}`, null)]: blogPageIdentity(slug),
+            "layout:/blog/[slug]": deriveBfcacheSegmentIdentity({
+              boundSegmentKey: blogRouteStateKey(slug),
+              graphId: "layout:/blog/[slug]",
+              kind: "layout",
+              rootBoundaryId: "/",
+            }),
+          },
+        },
+        href: `/blog/${slug}.rsc`,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const routeKey = {
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeId: "route:/blog/:slug",
+    };
+    const post3 = learn("post-3");
+    const post4 = learn("post-4");
+    // post-4 was learned last, so it is the route's template too.
+    const templates = new Map([
+      [getOptimisticRouteTemplateKey(routeKey), post4],
+      [
+        getOptimisticRouteTemplateKey({ ...routeKey, urlRouteStateKey: post3.urlRouteStateKey }),
+        post3,
+      ],
+      [
+        getOptimisticRouteTemplateKey({ ...routeKey, urlRouteStateKey: post4.urlRouteStateKey }),
+        post4,
+      ],
+    ]);
+    const resolve = (href: string) =>
+      resolveOptimisticNavigationPayload({
+        basePath: "",
+        href,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      });
+
+    expect(resolve("/blog/post-3")?.template).toBe(post3);
+    expect(resolve("/blog/post-4")?.template).toBe(post4);
+    // post-5 has no shell of its own, and the route's template renders post-4's layout.
+    expect(resolve("/blog/post-5")).toBeNull();
+  });
+
+  it("reads a URL's template only while its prefetch is in the cache", () => {
+    const createTemplate = () => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: createBlogMirroredLoadingShellElements("post-3"),
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const template = createTemplate();
+    const entry = {};
+    const prefetchCache = new Map<string, object>([["/blog/post-3", entry]]);
+    const urlTemplates = createOptimisticUrlRouteTemplates();
+    const learn = (learnedEntry: object) =>
+      setOptimisticUrlRouteTemplate(urlTemplates, {
+        cacheKey: "/blog/post-3",
+        entry: learnedEntry,
+        sourceKey: "source:post-3",
+        template,
+        urlTemplateKey: "route+post-3",
+      });
+    const read = () => readOptimisticUrlRouteTemplate(urlTemplates, prefetchCache, "route+post-3");
+    const prune = () => pruneOptimisticUrlRouteTemplates(urlTemplates, prefetchCache);
+
+    learn(entry);
+    prune();
+    expect(read()).toBe(template);
+    // A new prefetch of the URL replaces the entry it was learned from. The
+    // template isn't read even before a learning pass prunes it.
+    prefetchCache.set("/blog/post-3", {});
+    expect(read()).toBeUndefined();
+    prune();
+    expect(urlTemplates.sources.size).toBe(0);
+    expect(urlTemplates.owners.size).toBe(0);
+
+    // A prefetch evicted from the cache drops the URL's template too.
+    prefetchCache.set("/blog/post-3", entry);
+    learn(entry);
+    expect(read()).toBe(template);
+    prefetchCache.delete("/blog/post-3");
+    expect(read()).toBeUndefined();
+    prune();
+    expect(urlTemplates.sources.size).toBe(0);
+    expect(urlTemplates.owners.size).toBe(0);
+
+    // So does one already garbage collected.
+    prefetchCache.set("/blog/post-3", entry);
+    learn(entry);
+    urlTemplates.sources.set("source:post-3", {
+      cacheKey: "/blog/post-3",
+      entry: { deref: () => undefined } as unknown as WeakRef<object>,
+      urlTemplateKey: "route+post-3",
+    });
+    expect(read()).toBeUndefined();
+    prune();
+    expect(urlTemplates.sources.size).toBe(0);
+    expect(urlTemplates.owners.size).toBe(0);
+  });
+
+  it("tracks every prefetch a URL's template was learned from", () => {
+    const createTemplate = () => {
+      const template = createOptimisticRouteTemplate({
+        allowLoadingShell: true,
+        basePath: "",
+        elements: createBlogMirroredLoadingShellElements("post-3"),
+        href: "/blog/post-3.rsc",
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest: blogManifest(),
+      });
+      if (template === null) throw new Error("Expected optimistic route template");
+      return template;
+    };
+    const sources = (["a", "b", "c"] as const).map((key) => ({
+      cacheKey: `/blog/post-3?${key}`,
+      entry: {},
+      sourceKey: `source:${key}`,
+      template: createTemplate(),
+      urlTemplateKey: "route+post-3",
+    }));
+    // Three cache keys for one URL, learned in order, so the last one learned
+    // owns the URL's template.
+    const prefetchCache = new Map<string, object>(
+      sources.map((source) => [source.cacheKey, source.entry]),
+    );
+    const urlTemplates = createOptimisticUrlRouteTemplates();
+    for (const source of sources) setOptimisticUrlRouteTemplate(urlTemplates, source);
+    const read = () => readOptimisticUrlRouteTemplate(urlTemplates, prefetchCache, "route+post-3");
+    const prune = () => pruneOptimisticUrlRouteTemplates(urlTemplates, prefetchCache);
+
+    // A prefetch that no longer owns the template only forgets its source, so
+    // a new prefetch at its key is learned again.
+    prefetchCache.delete("/blog/post-3?a");
+    prune();
+    expect(read()).toBe(sources[2]!.template);
+    expect([...urlTemplates.sources.keys()]).toEqual(["source:b", "source:c"]);
+
+    // Once the owning prefetch goes, the URL's remaining prefetch is learned
+    // again rather than left without a template.
+    prefetchCache.delete("/blog/post-3?c");
+    expect(read()).toBeUndefined();
+    prune();
+    expect(urlTemplates.sources.size).toBe(0);
+    expect(urlTemplates.owners.size).toBe(0);
   });
 
   it("does not commit a shell for another URL deeper than it rebinds", () => {
