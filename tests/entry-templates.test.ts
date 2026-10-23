@@ -645,6 +645,8 @@ describe("App Router generated manifest construction", () => {
       write("feed/@modal/(..)tags/layout.tsx", `${forceDynamic}${page}`);
       write("feed/@modal/(..)tags/[id]/page.tsx", gsp);
       write("tags/[id]/page.tsx", gsp);
+      write("feed/@modal/(.)[slug]/page.tsx");
+      write("feed/[slug]/page.tsx", gsp);
       write("gallery/page.tsx");
       write("gallery/(.)items/[id]/page.tsx", `${forceDynamic}${page}`);
       write("gallery/items/[id]/page.tsx", gsp);
@@ -679,6 +681,11 @@ describe("App Router generated manifest construction", () => {
       expect(summarize("gallery/items/:id")).toEqual([
         undefined,
         [{ sourcePatternParts: ["gallery"], rendersDynamically: true }],
+      ]);
+      // The marker folder's own dynamic segment counts.
+      expect(summarize("feed/:slug")).toEqual([
+        undefined,
+        [{ sourcePatternParts: ["feed"], rendersDynamically: true }],
       ]);
       expect(summarize("feed")).toEqual([undefined, undefined]);
       expect(toLinkPrefetchRoutes(graph.routes).some((route) => route.intercepts)).toBe(false);

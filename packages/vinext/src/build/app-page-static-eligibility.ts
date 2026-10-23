@@ -131,6 +131,8 @@ export function isAppPageRouteRenderedDynamically(
 
 type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
 
+const INTERCEPTION_MARKER_RE = /^(?:\(\.\.\.\)|\(\.\.\)\(\.\.\)|\(\.\.\)|\(\.\))/;
+
 /**
  * Whether Next.js renders an intercepted page on every request. Next.js builds
  * the intercepting page as its own route (`/feed/(.)photos/[id]`): the
@@ -143,8 +145,11 @@ export function isAppInterceptRenderedDynamically(
   layoutPaths: readonly string[],
   readMdxEsm: ((source: string) => string) | null,
 ): boolean {
-  const routeSegments = intercept.sourcePageSegments;
-  if (!routeSegments) return false;
+  if (!intercept.sourcePageSegments) return false;
+  // The marker isn't part of the segment: `(.)[slug]` is the dynamic `[slug]`.
+  const routeSegments = intercept.sourcePageSegments.map((segment) =>
+    segment.replace(INTERCEPTION_MARKER_RE, ""),
+  );
   try {
     const pageDir = path.dirname(intercept.pagePath);
     const layoutsByPosition = new Map<number, string>();

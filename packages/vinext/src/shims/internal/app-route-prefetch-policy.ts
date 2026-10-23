@@ -12,7 +12,7 @@
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
 import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
 import { matchRoutePatternPrefix } from "../../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../../routing/utils.js";
+import { splitPathSegments } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -97,7 +97,9 @@ function resolveRendersDynamically(
   interceptionContext: string | null,
 ): boolean {
   if (interceptionContext !== null && route.intercepts) {
-    const contextParts = splitPathnameForRouteMatch(interceptionContext);
+    // Raw segments, as the server's intercept gate matches the still-encoded
+    // source: `/%61dmin` doesn't claim an `/admin` intercept.
+    const contextParts = splitPathSegments(interceptionContext);
     const matching = route.intercepts.filter((intercept) =>
       matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
     );

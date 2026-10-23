@@ -622,7 +622,8 @@ describe("Link App Router prefetch mode", () => {
         false,
       );
       // Without a matching context the target page renders.
-      for (const context of [null, "/feedback", "/elsewhere"]) {
+      // The server matches the still-encoded source, so `/%66eed` isn't `/feed`.
+      for (const context of [null, "/feedback", "/elsewhere", "/%66eed"]) {
         expect(resolveAutoAppRoutePrefetch("/photos/1", context).cacheForNavigation).toBe(true);
       }
       // `● /feed/(..)posts/[id]`: the modal is static even though the target is not.
