@@ -790,6 +790,51 @@ describe("init — basic functionality", () => {
     });
   });
 
+  it.each([false, true])(
+    "writes the empty-stub.js that native-module aliases point at (legacy: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app", extraPkg: { dependencies: { satori: "^0.13.0" } } });
+
+      const { result } = await runInit(tmpDir, {
+        cloudflare: {
+          legacyWrangler,
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+        },
+      });
+
+      expect(readFile(tmpDir, "vite.config.ts")).toContain(
+        '"satori": path.resolve(__dirname, "empty-stub.js")',
+      );
+      expect(readFile(tmpDir, "empty-stub.js")).toContain("export default {};");
+      expect(result.generatedPlatformFiles).toContain("empty-stub.js");
+    },
+  );
+
+  it("keeps an existing empty-stub.js", async () => {
+    setupProject(tmpDir, { router: "app", extraPkg: { dependencies: { sharp: "^0.34.0" } } });
+    writeFile(tmpDir, "empty-stub.js", "export default function sharpStub() {}\n");
+
+    const { result } = await runInit(tmpDir, {
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+
+    expect(readFile(tmpDir, "empty-stub.js")).toBe("export default function sharpStub() {}\n");
+    expect(result.generatedPlatformFiles).not.toContain("empty-stub.js");
+  });
+
+  it("does not write empty-stub.js when no native modules are stubbed", async () => {
+    setupProject(tmpDir, { router: "app" });
+
+    const { result } = await runInit(tmpDir, {
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+
+    expect(fs.existsSync(path.join(tmpDir, "empty-stub.js"))).toBe(false);
+    expect(result.generatedPlatformFiles).not.toContain("empty-stub.js");
+  });
+
   it("generates a collocated Response Store Wrangler config", async () => {
     setupProject(tmpDir, { router: "app" });
 
