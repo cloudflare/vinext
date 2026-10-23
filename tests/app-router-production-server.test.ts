@@ -2979,7 +2979,7 @@ describe("App Router Production server (startProdServer)", () => {
     // assertion next to the action round-trip so the test proves both halves:
     // the payload uses the server-reference encoding and the decoded reference
     // resolves through vinext's production manifest below.
-    expect(html).toContain('\\"getDate\\":\\"$h');
+    expect(html).toContain('"getDate":"$h');
 
     // Cache references keep plugin-rsc's module key while replacing the
     // derivable export name with an independently keyed alias.
@@ -2994,7 +2994,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(html).not.toContain(capturedScopeValue);
     const encryptedBoundArgs = [
       ...new Set(
-        [...html.matchAll(/[0-9a-f]+:\\"([A-Za-z0-9+/=]{64,})\\"/g)].map((match) => match[1]),
+        [...html.matchAll(/[0-9a-f]+:"([A-Za-z0-9+/=]{64,})"/g)].map((match) => match[1]),
       ),
     ];
     expect(encryptedBoundArgs).toHaveLength(2);

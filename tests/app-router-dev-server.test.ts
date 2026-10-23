@@ -1699,10 +1699,10 @@ describe("App Router integration", () => {
       contentIndex,
     );
     expect(html).not.toContain("<h2>Local found boundary</h2>");
-    const flightText = [
-      ...html.matchAll(/<script[^>]*>[^<]*\.rsc\.push\("([\s\S]*?)"\)<\/script>/g),
-    ]
-      .map((match) => match[1])
+    const flightText = html
+      .split('<script type="vinext/rsc"')
+      .slice(1)
+      .map((part) => part.slice(part.indexOf(">") + 1, part.indexOf("</script>")))
       .join("");
     expect(flightText).toContain("Local found boundary");
     expect(html).toContain('<meta name="robots" content="noindex"');

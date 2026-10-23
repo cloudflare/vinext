@@ -111,8 +111,9 @@ describe('"use client" page component: usePathname() SSR (issue #688)', () => {
     const html = await res.text();
 
     expect(html).toContain(`<script nonce="vinext-test-nonce">${RSC_BOOTSTRAP_PREFIX}`);
+    expect(html).toContain('<script type="vinext/rsc" nonce="vinext-test-nonce">');
     expect(html).toContain(
-      '<script nonce="vinext-test-nonce">((self[Symbol.for("vinext.navigationRuntime")]',
+      '<script nonce="vinext-test-nonce">(e=>e instanceof HTMLScriptElement&&((self[Symbol.for("vinext.navigationRuntime")]',
     );
     expect(html).toContain(".rsc.push(");
     expect(html).toContain(".done=true");
