@@ -33,7 +33,9 @@ const unreadWrappers = ((globalThis as Record<PropertyKey, unknown>)[UNREAD_WRAP
  * callbacks run innermost first, and a layer sees the error an inner layer's
  * callback threw as its stream error. Cancel callbacks run outermost first.
  * As with the pipe, each layer's callbacks run in the async context that
- * added them: cleanup reads and clears request-scoped state, while the
+ * added them, and the source is read and cancelled in the context of the
+ * first layer. Cleanup reads and clears request-scoped state, and spans the
+ * source starts while producing chunks need their request parent, but the
  * consumer (the runtime sending the body) reads from outside that scope.
  */
 export function deferUntilStreamConsumed(
@@ -80,24 +82,26 @@ export function deferUntilStreamConsumed(
     {
       pull(controller) {
         unreadWrappers.delete(wrapped);
-        return reader.read().then(
-          ({ done, value }) => {
-            if (!done) {
-              controller.enqueue(value);
-              return;
-            }
-            if (settled) return;
-            settled = true;
-            const failure = finish(undefined);
-            if (failure) controller.error(failure.error);
-            else controller.close();
-          },
-          (error: unknown) => {
-            if (settled) return;
-            settled = true;
-            controller.error(finish({ error })?.error);
-          },
-        );
+        return layer
+          .runInCreationContext(() => reader.read())
+          .then(
+            ({ done, value }) => {
+              if (!done) {
+                controller.enqueue(value);
+                return;
+              }
+              if (settled) return;
+              settled = true;
+              const failure = finish(undefined);
+              if (failure) controller.error(failure.error);
+              else controller.close();
+            },
+            (error: unknown) => {
+              if (settled) return;
+              settled = true;
+              controller.error(finish({ error })?.error);
+            },
+          );
       },
       cancel(reason) {
         unreadWrappers.delete(wrapped);

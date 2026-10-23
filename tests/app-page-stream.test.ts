@@ -406,6 +406,35 @@ describe("app page stream helpers", () => {
     expect(seen).toEqual(["outer tracing", "inner render", "source render"]);
   });
 
+  it("reads the source in the async context that created the wrapper", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const createSource = () => {
+      const body = new Response("page").body!.getReader();
+      return new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const { done, value } = await body.read();
+            seen.push(`source ${als.getStore()}`);
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    };
+    // As in a request handler, the source is created before an await and wrapped after it.
+    const wrapped = await als.run("render", async () => {
+      const source = createSource();
+      await Promise.resolve();
+      return deferUntilStreamConsumed(source, () => {});
+    });
+
+    // The runtime reads the response body from outside the request's context.
+    await expect(new Response(wrapped).text()).resolves.toBe("page");
+    expect(seen).toEqual(["source render", "source render"]);
+  });
+
   it("passes a cleanup failure to the outer layers like separate wrappers would", async () => {
     const calls: string[] = [];
     const inner = deferUntilStreamConsumed(createStream([]), () => {
@@ -447,8 +476,8 @@ describe("app page stream helpers", () => {
 
   it("reuses an unread wrapper from another copy of the module", async () => {
     // The RSC and SSR environments load separate copies of the module.
-    const copy =
-      (await import("../packages/vinext/src/server/defer-until-stream-consumed.js?second-environment")) as typeof import("../packages/vinext/src/server/defer-until-stream-consumed.js");
+    vi.resetModules();
+    const copy = await import("../packages/vinext/src/server/defer-until-stream-consumed.js");
     expect(copy.deferUntilStreamConsumed).not.toBe(deferUntilStreamConsumed);
 
     const calls: string[] = [];
