@@ -116,18 +116,41 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 }
 
 class FakeScriptElement {
-  constructor(readonly text: string) {}
+  constructor(
+    readonly text: string,
+    readonly type = "",
+    readonly previousElementSibling: FakeScriptElement | null = null,
+  ) {}
+}
+
+// Like the DOM, currentScript is a getter on the prototype, which a named
+// property such as <img name="currentScript"> shadows on the instance.
+class FakeDocument {
+  executing: FakeScriptElement | null = null;
+  get currentScript(): FakeScriptElement | null {
+    return this.executing;
+  }
 }
 
 /**
  * Run the scripts in `html` (a run of <script> elements) as a browser parses
  * them: CR and CRLF become LF, a script's content ends at the first "</script"
  * followed by a tag-name terminator, NUL becomes U+FFFD, and the previous
- * script element is the `previousSibling` of `document.currentScript`.
+ * script element is the `previousElementSibling` of `document.currentScript`.
  */
-function runEmbedScripts(html: string, globals: Record<string, unknown> = {}) {
-  const document = { currentScript: null as { previousSibling: FakeScriptElement } | null };
-  const context = createContext({ ...globals, document, HTMLScriptElement: FakeScriptElement });
+function runEmbedScripts(
+  html: string,
+  globals: Record<string, unknown> = {},
+  prepareDocument?: (document: FakeDocument) => void,
+) {
+  const document = new FakeDocument();
+  prepareDocument?.(document);
+  const context = createContext({
+    ...globals,
+    document,
+    Document: FakeDocument,
+    HTMLScriptElement: FakeScriptElement,
+  });
   const input = html.replace(/\r\n?/g, "\n");
   const startTagRe = /<script(\s[^>]*)?>/iy;
   const endTagRe = /<\/script[\t\n\f />]/gi;
@@ -145,11 +168,13 @@ function runEmbedScripts(html: string, globals: Record<string, unknown> = {}) {
     // ends the element elsewhere.
     expect(content).not.toMatch(/<!--|<script/i);
     const text = content.replace(/\0/g, "\uFFFD");
-    if (!startTag![1]?.includes(" type=")) {
-      document.currentScript = { previousSibling: previous! };
+    const type = /\stype="([^"]*)"/.exec(startTag![1] ?? "")?.[1] ?? "";
+    const element = new FakeScriptElement(text, type, previous);
+    if (type === "") {
+      document.executing = element;
       runInContext(text, context);
     }
-    previous = new FakeScriptElement(text);
+    previous = element;
     index = input.indexOf(">", endTag!.index) + 1;
   }
 }
@@ -260,19 +285,46 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     }
   });
 
-  it("does not push the text of page content when document.currentScript is clobbered", async () => {
-    const transform = createRscEmbedTransform(createTextStream(["chunk"]));
+  it("ignores a clobbered document.currentScript", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["0:chunk\n"]));
     const finalScripts = await transform.finalize();
     const self: Record<PropertyKey, unknown> = {};
-    const context = createContext({
-      self,
-      HTMLScriptElement: FakeScriptElement,
-      // As with <a>0:injected</a><img name="currentScript">.
-      document: { currentScript: { previousSibling: { text: "0:injected\n" } } },
+
+    runEmbedScripts(finalScripts, { self }, (document) => {
+      // As with <script type="application/ld+json">…</script><img name="currentScript">.
+      Object.defineProperty(document, "currentScript", {
+        value: {
+          previousElementSibling: new FakeScriptElement("0:injected\n", "application/ld+json"),
+        },
+      });
     });
 
-    const pushScript = finalScripts.slice(finalScripts.indexOf("<script>") + "<script>".length);
-    runInContext(pushScript.slice(0, pushScript.indexOf("</script>")), context);
+    expect(new TextDecoder().decode(readEmbeddedRscBytes(self))).toBe("0:chunk\n");
+  });
+
+  it("only pushes the text of a vinext data block", async () => {
+    const transform = createRscEmbedTransform(createTextStream(["0:chunk\n"]));
+    const finalScripts = await transform.finalize();
+    const self: Record<PropertyKey, unknown> = {};
+    const document = new FakeDocument();
+    const context = createContext({
+      self,
+      document,
+      Document: FakeDocument,
+      HTMLScriptElement: FakeScriptElement,
+    });
+    const pushScriptStart = finalScripts.indexOf("<script>") + "<script>".length;
+    const pushScript = finalScripts.slice(
+      pushScriptStart,
+      finalScripts.indexOf("</script>", pushScriptStart),
+    );
+    document.executing = new FakeScriptElement(
+      pushScript,
+      "",
+      new FakeScriptElement("0:injected\n", "application/ld+json"),
+    );
+
+    runInContext(pushScript, context);
 
     expect(self[Symbol.for("vinext.navigationRuntime")]).toBeUndefined();
   });

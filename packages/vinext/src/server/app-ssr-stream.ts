@@ -145,15 +145,17 @@ export const RSC_DATA_BLOCK_TYPE = "vinext/rsc";
 
 function createNavigationRuntimeRscDataBlockScript(chunk: string): string {
   // The script runs right after its data block is parsed, so text streams in
-  // as it arrives. The instanceof check keeps a clobbered
-  // `document.currentScript` (e.g. <img name="currentScript">) from pushing
-  // the text of page content instead.
+  // as it arrives. Page markup such as <img name="currentScript"> can shadow
+  // `document.currentScript`, so it reads the real getter from
+  // Document.prototype, and it only pushes the text of a vinext data block.
   return (
-    "(e=>e instanceof HTMLScriptElement&&" +
+    '(e=>e instanceof HTMLScriptElement&&e.type==="' +
+    RSC_DATA_BLOCK_TYPE +
+    '"&&' +
     navigationRuntimeRscBootstrapExpression() +
     ".rsc.push(" +
     chunk +
-    "))(document.currentScript.previousSibling)"
+    '))(Object.getOwnPropertyDescriptor(Document.prototype,"currentScript").get.call(document).previousElementSibling)'
   );
 }
 
