@@ -144,6 +144,54 @@ describe("ppr fallback shell cache task tracking", () => {
     state.abortController.abort();
   });
 
+  it("halts a warmup cache task whose arguments resolve after the final render starts", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let resolveInput!: () => void;
+    let reachedAfterInput = false;
+
+    void runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        await waitForPprFallbackShellCacheInput(
+          new Promise<void>((resolve) => (resolveInput = resolve)),
+        );
+        reachedAfterInput = true;
+      }, "default"),
+    );
+    await waitForPprFallbackShellCacheReady(state);
+    preparePprFallbackShellFinalRender(state);
+
+    resolveInput();
+    await delay(5);
+    expect(reachedAfterInput).toBe(false);
+    expect(state.pendingCacheTasks).toBe(0);
+  });
+
+  it("halts a warmup cache task that reaches its arguments after the final render starts", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let startEncoding!: () => void;
+    let reachedAfterInput = false;
+
+    void runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        await new Promise<void>((resolve) => (startEncoding = resolve));
+        await waitForPprFallbackShellCacheInput(Promise.resolve());
+        reachedAfterInput = true;
+      }, "default"),
+    );
+    preparePprFallbackShellFinalRender(state);
+
+    startEncoding();
+    await delay(5);
+    expect(reachedAfterInput).toBe(false);
+    expect(state.pendingCacheTasks).toBe(0);
+  });
+
   it("counts a cache task again once its arguments resolve", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

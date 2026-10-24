@@ -220,35 +220,29 @@ export function trackPprFallbackShellCacheTask<T>(
 export function waitForPprFallbackShellCacheInput<T>(input: Promise<T>): Promise<T> {
   const state = getPprFallbackShellState();
   const task = pprFallbackShellCacheTaskStackAls.getStore()?.at(-1);
-  if (
-    state === null ||
-    task === undefined ||
-    !task.isPending ||
-    task.isAwaitingInput ||
-    task.epoch !== state.cacheEpoch
-  ) {
+  if (state === null || task === undefined || !task.isPending || task.isAwaitingInput) {
     return input;
   }
+  // Whether the task may continue: one from an aborted warmup stays halted, so
+  // it can't fetch or fill the resume data cache while the final render runs.
+  if (task.epoch !== state.cacheEpoch) return new Promise<T>(() => {});
 
   task.isAwaitingInput = true;
   state.pendingCacheTasks--;
   scheduleCacheReadyIfSettled(state);
   const resumeTask = () => {
-    if (!task.isAwaitingInput) return;
+    const wasAwaitingInput = task.isAwaitingInput;
     task.isAwaitingInput = false;
-    if (task.epoch !== state.cacheEpoch) return;
+    if (task.epoch !== state.cacheEpoch) return false;
+    // An ignored task no longer counts.
+    if (!wasAwaitingInput) return true;
     cancelPendingCacheReady(state);
     state.pendingCacheTasks++;
+    return true;
   };
   return input.then(
-    (value) => {
-      resumeTask();
-      return value;
-    },
-    (error: unknown) => {
-      resumeTask();
-      throw error;
-    },
+    (value) => (resumeTask() ? value : new Promise<T>(() => {})),
+    (error: unknown) => (resumeTask() ? Promise.reject(error) : new Promise<T>(() => {})),
   );
 }
 
