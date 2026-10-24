@@ -478,6 +478,13 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector.js",
 ]);
 
+// vinext's shims stay out of the optimizer (see shimOptimizeDepsExclude), so an
+// installed vinext serves them raw from node_modules, and Vite does not
+// pre-bundle the bare imports of files inside node_modules. next/image imports
+// this CommonJS-only package, which would then reach the browser without
+// its default export.
+const CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze(["vinext > ipaddr.js"]);
+
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
 const VINEXT_GENERATED_DIR_RE = /(?:^|[/\\])\.vinext(?:[/\\]|$)/;
@@ -1994,6 +2001,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
+  // VINEXT_OPTIMIZE_DEPS_EXCLUDE plus every bare specifier vinext resolves to
+  // its own modules — populated in config() alongside nextShimMap.
+  let shimOptimizeDepsExclude: readonly string[] = VINEXT_OPTIMIZE_DEPS_EXCLUDE;
 
   /**
    * Generate the virtual SSR server entry module.
@@ -3254,8 +3264,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
         // Some libraries (for example `nuqs`) import `next/navigation.js`
-        // directly; aliasing the `.js` form ensures optimizeDeps pre-bundles
-        // vinext's shim instead of real Next.
+        // directly; aliasing the `.js` form ensures it reaches vinext's shim
+        // instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
             ...Object.fromEntries(
@@ -3355,6 +3365,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ]
               : [[k, v]],
           ),
+        );
+
+        // An installed vinext lives in node_modules, so the dep optimizer would
+        // pre-bundle these specifiers (an app's `next/link`, or a library's
+        // `next/navigation.js`) into a copy of the shim and its module state:
+        // router state, prefetch caches and instrumentation hooks. Excluding
+        // them keeps one instance, the one vinext's runtime imports. Excluded
+        // imports inside pre-bundled libraries stay bare and reach the shim.
+        shimOptimizeDepsExclude = mergeOptimizeDepsExclude(
+          VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+          Object.keys(nextShimMap),
+          [..._reactServerShims.keys()],
         );
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
@@ -4045,25 +4067,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Merge incoming excludes into the top-level optimizeDeps so
         // Pages Router builds (which don't set per-environment configs)
         // also preserve entries from earlier plugins.
-        // Build a rolldown plugin for shims resolved via resolveId instead
-        // of resolve.alias. The dep optimizer's bundler uses its own
-        // rolldown pipeline (not the Vite plugin pipeline), so it needs
-        // these aliases injected separately. See #834.
-        const depOptimizeAliasPlugin = {
-          name: "vinext:dep-optimize-alias",
-          resolveId(id: string) {
-            const shimBase = _reactServerShims.get(id);
-            if (shimBase !== undefined) {
-              return resolveShimModulePath(shimsDir, shimBase);
-            }
-          },
-        };
         const depOptimizeNodeEnvOptions = getDepOptimizeNodeEnvOptions(nodeEnvDefine);
         // Apply the define to the default optimizer and explicitly to server
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
+          exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
             "@tailwindcss/oxide",
           ]),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
@@ -4071,7 +4080,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
             // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
-            plugins: [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
+            plugins: [commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir
@@ -4195,11 +4204,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   additionalClientOptimizeIncludes.push(include);
                 } catch {}
               }
-              // The private Link reference also imports next/link on hydration.
-              // Discover it before the browser starts to avoid reloading React.
-              if (!excluded.includes("next") && !excluded.includes("next/link")) {
-                additionalClientOptimizeIncludes.push("next/link");
-              }
             } catch {}
           }
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
@@ -4255,7 +4259,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge, but not its vendored
                 // static.edge import, which it rewrites to this package specifier.
@@ -4335,7 +4339,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // while the renderer and client modules use the native one.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  shimOptimizeDepsExclude,
                   ["ipaddr.js"],
                   userSsrExternal === true || externalizeSsrReactInDev
                     ? SSR_EXTERNAL_REACT_ENTRIES
@@ -4379,7 +4383,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // causing MISSING_EXPORT build failures).
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  shimOptimizeDepsExclude,
                   nextServerExternal,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
@@ -4497,12 +4501,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Excluding it from the SSR dep optimizer avoids the "new
                 // dependencies optimized" full reload the first time a Pages
                 // Router page renders an <Image>.
-                exclude: mergeOptimizeDepsExclude(
-                  incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-                  ["ipaddr.js"],
-                  Object.keys(nextShimMap),
-                ),
+                exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
+                  "ipaddr.js",
+                ]),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -4589,7 +4590,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
           config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
             config.optimizeDeps.exclude ?? [],
-            VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            shimOptimizeDepsExclude,
             PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
           );
         }
@@ -4627,20 +4628,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!config.server.middlewareMode) applyDevServerDefaults(config.server, {});
           }
         }
-        if (isServeCommand && (hasAppDir || (hasCloudflarePlugin && hasPagesDir))) {
+        if (isServeCommand) {
           // Wait for all config/configEnvironment hooks before adding optional
           // defaults, so other plugins' explicit includes and opt-outs win.
           // Optimizers are created afterward, so these are still startup includes.
           const optionalWarnings = new Set<string>();
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
-            const optionalIncludes = hasAppDir
-              ? name === "client" && !optimizer.noDiscovery
-                ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : []
-              : name !== "client"
-                ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                : [];
+            const optionalIncludes =
+              name === "client"
+                ? optimizer.noDiscovery
+                  ? []
+                  : [
+                      ...(hasAppDir ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE : []),
+                      ...CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE,
+                    ]
+                : !hasAppDir && hasCloudflarePlugin && hasPagesDir
+                  ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+                  : [];
             for (const id of optionalIncludes) {
               const depId = id.slice(id.lastIndexOf(">") + 1).trim();
               if (
@@ -4931,7 +4936,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // The RSC next/image entry references Image as vinext/shims/image.
           // Elsewhere that is next/image, so the browser and SSR load one image
-          // module, the dep optimizer's when it has pre-bundled next/image.
+          // module.
           if (cleanId === "vinext/shims/image" && this.environment?.name !== "rsc") {
             return this.resolve("next/image", importer, { skipSelf: true });
           }

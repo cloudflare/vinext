@@ -347,7 +347,7 @@ describe("next-intl dependency optimization", () => {
     "@formatjs/fast-memoize",
     "intl-messageformat",
   ];
-  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react"];
   const legacyClientDependencies = [
     "next-intl > use-intl/_IntlProvider",
     "next-intl > use-intl/_useLocale",
@@ -419,7 +419,7 @@ describe("next-intl dependency optimization", () => {
       scenario: "explicit exclusions",
       excluded: true,
       expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
-      clientExpected: ["next/link"],
+      clientExpected: [],
     },
     {
       scenario: "dependencies unavailable from root",
@@ -491,7 +491,7 @@ describe("next-intl dependency optimization", () => {
             client: {
               optimizeDeps: {
                 noDiscovery: options.clientNoDiscovery,
-                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+                exclude: options.clientExcluded ? ["use-intl/react"] : [],
               },
             },
             rsc: {
@@ -513,6 +513,8 @@ describe("next-intl dependency optimization", () => {
           clientIncludes.includes(id),
         ),
       ).toEqual(options.clientExpected);
+      // An optimized next/link would carry its own copy of vinext's navigation state.
+      expect(clientIncludes).not.toContain("next/link");
       for (const name of ["client", "ssr"]) {
         const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
         expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
@@ -532,6 +534,21 @@ describe("optimizeDeps.exclude for vinext", () => {
     "vinext/shims/script",
     "vinext/shims/slot",
     "vinext/shims/offline",
+  ];
+  // Bare specifiers vinext resolves to its shims. An installed vinext lives in
+  // node_modules, so the optimizer would otherwise pre-bundle a second copy.
+  const nextShimExcludes = [
+    "next/link",
+    "next/link.js",
+    "next/navigation",
+    "next/navigation.js",
+    "next/error",
+    "next/form",
+    "next/script",
+    "next/router",
+    "next/headers",
+    "next/dist/client/components/navigation",
+    "next/dist/shared/lib/app-router-context.shared-runtime",
   ];
 
   it("excludes vinext at top level for Pages Router builds", async () => {
@@ -570,6 +587,10 @@ describe("optimizeDeps.exclude for vinext", () => {
       });
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      for (const shimExclude of nextShimExcludes) {
+        expect(result.optimizeDeps?.exclude).toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+      }
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
@@ -701,7 +722,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
-      for (const shimExclude of rscClientShimExcludes) {
+      for (const shimExclude of [...rscClientShimExcludes, ...nextShimExcludes]) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
