@@ -217,6 +217,33 @@ describe("ppr fallback shell cache task tracking", () => {
     expect(state.pendingCacheTasks).toBe(0);
   });
 
+  it("halts an ignored cache task whose arguments resolve", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let resolveInput!: () => void;
+    let reachedAfterInput = false;
+
+    void runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        const input = waitForPprFallbackShellCacheInput(
+          new Promise<void>((resolve) => (resolveInput = resolve)),
+        );
+        // Reading fallback params leaves the task out of the shell.
+        void createPprFallbackShellSuspensePromise("`params`");
+        await input;
+        reachedAfterInput = true;
+      }, "default"),
+    );
+
+    resolveInput();
+    await delay(5);
+    expect(reachedAfterInput).toBe(false);
+    expect(state.pendingCacheTasks).toBe(0);
+    state.abortController.abort();
+  });
+
   it("counts a cache task again once its arguments resolve", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

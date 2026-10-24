@@ -233,11 +233,9 @@ export function waitForPprFallbackShellCacheInput<T>(input: Promise<T>): Promise
   state.pendingCacheTasks--;
   scheduleCacheReadyIfSettled(state);
   const resumeTask = () => {
-    const wasAwaitingInput = task.isAwaitingInput;
     task.isAwaitingInput = false;
-    if (isHalted()) return false;
-    // An ignored task no longer counts.
-    if (!wasAwaitingInput) return true;
+    // An ignored task reads fallback params, so it stays halted, uncounted.
+    if (isHalted() || task.isIgnored) return false;
     cancelPendingCacheReady(state);
     state.pendingCacheTasks++;
     return true;
