@@ -169,6 +169,31 @@ describe("ppr fallback shell cache task tracking", () => {
     expect(state.pendingCacheTasks).toBe(0);
   });
 
+  it("halts a warmup cache task whose arguments resolve once the warmup aborts", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let resolveInput!: () => void;
+    let reachedAfterInput = false;
+
+    void runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        await waitForPprFallbackShellCacheInput(
+          new Promise<void>((resolve) => (resolveInput = resolve)),
+        );
+        reachedAfterInput = true;
+      }, "default"),
+    );
+    await waitForPprFallbackShellCacheReady(state);
+    // The warmup drains its stream between the abort and the final render.
+    state.abortController.abort();
+
+    resolveInput();
+    await delay(5);
+    expect(reachedAfterInput).toBe(false);
+  });
+
   it("halts a warmup cache task that reaches its arguments after the final render starts", async () => {
     const state = createPprFallbackShellState({
       fallbackParamNames: ["slug"],

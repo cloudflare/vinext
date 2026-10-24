@@ -223,9 +223,11 @@ export function waitForPprFallbackShellCacheInput<T>(input: Promise<T>): Promise
   if (state === null || task === undefined || !task.isPending || task.isAwaitingInput) {
     return input;
   }
-  // Whether the task may continue: one from an aborted warmup stays halted, so
+  // Whether the task may continue: one from an aborted render stays halted, so
   // it can't fetch or fill the resume data cache while the final render runs.
-  if (task.epoch !== state.cacheEpoch) return new Promise<T>(() => {});
+  const renderSignal = state.abortController.signal;
+  const isHalted = () => renderSignal.aborted || task.epoch !== state.cacheEpoch;
+  if (isHalted()) return new Promise<T>(() => {});
 
   task.isAwaitingInput = true;
   state.pendingCacheTasks--;
@@ -233,7 +235,7 @@ export function waitForPprFallbackShellCacheInput<T>(input: Promise<T>): Promise
   const resumeTask = () => {
     const wasAwaitingInput = task.isAwaitingInput;
     task.isAwaitingInput = false;
-    if (task.epoch !== state.cacheEpoch) return false;
+    if (isHalted()) return false;
     // An ignored task no longer counts.
     if (!wasAwaitingInput) return true;
     cancelPendingCacheReady(state);
