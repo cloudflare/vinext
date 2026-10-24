@@ -155,8 +155,8 @@ catalogs:
       specifier: 5.3.2
       version: 5.3.2
     image-size:
-      specifier: 2.0.2
-      version: 2.0.2
+      specifier: 2.0.4
+      version: 2.0.4
     ipaddr.js:
       specifier: ^2.1.0
       version: 2.4.0
@@ -1330,7 +1330,7 @@ importers:
         version: 5.3.2
       image-size:
         specifier: 'catalog:'
-        version: 2.0.2
+        version: 2.0.4
       pathslash:
         specifier: 'catalog:'
         version: 0.1.0
@@ -8885,6 +8885,11 @@ packages:
   image-size@2.0.2:
     resolution: {integrity: sha512-IRqXKlaXwgSMAMtpNzZa1ZAe8m+Sa1770Dhk8VkSsP9LS+iHD62Zd8FQKs8fbPiagBE7BzoFX23cxFnwshpV6w==}
     engines: {node: '>=16.x'}
+    hasBin: true
+
+  image-size@2.0.4:
+    resolution: {integrity: sha512-QRUkFFsRV/6fuESxb9Vkq+a0LkSrgKXuc2NEqfikiXxxN/G3tjWt5EVUlMaImRBZRZK/jRBEbYvpPYZL8t08Zw==}
+    engines: {node: '>=18'}
     hasBin: true
 
   immutable@5.1.6:
@@ -17363,6 +17368,8 @@ snapshots:
   ignore@7.0.9: {}
 
   image-size@2.0.2: {}
+
+  image-size@2.0.4: {}
 
   immutable@5.1.6: {}
 
