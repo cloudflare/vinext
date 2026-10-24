@@ -3540,6 +3540,59 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("never makes a navigation wait on a route-tree-gated Link prefetch during the cooldown", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/root-param/aaa",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: true,
+            patternParts: ["root-param", ":value"],
+            isDynamic: true,
+            hasRootParams: true,
+          },
+        ],
+      },
+    });
+
+    try {
+      let releaseRouteTree: ((response: Response) => void) | undefined;
+      result.fetch.mockImplementationOnce(
+        () =>
+          new Promise<Response>((resolve) => {
+            releaseRouteTree = resolve;
+          }),
+      );
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const { consumePrefetchResponseForNavigation, getPrefetchCache } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const [cacheKey] = Array.from(getPrefetchCache().entries()).find(
+        ([, entry]) => entry.prefetchKind === "navigation",
+      )!;
+      const { startAppPrefetchRevalidationCooldown } =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      startAppPrefetchRevalidationCooldown();
+      // The payload stage will be held, so the navigation fetches its own
+      // response instead of waiting out the cooldown.
+      const consumed = await Promise.race([
+        consumePrefetchResponseForNavigation(cacheKey, null, null),
+        new Promise((resolve) => setTimeout(() => resolve("waited"), 100)),
+      ]);
+      expect(consumed).toBeNull();
+
+      releaseRouteTree?.(createFlightResponse(""));
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    } finally {
+      await flushPrefetchTasks();
+      result.restoreNodeEnv();
+    }
+  });
+
   it("upgrades automatic dynamic links to full prefetch on unstable_dynamicOnHover intent", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({

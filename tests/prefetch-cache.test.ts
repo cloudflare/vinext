@@ -2082,6 +2082,44 @@ describe("prefetch cache eviction", () => {
     }
   });
 
+  it("fetches instead of waiting on a route-tree-gated router.prefetch during the cooldown", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+    const routeTree = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockImplementationOnce(() => routeTree.promise);
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/aaa");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const [cacheKey, entry] = Array.from(getPrefetchCache().entries()).find(
+      ([, candidate]) => candidate.prefetchKind === "navigation",
+    )!;
+    expect(entry.outcome).toBe("pending");
+
+    const queue = await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+    queue.startAppPrefetchRevalidationCooldown();
+    // The payload stage will be held, so the navigation fetches its own
+    // response instead of waiting out the cooldown.
+    const consumed = await Promise.race([
+      consumePrefetchResponseForNavigation(cacheKey, null, null),
+      new Promise((resolve) => setTimeout(() => resolve("waited"), 100)),
+    ]);
+    expect(consumed).toBeNull();
+
+    routeTree.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settlePrefetchSetup();
+  });
+
   it("fetches instead of sending a queued prefetch held by the revalidation cooldown", async () => {
     vi.useFakeTimers();
     try {

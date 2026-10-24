@@ -1065,6 +1065,8 @@ describe("Form prefetch prop", () => {
         }
         expect(fetch).toHaveBeenCalledTimes(sent);
       } finally {
+        // End the cooldown even after a failure; this file shares one queue.
+        await vi.advanceTimersByTimeAsync(300);
         vi.useRealTimers();
       }
     },

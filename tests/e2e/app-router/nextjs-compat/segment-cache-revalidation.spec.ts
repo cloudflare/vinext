@@ -88,8 +88,12 @@ test.describe("Next.js compat: segment cache revalidation", () => {
       await page.clock.fastForward(150);
       await expect.poll(() => greetingRequests.length).toBe(1);
       await greetingRequests[0].response();
+      // Exactly one re-prefetch.
+      await page.waitForTimeout(200);
+      expect(greetingRequests).toHaveLength(1);
 
       // The page is fully prefetched, so navigating makes no requests.
+      await page.clock.resume();
       greetingRequests.length = 0;
       await page.locator(link).click();
       await expect(page.locator("#greeting")).toHaveText("Hello");
