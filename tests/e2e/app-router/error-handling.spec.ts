@@ -558,22 +558,23 @@ test.describe("Not Found", () => {
       await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
       await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
       await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
-      // The route's own title, never a not-found's.
-      await expect(page, id).toHaveTitle("Team page");
+      // The route's own title, where Turbopack's slot page's wins over the
+      // page's, never a not-found's.
+      await expect(page, id).toHaveTitle("Team slot page");
     }
     // Both boundaries hydrate caught, so React doesn't recover by client rendering.
     expect(errors).toEqual([]);
 
     await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
     await waitForAppRouterHydration(page);
-    await expect(page).toHaveTitle("Team page");
+    await expect(page).toHaveTitle("Team slot page");
     for (const id of ["both", "late"]) {
       await page.getByRole("link", { name: `Team ${id}` }).click();
       await expect(page).toHaveURL(new RegExp(`/team/${id}$`));
       await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
       await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
       await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
-      await expect(page, id).toHaveTitle("Team page");
+      await expect(page, id).toHaveTitle("Team slot page");
     }
   });
 
@@ -634,10 +635,33 @@ test.describe("Not Found", () => {
     // The source page stays behind the modal.
     await expect(page.locator("#slot-own-home")).toBeVisible();
     await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+    // Like Next.js, a slot intercept keeps the source route's title.
+    await expect(page).toHaveTitle("Slot own layout");
 
     await page.getByRole("link", { name: "Item ok" }).click();
     await expect(page.locator("#slot-own-modal-item")).toHaveText("Modal item ok");
     await expect(page.locator("#slot-own-modal-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
+
+    // The intercepted route's own document uses its page's title.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/item/ok`);
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Item page");
+  });
+
+  test("a slot intercept with no page before its slot takes the intercepting page's title", async ({
+    page,
+  }) => {
+    // Next.js 16.2.7 (Turbopack) titles this navigation by the intercept:
+    // its head walk skips `children`, which renders nothing here.
+    await page.goto(`${BASE}/nextjs-compat/slot-only-intercept/first`);
+    await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Slot only first");
+
+    await page.getByRole("link", { name: "Photo" }).click();
+    await expect(page).toHaveURL(/\/slot-only-intercept\/photo$/);
+    await expect(page.locator("#slot-only-bar-intercept")).toBeVisible();
+    await expect(page).toHaveTitle("Slot only photo intercept");
   });
 });
 
