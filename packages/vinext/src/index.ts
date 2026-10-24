@@ -13,7 +13,13 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createIdResolver, createLogger, isRunnableDevEnvironment, transformWithOxc } from "vite";
+import {
+  createIdResolver,
+  createLogger,
+  esmExternalRequirePlugin,
+  isRunnableDevEnvironment,
+  transformWithOxc,
+} from "vite";
 import {
   hasImportAttributes,
   isTypeOnlyImport,
@@ -478,12 +484,18 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector.js",
 ]);
 
-// vinext's shims stay out of the optimizer (see shimOptimizeDepsExclude), so an
-// installed vinext serves them raw from node_modules, and Vite does not
-// pre-bundle the bare imports of files inside node_modules. next/image imports
-// this CommonJS-only package, which would then reach the browser without
-// its default export.
-const CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze(["vinext > ipaddr.js"]);
+// The third-party imports of vinext's client shims. The shims stay out of the
+// optimizer (see shimOptimizeDepsExclude), so the dependency scan never crawls
+// them. An installed vinext serves them raw from node_modules, and Vite does not
+// pre-bundle the bare imports of files inside node_modules: ipaddr.js is
+// CommonJS-only and would reach the browser without its default export. A
+// linked vinext lives outside node_modules, so Vite would discover these on
+// the first request that renders next/image or next/web-vitals and reload.
+const CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "vinext > @unpic/react",
+  "vinext > ipaddr.js",
+  "vinext > web-vitals",
+]);
 
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 const RSC_ENVIRONMENTS = new Set(["rsc", "ssr", "client"]);
@@ -2004,6 +2016,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // VINEXT_OPTIMIZE_DEPS_EXCLUDE plus every bare specifier vinext resolves to
   // its own modules — populated in config() alongside nextShimMap.
   let shimOptimizeDepsExclude: readonly string[] = VINEXT_OPTIMIZE_DEPS_EXCLUDE;
+  // Server optimizers pre-bundle for platform "node" (or "neutral" on
+  // Cloudflare), where Vite keeps require() calls to excluded ids instead of
+  // turning them into imports as it does for the browser. A CommonJS library's
+  // require("next/headers") would then load real Next or fail in the Worker.
+  const createShimRequirePlugin = () =>
+    esmExternalRequirePlugin({ external: [...shimOptimizeDepsExclude] });
 
   /**
    * Generate the virtual SSR server entry module.
@@ -4068,6 +4086,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Pages Router builds (which don't set per-environment configs)
         // also preserve entries from earlier plugins.
         const depOptimizeNodeEnvOptions = getDepOptimizeNodeEnvOptions(nodeEnvDefine);
+        const serverDepOptimizeOptions = {
+          ...depOptimizeNodeEnvOptions,
+          rolldownOptions: {
+            ...depOptimizeNodeEnvOptions.rolldownOptions,
+            plugins: [createShimRequirePlugin()],
+          },
+        };
         // Apply the define to the default optimizer and explicitly to server
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
@@ -4272,7 +4297,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     "react-server-dom-webpack/static.edge",
                   ]),
                 ],
-                ...depOptimizeNodeEnvOptions,
+                ...serverDepOptimizeOptions,
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
@@ -4355,7 +4380,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ? {}
                   : { include: ["react-dom/server", "react-dom/static"] }),
                 entries: optimizeEntries,
-                ...depOptimizeNodeEnvOptions,
+                ...serverDepOptimizeOptions,
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
@@ -4504,7 +4529,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
                   "ipaddr.js",
                 ]),
-                ...depOptimizeNodeEnvOptions,
+                ...serverDepOptimizeOptions,
               },
               build: {
                 outDir: "dist/server",
@@ -4593,6 +4618,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             shimOptimizeDepsExclude,
             PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
           );
+          config.optimizeDeps.rolldownOptions ??= {};
+          config.optimizeDeps.rolldownOptions.plugins = [
+            config.optimizeDeps.rolldownOptions.plugins,
+            createShimRequirePlugin(),
+          ];
         }
 
         const configuredExtensions =

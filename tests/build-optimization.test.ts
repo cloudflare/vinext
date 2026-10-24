@@ -1169,7 +1169,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(client.optimizeDeps.include).toEqual([
         "some-lib",
         "some-lib > nested-dep",
+        "vinext > @unpic/react",
         "vinext > ipaddr.js",
+        "vinext > web-vitals",
       ]);
       expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
     } finally {
