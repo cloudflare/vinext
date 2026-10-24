@@ -246,6 +246,7 @@ import {
 } from "./build/public-dir-conflict.js";
 import { renderVinextBuiltUrl } from "./utils/built-asset-url.js";
 import { asyncHooksStubPlugin } from "./plugins/async-hooks-stub.js";
+import { createClientCompileHintsPlugin } from "./plugins/client-compile-hints.js";
 import { clientReferenceDedupPlugin } from "./plugins/client-reference-dedup.js";
 import { dataUrlCssPlugin } from "./plugins/css-data-url.js";
 import { createCssModuleImportCompatibilityPlugin } from "./plugins/css-module-imports.js";
@@ -5963,6 +5964,11 @@ export const loadServerActionClient = ${
         },
       },
     },
+    createClientCompileHintsPlugin(
+      (id) =>
+        isVirtualEntryFacade(id, VIRTUAL_APP_BROWSER_ENTRY) ||
+        isVirtualEntryFacade(id, VIRTUAL_CLIENT_ENTRY),
+    ),
     // Stub node:async_hooks in client builds — see src/plugins/async-hooks-stub.ts
     asyncHooksStubPlugin,
     createInstrumentationClientTransformPlugin(
