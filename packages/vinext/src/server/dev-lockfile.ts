@@ -18,6 +18,9 @@
  *   (`process.kill(pid, 0)`), which is good enough for the dev-server
  *   "another server is running" use case. Race conditions on lock acquisition
  *   are tolerated: at worst, two dev servers race and one fails to bind a port.
+ *   Unlike a `flock()`, the lock file survives a hard restart, so a lock
+ *   written before the current boot is treated as stale whatever its PID: the
+ *   PID may now belong to an unrelated process.
  * - Lock file lives in `<root>/.vinext/dev/lock.json` (mirroring Next.js'
  *   `.next/dev/lock` layout). `.vinext/` is already used by the fonts plugin
  *   to cache self-hosted Google Fonts, so this re-uses the same project-local
@@ -25,6 +28,7 @@
  */
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "pathslash";
 
 const LOCK_DIR_RELATIVE = path.join(".vinext", "dev");
@@ -109,6 +113,28 @@ export function isPidAlive(pid: number): boolean {
 }
 
 /**
+ * Slack for the boot-time comparison in `predatesCurrentBoot`. `os.uptime()`
+ * has whole-second resolution on some platforms (macOS reads
+ * `kern.boottime`), and NTP can nudge the wall clock after boot, so the
+ * derived boot time is only accurate to a few seconds.
+ */
+const BOOT_TIME_TOLERANCE_MS = 5_000;
+
+/**
+ * Returns true if a lock with the given `startedAt` was written before the
+ * machine last booted.
+ *
+ * Such a lock was left behind by a session whose exit handler never ran (a
+ * crash, a forced restart, power loss). PIDs restart from the beginning after
+ * a boot, so the lock's PID is often held by an unrelated process, and
+ * `isPidAlive()` alone would report the dead server as running.
+ */
+export function predatesCurrentBoot(startedAt: number): boolean {
+  const bootTime = Date.now() - os.uptime() * 1000;
+  return startedAt < bootTime - BOOT_TIME_TOLERANCE_MS;
+}
+
+/**
  * Writes the lock file with the given content. Creates the parent directory
  * if it doesn't exist.
  *
@@ -178,7 +204,8 @@ type AcquireOptions = {
   /** Initial server info to write. Port/URL may be updated later via `update()`. */
   info: DevServerInfo;
   /**
-   * If a lock file exists but its PID is dead, take over instead of failing.
+   * If a lock file exists but is stale (its PID is dead, or it was written
+   * before the current boot), take over instead of failing.
    * Defaults to `true`. Set to `false` for testing.
    */
   takeOverStale?: boolean;
@@ -217,14 +244,15 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    const alive = isPidAlive(existing.pid);
+    const alive = !predatesCurrentBoot(existing.startedAt) && isPidAlive(existing.pid);
     if (alive) {
       return { ok: false, existing, lockfilePath };
     }
     if (!takeOverStale) {
       return { ok: false, existing, lockfilePath };
     }
-    // Existing entry is stale (dead PID). Fall through and overwrite.
+    // Existing entry is stale (dead PID, or written before this boot). Fall
+    // through and overwrite.
   }
 
   // NB: there is a small TOCTOU window between readLockfile() above and
@@ -262,7 +290,8 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   // (event loop drained, explicit process.exit(), or after the default
   // SIGINT/SIGTERM handlers terminate the process). It does NOT fire on
   // uncaught exceptions or hard crashes (SIGKILL), which is fine: the next
-  // `vinext dev` will detect the dead PID and take over the stale lock.
+  // `vinext dev` will detect the dead PID and take over the stale lock. The
+  // same goes for a machine restart, where the lock predates the new boot.
   //
   // If a future caller installs a custom signal handler that swallows
   // SIGINT/SIGTERM without exiting, the lock would leak — also fine, same

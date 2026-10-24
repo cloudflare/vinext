@@ -553,6 +553,44 @@ export default { plugins: [vinext()] };
     expect(duplicate.stderr).not.toContain("node:events");
   }, 30_000);
 
+  it("takes over a lock left behind before a restart when its PID was reused", async () => {
+    const root = createProject();
+    fs.writeFileSync(
+      path.join(root, "vite.config.ts"),
+      `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
+    );
+    // A lock from before the current boot whose PID now belongs to a live,
+    // unrelated process (this test runner).
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        pid: process.pid,
+        port: 3000,
+        hostname: "localhost",
+        appUrl: "http://localhost:3000",
+        startedAt: Date.now() - os.uptime() * 1000 - 60_000,
+        cwd: root,
+      }),
+    );
+    let stderr = "";
+    child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
+      cwd: root,
+      stdio: "pipe",
+    });
+    child.stderr?.on("data", (chunk) => (stderr += chunk));
+
+    const lock = await waitFor(() => {
+      if (child!.exitCode !== null) {
+        throw new Error(`vite dev exited with ${child!.exitCode}: ${stderr}`);
+      }
+      const current = readLockfile(lockPath);
+      return current && current.pid === child!.pid && current.port > 0 ? current : undefined;
+    });
+    expect(lock.pid).toBe(child.pid);
+  }, 30_000);
+
   it("claims the CLI lifecycle without locking a server that never listens", async () => {
     const root = createProject();
     useViteCliArgv();

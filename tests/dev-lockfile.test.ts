@@ -16,6 +16,7 @@ import {
   formatAlreadyRunningError,
   getLockfilePath,
   isPidAlive,
+  predatesCurrentBoot,
   readLockfile,
   tryAcquireLockfile,
 } from "../packages/vinext/src/server/dev-lockfile.js";
@@ -68,6 +69,21 @@ describe("isPidAlive", () => {
   it("returns false for a very large unused pid", () => {
     // PIDs above the typical kernel max are extremely unlikely to exist.
     expect(isPidAlive(2_147_000_000)).toBe(false);
+  });
+});
+
+/** A `startedAt` one minute before the machine booted. */
+function beforeBoot(): number {
+  return Date.now() - os.uptime() * 1000 - 60_000;
+}
+
+describe("predatesCurrentBoot", () => {
+  it("returns false for a lock written during this boot", () => {
+    expect(predatesCurrentBoot(Date.now())).toBe(false);
+  });
+
+  it("returns true for a lock written before this boot", () => {
+    expect(predatesCurrentBoot(beforeBoot())).toBe(true);
   });
 });
 
@@ -162,6 +178,37 @@ describe("tryAcquireLockfile", () => {
     if (!result.ok) return;
     expect(readLockfile(lockPath)).toEqual(info);
     result.lockfile.release();
+  });
+
+  it("takes over a lock written before the current boot even when its PID is alive", () => {
+    // After a restart the old server's PID is often reused by an unrelated
+    // process, so the PID check alone would report the lock as held.
+    const stale = baseInfo({ pid: process.pid, startedAt: beforeBoot(), cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const info = baseInfo({ pid: process.pid, port: 4000, cwd: root });
+    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(readLockfile(lockPath)).toEqual(info);
+    result.lockfile.release();
+  });
+
+  it("does not take over a lock written before the current boot when takeOverStale is false", () => {
+    const stale = baseInfo({ pid: process.pid, startedAt: beforeBoot(), cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root }),
+      takeOverStale: false,
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(false);
   });
 
   it("does not take over stale entries when takeOverStale is false", () => {
