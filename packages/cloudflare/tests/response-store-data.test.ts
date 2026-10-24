@@ -561,6 +561,18 @@ test("stores data entries without expire as stale indefinitely, like Next.js", a
   expect(store.response?.headers.get("Cache-Control")).toBe(
     "public, max-age=60, stale-while-revalidate=315360000",
   );
+
+  // An indefinite ISR policy uses Infinity, which neither Cache-Control nor JSON can hold.
+  await runWithResponseStoreInvocation("signed-in", false, () =>
+    handler.set("key", null, { cacheControl: { revalidate: Infinity, expire: Infinity } }),
+  );
+  expect(store.response?.headers.get("Cache-Control")).toBe("public, max-age=315360000");
+  expect(JSON.parse(await store.response!.clone().text()).cacheControl).toEqual({
+    revalidate: false,
+  });
+  expect(await policy({ cacheControl: { revalidate: 60, expire: Infinity } })).toBe(
+    "public, max-age=60, stale-while-revalidate=315360000",
+  );
 });
 
 test("leaves a stale replayable hit to the Store's own refresh", async () => {

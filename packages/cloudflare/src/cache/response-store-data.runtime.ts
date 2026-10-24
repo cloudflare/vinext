@@ -459,10 +459,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     let revalidate = readCacheControlField(context, "revalidate");
     if (value && "revalidate" in value) revalidate = value.revalidate;
     if (revalidate === 0) return;
+    // JSON and the Store's Cache-Control can't hold Infinity, so store it as `false`
+    // (never revalidates) and drop an infinite `expire`, like the KV adapter does.
+    if (typeof revalidate === "number" && !Number.isFinite(revalidate)) revalidate = false;
 
     const rawExpire = readCacheControlField(context, "expire");
-    const expire = typeof rawExpire === "number" ? rawExpire : undefined;
-    const stale = readCacheControlField(context, "stale");
+    const expire =
+      typeof rawExpire === "number" && Number.isFinite(rawExpire) ? rawExpire : undefined;
+    const rawStale = readCacheControlField(context, "stale");
+    const stale = typeof rawStale === "number" && Number.isFinite(rawStale) ? rawStale : undefined;
     const cacheControl =
       typeof revalidate === "number" || revalidate === false
         ? {
