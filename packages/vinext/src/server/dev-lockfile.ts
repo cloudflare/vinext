@@ -20,7 +20,7 @@
  *   are tolerated: at worst, two dev servers race and one fails to bind a port.
  *   Unlike a `flock()`, the lock file survives a hard restart, so a lock
  *   written before the current boot is treated as stale whatever its PID: the
- *   PID may now belong to an unrelated process.
+ *   PID may now belong to an unrelated process. See `predatesCurrentBoot()`.
  * - Lock file lives in `<root>/.vinext/dev/lock.json` (mirroring Next.js'
  *   `.next/dev/lock` layout). `.vinext/` is already used by the fonts plugin
  *   to cache self-hosted Google Fonts, so this re-uses the same project-local
@@ -45,6 +45,11 @@ export type DevServerInfo = {
   startedAt: number;
   /** Project directory the server is running in. Used to detect stale entries. */
   cwd: string;
+  /**
+   * Kernel boot identifier when the server started (`readBootId()`). Absent
+   * on platforms that don't expose one.
+   */
+  bootId?: string;
 };
 
 type DevLockfile = {
@@ -82,7 +87,8 @@ export function readLockfile(lockfilePath: string): DevServerInfo | undefined {
       typeof parsed.hostname === "string" &&
       typeof parsed.appUrl === "string" &&
       typeof parsed.startedAt === "number" &&
-      typeof parsed.cwd === "string"
+      typeof parsed.cwd === "string" &&
+      (parsed.bootId === undefined || typeof parsed.bootId === "string")
     ) {
       return parsed;
     }
@@ -112,26 +118,63 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
+const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
+
 /**
- * Slack for the boot-time comparison in `predatesCurrentBoot`. `os.uptime()`
- * has whole-second resolution on some platforms (macOS reads
- * `kern.boottime`), and NTP can nudge the wall clock after boot, so the
- * derived boot time is only accurate to a few seconds.
+ * Returns the kernel's identifier for the current boot, or `undefined` where
+ * none is available. Linux (including WSL and container hosts) exposes a
+ * random UUID that changes on every boot.
+ */
+export function readBootId(): string | undefined {
+  try {
+    return fs.readFileSync(BOOT_ID_PATH, "utf-8").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Slack for the wall-clock boot-time comparison in `predatesCurrentBoot`.
+ * `os.uptime()` has whole-second resolution on some platforms (macOS reads
+ * `kern.boottime`), and NTP slews the wall clock slightly, so the derived boot
+ * time is only accurate to a few seconds.
  */
 const BOOT_TIME_TOLERANCE_MS = 5_000;
 
 /**
- * Returns true if a lock with the given `startedAt` was written before the
- * machine last booted.
+ * Returns true if the lock was written before the machine last booted.
  *
  * Such a lock was left behind by a session whose exit handler never ran (a
- * crash, a forced restart, power loss). PIDs restart from the beginning after
- * a boot, so the lock's PID is often held by an unrelated process, and
+ * crash, a forced restart, power loss). PIDs are handed out again after a
+ * boot, so the lock's PID may be held by an unrelated process, and
  * `isPidAlive()` alone would report the dead server as running.
+ *
+ * When both the lock and the system have a boot ID, they are compared
+ * directly. Otherwise the lock's `startedAt` is compared with the boot time
+ * derived from `Date.now() - os.uptime()`. On macOS that derivation follows
+ * wall-clock changes, because XNU moves `kern.boottime` when the clock is set.
+ * On Windows `os.uptime()` is monotonic, so stepping the wall clock forward
+ * by more than a server's age makes its lock look stale. The second
+ * `vinext dev` then takes over and Vite picks another port, the same outcome
+ * as the acquisition race tolerated below.
+ *
+ * Known limitation: Windows Fast Startup shuts down by hibernating the
+ * kernel, so `os.uptime()` keeps counting and a lock left by that shutdown is
+ * still checked by PID alone.
  */
-export function predatesCurrentBoot(startedAt: number): boolean {
-  const bootTime = Date.now() - os.uptime() * 1000;
-  return startedAt < bootTime - BOOT_TIME_TOLERANCE_MS;
+export function predatesCurrentBoot(info: Pick<DevServerInfo, "startedAt" | "bootId">): boolean {
+  if (info.bootId !== undefined) {
+    const bootId = readBootId();
+    if (bootId !== undefined) return info.bootId !== bootId;
+  }
+  let uptime: number;
+  try {
+    uptime = os.uptime();
+  } catch {
+    return false;
+  }
+  const bootTime = Date.now() - uptime * 1000;
+  return info.startedAt < bootTime - BOOT_TIME_TOLERANCE_MS;
 }
 
 /**
@@ -244,7 +287,7 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    const alive = !predatesCurrentBoot(existing.startedAt) && isPidAlive(existing.pid);
+    const alive = !predatesCurrentBoot(existing) && isPidAlive(existing.pid);
     if (alive) {
       return { ok: false, existing, lockfilePath };
     }

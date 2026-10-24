@@ -8,7 +8,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { toSlash } from "pathslash";
 
 import {
@@ -17,6 +17,7 @@ import {
   getLockfilePath,
   isPidAlive,
   predatesCurrentBoot,
+  readBootId,
   readLockfile,
   tryAcquireLockfile,
 } from "../packages/vinext/src/server/dev-lockfile.js";
@@ -72,18 +73,64 @@ describe("isPidAlive", () => {
   });
 });
 
-/** A `startedAt` one minute before the machine booted. */
-function beforeBoot(): number {
-  return Date.now() - os.uptime() * 1000 - 60_000;
+function bootTime(): number {
+  return Date.now() - os.uptime() * 1000;
 }
 
+/** A `startedAt` one minute before the machine booted. */
+function beforeBoot(): number {
+  return bootTime() - 60_000;
+}
+
+const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
+
+/** Make `readBootId()` report `bootId`, on every platform. */
+function mockBootId(bootId: string): void {
+  const readFileSync = fs.readFileSync;
+  vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) =>
+    file === BOOT_ID_PATH ? `${bootId}\n` : readFileSync(file, options)) as typeof fs.readFileSync);
+}
+
+describe("readBootId", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("reads the kernel boot ID", () => {
+    mockBootId("0a1b2c3d-boot");
+    expect(readBootId()).toBe("0a1b2c3d-boot");
+  });
+});
+
 describe("predatesCurrentBoot", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("returns false for a lock written during this boot", () => {
-    expect(predatesCurrentBoot(Date.now())).toBe(false);
+    expect(predatesCurrentBoot({ startedAt: Date.now() })).toBe(false);
+  });
+
+  it("returns false for a lock written just after the derived boot time", () => {
+    // os.uptime() is whole seconds on macOS, so a lock written right after
+    // boot can appear to predate it slightly.
+    expect(predatesCurrentBoot({ startedAt: bootTime() - 1_000 })).toBe(false);
   });
 
   it("returns true for a lock written before this boot", () => {
-    expect(predatesCurrentBoot(beforeBoot())).toBe(true);
+    expect(predatesCurrentBoot({ startedAt: beforeBoot() })).toBe(true);
+  });
+
+  it("returns true when the lock's boot ID differs from the current one", () => {
+    mockBootId("current-boot");
+    expect(predatesCurrentBoot({ startedAt: Date.now(), bootId: "previous-boot" })).toBe(true);
+  });
+
+  it("trusts a matching boot ID over the wall clock", () => {
+    // A forward wall-clock step (e.g. a VM resuming after host sleep) moves
+    // the derived boot time past a live server's startedAt.
+    mockBootId("current-boot");
+    expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "current-boot" })).toBe(false);
   });
 });
 
@@ -123,6 +170,21 @@ describe("readLockfile", () => {
     fs.writeFileSync(lockPath, JSON.stringify(info));
     expect(readLockfile(lockPath)).toEqual(info);
   });
+
+  it("round-trips a boot ID", () => {
+    const info = baseInfo({ bootId: "0a1b2c3d-boot" });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(info));
+    expect(readLockfile(lockPath)).toEqual(info);
+  });
+
+  it("returns undefined for a non-string boot ID", () => {
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ ...baseInfo(), bootId: 42 }));
+    expect(readLockfile(lockPath)).toBeUndefined();
+  });
 });
 
 describe("tryAcquireLockfile", () => {
@@ -133,6 +195,7 @@ describe("tryAcquireLockfile", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     cleanup(root);
   });
 
@@ -196,7 +259,44 @@ describe("tryAcquireLockfile", () => {
     result.lockfile.release();
   });
 
-  it("does not take over a lock written before the current boot when takeOverStale is false", () => {
+  it("fails when a live server's lock looks pre-boot only because the wall clock stepped", () => {
+    mockBootId("current-boot");
+    const existing = baseInfo({
+      pid: process.pid,
+      startedAt: beforeBoot(),
+      bootId: "current-boot",
+      cwd: root,
+    });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(existing));
+
+    const result = tryAcquireLockfile({
+      root,
+      info: baseInfo({ pid: process.pid + 1, cwd: root }),
+      unlockOnExit: false,
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.existing).toEqual(existing);
+  });
+
+  it("takes over a lock from a previous boot even when its PID is alive", () => {
+    mockBootId("current-boot");
+    const stale = baseInfo({ pid: process.pid, bootId: "previous-boot", cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const info = baseInfo({ pid: process.pid, port: 4000, bootId: "current-boot", cwd: root });
+    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(readLockfile(lockPath)).toEqual(info);
+    result.lockfile.release();
+  });
+
+  it("leaves a lock written before the current boot in place when takeOverStale is false", () => {
     const stale = baseInfo({ pid: process.pid, startedAt: beforeBoot(), cwd: root });
     const lockPath = getLockfilePath(root);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -209,6 +309,9 @@ describe("tryAcquireLockfile", () => {
       unlockOnExit: false,
     });
     expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.existing).toEqual(stale);
+    expect(readLockfile(lockPath)).toEqual(stale);
   });
 
   it("does not take over stale entries when takeOverStale is false", () => {

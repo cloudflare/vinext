@@ -7,7 +7,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
+import {
+  getLockfilePath,
+  readBootId,
+  readLockfile,
+} from "../packages/vinext/src/server/dev-lockfile.js";
 
 const originalArgv = process.argv;
 const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
@@ -574,21 +578,23 @@ export default { plugins: [vinext()] };
         cwd: root,
       }),
     );
-    let stderr = "";
     child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
       cwd: root,
       stdio: "pipe",
     });
-    child.stderr?.on("data", (chunk) => (stderr += chunk));
+    let output = "";
+    child.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
+    child.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
+    // Before the fix, Vite exits with "Another vinext dev server is already
+    // running" and this throws.
     const lock = await waitFor(() => {
-      if (child!.exitCode !== null) {
-        throw new Error(`vite dev exited with ${child!.exitCode}: ${stderr}`);
-      }
+      if (child?.exitCode !== null) throw new Error(`Vite exited: ${output}`);
       const current = readLockfile(lockPath);
-      return current && current.pid === child!.pid && current.port > 0 ? current : undefined;
+      return current && current.pid === child?.pid && current.port > 0 ? current : undefined;
     });
-    expect(lock.pid).toBe(child.pid);
+    expect(lock.port).not.toBe(3000);
+    expect(lock.bootId).toBe(readBootId());
   }, 30_000);
 
   it("claims the CLI lifecycle without locking a server that never listens", async () => {
