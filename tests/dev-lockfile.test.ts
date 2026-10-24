@@ -84,11 +84,23 @@ function beforeBoot(): number {
 
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
 
+const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+
+function stubPlatform(platform: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
+}
+
+function restoreMocks(): void {
+  vi.restoreAllMocks();
+  Object.defineProperty(process, "platform", originalPlatform);
+}
+
 /**
  * Make the boot ID file read as `contents`, or fail with ENOENT when
- * `contents` is undefined, on every platform.
+ * `contents` is undefined, and report Linux so `readBootId()` reads it.
  */
 function mockBootIdFile(contents: string | undefined): void {
+  stubPlatform("linux");
   const readFileSync = fs.readFileSync;
   vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) => {
     if (file !== BOOT_ID_PATH) return readFileSync(file, options);
@@ -104,7 +116,7 @@ function mockBootId(bootId: string): void {
 
 describe("readBootId", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    restoreMocks();
   });
 
   it("reads the kernel boot ID", () => {
@@ -117,6 +129,13 @@ describe("readBootId", () => {
     expect(readBootId()).toBeUndefined();
   });
 
+  it("does not read the boot ID path on other platforms", () => {
+    // On Windows the path resolves to a drive-root folder any user can create.
+    mockBootIdFile("planted-boot");
+    stubPlatform("win32");
+    expect(readBootId()).toBeUndefined();
+  });
+
   it("returns undefined for an empty boot ID file", () => {
     mockBootIdFile("\n");
     expect(readBootId()).toBeUndefined();
@@ -125,7 +144,7 @@ describe("readBootId", () => {
 
 describe("predatesCurrentBoot", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    restoreMocks();
   });
 
   it("returns false for a lock written during this boot", () => {
@@ -223,7 +242,7 @@ describe("tryAcquireLockfile", () => {
   });
 
   afterEach(() => {
-    vi.restoreAllMocks();
+    restoreMocks();
     cleanup(root);
   });
 

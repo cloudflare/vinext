@@ -123,9 +123,12 @@ const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
 /**
  * Returns the kernel's identifier for the current boot, or `undefined` where
  * none is available. Linux (including WSL and container hosts) exposes a
- * random UUID that changes on every boot.
+ * random UUID that changes on every boot. Other platforms are never read:
+ * on Windows the path resolves to a drive-root folder any local user can
+ * create.
  */
 export function readBootId(): string | undefined {
+  if (process.platform !== "linux") return undefined;
   try {
     return fs.readFileSync(BOOT_ID_PATH, "utf-8").trim() || undefined;
   } catch {
@@ -136,9 +139,9 @@ export function readBootId(): string | undefined {
 /**
  * Slack for the wall-clock boot-time comparison in `predatesCurrentBoot`.
  * `os.uptime()` has whole-second resolution on some platforms (macOS derives
- * it from `kern.boottime`), and on Linux and Windows NTP slews the wall clock
- * against the uptime clock, so the derived boot time is only accurate to a
- * few seconds.
+ * it from `kern.boottime`), and on Windows NTP slews the wall clock against
+ * the uptime clock, so the derived boot time is only accurate to a few
+ * seconds.
  */
 const BOOT_TIME_TOLERANCE_MS = 5_000;
 
@@ -248,8 +251,9 @@ type AcquireOptions = {
   /** Initial server info to write. Port/URL may be updated later via `update()`. */
   info: DevServerInfo;
   /**
-   * If a lock file exists but is stale (its PID is dead, or it was written
-   * before the current boot), take over instead of failing.
+   * If a lock file exists but is stale (its PID is dead or is the acquiring
+   * process's own, or it was written before the current boot), take over
+   * instead of failing.
    * Defaults to `true`. Set to `false` for testing.
    */
   takeOverStale?: boolean;
