@@ -19859,6 +19859,127 @@ describe("Pages Router concurrent navigation", () => {
     }
   });
 
+  it("throws incompatible-href-as when an inherited dynamic route gets an empty leading param", async () => {
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/ca/details",
+      href: "http://localhost/ca/details",
+    });
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/[zone]/details",
+      query: { zone: "ca" },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      // `zone: ""` interpolates to `//details`, a protocol-relative URL.
+      await expect(Router.push({ query: { zone: "" } })).rejects.toThrow(
+        "The provided `as` value (//details) is incompatible with the `href` value (/[zone]/details). Read more: https://nextjs.org/docs/messages/incompatible-href-as",
+      );
+      expect(win.location.href).toBe("http://localhost/ca/details");
+      expect(win.history.pushState).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("rejects a root catch-all whose empty first segment interpolates to a // path", async () => {
+    // Next.js fetches same-origin data, then history.pushState throws a
+    // SecurityError for `//attacker.example/x`; the URL never leaves the app.
+    const previousWindow = (globalThis as any).window;
+    const { win } = createNavWindow();
+    Object.assign(win.location, {
+      pathname: "/docs/a",
+      href: "http://localhost/docs/a",
+    });
+    win.__NEXT_DATA__ = {
+      ...win.__NEXT_DATA__,
+      page: "/[...slug]",
+      query: { slug: ["docs", "a"] },
+    };
+    (globalThis as any).window = win;
+    const message =
+      'The interpolated route path (//attacker.example/x) for the `href` value (/[...slug]) starts with "//" and would leave the current origin.';
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(
+        Router.push({
+          pathname: "/[...slug]",
+          query: { slug: ["", "attacker.example", "x"] },
+        }),
+      ).rejects.toThrow(message);
+      await expect(Router.push("/[...slug]?slug=&slug=attacker.example&slug=x")).rejects.toThrow(
+        message,
+      );
+      // The current route's params are inherited for a query-only update.
+      await expect(Router.push({ query: { slug: ["", "attacker.example", "x"] } })).rejects.toThrow(
+        message,
+      );
+      expect(win.location.href).toBe("http://localhost/docs/a");
+      expect(win.history.pushState).not.toHaveBeenCalled();
+
+      // Non-empty segments still interpolate and navigate.
+      await Router.push({ query: { slug: ["docs", "b"] } }, undefined, { shallow: true });
+      expect(win.history.pushState).toHaveBeenCalledWith(
+        expect.objectContaining({ __N: true }),
+        "",
+        "/docs/b",
+      );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
+  it("matches an explicit as against the route before interpolating the href query", async () => {
+    // Next.js Router.change() collapses `//details` to `/details`, then rejects
+    // it because `/details` does not match `/[id]/details` and `id` is empty.
+    const previousWindow = (globalThis as any).window;
+    const { win, pushState } = createNavWindow();
+    Object.assign(win, {
+      __VINEXT_LOCALE__: "en",
+      __VINEXT_LOCALES__: ["en", "fr"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+    });
+    (globalThis as any).window = win;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      vi.resetModules();
+      const { default: Router } = await import("../packages/vinext/src/shims/router.js");
+
+      await expect(Router.push("/[id]/details?id=", "//details")).rejects.toThrow(
+        "The provided `as` value (/details) is incompatible with the `href` value (/[id]/details). Read more: https://nextjs.org/docs/messages/incompatible-href-as",
+      );
+      expect(pushState).not.toHaveBeenCalled();
+
+      // Matching masks, locale-prefixed masks and masks whose params come from
+      // the href query still navigate.
+      await Router.push("/[id]/details", "/abc/details", { shallow: true });
+      expect(win.location.pathname).toBe("/abc/details");
+      await Router.push("/[id]/details", "/abc/details", { locale: "fr", shallow: true });
+      expect(win.location.pathname).toBe("/fr/abc/details");
+      await Router.push("/[id]/details?id=abc", "/custom-mask", { locale: "en", shallow: true });
+      expect(win.location.pathname).toBe("/custom-mask");
+    } finally {
+      error.mockRestore();
+      vi.resetModules();
+      if (previousWindow === undefined) delete (globalThis as any).window;
+      else (globalThis as any).window = previousWindow;
+    }
+  });
+
   // Ported from Next.js: test/e2e/dynamic-routing/dynamic-routing.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/dynamic-routing/dynamic-routing.test.ts
   it("throws href-interpolation-failed when a full dynamic href omits a required param", async () => {
