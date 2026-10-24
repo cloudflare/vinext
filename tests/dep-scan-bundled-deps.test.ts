@@ -60,7 +60,7 @@ try {
   return root;
 }
 
-function runProbe(root: string): Promise<{ errors: string[] }> {
+function runProbe<T = { errors: string[] }>(root: string): Promise<T> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ["probe.mjs"], {
       cwd: root,
@@ -86,6 +86,109 @@ function runProbe(root: string): Promise<{ errors: string[] }> {
   });
 }
 
+// An installed vinext lives in node_modules, unlike this checkout's workspace
+// link, so the optimizer treats the files its next/* aliases resolve to as
+// dependencies. Copy the dist build into node_modules to model npm's layout.
+function createInstalledVinextProject(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-installed-optimizer-"));
+  roots.push(root);
+  const nodeModules = path.join(root, "node_modules");
+  const vinextDir = path.join(nodeModules, "vinext");
+  const vinextPackage = path.resolve(import.meta.dirname, "../packages/vinext");
+  fs.mkdirSync(vinextDir, { recursive: true });
+  for (const name of ["dist", "package.json"]) {
+    fs.cpSync(path.join(vinextPackage, name), path.join(vinextDir, name), { recursive: true });
+  }
+  fs.symlinkSync(
+    path.join(vinextPackage, "node_modules"),
+    path.join(vinextDir, "node_modules"),
+    "junction",
+  );
+  for (const name of ["react", "react-dom", "vite"]) {
+    fs.symlinkSync(
+      path.resolve(import.meta.dirname, "../node_modules", name),
+      path.join(nodeModules, name),
+      "junction",
+    );
+  }
+  // Libraries that import next/* themselves, as ESM and as CommonJS.
+  const libraries: Record<string, Record<string, string>> = {
+    "esm-nav-lib": {
+      "package.json": '{"name":"esm-nav-lib","type":"module","exports":"./index.js"}',
+      "index.js": 'export { useRouter as libUseRouter } from "next/navigation.js";',
+    },
+    "cjs-link-lib": {
+      "package.json": '{"name":"cjs-link-lib","main":"index.js"}',
+      "index.js": 'const Link = require("next/link"); exports.LibLink = Link.default || Link;',
+    },
+  };
+  for (const [name, files] of Object.entries(libraries)) {
+    fs.mkdirSync(path.join(nodeModules, name));
+    for (const [file, code] of Object.entries(files)) {
+      fs.writeFileSync(path.join(nodeModules, name, file), code);
+    }
+  }
+  fs.mkdirSync(path.join(root, "app"));
+  fs.writeFileSync(path.join(root, "package.json"), '{"type":"module"}\n');
+  fs.writeFileSync(
+    path.join(root, "app/layout.tsx"),
+    "export default function RootLayout({ children }: { children: React.ReactNode }) { return <html><body>{children}</body></html>; }\n",
+  );
+  fs.writeFileSync(
+    path.join(root, "app/page.tsx"),
+    'import Link from "next/link";\nimport { Client } from "./client";\nexport default function Page() { return <main><Link href="/">home</Link><Client /></main>; }\n',
+  );
+  fs.writeFileSync(
+    path.join(root, "app/client.tsx"),
+    `"use client";
+import Form from "next/form";
+import Image from "next/image";
+import Script from "next/script";
+import { useRouter } from "next/navigation";
+import { libUseRouter } from "esm-nav-lib";
+import { LibLink } from "cjs-link-lib";
+export function Client() {
+  return <p>{String(libUseRouter === useRouter && LibLink && Form && Image && Script)}</p>;
+}
+`,
+  );
+  fs.writeFileSync(
+    path.join(root, "probe.mjs"),
+    `import fs from "node:fs";
+import { createLogger, createServer } from "vite";
+import vinext from "vinext";
+const server = await createServer({
+  root: ${JSON.stringify(root)},
+  cacheDir: ${JSON.stringify(path.join(root, ".vite"))},
+  configFile: false,
+  customLogger: createLogger("silent"),
+  plugins: [vinext()],
+  server: { host: "127.0.0.1", port: 0 },
+});
+try {
+  await server.listen();
+  const optimizer = server.environments.client.depsOptimizer;
+  await optimizer.scanProcessing;
+  const deps = { ...optimizer.metadata.optimized, ...optimizer.metadata.discovered };
+  const libraries = {};
+  for (const name of ["esm-nav-lib", "cjs-link-lib"]) {
+    await deps[name]?.processing;
+    libraries[name] = deps[name] ? fs.readFileSync(deps[name].file, "utf8") : null;
+  }
+  // Served raw from node_modules, so Vite would not discover its imports.
+  const imageConfig = await server.environments.client.transformRequest(
+    "/node_modules/vinext/dist/shims/image-config.js",
+  );
+  const ipaddrImport = imageConfig.code.match(/from "([^"]*ipaddr[^"]*)"/)?.[1] ?? null;
+  console.log("probe:" + JSON.stringify({ deps: Object.keys(deps), libraries, ipaddrImport }));
+} finally {
+  await server.close();
+}
+`,
+  );
+  return root;
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
 });
@@ -97,5 +200,28 @@ describe("client dependency scan", () => {
   it("scans an app that imports a shim with an inlined CommonJS dependency", async () => {
     const { errors } = await runProbe(createAppProject());
     expect(errors).toEqual([]);
+  }, 60_000);
+
+  // A pre-bundled shim carries its own copy of vinext's module state, so
+  // <Link> navigations would not reach the app's instrumentation hooks.
+  it("keeps an installed vinext's next/* shims out of the client optimizer", async () => {
+    const { deps, libraries, ipaddrImport } = await runProbe<{
+      deps: string[];
+      libraries: Record<string, string | null>;
+      ipaddrImport: string | null;
+    }>(createInstalledVinextProject());
+    expect(deps).toEqual(expect.arrayContaining(["esm-nav-lib", "cjs-link-lib"]));
+    expect(
+      deps.filter((id) => id.startsWith("next/") || id === "vinext" || id.startsWith("vinext/")),
+    ).toEqual([]);
+    // Libraries keep their next/* imports bare, which resolve to the same shim
+    // module as the app's imports instead of inlining another copy.
+    expect(libraries["esm-nav-lib"]).toContain('from "next/navigation.js"');
+    expect(libraries["cjs-link-lib"]).toContain('from "next/link"');
+    for (const code of Object.values(libraries)) {
+      expect(code).not.toMatch(/\.\/(?:navigation|link)-[\w-]+\.js/);
+    }
+    // The raw next/image shim's CommonJS dependency must still be pre-bundled.
+    expect(ipaddrImport).toContain("/.vite/deps/");
   }, 60_000);
 });
