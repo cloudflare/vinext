@@ -403,3 +403,62 @@ export default function Layout({ children }) { return <html><body>{children}</bo
     120_000,
   );
 });
+
+describe("tsconfig paths for next/* shims with react-server variants", () => {
+  it("dev: keeps the react-server next/navigation variant in Server Components", async () => {
+    const root = makeTmpDir("vinext-tsconfig-next-navigation-");
+    linkRepoNodeModules(root);
+    writeFixtureFile(
+      root,
+      "package.json",
+      JSON.stringify({ name: "tsconfig-next-navigation", private: true, type: "module" }),
+    );
+    // Points `next/navigation` at the client shim, e.g. to type-check an app
+    // without `next` installed.
+    writeFixtureFile(
+      root,
+      "tsconfig.json",
+      JSON.stringify({
+        compilerOptions: {
+          jsx: "react-jsx",
+          paths: {
+            "next/navigation": [
+              path.resolve(import.meta.dirname, "../packages/vinext/src/shims/navigation.ts"),
+            ],
+          },
+        },
+      }),
+    );
+    writeFixtureFile(
+      root,
+      "app/layout.tsx",
+      `export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <body>{children}</body>
+    </html>
+  );
+}
+`,
+    );
+    writeFixtureFile(
+      root,
+      "app/page.tsx",
+      `import { usePathname } from "next/navigation";
+
+export default function HomePage() {
+  return <p>{usePathname()}</p>;
+}
+`,
+    );
+
+    const { server, baseUrl } = await startFixtureServer(root, { appDir: root });
+    try {
+      const { res, html } = await fetchHtml(baseUrl, "/");
+      expect(res.status).toBe(500);
+      expect(html).toContain("usePathname()");
+    } finally {
+      await server.close();
+    }
+  }, 60_000);
+});

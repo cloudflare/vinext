@@ -1260,6 +1260,15 @@ function resolveTsconfigAliases(
     };
     break;
   }
+  // Shims with react-server variants are resolved per environment by
+  // vinext's resolveId hook. A tsconfig alias for one of them would apply to
+  // every environment, so the RSC environment would get the client variant
+  // and the browser would request a dependency the optimizer scan never saw
+  // (the scan resolves these specifiers through vinext:dep-optimize-alias),
+  // forcing a re-optimization and full page reload on a cold dev server.
+  aliases.vite = Object.fromEntries(
+    Object.entries(aliases.vite).filter(([find]) => !_reactServerShims.has(find)),
+  );
 
   _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
