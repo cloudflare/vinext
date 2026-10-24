@@ -14,6 +14,7 @@ import {
   type AppPagePprRuntime,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
+import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
 
 type PprFallbackShellEligibility =
   | {
@@ -83,7 +84,8 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
     const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
       clearRequestContext: options.clearRequestContext,
       expireSeconds: options.expireSeconds,
-      fallbackPathname: fallbackShell.pathname,
+      // The build keys a shell by its decoded pathname, like a concrete page.
+      fallbackPathname: normalizePregeneratedPathname(fallbackShell.pathname),
       isEdgeRuntime: options.isEdgeRuntime,
       isrDebug: options.isrDebug,
       isrGet: options.isrGet,

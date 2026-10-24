@@ -5711,6 +5711,37 @@ describe("app page dispatch", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
+  it("reads a fallback shell with an encoded kept param under its decoded build key", async () => {
+    const buildPageElement = createParamTextPageElement();
+    const isrGet = vi.fn(async (key: string) =>
+      key === "shell:/café/blog/[slug]"
+        ? buildISRCacheEntry(
+            buildCachedAppPageValue("<html><head></head><body>Locale: café</body></html>"),
+            false,
+          )
+        : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/caf%C3%A9/blog/new-post",
+      isrGet,
+      params: { locale: "caf%C3%A9", slug: "new-post" },
+      pprFallbackCacheShells: [
+        {
+          fallbackParamNames: ["slug"],
+          params: { locale: "caf%C3%A9", slug: "[slug]" },
+          pathname: "/caf%C3%A9/blog/[slug]",
+        },
+      ],
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet.mock.calls.map(([key]) => key)).toContain("shell:/café/blog/[slug]");
+    await expect(response.text()).resolves.toContain("Locale: café");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
   it("does not serve fallback shell HTML for an unknown child param when the request has search params", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = createPprBlogFallbackShellGetter(false);

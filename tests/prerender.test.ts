@@ -2650,6 +2650,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     cacheComponents: boolean,
     fallbackShellResumeDataCache?: string,
     previousFallbackPostponed?: string,
+    staticParamsFor: (pattern: string | null) => unknown = () => [{ locale: "en", slug: "hello" }],
   ) {
     const root = tmpDir("vinext-prerender-ppr-shell-");
     const outDir = path.join(root, "out");
@@ -2677,7 +2678,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
       const url = new URL(req.url ?? "/", "http://127.0.0.1");
       if (url.pathname === "/__vinext/prerender/static-params") {
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify([{ locale: "en", slug: "hello" }]));
+        res.end(JSON.stringify(staticParamsFor(url.searchParams.get("pattern"))));
         return;
       }
       if (url.pathname === "/__vinext_nonexistent_for_404__") {
@@ -2755,6 +2756,24 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     expect(fallbackHtml).toContain("<!--vinext-ppr-dynamic-fallback-shell-->");
     expect(fallbackPostponed).toBeNull();
   });
+
+  it.each([
+    ["no generateStaticParams", null],
+    ["an empty generateStaticParams", []],
+  ])(
+    "keeps the layout's root params in the fallback shells of a page with %s",
+    async (_label, pageStaticParams) => {
+      const { fallbackHtml, renderedPaths } = await prerenderDynamicRootParamRoute(
+        true,
+        undefined,
+        undefined,
+        (pattern) => (pattern === "layouts:[locale]" ? [{ locale: "en" }] : pageStaticParams),
+      );
+
+      expect(renderedPaths).toContain("/en/blog/[slug]");
+      expect(fallbackHtml).toContain("<!--vinext-ppr-dynamic-fallback-shell-->");
+    },
+  );
 
   it("writes a fallback shell's resume data cache beside it, out of the served HTML", async () => {
     const resumeDataCache = JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} });
