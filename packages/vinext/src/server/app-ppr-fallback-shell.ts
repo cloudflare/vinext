@@ -114,9 +114,13 @@ function pushParamValue(segments: string[], value: string | string[] | undefined
   return true;
 }
 
-function isPlaceholderLikeValue(value: string | string[] | undefined): boolean {
-  const values = Array.isArray(value) ? value : [value];
-  return values.some((item) => item?.startsWith("[") === true && item.endsWith("]"));
+function isSameParamValue(value: string | string[] | undefined, other: string | string[]): boolean {
+  if (!Array.isArray(other)) return value === other;
+  return (
+    Array.isArray(value) &&
+    value.length === other.length &&
+    value.every((item, index) => item === other[index])
+  );
 }
 
 export function createAppPprFallbackShells(
@@ -164,9 +168,14 @@ export function createAppPprFallbackShells(
         }
 
         const value = matchedParams[paramName];
-        // A shell is keyed by its decoded pathname, where a value like
-        // `[slug]` would read as a placeholder and share another shell's entry.
-        if (isPlaceholderLikeValue(value) || !pushParamValue(segments, value)) {
+        // A shell is keyed by its decoded pathname, where a value equal to its
+        // param's placeholder would share the entry of the shell that leaves
+        // the param out. A root param is never left out.
+        if (
+          (!rootParamNames.has(paramName) &&
+            isSameParamValue(value, placeholderForParam(part, paramName))) ||
+          !pushParamValue(segments, value)
+        ) {
           isValidShell = false;
           break;
         }
