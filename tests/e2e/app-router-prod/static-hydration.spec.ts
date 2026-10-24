@@ -24,10 +24,13 @@ test("force-static useSearchParams is empty in SSR and reads the browser query a
   const html = await (await request.get("/static-test?value=hidden")).text();
   expect(html).toMatch(/data-testid="force-static-search-params"[^>]*>N\/A</);
 
-  // ...and React switches to the live browser URL snapshot once hydrated.
+  // ...and React switches to the live browser URL snapshot once hydrated,
+  // without a hydration mismatch.
+  const errors = collectPageErrors(page);
   await page.goto("/static-test?value=hidden");
   await waitForAppRouterHydration(page);
   await expect(page.getByTestId("force-static-search-params")).toHaveText("hidden");
+  expect(errors).toEqual([]);
 });
 
 test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {
