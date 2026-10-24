@@ -1003,10 +1003,14 @@ import {
   appIsrRscKey as __isrRscKey,
   appIsrRouteKey as __isrRouteKey,
   isrGet as __isrGet,
+  isrGetFallbackShell as __isrGetFallbackShell,
   isrSet as __isrSet,
+  isrSetFallbackShell as __isrSetFallbackShell,
   isrSetPrerenderedAppPage as __isrSetPrerenderedAppPage,
+  isrSetPrerenderedFallbackShell as __isrSetPrerenderedFallbackShell,
   isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest,
   triggerBackgroundRegeneration as __triggerBackgroundRegeneration,
+  triggerFallbackShellRegeneration as __triggerFallbackShellRegeneration,
 } from ${JSON.stringify(isrCachePath)};
 // Import server-only state module to register ALS-backed accessors.
 import "vinext/navigation-state";
@@ -1406,6 +1410,9 @@ export async function seedMemoryCacheFromPrerender(serverDir) {
     writeAppPageEntry(key, data, metadata) {
       return __isrSetPrerenderedAppPage(key, data, metadata);
     },
+    writeAppPageFallbackShellEntry(key, data, metadata) {
+      return __isrSetPrerenderedFallbackShell(key, data, metadata);
+    },
     writeAppRouteEntry(key, data, policy) {
       return __isrSet(key, data, policy);
     },
@@ -1590,6 +1597,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       isRscRequest,
       isrDebug: __isrDebug,
       isrGet: __isrGet,
+      isrGetFallbackShell: __isrGetFallbackShell,
+      isrSetFallbackShell: __isrSetFallbackShell,
       isrFallbackShellHtmlKey: __isrFallbackShellHtmlKey,
       isrHtmlKey(pathname) {
         return __isrHtmlKey(pathname === cleanPathname ? cachePathname : pathname);
@@ -1679,6 +1688,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       },
       scheduleBackgroundRegeneration(key, renderFn, errorContext) {
         __triggerBackgroundRegeneration(key, renderFn, errorContext);
+      },
+      scheduleFallbackShellRegeneration(key, renderFn, errorContext) {
+        __triggerFallbackShellRegeneration(key, renderFn, errorContext);
       },
       scriptNonce,
       searchParams,
