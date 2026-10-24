@@ -1667,14 +1667,15 @@ function resolveFallbackRouteHead<TRoute extends AppPageDispatchRoute>(
 }
 
 /**
- * The outermost layout above every loading boundary whose subtree throws an
- * HTTP access fallback. The document's shell rejected with one that a
- * component nothing tags threw: one a layout renders, the page renders or a
- * template. This runs only on that error path, as a layout's own component
- * tags what it throws.
+ * The outermost layout above every loading boundary whose subtree throws the
+ * HTTP access fallback with `statusCode`. The document's shell rejected with
+ * one that a component nothing tags threw: one a layout renders, the page
+ * renders or a template. This runs only on that error path, as a layout's own
+ * component tags what it throws.
  */
 async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
+  statusCode: number,
   limit: number,
 ): Promise<number | null> {
   const layoutCount = Math.min(
@@ -1691,7 +1692,11 @@ async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageD
             await options.probeLayoutAt(layoutIndex);
             return false;
           } catch (error) {
-            return resolveAppPageSpecialError(error)?.kind === "http-access-fallback";
+            const specialError = resolveAppPageSpecialError(error);
+            return (
+              specialError?.kind === "http-access-fallback" &&
+              specialError.statusCode === statusCode
+            );
           }
         });
         if (outcome.completed && outcome.result) return layoutIndex;
@@ -1897,6 +1902,7 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
           layoutIndex =
             (await findAppPageLayoutSubtreeSpecialErrorIndex(
               options,
+              statusCode,
               layoutIndex ??
                 (specialError.slotLayoutIndex === undefined
                   ? options.route.layouts.length

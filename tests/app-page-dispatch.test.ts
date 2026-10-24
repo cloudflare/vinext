@@ -876,6 +876,49 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("attributes an untagged notFound() only to a layout whose subtree throws the same status", async () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const layouts = [0, 1, 3].map(() => ({ default: () => null }));
+    const route = createRoute({
+      layouts,
+      layoutTreePositions: [0, 1, 3],
+      routeSegments: ["(group)", "posts", "[slug]"],
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const probeLayoutAt = vi.fn((layoutIndex: number) => {
+      // The posts layout's subtree throws forbidden(), the inner one's notFound().
+      const thrown = ["", "NEXT_HTTP_ERROR_FALLBACK;403", digest][layoutIndex];
+      if (thrown) throw Object.assign(new Error(thrown), { digest: thrown });
+      return null;
+    });
+    const { options } = createDispatchOptions({
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      probeLayoutAt,
+      // A component the inner layout renders throws notFound(), so nothing tags it.
+      renderToReadableStream(_element, { onError }) {
+        onError(Object.assign(new Error(digest), { digest }), undefined, undefined);
+        return createStream(["flight"]);
+      },
+      route,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ layouts: layouts.slice(0, 2) }),
+      null,
+    );
+  });
+
   // https://github.com/cloudflare/vinext/issues/4092
   it.each([
     {

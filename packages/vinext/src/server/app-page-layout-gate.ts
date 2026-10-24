@@ -1,5 +1,3 @@
-import { resolveAppPageSpecialError } from "./app-page-execution.js";
-
 /**
  * Holds an RSC response until the layouts above the route's first loading
  * boundary have rendered, so that a layout's redirect(), notFound(),
@@ -15,19 +13,18 @@ export type AppPageLayoutGate = {
   /** Reports how the layout with `layoutId` rendered. */
   settle(layoutId: string, failure?: { error: unknown }): void;
   /**
-   * Stops waiting when the render threw an error that may end it before every
-   * held layout renders. A redirect(), notFound(), forbidden() or
-   * unauthorized() doesn't, such as the page's: it renders before its layouts.
-   */
-  observeRenderError(error: unknown): void;
-  /**
    * The outermost held layout that threw, once every held layout `isRendered`
-   * includes has rendered, or null.
+   * includes has rendered, or null. An error elsewhere in the render doesn't
+   * stop the wait, as Flight goes on to render the other entries, but the
+   * render ending does: `ended` settles when its stream closes or errors.
    */
-  wait(isRendered: (layoutId: string) => boolean): Promise<AppPageLayoutGateFailure | null>;
+  wait(
+    isRendered: (layoutId: string) => boolean,
+    ended: Promise<unknown>,
+  ): Promise<AppPageLayoutGateFailure | null>;
 };
 
-export type AppPageLayoutGateFailure = {
+type AppPageLayoutGateFailure = {
   error: unknown;
   layoutIndex: number;
 };
@@ -35,9 +32,8 @@ export type AppPageLayoutGateFailure = {
 export function createAppPageLayoutGate(): AppPageLayoutGate {
   const held = new Map<string, number>();
   const settled = new Set<string>();
-  const failures = new Set<unknown>();
   let failure: AppPageLayoutGateFailure | null = null;
-  let opened = false;
+  let ended = false;
   let check: (() => void) | null = null;
 
   return {
@@ -49,7 +45,6 @@ export function createAppPageLayoutGate(): AppPageLayoutGate {
       if (layoutIndex === undefined || settled.has(layoutId)) return;
       settled.add(layoutId);
       if (layoutFailure) {
-        failures.add(layoutFailure.error);
         // The outermost layout's signal is the one its boundary shows.
         if (failure === null || layoutIndex < failure.layoutIndex) {
           failure = { error: layoutFailure.error, layoutIndex };
@@ -57,20 +52,20 @@ export function createAppPageLayoutGate(): AppPageLayoutGate {
       }
       check?.();
     },
-    observeRenderError(error) {
-      if (failures.has(error) || resolveAppPageSpecialError(error) !== null) return;
-      opened = true;
-      check?.();
-    },
-    wait(isRendered) {
+    wait(isRendered, renderEnded) {
       return new Promise((resolve) => {
         check = () => {
           for (const layoutId of held.keys()) {
-            if (!opened && !settled.has(layoutId) && isRendered(layoutId)) return;
+            if (!ended && !settled.has(layoutId) && isRendered(layoutId)) return;
           }
           check = null;
           resolve(failure);
         };
+        const end = () => {
+          ended = true;
+          check?.();
+        };
+        renderEnded.then(end, end);
         check();
       });
     },

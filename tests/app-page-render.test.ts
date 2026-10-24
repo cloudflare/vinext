@@ -518,57 +518,89 @@ describe("app page render lifecycle", () => {
     const { element, gate } = createGatedElements(["layout:/"]);
     let settled = false;
 
-    const responsePromise = renderAppPageLifecycle({
+    const response = await renderAppPageLifecycle({
       ...common.options,
       element,
       isRscRequest: true,
       renderToReadableStream() {
-        setTimeout(() => {
-          settled = true;
-          gate.settle("layout:/");
-        }, 10);
-        return createStream(["flight-data"]);
+        return new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-data"));
+            setTimeout(() => {
+              settled = true;
+              gate.settle("layout:/");
+              controller.close();
+            }, 10);
+          },
+        });
       },
     });
 
-    const response = await responsePromise;
     expect(settled).toBe(true);
     await expect(response.text()).resolves.toBe("flight-data");
     expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 
-  it("waits for a layout's signal past the page's, and streams after a fatal error", async () => {
+  it("waits for a layout's signal past the page's errors", async () => {
     const common = createCommonOptions();
     const { element, gate } = createGatedElements(["layout:/", "layout:/posts"]);
 
-    // The page renders before its layouts.
-    const layoutFirst = await renderAppPageLifecycle({
+    // The page renders, and fails, before its layouts.
+    const response = await renderAppPageLifecycle({
       ...common.options,
       element,
       isRscRequest: true,
       renderToReadableStream(_element, opts) {
         opts.onError({ digest: "NEXT_REDIRECT;replace;/elsewhere;307;" }, null, null);
+        opts.onError(new Error("page failed"), null, null);
         gate.settle("layout:/");
-        queueMicrotask(() =>
-          gate.settle("layout:/posts", { error: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" } }),
+        setTimeout(
+          () => gate.settle("layout:/posts", { error: { digest: "NEXT_HTTP_ERROR_FALLBACK;404" } }),
+          10,
         );
-        return createStream(["flight-with-digest"]);
+        return new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("flight-with-digest"));
+          },
+        });
       },
     });
-    expect(layoutFirst.status).toBe(404);
 
-    const other = createGatedElements(["layout:/"]);
-    const fatal = await renderAppPageLifecycle({
-      ...common.options,
-      element: other.element,
-      isRscRequest: true,
-      renderToReadableStream(_element, opts) {
-        opts.onError(new Error("serialization failed"), null, null);
-        return createStream(["flight-error"]);
-      },
+    expect(response.status).toBe(404);
+    expect(common.renderPageSpecialError).toHaveBeenCalledWith({
+      kind: "http-access-fallback",
+      layoutIndex: 1,
+      statusCode: 404,
     });
-    expect(fatal.status).toBe(200);
-    await expect(fatal.text()).resolves.toBe("flight-error");
+  });
+
+  it("streams once the render ends before a held layout renders", async () => {
+    const common = createCommonOptions();
+
+    for (const end of ["close", "error"] as const) {
+      const { element } = createGatedElements(["layout:/"]);
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        element,
+        isRscRequest: true,
+        renderToReadableStream() {
+          return new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode("flight-error"));
+              setTimeout(() => {
+                if (end === "close") controller.close();
+                else controller.error(new Error("render failed"));
+              }, 10);
+            },
+          });
+        },
+      });
+
+      expect(response.status).toBe(200);
+      if (end === "close") await expect(response.text()).resolves.toBe("flight-error");
+      else await expect(response.text()).rejects.toThrow("render failed");
+    }
+    expect(common.renderPageSpecialError).not.toHaveBeenCalled();
   });
 
   it("doesn't wait for a held layout the payload doesn't render", async () => {

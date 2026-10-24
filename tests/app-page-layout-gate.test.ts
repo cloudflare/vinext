@@ -6,6 +6,7 @@ import {
 } from "../packages/vinext/src/server/app-page-layout-gate.js";
 
 const rendered = () => true;
+const running = new Promise<never>(() => {});
 
 describe("app page layout gate", () => {
   it("waits for every held layout, then reports the outermost that threw", async () => {
@@ -14,7 +15,7 @@ describe("app page layout gate", () => {
     gate.hold("layout:/a", 1);
     gate.hold("layout:/a/b", 2);
     let result: unknown = "pending";
-    const waiting = gate.wait(rendered).then((value) => (result = value));
+    const waiting = gate.wait(rendered, running).then((value) => (result = value));
 
     gate.settle("layout:/a/b", { error: "inner" });
     gate.settle("layout:/a", { error: "outer" });
@@ -31,7 +32,7 @@ describe("app page layout gate", () => {
     gate.hold("layout:/", 0);
     gate.settle("layout:/");
     gate.settle("layout:/", { error: "a retry doesn't count" });
-    await expect(gate.wait(rendered)).resolves.toBeNull();
+    await expect(gate.wait(rendered, running)).resolves.toBeNull();
   });
 
   it("doesn't wait for a held layout the payload doesn't render", async () => {
@@ -39,28 +40,33 @@ describe("app page layout gate", () => {
     gate.hold("layout:/", 0);
     gate.hold("layout:/skipped", 1);
     gate.settle("layout:/");
-    await expect(gate.wait((layoutId) => layoutId !== "layout:/skipped")).resolves.toBeNull();
+    await expect(
+      gate.wait((layoutId) => layoutId !== "layout:/skipped", running),
+    ).resolves.toBeNull();
   });
 
-  it("stops waiting only when the render throws an error that may end it", async () => {
-    const gate = createAppPageLayoutGate();
-    gate.hold("layout:/", 0);
-    gate.hold("layout:/a", 1);
-    const layoutError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
-    const waiting = gate.wait(rendered);
+  it("keeps waiting past other errors, and stops when the render ends", async () => {
+    for (const end of ["completes", "fails"] as const) {
+      const gate = createAppPageLayoutGate();
+      gate.hold("layout:/", 0);
+      gate.hold("layout:/a", 1);
+      const layoutError = { digest: "NEXT_HTTP_ERROR_FALLBACK;404" };
+      let endRender!: () => void;
+      const ended = new Promise<void>((resolve, reject) => {
+        endRender = end === "completes" ? resolve : () => reject(new Error("fatal"));
+      });
+      let settled = false;
+      const waiting = gate.wait(rendered, ended);
+      void waiting.then(() => (settled = true));
 
-    gate.settle("layout:/a", { error: layoutError });
-    gate.observeRenderError(layoutError);
-    // The page renders before its layouts, and its signals don't end the render.
-    gate.observeRenderError({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
-    gate.observeRenderError({ digest: "NEXT_REDIRECT;replace;/login;307;" });
-    let settled = false;
-    void waiting.then(() => (settled = true));
-    await Promise.resolve();
-    expect(settled).toBe(false);
+      // Flight renders the other entries after an error, so it isn't an end.
+      gate.settle("layout:/a", { error: layoutError });
+      await Promise.resolve();
+      expect(settled).toBe(false);
 
-    gate.observeRenderError(new Error("a fatal error"));
-    await expect(waiting).resolves.toEqual({ error: layoutError, layoutIndex: 1 });
+      endRender();
+      await expect(waiting).resolves.toEqual({ error: layoutError, layoutIndex: 1 });
+    }
   });
 
   it("is found from the elements record it was registered with", () => {

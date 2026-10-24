@@ -1040,7 +1040,6 @@ async function renderAppPageLifecycleImpl(
       ? getAppPageLayoutGate(options.element)
       : null;
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
-    layoutGate?.observeRenderError(error);
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
     return baseOnError(error, requestInfo, errorContext);
   });
@@ -1075,10 +1074,20 @@ async function renderAppPageLifecycleImpl(
   }
 
   if (layoutGate) {
+    // A branch read only while waiting tells the gate when the render ends,
+    // completed or failed, before every held layout renders.
+    const [heldStream, watchedStream] = rscStream.tee();
+    rscStream = heldStream;
+    const watchedReader = watchedStream.getReader();
+    const renderEnded = (async () => {
+      while (!(await watchedReader.read()).done);
+    })();
     const layoutFailure = await layoutGate.wait(
       (layoutId) =>
         isAppElementsRecord(outgoingElement) && Object.hasOwn(outgoingElement, layoutId),
+      renderEnded,
     );
+    void watchedReader.cancel().catch(() => {});
     const layoutSpecialError = layoutFailure
       ? resolveAppPageSpecialError(layoutFailure.error)
       : null;
