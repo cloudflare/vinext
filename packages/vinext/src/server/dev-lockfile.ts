@@ -27,7 +27,6 @@
  *   state directory rather than polluting `node_modules`.
  */
 
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "pathslash";
@@ -46,18 +45,6 @@ export type DevServerInfo = {
   startedAt: number;
   /** Project directory the server is running in. Used to detect stale entries. */
   cwd: string;
-  /**
-   * Kernel boot identifier when the server started (`readBootId()`). Absent
-   * on platforms that don't expose one.
-   */
-  bootId?: string;
-  /**
-   * Random token written by `tryAcquireLockfile` for each acquisition. It
-   * tells holders apart when PIDs collide (a restarted container, another PID
-   * namespace sharing the directory, or a second acquisition in this process).
-   * Callers don't set it.
-   */
-  token?: string;
 };
 
 type DevLockfile = {
@@ -95,9 +82,7 @@ export function readLockfile(lockfilePath: string): DevServerInfo | undefined {
       typeof parsed.hostname === "string" &&
       typeof parsed.appUrl === "string" &&
       typeof parsed.startedAt === "number" &&
-      typeof parsed.cwd === "string" &&
-      (parsed.bootId === undefined || typeof parsed.bootId === "string") &&
-      (parsed.token === undefined || typeof parsed.token === "string")
+      typeof parsed.cwd === "string"
     ) {
       return parsed;
     }
@@ -127,65 +112,36 @@ export function isPidAlive(pid: number): boolean {
   }
 }
 
-const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
-
-/** Tokens of the locks this process currently holds. */
-const heldLockTokens = new Set<string>();
-
 /**
- * Returns the kernel's identifier for the current boot, or `undefined` where
- * none is available. Linux (including WSL and container hosts) exposes a
- * random UUID that changes on every boot. Other platforms are never read:
- * on Windows the path resolves to a drive-root folder any local user can
- * create.
- */
-export function readBootId(): string | undefined {
-  if (process.platform !== "linux") return undefined;
-  try {
-    return fs.readFileSync(BOOT_ID_PATH, "utf-8").trim() || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Slack for the wall-clock boot-time comparison in `predatesCurrentBoot`.
- * `os.uptime()` has whole-second resolution on some platforms (macOS derives
- * it from `kern.boottime`). On Windows the uptime clock also drifts slowly
- * against the NTP-corrected wall clock, but a live lock only looks stale once
- * that drift exceeds the uptime at which its server started, which takes
- * days even for a server started right after boot.
+ * Slack for the boot-time comparison in `predatesCurrentBoot`. `os.uptime()`
+ * has whole-second resolution on some platforms (macOS derives it from
+ * `kern.boottime`), so the derived boot time is only accurate to about a
+ * second.
  */
 const BOOT_TIME_TOLERANCE_MS = 5_000;
 
 /**
- * Returns true if the lock was written before the machine last booted.
+ * Returns true if a lock with the given `startedAt` was written before the
+ * machine last booted.
  *
  * Such a lock was left behind by a session whose exit handler never ran (a
  * crash, a forced restart, power loss). PIDs are handed out again after a
  * boot, so the lock's PID may be held by an unrelated process, and
  * `isPidAlive()` alone would report the dead server as running.
  *
- * When both the lock and the system have a boot ID (Linux), they are
- * compared directly. Otherwise the lock's `startedAt` is compared with the
- * boot time derived from `Date.now() - os.uptime()`. Stepping the wall clock
- * forward moves that derived boot time with it (`os.uptime()` doesn't change),
- * so without a boot ID on both sides (macOS, Windows, and Linux locks written
- * by older vinext or where `/proc` is unreadable) a forward step larger than
- * the uptime at which a server started makes its lock look stale, e.g. a VM
- * resuming after the host slept. The second `vinext dev` then takes over, as
- * in the acquisition race tolerated below: Vite moves it to another port, or
- * it fails to bind with `strictPort`.
+ * The boot time is derived from `Date.now() - os.uptime()`. Stepping the wall
+ * clock forward moves it too (`os.uptime()` doesn't change), so a forward
+ * step larger than the uptime at which a server started makes its lock look
+ * stale, e.g. a VM resuming after the host slept. The second `vinext dev`
+ * then takes over, as in the acquisition race tolerated below: Vite moves it
+ * to another port, or it fails to bind with `strictPort`.
  *
- * Known limitation: Windows Fast Startup shuts down by hibernating the
+ * Known limitations: Windows Fast Startup shuts down by hibernating the
  * kernel, so `os.uptime()` keeps counting and a lock left by that shutdown is
- * still checked by PID alone.
+ * still checked by PID alone. A container restart doesn't reset the host's
+ * uptime either.
  */
-export function predatesCurrentBoot(info: Pick<DevServerInfo, "startedAt" | "bootId">): boolean {
-  if (info.bootId !== undefined) {
-    const bootId = readBootId();
-    if (bootId !== undefined) return info.bootId !== bootId;
-  }
+export function predatesCurrentBoot(startedAt: number): boolean {
   let uptime: number;
   try {
     uptime = os.uptime();
@@ -193,7 +149,7 @@ export function predatesCurrentBoot(info: Pick<DevServerInfo, "startedAt" | "boo
     return false;
   }
   const bootTime = Date.now() - uptime * 1000;
-  return info.startedAt < bootTime - BOOT_TIME_TOLERANCE_MS;
+  return startedAt < bootTime - BOOT_TIME_TOLERANCE_MS;
 }
 
 /**
@@ -266,9 +222,8 @@ type AcquireOptions = {
   /** Initial server info to write. Port/URL may be updated later via `update()`. */
   info: DevServerInfo;
   /**
-   * If a lock file exists but is stale (its PID is dead or is the acquiring
-   * process's own, or it was written before the current boot), take over
-   * instead of failing.
+   * If a lock file exists but is stale (its PID is dead, or it was written
+   * before the current boot), take over instead of failing.
    * Defaults to `true`. Set to `false` for testing.
    */
   takeOverStale?: boolean;
@@ -307,26 +262,15 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    // A lock this process holds is live; its token tells it apart. Any other
-    // lock naming the acquiring PID was written by a different process with
-    // the same PID, typically before a container restart, where the new PID
-    // namespace hands out PIDs deterministically while the host's boot ID and
-    // uptime don't change. (A live server in another PID namespace sharing
-    // this directory can also match; PIDs never identified processes across
-    // namespaces, and the token keeps the two holders from mutating each
-    // other's lock.)
-    const heldHere = existing.token !== undefined && heldLockTokens.has(existing.token);
-    const alive =
-      heldHere ||
-      (existing.pid !== info.pid && !predatesCurrentBoot(existing) && isPidAlive(existing.pid));
+    const alive = !predatesCurrentBoot(existing.startedAt) && isPidAlive(existing.pid);
     if (alive) {
       return { ok: false, existing, lockfilePath };
     }
     if (!takeOverStale) {
       return { ok: false, existing, lockfilePath };
     }
-    // Existing entry is stale (dead PID, our PID but not held here, or
-    // written before this boot). Fall through and overwrite.
+    // Existing entry is stale (dead PID, or written before this boot). Fall
+    // through and overwrite.
   }
 
   // NB: there is a small TOCTOU window between readLockfile() above and
@@ -336,29 +280,23 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   // error. A native flock() (the approach Next.js takes via Rust bindings)
   // would close the window, but it's not worth the complexity for a
   // dev-ergonomics feature.
-  const token = randomUUID();
-  writeLockfile(lockfilePath, { ...info, token });
-  heldLockTokens.add(token);
+  writeLockfile(lockfilePath, info);
 
   // Capture the owner PID once so release() always asks "is the file still
   // mine?" against the same identity, regardless of what update() writes
   // later. In practice the PID never changes between acquire and release,
   // but this makes the intent explicit and decouples release from update.
-  // The token distinguishes this acquisition from another holder that has
-  // the same PID.
   const ownerPid = info.pid;
-  const isMine = (current: DevServerInfo | undefined) =>
-    current !== undefined && current.pid === ownerPid && current.token === token;
 
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
-    heldLockTokens.delete(token);
     try {
       // Only delete if the file still points at us. If another process took
       // over the lock (e.g. after a crash), don't delete their entry.
-      if (isMine(readLockfile(lockfilePath))) {
+      const current = readLockfile(lockfilePath);
+      if (current && current.pid === ownerPid) {
         fs.unlinkSync(lockfilePath);
       }
     } catch {
@@ -387,8 +325,9 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
     update(next: DevServerInfo): void {
       if (released) return;
       try {
-        if (!isMine(readLockfile(lockfilePath))) return;
-        writeLockfile(lockfilePath, { ...next, token });
+        const current = readLockfile(lockfilePath);
+        if (!current || current.pid !== ownerPid) return;
+        writeLockfile(lockfilePath, next);
       } catch {
         // Best-effort; not fatal.
       }

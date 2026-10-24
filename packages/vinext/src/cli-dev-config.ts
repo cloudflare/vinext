@@ -1,11 +1,7 @@
 import fs from "node:fs";
 import { toSlash } from "pathslash";
 import type { Plugin, ResolvedConfig, ServerOptions, UserConfig, ViteDevServer } from "vite";
-import {
-  formatAlreadyRunningError,
-  readBootId,
-  tryAcquireLockfile,
-} from "./server/dev-lockfile.js";
+import { formatAlreadyRunningError, tryAcquireLockfile } from "./server/dev-lockfile.js";
 import { isViteCliInvocation } from "./utils/vite-cli-invocation.js";
 
 type ActiveDevServerLock = {
@@ -13,7 +9,6 @@ type ActiveDevServerLock = {
   restarting: boolean;
   servers: number;
   startedAt: number;
-  bootId: string | undefined;
 };
 
 const activeDevServerLocks = new Map<string, ActiveDevServerLock>();
@@ -173,7 +168,6 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
       activeLock = restartingLock;
     } else {
       const startedAt = Date.now();
-      const bootId = readBootId();
       const acquired = tryAcquireLockfile({
         root,
         info: {
@@ -183,7 +177,6 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
           appUrl: `http://${displayHostname}:${configuredPort}`,
           startedAt,
           cwd: root,
-          bootId,
         },
       });
       if (!acquired.ok) {
@@ -195,13 +188,7 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
           }),
         );
       }
-      activeLock = {
-        lockfile: acquired.lockfile,
-        restarting: false,
-        servers: 0,
-        startedAt,
-        bootId,
-      };
+      activeLock = { lockfile: acquired.lockfile, restarting: false, servers: 0, startedAt };
       activeDevServerLocks.set(root, activeLock);
     }
     activeLock.servers++;
@@ -233,7 +220,6 @@ function configureDevServerLifecycle(server: ViteDevServer): void {
         appUrl,
         startedAt: lock.startedAt,
         cwd: root,
-        bootId: lock.bootId,
       });
     });
   });

@@ -17,7 +17,6 @@ import {
   getLockfilePath,
   isPidAlive,
   predatesCurrentBoot,
-  readBootId,
   readLockfile,
   tryAcquireLockfile,
 } from "../packages/vinext/src/server/dev-lockfile.js";
@@ -82,113 +81,30 @@ function beforeBoot(): number {
   return bootTime() - 60_000;
 }
 
-const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
-
-const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
-
-function stubPlatform(platform: NodeJS.Platform): void {
-  Object.defineProperty(process, "platform", { ...originalPlatform, value: platform });
-}
-
-function restoreMocks(): void {
-  vi.restoreAllMocks();
-  Object.defineProperty(process, "platform", originalPlatform);
-}
-
-/**
- * Make the boot ID file read as `contents`, or fail with ENOENT when
- * `contents` is undefined, and report Linux so `readBootId()` reads it.
- */
-function mockBootIdFile(contents: string | undefined): void {
-  stubPlatform("linux");
-  const readFileSync = fs.readFileSync;
-  vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) => {
-    if (file !== BOOT_ID_PATH) return readFileSync(file, options);
-    if (contents === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-    return contents;
-  }) as typeof fs.readFileSync);
-}
-
-/** Make `readBootId()` report `bootId`, on every platform. */
-function mockBootId(bootId: string): void {
-  mockBootIdFile(`${bootId}\n`);
-}
-
-describe("readBootId", () => {
-  afterEach(() => {
-    restoreMocks();
-  });
-
-  it("reads the kernel boot ID", () => {
-    mockBootId("0a1b2c3d-boot");
-    expect(readBootId()).toBe("0a1b2c3d-boot");
-  });
-
-  it.runIf(process.platform === "linux")("reads the real kernel boot ID on Linux", () => {
-    expect(readBootId()).toMatch(/^[0-9a-f-]{36}$/);
-  });
-
-  it("returns undefined when the boot ID file can't be read", () => {
-    mockBootIdFile(undefined);
-    expect(readBootId()).toBeUndefined();
-  });
-
-  it("does not read the boot ID path on other platforms", () => {
-    // On Windows the path resolves to a drive-root folder any user can create.
-    mockBootIdFile("planted-boot");
-    stubPlatform("win32");
-    expect(readBootId()).toBeUndefined();
-  });
-
-  it("returns undefined for an empty boot ID file", () => {
-    mockBootIdFile("\n");
-    expect(readBootId()).toBeUndefined();
-  });
-});
-
 describe("predatesCurrentBoot", () => {
   afterEach(() => {
-    restoreMocks();
+    vi.restoreAllMocks();
   });
 
   it("returns false for a lock written during this boot", () => {
-    expect(predatesCurrentBoot({ startedAt: Date.now() })).toBe(false);
+    expect(predatesCurrentBoot(Date.now())).toBe(false);
   });
 
   it("tolerates a lock that predates the derived boot time by a few seconds", () => {
-    // os.uptime() is whole seconds on macOS and NTP slews the wall clock, so
-    // a lock written right after boot can appear to predate it slightly.
-    expect(predatesCurrentBoot({ startedAt: bootTime() - 4_000 })).toBe(false);
+    // os.uptime() is whole seconds on macOS, so a lock written right after
+    // boot can appear to predate it slightly.
+    expect(predatesCurrentBoot(bootTime() - 4_000)).toBe(false);
   });
 
   it("returns true for a lock written before this boot", () => {
-    expect(predatesCurrentBoot({ startedAt: beforeBoot() })).toBe(true);
-  });
-
-  it("returns true when the lock's boot ID differs from the current one", () => {
-    mockBootId("current-boot");
-    expect(predatesCurrentBoot({ startedAt: Date.now(), bootId: "previous-boot" })).toBe(true);
-  });
-
-  it("trusts a matching boot ID over the wall clock", () => {
-    // A forward wall-clock step (e.g. a VM resuming after host sleep) moves
-    // the derived boot time past a live server's startedAt.
-    mockBootId("current-boot");
-    expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "current-boot" })).toBe(false);
+    expect(predatesCurrentBoot(beforeBoot())).toBe(true);
   });
 
   it("falls back to the PID check when os.uptime() throws", () => {
     vi.spyOn(os, "uptime").mockImplementation(() => {
       throw new Error("uv_uptime failed");
     });
-    expect(predatesCurrentBoot({ startedAt: 0 })).toBe(false);
-  });
-
-  it("falls back to the wall clock when the lock has a boot ID but the system has none", () => {
-    // e.g. a lock written in a Linux container, read where /proc is unavailable.
-    mockBootIdFile(undefined);
-    expect(predatesCurrentBoot({ startedAt: Date.now(), bootId: "previous-boot" })).toBe(false);
-    expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "previous-boot" })).toBe(true);
+    expect(predatesCurrentBoot(0)).toBe(false);
   });
 });
 
@@ -228,28 +144,6 @@ describe("readLockfile", () => {
     fs.writeFileSync(lockPath, JSON.stringify(info));
     expect(readLockfile(lockPath)).toEqual(info);
   });
-
-  it("round-trips a boot ID", () => {
-    const info = baseInfo({ bootId: "0a1b2c3d-boot" });
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify(info));
-    expect(readLockfile(lockPath)).toEqual(info);
-  });
-
-  it("returns undefined for a non-string token", () => {
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ ...baseInfo(), token: 42 }));
-    expect(readLockfile(lockPath)).toBeUndefined();
-  });
-
-  it("returns undefined for a non-string boot ID", () => {
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify({ ...baseInfo(), bootId: 42 }));
-    expect(readLockfile(lockPath)).toBeUndefined();
-  });
 });
 
 describe("tryAcquireLockfile", () => {
@@ -260,7 +154,6 @@ describe("tryAcquireLockfile", () => {
   });
 
   afterEach(() => {
-    restoreMocks();
     cleanup(root);
   });
 
@@ -270,7 +163,7 @@ describe("tryAcquireLockfile", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const stored = readLockfile(getLockfilePath(root));
-    expect(stored).toEqual({ ...info, token: expect.any(String) });
+    expect(stored).toEqual(info);
     result.lockfile.release();
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
@@ -304,7 +197,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
+    expect(readLockfile(lockPath)).toEqual(info);
     result.lockfile.release();
   });
 
@@ -320,60 +213,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
-    result.lockfile.release();
-  });
-
-  it("fails when a live server's lock looks pre-boot only because the wall clock stepped", () => {
-    mockBootId("current-boot");
-    const existing = baseInfo({
-      pid: process.pid,
-      startedAt: beforeBoot(),
-      bootId: "current-boot",
-      cwd: root,
-    });
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify(existing));
-
-    const result = tryAcquireLockfile({
-      root,
-      info: baseInfo({ pid: process.pid + 1, cwd: root }),
-      unlockOnExit: false,
-    });
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.existing).toEqual(existing);
-  });
-
-  it("takes over a lock whose boot ID differs from the current one even when its PID is alive", () => {
-    mockBootId("current-boot");
-    const stale = baseInfo({ pid: process.pid, bootId: "previous-boot", cwd: root });
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify(stale));
-
-    const info = baseInfo({ pid: process.pid + 1, port: 4000, bootId: "current-boot", cwd: root });
-    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
-    result.lockfile.release();
-  });
-
-  it("takes over a live-looking lock that names the acquiring PID", () => {
-    // After a container restart the new server often gets the old one's PID,
-    // and the host's boot ID and uptime are unchanged.
-    const stale = baseInfo({ pid: process.pid, startedAt: Date.now() - 60_000, cwd: root });
-    const lockPath = getLockfilePath(root);
-    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
-    fs.writeFileSync(lockPath, JSON.stringify(stale));
-
-    const info = baseInfo({ pid: process.pid, port: 4000, cwd: root });
-    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
+    expect(readLockfile(lockPath)).toEqual(info);
     result.lockfile.release();
   });
 
@@ -420,7 +260,7 @@ describe("tryAcquireLockfile", () => {
     if (!result.ok) return;
     const updated = baseInfo({ cwd: root, port: 5173, appUrl: "http://localhost:5173" });
     result.lockfile.update(updated);
-    expect(readLockfile(getLockfilePath(root))).toEqual({ ...updated, token: expect.any(String) });
+    expect(readLockfile(getLockfilePath(root))).toEqual(updated);
     result.lockfile.release();
   });
 
@@ -480,42 +320,6 @@ describe("tryAcquireLockfile", () => {
 
     expect(readLockfile(getLockfilePath(root))).toEqual(other);
     result.lockfile.release();
-  });
-
-  it("fails when this process already holds the lock", () => {
-    const first = tryAcquireLockfile({ root, info: baseInfo({ cwd: root }), unlockOnExit: false });
-    expect(first.ok).toBe(true);
-    if (!first.ok) return;
-    const lockPath = getLockfilePath(root);
-    const held = readLockfile(lockPath);
-
-    // e.g. a second server.listen() on the same Vite server.
-    const second = tryAcquireLockfile({
-      root,
-      info: baseInfo({ cwd: root, port: 4000 }),
-      unlockOnExit: false,
-    });
-    expect(second.ok).toBe(false);
-    expect(readLockfile(lockPath)).toEqual(held);
-
-    first.lockfile.release();
-    expect(fs.existsSync(lockPath)).toBe(false);
-  });
-
-  it("does not update or release a lock taken over by another holder with the same PID", () => {
-    const result = tryAcquireLockfile({ root, info: baseInfo({ cwd: root }), unlockOnExit: false });
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    // Another PID namespace sharing this directory, whose server has our PID.
-    const lockPath = getLockfilePath(root);
-    const other = baseInfo({ cwd: root, port: 5000, token: "other-holder" });
-    fs.writeFileSync(lockPath, JSON.stringify(other));
-
-    result.lockfile.update(baseInfo({ cwd: root, port: 4000 }));
-    expect(readLockfile(lockPath)).toEqual(other);
-    result.lockfile.release();
-    expect(readLockfile(lockPath)).toEqual(other);
   });
 
   it("release() is idempotent", () => {

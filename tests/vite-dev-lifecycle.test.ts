@@ -7,11 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer, type ViteDevServer } from "vite";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
-import {
-  getLockfilePath,
-  readBootId,
-  readLockfile,
-} from "../packages/vinext/src/server/dev-lockfile.js";
+import { getLockfilePath, readLockfile } from "../packages/vinext/src/server/dev-lockfile.js";
 
 const originalArgv = process.argv;
 const VITE_CLI_PATH = path.join(path.dirname(fileURLToPath(import.meta.resolve("vite"))), "cli.js");
@@ -564,9 +560,7 @@ export default { plugins: [vinext()] };
       `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
     );
     // A lock from before the current boot whose PID now belongs to a live,
-    // unrelated process (this test runner). On Linux the boot ID mismatch is
-    // the only stale signal; other platforms use the pre-boot startedAt.
-    const isLinux = process.platform === "linux";
+    // unrelated process (this test runner).
     const lockPath = getLockfilePath(root);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(
@@ -576,9 +570,8 @@ export default { plugins: [vinext()] };
         port: 3000,
         hostname: "localhost",
         appUrl: "http://localhost:3000",
-        startedAt: isLinux ? Date.now() - 60_000 : Date.now() - os.uptime() * 1000 - 60_000,
+        startedAt: Date.now() - os.uptime() * 1000 - 60_000,
         cwd: root,
-        bootId: "previous-boot",
       }),
     );
     child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {
@@ -597,8 +590,6 @@ export default { plugins: [vinext()] };
       return current && current.pid === child?.pid && current.port > 0 ? current : undefined;
     });
     expect(lock.port).not.toBe(3000);
-    expect(lock.bootId).toBe(readBootId());
-    if (isLinux) expect(lock.bootId).toMatch(/^[0-9a-f-]{36}$/);
   }, 30_000);
 
   it("claims the CLI lifecycle without locking a server that never listens", async () => {
