@@ -410,7 +410,8 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       } else if (
         // The Store can't regenerate a non-replayable entry, so the caller revalidates it
         // once the Store reports it stale: past its stored revalidate, or after invalidate().
-        // Its edge copy is gone by then, so the first refresh replaces it without an edge purge.
+        // Its own edge copy has expired by then, so the first refresh normally replaces it
+        // without an edge purge.
         storeStatus === "BLOB-STALE" ||
         // A shorter requested revalidate makes it stale before the Store does.
         (requestedStale &&
