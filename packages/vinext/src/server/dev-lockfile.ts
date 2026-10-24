@@ -139,9 +139,10 @@ export function readBootId(): string | undefined {
 /**
  * Slack for the wall-clock boot-time comparison in `predatesCurrentBoot`.
  * `os.uptime()` has whole-second resolution on some platforms (macOS derives
- * it from `kern.boottime`), and on Windows NTP slews the wall clock against
- * the uptime clock, so the derived boot time is only accurate to a few
- * seconds.
+ * it from `kern.boottime`). On Windows the uptime clock also drifts slowly
+ * against the NTP-corrected wall clock, but a live lock only looks stale once
+ * that drift exceeds the uptime at which its server started, which takes
+ * days even for a server started right after boot.
  */
 const BOOT_TIME_TOLERANCE_MS = 5_000;
 
@@ -157,9 +158,10 @@ const BOOT_TIME_TOLERANCE_MS = 5_000;
  * compared directly. Otherwise the lock's `startedAt` is compared with the
  * boot time derived from `Date.now() - os.uptime()`. Stepping the wall clock
  * forward moves that derived boot time with it (`os.uptime()` doesn't change),
- * so on macOS and Windows a forward step larger than the uptime at which a
- * server started makes its lock look stale, e.g. a VM resuming after the host
- * slept. The second `vinext dev` then takes over and Vite picks another port,
+ * so without a boot ID on both sides (macOS, Windows, and Linux locks written
+ * by older vinext or where `/proc` is unreadable) a forward step larger than
+ * the uptime at which a server started makes its lock look stale, e.g. a VM
+ * resuming after the host slept. The second `vinext dev` then takes over and Vite picks another port,
  * the same outcome as the acquisition race tolerated below.
  *
  * Known limitation: Windows Fast Startup shuts down by hibernating the
