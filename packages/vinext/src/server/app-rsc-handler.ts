@@ -1387,7 +1387,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cache === "shared" &&
             props.kind === "app-page" &&
             props.isRscRequest &&
-            props.matchKind === "request" &&
+            // A rewrite's target is in the props that key a shared dispatch,
+            // so a rewritten request is canonicalized like a direct one.
+            (props.matchKind === "request" || props.matchKind === "resolved") &&
             props.interceptionContext === null &&
             props.interceptionId === null &&
             props.mountedSlotsHeader === null

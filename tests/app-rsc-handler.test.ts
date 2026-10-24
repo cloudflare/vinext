@@ -937,7 +937,7 @@ describe("createAppRscHandler", () => {
     });
   });
 
-  it("keeps rewritten and mounted-slot RSC requests contextual", async () => {
+  it("canonicalizes rewritten RSC requests and keeps mounted-slot ones contextual", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
@@ -963,8 +963,10 @@ describe("createAppRscHandler", () => {
     );
 
     const [rewrittenRequest, rewrittenProps] = dispatchResponseStage.mock.calls[0]!;
-    expect(rewrittenRequest.headers.get("next-url")).toBe("/source");
-    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).not.toBe("");
+    // The rewrite target is in the props, so the per-navigation selectors are
+    // canonicalized away and every navigation shares one cache entry.
+    expect(rewrittenRequest.headers.get("next-url")).toBeNull();
+    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).toBe("");
     expect(rewrittenProps).toMatchObject({ matchKind: "resolved" });
 
     dispatchResponseStage.mockClear();
@@ -1168,14 +1170,11 @@ describe("createAppRscHandler", () => {
       );
 
       const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
-      // Rewritten RSC requests stay contextual, so the raw URL reaches dispatch.
+      // Rewritten RSC requests are canonicalized like direct ones, so the
+      // per-navigation hash and the user's `_rsc` pairs leave the identity.
       expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
-      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([
-        hash,
-        "ignored",
-        "encoded",
-      ]);
-      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(`/docs/source?_rsc=${hash}`);
+      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([""]);
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc=");
     });
 
     it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
@@ -3116,6 +3115,42 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
+  });
+
+  it("normalizes a contextual RSC request reached through a rewrite before shared dispatch", async () => {
+    const route = createPageRoute();
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+    });
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    const contextualUrl = await createRscRequestUrl("/docs/alias", headers);
+
+    await handler(
+      new Request(new URL(contextualUrl, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props).toMatchObject({ kind: "app-page", matchKind: "resolved" });
+    // Without canonicalization the per-navigation state tree and `_rsc` hash
+    // reach the cache key, so every prefetch and reload misses.
+    expect(request.headers.get("next-router-state-tree")).toBeNull();
+    expect(request.headers.get("next-url")).toBeNull();
   });
 
   it.each([
