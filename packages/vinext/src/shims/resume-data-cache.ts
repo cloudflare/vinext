@@ -14,17 +14,41 @@
  */
 import type { CacheControlMetadata, CachedFetchValue } from "./cache-handler.js";
 import { _getResumeDataCacheCollector, _getResumeDataCacheSeed } from "./cache-request-state.js";
+import { getOrCreateAls } from "./internal/als-registry.js";
+import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
+
+// cache.ts owns this scope. Read it through the shared registry so the
+// resume data cache does not pull in the full `next/cache` implementation.
+const unstableCacheContextStorage = getOrCreateAls<boolean>("vinext.unstableCache.als");
+
+/**
+ * Like Next.js's getRenderResumeDataCache() and getPrerenderResumeDataCache(),
+ * a cache scope sees no resume data cache. A nested cache is part of its
+ * enclosing entry, so it is never replayed or collected on its own.
+ */
+function isInsideCacheScope(): boolean {
+  const type = workUnitAsyncStorage.getStore()?.type;
+  return (
+    type === "cache" ||
+    type === "private-cache" ||
+    type === "unstable-cache" ||
+    unstableCacheContextStorage.getStore() === true
+  );
+}
+
+function getResumeDataCacheSeed(): ResumeDataCache | null {
+  return isInsideCacheScope() ? null : _getResumeDataCacheSeed();
+}
+
+function getResumeDataCacheCollector(): ResumeDataCache | null {
+  return isInsideCacheScope() ? null : _getResumeDataCacheCollector();
+}
 
 export type UseCacheResumeDataCacheEntry = {
   /** The base64 Flight payload of the cached result. */
   body: string;
   cacheControl: CacheControlMetadata | undefined;
   tags: string[];
-  /**
-   * The root params the cached function read, so a resumed hit still keys an
-   * enclosing cache by them on a runtime that has not run the function yet.
-   */
-  readRootParamNames?: string[];
 };
 
 export type FetchResumeDataCacheEntry = CachedFetchValue["data"];
@@ -73,7 +97,7 @@ export function parseResumeDataCache(value: string | undefined): ResumeDataCache
 export function readUseCacheResumeDataCacheEntry(
   key: string,
 ): UseCacheResumeDataCacheEntry | undefined {
-  return _getResumeDataCacheSeed()?.cache.get(key);
+  return getResumeDataCacheSeed()?.cache.get(key);
 }
 
 // Like Next.js's DYNAMIC_EXPIRE (server/use-cache/constants.ts), in seconds.
@@ -94,16 +118,16 @@ export function collectUseCacheResumeDataCacheEntry(
   ) {
     return;
   }
-  _getResumeDataCacheCollector()?.cache.set(key, entry);
+  getResumeDataCacheCollector()?.cache.set(key, entry);
 }
 
 export function readFetchResumeDataCacheEntry(key: string): FetchResumeDataCacheEntry | undefined {
-  return _getResumeDataCacheSeed()?.fetch.get(key);
+  return getResumeDataCacheSeed()?.fetch.get(key);
 }
 
 export function collectFetchResumeDataCacheEntry(
   key: string,
   entry: FetchResumeDataCacheEntry,
 ): void {
-  _getResumeDataCacheCollector()?.fetch.set(key, entry);
+  getResumeDataCacheCollector()?.fetch.set(key, entry);
 }

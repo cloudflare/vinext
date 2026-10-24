@@ -7331,7 +7331,9 @@ describe('"use cache" runtime', () => {
     expect(outerCalls).toBe(2);
   });
 
-  it("keys an outer cache by the root params of a nested resume data cache hit", async () => {
+  // Ported from Next.js: getRenderResumeDataCache() and getPrerenderResumeDataCache()
+  // return null inside a cache scope (server/app-render/work-unit-async-storage.external.ts).
+  it("keeps nested caches out of the resume data cache", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
     const { setCacheHandler, MemoryCacheHandler } =
@@ -7349,49 +7351,45 @@ describe('"use cache" runtime', () => {
     let outerCalls = 0;
     const inner = registerCachedFunction(
       async () => ({ countryCode: await getRootParam("countryCode") }),
-      "test:rdc-root-param-inner",
+      "test:rdc-nested-inner",
     );
     const outer = registerCachedFunction(async () => {
       outerCalls++;
       return { ...(await inner()), outerCalls };
-    }, "test:rdc-root-param-outer");
-    const invoke = (
+    }, "test:rdc-nested-outer");
+    const invoke = <T>(
+      fn: () => Promise<T>,
       countryCode: string,
       rdc: {
         collector?: ReturnType<typeof createResumeDataCache>;
         seed?: ReturnType<typeof createResumeDataCache>;
-      } = {},
+      },
     ) =>
       runWithRequestContext(createRequestContext(), () =>
         runWithRootParamsScope({ countryCode }, () => {
           _setResumeDataCacheCollector(rdc.collector ?? null);
           _setResumeDataCacheSeed(rdc.seed ?? null);
-          return outer();
+          return fn();
         }),
       );
 
+    // Only the outermost cache is collected.
     const collector = createResumeDataCache();
-    await expect(invoke("us", { collector })).resolves.toEqual({
+    await expect(invoke(outer, "us", { collector })).resolves.toEqual({
       countryCode: "us",
       outerCalls: 1,
     });
+    expect([...collector.cache.keys()]).toEqual([expect.stringContaining("test:rdc-nested-outer")]);
 
-    // A cold runtime resumes a shell that holds only the inner entry.
+    // A seeded entry for the inner cache is not replayed inside the outer one.
+    const innerSeed = createResumeDataCache();
+    await invoke(inner, "us", { collector: innerSeed });
+    expect(innerSeed.cache.size).toBe(1);
     setCacheHandler(new MemoryCacheHandler());
-    const knownRootParams = Reflect.get(
-      globalThis,
-      Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId"),
-    ) as Map<string, Set<string>>;
-    knownRootParams.clear();
-    const seed = createResumeDataCache();
-    for (const [key, entry] of collector.cache) {
-      if (key.includes("test:rdc-root-param-inner")) seed.cache.set(key, entry);
-    }
-    expect(seed.cache.size).toBe(1);
-    await expect(invoke("us", { seed })).resolves.toEqual({ countryCode: "us", outerCalls: 2 });
-
-    // The outer entry is keyed by the root param the nested hit read.
-    await expect(invoke("gb")).resolves.toEqual({ countryCode: "gb", outerCalls: 3 });
+    await expect(invoke(outer, "gb", { seed: innerSeed })).resolves.toEqual({
+      countryCode: "gb",
+      outerCalls: 2,
+    });
   });
 
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
