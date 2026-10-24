@@ -73,10 +73,11 @@ export function edgeCacheControl(
   hasRevalidator = true,
 ): string {
   if (!hasRevalidator) {
-    // Its writer replaces it once it goes stale, so its edge copy ends there, never later,
-    // and the replacement needs no edge purge. The Store serves it stale meanwhile.
+    // Its writer replaces it once it goes stale, so its edge copy ends there, never later
+    // (not even on an error), and the replacement needs no edge purge. The Store serves it
+    // stale meanwhile.
     const remainingFreshSeconds = Math.max(0, Math.floor((freshUntil - now) / 1000));
-    return `max-age=${remainingFreshSeconds}, stale-while-revalidate=0`;
+    return `max-age=${remainingFreshSeconds}, stale-while-revalidate=0, stale-if-error=0`;
   }
 
   if (now < freshUntil) {

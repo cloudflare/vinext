@@ -18,8 +18,8 @@ import { mapSettledWithR2Concurrency } from "../src/r2-concurrency.js";
 
 const workerScript = fileURLToPath(new URL("../dist/worker/worker.js", import.meta.url));
 const versionId = "poc-v2";
-const metadataName = `${versionId}:r2-v2`;
-const r2Root = `runtime-cache/${versionId}/r2-v2`;
+const metadataName = `${versionId}:r2-v3`;
+const r2Root = `runtime-cache/${versionId}/r2-v3`;
 
 type PutOptions = {
   age?: number;
@@ -390,7 +390,7 @@ test("purgeExisting skips replacing an entry without a revalidator once its edge
   // Its writer replaces it once it goes stale, so its edge copy ends there, rounded down.
   assert.match(
     fresh.headers.get("Cloudflare-CDN-Cache-Control") ?? "",
-    /^max-age=[12], stale-while-revalidate=0$/,
+    /^max-age=[12], stale-while-revalidate=0, stale-if-error=0$/,
   );
   await fresh.arrayBuffer();
 
@@ -410,7 +410,7 @@ test("purgeExisting skips replacing an entry without a revalidator once its edge
   assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.equal(
     stale.headers.get("Cloudflare-CDN-Cache-Control"),
-    "max-age=0, stale-while-revalidate=0",
+    "max-age=0, stale-while-revalidate=0, stale-if-error=0",
   );
   assert.equal(await stale.text(), "second");
   // A Workers Cache revalidation gets the stored response instead of a failed regeneration.
@@ -437,7 +437,7 @@ test("an entry without a revalidator keeps its edge policy with response metadat
   assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
   assert.equal(
     stale.headers.get("Cloudflare-CDN-Cache-Control"),
-    "max-age=0, stale-while-revalidate=0",
+    "max-age=0, stale-while-revalidate=0, stale-if-error=0",
   );
   assert.equal(await stale.text(), "body");
 });
@@ -462,10 +462,84 @@ test("purgeExisting still purges a stale entry whose edge copy may still be serv
     purgeExisting: true,
   });
   assert.deepEqual(afterInvalidate.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+
+  // The refused purge left the first, longer-lived copy at the edge after the second went stale.
+  const firstWrittenAt = Date.now();
+  await put("/stale-after-refused-purge", "first", {
+    cacheControl: "public, max-age=3, stale-while-revalidate=60",
+    noRevalidator: true,
+  });
+  const shorter = await put("/stale-after-refused-purge", "second", {
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    noRevalidator: true,
+    purgeExisting: true,
+  });
+  assert.deepEqual(shorter.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const staleSecond = await read("/stale-after-refused-purge");
+  assert.equal(staleSecond.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await staleSecond.arrayBuffer();
+  const afterRefusedPurge = await put("/stale-after-refused-purge", "third", {
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    noRevalidator: true,
+    purgeExisting: true,
+  });
+  assert.deepEqual(afterRefusedPurge.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: false,
+  });
   assert.equal(
     ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length,
-    3,
+    5,
   );
+
+  // Once the first copy has expired too, replacing the stale entry skips the purge again.
+  await new Promise((resolve) => setTimeout(resolve, firstWrittenAt + 3300 - Date.now()));
+  const afterEarlierCopyExpired = await put("/stale-after-refused-purge", "fourth", {
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    noRevalidator: true,
+    purgeExisting: true,
+  });
+  assert.deepEqual(afterEarlierCopyExpired.json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  assert.equal(
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length,
+    5,
+  );
+});
+
+test("purgeExisting keeps purging after replacing an entry with a revalidator until a purge is accepted", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  const edgeCalls = async () =>
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length;
+  const options = {
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    noRevalidator: true,
+    purgeExisting: true,
+  };
+  // Workers Cache may serve an entry with a revalidator stale past its SWR window, e.g. on an error.
+  await put("/replaced-revalidator", "first", {
+    cacheControl: "public, max-age=0, stale-while-revalidate=1",
+  });
+  const refused = await put("/replaced-revalidator", "second", options);
+  assert.deepEqual(refused.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const stillPurged = await put("/replaced-revalidator", "third", options);
+  assert.deepEqual(stillPurged.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+  assert.equal(await edgeCalls(), 2);
+
+  // An accepted purge removed every earlier copy, so the next stale replacement skips it.
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  const accepted = await put("/replaced-revalidator", "fourth", options);
+  assert.deepEqual(accepted.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await edgeCalls(), 1);
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+  const skipped = await put("/replaced-revalidator", "fifth", options);
+  assert.deepEqual(skipped.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(await edgeCalls(), 1);
+  assert.equal(await (await read("/replaced-revalidator")).text(), "fifth");
 });
 
 test("put clears a miss cached while the write is in flight", async () => {
@@ -2722,11 +2796,15 @@ test("the previous metadata schema is upgraded in place", async () => {
         { version: 6 },
         { version: 7 },
         { version: 8 },
+        { version: 9 },
       ],
     );
     assert.deepEqual(
-      await storage.exec("SELECT expiry_behavior FROM entries WHERE key_hash = ?", "legacy-entry"),
-      [{ expiry_behavior: null }],
+      await storage.exec(
+        "SELECT expiry_behavior, edge_fresh_until FROM entries WHERE key_hash = ?",
+        "legacy-entry",
+      ),
+      [{ expiry_behavior: null, edge_fresh_until: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(

@@ -300,7 +300,7 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
-const STORAGE_LAYOUT_VERSION = "r2-v2";
+const STORAGE_LAYOUT_VERSION = "r2-v3";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 const pendingR2Reads = new Map<string, Promise<boolean>>();
 const entryReads = new IsolateNegativeCache<string>(
@@ -1368,7 +1368,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             backingStoreUpdated: true,
             edgePurgeAccepted:
               options.purgeExisting && result.edgePurgeRequired
-                ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
+                ? await this.purgeReplacedEdgeCopies(metadata, result.entry)
                 : true,
           };
         }
@@ -1411,7 +1411,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         backingStoreUpdated: true,
         edgePurgeAccepted:
           options.purgeExisting && result.edgePurgeRequired
-            ? await this.updateEdgeCacheByTags([purgeTagForEntry(result.entry)])
+            ? await this.purgeReplacedEdgeCopies(metadata, result.entry)
             : true,
       };
     } finally {
@@ -1420,6 +1420,21 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       }
       cleared();
     }
+  }
+
+  private async purgeReplacedEdgeCopies(
+    metadata: CacheMetadataStub,
+    entry: StoredEntry,
+  ): Promise<boolean> {
+    const accepted = await this.updateEdgeCacheByTags([purgeTagForEntry(entry)]);
+    if (accepted) {
+      // Later replacements of this entry can skip their purge again once it goes stale.
+      // If this fails, they keep purging instead.
+      await metadata
+        .markReplacedEdgeCopiesPurged(entry.keyHash, entry.activeRevision)
+        .catch(() => {});
+    }
+    return accepted;
   }
 
   async refresh(options: ResponseStoreRefreshOptions): Promise<ResponseStoreMutationResult> {
