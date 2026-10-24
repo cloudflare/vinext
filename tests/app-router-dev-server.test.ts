@@ -2322,7 +2322,11 @@ describe("App Router integration", () => {
 
     const optimizedDependencies =
       rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
-    expect(optimizedDependencies).toContain("react-server-dom-webpack/static.edge");
+    // plugin-rsc selects its vendored runtime unless the package.json at the
+    // working directory declares react-server-dom-webpack; the repo root does not.
+    expect(optimizedDependencies).toContain(
+      "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
+    );
   });
 
   // ── CSRF protection for server actions ───────────────────────────────
@@ -3092,4 +3096,52 @@ describe("optional external store dependency warnings", () => {
     },
     30000,
   );
+});
+
+describe("App Router dev with plugin-rsc's vendored Flight runtime", () => {
+  // https://github.com/cloudflare/vinext/issues/4270
+  it("prebundles the vendored static renderer without a react-server-dom-webpack include", async () => {
+    const root = await createExternalStoreFixture("absent");
+    await fsp.unlink(path.join(root, "node_modules/react-server-dom-webpack"));
+    const requireFromProject = createRequire(path.join(root, "package.json"));
+    const warnings: string[] = [];
+    const logger = createLogger("warn");
+    logger.warn = (message) => {
+      warnings.push(stripVTControlCharacters(message));
+    };
+    logger.warnOnce = (message) => logger.warn(message);
+    let server: ViteDevServer | undefined;
+    try {
+      expect(() => requireFromProject.resolve("react-server-dom-webpack/static.edge")).toThrow();
+      server = await createServer({
+        root,
+        configFile: false,
+        cacheDir: path.join(root, ".vite"),
+        customLogger: logger,
+        plugins: [vinext({ appDir: root })],
+        server: { host: "127.0.0.1", port: 0 },
+      });
+      await server.listen();
+      const address = server.httpServer!.address();
+      if (!address || typeof address === "string") throw new Error("Missing fixture address");
+      const response = await fetch(`http://127.0.0.1:${address.port}/`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("No external store dependency");
+
+      const rscEnvironment = server.environments.rsc;
+      await rscEnvironment.depsOptimizer?.scanProcessing;
+      await rscEnvironment.waitForRequestsIdle();
+      const optimizedDependencies =
+        rscEnvironment.depsOptimizer?.metadata.depInfoList.map((dep) => dep.id) ?? [];
+      expect(optimizedDependencies).toContain(
+        "@vitejs/plugin-rsc/vendor/react-server-dom/static.edge",
+      );
+      expect(warnings.filter((warning) => warning.includes("react-server-dom-webpack"))).toEqual(
+        [],
+      );
+    } finally {
+      await server?.close();
+      await fsp.rm(root, { recursive: true, force: true });
+    }
+  }, 30000);
 });
