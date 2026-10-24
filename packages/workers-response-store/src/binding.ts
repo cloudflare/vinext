@@ -20,6 +20,14 @@ export type SerializableValue =
 export type ResponseStorePutOptions = {
   /** @internal Collapse overlapping framework writes for the same cache key. */
   coalesce?: boolean;
+  /**
+   * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
+   * that this write refreshes. While another write's fresh replacement of that revision is
+   * stored and readable, the write is dropped instead of replacing and purging that copy,
+   * and returns `{ backingStoreUpdated: false, edgePurgeAccepted: false }`.
+   * A value that isn't a positive integer is ignored.
+   */
+  replacesRevision?: number;
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
   /**
@@ -853,6 +861,18 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     return entry ? { ...entry, cacheTags: [], objectKey: this.r2ObjectKey(entry.keyHash) } : entry;
   }
 
+  /**
+   * The revision a refresh replaces, once readers see a newer one in R2. Until then nothing
+   * they can read has replaced it, e.g. after a publish whose R2 write never landed, so the
+   * refresh is written as usual.
+   */
+  private async replacedInR2(keyHash: string, revision?: number): Promise<number | undefined> {
+    if (revision === undefined) return undefined;
+    const object = await this.env.CACHE_BODIES.head(this.r2ObjectKey(keyHash));
+    const latestRevision = metadataInteger(object?.customMetadata?.latestRevision);
+    return latestRevision !== undefined && latestRevision > revision ? revision : undefined;
+  }
+
   private async reserveWrite(
     metadata: CacheMetadataStub,
     cacheKey: CacheKey,
@@ -986,6 +1006,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
+    replacesRevision?: number,
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
@@ -1028,6 +1049,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         candidate,
         write.claimId,
         reservationObjectKey,
+        replacesRevision,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1325,6 +1347,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const metadata = this.getMetadata(keyHash);
     const cacheTags = cacheTagsFromResponse(response);
     const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
+    const replacesRevision =
+      Number.isSafeInteger(options.replacesRevision) && options.replacesRevision! > 0
+        ? options.replacesRevision
+        : undefined;
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {
@@ -1364,6 +1390,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             .finishPendingObjects([objectKey])
             .catch((error) => this.logCleanupFailure(objectKey, error));
           void response.body?.cancel().catch(() => {});
+          // Dropped like a refresh the Store finds replaced: the leading write already replaced
+          // that revision, purging its edge copy if needed.
+          if (
+            replacesRevision !== undefined &&
+            result.entry.activeRevision > replacesRevision &&
+            Date.now() < result.entry.freshUntil
+          ) {
+            return { backingStoreUpdated: false, edgePurgeAccepted: false };
+          }
           return {
             backingStoreUpdated: true,
             edgePurgeAccepted:
@@ -1388,6 +1423,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         options.expiryBehavior === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
+        undefined,
+        await this.replacedInR2(keyHash, replacesRevision),
       );
     })();
     let cleared = () => {};

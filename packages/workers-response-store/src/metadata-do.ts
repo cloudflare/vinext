@@ -96,6 +96,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
+    replacesRevision?: number,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
@@ -988,8 +989,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
+    replacesRevision?: number,
   ): Promise<PublicationResult> {
     return this.ctx.storage.transactionSync(() => {
+      const now = Date.now();
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
           `SELECT entries.*,
@@ -1015,6 +1018,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
+        // A refresh of a revision another write has since replaced with a fresh copy. Anything
+        // else since its read (a tombstone, an invalidation) leaves it a refresh like any other.
+        (replacesRevision !== undefined &&
+          current.active_revision !== null &&
+          current.active_revision > replacesRevision &&
+          current.fresh_until !== null &&
+          now < current.fresh_until) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
@@ -1044,7 +1054,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
       // Like Next.js, a tag's pending `expire` deadline also expires entries
       // published before it.
-      const now = Date.now();
       const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
       const freshUntil = Math.min(metadata.freshUntil, deadline);
       const swrUntil = Math.min(metadata.swrUntil, deadline);
