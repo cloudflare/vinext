@@ -47,8 +47,16 @@ const DEV_ALIAS_FORMS: Array<[string, AliasOptions]> = [
   [CUSTOM_RESOLVER_FORM, customResolverAlias(FIXTURE_DIR)],
 ];
 
+// Rolldown's alias plugin ignores lastIndex, so this still takes next/image.
+function advancedGlobalRegExpAlias(fixtureDir: string) {
+  const find = /^next\/image$/g;
+  find.lastIndex = 1;
+  return [{ find, replacement: path.join(fixtureDir, "app/image-wrapper.tsx") }];
+}
+
 const PRODUCTION_ALIAS_FORMS: Array<[string, (fixtureDir: string) => AliasOptions]> = [
   ["a RegExp", nextImageAlias],
+  ["a global RegExp with an advanced lastIndex", advancedGlobalRegExpAlias],
   [CUSTOM_RESOLVER_FORM, customResolverAlias],
 ];
 

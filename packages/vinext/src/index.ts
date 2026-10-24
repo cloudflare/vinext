@@ -1319,8 +1319,10 @@ const tsconfigAliasCustomResolver = async function (
 // itself or a path below it.
 function aliasFindMatches(find: string | RegExp, id: string): boolean {
   if (typeof find === "string") return id === find || id.startsWith(`${find}/`);
-  // A g or y flag makes test() advance lastIndex, and Vite reuses this RegExp.
+  // A g or y flag makes test() start at lastIndex and advance it. Test from the
+  // start, as rolldown's alias plugin does, and leave the caller's state.
   const { lastIndex } = find;
+  find.lastIndex = 0;
   const matches = find.test(id);
   find.lastIndex = lastIndex;
   return matches;
