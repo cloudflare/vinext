@@ -20,9 +20,10 @@ let appPrefetchFetchClaimSequence = 0;
 let activeDefaultAppPrefetchRequests = 0;
 let defaultAppPrefetchDrainScheduled = false;
 
-// Next.js holds every prefetch request for 300ms after a revalidating Server
-// Action so the revalidation can propagate through CDN caches
-// (REVALIDATION_COOLDOWN_MS in client/components/segment-cache/scheduler.ts).
+// Next.js holds prefetch requests that haven't been sent yet for 300ms after a
+// revalidating Server Action so the revalidation can propagate through CDN
+// caches (REVALIDATION_COOLDOWN_MS in client/components/segment-cache/scheduler.ts).
+// Requests already in flight are left alone.
 const REVALIDATION_COOLDOWN_MS = 300;
 let revalidationCooldownTimer: ReturnType<typeof setTimeout> | null = null;
 /** High-priority requests held by the cooldown, which skip the queue's cap. */
@@ -60,7 +61,9 @@ export function markGatedAppPrefetchFetch(promise: Promise<Response>): Promise<R
 
 /**
  * Whether the revalidation cooldown holds the request behind `promise`: it is
- * still queued, or it is a gated prefetch whose payload request is yet to come.
+ * still queued, or it is a gated prefetch. A gated prefetch's payload stage
+ * isn't tracked, so one counts as held even once its payload request is sent,
+ * and a navigation fetches its own response instead of waiting on it.
  */
 export function isAppPrefetchFetchHeldByRevalidationCooldown(
   promise: Promise<Response> | undefined,

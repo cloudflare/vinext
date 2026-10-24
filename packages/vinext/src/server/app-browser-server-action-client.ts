@@ -167,6 +167,15 @@ export async function invokeClientServerAction(
 
   throwOnServerActionNotFound(fetchResponse, id);
 
+  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
+  // Clear the caches as soon as the server reports a revalidation: a navigation
+  // can run while the response decodes, and the loop guard can refuse any hard
+  // navigation below and keep this document. The cooldown starts first so it
+  // holds the re-prefetches the clear triggers.
+  if (revalidation !== "none") {
+    startAppPrefetchRevalidationCooldown();
+    deps.clearClientNavigationCaches();
+  }
   const hasActionRedirect = fetchResponse.headers.has(ACTION_REDIRECT_HEADER);
   const actionRedirectTarget = resolveActionRedirectTarget(
     fetchResponse,
@@ -190,18 +199,15 @@ export async function invokeClientServerAction(
   if (
     applyServerActionResultDecision(
       actionResultDecision,
-      () => deps.clearClientNavigationCaches(),
+      () => {
+        if (revalidation === "none") deps.clearClientNavigationCaches();
+      },
       (url, historyMode) => deps.performHardNavigation(url, historyMode),
     )
   ) {
     return undefined;
   }
 
-  const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") {
-    startAppPrefetchRevalidationCooldown();
-    deps.clearClientNavigationCaches();
-  }
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,
@@ -224,6 +230,10 @@ export async function invokeClientServerAction(
     Promise.resolve(flightResponse),
     { temporaryReferences },
   );
+  // Next.js starts the cooldown once the action response is decoded
+  // (server-action-reducer.ts), so the window ends 300ms after the action
+  // completes.
+  if (revalidation !== "none") startAppPrefetchRevalidationCooldown();
   if (
     revalidation === "none" &&
     shouldClearClientNavigationCachesForServerActionResult(result, revalidation)

@@ -1608,12 +1608,16 @@ async function renderIsolatedLink(options: {
     const anchor = { href: options.href } as HTMLAnchorElement;
     capturedAnchorProps.ref?.(anchor);
 
-    for (const effect of effects) {
-      effect();
-    }
+    const cleanups = effects.map((effect) => effect());
+    // Runs the first Link's effect cleanups, as unmounting it would.
+    const unmount = (): void => {
+      for (const cleanup of cleanups.reverse()) cleanup?.();
+    };
 
     // Mounts one more Link from the same module instance and runs its effects.
-    const mountAnotherLink = (href: string): void => {
+    const mountAnotherLink = (
+      href: string,
+    ): { anchor: HTMLAnchorElement; anchorProps?: CapturedAnchorProps; unmount(): void } => {
       const firstEffect = effects.length;
       capturedAnchorProps = undefined;
       ReactDOMServer.renderToString(
@@ -1621,10 +1625,16 @@ async function renderIsolatedLink(options: {
       );
       // The render above reassigns capturedAnchorProps through captureAnchor.
       const anotherAnchorProps = capturedAnchorProps as CapturedAnchorProps | undefined;
-      anotherAnchorProps?.ref?.({ href } as HTMLAnchorElement);
-      for (const effect of effects.slice(firstEffect)) {
-        effect();
-      }
+      const anotherAnchor = { href } as HTMLAnchorElement;
+      anotherAnchorProps?.ref?.(anotherAnchor);
+      const anotherCleanups = effects.slice(firstEffect).map((effect) => effect());
+      return {
+        anchor: anotherAnchor,
+        anchorProps: anotherAnchorProps,
+        unmount: () => {
+          for (const cleanup of anotherCleanups.reverse()) cleanup?.();
+        },
+      };
     };
 
     return {
@@ -1635,6 +1645,7 @@ async function renderIsolatedLink(options: {
       navigate,
       pagePrefetchLinks,
       restoreNodeEnv,
+      unmount,
     };
   } catch (error) {
     restoreNodeEnv();
@@ -1908,6 +1919,130 @@ describe("Link prefetch scheduling", () => {
         await new Promise((resolve) => setTimeout(resolve, 350));
         await flushPrefetchTasks();
         expect(result.fetch).toHaveBeenCalledTimes(leaves ? 1 : 2);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    }
+  });
+
+  it("drops a held hover prefetch when its Link unmounts without an IntersectionObserver", async () => {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    const result = await renderIsolatedLink({
+      href: "/viewport-prefetch-target",
+      nodeEnv: "production",
+    });
+
+    try {
+      const { startAppPrefetchRevalidationCooldown } =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      startAppPrefetchRevalidationCooldown();
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      result.unmount();
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      await flushPrefetchTasks();
+      expect(result.fetch).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it.each([
+    { replacement: "enters before the cooldown ends", probes: true },
+    { replacement: "enters after the cooldown ends", probes: true },
+    { replacement: "leaves while its prefetch is set up", probes: false },
+  ] as const)(
+    "shares a held rewrite alias probe with a replacement Link that $replacement",
+    async ({ replacement, probes }) => {
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href: "/intent-prefetch-target",
+        nodeEnv: "production",
+        props: { prefetch: true },
+        windowOverrides: {
+          __VINEXT_CLIENT_REWRITES__: {
+            beforeFiles: [
+              { source: "/intent-prefetch-target", destination: "/viewport-prefetch-target" },
+            ],
+            afterFiles: [],
+            fallback: [],
+          },
+        },
+      });
+      const methodOf = (call: unknown[] | undefined) =>
+        (call?.[1] as RequestInit | undefined)?.method ?? "GET";
+
+      try {
+        // The rewrite destination is prefetched (its payload, then its loading
+        // shell), so the source Link only sends a HEAD probe for its own URL.
+        observer.dispatchIntersectingEntry(
+          result.mountAnotherLink("/viewport-prefetch-target").anchor,
+        );
+        await waitForFetchCalls(result.fetch, 2);
+        await flushPrefetchTasks();
+        expect(result.fetch.mock.calls.map(methodOf)).toEqual(["GET", "GET"]);
+
+        const { startAppPrefetchRevalidationCooldown } =
+          await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+        startAppPrefetchRevalidationCooldown();
+        observer.dispatchIntersectingEntry(result.anchor);
+        await flushPrefetchTasks();
+        result.unmount();
+        if (replacement !== "enters after the cooldown ends") {
+          const another = result.mountAnotherLink("/intent-prefetch-target");
+          observer.dispatchIntersectingEntry(another.anchor);
+          if (replacement === "leaves while its prefetch is set up") {
+            // Hovering starts its prefetch now; the viewport one would only
+            // start after it left.
+            another.anchorProps?.onMouseEnter?.({ currentTarget: another.anchor });
+            another.unmount();
+          }
+          await flushPrefetchTasks();
+        }
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await flushPrefetchTasks();
+        if (replacement === "enters after the cooldown ends") {
+          // The held probe was dropped with its Link.
+          expect(result.fetch).toHaveBeenCalledTimes(2);
+          observer.dispatchIntersectingEntry(
+            result.mountAnotherLink("/intent-prefetch-target").anchor,
+          );
+        }
+        if (probes) {
+          await waitForFetchCalls(result.fetch, 3);
+          expect(methodOf(result.fetch.mock.calls[2])).toBe("HEAD");
+        }
+        await flushPrefetchTasks();
+        expect(result.fetch).toHaveBeenCalledTimes(probes ? 3 : 2);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    },
+  );
+
+  it("ignores hover on a Link that isn't visible yet", async () => {
+    // Next.js: rescheduleLinkPrefetch in client/components/links.ts schedules
+    // nothing for an instance that isn't visible, so no request is held by the
+    // revalidation cooldown and sent after the Link has gone.
+    for (const duringCooldown of [false, true]) {
+      stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href: "/viewport-prefetch-target",
+        nodeEnv: "production",
+      });
+
+      try {
+        if (duringCooldown) {
+          const { startAppPrefetchRevalidationCooldown } =
+            await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+          startAppPrefetchRevalidationCooldown();
+        }
+        result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await flushPrefetchTasks();
+        expect(result.fetch).not.toHaveBeenCalled();
       } finally {
         result.restoreNodeEnv();
       }

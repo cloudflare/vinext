@@ -657,11 +657,29 @@ function prefetchUrl(
           if (mountedSlotsHeader) {
             probeHeaders.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
           }
-          const ownerLeaveCount = owner?.leaveCount;
-          const probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
+          const held = new Map([[owner ?? null, owner?.leaveCount ?? 0]]);
+          heldAliasProbes.set(cacheKey, held);
+          const releaseHeld = () => {
+            if (heldAliasProbes.get(cacheKey) === held) heldAliasProbes.delete(cacheKey);
+          };
+          let probeRscUrl: string;
+          try {
+            probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
+          } catch (error) {
+            releaseHeld();
+            throw error;
+          }
           return runAfterAppPrefetchRevalidationCooldown(() => {
-            // The Link left meanwhile. The probe is best effort, so drop it.
-            if (owner && owner.leaveCount !== ownerLeaveCount) {
+            releaseHeld();
+            // Every Link that wanted it left meanwhile. The probe is best
+            // effort, so drop it, and let a replacement Link probe again.
+            if (
+              !Array.from(held).some(
+                ([heldOwner, leaveCount]) =>
+                  heldOwner === null || heldOwner.leaveCount === leaveCount,
+              )
+            ) {
+              prefetched.delete(cacheKey);
               throw new DOMException("Prefetch is no longer wanted", "AbortError");
             }
             return fetch(probeRscUrl, {
@@ -701,15 +719,21 @@ function prefetchUrl(
         if (hasNavigationCacheEntry) {
           if (
             !hasExactNavigationCacheEntry &&
-            !prefetched.has(cacheKey) &&
             additionalRscUrls.length > 0 &&
             autoPrefetch.prefetchShellFirst &&
-            mountedSlotsHeader === null
+            mountedSlotsHeader === null &&
+            // A Link that left while this prefetch was set up wants no probe.
+            (owner === undefined || owner.isVisible)
           ) {
-            prefetched.add(cacheKey);
-            void fetchAliasCacheHitProbe()
-              .then((response) => response.arrayBuffer())
-              .catch(() => {});
+            const heldProbe = heldAliasProbes.get(cacheKey);
+            if (heldProbe) {
+              heldProbe.set(owner ?? null, owner?.leaveCount ?? 0);
+            } else if (!prefetched.has(cacheKey)) {
+              prefetched.add(cacheKey);
+              void fetchAliasCacheHitProbe()
+                .then((response) => response.arrayBuffer())
+                .catch(() => {});
+            }
           }
           return;
         }
@@ -920,6 +944,12 @@ type LinkPrefetchInstance = {
 };
 
 const observedLinkPrefetches = new WeakMap<Element, LinkPrefetchInstance>();
+/**
+ * Alias HEAD probes waiting to be sent, by cache key, with each Link that wants
+ * one and its leave count when it asked (null for a prefetch with no Link). A
+ * Link that asks meanwhile shares the probe instead of skipping it.
+ */
+const heldAliasProbes = new Map<string, Map<LinkPrefetchInstance | null, number>>();
 const visibleLinkPrefetches = new Set<LinkPrefetchInstance>();
 const visibleAppPrefetchQueue: LinkPrefetchInstance[] = [];
 let visibleAppPrefetchDrainScheduled = false;
@@ -1424,13 +1454,14 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       : normalizedHref;
     if (hrefToPrefetch == null) return;
 
+    // Without an IntersectionObserver, which every supported browser has, the
+    // Link can't be observed. It counts as visible while mounted, so it keeps
+    // its intent prefetches and drops the held ones when it unmounts.
     const observer = getSharedObserver();
-    if (!observer) return;
-
-    registerVisibleLinkPing();
+    if (observer) registerVisibleLinkPing();
     const instance: LinkPrefetchInstance = {
       href: hrefToPrefetch,
-      isVisible: false,
+      isVisible: observer === null,
       locale,
       mode: prefetchMode,
       ownedPrefetches: new Set(),
@@ -1448,10 +1479,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       viewportPrefetched: false,
     };
     observedLinkPrefetches.set(node, instance);
-    observer.observe(node);
+    observer?.observe(node);
 
     return () => {
-      observer.unobserve(node);
+      observer?.unobserve(node);
       observedLinkPrefetches.delete(node);
       visibleLinkPrefetches.delete(instance);
       instance.isVisible = false;
@@ -1488,6 +1519,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       }
       void promotePrefetchEntriesForNavigation(normalizedHref);
     }
+    const owner = instance?.routerMode === "app" ? instance : undefined;
+    // Next.js ignores intent on a Link that isn't visible yet
+    // (rescheduleLinkPrefetch in client/components/links.ts).
+    if (owner && !owner.isVisible) return;
     prefetchUrl(
       normalizedHref,
       intentMode,
@@ -1497,7 +1532,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       // Like Next.js's rescheduled intent task, the request is dropped if the
       // Link leaves before it starts, e.g. while the revalidation cooldown
       // holds it.
-      instance?.isVisible && instance.routerMode === "app" ? instance : undefined,
+      owner,
     );
   }, [
     effectivePrefetchProp,

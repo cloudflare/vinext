@@ -9,7 +9,6 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import React from "react";
 import ReactDOMServer from "react-dom/server";
 import Form from "../packages/vinext/src/shims/form.js";
-import { startAppPrefetchRevalidationCooldown } from "../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js";
 
 type FormEntry = [string, string];
 
@@ -84,7 +83,15 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
 
 function renderClientForm(
   props: Record<string, unknown>,
-  { effects = [] }: { effects?: Array<() => void | (() => void)> } = {},
+  {
+    effects = [],
+    layoutEffects = effects,
+    FormComponent = Form,
+  }: {
+    effects?: Array<() => void | (() => void)>;
+    layoutEffects?: Array<() => void | (() => void)>;
+    FormComponent?: typeof Form;
+  } = {},
 ) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
@@ -116,7 +123,9 @@ function renderClientForm(
     useMemo: (fn: () => unknown) => fn(),
     useState: (init: unknown) => [init, () => {}],
     useReducer: (_reducer: unknown, init: unknown) => [init, () => {}],
-    useLayoutEffect: () => {},
+    useLayoutEffect(effect: () => void | (() => void)) {
+      layoutEffects.push(effect);
+    },
     useImperativeHandle: () => {},
     useDebugValue: () => {},
     useDeferredValue: (val: unknown) => val,
@@ -129,7 +138,7 @@ function renderClientForm(
   hookIndex = 0;
   try {
     const rendered = (
-      Form as unknown as { render: (props: Record<string, unknown>) => any }
+      FormComponent as unknown as { render: (props: Record<string, unknown>) => any }
     ).render(props);
     expect(rendered.type).toBe("form");
     return rendered.props as {
@@ -995,15 +1004,20 @@ describe("Form prefetch prop", () => {
   });
 
   it.each([
-    { unmounts: false, sent: 1 },
-    { unmounts: true, sent: 0 },
-  ])(
-    "holds viewport prefetches for the revalidation cooldown (unmounts: $unmounts)",
-    async ({ unmounts, sent }) => {
+    { scrolls: "no", unmounts: false, another: "none", sent: 1 },
+    { scrolls: "out", unmounts: false, another: "none", sent: 0 },
+    { scrolls: "out and back", unmounts: false, another: "none", sent: 1 },
+    { scrolls: "no", unmounts: true, another: "none", sent: 0 },
+    { scrolls: "no", unmounts: true, another: "after unmount", sent: 1 },
+    { scrolls: "no", unmounts: true, another: "before unmount", sent: 1 },
+  ] as const)(
+    "holds viewport prefetches for the revalidation cooldown (scrolls: $scrolls, unmounts: $unmounts, another form: $another)",
+    async ({ scrolls, unmounts, another, sent }) => {
       // Next.js: Form prefetches share the segment-cache scheduler with Link, so
       // REVALIDATION_COOLDOWN_MS in client/components/segment-cache/scheduler.ts
       // holds them after a revalidating Server Action too. A form that unmounts
-      // meanwhile never sends its held prefetch.
+      // meanwhile never sends its held prefetch, but another form with the same
+      // action still gets one.
       vi.stubEnv("NODE_ENV", "production");
       const effects: Array<() => void | (() => void)> = [];
       const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
@@ -1029,15 +1043,28 @@ describe("Form prefetch prop", () => {
       });
       vi.stubGlobal("fetch", fetch);
       vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+      // Load the client modules with a window, so the prefetch cache and its
+      // de-duplication are the browser's.
+      vi.resetModules();
+      const { default: FormComponent } = await import("../packages/vinext/src/shims/form.js");
+      const queue =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      const { AppElementsWire } = await import("../packages/vinext/src/server/app-elements.js");
+      const encodeCacheKey = vi.spyOn(AppElementsWire, "encodeCacheKey");
 
-      const { ref } = renderClientForm({ action: "/search" }, { effects });
+      const layoutEffects: Array<() => void | (() => void)> = [];
+      const { ref } = renderClientForm(
+        { action: "/search" },
+        { effects, layoutEffects, FormComponent },
+      );
       const form = {} as HTMLFormElement;
       ref(form);
-      const cleanups = effects.map((effect) => effect());
+      const layoutCleanups = layoutEffects.map((effect) => effect());
+      for (const effect of effects) effect();
 
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
-        startAppPrefetchRevalidationCooldown();
+        queue.startAppPrefetchRevalidationCooldown();
         intersectionCallback?.(
           [
             {
@@ -1050,16 +1077,100 @@ describe("Form prefetch prop", () => {
         );
         // Let the prefetch reach its request: the RSC URL hash resolves off the
         // microtask queue.
-        for (let index = 0; index < 20; index++) {
+        const prefetchCacheEntry = () =>
+          (
+            globalThis.window as { __VINEXT_RSC_PREFETCH_CACHE__?: Map<string, unknown> }
+          ).__VINEXT_RSC_PREFETCH_CACHE__
+            ?.values()
+            .next().value;
+        for (let index = 0; index < 1_000 && prefetchCacheEntry() === undefined; index++) {
           await new Promise((resolve) => setImmediate(resolve));
         }
+        const heldEntry = prefetchCacheEntry();
+        expect(heldEntry).toBeDefined();
         await vi.advanceTimersByTimeAsync(299);
         expect(fetch).not.toHaveBeenCalled();
-        if (unmounts) {
-          for (const cleanup of cleanups) cleanup?.();
+        // Like Next.js, leaving the viewport drops the held request, and coming
+        // back prefetches again.
+        if (scrolls !== "no") {
+          const visibility = (isIntersecting: boolean) =>
+            intersectionCallback?.(
+              [
+                {
+                  intersectionRatio: isIntersecting ? 1 : 0,
+                  isIntersecting,
+                  target: form,
+                } as unknown as IntersectionObserverEntry,
+              ],
+              {} as IntersectionObserver,
+            );
+          visibility(false);
+          if (scrolls === "out and back") {
+            visibility(true);
+            for (let index = 0; index < 1_000 && prefetchCacheEntry() === heldEntry; index++) {
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+            expect(prefetchCacheEntry()).not.toBe(heldEntry);
+          }
         }
+        const mountAnotherForm = () => {
+          const replacementLayoutEffects: Array<() => void | (() => void)> = [];
+          const replacement = renderClientForm(
+            { action: "/search" },
+            { effects: [], layoutEffects: replacementLayoutEffects, FormComponent },
+          );
+          const replacementForm = {} as HTMLFormElement;
+          replacement.ref(replacementForm);
+          for (const effect of replacementLayoutEffects) effect();
+          intersectionCallback?.(
+            [
+              {
+                intersectionRatio: 1,
+                isIntersecting: true,
+                target: replacementForm,
+              } as unknown as IntersectionObserverEntry,
+            ],
+            {} as IntersectionObserver,
+          );
+        };
+        // Another form with the same action enters the viewport while the
+        // first is still mounted, and shares its held request.
+        if (another === "before unmount") {
+          const encodedKeys = encodeCacheKey.mock.calls.length;
+          mountAnotherForm();
+          // The form settles synchronously once it has keyed its request.
+          for (
+            let index = 0;
+            index < 1_000 && encodeCacheKey.mock.calls.length === encodedKeys;
+            index++
+          ) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          expect(encodeCacheKey.mock.calls.length).toBeGreaterThan(encodedKeys);
+          expect(prefetchCacheEntry()).toBe(heldEntry);
+        }
+        // The commit that detaches the form runs only its layout cleanups;
+        // passive ones may run after the cooldown releases the request.
+        if (unmounts) {
+          for (const cleanup of layoutCleanups) cleanup?.();
+        }
+        // A replacement form with the same action enters the viewport before
+        // the held request is dropped, and still prefetches.
+        if (another === "after unmount") {
+          mountAnotherForm();
+          // Wait, without ending the cooldown, until the replacement's held
+          // prefetch has replaced the original's cache entry.
+          for (let index = 0; index < 1_000 && prefetchCacheEntry() === heldEntry; index++) {
+            await new Promise((resolve) => setImmediate(resolve));
+          }
+          expect(prefetchCacheEntry()).not.toBe(heldEntry);
+        }
+        expect(fetch).not.toHaveBeenCalled();
 
         await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 1_000 && fetch.mock.calls.length < sent; index++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
         for (let index = 0; index < 20; index++) {
           await new Promise((resolve) => setImmediate(resolve));
         }
