@@ -27,6 +27,7 @@
  *   state directory rather than polluting `node_modules`.
  */
 
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "pathslash";
@@ -50,6 +51,13 @@ export type DevServerInfo = {
    * on platforms that don't expose one.
    */
   bootId?: string;
+  /**
+   * Random token written by `tryAcquireLockfile` for each acquisition. It
+   * tells holders apart when PIDs collide (a restarted container, another PID
+   * namespace sharing the directory, or a second acquisition in this process).
+   * Callers don't set it.
+   */
+  token?: string;
 };
 
 type DevLockfile = {
@@ -88,7 +96,8 @@ export function readLockfile(lockfilePath: string): DevServerInfo | undefined {
       typeof parsed.appUrl === "string" &&
       typeof parsed.startedAt === "number" &&
       typeof parsed.cwd === "string" &&
-      (parsed.bootId === undefined || typeof parsed.bootId === "string")
+      (parsed.bootId === undefined || typeof parsed.bootId === "string") &&
+      (parsed.token === undefined || typeof parsed.token === "string")
     ) {
       return parsed;
     }
@@ -119,6 +128,9 @@ export function isPidAlive(pid: number): boolean {
 }
 
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
+
+/** Tokens of the locks this process currently holds. */
+const heldLockTokens = new Set<string>();
 
 /**
  * Returns the kernel's identifier for the current boot, or `undefined` where
@@ -295,23 +307,26 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    // A lock naming the acquiring process itself can't be ours: a Vite
-    // restart within one process reuses its lock and never gets here. It was
-    // written by another process with the same PID, typically before a
-    // container restart, where the new PID namespace hands out PIDs
-    // deterministically while the host's boot ID and uptime don't change.
-    // (A live server in another PID namespace sharing this directory can also
-    // match; PIDs never identified processes across namespaces.)
+    // A lock this process holds is live; its token tells it apart. Any other
+    // lock naming the acquiring PID was written by a different process with
+    // the same PID, typically before a container restart, where the new PID
+    // namespace hands out PIDs deterministically while the host's boot ID and
+    // uptime don't change. (A live server in another PID namespace sharing
+    // this directory can also match; PIDs never identified processes across
+    // namespaces, and the token keeps the two holders from mutating each
+    // other's lock.)
+    const heldHere = existing.token !== undefined && heldLockTokens.has(existing.token);
     const alive =
-      existing.pid !== info.pid && !predatesCurrentBoot(existing) && isPidAlive(existing.pid);
+      heldHere ||
+      (existing.pid !== info.pid && !predatesCurrentBoot(existing) && isPidAlive(existing.pid));
     if (alive) {
       return { ok: false, existing, lockfilePath };
     }
     if (!takeOverStale) {
       return { ok: false, existing, lockfilePath };
     }
-    // Existing entry is stale (dead PID, our own PID, or written before this
-    // boot). Fall through and overwrite.
+    // Existing entry is stale (dead PID, our PID but not held here, or
+    // written before this boot). Fall through and overwrite.
   }
 
   // NB: there is a small TOCTOU window between readLockfile() above and
@@ -321,23 +336,29 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
   // error. A native flock() (the approach Next.js takes via Rust bindings)
   // would close the window, but it's not worth the complexity for a
   // dev-ergonomics feature.
-  writeLockfile(lockfilePath, info);
+  const token = randomUUID();
+  writeLockfile(lockfilePath, { ...info, token });
+  heldLockTokens.add(token);
 
   // Capture the owner PID once so release() always asks "is the file still
   // mine?" against the same identity, regardless of what update() writes
   // later. In practice the PID never changes between acquire and release,
   // but this makes the intent explicit and decouples release from update.
+  // The token distinguishes this acquisition from another holder that has
+  // the same PID.
   const ownerPid = info.pid;
+  const isMine = (current: DevServerInfo | undefined) =>
+    current !== undefined && current.pid === ownerPid && current.token === token;
 
   let released = false;
   const release = () => {
     if (released) return;
     released = true;
+    heldLockTokens.delete(token);
     try {
       // Only delete if the file still points at us. If another process took
       // over the lock (e.g. after a crash), don't delete their entry.
-      const current = readLockfile(lockfilePath);
-      if (current && current.pid === ownerPid) {
+      if (isMine(readLockfile(lockfilePath))) {
         fs.unlinkSync(lockfilePath);
       }
     } catch {
@@ -366,9 +387,8 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
     update(next: DevServerInfo): void {
       if (released) return;
       try {
-        const current = readLockfile(lockfilePath);
-        if (!current || current.pid !== ownerPid) return;
-        writeLockfile(lockfilePath, next);
+        if (!isMine(readLockfile(lockfilePath))) return;
+        writeLockfile(lockfilePath, { ...next, token });
       } catch {
         // Best-effort; not fatal.
       }

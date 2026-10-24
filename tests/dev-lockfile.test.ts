@@ -237,6 +237,13 @@ describe("readLockfile", () => {
     expect(readLockfile(lockPath)).toEqual(info);
   });
 
+  it("returns undefined for a non-string token", () => {
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify({ ...baseInfo(), token: 42 }));
+    expect(readLockfile(lockPath)).toBeUndefined();
+  });
+
   it("returns undefined for a non-string boot ID", () => {
     const lockPath = getLockfilePath(root);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -263,7 +270,7 @@ describe("tryAcquireLockfile", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const stored = readLockfile(getLockfilePath(root));
-    expect(stored).toEqual(info);
+    expect(stored).toEqual({ ...info, token: expect.any(String) });
     result.lockfile.release();
     expect(fs.existsSync(getLockfilePath(root))).toBe(false);
   });
@@ -297,7 +304,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual(info);
+    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
     result.lockfile.release();
   });
 
@@ -313,7 +320,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual(info);
+    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
     result.lockfile.release();
   });
 
@@ -350,7 +357,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual(info);
+    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
     result.lockfile.release();
   });
 
@@ -366,7 +373,7 @@ describe("tryAcquireLockfile", () => {
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(readLockfile(lockPath)).toEqual(info);
+    expect(readLockfile(lockPath)).toEqual({ ...info, token: expect.any(String) });
     result.lockfile.release();
   });
 
@@ -413,7 +420,7 @@ describe("tryAcquireLockfile", () => {
     if (!result.ok) return;
     const updated = baseInfo({ cwd: root, port: 5173, appUrl: "http://localhost:5173" });
     result.lockfile.update(updated);
-    expect(readLockfile(getLockfilePath(root))).toEqual(updated);
+    expect(readLockfile(getLockfilePath(root))).toEqual({ ...updated, token: expect.any(String) });
     result.lockfile.release();
   });
 
@@ -473,6 +480,42 @@ describe("tryAcquireLockfile", () => {
 
     expect(readLockfile(getLockfilePath(root))).toEqual(other);
     result.lockfile.release();
+  });
+
+  it("fails when this process already holds the lock", () => {
+    const first = tryAcquireLockfile({ root, info: baseInfo({ cwd: root }), unlockOnExit: false });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const lockPath = getLockfilePath(root);
+    const held = readLockfile(lockPath);
+
+    // e.g. a second server.listen() on the same Vite server.
+    const second = tryAcquireLockfile({
+      root,
+      info: baseInfo({ cwd: root, port: 4000 }),
+      unlockOnExit: false,
+    });
+    expect(second.ok).toBe(false);
+    expect(readLockfile(lockPath)).toEqual(held);
+
+    first.lockfile.release();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("does not update or release a lock taken over by another holder with the same PID", () => {
+    const result = tryAcquireLockfile({ root, info: baseInfo({ cwd: root }), unlockOnExit: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    // Another PID namespace sharing this directory, whose server has our PID.
+    const lockPath = getLockfilePath(root);
+    const other = baseInfo({ cwd: root, port: 5000, token: "other-holder" });
+    fs.writeFileSync(lockPath, JSON.stringify(other));
+
+    result.lockfile.update(baseInfo({ cwd: root, port: 4000 }));
+    expect(readLockfile(lockPath)).toEqual(other);
+    result.lockfile.release();
+    expect(readLockfile(lockPath)).toEqual(other);
   });
 
   it("release() is idempotent", () => {
