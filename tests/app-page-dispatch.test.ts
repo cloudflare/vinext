@@ -60,6 +60,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
@@ -1353,6 +1354,30 @@ describe("app page dispatch", () => {
     await response.text();
 
     expect(buildPageElement.mock.calls[0]?.[5]?.isUncacheableRender).toBe(expected);
+  });
+
+  it("refreshes stale fetches before collecting a PPR fallback shell's resume data cache", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const refreshInForeground: boolean[] = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+      refreshInForeground.push(getRequestContext().refreshStaleFetchesInForeground);
+      return React.createElement("main", null, "page");
+    });
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(200);
+    expect(refreshInForeground[0]).toBe(true);
   });
 
   afterEach(() => {

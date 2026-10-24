@@ -25,6 +25,24 @@ describe("createAppPprRequestFallbackShells", () => {
       },
     ]);
   });
+
+  it("keeps a param named __proto__", () => {
+    const shells = createAppPprRequestFallbackShells(
+      {
+        params: ["__proto__", "slug"],
+        pattern: "/:__proto__/:slug",
+        rootParamNames: ["__proto__"],
+      },
+      JSON.parse('{"__proto__":"caf%C3%A9","slug":"new-post"}'),
+    );
+
+    expect(shells).toHaveLength(1);
+    expect(shells[0].pathname).toBe("/caf%C3%A9/[slug]");
+    expect(Object.entries(shells[0].params)).toEqual([
+      ["__proto__", "café"],
+      ["slug", "[slug]"],
+    ]);
+  });
 });
 
 describe("createAppPprFallbackShells", () => {

@@ -1473,6 +1473,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
     // The shell's resume data cache: every cache entry its renders read or wrote.
     _setResumeDataCacheCollector(createResumeDataCache());
+    // Its entries replay at any age, so a stale fetch refreshes first, like Next.js.
+    setRefreshStaleFetchesInForeground(true);
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;

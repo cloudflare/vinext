@@ -143,7 +143,7 @@ export function createAppPprFallbackShells(
 
     const fallbackParamNameSet = new Set(fallbackParamNames);
     const segments: string[] = [];
-    const fallbackParams: Record<string, string | string[]> = {};
+    const fallbackParams: Record<string, string | string[]> = Object.create(null);
 
     let isValidShell = true;
     for (const part of route.pattern.split("/").filter(Boolean)) {
@@ -191,7 +191,7 @@ export function createAppPprRequestFallbackShells(
   route: AppPprFallbackShellRoute,
   requestParams: Record<string, string | string[]>,
 ): AppPprFallbackShell[] {
-  const decodedParams: Record<string, string | string[]> = {};
+  const decodedParams: Record<string, string | string[]> = Object.create(null);
   for (const [name, value] of Object.entries(requestParams)) {
     decodedParams[name] = Array.isArray(value)
       ? value.map(decodeParamValue)
