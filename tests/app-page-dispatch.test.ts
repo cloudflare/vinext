@@ -6,7 +6,10 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
-import { tagAppPageSlotError } from "../packages/vinext/src/server/app-page-execution.js";
+import {
+  tagAppPageLayoutError,
+  tagAppPageSlotError,
+} from "../packages/vinext/src/server/app-page-execution.js";
 import {
   DEFAULT_FORBIDDEN_MODULE,
   DEFAULT_NOT_FOUND_MODULE,
@@ -659,6 +662,29 @@ function createVerifiedStaticLayoutManifest(input: {
   return parseClientReuseManifestHeader(header);
 }
 
+/**
+ * A render whose layout at `layoutIndex` threw `digest`: the RSC render
+ * reports the tagged error, and SSR rejects its shell with the error decoded
+ * from the Flight digest.
+ */
+function createLayoutSignalRender(
+  digest: string,
+  layoutIndex: number,
+): Pick<CreateDispatchOptionsOverrides, "loadSsrHandler" | "renderToReadableStream"> {
+  return {
+    renderToReadableStream(_element, { onError }) {
+      const thrown = Object.assign(new Error(digest), { digest });
+      onError(tagAppPageLayoutError(thrown, layoutIndex), undefined, undefined);
+      return createStream(["flight"]);
+    },
+    loadSsrHandler: async () => ({
+      async handleSsr() {
+        throw Object.assign(new Error(digest), { digest });
+      },
+    }),
+  };
+}
+
 type LayoutParamProbeReader = (params: unknown) => unknown;
 
 function createLayoutParamProbe(
@@ -744,10 +770,7 @@ describe("app page dispatch", () => {
         async () => new Response("<html>fallback</html>", { status }),
       );
       const { options } = createDispatchOptions({
-        probeLayoutAt(layoutIndex) {
-          if (layoutIndex === 1) throw Object.assign(new Error(digest), { digest });
-          return null;
-        },
+        ...createLayoutSignalRender(digest, 1),
         route,
       });
       options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
@@ -779,14 +802,7 @@ describe("app page dispatch", () => {
       async () => new Response("<html>not found</html>", { status: 404 }),
     );
     const { options } = createDispatchOptions({
-      probeLayoutAt(layoutIndex) {
-        if (layoutIndex === 1) {
-          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
-            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
-          });
-        }
-        return null;
-      },
+      ...createLayoutSignalRender("NEXT_HTTP_ERROR_FALLBACK;404", 1),
       route,
     });
     options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
@@ -841,14 +857,7 @@ describe("app page dispatch", () => {
         async () => new Response("<html>not found</html>", { status: 404 }),
       );
       const { options } = createDispatchOptions({
-        probeLayoutAt(layoutIndex) {
-          if (layoutIndex === throwingLayoutIndex) {
-            throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
-              digest: "NEXT_HTTP_ERROR_FALLBACK;404",
-            });
-          }
-          return null;
-        },
+        ...createLayoutSignalRender("NEXT_HTTP_ERROR_FALLBACK;404", throwingLayoutIndex),
         route,
       });
       options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
@@ -1083,14 +1092,7 @@ describe("app page dispatch", () => {
         async () => new Response("<html>denied</html>", { status: statusCode }),
       );
       const { options } = createDispatchOptions({
-        probeLayoutAt(layoutIndex) {
-          if (layoutIndex === throwingLayoutIndex) {
-            throw Object.assign(new Error(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`), {
-              digest: `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`,
-            });
-          }
-          return null;
-        },
+        ...createLayoutSignalRender(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`, throwingLayoutIndex),
         route,
       });
       options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;

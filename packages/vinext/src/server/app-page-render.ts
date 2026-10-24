@@ -7,6 +7,7 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
+import { getAppPageLayoutGate } from "./app-page-layout-gate.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -101,7 +102,6 @@ import type {
 import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
 import {
   isRenderDynamicLatched,
-  markDynamicUsage,
   peekDynamicUsage,
   runWithDetachedDynamicUsage,
 } from "vinext/shims/headers";
@@ -261,10 +261,6 @@ type RenderAppPageLifecycleOptionsBase = {
     error: unknown,
     errorOrigin: "rsc" | "ssr",
   ) => Promise<Response | null>;
-  renderLayoutSpecialError: (
-    specialError: AppPageSpecialError,
-    layoutIndex: number,
-  ) => Promise<Response>;
   renderPageSpecialError: (
     specialError: AppPageSpecialError,
     renderOptions?: AppPageSpecialErrorRenderOptions,
@@ -963,10 +959,6 @@ async function renderAppPageLifecycleImpl(
       probeLayoutAt(layoutIndex) {
         return options.probeLayoutAt(layoutIndex);
       },
-      renderLayoutSpecialError(specialError, layoutIndex) {
-        return options.renderLayoutSpecialError(specialError, layoutIndex);
-      },
-      resolveSpecialError: resolveAppPageSpecialError,
       runWithSuppressedHookWarning(probe) {
         return options.runWithSuppressedHookWarning(probe);
       },
@@ -974,16 +966,6 @@ async function renderAppPageLifecycleImpl(
     }),
   );
   const preRenderResult = probeOutcome.result;
-  if (preRenderResult.response) {
-    // This response replaces the render, so the probe's usage classifies it.
-    if (probeOutcome.dynamicDetected) markDynamicUsage();
-    return applyIneligibleRouteCachePolicy(
-      preRenderResult.response,
-      options,
-      probeOutcome.cacheLife,
-    );
-  }
-
   const layoutFlags = preRenderResult.layoutFlags;
 
   // Render the CANONICAL element. The outgoing payload carries per-layout
@@ -1049,7 +1031,16 @@ async function renderAppPageLifecycleImpl(
     options.routePattern,
     errorContextOverrides,
   );
+  // A client navigation's response waits for the layouts above the first
+  // loading boundary, as their redirect() answers it through a header.
+  const layoutGate =
+    options.isRscRequest &&
+    options.isPrerender !== true &&
+    options.pprFallbackShellSignal === undefined
+      ? getAppPageLayoutGate(options.element)
+      : null;
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
+    layoutGate?.observeRenderError(error);
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
     return baseOnError(error, requestInfo, errorContext);
   });
@@ -1081,6 +1072,30 @@ async function renderAppPageLifecycleImpl(
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
     pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+  }
+
+  if (layoutGate) {
+    const layoutFailure = await layoutGate.wait(
+      (layoutId) =>
+        isAppElementsRecord(outgoingElement) && Object.hasOwn(outgoingElement, layoutId),
+    );
+    const layoutSpecialError = layoutFailure
+      ? resolveAppPageSpecialError(layoutFailure.error)
+      : null;
+    if (layoutFailure && layoutSpecialError) {
+      // This response replaces the render, which classifies it.
+      void rscStream.cancel().catch(() => {});
+      const response = await options.renderPageSpecialError(
+        layoutSpecialError.kind === "http-access-fallback"
+          ? { ...layoutSpecialError, layoutIndex: layoutFailure.layoutIndex }
+          : layoutSpecialError,
+      );
+      return applyIneligibleRouteCachePolicy(
+        response,
+        options,
+        options.peekRequestCacheLife?.() ?? options.getRequestCacheLife(),
+      );
+    }
   }
 
   let revalidateSeconds = options.revalidateSeconds;

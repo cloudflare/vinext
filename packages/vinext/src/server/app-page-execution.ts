@@ -16,7 +16,6 @@ import {
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
-import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
 import { isHTTPAccessFallbackError, isThrownNavigationError } from "vinext/shims/navigation-errors";
@@ -87,6 +86,13 @@ const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
  */
 const APP_PAGE_PAGE_ERROR = Symbol.for("vinext.appPage.pageError");
 
+/**
+ * Marker we tag onto an error a route layout's own component threw, holding
+ * that layout's index. Its boundaries wrap only its `children`, so the
+ * boundary above the layout catches it, as for a slot the layout renders.
+ */
+const APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.layoutErrorLayoutIndex");
+
 function tagAppPageHttpAccessFallbackError<T>(error: T, tags: PropertyDescriptorMap): T {
   // Only an HTTP access fallback reads the tag. A thrown error can be shared
   // across slots, renders and requests (a module-scoped rejected promise), so
@@ -120,8 +126,20 @@ export function tagAppPagePageError<T>(error: T): T {
   return tagAppPageHttpAccessFallbackError(error, { [APP_PAGE_PAGE_ERROR]: { value: true } });
 }
 
+export function tagAppPageLayoutError<T>(error: T, layoutIndex: number): T {
+  return tagAppPageHttpAccessFallbackError(error, {
+    [APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+  });
+}
+
 function isAppPagePageError(error: unknown): boolean {
   return !!error && typeof error === "object" && Reflect.get(error, APP_PAGE_PAGE_ERROR) === true;
+}
+
+function getAppPageLayoutErrorLayoutIndex(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const layoutIndex: unknown = Reflect.get(error, APP_PAGE_LAYOUT_ERROR_LAYOUT_INDEX);
+  return typeof layoutIndex === "number" ? layoutIndex : null;
 }
 
 function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
@@ -156,6 +174,17 @@ export type AppPageSpecialError =
       fromMetadata?: boolean;
       /** Set when a parallel slot threw it: the layout rendering the outermost such slot. */
       slotLayoutIndex?: number;
+      /**
+       * Set when a route layout's own component threw it, above any slot that
+       * did: the outermost such layout, whose boundary above catches it.
+       */
+      layoutIndex?: number;
+      /**
+       * Set when the render threw a copy nothing tagged: a server component
+       * that a layout, the page or a template renders. The document's
+       * fallback then finds out whether a layout's subtree threw it.
+       */
+      unattributed?: boolean;
     };
 
 export type AppPageFontPreload = {
@@ -224,7 +253,6 @@ type BuildAppPageSpecialErrorResponseOptions = {
 };
 
 type ProbeAppPageLayoutsResult = {
-  response: Response | null;
   layoutFlags: LayoutFlags;
 };
 
@@ -262,7 +290,6 @@ export type LayoutClassificationOptions = {
 
 type ProbeAppPageLayoutsOptions = {
   layoutCount: number;
-  onLayoutError: (error: unknown, layoutIndex: number) => Promise<Response | null>;
   probeLayoutAt: (layoutIndex: number) => unknown;
   runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   /** When provided, enables per-layout static/dynamic classification. */
@@ -332,8 +359,10 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
  * runs only in the RSC render. A notFound() / forbidden() / unauthorized()
  * a parallel slot's page threw is caught above the layout rendering it,
  * unless the slot's own not-found catches its notFound() and every other copy
- * is the page's or another slot's. A copy neither threw, such as a template's,
- * keeps the fallback above that layout.
+ * is the page's or another slot's. One a route layout threw is caught above
+ * that layout, and the outermost such layout wins. A copy nothing tagged,
+ * such as a template's or one from a component a layout or the page renders,
+ * marks the error unattributed.
  */
 export function resolveAppPageShellSpecialError(
   error: unknown,
@@ -360,16 +389,46 @@ export function resolveAppPageShellSpecialError(
         isAppPagePageError(rendered) || getAppPageSlotErrorLayoutIndex(rendered) !== null,
     );
   let slotLayoutIndex: number | null = null;
+  let layoutIndex: number | null = null;
+  let unattributed = false;
   for (const rendered of renderedSpecialErrors) {
+    const throwingLayoutIndex = getAppPageLayoutErrorLayoutIndex(rendered);
+    if (throwingLayoutIndex !== null) {
+      if (layoutIndex === null || throwingLayoutIndex < layoutIndex) {
+        layoutIndex = throwingLayoutIndex;
+      }
+      continue;
+    }
     if (skipsSlotCaughtNotFound && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
       continue;
     }
-    const layoutIndex = getAppPageSlotErrorLayoutIndex(rendered);
-    if (layoutIndex !== null && (slotLayoutIndex === null || layoutIndex < slotLayoutIndex)) {
-      slotLayoutIndex = layoutIndex;
+    const slotOwnerIndex = getAppPageSlotErrorLayoutIndex(rendered);
+    if (slotOwnerIndex !== null) {
+      if (slotLayoutIndex === null || slotOwnerIndex < slotLayoutIndex) {
+        slotLayoutIndex = slotOwnerIndex;
+      }
+      continue;
+    }
+    if (
+      !isAppPagePageError(rendered) &&
+      resolveAppPageSpecialError(rendered)?.fromMetadata !== true
+    ) {
+      unattributed = true;
     }
   }
-  return slotLayoutIndex === null ? specialError : { ...specialError, slotLayoutIndex };
+  // The boundary above the outermost layout catches it. A layout's own signal
+  // wins over its slot's, which renders inside it.
+  if (layoutIndex !== null && slotLayoutIndex !== null) {
+    if (layoutIndex <= slotLayoutIndex) slotLayoutIndex = null;
+    else layoutIndex = null;
+  }
+  if (slotLayoutIndex === null && layoutIndex === null && !unattributed) return specialError;
+  return {
+    ...specialError,
+    ...(slotLayoutIndex !== null ? { slotLayoutIndex } : {}),
+    ...(layoutIndex !== null ? { layoutIndex } : {}),
+    ...(unattributed ? { unattributed: true } : {}),
+  };
 }
 
 /**
@@ -398,6 +457,8 @@ export function resolveAppPageCaughtNotFoundBoundaries(
   let caughtInSlot = false;
   for (const rendered of renderedSpecialErrors) {
     if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    // A layout's own signal renders outside every slot's boundary.
+    if (getAppPageLayoutErrorLayoutIndex(rendered) !== null) return null;
     const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
     if (boundary !== null) {
       caughtInSlot = true;
@@ -649,35 +710,51 @@ export async function buildAppPageSpecialErrorResponse(
   );
 }
 
-/** See `LayoutFlags` type docblock in app-elements.ts for lifecycle. */
+/**
+ * Classifies each layout as static or dynamic for skip transport. See the
+ * `LayoutFlags` type docblock in app-elements.ts for lifecycle. A layout's
+ * redirect(), notFound(), forbidden() or unauthorized() comes from the render,
+ * as the page's does, so the probe ignores what a layout throws.
+ */
 export async function probeAppPageLayouts(
   options: ProbeAppPageLayoutsOptions,
 ): Promise<ProbeAppPageLayoutsResult> {
   const layoutFlags: Record<string, "s" | "d"> = {};
   const cls = options.classification ?? null;
+  if (!cls) return { layoutFlags };
 
-  const response = await options.runWithSuppressedHookWarning(async () => {
+  await options.runWithSuppressedHookWarning(async () => {
     for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
-      const buildTimeResult = cls?.buildTimeClassifications?.get(layoutIndex);
+      const buildTimeResult = cls.buildTimeClassifications?.get(layoutIndex);
+      const layoutId = cls.getLayoutId(layoutIndex);
 
-      if (cls && buildTimeResult) {
-        const layoutId = cls.getLayoutId(layoutIndex);
-        // Build-time classified (Layer 1 or Layer 2): skip dynamic isolation,
-        // but still probe for special errors (redirects, not-found). Record the
-        // build-time flag up front so it survives a short-circuit if the error
-        // probe returns a special-error response below.
-        layoutFlags[layoutId] = buildTimeResult === "static" ? "s" : "d";
-        const errorResponse = await probeLayoutForErrors(options, layoutIndex);
-        if (errorResponse) return errorResponse;
+      if (buildTimeResult) {
+        // Build-time classified (Layer 1 or Layer 2): no dynamic isolation. A
+        // dynamic layout is final. A static one still runs so its observation
+        // can override it, since skip reads that observation too.
+        // A layout that throws is never reused: its entry is the error the
+        // render throws again.
+        let threw = false;
+        if (buildTimeResult === "static") {
+          await runWithConnectionProbe(async () => {
+            try {
+              await options.probeLayoutAt(layoutIndex);
+            } catch {
+              threw = true;
+            }
+          });
+        }
         // Compute the final flag before reporting so the emitted debug reason
         // always agrees with `layoutFlags[layoutId]`. A runtime observation can
         // override a build-time `static` decision to dynamic; in that case we
         // report a `runtime-probe` reason rather than the stale build-time one.
-        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+        const observationDynamic =
+          buildTimeResult === "static" &&
+          (threw || cls.isLayoutObservationDynamic?.(layoutId) === true);
         const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
         layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
         if (cls.debugClassification) {
-          if (observationDynamic && buildTimeResult === "static") {
+          if (observationDynamic) {
             cls.debugClassification(layoutId, {
               layer: "runtime-probe",
               outcome: "dynamic",
@@ -697,68 +774,38 @@ export async function probeAppPageLayouts(
         continue;
       }
 
-      if (cls) {
-        const layoutId = cls.getLayoutId(layoutIndex);
-        // Layer 3: probe with isolated dynamic scope to detect per-layout
-        // dynamic API usage (headers(), cookies(), connection(), etc.)
-        try {
-          const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
-            const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
-            return outcome.completed ? outcome.result : null;
+      // Layer 3: probe with isolated dynamic scope to detect per-layout
+      // dynamic API usage (headers(), cookies(), connection(), etc.)
+      try {
+        const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
+          const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
+          return outcome.completed ? outcome.result : null;
+        });
+        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
+        const layoutDynamic = dynamicDetected || observationDynamic;
+        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
+        if (cls.debugClassification) {
+          cls.debugClassification(layoutId, {
+            layer: "runtime-probe",
+            outcome: layoutDynamic ? "dynamic" : "static",
           });
-          const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-          const layoutDynamic = dynamicDetected || observationDynamic;
-          layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
-          if (cls.debugClassification) {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: layoutDynamic ? "dynamic" : "static",
-            });
-          }
-        } catch (error) {
-          // Probe failed — conservatively treat as dynamic.
-          layoutFlags[layoutId] = "d";
-          if (cls.debugClassification) {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: "dynamic",
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          const errorResponse = await options.onLayoutError(error, layoutIndex);
-          if (errorResponse) return errorResponse;
         }
-        continue;
+      } catch (error) {
+        // Probe failed — conservatively treat as dynamic. The render throws
+        // the error again.
+        layoutFlags[layoutId] = "d";
+        if (cls.debugClassification) {
+          cls.debugClassification(layoutId, {
+            layer: "runtime-probe",
+            outcome: "dynamic",
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
-
-      // No classification options — original behavior
-      const errorResponse = await probeLayoutForErrors(options, layoutIndex);
-      if (errorResponse) return errorResponse;
     }
-
-    return null;
   });
 
-  return { response, layoutFlags };
-}
-
-async function probeLayoutForErrors(
-  options: ProbeAppPageLayoutsOptions,
-  layoutIndex: number,
-): Promise<Response | null> {
-  const outcome = await runWithConnectionProbe(async () => {
-    try {
-      const layoutResult = options.probeLayoutAt(layoutIndex);
-      if (isPromiseLike(layoutResult)) {
-        await layoutResult;
-      }
-    } catch (error) {
-      return options.onLayoutError(error, layoutIndex);
-    }
-    return null;
-  });
-
-  return outcome.completed ? outcome.result : null;
+  return { layoutFlags };
 }
 
 export async function readAppPageBinaryStream(

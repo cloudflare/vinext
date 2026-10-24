@@ -130,11 +130,25 @@ describe("app page probe helpers", () => {
     expect(sharedChildren.next().value).toMatchObject({ type: Child });
   });
 
-  it("handles layout special errors innermost first", async () => {
-    const layoutError = new Error("layout failed");
-    const renderLayoutSpecialError = vi.fn(
-      async () => new Response("layout-fallback", { status: 404 }),
-    );
+  it("runs no layout without classification", async () => {
+    const probeLayoutAt = vi.fn(() => null);
+
+    const result = await probeAppPageBeforeRender({
+      layoutCount: 3,
+      probeLayoutAt,
+      runWithSuppressedHookWarning(probe) {
+        return probe();
+      },
+    });
+
+    expect(probeLayoutAt).not.toHaveBeenCalled();
+    expect(result.layoutFlags).toEqual({});
+  });
+
+  it("leaves layout failures to the render and never reuses those layouts", async () => {
+    const layoutError = Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
     const probedLayouts: number[] = [];
 
     const result = await probeAppPageBeforeRender({
@@ -146,67 +160,37 @@ describe("app page probe helpers", () => {
         }
         return null;
       },
-      renderLayoutSpecialError,
-      resolveSpecialError(error) {
-        return error === layoutError
-          ? {
-              kind: "http-access-fallback",
-              statusCode: 404,
-            }
-          : null;
-      },
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
-    });
-
-    expect(probedLayouts).toEqual([2, 1]);
-    expect(renderLayoutSpecialError).toHaveBeenCalledWith(
-      {
-        kind: "http-access-fallback",
-        statusCode: 404,
-      },
-      1,
-    );
-    expect(result.response?.status).toBe(404);
-    await expect(result.response?.text()).resolves.toBe("layout-fallback");
-  });
-
-  it("leaves layout failures that are not special to the render", async () => {
-    const layoutError = new Error("ordinary layout failure");
-    const renderLayoutSpecialError = vi.fn();
-
-    const result = await probeAppPageBeforeRender({
-      layoutCount: 2,
-      probeLayoutAt(layoutIndex) {
-        if (layoutIndex === 1) {
-          throw layoutError;
-        }
-        return null;
-      },
-      renderLayoutSpecialError,
-      resolveSpecialError() {
-        return null;
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
+      classification: {
+        buildTimeClassifications: new Map([
+          [0, "static"],
+          [1, "static"],
+        ]),
+        getLayoutId(layoutIndex) {
+          return ["layout:/", "layout:/shop", "layout:/shop/[id]"][layoutIndex];
+        },
+        async runWithIsolatedDynamicScope(fn) {
+          return { result: await fn(), dynamicDetected: false };
+        },
       },
     });
 
-    expect(result.response).toBeNull();
-    expect(renderLayoutSpecialError).not.toHaveBeenCalled();
+    expect(probedLayouts).toEqual([2, 1, 0]);
+    expect(result.layoutFlags).toEqual({
+      "layout:/": "s",
+      "layout:/shop": "d",
+      "layout:/shop/[id]": "s",
+    });
   });
 
   it("propagates layoutFlags from layout probe result", async () => {
+    const probedLayouts: number[] = [];
     const result = await probeAppPageBeforeRender({
       layoutCount: 2,
-      probeLayoutAt() {
-        return null;
-      },
-      renderLayoutSpecialError() {
-        throw new Error("should not render a layout special error");
-      },
-      resolveSpecialError() {
+      probeLayoutAt(layoutIndex) {
+        probedLayouts.push(layoutIndex);
         return null;
       },
       runWithSuppressedHookWarning(probe) {
@@ -226,42 +210,11 @@ describe("app page probe helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
+    // A build-time dynamic layout's flag is final, so it doesn't run.
+    expect(probedLayouts).toEqual([0]);
     expect(result.layoutFlags).toEqual({
       "layout:/": "s",
       "layout:/admin": "d",
     });
-  });
-
-  it("still handles special errors with classification enabled", async () => {
-    const layoutError = new Error("layout failed");
-
-    const result = await probeAppPageBeforeRender({
-      layoutCount: 2,
-      probeLayoutAt(layoutIndex) {
-        if (layoutIndex === 1) {
-          throw layoutError;
-        }
-        return null;
-      },
-      renderLayoutSpecialError: vi.fn(async () => new Response("layout-fallback", { status: 404 })),
-      resolveSpecialError(error) {
-        return error === layoutError ? { kind: "http-access-fallback", statusCode: 404 } : null;
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-      classification: {
-        getLayoutId(layoutIndex) {
-          return ["layout:/", "layout:/admin"][layoutIndex];
-        },
-        async runWithIsolatedDynamicScope(fn) {
-          return { result: await fn(), dynamicDetected: false };
-        },
-      },
-    });
-
-    // Special error response should still be returned
-    expect(result.response?.status).toBe(404);
   });
 });

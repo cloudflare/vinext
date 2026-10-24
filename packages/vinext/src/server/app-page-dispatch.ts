@@ -15,6 +15,8 @@ import {
   isDraftModeRequest,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
+  runWithConnectionProbe,
+  runWithDetachedDynamicUsage,
   runWithIsolatedDynamicUsage,
   setHeadersContext,
 } from "vinext/shims/headers";
@@ -1618,15 +1620,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     renderErrorBoundaryResponse(renderError, errorOrigin) {
       return options.renderErrorBoundaryPage(renderError, errorOrigin);
     },
-    renderLayoutSpecialError(specialError, layoutIndex) {
-      return renderLayoutSpecialError(
-        options,
-        specialError,
-        layoutIndex,
-        serveStreamingMetadata,
-        renderedRouteHead,
-      );
-    },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(
         options,
@@ -1673,36 +1666,40 @@ function resolveFallbackRouteHead<TRoute extends AppPageDispatchRoute>(
   return { ...render, prepared: value };
 }
 
-async function renderLayoutSpecialError<TRoute extends AppPageDispatchRoute>(
+/**
+ * The outermost layout above every loading boundary whose subtree throws an
+ * HTTP access fallback. The document's shell rejected with one that a
+ * component nothing tags threw: one a layout renders, the page renders or a
+ * template. This runs only on that error path, as a layout's own component
+ * tags what it throws.
+ */
+async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
-  specialError: AppPageSpecialError,
-  layoutIndex: number,
-  serveStreamingMetadata: boolean,
-  renderedRouteHead: RouteHeadRef | null,
-): Promise<Response> {
-  return buildAppPageSpecialErrorResponse({
-    basePath: options.basePath,
-    buildRscRedirectFlightStream: (rscOptions) =>
-      buildRscRedirectFlightStream({
-        renderToReadableStream: options.renderToReadableStream,
-        digest: rscOptions.digest,
-      }),
-    clearRequestContext: options.clearRequestContext,
-    getAndClearPendingCookies,
-    serveStreamingMetadata,
-    isEdgeRuntime: options.isEdgeRuntime,
-    isRscRequest: options.isRscRequest,
-    middlewareContext: options.middlewareContext,
-    renderFallbackPage(statusCode) {
-      return renderLayoutBoundaryFallback(options, statusCode, layoutIndex, {
-        // Every layout above the throwing one still contributes metadata.
-        headLayouts: options.route.layouts.slice(0, layoutIndex),
-        routeHead: resolveFallbackRouteHead(options, renderedRouteHead),
-      });
-    },
-    request: options.request,
-    specialError,
-  });
+  limit: number,
+): Promise<number | null> {
+  const layoutCount = Math.min(
+    limit,
+    getAppPageLayoutProbeCount(options.route, getActiveLoadingTreePositions(options.route)),
+  );
+  if (layoutCount === 0) return null;
+  // The render's own dynamic usage already decides how the fallback is stored.
+  const { result } = await runWithDetachedDynamicUsage(() =>
+    options.runWithSuppressedHookWarning(async () => {
+      for (let layoutIndex = 0; layoutIndex < layoutCount; layoutIndex++) {
+        const outcome = await runWithConnectionProbe(async () => {
+          try {
+            await options.probeLayoutAt(layoutIndex);
+            return false;
+          } catch (error) {
+            return resolveAppPageSpecialError(error)?.kind === "http-access-fallback";
+          }
+        });
+        if (outcome.completed && outcome.result) return layoutIndex;
+      }
+      return null;
+    }),
+  );
+  return result;
 }
 
 /**
@@ -1887,9 +1884,34 @@ async function renderPageSpecialError<TRoute extends AppPageDispatchRoute>(
     isEdgeRuntime: options.isEdgeRuntime,
     isRscRequest: options.isRscRequest,
     middlewareContext: options.middlewareContext,
-    renderFallbackPage(statusCode) {
+    async renderFallbackPage(statusCode) {
       // Parallel slot not-found boundaries caught it in the page's own document.
-      if (caughtDocument) return Promise.resolve(caughtDocument);
+      if (caughtDocument) return caughtDocument;
+      if (specialError.kind === "http-access-fallback") {
+        // A layout's signal is caught above that layout, so the layouts above
+        // it contribute the head. One a component the layout renders threw
+        // carries no tag, so it's found among the layouts above the tagged
+        // ones, which it would be caught outside of.
+        let layoutIndex = specialError.layoutIndex ?? null;
+        if (specialError.unattributed === true) {
+          layoutIndex =
+            (await findAppPageLayoutSubtreeSpecialErrorIndex(
+              options,
+              layoutIndex ??
+                (specialError.slotLayoutIndex === undefined
+                  ? options.route.layouts.length
+                  : specialError.slotLayoutIndex + 1),
+            )) ?? layoutIndex;
+        }
+        if (layoutIndex !== null) {
+          return renderLayoutBoundaryFallback(options, statusCode, layoutIndex, {
+            headLayouts: options.route.layouts.slice(0, layoutIndex),
+            intercept,
+            isCacheCandidate,
+            routeHead,
+          });
+        }
+      }
       // A slot's signal is caught above the layout that renders it.
       if (
         specialError.kind === "http-access-fallback" &&

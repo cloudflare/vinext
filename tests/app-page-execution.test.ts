@@ -8,6 +8,7 @@ import {
   resolveAppPageCaughtNotFoundBoundaries,
   resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
+  tagAppPageLayoutError,
   tagAppPagePageError,
   tagAppPageSlotError,
   teeAppPageRscStreamForCapture,
@@ -56,7 +57,7 @@ describe("app page execution helpers", () => {
       digest,
       [Symbol.for("vinext.appPage.metadataError")]: true,
     });
-    const fromPage = Object.assign(new Error(digest), { digest });
+    const fromPage = tagAppPagePageError(Object.assign(new Error(digest), { digest }));
 
     expect(resolveAppPageShellSpecialError(decoded, [fromMetadata])).toEqual({
       kind: "http-access-fallback",
@@ -71,6 +72,59 @@ describe("app page execution helpers", () => {
       kind: "http-access-fallback",
       statusCode: 404,
     });
+  });
+
+  it("resolves a shell's access fallback a route layout threw to the outermost such layout", () => {
+    // A layout's boundaries wrap only its `children`, so its own notFound() is
+    // caught above it, outside the boundary of any slot it renders.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [tagAppPageLayoutError(thrown(), 2)])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      layoutIndex: 2,
+    });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        tagAppPagePageError(thrown()),
+        tagAppPageLayoutError(thrown(), 2),
+        tagAppPageLayoutError(thrown(), 1),
+      ]),
+    ).toEqual({ kind: "http-access-fallback", statusCode: 404, layoutIndex: 1 });
+    // The layout renders its slot, so the layout's signal wins over the slot's.
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        tagAppPageSlotError(thrown(), 1),
+        tagAppPageLayoutError(thrown(), 1),
+      ]),
+    ).toEqual({ kind: "http-access-fallback", statusCode: 404, layoutIndex: 1 });
+    // A slot an outer layout renders is caught above that outer layout.
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        tagAppPageSlotError(thrown(), 0),
+        tagAppPageLayoutError(thrown(), 1),
+      ]),
+    ).toEqual({ kind: "http-access-fallback", statusCode: 404, slotLayoutIndex: 0 });
+    // A copy a component the layout renders threw carries no tag.
+    expect(
+      resolveAppPageShellSpecialError(decoded, [tagAppPageLayoutError(thrown(), 2), thrown()]),
+    ).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      layoutIndex: 2,
+      unattributed: true,
+    });
+    // Only an access fallback is attributed; a redirect is the same anywhere.
+    const redirectDigest = "NEXT_REDIRECT;replace;/login;307;";
+    const redirect = Object.assign(new Error(redirectDigest), { digest: redirectDigest });
+    expect(
+      resolveAppPageShellSpecialError(redirect, [tagAppPageLayoutError(redirect, 0)]),
+    ).toMatchObject({ kind: "redirect" });
+    expect(
+      resolveAppPageShellSpecialError(redirect, [tagAppPageLayoutError(redirect, 0)]),
+    ).not.toHaveProperty("layoutIndex");
   });
 
   it("resolves a special error a client component threw during SSR as the page's", () => {
@@ -102,7 +156,7 @@ describe("app page execution helpers", () => {
     const decoded = Object.assign(new Error(digest), { digest });
     const fromInnerSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 2);
     const fromOuterSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 1);
-    const fromPage = Object.assign(new Error(digest), { digest });
+    const fromPage = tagAppPagePageError(Object.assign(new Error(digest), { digest }));
 
     expect(resolveAppPageShellSpecialError(decoded, [fromInnerSlot])).toEqual({
       kind: "http-access-fallback",
@@ -127,9 +181,11 @@ describe("app page execution helpers", () => {
     expect(fromRootSlot).not.toBe(shared);
     expect(fromRootSlot).toBeInstanceOf(Error);
     expect(fromRootSlot).toMatchObject({ digest, message: digest, stack: shared.stack });
+    // A copy nothing tagged may be from a component a layout renders.
     expect(resolveAppPageShellSpecialError(decoded, [shared])).toEqual({
       kind: "http-access-fallback",
       statusCode: 404,
+      unattributed: true,
     });
     expect(
       resolveAppPageShellSpecialError(decoded, [tagAppPageSlotError(shared, 2)]),
@@ -1129,32 +1185,6 @@ describe("app page execution helpers", () => {
     expect(response.status).toBe(404);
   });
 
-  it("probes layouts from inner to outer and stops on a handled special response", async () => {
-    const probedLayouts: number[] = [];
-
-    const result = await probeAppPageLayouts({
-      layoutCount: 3,
-      async onLayoutError(error, layoutIndex) {
-        expect(error).toBeInstanceOf(Error);
-        return layoutIndex === 1 ? new Response("layout-fallback", { status: 404 }) : null;
-      },
-      probeLayoutAt(layoutIndex) {
-        probedLayouts.push(layoutIndex);
-        if (layoutIndex === 1) {
-          throw new Error("layout failed");
-        }
-        return null;
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-    });
-
-    expect(probedLayouts).toEqual([2, 1]);
-    expect(result.response?.status).toBe(404);
-    await expect(result.response?.text()).resolves.toBe("layout-fallback");
-  });
-
   it("produces fused ssrStream + sideStream when capturing (#981)", async () => {
     const capture = teeAppPageRscStreamForCapture(createStream(["flight-", "chunk"]), true);
 
@@ -1182,9 +1212,6 @@ describe("app page execution helpers", () => {
   it("tracks per-layout dynamic usage when classification options are provided", async () => {
     const result = await probeAppPageLayouts({
       layoutCount: 3,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1205,7 +1232,6 @@ describe("app page execution helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
     // Layout 0 is build-time static, layout 2 is build-time dynamic
     // Layout 1 has no build-time classification, probed with no dynamic detected
     expect(result.layoutFlags).toEqual({
@@ -1219,9 +1245,6 @@ describe("app page execution helpers", () => {
     let probeCallCount = 0;
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1245,38 +1268,29 @@ describe("app page execution helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
     expect(result.layoutFlags).toEqual({
       "layout:/": "d",
       "layout:/dashboard": "s",
     });
   });
 
-  it("returns empty layoutFlags when classification options are absent (backward compat)", async () => {
+  it("runs no layout when classification options are absent", async () => {
+    const probeLayoutAt = vi.fn(() => null);
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
-      probeLayoutAt() {
-        return null;
-      },
+      probeLayoutAt,
       runWithSuppressedHookWarning(probe) {
         return probe();
       },
     });
 
-    expect(result.response).toBeNull();
+    expect(probeLayoutAt).not.toHaveBeenCalled();
     expect(result.layoutFlags).toEqual({});
   });
 
   it("defaults to dynamic flag when probe throws a non-special error", async () => {
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        // Non-special error — return null (don't short-circuit)
-        return Promise.resolve(null);
-      },
       probeLayoutAt(layoutIndex) {
         if (layoutIndex === 1) throw new Error("use() outside render");
         return null;
@@ -1295,7 +1309,6 @@ describe("app page execution helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
     // Layout 1 threw → conservatively flagged as dynamic
     expect(result.layoutFlags["layout:/dashboard"]).toBe("d");
     // Layout 0 probed successfully
@@ -1307,9 +1320,6 @@ describe("app page execution helpers", () => {
 
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt(layoutIndex) {
         if (layoutIndex === 1) {
           dynamicUsageDetected = true;
@@ -1340,7 +1350,6 @@ describe("app page execution helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
     expect(result.layoutFlags).toEqual({
       "layout:/": "s",
       "layout:/dashboard": "d",
@@ -1351,9 +1360,6 @@ describe("app page execution helpers", () => {
     let probeCalls = 0;
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1382,16 +1388,14 @@ describe("app page execution helpers", () => {
     });
   });
 
-  it("returns special error response when build-time classified layout throws during error probe", async () => {
+  it("leaves a build-time static layout's failure to the render and flags it dynamic", async () => {
     const layoutError = new Error("layout failed");
-    const specialResponse = new Response("layout-fallback", { status: 404 });
+    const probedLayouts: number[] = [];
 
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError(error) {
-        return Promise.resolve(error === layoutError ? specialResponse : null);
-      },
       probeLayoutAt(layoutIndex) {
+        probedLayouts.push(layoutIndex);
         if (layoutIndex === 1) throw layoutError;
         return null;
       },
@@ -1412,11 +1416,10 @@ describe("app page execution helpers", () => {
       },
     });
 
-    // The special-error response from the throwing layout short-circuits the
-    // loop. The flag for layout 1 is still recorded (set before the error
-    // probe runs), and layout 0 is never reached.
-    expect(result.response).toBe(specialResponse);
-    expect(result.layoutFlags).toEqual({ "layout:/admin": "s" });
+    // The render throws the error again, so the probe keeps going. The layout
+    // that threw is never reused.
+    expect(probedLayouts).toEqual([1, 0]);
+    expect(result.layoutFlags).toEqual({ "layout:/": "s", "layout:/admin": "d" });
   });
 
   it("does not read build-time reasons when debugClassification is absent", async () => {
@@ -1428,9 +1431,6 @@ describe("app page execution helpers", () => {
 
     await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1458,9 +1458,6 @@ describe("app page execution helpers", () => {
 
     await probeAppPageLayouts({
       layoutCount: 3,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1514,9 +1511,6 @@ describe("app page execution helpers", () => {
 
     await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1564,9 +1558,6 @@ describe("app page execution helpers", () => {
 
     const result = await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt() {
         return null;
       },
@@ -1598,7 +1589,6 @@ describe("app page execution helpers", () => {
       },
     });
 
-    expect(result.response).toBeNull();
     // dashboard: build-time static, but the observation flips it to dynamic.
     // root: build-time static with a safe observation stays static.
     expect(result.layoutFlags).toEqual({
@@ -1624,9 +1614,6 @@ describe("app page execution helpers", () => {
 
     await probeAppPageLayouts({
       layoutCount: 2,
-      onLayoutError() {
-        return Promise.resolve(null);
-      },
       probeLayoutAt(layoutIndex) {
         if (layoutIndex === 1) throw new Error("headers() outside render");
         return null;
