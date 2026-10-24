@@ -27,7 +27,10 @@ import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js
 import { encodeCacheTag } from "../utils/encode-cache-tag.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import { hasQueryInvariantRenderProof, type RenderObservation } from "./cache-proof.js";
-import { isAppPprDynamicFallbackShellHtml } from "./app-ppr-fallback-shell.js";
+import {
+  hasAppPprFallbackShellPrelude,
+  isAppPprDynamicFallbackShellHtml,
+} from "./app-ppr-fallback-shell.js";
 import { buildPageCacheTags } from "./implicit-tags.js";
 import { markFrameworkLinkHeaders } from "./app-response-header-provenance.js";
 export {
@@ -147,6 +150,12 @@ type ReadAppPageFallbackShellCacheResponseOptions = {
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   revalidateSeconds: number;
+  /**
+   * Resumes a dynamic shell, whose holes need a render. Returns whether the
+   * shell carried the resume data cache that render uses. An empty shell has
+   * no prelude to serve, so its route renders blocking instead.
+   */
+  resumeDynamicShell: (postponed: string | undefined, hasPrelude: boolean) => boolean;
   rewriteHtml: (html: string) => string;
 };
 
@@ -790,7 +799,22 @@ export async function readAppPageFallbackShellCacheResponse(
       return null;
     }
     if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
-      options.isrDebug?.("MISS (dynamic fallback shell requires resume)", options.fallbackPathname);
+      // Like any App Page read, a hard-expired shell is a miss. Shells are not
+      // regenerated, so its build-time values must not be replayed.
+      if (cached?.isExpired) {
+        options.isrDebug?.("MISS (expired dynamic fallback shell)", options.fallbackPathname);
+        return null;
+      }
+      const isResumed = options.resumeDynamicShell(
+        cachedValue.postponed,
+        hasAppPprFallbackShellPrelude(cachedValue.html),
+      );
+      options.isrDebug?.(
+        isResumed
+          ? "RESUME (dynamic fallback shell)"
+          : "MISS (dynamic fallback shell without resume data cache)",
+        options.fallbackPathname,
+      );
       return null;
     }
 

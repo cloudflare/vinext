@@ -46,6 +46,10 @@ import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-runtime.js";
 import {
+  _getResumeDataCacheCollector,
+  _getResumeDataCacheSeed,
+} from "../packages/vinext/src/shims/cache-request-state.js";
+import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
@@ -59,6 +63,7 @@ import {
 } from "../packages/vinext/src/server/cacheability-manifest.js";
 import {
   createRequestContext,
+  getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
 import {
@@ -1284,6 +1289,57 @@ describe("app page dispatch", () => {
     expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
       serveStreamingMetadata: true,
     });
+  });
+
+  it("refreshes stale fetches before collecting a PPR fallback shell's resume data cache", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const refreshInForeground: boolean[] = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+      refreshInForeground.push(getRequestContext().refreshStaleFetchesInForeground);
+      return React.createElement("main", null, "page");
+    });
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(200);
+    expect(refreshInForeground[0]).toBe(true);
+  });
+
+  it("seeds a PPR fallback shell's final render with what its warmup collected", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const caches: { collector: unknown; seed: unknown }[] = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+      caches.push({ collector: _getResumeDataCacheCollector(), seed: _getResumeDataCacheSeed() });
+      return React.createElement("main", null, "page");
+    });
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(200);
+    expect(caches).toHaveLength(2);
+    expect(caches[0]!.seed).toBeNull();
+    expect(caches[1]!.seed).not.toBeNull();
+    expect(caches[1]!.seed).toBe(caches[0]!.collector);
   });
 
   afterEach(() => {
@@ -5519,6 +5575,37 @@ describe("app page dispatch", () => {
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toContain("Locale: en");
+    expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("reads a fallback shell with an encoded kept param under its decoded build key", async () => {
+    const buildPageElement = createParamTextPageElement();
+    const isrGet = vi.fn(async (key: string) =>
+      key === "shell:/café/blog/[slug]"
+        ? buildISRCacheEntry(
+            buildCachedAppPageValue("<html><head></head><body>Locale: café</body></html>"),
+            false,
+          )
+        : null,
+    );
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      cleanPathname: "/caf%C3%A9/blog/new-post",
+      isrGet,
+      params: { locale: "caf%C3%A9", slug: "new-post" },
+      pprFallbackCacheShells: [
+        {
+          fallbackParamNames: ["slug"],
+          params: { locale: "café", slug: "[slug]" },
+          pathname: "/caf%C3%A9/blog/[slug]",
+        },
+      ],
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(isrGet.mock.calls.map(([key]) => key)).toContain("shell:/café/blog/[slug]");
+    await expect(response.text()).resolves.toContain("Locale: café");
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 

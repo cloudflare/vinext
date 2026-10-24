@@ -219,6 +219,106 @@ describe("staticAssetsAdapter", () => {
     }
   });
 
+  it("packages a fallback shell's resume data cache beside its HTML", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/:lang/:slug",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            path: "/en/[slug]",
+            fallback: true,
+          },
+          { route: "/about", status: "rendered", revalidate: 60, router: "app", path: "/about" },
+        ],
+      }),
+    );
+    const resumeDataCache = JSON.stringify({ cache: { key: { body: "AA==" } }, fetch: {} });
+    write(root, "dist/server/prerendered-routes/en/[slug].html", "<!DOCTYPE html><h1>shell</h1>");
+    write(root, "dist/server/prerendered-routes/en/[slug].rsc", "shell payload");
+    write(root, "dist/server/prerendered-routes/en/[slug].postponed", resumeDataCache);
+    write(root, "dist/server/prerendered-routes/about.html", "<h1>about</h1>");
+    // Only a fallback shell resumes, so a stray sidecar beside a page is ignored.
+    write(root, "dist/server/prerendered-routes/about.postponed", resumeDataCache);
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+
+    await expect(
+      adapter.get(appIsrFallbackShellKey("/en/[slug]", "html", "build-a")),
+    ).resolves.toMatchObject({ value: { kind: "APP_PAGE", postponed: resumeDataCache } });
+    await expect(
+      adapter.get(appIsrFallbackShellKey("/en/[slug]", "rsc", "build-a")),
+    ).resolves.toMatchObject({ value: { kind: "APP_PAGE", postponed: undefined } });
+    await expect(adapter.get(appIsrCacheKey("/about", "html", "build-a"))).resolves.toMatchObject({
+      value: { kind: "APP_PAGE", html: "<h1>about</h1>", postponed: undefined },
+    });
+  });
+
+  it("leaves out a fallback shell whose resume data cache is over the Workers Static Assets file size limit", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/:lang/:slug",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            path: "/en/[slug]",
+            fallback: true,
+          },
+        ],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/en/[slug].html", "<!DOCTYPE html><h1>shell</h1>");
+    write(root, "dist/server/prerendered-routes/en/[slug].rsc", "shell payload");
+    const postponedPath = path.join(root, "dist/server/prerendered-routes/en/[slug].postponed");
+    write(root, "dist/server/prerendered-routes/en/[slug].postponed", "");
+    fs.truncateSync(postponedPath, 25 * 1024 * 1024 + 1);
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+
+    const files = fs.readdirSync(path.join(root, "dist/client"), { recursive: true });
+    expect(files.filter((file) => String(file).endsWith(".postponed"))).toEqual([]);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+    // Without its shell, the route renders blocking.
+    await expect(
+      adapter.get(appIsrFallbackShellKey("/en/[slug]", "html", "build-a")),
+    ).resolves.toBeNull();
+  });
+
   it.each(
     [false, true].flatMap((trailingSlash) =>
       ["first", "café", "with space"].flatMap((slug) =>
