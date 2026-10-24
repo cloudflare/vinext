@@ -97,6 +97,17 @@ describe("createAppPprFallbackShells", () => {
     });
   });
 
+  it("derives no shell from a value that reads as a placeholder once decoded", () => {
+    const route = { params: ["locale", "slug"], pattern: "/:locale/:slug", rootParamNames: [] };
+
+    const pathnames = createAppPprFallbackShells(route, { locale: "[locale]", slug: "a" }).map(
+      (shell) => shell.pathname,
+    );
+
+    // `/%5Blocale%5D/[slug]` would share `/[locale]/[slug]`'s decoded key.
+    expect(pathnames).toEqual(["/[locale]/[slug]"]);
+  });
+
   it("orders nested fallback shells from most specific child prefix to root-only", () => {
     const shells = createAppPprFallbackShells(
       {
