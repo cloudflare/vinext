@@ -47,6 +47,10 @@ test.describe("Next.js compat: segment cache revalidation", () => {
         }
       });
 
+      // Install fake timers before the page loads so the 300ms cooldown
+      // setTimeout in the browser can be frozen later. Until it is paused the
+      // fake clock runs in real time.
+      await page.clock.install();
       await page.goto(ROOT);
       await waitForAppRouterHydration(page);
 
@@ -55,13 +59,11 @@ test.describe("Next.js compat: segment cache revalidation", () => {
       await expect.poll(() => greetingRequests.length).toBeGreaterThan(0);
       await Promise.all(greetingRequests.map((request) => request.response()));
 
-      // Install fake timers so the 300ms cooldown setTimeout in the browser is
-      // frozen until the test advances the clock. Next.js only installs them,
-      // which leaves the clock running in real time; pausing keeps the checks
-      // below independent of how long each step takes.
-      const installedAt = Date.now();
-      await page.clock.install({ time: installedAt });
-      await page.clock.pauseAt(installedAt + 5_000);
+      // Freeze the clock so the cooldown only ends when the test advances it.
+      // Next.js leaves the fake clock running in real time; pausing keeps the
+      // checks below independent of how long each step takes.
+      const pageNow = await page.evaluate(() => Date.now());
+      await page.clock.pauseAt(pageNow + 5_000);
 
       // The revalidation triggers a 300ms cooldown before any new prefetch.
       greetingRequests.length = 0;
