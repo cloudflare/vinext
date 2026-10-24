@@ -102,9 +102,27 @@ export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
  */
 export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | null> {
   const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
-  const result =
-    (await getDataCacheHandler().get(key)) ?? (await getExplicitCdnCacheAdapter()?.get(key));
-  return toIsrCacheEntry(result ?? null);
+  const stored = await getDataCacheHandler().get(key);
+  if (stored) return toIsrCacheEntry(stored);
+  const packaged = await getExplicitCdnCacheAdapter()?.get(key);
+  return toIsrCacheEntry(packaged ? withAgeCacheState(packaged) : null);
+}
+
+/**
+ * A packaged entry records only when it was built and its lifetime, so its age
+ * decides whether it is stale or expired, as a data-cache entry's would.
+ */
+function withAgeCacheState(entry: CacheHandlerValue): CacheHandlerValue {
+  if (entry.cacheState !== undefined) return entry;
+  const age = Date.now() - entry.lastModified;
+  const { expire, revalidate } = entry.cacheControl ?? {};
+  if (typeof expire === "number" && age > expire * 1000) {
+    return { ...entry, cacheState: "expired" };
+  }
+  if (typeof revalidate === "number" && age > revalidate * 1000) {
+    return { ...entry, cacheState: "stale" };
+  }
+  return entry;
 }
 
 /** Store a PPR fallback shell in the data cache, where {@link isrGetFallbackShell} reads it. */

@@ -44,7 +44,9 @@ test.describe("fallback shells on a warmed deploy", () => {
       expect(response.headers()["cache-control"]).toContain("no-store");
       const html = await response.text();
       expect(html).toContain(`<p id="param">${id}</p>`);
-      renderedAt.add(html.match(/<p id="rendered-at">([^<]+)<\/p>/)?.[1] ?? "");
+      const renderedAtMatch = html.match(/<p id="rendered-at">([^<]+)<\/p>/);
+      expect(renderedAtMatch).not.toBeNull();
+      renderedAt.add(renderedAtMatch![1]);
     }
     // Both requests resume the shell with its cached values.
     expect(renderedAt.size).toBe(1);

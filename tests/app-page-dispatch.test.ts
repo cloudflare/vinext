@@ -5699,6 +5699,46 @@ describe("app page dispatch", () => {
     expect(handleSsr).toHaveBeenCalledTimes(3);
   });
 
+  it("shares a cold shell's production until its write settles", async () => {
+    let settleWrite!: () => void;
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      () =>
+        new Promise<void>((resolve) => {
+          settleWrite = resolve;
+        }),
+    );
+    const executionContext = { waitUntil: vi.fn(), passThroughOnException() {} };
+    const dispatchFor = (slug: string) => {
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement(),
+        cleanPathname: `/en/blog/${slug}`,
+        isrGet: vi.fn(async () => null),
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return createStream(["<!DOCTYPE html><html><head></head><body>shell</body></html>"]);
+          },
+        }),
+        params: { locale: "en", slug },
+        request: new Request(`https://example.test/en/blog/${slug}`),
+      });
+      return runWithExecutionContext(executionContext, () =>
+        runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage({ ...options, isrSetFallbackShell }),
+        ),
+      );
+    };
+
+    const first = dispatchFor("first");
+    await vi.waitFor(() => expect(isrSetFallbackShell).toHaveBeenCalled());
+    const second = dispatchFor("second");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    settleWrite();
+    await Promise.all([first, second]);
+
+    expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+    expect(executionContext.waitUntil).toHaveBeenCalled();
+  });
+
   it("keeps generateStaticParams' dynamic usage out of the page it checks", async () => {
     const { options } = createPprBlogDispatchOptions({
       buildPageElement: createParamTextPageElement("fresh"),
