@@ -379,6 +379,9 @@ function printHelp(cmd?: string) {
                          (Response Store or Workers Cache, default: prompt with No)
     --legacy-wrangler-cloudflare-init
                          Use the legacy Wrangler setup instead of cf
+    --ignore-wrangler-config
+                         Set up cf even if a root Wrangler config exists
+                         (use when it belongs to an unrelated Worker)
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache,
                          static-assets, or data-cache
                          (default: none; response-store is the default cache choice)
