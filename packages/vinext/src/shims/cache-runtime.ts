@@ -875,6 +875,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
+          propagateRootParamNamesToParent(new Set(resumeEntry.readRootParamNames));
           propagateCacheTagsToRequest(resumeEntry.tags);
           recordRequestScopedCacheControl(resumeEntry.cacheControl);
           collectUseCacheResumeDataCacheEntry(coarseCacheKey, resumeEntry);
@@ -972,6 +973,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                   stale: effectiveLife.stale,
                 },
                 tags: ctx.tags,
+                ...(rootParamNames && rootParamNames.size > 0
+                  ? { readRootParamNames: [...rootParamNames] }
+                  : {}),
               });
             }
             const cacheValue = {
@@ -1053,10 +1057,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           recordRequestScopedCacheControl(existing.cacheControl);
+          const knownNames = knownRootParamsByFunctionId.get(id);
           collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
             body: existing.value.data.body,
             cacheControl: existing.cacheControl,
             tags: existing.value.tags ?? [],
+            ...(knownNames && knownNames.size > 0 ? { readRootParamNames: [...knownNames] } : {}),
           });
           if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
           return result;

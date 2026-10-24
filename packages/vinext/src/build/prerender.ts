@@ -2122,8 +2122,11 @@ export async function prerenderApp({
 
         // A request resumes the shell from this private artifact, seeded as
         // the shell entry's `postponed` value. An empty shell renders blocking.
+        // An earlier build's sidecar is removed first: its presence alone marks
+        // a shell as resumable.
+        const postponedFullPath = path.join(outDir, getPostponedOutputPath(urlPath));
+        fs.rmSync(postponedFullPath, { force: true });
         if (fallbackShell?.resumeDataCache && hasAppPprFallbackShellPrelude(fallbackShell.html)) {
-          const postponedFullPath = path.join(outDir, getPostponedOutputPath(urlPath));
           fs.writeFileSync(postponedFullPath, fallbackShell.resumeDataCache, "utf-8");
         }
 

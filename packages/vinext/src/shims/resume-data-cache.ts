@@ -20,6 +20,11 @@ export type UseCacheResumeDataCacheEntry = {
   body: string;
   cacheControl: CacheControlMetadata | undefined;
   tags: string[];
+  /**
+   * The root params the cached function read, so a resumed hit still keys an
+   * enclosing cache by them on a runtime that has not run the function yet.
+   */
+  readRootParamNames?: string[];
 };
 
 export type FetchResumeDataCacheEntry = CachedFetchValue["data"];
@@ -71,10 +76,24 @@ export function readUseCacheResumeDataCacheEntry(
   return _getResumeDataCacheSeed()?.cache.get(key);
 }
 
+// Like Next.js's DYNAMIC_EXPIRE (server/use-cache/constants.ts), in seconds.
+const DYNAMIC_EXPIRE = 300;
+
 export function collectUseCacheResumeDataCacheEntry(
   key: string,
   entry: UseCacheResumeDataCacheEntry,
 ): void {
+  // Like Next.js, short-lived entries stay out of a shell's resume data
+  // cache: a resumed request runs them again instead of replaying build-time
+  // values.
+  const cacheControl = entry.cacheControl;
+  if (
+    cacheControl &&
+    (cacheControl.revalidate === 0 ||
+      (cacheControl.expire !== undefined && cacheControl.expire < DYNAMIC_EXPIRE))
+  ) {
+    return;
+  }
   _getResumeDataCacheCollector()?.cache.set(key, entry);
 }
 

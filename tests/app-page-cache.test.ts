@@ -1318,6 +1318,46 @@ describe("app page cache helpers", () => {
     expect(resumeDynamicShell).toHaveBeenCalledWith('{"cache":{},"fetch":{}}', true);
   });
 
+  it("does not resume a hard-expired dynamic fallback shell", async () => {
+    const debugCalls: Array<[string, string]> = [];
+    const resumeDynamicShell = vi.fn(() => true);
+
+    const response = await readAppPageFallbackShellCacheResponse({
+      clearRequestContext() {
+        throw new Error("should not clear request context for an expired shell");
+      },
+      isrDebug(event, detail) {
+        debugCalls.push([event, detail]);
+      },
+      async isrGet() {
+        return {
+          ...buildISRCacheEntry({
+            ...buildCachedAppPageValue(
+              markAppPprDynamicFallbackShellHtml(
+                "<!DOCTYPE html><html><head></head><body>dynamic shell</body></html>",
+              ),
+            ),
+            postponed: '{"cache":{},"fetch":{}}',
+          }),
+          isExpired: true,
+        };
+      },
+      isrFallbackShellHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      fallbackPathname: "/en/blog/[slug]",
+      resumeDynamicShell,
+      revalidateSeconds: 60,
+      rewriteHtml(html) {
+        return html;
+      },
+    });
+
+    expect(response).toBeNull();
+    expect(resumeDynamicShell).not.toHaveBeenCalled();
+    expect(debugCalls).toContainEqual(["MISS (expired dynamic fallback shell)", "/en/blog/[slug]"]);
+  });
+
   it("still schedules stale regeneration when the stale payload is unusable for this request", async () => {
     const debugCalls: Array<[string, string]> = [];
     const scheduledRegenerations: Array<() => Promise<void>> = [];

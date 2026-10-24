@@ -272,6 +272,53 @@ describe("staticAssetsAdapter", () => {
     });
   });
 
+  it("leaves out a resume data cache over the Workers Static Assets file size limit", async () => {
+    const root = createRoot();
+    write(
+      root,
+      "dist/server/vinext-prerender.json",
+      JSON.stringify({
+        buildId: "build-a",
+        routes: [
+          {
+            route: "/:lang/:slug",
+            status: "rendered",
+            revalidate: 60,
+            router: "app",
+            path: "/en/[slug]",
+            fallback: true,
+          },
+        ],
+      }),
+    );
+    write(root, "dist/server/prerendered-routes/en/[slug].html", "<!DOCTYPE html><h1>shell</h1>");
+    write(root, "dist/server/prerendered-routes/en/[slug].rsc", "shell payload");
+    const postponedPath = path.join(root, "dist/server/prerendered-routes/en/[slug].postponed");
+    write(root, "dist/server/prerendered-routes/en/[slug].postponed", "");
+    fs.truncateSync(postponedPath, 25 * 1024 * 1024 + 1);
+
+    await finalizeCacheAdapterPrerenderOutput({ cdn: staticAssetsAdapter() }, root);
+
+    const files = fs.readdirSync(path.join(root, "dist/client"), { recursive: true });
+    expect(files.filter((file) => String(file).endsWith(".postponed"))).toEqual([]);
+    const adapter = createStaticAssetsCacheAdapter({
+      env: {
+        ASSETS: {
+          async fetch(input: string) {
+            const file = path.join(root, "dist/client", new URL(input).pathname);
+            return fs.existsSync(file)
+              ? new Response(fs.readFileSync(file))
+              : new Response(null, { status: 404 });
+          },
+        },
+      },
+    });
+    // Without its resume data cache, the route renders blocking.
+    await expect(
+      adapter.get(appIsrFallbackShellKey("/en/[slug]", "html", "build-a")),
+    ).resolves.toMatchObject({ value: { kind: "APP_PAGE", postponed: undefined } });
+  });
+
   it.each(
     [false, true].flatMap((trailingSlash) =>
       ["first", "café", "with space"].flatMap((slug) =>

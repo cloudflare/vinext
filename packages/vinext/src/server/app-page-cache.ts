@@ -799,6 +799,12 @@ export async function readAppPageFallbackShellCacheResponse(
       return null;
     }
     if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
+      // Like any App Page read, a hard-expired shell is a miss. Shells are not
+      // regenerated, so its build-time values must not be replayed.
+      if (cached?.isExpired) {
+        options.isrDebug?.("MISS (expired dynamic fallback shell)", options.fallbackPathname);
+        return null;
+      }
       const isResumed = options.resumeDynamicShell(
         cachedValue.postponed,
         hasAppPprFallbackShellPrelude(cachedValue.html),
