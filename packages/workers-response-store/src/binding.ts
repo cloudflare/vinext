@@ -98,6 +98,8 @@ export type StoredEntry = EntryMetadata & {
   cacheKey: string;
   activeRevision: number;
   latestRevision: number;
+  /** Set on entries read from R2, whose metadata records only whether a revalidator exists. */
+  hasRevalidator?: boolean;
 };
 
 export type RefreshCandidate = Pick<
@@ -427,6 +429,10 @@ async function readBodyPrefix(
   };
 }
 
+function hasRevalidator(entry: StoredEntry): boolean {
+  return entry.hasRevalidator ?? entry.revalidator !== null;
+}
+
 function purgeTagForEntry(entry: Pick<StoredEntry, "keyHash">): string {
   return `runtime-cache-${entry.keyHash}`;
 }
@@ -697,6 +703,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       freshUntil,
       swrUntil,
       revalidator: null,
+      hasRevalidator: metadata.noRevalidator !== "1",
       expiryBehavior: metadata.expiryBehavior === "miss" ? "miss" : "regenerate",
       cacheTags: [],
       activeRevision: latestRevision,
@@ -811,6 +818,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         swrUntil: String(entry.swrUntil),
         latestRevision: String(entry.activeRevision),
         ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
+        ...(hasRevalidator(entry) ? {} : { noRevalidator: "1" }),
       };
       if (customMetadataSize(customMetadata) > R2_CUSTOM_METADATA_SAFE_BYTES) {
         const responseMetadata = new TextEncoder().encode(
@@ -826,6 +834,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           swrUntil: String(entry.swrUntil),
           latestRevision: String(entry.activeRevision),
           ...(entry.expiryBehavior === "miss" ? { expiryBehavior: "miss" } : {}),
+          ...(hasRevalidator(entry) ? {} : { noRevalidator: "1" }),
         };
       }
       return await this.writeR2Revision(
@@ -895,7 +904,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     headers.set("Age", String(representationAge(createdAt, initialAge, now)));
     headers.set(
       "Cloudflare-CDN-Cache-Control",
-      edgeCacheControl(entry.freshUntil, entry.swrUntil, now),
+      edgeCacheControl(entry.freshUntil, entry.swrUntil, now, hasRevalidator(entry)),
     );
     headers.set("Cache-Tag", cacheTagHeader(entry));
     headers.set("X-Workers-Response-Store", now < entry.freshUntil ? "BLOB-FRESH" : "BLOB-STALE");
@@ -1221,13 +1230,15 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     // (both background SWR and blocking expiry). Return its fresh replacement
     // instead of starting another SWR cycle. A fresh R2 revision can still fill
     // the edge immediately; unconditional reads retain the stale fast path.
+    // An entry without a revalidator is served stale until its writer replaces it.
     const revalidateStale =
+      hasRevalidator(entry) &&
       now >= entry.freshUntil &&
       (request.headers.has("If-None-Match") || request.headers.has("If-Modified-Since"));
     if (now < entry.swrUntil && !revalidateStale) {
       const stored = await this.readStoredResponse(entry, now, r2Read?.object);
       if (stored) {
-        if (now < entry.freshUntil) {
+        if (now < entry.freshUntil || !hasRevalidator(entry)) {
           return stored;
         }
 

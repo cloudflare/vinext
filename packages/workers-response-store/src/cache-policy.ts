@@ -66,7 +66,19 @@ export function representationAge(createdAt: number, initialAge: number, now = D
   return initialAge + Math.max(0, Math.floor((now - createdAt) / 1000));
 }
 
-export function edgeCacheControl(freshUntil: number, swrUntil: number, now = Date.now()): string {
+export function edgeCacheControl(
+  freshUntil: number,
+  swrUntil: number,
+  now = Date.now(),
+  hasRevalidator = true,
+): string {
+  if (!hasRevalidator) {
+    // Its writer replaces it once it goes stale, so its edge copy ends there, never later,
+    // and the replacement needs no edge purge. The Store serves it stale meanwhile.
+    const remainingFreshSeconds = Math.max(0, Math.floor((freshUntil - now) / 1000));
+    return `max-age=${remainingFreshSeconds}, stale-while-revalidate=0`;
+  }
+
   if (now < freshUntil) {
     const remainingFreshSeconds = Math.max(0, Math.ceil((freshUntil - now) / 1000));
     const staleWhileRevalidateSeconds = Math.max(0, Math.ceil((swrUntil - freshUntil) / 1000));
