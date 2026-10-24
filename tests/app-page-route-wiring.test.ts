@@ -1908,35 +1908,63 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  // Next.js: a pre-PPR prefetch with no loading boundary returns only the
+  // router state and a [null, null] head (walkTreeWithFlightRouterState()):
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+  it("renders only the route tree for loading-shell prefetches without a loading boundary", () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
         return Promise.resolve(params);
       },
       matchedParams: {},
+      metadataPlacement: "head",
+      resolveHead: createResolvedHead,
       route: {
         error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: RootLayout }],
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: RootLayout }],
         loading: null,
         notFound: null,
-        notFounds: [null],
+        notFounds: [null, null],
         routeSegments: ["dashboard"],
-        templateTreePositions: [],
-        templates: [],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            ownerTreePosition: 0,
+            page: { default: SlotPage },
+            routeSegments: ["dashboard"],
+          },
+        },
+        templateTreePositions: [0],
+        templates: [{ default: RootLayout }],
       },
       routePath: "/dashboard",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
-    expect(elements["page:/dashboard"]).toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
-    const html = await renderRouteEntry(elements, "route:/dashboard");
-
-    expect(html).not.toContain("Page");
+    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["route:/dashboard"]).toBeNull();
+    expect(
+      Object.keys(elements).filter(
+        (key) =>
+          key.startsWith("layout:") ||
+          key.startsWith("template:") ||
+          key.startsWith("slot:") ||
+          key.startsWith("__vinext_streaming_metadata"),
+      ),
+    ).toEqual([]);
+    // The route's metadata still describes the whole route.
+    expect(elements[APP_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/dashboard"]);
+    expect(elements[APP_ROOT_LAYOUT_KEY]).toBe("/");
   });
 
   // Ported from Next.js: test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts

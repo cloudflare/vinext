@@ -1218,15 +1218,11 @@ export function buildAppPageElements<
   const shouldRenderPrefetchLoadingShell =
     isPrefetchLoadingShell &&
     (prefetchLoadingComponent !== null || prefetchSlotLoadingEntries.length > 0);
-  // A loading-shell prefetch with no loading boundary is the counterpart of
-  // Next.js's pre-PPR no-loading prefetch, which sends only the router state
-  // and a [null, null] head. Leave the streamed generateMetadata() tags out of
-  // it too. A shell that renders a loading boundary keeps them, as Next.js's
-  // walkTreeWithFlightRouterState() returns rscHead with that shell.
+  // A shell that renders a loading boundary keeps the streamed
+  // generateMetadata() tags, as Next.js's walkTreeWithFlightRouterState()
+  // returns rscHead with that shell. A shell without one returns below first.
   const streamingMetadataBodyId =
-    options.resolveHead &&
-    metadataPlacement === "body" &&
-    (!isPrefetchLoadingShell || shouldRenderPrefetchLoadingShell)
+    options.resolveHead && metadataPlacement === "body"
       ? `__vinext_streaming_metadata_body:${routeId}`
       : null;
   // The children spine must reach every slot owner whose branch has a loading
@@ -1281,6 +1277,21 @@ export function buildAppPageElements<
       ...metadataEntries,
       [APP_LAYOUT_IDS_KEY]: [],
       [APP_ROOT_LAYOUT_KEY]: null,
+      [pageElementId]: null,
+      [routeId]: null,
+    };
+  }
+  // A loading-shell prefetch with no loading boundary is the counterpart of
+  // Next.js's pre-PPR no-loading prefetch, which sends only the router state
+  // and a [null, null] head (walkTreeWithFlightRouterState() in
+  // server/app-render/walk-tree-with-flight-router-state.tsx). The client only
+  // learns the route from it, so no layout, template, slot or head renders.
+  if (isPrefetchLoadingShell && !shouldRenderPrefetchLoadingShell) {
+    return {
+      ...metadataEntries,
+      ...(options.route.staticSiblings && options.route.staticSiblings.length > 0
+        ? { [APP_STATIC_SIBLINGS_KEY]: options.route.staticSiblings }
+        : {}),
       [pageElementId]: null,
       [routeId]: null,
     };

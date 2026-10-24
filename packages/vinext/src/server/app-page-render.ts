@@ -52,7 +52,10 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  type AppRscRenderMode,
+} from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -492,6 +495,20 @@ function resolveAppPageCacheWriteRevalidateSeconds(options: {
   }
 
   return options.revalidateSeconds;
+}
+
+/**
+ * A loading-shell prefetch without a loading boundary renders only the route
+ * tree (see buildAppPageElements), so no layout runs and none is probed. Next.js
+ * runs no layout for its no-loading prefetch either. With no layout rendered, a
+ * route that is static by config stores the shell even if a layout reads
+ * request data; the shell itself carries none.
+ */
+function isRouteTreeOnlyLoadingShell(options: ResolvedRenderAppPageLifecycleOptions): boolean {
+  if (options.renderMode !== APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) return false;
+  if (!isAppElementsRecord(options.element)) return false;
+  const routeId = options.element[AppElementsWire.keys.route];
+  return typeof routeId === "string" && options.element[routeId] === null;
 }
 
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
@@ -941,7 +958,8 @@ async function renderAppPageLifecycleImpl(
   // which has no probe, the render alone decides whether the page is dynamic.
   const probeOutcome = await runWithDetachedDynamicUsage(() =>
     probeAppPageBeforeRender({
-      skipProbes: options.pprFallbackShellSignal !== undefined,
+      skipProbes:
+        options.pprFallbackShellSignal !== undefined || isRouteTreeOnlyLoadingShell(options),
       layoutCount: options.layoutCount,
       probeLayoutAt(layoutIndex) {
         return options.probeLayoutAt(layoutIndex);

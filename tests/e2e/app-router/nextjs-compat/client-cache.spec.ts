@@ -307,6 +307,32 @@ test.describe("Next.js compat: client cache", () => {
     });
   }
 
+  test("a loading-shell prefetch without a loading boundary carries only the route tree", async ({
+    page,
+  }) => {
+    // Next.js answers a pre-PPR prefetch with no loading boundary with only the
+    // router state and a [null, null] head, rendering no layout
+    // (walkTreeWithFlightRouterState()):
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+    const response = await page.request.get(`${ROOT}/no-loading/1?_rsc=no-loading-shell`, {
+      headers: {
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    });
+    const body = await response.text();
+    expect(response.status()).toBe(200);
+    expect(body).toContain(`route:${ROOT}/no-loading/1`);
+    expect(body).not.toContain('"lang":"en"');
+    expect(body).not.toContain("App Basic");
+    expect(body).not.toContain("client-cache-breadcrumbs");
+
+    await openHome(page);
+    await navigateToNoLoading(page);
+  });
+
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
     page,
   }) => {
