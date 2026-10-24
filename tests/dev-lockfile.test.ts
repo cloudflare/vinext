@@ -260,7 +260,7 @@ describe("tryAcquireLockfile", () => {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(lockPath, JSON.stringify(stale));
 
-    const info = baseInfo({ pid: process.pid, port: 4000, cwd: root });
+    const info = baseInfo({ pid: process.pid + 1, port: 4000, cwd: root });
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -297,7 +297,23 @@ describe("tryAcquireLockfile", () => {
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(lockPath, JSON.stringify(stale));
 
-    const info = baseInfo({ pid: process.pid, port: 4000, bootId: "current-boot", cwd: root });
+    const info = baseInfo({ pid: process.pid + 1, port: 4000, bootId: "current-boot", cwd: root });
+    const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(readLockfile(lockPath)).toEqual(info);
+    result.lockfile.release();
+  });
+
+  it("takes over a live-looking lock that names the acquiring PID", () => {
+    // After a container restart the new server often gets the old one's PID,
+    // and the host's boot ID and uptime are unchanged.
+    const stale = baseInfo({ pid: process.pid, startedAt: Date.now() - 60_000, cwd: root });
+    const lockPath = getLockfilePath(root);
+    fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+    fs.writeFileSync(lockPath, JSON.stringify(stale));
+
+    const info = baseInfo({ pid: process.pid, port: 4000, cwd: root });
     const result = tryAcquireLockfile({ root, info, unlockOnExit: false });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -313,7 +329,7 @@ describe("tryAcquireLockfile", () => {
 
     const result = tryAcquireLockfile({
       root,
-      info: baseInfo({ cwd: root }),
+      info: baseInfo({ pid: process.pid + 1, cwd: root }),
       takeOverStale: false,
       unlockOnExit: false,
     });

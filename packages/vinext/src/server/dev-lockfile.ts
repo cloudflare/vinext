@@ -135,9 +135,10 @@ export function readBootId(): string | undefined {
 
 /**
  * Slack for the wall-clock boot-time comparison in `predatesCurrentBoot`.
- * `os.uptime()` has whole-second resolution on some platforms (macOS reads
- * `kern.boottime`), and NTP slews the wall clock slightly, so the derived boot
- * time is only accurate to a few seconds.
+ * `os.uptime()` has whole-second resolution on some platforms (macOS derives
+ * it from `kern.boottime`), and on Linux and Windows NTP slews the wall clock
+ * against the uptime clock, so the derived boot time is only accurate to a
+ * few seconds.
  */
 const BOOT_TIME_TOLERANCE_MS = 5_000;
 
@@ -149,14 +150,14 @@ const BOOT_TIME_TOLERANCE_MS = 5_000;
  * boot, so the lock's PID may be held by an unrelated process, and
  * `isPidAlive()` alone would report the dead server as running.
  *
- * When both the lock and the system have a boot ID, they are compared
- * directly. Otherwise the lock's `startedAt` is compared with the boot time
- * derived from `Date.now() - os.uptime()`. On macOS that derivation follows
- * wall-clock changes, because XNU moves `kern.boottime` when the clock is set.
- * On Windows `os.uptime()` is monotonic, so stepping the wall clock forward
- * by more than a server's age makes its lock look stale. The second
- * `vinext dev` then takes over and Vite picks another port, the same outcome
- * as the acquisition race tolerated below.
+ * When both the lock and the system have a boot ID (Linux), they are
+ * compared directly. Otherwise the lock's `startedAt` is compared with the
+ * boot time derived from `Date.now() - os.uptime()`. Stepping the wall clock
+ * forward moves that derived boot time with it (`os.uptime()` doesn't change),
+ * so on macOS and Windows a forward step larger than the uptime at which a
+ * server started makes its lock look stale, e.g. a VM resuming after the host
+ * slept. The second `vinext dev` then takes over and Vite picks another port,
+ * the same outcome as the acquisition race tolerated below.
  *
  * Known limitation: Windows Fast Startup shuts down by hibernating the
  * kernel, so `os.uptime()` keeps counting and a lock left by that shutdown is
@@ -287,15 +288,21 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    const alive = !predatesCurrentBoot(existing) && isPidAlive(existing.pid);
+    // A lock naming the acquiring process itself was left by an earlier
+    // process that had the same PID, e.g. before a container restart: the new
+    // PID namespace hands out PIDs deterministically, while the host's boot ID
+    // and uptime don't change. A Vite restart within one process reuses its
+    // lock and never gets here.
+    const alive =
+      existing.pid !== info.pid && !predatesCurrentBoot(existing) && isPidAlive(existing.pid);
     if (alive) {
       return { ok: false, existing, lockfilePath };
     }
     if (!takeOverStale) {
       return { ok: false, existing, lockfilePath };
     }
-    // Existing entry is stale (dead PID, or written before this boot). Fall
-    // through and overwrite.
+    // Existing entry is stale (dead PID, our own PID, or written before this
+    // boot). Fall through and overwrite.
   }
 
   // NB: there is a small TOCTOU window between readLockfile() above and
