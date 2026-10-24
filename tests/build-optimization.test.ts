@@ -1159,6 +1159,7 @@ describe("optimizeDeps.exclude for vinext", () => {
             "some-lib > next/{link,image}",
             "some-lib/*",
             "@scope/lib/*",
+            "next/dist/compiled/semver/*.js",
           ],
         },
       };
@@ -1177,11 +1178,33 @@ describe("optimizeDeps.exclude for vinext", () => {
         "some-lib > nested-dep",
         "some-lib/*",
         "@scope/lib/*",
+        "next/dist/compiled/semver/*.js",
         "vinext > @unpic/react",
         "vinext > ipaddr.js",
         "vinext > web-vitals",
       ]);
       expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
+
+      // A filtered next/image include no longer pre-bundles the shim's
+      // dependencies, so noDiscovery keeps them while the optimizer runs.
+      const noDiscoveryClient = { optimizeDeps: { noDiscovery: true, include: ["next/image"] } };
+      const disabledClient = { optimizeDeps: { noDiscovery: true } };
+      for (const environment of [noDiscoveryClient, disabledClient]) {
+        await (mainPlugin as any).configResolved({
+          cacheDir: path.join(tmpDir, ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { client: environment },
+          logger: createLogger("silent"),
+          plugins: [],
+        });
+      }
+      expect(noDiscoveryClient.optimizeDeps.include).toEqual([
+        "vinext > @unpic/react",
+        "vinext > ipaddr.js",
+        "vinext > web-vitals",
+      ]);
+      expect(disabledClient.optimizeDeps).toEqual({ noDiscovery: true });
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
