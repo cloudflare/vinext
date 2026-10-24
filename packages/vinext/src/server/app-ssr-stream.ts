@@ -15,6 +15,9 @@ import {
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
 import { getVinextRscCompatibilityId } from "./app-rsc-cache-busting.js";
 
+// An embedded chunk before it's written: valid UTF-8 stays as bytes.
+type PendingChunk = Uint8Array | Exclude<RscEmbeddedChunk, string>;
+
 type RscEmbedTransform = {
   /** UTF-8 bytes of the scripts for the chunks read since the last flush. */
   flush(): Uint8Array | null;
@@ -224,6 +227,25 @@ function createNextFlightCleanupScript(): string {
   return 'self.addEventListener("DOMContentLoaded",()=>{if(self.__next_f?.push===Array.prototype.push)self.__next_f.length=0},{once:true})';
 }
 
+// The length of the UTF-8 character a byte starts. Continuation and invalid
+// bytes count as one.
+function utf8CharacterLength(byte: number): number {
+  return byte >= 0xf8 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+}
+
+// Where a trailing, still incomplete UTF-8 character starts, or the byte length
+// if there is none.
+function utf8CompleteEnd(bytes: Uint8Array): number {
+  const length = bytes.byteLength;
+  // A UTF-8 character is at most 4 bytes, so only its last 3 can be missing.
+  for (let index = length - 1; index >= 0 && index >= length - 3; index--) {
+    const byte = bytes[index];
+    if ((byte & 0xc0) === 0x80) continue;
+    return index + utf8CharacterLength(byte) > length ? index : length;
+  }
+  return length;
+}
+
 /**
  * Create a helper that progressively embeds RSC chunks as inline <script> tags.
  * The browser entry turns the embedded chunks back into Uint8Array data.
@@ -235,8 +257,10 @@ export function createRscEmbedTransform(
   const options =
     typeof optionsOrNonce === "string" ? { scriptNonce: optionsOrNonce } : optionsOrNonce;
   const reader = embedStream.getReader();
-  // Valid UTF-8 chunks stay as bytes; others are already base64 chunks.
-  let pendingChunks: (Uint8Array | Exclude<RscEmbeddedChunk, string>)[] = [];
+  // Valid UTF-8 stays as bytes; the rest is already base64 chunks.
+  let pendingChunks: PendingChunk[] = [];
+  // How many raw chunks pendingChunks were decoded from.
+  let pendingRawChunkCount = 0;
   const rawChunks: Uint8Array[] = [];
   // How many of rawChunks have been embedded, to replay them into a mirror
   // that starts mid-stream.
@@ -253,13 +277,84 @@ export function createRscEmbedTransform(
   const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
   const nonceAttribute = textToByteString(createNonceAttribute(options.scriptNonce));
 
-  function decodeChunk(bytes: Uint8Array): RscEmbeddedChunk {
-    return isUtf8(bytes) ? textDecoder.decode(bytes) : toBinaryChunk(bytes);
-  }
-
   function toBinaryChunk(bytes: Uint8Array): Exclude<RscEmbeddedChunk, string> {
     return [RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)];
   }
+
+  function splitChunk(bytes: Uint8Array, chunks: PendingChunk[]): void {
+    if (isUtf8(bytes)) {
+      chunks.push(bytes);
+      return;
+    }
+    // The chunk holds the body of a binary row, usually among text rows. A
+    // newline is never part of a multi-byte character, so check line by line
+    // and base64 only the lines that aren't text.
+    const pushRange = (start: number, end: number, text: boolean): void => {
+      const range = bytes.subarray(start, end);
+      chunks.push(text ? range : toBinaryChunk(range));
+    };
+    let rangeStart = 0;
+    let rangeIsText = false;
+    let start = 0;
+    while (start < bytes.byteLength) {
+      const newline = bytes.indexOf(0x0a, start);
+      const end = newline === -1 ? bytes.byteLength : newline + 1;
+      const isText = isUtf8(bytes.subarray(start, end));
+      if (start > rangeStart && isText !== rangeIsText) {
+        pushRange(rangeStart, start, rangeIsText);
+        rangeStart = start;
+      }
+      rangeIsText = isText;
+      start = end;
+    }
+    pushRange(rangeStart, bytes.byteLength, rangeIsText);
+  }
+
+  /**
+   * React cuts its output into fixed-size chunks wherever they fall, even
+   * inside a character, so a chunk's last incomplete character is decoded with
+   * the next chunk, which React writes in the same flush. Bytes are never held
+   * past an embed flush, though: they may be the end of a binary row, which the
+   * browser needs before React writes anything else. They're embedded as
+   * binary then, and so are the bytes that complete them.
+   */
+  function createChunkDecoder() {
+    let carry: Uint8Array | null = null;
+    let missing = 0;
+    return {
+      decode(raw: Uint8Array, chunks: PendingChunk[]): void {
+        let bytes = raw;
+        if (missing > 0) {
+          let count = 0;
+          while (count < missing && count < bytes.byteLength && (bytes[count] & 0xc0) === 0x80) {
+            count++;
+          }
+          missing = 0;
+          if (count > 0) {
+            chunks.push(toBinaryChunk(bytes.subarray(0, count)));
+            bytes = bytes.subarray(count);
+          }
+        }
+        if (carry) {
+          bytes = concatUint8Arrays([carry, bytes]);
+          carry = null;
+        }
+        const end = utf8CompleteEnd(bytes);
+        if (end < bytes.byteLength) {
+          carry = bytes.slice(end);
+          bytes = bytes.subarray(0, end);
+        }
+        if (bytes.byteLength > 0) splitChunk(bytes, chunks);
+      },
+      flush(chunks: PendingChunk[]): void {
+        if (!carry) return;
+        chunks.push(toBinaryChunk(carry));
+        missing = utf8CharacterLength(carry[0]) - carry.byteLength;
+        carry = null;
+      },
+    };
+  }
+  const chunkDecoder = createChunkDecoder();
 
   function inlineScript(byteScript: string): string {
     return "<script" + nonceAttribute + ">" + byteScript + "</script>";
@@ -285,10 +380,15 @@ export function createRscEmbedTransform(
     let scripts =
       inlineScript(createNextFlightBootstrapScript()) +
       inlineScript(createNextFlightCleanupScript());
+    const embeddedChunks: PendingChunk[] = [];
+    const replayDecoder = createChunkDecoder();
     for (let index = 0; index < embeddedRawChunkCount; index++) {
-      scripts += inlineScript(
-        textToByteString(createNextFlightChunkScript(decodeChunk(rawChunks[index]))),
-      );
+      replayDecoder.decode(rawChunks[index], embeddedChunks);
+    }
+    replayDecoder.flush(embeddedChunks);
+    for (const chunk of embeddedChunks) {
+      const nextChunk = chunk instanceof Uint8Array ? textDecoder.decode(chunk) : chunk;
+      scripts += inlineScript(textToByteString(createNextFlightChunkScript(nextChunk)));
     }
     releaseRawChunks();
     return scripts;
@@ -303,7 +403,8 @@ export function createRscEmbedTransform(
         if (result.done) break;
         rawChunks.push(result.value);
         for (const replay of replays) replay.controller.enqueue(result.value);
-        pendingChunks.push(isUtf8(result.value) ? result.value : toBinaryChunk(result.value));
+        chunkDecoder.decode(result.value, pendingChunks);
+        pendingRawChunkCount++;
       }
       readDone = true;
       for (const replay of replays.splice(0)) {
@@ -325,12 +426,14 @@ export function createRscEmbedTransform(
 
   /** Scripts for the chunks read since the last flush, as a byte string. */
   function flushByteScripts(): string {
+    chunkDecoder.flush(pendingChunks);
     if (pendingChunks.length === 0) return "";
 
     const mirrorScripts = startNextFlightMirror();
     const chunks = pendingChunks;
     pendingChunks = [];
-    embeddedRawChunkCount += chunks.length;
+    embeddedRawChunkCount += pendingRawChunkCount;
+    pendingRawChunkCount = 0;
 
     // React commonly emits one small Flight row per byte chunk. Embedding
     // each row in its own script makes large trees pay for thousands of
@@ -353,9 +456,9 @@ export function createRscEmbedTransform(
     };
     for (const chunk of chunks) {
       if (chunk instanceof Uint8Array) {
-        // Flush only between React chunks, which are each valid UTF-8, so a
-        // batch never splits a character. A single unusually large chunk is
-        // no larger than the script vinext emitted before batching.
+        // Flush only between text chunks, which each end on a whole
+        // character, so a batch never splits one. A single unusually large
+        // chunk is no larger than the script vinext emitted before batching.
         if (textBytes > 0 && textBytes + chunk.byteLength > RSC_EMBED_TEXT_BATCH_MAX_BYTES) {
           flushTextChunks();
         }
@@ -423,21 +526,6 @@ export function createRscEmbedTransform(
       });
     },
   };
-}
-
-/**
- * Fix invalid preload "as" values in server-rendered HTML.
- * React Fizz emits <link rel="preload" as="stylesheet"> for CSS, but the
- * HTML spec requires as="style" for <link rel="preload">.
- */
-export function fixPreloadAs(html: string): string {
-  // React's own stylesheet preloads already use as="style" (Flight hints are
-  // normalized in rsc-stream-hints.ts), so this rarely matches. Skip the tag
-  // scan and return the same string when there is nothing to replace.
-  if (!html.includes(' as="stylesheet"')) return html;
-  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) =>
-    tag.replace(' as="stylesheet"', ' as="style"'),
-  );
 }
 
 // These `g`-flag regexes carry mutable `lastIndex` state. Every consumer below
@@ -905,15 +993,14 @@ export function createTickBufferedTransform(
       emitInsertion(controller);
     }
 
-    const preparedHtml = fixPreloadAs(split.complete);
     const inlineCssResult = hasInlineCssManifest
       ? rewriteInlineCssStylesheetLinks(
-          preparedHtml,
+          split.complete,
           inlineCssManifest,
           inlineCssPrependCss,
           inlineCssScriptNonce,
         )
-      : { html: preparedHtml, consumedPrependCss: false };
+      : { html: split.complete, consumedPrependCss: false };
     if (inlineCssResult.consumedPrependCss) {
       inlineCssPrependCss = "";
     }

@@ -101,7 +101,7 @@ const appRscResponseStagePath = resolveEntryPath(
   "../server/app-rsc-response-stage.js",
   import.meta.url,
 );
-const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
+const rscRenderStreamPath = resolveEntryPath("../server/rsc-render-stream.js", import.meta.url);
 const appClientReferenceManifestPath = resolveEntryPath(
   "../server/app-client-reference-manifest.js",
   import.meta.url,
@@ -860,7 +860,7 @@ import {
 } from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
 `
     : ""
-}import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
+}import { createRscRenderer } from ${JSON.stringify(rscRenderStreamPath)};
 
 // Each render takes a fresh client manifest: in development, its references
 // carry a new cache tag.
@@ -870,9 +870,8 @@ const __withClientReferenceChunks = createClientReferenceChunksManifest(
 const renderToReadableStream = createRscRenderer((model, options) =>
   _renderToReadableStream(model, __withClientReferenceChunks(_createClientManifest()), options),
 );
-const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
-  _prerender(model, __withClientReferenceChunks(_createClientManifest()), options),
-);
+const prerenderToReadableStream = (model, options) =>
+  _prerender(model, __withClientReferenceChunks(_createClientManifest()), options);
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";

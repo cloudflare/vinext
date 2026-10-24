@@ -116,7 +116,7 @@ export default {
         "src/server/app-request-context.ts",
         "src/server/app-rsc-error-handler.ts",
         "src/server/isr-cache.ts",
-        "src/server/rsc-stream-hints.ts",
+        "src/server/rsc-render-stream.ts",
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",

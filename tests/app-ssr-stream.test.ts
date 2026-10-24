@@ -12,7 +12,6 @@ import {
   createNavigationRuntimeRscMetadataScript,
   createRscEmbedTransform,
   createTickBufferedTransform,
-  fixPreloadAs,
   navigationRuntimeRscBootstrapExpression,
   waitAtLeastOneReactRenderTask,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
@@ -59,42 +58,6 @@ it("sends the server's RSC compatibility ID with the page, except for static exp
   }
 });
 
-describe("App SSR stream helpers", () => {
-  describe("fixPreloadAs", () => {
-    it('replaces as="stylesheet" with as="style" for preload links', () => {
-      expect(
-        fixPreloadAs('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="stylesheet"/>'),
-      ).toBe('<link rel="preload" href="/assets/index-hG1v95Xi.css" as="style"/>');
-
-      expect(fixPreloadAs('<link as="stylesheet" rel="preload" href="/file.css"/>')).toBe(
-        '<link as="style" rel="preload" href="/file.css"/>',
-      );
-    });
-
-    it("leaves non-preload links and other preload types unchanged", () => {
-      expect(fixPreloadAs('<link rel="stylesheet" href="/file.css" as="stylesheet"/>')).toBe(
-        '<link rel="stylesheet" href="/file.css" as="stylesheet"/>',
-      );
-
-      expect(fixPreloadAs('<link rel="preload" href="/font.woff2" as="font"/>')).toBe(
-        '<link rel="preload" href="/font.woff2" as="font"/>',
-      );
-
-      expect(fixPreloadAs('<link rel="preload" href="/a.css" as="style"/>')).toBe(
-        '<link rel="preload" href="/a.css" as="style"/>',
-      );
-    });
-
-    it("handles multiple preload links in a single chunk", () => {
-      const html =
-        '<link rel="preload" href="/a.css" as="stylesheet"/><link rel="preload" href="/b.css" as="stylesheet"/>';
-      expect(fixPreloadAs(html)).toBe(
-        '<link rel="preload" href="/a.css" as="style"/><link rel="preload" href="/b.css" as="style"/>',
-      );
-    });
-  });
-});
-
 function createTextStream(chunks: string[]): ReadableStream<Uint8Array> {
   return new ReadableStream({
     start(controller) {
@@ -115,6 +78,22 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
       controller.close();
     },
   });
+}
+
+// Runs the embed's scripts as the browser would and returns the bytes it
+// rebuilds from the embedded chunks.
+function runEmbedScripts(scripts: string): Uint8Array {
+  const self: Record<PropertyKey, unknown> = {};
+  const context = createContext({ self });
+  for (const scriptSource of scripts
+    .slice("<script>".length, -"</script>".length)
+    .split("</script><script>")) {
+    runInContext(scriptSource, context);
+  }
+  const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
+    bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
+  };
+  return concatUint8Arrays(navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk));
 }
 
 function createNoopRscEmbedTransform() {
@@ -463,23 +442,8 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const expectedBytes = concatUint8Arrays(flightChunks);
 
     const transform = createRscEmbedTransform(createByteStream(flightChunks));
-    const finalScripts = text(await transform.finalize());
-    const self: Record<PropertyKey, unknown> = {};
-    const context = createContext({ self });
 
-    for (const scriptSource of finalScripts
-      .slice("<script>".length, -"</script>".length)
-      .split("</script><script>")) {
-      runInContext(scriptSource, context);
-    }
-
-    const navigationRuntime = self[Symbol.for("vinext.navigationRuntime")] as {
-      bootstrap: { rsc: { rsc: RscEmbeddedChunk[] } };
-    };
-    const embeddedChunks = navigationRuntime.bootstrap.rsc.rsc.map(decodeRscEmbeddedChunk);
-    const embeddedBytes = concatUint8Arrays(embeddedChunks);
-
-    expect(embeddedBytes).toEqual(expectedBytes);
+    expect(runEmbedScripts(text(await transform.finalize()))).toEqual(expectedBytes);
   });
 
   it("preserves binary boundaries while coalescing adjacent text chunks", async () => {
@@ -521,10 +485,130 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       createByteStream([new Uint8Array([0x41, 0xc3]), new Uint8Array([0xff])]),
     );
 
+    expect(runEmbedScripts(text(await transform.finalize()))).toEqual(
+      new Uint8Array([0x41, 0xc3, 0xff]),
+    );
+  });
+
+  it("embeds a character split across chunks as text", async () => {
+    // React cuts its output into fixed-size chunks, even inside a character.
+    const row = new TextEncoder().encode('0:D{"name":"page"}\n1:{"t":"あい😀"}\n');
+    const firstSplit = row.indexOf(0x81) + 1; // inside あ
+    const secondSplit = row.indexOf(0x9f) + 1; // inside 😀
+    const transform = createRscEmbedTransform(
+      createByteStream([
+        row.slice(0, firstSplit),
+        row.slice(firstSplit, secondSplit),
+        row.slice(secondSplit),
+      ]),
+    );
+
     const finalScripts = text(await transform.finalize());
 
-    expect(finalScripts).toContain('.rsc.push([3,"QcM="])');
-    expect(finalScripts).toContain('.rsc.push([3,"/w=="])');
+    expect(finalScripts).not.toContain("[3,");
+    expect(runEmbedScripts(finalScripts)).toEqual(row);
+  });
+
+  it("embeds bytes held for an incomplete character when flushed with the stream open", async () => {
+    // A binary row's last byte can look like the start of a character. The
+    // browser needs it before React writes anything else.
+    const encoder = new TextEncoder();
+    const binaryRow = new Uint8Array([...encoder.encode("1:A2,"), 0x01, 0xe3]);
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(binaryRow);
+      },
+    });
+    const transform = createRscEmbedTransform(stream);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const firstScripts = text(transform.flush());
+    expect(runEmbedScripts(firstScripts)).toEqual(binaryRow);
+
+    // The bytes after a flushed incomplete character may complete it.
+    const character = encoder.encode("あ");
+    const rest = new Uint8Array([...encoder.encode("2:T6,"), ...character, ...character]);
+    const split = new Uint8Array([...encoder.encode('3:"'), character[0]]);
+    streamController.enqueue(split);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const secondScripts = text(transform.flush());
+    streamController.enqueue(new Uint8Array([...character.slice(1), ...encoder.encode('"\n')]));
+    streamController.enqueue(rest);
+    streamController.close();
+    const finalScripts = text(await transform.finalize());
+
+    expect(finalScripts).toContain('.rsc.push("\\"\\n2:T6,ああ")');
+    expect(runEmbedScripts(firstScripts + secondScripts + finalScripts)).toEqual(
+      concatUint8Arrays([binaryRow, split, character.slice(1), encoder.encode('"\n'), rest]),
+    );
+  });
+
+  // React copies a small binary row into the same chunk as the rows around it.
+  function chunkWithBinaryRow(): { payload: Uint8Array; lines: string[] } {
+    const encoder = new TextEncoder();
+    const binaryLine = new Uint8Array([
+      ...encoder.encode("1:A1,"),
+      0xff,
+      ...encoder.encode('2:["done"]\n'),
+    ]);
+    const payload = new Uint8Array([
+      ...encoder.encode('0:D{"name":"page"}\n'),
+      ...binaryLine,
+      ...encoder.encode('3:"tail"\n'),
+    ]);
+    return {
+      payload,
+      lines: [
+        JSON.stringify('0:D{"name":"page"}\n'),
+        `[3,"${Buffer.from(binaryLine).toString("base64")}"]`,
+        JSON.stringify('3:"tail"\n'),
+      ],
+    };
+  }
+
+  it("base64s only the lines of a chunk that aren't text", async () => {
+    const { payload, lines } = chunkWithBinaryRow();
+    const transform = createRscEmbedTransform(createByteStream([payload]));
+
+    const finalScripts = text(await transform.finalize());
+
+    const indexes = lines.map((line) => finalScripts.indexOf(`.rsc.push(${line})`));
+    expect(indexes[0]).toBeGreaterThanOrEqual(0);
+    expect(indexes[1]).toBeGreaterThan(indexes[0]);
+    expect(indexes[2]).toBeGreaterThan(indexes[1]);
+    expect(new Uint8Array(await transform.getRawBuffer())).toEqual(payload);
+  });
+
+  it("replays a chunk split around a binary row into a late mirror once", async () => {
+    const { payload, lines } = chunkWithBinaryRow();
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+        controller.enqueue(payload);
+      },
+    });
+    let mirror = false;
+    const transform = createRscEmbedTransform(stream, { mirrorNextFlight: () => mirror });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(text(transform.flush())).not.toContain("self.__next_f");
+    mirror = true;
+    streamController.enqueue(new TextEncoder().encode('4:"after"\n'));
+    streamController.close();
+    const finalScripts = text(await transform.finalize());
+
+    const mirrored = [
+      ...finalScripts.matchAll(/self\.__next_f\.push\((\[[13],.*?\])\)<\/script>/g),
+    ].map((match) => match[1]);
+    expect(mirrored).toEqual([
+      `[1,${lines[0]}]`,
+      lines[1],
+      `[1,${lines[2]}]`,
+      `[1,${JSON.stringify('4:"after"\n')}]`,
+    ]);
   });
 });
 
@@ -994,14 +1078,14 @@ describe("createTickBufferedTransform byte pass-through", () => {
     ]);
   });
 
-  it('still rewrites a late preload with as="stylesheet"', async () => {
+  it("leaves a late preload link as written", async () => {
     const out = await runTickedTransformMatchingTextPath([
       ["<!DOCTYPE html><html><head></head><body>"],
       ['<link rel="preload" href="/late.css" as="stylesheet"/><p>ü</p>'],
       ["</body></html>"],
     ]);
 
-    expect(out).toContain('<link rel="preload" href="/late.css" as="style"/><p>ü</p>');
+    expect(out).toContain('<link rel="preload" href="/late.css" as="stylesheet"/><p>ü</p>');
   });
 
   it("replaces invalid UTF-8 with U+FFFD like the text path", async () => {
@@ -1115,7 +1199,7 @@ describe("createTickBufferedTransform inline CSS", () => {
 
   it("does not rewrite preload or modulepreload links", async () => {
     const html =
-      '<html><head><link rel="preload" href="/_next/static/app.css" as="stylesheet"/><link rel="modulepreload" href="/_next/static/app.js"/></head></html>';
+      '<html><head><link rel="preload" href="/_next/static/app.css" as="style"/><link rel="modulepreload" href="/_next/static/app.js"/></head></html>';
 
     const out = await runTransform([html], {
       inlineCss: {
