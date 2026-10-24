@@ -47,6 +47,24 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
     );
   });
 
+  // Next.js App Router next/dynamic is React.lazy in Suspense with no error boundary of
+  // its own, so loader and render errors reach the nearest error.tsx instead of being
+  // rendered by the `loading` component.
+  // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
+  for (const [button, message] of [
+    ["#show-failing-load", "dynamic chunk failed to load"],
+    ["#show-throwing-render", "dynamic component threw while rendering"],
+  ] as const) {
+    test(`${message}: the error reaches error.tsx, not the loading component`, async ({ page }) => {
+      await page.goto(`${BASE}/nextjs-compat/dynamic/loading-error`);
+      await waitForAppRouterHydration(page);
+
+      await page.click(button);
+      await expect(page.locator("#dynamic-error-boundary")).toHaveText(message);
+      await expect(page.locator("#dynamic-loading")).toHaveCount(0);
+    });
+  }
+
   // Next.js: 'should support dynamic import with accessing named exports'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L97-L100
   test("named export via dynamic() renders button after hydration", async ({ page }) => {
