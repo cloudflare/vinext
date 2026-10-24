@@ -865,7 +865,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // A resumed fallback shell renders its cached parts from the values it
       // was built with, whatever their age, like Next.js's resume data cache.
       // Only a tag this request revalidated bypasses it. The coarse key is
-      // enough: a shell keeps its root params concrete.
+      // enough: a shell keeps its root params concrete. A nested cache never
+      // reads it, so a hit has no enclosing cache to key by root params.
       const resumeEntry = readUseCacheResumeDataCacheEntry(coarseCacheKey);
       if (resumeEntry && !_hasPendingRevalidatedTag([...resumeEntry.tags, ...softTags])) {
         try {
@@ -874,8 +875,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             {},
             { preserveServerReferences: true },
           );
-          propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
-          propagateRootParamNamesToParent(new Set(resumeEntry.readRootParamNames));
           propagateCacheTagsToRequest(resumeEntry.tags);
           recordRequestScopedCacheControl(resumeEntry.cacheControl);
           collectUseCacheResumeDataCacheEntry(coarseCacheKey, resumeEntry);
@@ -973,9 +972,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                   stale: effectiveLife.stale,
                 },
                 tags: ctx.tags,
-                ...(rootParamNames && rootParamNames.size > 0
-                  ? { readRootParamNames: [...rootParamNames] }
-                  : {}),
               });
             }
             const cacheValue = {
@@ -1057,12 +1053,10 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           recordRequestScopedCacheControl(existing.cacheControl);
-          const knownNames = knownRootParamsByFunctionId.get(id);
           collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
             body: existing.value.data.body,
             cacheControl: existing.cacheControl,
             tags: existing.value.tags ?? [],
-            ...(knownNames && knownNames.size > 0 ? { readRootParamNames: [...knownNames] } : {}),
           });
           if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
           return result;
