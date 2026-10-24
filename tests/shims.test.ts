@@ -1282,8 +1282,9 @@ describe("next/navigation shim", () => {
   });
 
   it("hands every browser module instance the same hydrated search params object", async () => {
-    // The browser adopts the hydrated object once the URL's query matches, so
-    // instances must agree on it or their callers re-render with a new one.
+    // Every instance must hydrate with the same object: the browser adopts it
+    // once the URL's query matches, so a per-instance wrapper would hand some
+    // callers a new object after hydration.
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
     const previousWindow = globalThis.window;
@@ -1292,6 +1293,8 @@ describe("next/navigation shim", () => {
     const globalRecord = globalThis as Record<PropertyKey, unknown>;
     const previousAccessors = globalRecord[accessorsKey];
     const previousHydration = globalRecord[hydrationKey];
+
+    let firstMod: typeof import("../packages/vinext/src/shims/navigation.js") | undefined;
 
     try {
       delete globalRecord[accessorsKey];
@@ -1317,7 +1320,7 @@ describe("next/navigation shim", () => {
       const firstPath = "../packages/vinext/src/shims/navigation.js?hydration-search-params=first";
       const secondPath =
         "../packages/vinext/src/shims/navigation.js?hydration-search-params=second";
-      const firstMod = (await import(
+      firstMod = (await import(
         firstPath
       )) as typeof import("../packages/vinext/src/shims/navigation.js");
       const secondMod = (await import(
@@ -1331,7 +1334,7 @@ describe("next/navigation shim", () => {
       });
 
       const seen: unknown[] = [];
-      function Probe({ mod }: { mod: typeof firstMod }) {
+      function Probe({ mod }: { mod: typeof secondMod }) {
         seen.push(mod.useSearchParams());
         return null;
       }
@@ -1345,10 +1348,10 @@ describe("next/navigation shim", () => {
       );
 
       expect(seen).toHaveLength(2);
+      expect((seen[0] as URLSearchParams).get("q")).toBe("hello");
       expect(seen[0]).toBe(seen[1]);
-
-      firstMod.setNavigationContext(null);
     } finally {
+      firstMod?.setNavigationContext(null);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {

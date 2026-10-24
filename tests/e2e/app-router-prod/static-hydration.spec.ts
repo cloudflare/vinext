@@ -21,7 +21,8 @@ test("force-static useSearchParams is empty in SSR and reads the browser query a
   request,
 }) => {
   // Next.js skips "should have empty search params on force-static" in
-  // app-static.test.ts: its browser reads the URL's query once hydrated.
+  // app-static.test.ts. Its browser derives useSearchParams from the URL
+  // (canonicalUrl in app-router.tsx), so it reads the query once hydrated.
   // force-static embeds an empty query in the server-rendered HTML...
   const html = await (await request.get("/static-test?value=hidden")).text();
   expect(html).toMatch(/data-testid="force-static-search-params"[^>]*>N\/A</);
