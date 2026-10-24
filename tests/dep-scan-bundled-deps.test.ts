@@ -163,6 +163,8 @@ const server = await createServer({
   configFile: false,
   customLogger: createLogger("silent"),
   plugins: [vinext()],
+  // Vite pre-bundles included specifiers even when they are excluded.
+  optimizeDeps: { include: ["next/link", "cjs-link-lib > next/link"] },
   server: { host: "127.0.0.1", port: 0 },
 });
 try {
@@ -212,7 +214,10 @@ describe("client dependency scan", () => {
     }>(createInstalledVinextProject());
     expect(deps).toEqual(expect.arrayContaining(["esm-nav-lib", "cjs-link-lib"]));
     expect(
-      deps.filter((id) => id.startsWith("next/") || id === "vinext" || id.startsWith("vinext/")),
+      deps.filter((id) => {
+        const depId = id.slice(id.lastIndexOf(">") + 1).trim();
+        return depId.startsWith("next/") || depId === "vinext" || depId.startsWith("vinext/");
+      }),
     ).toEqual([]);
     // Libraries keep their next/* imports bare, which resolve to the same shim
     // module as the app's imports instead of inlining another copy.
