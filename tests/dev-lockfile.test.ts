@@ -124,7 +124,11 @@ describe("readBootId", () => {
     expect(readBootId()).toBe("0a1b2c3d-boot");
   });
 
-  it("returns undefined when the platform has no boot ID", () => {
+  it.runIf(process.platform === "linux")("reads the real kernel boot ID on Linux", () => {
+    expect(readBootId()).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it("returns undefined when the boot ID file can't be read", () => {
     mockBootIdFile(undefined);
     expect(readBootId()).toBeUndefined();
   });
@@ -171,6 +175,13 @@ describe("predatesCurrentBoot", () => {
     // the derived boot time past a live server's startedAt.
     mockBootId("current-boot");
     expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "current-boot" })).toBe(false);
+  });
+
+  it("falls back to the PID check when os.uptime() throws", () => {
+    vi.spyOn(os, "uptime").mockImplementation(() => {
+      throw new Error("uv_uptime failed");
+    });
+    expect(predatesCurrentBoot({ startedAt: 0 })).toBe(false);
   });
 
   it("falls back to the wall clock when the lock has a boot ID but the system has none", () => {
