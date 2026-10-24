@@ -650,6 +650,95 @@ test("revalidates an entry the Store cannot regenerate once the Store reports it
   }
 });
 
+test("refreshes only the revision the Store reported stale", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const readAs = (status: string, revision: string | null, revalidate?: number) => {
+      store.response?.headers.set("X-Workers-Response-Store", status);
+      if (revision === null) store.response?.headers.delete("X-Workers-Response-Store-Revision");
+      else store.response?.headers.set("X-Workers-Response-Store-Revision", revision);
+      return handler.get("key", revalidate === undefined ? undefined : { revalidate });
+    };
+    const write = async (key = "key") => {
+      store.options = undefined;
+      await handler.set(key, null, { revalidate: 60 });
+      expect(store.options).toBeDefined();
+      return store.options;
+    };
+    await write();
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      // A fresh read's write is an ordinary replacement.
+      await expect(readAs("BLOB-FRESH", "7")).resolves.not.toHaveProperty("cacheState");
+      expect(await write()).not.toHaveProperty("replacesRevision");
+
+      await expect(readAs("BLOB-STALE", "7")).resolves.toMatchObject({ cacheState: "stale" });
+      // Another key's write doesn't take it.
+      expect(await write("other")).not.toHaveProperty("replacesRevision");
+      expect(await write()).toMatchObject({ replacesRevision: 7 });
+      // Only the refresh that follows the stale read carries it.
+      expect(await write()).not.toHaveProperty("replacesRevision");
+
+      // A later fresh read makes the next write an ordinary replacement, e.g. one merging tags.
+      await expect(readAs("BLOB-STALE", "9")).resolves.toMatchObject({ cacheState: "stale" });
+      await expect(readAs("BLOB-FRESH", "10")).resolves.not.toHaveProperty("cacheState");
+      expect(await write()).not.toHaveProperty("replacesRevision");
+
+      // So does a later read that misses.
+      await expect(readAs("BLOB-STALE", "11")).resolves.toMatchObject({ cacheState: "stale" });
+      vi.spyOn(store, "fetch").mockResolvedValueOnce(
+        new Response("miss", { status: 404, headers: { "X-Workers-Response-Store": "MISS" } }),
+      );
+      await expect(handler.get("key")).resolves.toBeNull();
+      expect(await write()).not.toHaveProperty("replacesRevision");
+
+      // A copy stale only to its caller may be an edge copy: replacing it must purge it.
+      vi.setSystemTime(40_000);
+      await expect(readAs("BLOB-FRESH", "14", 10)).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+      expect(await write()).not.toHaveProperty("replacesRevision");
+
+      // A stale read without a usable revision leaves the write an ordinary replacement.
+      for (const revision of [null, "0", "-1", "1.5", "abc"]) {
+        await expect(readAs("BLOB-STALE", "15")).resolves.toMatchObject({ cacheState: "stale" });
+        await expect(readAs("BLOB-STALE", revision)).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+        expect(await write(), String(revision)).not.toHaveProperty("replacesRevision");
+      }
+    });
+
+    // A request's own invalidation makes its later writes fills, even one overlapping a read.
+    await runWithRequestContext(createRequestContext(), async () => {
+      await expect(readAs("BLOB-STALE", "12")).resolves.toMatchObject({ cacheState: "stale" });
+      await handler.revalidateTag("tag", { expire: 0 });
+      expect(await write()).not.toHaveProperty("replacesRevision");
+      await expect(readAs("BLOB-STALE", "13")).resolves.toMatchObject({ cacheState: "stale" });
+      expect(await write()).not.toHaveProperty("replacesRevision");
+    });
+    await runWithRequestContext(createRequestContext(), async () => {
+      const inFlight = readAs("BLOB-STALE", "14");
+      await handler.revalidateTag("tag", { expire: 0 });
+      await expect(inFlight).resolves.toMatchObject({ cacheState: "stale" });
+      expect(await write()).not.toHaveProperty("replacesRevision");
+    });
+
+    // Another request's write doesn't take it either.
+    await expect(
+      runWithRequestContext(createRequestContext(), () => readAs("BLOB-STALE", "16")),
+    ).resolves.toMatchObject({ cacheState: "stale" });
+    expect(await runWithRequestContext(createRequestContext(), () => write())).not.toHaveProperty(
+      "replacesRevision",
+    );
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {

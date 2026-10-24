@@ -325,6 +325,14 @@ function cachePolicy(revalidate: number | false | undefined, expire: number | un
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
   private readonly tagExpirations = cacheForRequest(() => new Map<string, Promise<number>>());
+  /**
+   * The revision of each entry this request last read stale, which its next write refreshes,
+   * until the request invalidates tags itself.
+   */
+  private readonly staleRevisions = cacheForRequest(() => ({
+    invalidated: false,
+    revisions: new Map<string, number>(),
+  }));
 
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
@@ -335,6 +343,16 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
   }
 
   async get(key: string, context?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
+    const value = await this.read(key, context);
+    // A miss makes this request's next write of the key a fill, not a refresh.
+    if (!value) this.staleRevisions().revisions.delete(key);
+    return value;
+  }
+
+  private async read(
+    key: string,
+    context?: Record<string, unknown>,
+  ): Promise<CacheHandlerValue | null> {
     if (regenerationStorage.getStore()?.targetKey === key) return null;
 
     const request = await cacheRequest(key);
@@ -424,6 +442,22 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
           age > storedRevalidate * 1000 + STALE_FRESH_HIT_GRACE_MS)
       ) {
         cacheState = "stale";
+      }
+      // Only a read the Store itself reports stale makes this request's next write a
+      // refresh, unless the request has invalidated tags: its writes are fills. A copy
+      // stale only to its caller may be an edge copy, whose replacement must still purge it.
+      const staleRevisions = this.staleRevisions();
+      const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
+      if (
+        cacheState &&
+        storeStatus === "BLOB-STALE" &&
+        !staleRevisions.invalidated &&
+        Number.isSafeInteger(revision) &&
+        revision > 0
+      ) {
+        staleRevisions.revisions.set(key, revision);
+      } else {
+        staleRevisions.revisions.delete(key);
       }
       return {
         lastModified: entry.lastModified,
@@ -531,6 +565,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
     if (regeneration && !revalidator) return;
 
+    // Concurrent requests that read the entry stale each refresh it. Once one has replaced
+    // that revision, the Store drops the rest instead of replacing it again and spending
+    // an edge purge on each.
+    const { revisions } = this.staleRevisions();
+    const replacesRevision = revisions.get(key);
+    revisions.delete(key);
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
       // A read that finds a page-replay entry expired must not wait for the replay: a page
@@ -542,10 +582,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         : {}),
       coalesce: true,
       purgeExisting: true,
+      ...(replacesRevision === undefined ? {} : { replacesRevision }),
     });
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    // Writes after this request's own invalidation are fills, not refreshes of earlier reads.
+    const staleRevisions = this.staleRevisions();
+    staleRevisions.invalidated = true;
+    staleRevisions.revisions.clear();
     const dataTags = Array.isArray(tags) ? tags : [tags];
     const encodedTags = dataTags.map(encodeCloudflareCacheTag);
     if (!encodedTags.length) return;
