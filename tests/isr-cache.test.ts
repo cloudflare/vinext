@@ -17,6 +17,7 @@ import {
   appIsrRscKey,
   appIsrRouteKey,
   isrGet,
+  isrGetFallbackShell,
   isrSet,
   buildPagesCacheValue,
   buildAppPageCacheValue,
@@ -24,6 +25,11 @@ import {
   triggerBackgroundRegeneration,
   coalesceOnDemandRevalidation,
 } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+  type CdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import { buildPageCacheTags } from "../packages/vinext/src/server/implicit-tags.js";
@@ -1140,5 +1146,31 @@ describe("Pages cache pathname identity", () => {
       variants.map((variant) => pagesIsrCacheKey(pathname, "build-a", variant)),
     );
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("isrGetFallbackShell", () => {
+  afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
+
+  it.each([
+    { age: 30, state: { isStale: false } },
+    { age: 90, state: { isStale: true } },
+    { age: 150, state: { isStale: true, isExpired: true } },
+  ])("ages a packaged shell like a stored one ($age s old)", async ({ age, state }) => {
+    setCacheHandler(new MemoryCacheHandler());
+    setCdnCacheAdapter({
+      async get() {
+        return {
+          lastModified: Date.now() - age * 1000,
+          cacheControl: { revalidate: 60, expire: 120 },
+          value: buildAppPageCacheValue("<html>shell</html>"),
+        };
+      },
+    } as unknown as CdnCacheAdapter);
+
+    const entry = await isrGetFallbackShell(appIsrFallbackShellKey("/posts/[slug]", "html"));
+
+    expect(entry).toMatchObject(state);
+    expect(entry?.isExpired).toBe(state.isExpired);
   });
 });

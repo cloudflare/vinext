@@ -87,9 +87,9 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     const write = options.isrSetFallbackShell(key, value, { cacheControl, tags }).catch((error) => {
       console.error("[vinext] ISR fallback shell cache write error:", error);
     });
-    const executionContext = getRequestExecutionContext();
-    if (executionContext) executionContext.waitUntil(write);
-    else await write;
+    getRequestExecutionContext()?.waitUntil(write);
+    // Requests sharing this production find the shell stored once it settles.
+    await write;
   }
   options.isrDebug?.("STORE (fallback shell)", fallbackPathname);
 
