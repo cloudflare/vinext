@@ -64,12 +64,12 @@ function writeCacheAsset(
   postponedPath?: string,
 ): boolean {
   if (!fs.existsSync(sourcePath)) return false;
-  // An oversized sidecar would fail the whole deploy. Without one, the route
-  // renders blocking instead of resuming its shell.
-  const hasPostponed =
-    postponedPath !== undefined &&
-    fs.existsSync(postponedPath) &&
-    fs.statSync(postponedPath).size <= WORKERS_STATIC_ASSET_MAX_BYTES;
+  const hasPostponed = postponedPath !== undefined && fs.existsSync(postponedPath);
+  // An oversized sidecar would fail the whole deploy, and its shell can't
+  // resume without it, so the route is left to render blocking on a miss.
+  if (hasPostponed && fs.statSync(postponedPath).size > WORKERS_STATIC_ASSET_MAX_BYTES) {
+    return false;
+  }
 
   const id = cacheAssetId(key);
   const extension = kind;
