@@ -136,10 +136,13 @@ const BOOT_TIME_TOLERANCE_MS = 5_000;
  * then takes over, as in the acquisition race tolerated below: Vite moves it
  * to another port, or it fails to bind with `strictPort`.
  *
- * Known limitations: Windows Fast Startup shuts down by hibernating the
- * kernel, so `os.uptime()` keeps counting and a lock left by that shutdown is
- * still checked by PID alone. A container restart doesn't reset the host's
- * uptime either.
+ * Known limitations, where a lock is still checked by PID alone:
+ * - A wall clock that comes back from a reboot behind the previous session
+ *   (an RTC running slow, or NTP stepping it back) can leave the lock's
+ *   `startedAt` after the derived boot time.
+ * - Windows Fast Startup shuts down by hibernating the kernel, so
+ *   `os.uptime()` keeps counting across that shutdown.
+ * - A container restart doesn't reset the host's uptime.
  */
 export function predatesCurrentBoot(startedAt: number): boolean {
   let uptime: number;
