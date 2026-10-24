@@ -15,6 +15,7 @@ export function formatDeployHelp(): string {
     --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
     --name <name>            Custom Worker name for Wrangler config projects
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
+    --vite-config <path>     Vite config file to build with (default: vite.config.*)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands

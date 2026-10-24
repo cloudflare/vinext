@@ -129,6 +129,8 @@ export type DeployOptions = {
   name?: string;
   /** Wrangler config path, relative to root unless absolute */
   config?: string;
+  /** Vite config file used to build and read deploy metadata, relative to root unless absolute */
+  viteConfig?: string;
   /** Skip the build step (assume already built) */
   skipBuild?: boolean;
   /** Dry run — validate setup but don't build or deploy */
@@ -304,6 +306,7 @@ const deployArgOptions = {
   env: { type: "string" },
   name: { type: "string" },
   config: { type: "string" },
+  "vite-config": { type: "string" },
   "skip-build": { type: "boolean", default: false },
   "dry-run": { type: "boolean", default: false },
   verbose: { type: "boolean", default: false },
@@ -412,6 +415,7 @@ export function parseDeployArgs(args: string[]) {
     env: values.env?.trim() || undefined,
     name: values.name?.trim() || undefined,
     config: values.config?.trim() || undefined,
+    viteConfig: values["vite-config"]?.trim() || undefined,
     skipBuild: values["skip-build"],
     dryRun: values["dry-run"],
     verbose: values.verbose,
@@ -605,12 +609,18 @@ export function resolveViteBuildMode(
   return deploymentTool === "cf" ? (env ?? "production") : "production";
 }
 
+/** Resolve a `--vite-config` value to an absolute path; undefined keeps Vite's default lookup. */
+export function resolveViteConfigFile(root: string, viteConfig: string | undefined) {
+  return viteConfig ? path.resolve(root, viteConfig) : undefined;
+}
+
 async function loadDeployViteConfigMetadata(
   root: string,
   mode: string,
+  configFile: string | undefined,
 ): Promise<DeployViteConfigMetadata> {
   const vite = await loadProjectViteApi(root);
-  const loaded = await vite.loadConfigFromFile({ command: "build", mode }, undefined, root);
+  const loaded = await vite.loadConfigFromFile({ command: "build", mode }, configFile, root);
   const plugins = loaded?.config.plugins;
   return {
     // The executed Vite config is authoritative. Source scans cannot see
@@ -622,7 +632,12 @@ async function loadDeployViteConfigMetadata(
   };
 }
 
-async function runBuild(info: ProjectInfo, env: string | undefined, mode: string): Promise<void> {
+async function runBuild(
+  info: ProjectInfo,
+  env: string | undefined,
+  mode: string,
+  configFile: string | undefined,
+): Promise<void> {
   console.log("\n  Building for Cloudflare Workers...\n");
 
   const { createBuilder } = await loadProjectViteApi(info.root);
@@ -647,6 +662,7 @@ async function runBuild(info: ProjectInfo, env: string | undefined, mode: string
     const builder = await createBuilder({
       root: info.root,
       mode,
+      configFile,
       [VINEXT_BUILD_LIFECYCLE_CONFIG]: invocation,
     } as Parameters<typeof createBuilder>[0]);
     await builder.buildApp();
@@ -2202,6 +2218,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
     );
   }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
+  const viteConfigFile = resolveViteConfigFile(root, options.viteConfig);
   const wranglerFallbackEnv = deploymentTool === "cf" ? undefined : deployEnv;
   loadDotenv({ root, mode: viteMode });
 
@@ -2237,8 +2254,12 @@ export async function deploy(options: DeployOptions): Promise<void> {
   console.log(`  ISR:     ${info.hasISR ? "detected" : "none"}`);
 
   // Step 2: Validate init-owned dependencies and deployment scaffolding.
+  if (viteConfigFile && !fs.existsSync(viteConfigFile)) {
+    throw new Error(`Vite config file not found: ${viteConfigFile}`);
+  }
+  const hasViteConfig = Boolean(viteConfigFile) || info.hasViteConfig;
   const missingScaffolding = [
-    !info.hasViteConfig && "Vite config",
+    !hasViteConfig && "Vite config",
     !info.hasWranglerConfig && "Wrangler config",
   ].filter((value): value is string => Boolean(value));
   if (missingScaffolding.length > 0) {
@@ -2261,7 +2282,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // Fail if an existing Vite config is missing the Cloudflare plugin.
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init --platform=cloudflare` adds it via an AST update.
-  if (info.hasViteConfig && !viteConfigHasCloudflarePlugin(root)) {
+  if (hasViteConfig && !viteConfigHasCloudflarePlugin(root, viteConfigFile)) {
     throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
   }
 
@@ -2273,11 +2294,15 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // For backwards compat, older apps that wired a cache backend imperatively in
   // their Worker entry (setCacheHandler / setDataCacheHandler / setCdnCacheAdapter)
   // are still considered configured and must not be blocked.
-  if (info.hasISR && !viteConfigHasCacheAdapter(root) && !workerEntryHasCacheHandler(root)) {
+  if (
+    info.hasISR &&
+    !viteConfigHasCacheAdapter(root, viteConfigFile) &&
+    !workerEntryHasCacheHandler(root)
+  ) {
     throw new Error(formatMissingCacheAdapterError({ typedConfig: deploymentTool === "cf" }));
   }
 
-  if (!viteConfigHasImageAdapter(root)) {
+  if (!viteConfigHasImageAdapter(root, viteConfigFile)) {
     console.log();
     console.log(formatImageOptimizationHint(deploymentTool === "cf"));
   }
@@ -2301,7 +2326,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
   // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
   const viteConfigMetadata = await withBuildContext(() =>
-    loadDeployViteConfigMetadata(info.root, viteMode),
+    loadDeployViteConfigMetadata(info.root, viteMode, viteConfigFile),
   );
   const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
   const nextConfig = await withBuildContext(async () => {
@@ -2350,7 +2375,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode));
+    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode, viteConfigFile));
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
