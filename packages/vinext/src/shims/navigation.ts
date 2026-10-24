@@ -212,9 +212,11 @@ function useChildSegments(parallelRoutesKey: string = "children"): string[] {
 // Server-side request context (set by the RSC entry before rendering)
 // ---------------------------------------------------------------------------
 
-const _READONLY_SEARCH_PARAMS = Symbol("vinext.navigation.readonlySearchParams");
-const _READONLY_SEARCH_PARAMS_SOURCE = Symbol("vinext.navigation.readonlySearchParamsSource");
-const _READONLY_SEARCH_PARAMS_SOURCE_KEY = Symbol(
+// Global symbols, so every instance of this module reuses one wrapper per
+// context and the browser adopts that same object after hydration.
+const _READONLY_SEARCH_PARAMS = Symbol.for("vinext.navigation.readonlySearchParams");
+const _READONLY_SEARCH_PARAMS_SOURCE = Symbol.for("vinext.navigation.readonlySearchParamsSource");
+const _READONLY_SEARCH_PARAMS_SOURCE_KEY = Symbol.for(
   "vinext.navigation.readonlySearchParamsSourceKey",
 );
 

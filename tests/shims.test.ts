@@ -1281,6 +1281,92 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("hands every browser module instance the same hydrated search params object", async () => {
+    // The browser adopts the hydrated object once the URL's query matches, so
+    // instances must agree on it or their callers re-render with a new one.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const previousWindow = globalThis.window;
+    const accessorsKey = Symbol.for("vinext.navigation.globalAccessors");
+    const hydrationKey = Symbol.for("vinext.navigation.clientHydrationContext");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessors = globalRecord[accessorsKey];
+    const previousHydration = globalRecord[hydrationKey];
+
+    try {
+      delete globalRecord[accessorsKey];
+      delete globalRecord[hydrationKey];
+      (globalThis as any).window = {
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        history: {
+          pushState() {},
+          replaceState() {},
+        },
+        location: {
+          href: "http://localhost/shared-search?q=hello",
+          origin: "http://localhost",
+          pathname: "/shared-search",
+          search: "?q=hello",
+        },
+        removeEventListener() {},
+      };
+
+      const firstPath = "../packages/vinext/src/shims/navigation.js?hydration-search-params=first";
+      const secondPath =
+        "../packages/vinext/src/shims/navigation.js?hydration-search-params=second";
+      const firstMod = (await import(
+        firstPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      const secondMod = (await import(
+        secondPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      firstMod.setNavigationContext({
+        pathname: "/shared-search",
+        searchParams: new URLSearchParams("q=hello"),
+        params: {},
+      });
+
+      const seen: unknown[] = [];
+      function Probe({ mod }: { mod: typeof firstMod }) {
+        seen.push(mod.useSearchParams());
+        return null;
+      }
+      renderToStaticMarkup(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Probe, { mod: firstMod }),
+          React.createElement(Probe, { mod: secondMod }),
+        ),
+      );
+
+      expect(seen).toHaveLength(2);
+      expect(seen[0]).toBe(seen[1]);
+
+      firstMod.setNavigationContext(null);
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousAccessors === undefined) {
+        delete globalRecord[accessorsKey];
+      } else {
+        globalRecord[accessorsKey] = previousAccessors;
+      }
+      if (previousHydration === undefined) {
+        delete globalRecord[hydrationKey];
+      } else {
+        globalRecord[hydrationKey] = previousHydration;
+      }
+    }
+  });
+
   it("keeps explicit app navigation context ahead of globally installed Pages compat state", async () => {
     const React = await import("react");
     const { renderToStaticMarkup } = await import("react-dom/server");
