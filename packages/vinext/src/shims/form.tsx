@@ -317,6 +317,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (!node) return;
     if (typeof IntersectionObserver === "undefined") return;
 
+    let active = true;
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -368,8 +369,13 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               )
                 return;
               prefetched.add(cacheKey);
-              const fetchPromise = runAfterAppPrefetchRevalidationCooldown(() =>
-                fetch(rscUrl, {
+              const fetchPromise = runAfterAppPrefetchRevalidationCooldown(() => {
+                // The form unmounted or changed its action while the
+                // revalidation cooldown held the request.
+                if (!active) {
+                  throw new DOMException("Prefetch is no longer wanted", "AbortError");
+                }
+                return fetch(rscUrl, {
                   headers,
                   credentials: "include",
                   // Match link.tsx: deprioritize the background prefetch and tag it
@@ -377,8 +383,8 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
                   priority: "low",
                   // @ts-expect-error — purpose is a valid fetch option in some browsers
                   purpose: "prefetch",
-                }),
-              );
+                });
+              });
               prefetchRscResponse(
                 rscUrl,
                 fetchPromise,
@@ -399,6 +405,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     );
     observer.observe(node);
     return () => {
+      active = false;
       observer.unobserve(node);
     };
     // `actionHref` is derived purely from `action` (+ the module-constant

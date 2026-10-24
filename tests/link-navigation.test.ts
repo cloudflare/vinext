@@ -1879,6 +1879,41 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("drops a hover prefetch held by the revalidation cooldown once its Link leaves", async () => {
+    // Next.js cancels the Link's intent task when it leaves or unmounts
+    // (cancelPrefetchTask in client/components/links.ts), so a task the
+    // cooldown holds is never sent.
+    for (const leaves of [true, false]) {
+      const observer = stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href: "/viewport-prefetch-target",
+        nodeEnv: "production",
+      });
+      // The viewport prefetch fails, so the hover makes its own request.
+      result.fetch.mockRejectedValueOnce(new Error("offline"));
+
+      try {
+        observer.dispatchIntersectingEntry(result.anchor);
+        await waitForFetchCalls(result.fetch, 1);
+        await flushPrefetchTasks();
+
+        const { startAppPrefetchRevalidationCooldown } =
+          await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+        startAppPrefetchRevalidationCooldown();
+        result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+        await flushPrefetchTasks();
+        expect(result.fetch).toHaveBeenCalledTimes(1);
+
+        if (leaves) observer.dispatchIntersectingEntry(result.anchor, false);
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await flushPrefetchTasks();
+        expect(result.fetch).toHaveBeenCalledTimes(leaves ? 1 : 2);
+      } finally {
+        result.restoreNodeEnv();
+      }
+    }
+  });
+
   it("preserves Pages Router viewport, explicit, and intent prefetches for a bot user agent", async () => {
     const botWindowOverrides = {
       __NEXT_DATA__: {

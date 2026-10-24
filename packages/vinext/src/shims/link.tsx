@@ -1479,8 +1479,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       return;
     }
     const intentMode = unstable_dynamicOnHover ? "full-after-shell" : prefetchMode;
+    const instance = internalRef.current
+      ? observedLinkPrefetches.get(internalRef.current)
+      : undefined;
     if (unstable_dynamicOnHover && internalRef.current) {
-      const instance = observedLinkPrefetches.get(internalRef.current);
       if (instance) {
         instance.mode = "full-after-shell";
       }
@@ -1492,6 +1494,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       "high",
       normalizedRouteHref === normalizedHref ? undefined : normalizedRouteHref,
       locale,
+      // Like Next.js's rescheduled intent task, the request is dropped if the
+      // Link leaves before it starts, e.g. while the revalidation cooldown
+      // holds it.
+      instance?.isVisible && instance.routerMode === "app" ? instance : undefined,
     );
   }, [
     effectivePrefetchProp,

@@ -994,68 +994,81 @@ describe("Form prefetch prop", () => {
     expect(init).toMatchObject({ credentials: "include", priority: "low", purpose: "prefetch" });
   });
 
-  it("holds viewport prefetches for the revalidation cooldown", async () => {
-    // Next.js: Form prefetches share the segment-cache scheduler with Link, so
-    // REVALIDATION_COOLDOWN_MS in client/components/segment-cache/scheduler.ts
-    // holds them after a revalidating Server Action too.
-    vi.stubEnv("NODE_ENV", "production");
-    const effects: Array<() => void | (() => void)> = [];
-    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
-      Promise.resolve(new Response("prefetched")),
-    );
-    let intersectionCallback: IntersectionObserverCallback | undefined;
-
-    class FakeIntersectionObserver {
-      constructor(callback: IntersectionObserverCallback) {
-        intersectionCallback = callback;
-      }
-
-      observe = vi.fn();
-      unobserve = vi.fn();
-      disconnect = vi.fn();
-      takeRecords = vi.fn(() => []);
-    }
-
-    const { window } = createWindowStub();
-    vi.stubGlobal("window", {
-      ...window,
-      navigator: { userAgent: "Mozilla/5.0" },
-    });
-    vi.stubGlobal("fetch", fetch);
-    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
-
-    const { ref } = renderClientForm({ action: "/search" }, { effects });
-    const form = {} as HTMLFormElement;
-    ref(form);
-    for (const effect of effects) effect();
-
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      startAppPrefetchRevalidationCooldown();
-      intersectionCallback?.(
-        [
-          {
-            intersectionRatio: 1,
-            isIntersecting: true,
-            target: form,
-          } as unknown as IntersectionObserverEntry,
-        ],
-        {} as IntersectionObserver,
+  it.each([
+    { unmounts: false, sent: 1 },
+    { unmounts: true, sent: 0 },
+  ])(
+    "holds viewport prefetches for the revalidation cooldown (unmounts: $unmounts)",
+    async ({ unmounts, sent }) => {
+      // Next.js: Form prefetches share the segment-cache scheduler with Link, so
+      // REVALIDATION_COOLDOWN_MS in client/components/segment-cache/scheduler.ts
+      // holds them after a revalidating Server Action too. A form that unmounts
+      // meanwhile never sends its held prefetch.
+      vi.stubEnv("NODE_ENV", "production");
+      const effects: Array<() => void | (() => void)> = [];
+      const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        Promise.resolve(new Response("prefetched")),
       );
-      // Let the prefetch reach its request: the RSC URL hash resolves off the
-      // microtask queue.
-      for (let index = 0; index < 20; index++) {
-        await new Promise((resolve) => setImmediate(resolve));
-      }
-      await vi.advanceTimersByTimeAsync(299);
-      expect(fetch).not.toHaveBeenCalled();
+      let intersectionCallback: IntersectionObserverCallback | undefined;
 
-      await vi.advanceTimersByTimeAsync(1);
-      await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+      class FakeIntersectionObserver {
+        constructor(callback: IntersectionObserverCallback) {
+          intersectionCallback = callback;
+        }
+
+        observe = vi.fn();
+        unobserve = vi.fn();
+        disconnect = vi.fn();
+        takeRecords = vi.fn(() => []);
+      }
+
+      const { window } = createWindowStub();
+      vi.stubGlobal("window", {
+        ...window,
+        navigator: { userAgent: "Mozilla/5.0" },
+      });
+      vi.stubGlobal("fetch", fetch);
+      vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+      const { ref } = renderClientForm({ action: "/search" }, { effects });
+      const form = {} as HTMLFormElement;
+      ref(form);
+      const cleanups = effects.map((effect) => effect());
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        startAppPrefetchRevalidationCooldown();
+        intersectionCallback?.(
+          [
+            {
+              intersectionRatio: 1,
+              isIntersecting: true,
+              target: form,
+            } as unknown as IntersectionObserverEntry,
+          ],
+          {} as IntersectionObserver,
+        );
+        // Let the prefetch reach its request: the RSC URL hash resolves off the
+        // microtask queue.
+        for (let index = 0; index < 20; index++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        await vi.advanceTimersByTimeAsync(299);
+        expect(fetch).not.toHaveBeenCalled();
+        if (unmounts) {
+          for (const cleanup of cleanups) cleanup?.();
+        }
+
+        await vi.advanceTimersByTimeAsync(1);
+        for (let index = 0; index < 20; index++) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        expect(fetch).toHaveBeenCalledTimes(sent);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it("resolves a relative viewport-prefetch action from the URL before the route manifest wait", async () => {
     vi.stubEnv("NODE_ENV", "production");
