@@ -484,9 +484,9 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector.js",
 ]);
 
-// The third-party imports of vinext's client shims. The shims stay out of the
-// optimizer (see shimOptimizeDepsExclude), so the dependency scan never crawls
-// them. An installed vinext serves them raw from node_modules, and Vite does not
+// The third-party imports of vinext's client shims. App Router apps keep the
+// shims out of the optimizer (see shimOptimizeDepsExclude), so the dependency
+// scan never crawls them. An installed vinext serves them raw from node_modules, and Vite does not
 // pre-bundle the bare imports of files inside node_modules: ipaddr.js is
 // CommonJS-only and would reach the browser without its default export. A
 // linked vinext lives outside node_modules, so Vite would discover these on
@@ -4085,20 +4085,42 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Merge incoming excludes into the top-level optimizeDeps so
         // Pages Router builds (which don't set per-environment configs)
         // also preserve entries from earlier plugins.
+        // Build a rolldown plugin for shims resolved via resolveId instead
+        // of resolve.alias. The dep optimizer's bundler uses its own
+        // rolldown pipeline (not the Vite plugin pipeline), so it needs
+        // these aliases injected separately. See #834.
+        const depOptimizeAliasPlugin = {
+          name: "vinext:dep-optimize-alias",
+          resolveId(id: string) {
+            const shimBase = _reactServerShims.get(id);
+            if (shimBase !== undefined) {
+              return resolveShimModulePath(shimsDir, shimBase);
+            }
+          },
+        };
         const depOptimizeNodeEnvOptions = getDepOptimizeNodeEnvOptions(nodeEnvDefine);
         // Apply the define to the default optimizer and explicitly to server
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
-            "@tailwindcss/oxide",
-          ]),
+          exclude: mergeOptimizeDepsExclude(
+            incomingExclude,
+            // The Pages Router client entry imports next/router, so the
+            // optimizer pre-bundles its runtime and the app's next/* shims
+            // together, sharing one copy of their module state in fewer
+            // requests. The App Router runtime loads raw, so its shims must too.
+            hasAppDir ? shimOptimizeDepsExclude : VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            ["@tailwindcss/oxide"],
+          ),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
             // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
-            plugins: [commonJsEsmFacadeOptimizeDepsPlugin],
+            // The alias plugin would inline excluded shims into App Router deps.
+            plugins: hasAppDir
+              ? [commonJsEsmFacadeOptimizeDepsPlugin]
+              : [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir
@@ -4567,7 +4589,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.build.copyPublicDir = false;
         }
 
-        if (name !== "client" && config.consumer !== "client") {
+        const isClientConsumer = name === "client" || config.consumer === "client";
+        if (isClientConsumer && hasAppDir) {
+          // Covers client environments vinext does not create.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
+            config.optimizeDeps.exclude ?? [],
+            shimOptimizeDepsExclude,
+          );
+        }
+
+        if (!isClientConsumer) {
           // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
           // container. Register only the thin adapter for the same module-
           // identity capability; parsing, dependency classification, marker
@@ -4673,33 +4705,31 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             });
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
+            const isClient = (environment.consumer ?? name) === "client";
             // Vite disables a noDiscovery optimizer without includes.
             const optimizerActive = !optimizer.noDiscovery || !!optimizer.include?.length;
             // Vite pre-bundles an included specifier even when it is also
             // excluded, so an app's or plugin's include of a shim specifier
             // would bring back the duplicate shim module state.
-            if (optimizer.include) {
+            if (optimizer.include && (!isClient || hasAppDir)) {
               optimizer.include = optimizer.include.filter(
                 (id) => !isExcludedShim(id.slice(id.lastIndexOf(">") + 1).trim()),
               );
             }
-            // The shims' own dependencies are required whenever the client
-            // optimizer runs, since a filtered next/image include no longer
-            // brings ipaddr.js with it. noDiscovery only opts out of the App
-            // Router defaults.
-            const optionalIncludes =
-              name === "client"
-                ? optimizerActive
-                  ? [
-                      ...(hasAppDir && !optimizer.noDiscovery
-                        ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                        : []),
-                      ...CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE,
-                    ]
-                  : []
-                : !hasAppDir && hasCloudflarePlugin && hasPagesDir
-                  ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
-                  : [];
+            // The excluded shims' own dependencies are required whenever the
+            // client optimizer runs, since a filtered next/image include no
+            // longer brings ipaddr.js with it. noDiscovery only opts out of the
+            // App Router defaults.
+            const optionalIncludes = isClient
+              ? hasAppDir && optimizerActive
+                ? [
+                    ...(optimizer.noDiscovery ? [] : APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE),
+                    ...CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE,
+                  ]
+                : []
+              : !hasAppDir && hasCloudflarePlugin && hasPagesDir
+                ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+                : [];
             for (const id of optionalIncludes) {
               const depId = id.slice(id.lastIndexOf(">") + 1).trim();
               if (
