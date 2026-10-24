@@ -2286,6 +2286,114 @@ describe("app page route wiring helpers", () => {
     expect(fallbackType(findElementByTypeName(intercepted, "NotFoundBoundary"))).toBe(
       InterceptNotFound,
     );
+
+    // And its forbidden and unauthorized files, in Next.js's per-segment
+    // order: Unauthorized > Forbidden > NotFound > page.
+    function InterceptForbidden() {
+      return createElement("p", null, "intercept forbidden");
+    }
+    function InterceptUnauthorized() {
+      return createElement("p", null, "intercept unauthorized");
+    }
+    const interceptedWithAccess = buildSlotElements({
+      modal: {
+        branchSegments: ["(.)photo", "[id]"],
+        forbiddenModules: [{ default: InterceptForbidden }],
+        forbiddenTreePositions: [2],
+        layoutModules: [],
+        layoutSegments: [],
+        notFoundModules: [{ default: InterceptNotFound }],
+        notFoundTreePositions: [2],
+        pageModule: { default: SlotPage },
+        params: { id: "1" },
+        unauthorizedModules: [{ default: InterceptUnauthorized }],
+        unauthorizedTreePositions: [2],
+      },
+    })[modalSlotId];
+    const unauthorizedBoundary = findElementByTypeName(
+      interceptedWithAccess,
+      "UnauthorizedBoundary",
+    );
+    expect(fallbackType(unauthorizedBoundary)).toBe(InterceptUnauthorized);
+    const forbiddenBoundary = findElementByTypeName(
+      unauthorizedBoundary?.props.children,
+      "ForbiddenBoundary",
+    );
+    expect(fallbackType(forbiddenBoundary)).toBe(InterceptForbidden);
+    expect(
+      fallbackType(findElementByTypeName(forbiddenBoundary?.props.children, "NotFoundBoundary")),
+    ).toBe(InterceptNotFound);
+
+    // Each forbidden file sits inside its own segment's layout, so the slot
+    // root's forbidden also catches `@modal/feed/layout`'s own forbidden().
+    function SlotForbidden() {
+      return createElement("p", null, "slot forbidden");
+    }
+    function FeedLayout({ children }: { children?: ReactNode }) {
+      return createElement("section", null, children);
+    }
+    const interceptedUnderFeed = buildSlotElements({
+      modal: {
+        branchSegments: ["feed", "(.)photo"],
+        forbiddenModules: [{ default: SlotForbidden }, { default: InterceptForbidden }],
+        forbiddenTreePositions: [0, 1],
+        layoutModules: [{ default: FeedLayout }],
+        layoutSegments: [["feed"]],
+        pageModule: { default: SlotPage },
+        params: {},
+      },
+    })[modalSlotId];
+    const slotForbidden = findElementByTypeName(interceptedUnderFeed, "ForbiddenBoundary");
+    expect(fallbackType(slotForbidden)).toBe(SlotForbidden);
+    const feedLayout = findElementByTypeName(slotForbidden?.props.children, "FeedLayout");
+    expect(feedLayout).not.toBeNull();
+    expect(
+      fallbackType(findElementByTypeName(feedLayout?.props.children, "ForbiddenBoundary")),
+    ).toBe(InterceptForbidden);
+
+    // Its error.tsx files do the same, outside the segment's access
+    // boundaries, so `@modal/feed/(.)photo/error.tsx` catches its page's
+    // errors, and its generateMetadata()'s through the outlet beside it.
+    function SlotError() {
+      return createElement("p", null, "slot error");
+    }
+    function InterceptError() {
+      return createElement("p", null, "intercept error");
+    }
+    function MetadataOutletProbe() {
+      return null;
+    }
+    const interceptedWithErrors = buildSlotElements({
+      modal: {
+        branchSegments: ["feed", "(.)photo"],
+        errorModules: [{ default: SlotError }, { default: InterceptError }],
+        errorTreePositions: [0, 1],
+        forbiddenModules: [{ default: InterceptForbidden }],
+        forbiddenTreePositions: [1],
+        layoutModules: [{ default: FeedLayout }],
+        layoutSegments: [["feed"]],
+        metadataOutlet: createElement(MetadataOutletProbe),
+        pageModule: { default: SlotPage },
+        params: {},
+      },
+    })[modalSlotId];
+    const slotError = findElementByTypeName(interceptedWithErrors, "ErrorBoundary");
+    expect(slotError?.props.fallback).toBe(SlotError);
+    const feedLayoutWithErrors = findElementByTypeName(slotError?.props.children, "FeedLayout");
+    expect(feedLayoutWithErrors).not.toBeNull();
+    const interceptError = findElementByTypeName(
+      feedLayoutWithErrors?.props.children,
+      "ErrorBoundary",
+    );
+    expect(interceptError?.props.fallback).toBe(InterceptError);
+    const interceptErrorForbidden = findElementByTypeName(
+      interceptError?.props.children,
+      "ForbiddenBoundary",
+    );
+    expect(fallbackType(interceptErrorForbidden)).toBe(InterceptForbidden);
+    expect(
+      findElementByTypeName(interceptErrorForbidden?.props.children, "MetadataOutletProbe"),
+    ).not.toBeNull();
   });
 
   it("tags a slot's notFound() with the id of its own not-found boundary that catches it", async () => {

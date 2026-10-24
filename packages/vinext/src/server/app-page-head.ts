@@ -154,12 +154,18 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
    * Branches whose head Next.js resolves but never shows, such as a slot
    * intercept beside the source page. Their own generateMetadata() and
    * generateViewport() run once, after every branch before them in the loader
-   * tree, and their errors reach `routeErrors` rather than the head.
+   * tree, and their errors reach `hiddenErrors` rather than the head.
    */
   hiddenParallelRoutes?: readonly AppPageHiddenParallelRoute<TModule>[] | null;
   layoutModules: readonly (TModule | null | undefined)[];
   layoutTreePositions?: readonly number[] | null;
   metadataRoutes: readonly MetadataFileRoute[];
+  /**
+   * The index in `parallelRoutes` of a shown branch whose own errors reach
+   * `hiddenErrors` rather than `routeErrors`, such as a slot intercept that
+   * heads the route: Next.js throws them in that page's own segment.
+   */
+  outletParallelRouteIndex?: number | null;
   pageModule?: TModule | null;
   parallelRoutes?: readonly AppPageHeadParallelRoute<TModule>[] | null;
   params: AppPageParams;
@@ -194,10 +200,16 @@ export type ResolveAppPageHeadResult = {
 };
 
 export type PreparedAppPageHead = Omit<ResolveAppPageHeadResult, "metadata" | "viewport"> & {
+  /**
+   * Rejects with the first error, in loader-tree order, from
+   * `hiddenParallelRoutes`, or from `outletParallelRouteIndex`'s own resolvers
+   * and the head's own failures.
+   */
+  hiddenErrors: Promise<null>;
   metadata: Promise<Metadata | null>;
   /**
-   * Rejects with the first error, in loader-tree order, of `metadata`'s or
-   * `viewport`'s branches, `hiddenParallelRoutes` included.
+   * Rejects with the first error, in loader-tree order, of the other branches
+   * of `metadata` and `viewport`. It never waits on the outlet branch.
    */
   routeErrors: Promise<null>;
   viewport: Promise<ResolvedViewport>;
@@ -247,6 +259,8 @@ type PreparedParallelRouteMetadata = {
   accumulated: Promise<Metadata>;
   /** The branch's parent after each of its layouts: `[0]` is its own parent. */
   layoutParents: Promise<Metadata>[];
+  /** Each of the branch's own generateMetadata() results. */
+  resolvers: Promise<unknown>[];
   result: Promise<ResolvedParallelRouteMetadata>;
 };
 
@@ -254,6 +268,8 @@ type PreparedViewportBranch = {
   /** The branch's parent after each of its layouts: `[0]` is its own parent. */
   layoutParents: Promise<ResolvedViewport>[];
   resolvedViewport: Promise<ResolvedViewport>;
+  /** Each of the branch's own generateViewport() results. */
+  resolvers: Promise<unknown>[];
   viewportResults: Promise<(Viewport | null)[]>;
 };
 
@@ -602,7 +618,7 @@ function resolveLayoutViewport<TModule extends AppPageHeadModule>(
   layoutInputs: readonly AppPageHeadLayout<TModule>[],
   params: AppPageParams,
   routeSegments: readonly string[],
-): Omit<PreparedViewportBranch, "layoutParents"> {
+): Omit<PreparedViewportBranch, "layoutParents" | "resolvers"> {
   const viewportPromises: Promise<Viewport | null>[] = [];
   let accumulatedViewport = Promise.resolve(mergeViewport([]));
 
@@ -769,7 +785,12 @@ function prepareParallelRouteMetadata<TModule extends AppPageHeadModule>(
   });
   void result.catch(() => null);
 
-  return { accumulated: accumulatedMetadata, layoutParents, result };
+  return {
+    accumulated: accumulatedMetadata,
+    layoutParents,
+    resolvers: [...layoutMetadataPromises, ...(pageMetadataPromise ? [pageMetadataPromise] : [])],
+    result,
+  };
 }
 
 function resolveParallelRouteViewport<TModule extends AppPageHeadModule>(
@@ -823,6 +844,7 @@ function resolveParallelRouteViewport<TModule extends AppPageHeadModule>(
   return {
     layoutParents,
     resolvedViewport: accumulatedViewport,
+    resolvers: viewportPromises,
     viewportResults: allInOrder(viewportPromises),
   };
 }
@@ -967,7 +989,9 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   let parallelParentMetadata = options.pageModule
     ? mergeParentMetadata(pageParentPromise, pageMetadataPromise)
     : pageParentPromise;
+  const parallelMetadataParents: Promise<Metadata>[] = [];
   const preparedParallelMetadata = parallelRoutes.map((parallelRoute) => {
+    parallelMetadataParents.push(parallelParentMetadata);
     const prepared = prepareParallelRouteMetadata(
       parallelRoute,
       options.params,
@@ -999,7 +1023,9 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     accumulatedViewport = mergeResolvedViewport(pageParentViewport, pageViewportPromise);
     void accumulatedViewport.catch(() => null);
   }
+  const parallelViewportParents: Promise<ResolvedViewport>[] = [];
   for (const parallelRoute of parallelRoutes) {
+    parallelViewportParents.push(accumulatedViewport);
     const parallelViewport = resolveParallelRouteViewport(
       parallelRoute,
       options.params,
@@ -1013,90 +1039,159 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     accumulatedViewport = parallelViewport.resolvedViewport;
   }
   const parallelRouteViewportPromise = allInOrder(parallelRouteViewportPromises);
-  // A hidden branch continues its slot's branch from the layouts they share,
+  // Next.js accumulates metadata in loader-tree order, so a branch's own error
+  // counts only once everything before it resolved: one its parent rejects
+  // with first, such as the source page's, belongs to that earlier branch,
+  // and the branch's result, which then goes unread, is handled here.
+  const gateOnParent = (parent: Promise<unknown>, result: Promise<unknown>): Promise<null> => {
+    void result.catch(() => null);
+    return parent.then(
+      () => result.then(() => null),
+      () => null,
+    );
+  };
+  // The errors the outlet's own resolvers threw rather than took from its
+  // parent, recorded as they reject: `routeErrors` checks against them without
+  // waiting on the outlet, whose generateMetadata() may never settle.
+  const outletIndex = options.outletParallelRouteIndex ?? -1;
+  const outletOwnErrors = new Set<unknown>();
+  const outletBranch =
+    outletIndex in preparedParallelMetadata
+      ? {
+          metadata: preparedParallelMetadata[outletIndex],
+          metadataParent: parallelMetadataParents[outletIndex],
+          viewport: preparedParallelViewports[outletIndex],
+          viewportParent: parallelViewportParents[outletIndex],
+        }
+      : null;
+  if (outletBranch) {
+    for (const [parent, resolvers] of [
+      [outletBranch.metadataParent, outletBranch.metadata.resolvers],
+      [outletBranch.viewportParent, outletBranch.viewport.resolvers],
+    ] as const) {
+      let parentRejection: { error: unknown } | null = null;
+      void parent.then(null, (error: unknown) => {
+        parentRejection = { error };
+      });
+      for (const resolver of resolvers) {
+        void resolver.then(null, (error: unknown) => {
+          if (parentRejection?.error !== error) outletOwnErrors.add(error);
+        });
+      }
+    }
+  }
+  // The branches whose own errors throw in their slot, in loader-tree order: a
+  // hidden branch continues its slot's branch from the layouts they share,
   // which resolve once, as in Next.js's single loader tree.
-  const hiddenBranches = (options.hiddenParallelRoutes ?? []).map((hidden) => {
-    const slotMetadata = preparedParallelMetadata[hidden.parallelRouteIndex];
-    const slotViewport = preparedParallelViewports[hidden.parallelRouteIndex];
-    const sharedLayoutCount =
-      slotMetadata && slotViewport
-        ? Math.min(hidden.sharedLayoutCount, slotMetadata.layoutParents.length - 1)
-        : 0;
-    const parallelRoute = withoutLeadingLayouts(hidden.route, sharedLayoutCount);
-    return {
-      metadata: prepareParallelRouteMetadata(
-        parallelRoute,
-        options.params,
-        routeSegments,
-        pageSearchParams,
-        slotMetadata?.layoutParents[sharedLayoutCount] ?? parallelParentMetadata,
-        options.searchParamsObserver,
-      ).result,
-      parallelRouteIndex: slotMetadata && slotViewport ? hidden.parallelRouteIndex : -1,
-      viewport: resolveParallelRouteViewport(
-        parallelRoute,
-        options.params,
-        routeSegments,
-        pageSearchParams,
-        slotViewport?.layoutParents[sharedLayoutCount] ?? accumulatedViewport,
-        options.searchParamsObserver,
-      ).viewportResults,
-    };
-  });
+  const slotOwnedBranches = [
+    ...(options.hiddenParallelRoutes ?? []).map((hidden) => {
+      const slotMetadata = preparedParallelMetadata[hidden.parallelRouteIndex];
+      const slotViewport = preparedParallelViewports[hidden.parallelRouteIndex];
+      const sharedLayoutCount =
+        slotMetadata && slotViewport
+          ? Math.min(hidden.sharedLayoutCount, slotMetadata.layoutParents.length - 1)
+          : 0;
+      const parallelRoute = withoutLeadingLayouts(hidden.route, sharedLayoutCount);
+      const metadataParent =
+        slotMetadata?.layoutParents[sharedLayoutCount] ?? parallelParentMetadata;
+      const viewportParent = slotViewport?.layoutParents[sharedLayoutCount] ?? accumulatedViewport;
+      return {
+        metadata: gateOnParent(
+          metadataParent,
+          prepareParallelRouteMetadata(
+            parallelRoute,
+            options.params,
+            routeSegments,
+            pageSearchParams,
+            metadataParent,
+            options.searchParamsObserver,
+          ).result,
+        ),
+        parallelRouteIndex:
+          slotMetadata && slotViewport ? hidden.parallelRouteIndex : parallelRoutes.length,
+        viewport: gateOnParent(
+          viewportParent,
+          resolveParallelRouteViewport(
+            parallelRoute,
+            options.params,
+            routeSegments,
+            pageSearchParams,
+            viewportParent,
+            options.searchParamsObserver,
+          ).viewportResults,
+        ),
+      };
+    }),
+    ...(outletBranch
+      ? [
+          {
+            metadata: gateOnParent(outletBranch.metadataParent, outletBranch.metadata.result),
+            parallelRouteIndex: outletIndex,
+            viewport: gateOnParent(
+              outletBranch.viewportParent,
+              outletBranch.viewport.viewportResults,
+            ),
+          },
+        ]
+      : []),
+  ].sort((left, right) => left.parallelRouteIndex - right.parallelRouteIndex);
   const hasDynamicMetadata = hasAppPageDynamicMetadata(options);
 
-  const metadata = allInOrder([
+  const metadataBranches = allInOrder([
     layoutMetadataPromise,
     pageMetadataPromise,
     parallelRouteMetadataPromise,
-  ]).then(async ([layoutMetadataResults, pageMetadata, parallelRouteMetadata]) => {
-    const parallelMetadataSources = parallelRouteMetadata.flatMap((head) => head.metadataSources);
+  ]);
+  const metadata = metadataBranches.then(
+    async ([layoutMetadataResults, pageMetadata, parallelRouteMetadata]) => {
+      const parallelMetadataSources = parallelRouteMetadata.flatMap((head) => head.metadataSources);
 
-    // Next.js merges metadata in loader-tree order, and Turbopack (Next.js 16's
-    // default bundler) always puts `children` before the named slots, so a slot
-    // page's title, like every other field, overrides the page's. Webpack builds
-    // can order slots first; vinext follows Turbopack.
-    //
-    // Next.js's accumulateMetadata lets every loader-tree item but the last two
-    // set the title template (`i < metadataItems.length - 2`). Each slot adds at
-    // least two items, its directory and its page or default, so with a slot
-    // after it a page's template wraps later titles: the route's page's, and
-    // every slot page's but the last slot's. `isPage` marks the pages among the
-    // last two items. Layouts keep vinext's own rule (see Known limitations).
-    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
-    // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
-    const lastParallelRouteIndex = parallelRouteMetadata.length - 1;
-    const metadataEntries: MetadataMergeEntry[] = [
-      ...layoutMetadataResults.filter(isPresent).map((entry) => ({ metadata: entry })),
-      ...(pageMetadata
-        ? [{ ...(lastParallelRouteIndex === -1 ? { isPage: true } : {}), metadata: pageMetadata }]
-        : []),
-      ...parallelRouteMetadata.flatMap((head, index) =>
-        head.metadataEntries.flatMap(({ isPage, metadata: entry }) =>
-          entry
-            ? [
-                {
-                  ...(isPage && index === lastParallelRouteIndex ? { isPage } : {}),
-                  metadata: entry,
-                },
-              ]
-            : [],
+      // Next.js merges metadata in loader-tree order, and Turbopack (Next.js 16's
+      // default bundler) always puts `children` before the named slots, so a slot
+      // page's title, like every other field, overrides the page's. Webpack builds
+      // can order slots first; vinext follows Turbopack.
+      //
+      // Next.js's accumulateMetadata lets every loader-tree item but the last two
+      // set the title template (`i < metadataItems.length - 2`). Each slot adds at
+      // least two items, its directory and its page or default, so with a slot
+      // after it a page's template wraps later titles: the route's page's, and
+      // every slot page's but the last slot's. `isPage` marks the pages among the
+      // last two items. Layouts keep vinext's own rule (see Known limitations).
+      // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+      // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
+      const lastParallelRouteIndex = parallelRouteMetadata.length - 1;
+      const metadataEntries: MetadataMergeEntry[] = [
+        ...layoutMetadataResults.filter(isPresent).map((entry) => ({ metadata: entry })),
+        ...(pageMetadata
+          ? [{ ...(lastParallelRouteIndex === -1 ? { isPage: true } : {}), metadata: pageMetadata }]
+          : []),
+        ...parallelRouteMetadata.flatMap((head, index) =>
+          head.metadataEntries.flatMap(({ isPage, metadata: entry }) =>
+            entry
+              ? [
+                  {
+                    ...(isPage && index === lastParallelRouteIndex ? { isPage } : {}),
+                    metadata: entry,
+                  },
+                ]
+              : [],
+          ),
         ),
-      ),
-    ];
+      ];
 
-    const resolvedMetadataBase =
-      metadataEntries.length > 0 ? mergeMetadataEntries(metadataEntries) : null;
-    const metadataSources = createMetadataSources(
-      layoutMetadataResults,
-      routeSegments,
-      layoutSourcePositions,
-      pageMetadata,
-      Boolean(options.pageModule),
-    );
-    metadataSources.push(...parallelMetadataSources);
-    return finalizeAppPageMetadata(resolvedMetadataBase, metadataSources, options);
-  });
+      const resolvedMetadataBase =
+        metadataEntries.length > 0 ? mergeMetadataEntries(metadataEntries) : null;
+      const metadataSources = createMetadataSources(
+        layoutMetadataResults,
+        routeSegments,
+        layoutSourcePositions,
+        pageMetadata,
+        Boolean(options.pageModule),
+      );
+      metadataSources.push(...parallelMetadataSources);
+      return finalizeAppPageMetadata(resolvedMetadataBase, metadataSources, options);
+    },
+  );
   const viewport = allInOrder([
     layoutViewportPromise,
     pageViewportPromise,
@@ -1114,46 +1209,61 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   // request switches to its error response.
   void metadata.catch(() => null);
   void viewport.catch(() => null);
-  // A hidden branch's errors still reach the route's outlet, as every
-  // branch's did before it left the head, in its place in the loader tree:
-  // after its slot's branch, before the next slot's.
-  const inLoaderTreeOrder = (
-    route: readonly Promise<unknown>[],
-    slots: readonly Promise<unknown>[],
-    hidden: (branch: (typeof hiddenBranches)[number]) => Promise<unknown>,
-    head: Promise<unknown>,
-  ) =>
-    allInOrder([
-      ...route,
-      ...slots.flatMap((slot, index) => [
-        slot,
-        ...hiddenBranches.filter((branch) => branch.parallelRouteIndex === index).map(hidden),
-      ]),
-      ...hiddenBranches.filter((branch) => branch.parallelRouteIndex === -1).map(hidden),
-      // The head's own failures, such as file-based metadata's.
-      head,
-    ]);
+  // The head's own failures, such as file-based metadata's, once every branch
+  // resolved. Next.js throws them from its single MetadataOutlet, in the page
+  // that heads the route: the outlet branch's when there is one.
+  const metadataOwnErrors = metadataBranches.then(
+    () => metadata.then(() => null),
+    () => null,
+  );
   // Like Next.js's MetadataOutlet, the first of metadata's and viewport's
-  // errors to settle fails the route.
+  // errors to settle fails the outlet, each taken in loader-tree order.
+  const hiddenErrors = Promise.all([
+    allInOrder([
+      ...slotOwnedBranches.map((branch) => branch.metadata),
+      ...(outletBranch ? [metadataOwnErrors] : []),
+    ]),
+    allInOrder(slotOwnedBranches.map((branch) => branch.viewport)),
+  ]).then(() => null);
+  void hiddenErrors.catch(() => null);
+  // The route's errors are every other branch's, in loader-tree order. They
+  // never wait on the outlet branch, whose generateMetadata() or
+  // generateViewport() may never settle, and skip an error a later branch took
+  // from it through `parent`.
+  const firstRouteError = async (branches: readonly Promise<unknown>[]): Promise<null> => {
+    for (const branch of branches) void branch.catch(() => null);
+    for (const branch of branches) {
+      try {
+        await branch;
+      } catch (error) {
+        if (!outletOwnErrors.has(error)) throw error;
+      }
+    }
+    return null;
+  };
   const routeErrors = Promise.all([
-    inLoaderTreeOrder(
-      [layoutMetadataPromise, pageMetadataPromise],
-      preparedParallelMetadata.map((prepared) => prepared.result),
-      (branch) => branch.metadata,
-      metadata,
-    ),
-    inLoaderTreeOrder(
-      [layoutViewportPromise, pageViewportPromise],
-      parallelRouteViewportPromises,
-      (branch) => branch.viewport,
-      viewport,
-    ),
+    firstRouteError([
+      layoutMetadataPromise,
+      pageMetadataPromise,
+      ...preparedParallelMetadata.flatMap((prepared, index) =>
+        index === outletIndex ? [] : prepared.resolvers,
+      ),
+      ...(outletBranch ? [] : [metadataOwnErrors]),
+    ]),
+    firstRouteError([
+      layoutViewportPromise,
+      pageViewportPromise,
+      ...preparedParallelViewports.flatMap((prepared, index) =>
+        index === outletIndex ? [] : prepared.resolvers,
+      ),
+    ]),
   ]).then(() => null);
   void routeErrors.catch(() => null);
 
   return {
     hasDynamicMetadata,
     hasSearchParams,
+    hiddenErrors,
     metadata,
     pageSearchParams,
     routeErrors,

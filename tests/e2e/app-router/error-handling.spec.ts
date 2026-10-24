@@ -649,6 +649,53 @@ test.describe("Not Found", () => {
     await expect(page).toHaveTitle("Item page");
   });
 
+  test("an intercepting modal's generateMetadata() notFound() renders its own not-found inside the modal", async ({
+    page,
+  }) => {
+    // Next.js 16.2.7 renders the MetadataOutlet in the intercepting page's
+    // segment, so the signal stays inside the modal beside the source page.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Item metadata missing" }).click();
+    await expect(page).toHaveURL(/\/item\/meta-missing$/);
+    await expect(page.locator("#slot-own-modal #slot-own-modal-nf")).toBeVisible();
+    await expect(page.locator("#slot-own-home")).toBeVisible();
+    await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
+  });
+
+  for (const kind of ["forbidden", "unauthorized"]) {
+    test(`an intercepting modal's generateMetadata() ${kind}() renders its own ${kind} inside the modal`, async ({
+      page,
+    }) => {
+      // Next.js 16.2.7 (Turbopack) catches it in the intercepting page's own
+      // segment too, with the source page and its title kept.
+      await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+      await waitForAppRouterHydration(page);
+
+      await page.getByRole("link", { name: `Item metadata ${kind}` }).click();
+      await expect(page).toHaveURL(new RegExp(`/item/meta-${kind}$`));
+      await expect(page.locator(`#slot-own-modal #slot-own-modal-${kind}`)).toBeVisible();
+      await expect(page.locator("#slot-own-home")).toBeVisible();
+      await expect(page).toHaveTitle("Slot own layout");
+    });
+  }
+
+  test("an intercepting modal's generateMetadata() error renders its own segment's error.tsx inside the modal", async ({
+    page,
+  }) => {
+    // Next.js renders the MetadataOutlet in the intercepting page's segment,
+    // under that segment's error boundary: @modal/(.)item/[id]/error.tsx.
+    await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByRole("link", { name: "Item metadata error" }).click();
+    await expect(page).toHaveURL(/\/item\/meta-error$/);
+    await expect(page.locator("#slot-own-modal #slot-own-modal-error")).toBeVisible();
+    await expect(page.locator("#slot-own-home")).toBeVisible();
+  });
+
   test("a slot intercept with no page before its slot takes the intercepting page's title", async ({
     page,
   }) => {
@@ -663,6 +710,30 @@ test.describe("Not Found", () => {
     await expect(page.locator("#slot-only-bar-intercept")).toBeVisible();
     await expect(page).toHaveTitle("Slot only photo intercept");
   });
+
+  for (const { boundary, kind } of [
+    { boundary: "nf", kind: "missing" },
+    { boundary: "forbidden", kind: "forbidden" },
+    { boundary: "unauthorized", kind: "unauthorized" },
+  ]) {
+    test(`a heading slot intercept's generateMetadata() ${kind} signal renders its own boundary in the slot`, async ({
+      page,
+    }) => {
+      // Next.js 16.2.7 (Turbopack) throws the signal in the intercepting page's
+      // segment, so its own not-found, forbidden or unauthorized file renders
+      // inside the slot, the layout stays, and the layouts title the page.
+      await page.goto(`${BASE}/nextjs-compat/slot-only-intercept/first`);
+      await waitForAppRouterHydration(page);
+
+      await page.getByRole("link", { name: `Signal ${kind}` }).click();
+      await expect(page).toHaveURL(new RegExp(`/slot-only-intercept/signal/${kind}$`));
+      await expect(
+        page.locator(`#slot-only-layout #slot-only-bar #slot-only-bar-signal-${boundary}`),
+      ).toBeVisible();
+      await expect(page.locator("#slot-only-bar-signal")).toHaveCount(0);
+      await expect(page).toHaveTitle("Slot only layout");
+    });
+  }
 });
 
 test.describe("Forbidden & Unauthorized", () => {
