@@ -1724,6 +1724,68 @@ describe("matchAppRoute - URL matching", () => {
         canonical(path.join(interceptDir, "[id]", "unauthorized.tsx")),
       );
       expect(intercept?.unauthorizedTreePosition).toBe(2);
+      expect(intercept?.forbiddenPaths).toEqual([
+        canonical(path.join(interceptDir, "forbidden.tsx")),
+      ]);
+      expect(intercept?.forbiddenTreePositions).toEqual([1]);
+      expect(intercept?.unauthorizedPaths).toEqual([
+        canonical(path.join(interceptDir, "[id]", "unauthorized.tsx")),
+      ]);
+      expect(intercept?.unauthorizedTreePositions).toEqual([2]);
+    });
+  });
+
+  it("records a slot intercept's own error, forbidden and unauthorized boundaries", async () => {
+    await withTempDir("vinext-app-slot-intercept-access-", async (tmpDir) => {
+      const appDir = path.join(tmpDir, "app");
+      const slotDir = path.join(appDir, "feed", "@modal");
+      const interceptDir = path.join(slotDir, "(.)photo");
+
+      await mkdir(path.join(interceptDir, "[id]"), { recursive: true });
+      await mkdir(path.join(appDir, "feed", "photo", "[id]"), { recursive: true });
+      await writeFile(path.join(appDir, "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "feed", "layout.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "feed", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(slotDir, "default.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(slotDir, "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "forbidden.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "[id]", "unauthorized.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "[id]", "page.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(slotDir, "error.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(interceptDir, "[id]", "error.tsx"), EMPTY_PAGE);
+      await writeFile(path.join(appDir, "feed", "photo", "[id]", "page.tsx"), EMPTY_PAGE);
+
+      invalidateAppRouteCache();
+      const routes = await appRouter(appDir);
+      const sourceRoute = routes.find((route) => route.pattern === "/feed");
+      const intercept = sourceRoute?.parallelSlots
+        .find((slot) => slot.name === "modal")
+        ?.interceptingRoutes.find((candidate) => candidate.targetPattern === "/feed/photo/:id");
+
+      // Positions count from the slot, as for its not-found files: the slot
+      // root is 0, (.)photo is 1, [id] is 2. The singular fields keep the
+      // nearest boundary; the arrays keep every one so each segment gets its
+      // own.
+      expect(intercept?.forbiddenPath).toBe(canonical(path.join(interceptDir, "forbidden.tsx")));
+      expect(intercept?.forbiddenTreePosition).toBe(1);
+      expect(intercept?.forbiddenPaths).toEqual([
+        canonical(path.join(slotDir, "forbidden.tsx")),
+        canonical(path.join(interceptDir, "forbidden.tsx")),
+      ]);
+      expect(intercept?.forbiddenTreePositions).toEqual([0, 1]);
+      expect(intercept?.unauthorizedPath).toBe(
+        canonical(path.join(interceptDir, "[id]", "unauthorized.tsx")),
+      );
+      expect(intercept?.unauthorizedTreePosition).toBe(2);
+      expect(intercept?.unauthorizedPaths).toEqual([
+        canonical(path.join(interceptDir, "[id]", "unauthorized.tsx")),
+      ]);
+      expect(intercept?.unauthorizedTreePositions).toEqual([2]);
+      expect(intercept?.errorPaths).toEqual([
+        canonical(path.join(slotDir, "error.tsx")),
+        canonical(path.join(interceptDir, "[id]", "error.tsx")),
+      ]);
+      expect(intercept?.errorTreePositions).toEqual([0, 2]);
     });
   });
 

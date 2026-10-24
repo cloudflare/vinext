@@ -61,6 +61,15 @@ type AppRscInterceptForMatching = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[];
+  interceptForbiddenTreePositions?: readonly number[];
+  __loadInterceptForbiddens?: readonly (() => Promise<unknown>)[] | null;
+  interceptUnauthorizeds?: readonly unknown[];
+  interceptUnauthorizedTreePositions?: readonly number[];
+  __loadInterceptUnauthorizeds?: readonly (() => Promise<unknown>)[] | null;
+  interceptErrors?: readonly unknown[];
+  interceptErrorTreePositions?: readonly number[];
+  __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
   params: readonly string[];
 };
 
@@ -95,12 +104,15 @@ type AppRscSiblingInterceptForMatching = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
-  forbidden?: unknown;
-  __loadForbidden?: (() => Promise<unknown>) | null;
-  forbiddenTreePosition?: number | null;
-  unauthorized?: unknown;
-  __loadUnauthorized?: (() => Promise<unknown>) | null;
-  unauthorizedTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[];
+  interceptForbiddenTreePositions?: readonly number[];
+  __loadInterceptForbiddens?: readonly (() => Promise<unknown>)[] | null;
+  interceptUnauthorizeds?: readonly unknown[];
+  interceptUnauthorizedTreePositions?: readonly number[];
+  __loadInterceptUnauthorizeds?: readonly (() => Promise<unknown>)[] | null;
+  interceptErrors?: readonly unknown[];
+  interceptErrorTreePositions?: readonly number[];
+  __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
   params: readonly string[];
 };
 
@@ -127,10 +139,6 @@ type AppRscInterceptLoadState = {
   pageLoading: Promise<unknown> | null;
   notFound: unknown;
   notFoundLoading: Promise<unknown> | null;
-  forbidden?: unknown;
-  forbiddenLoading?: Promise<unknown> | null;
-  unauthorized?: unknown;
-  unauthorizedLoading?: Promise<unknown> | null;
   interceptLayoutsLoading: Promise<readonly unknown[]> | null;
 };
 
@@ -160,12 +168,15 @@ type AppRscInterceptLookupEntry = {
   notFound: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
-  forbidden?: unknown;
-  __loadForbidden?: (() => Promise<unknown>) | null;
-  forbiddenTreePosition?: number | null;
-  unauthorized?: unknown;
-  __loadUnauthorized?: (() => Promise<unknown>) | null;
-  unauthorizedTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[];
+  interceptForbiddenTreePositions?: readonly number[];
+  __loadInterceptForbiddens?: readonly (() => Promise<unknown>)[] | null;
+  interceptUnauthorizeds?: readonly unknown[];
+  interceptUnauthorizedTreePositions?: readonly number[];
+  __loadInterceptUnauthorizeds?: readonly (() => Promise<unknown>)[] | null;
+  interceptErrors?: readonly unknown[];
+  interceptErrorTreePositions?: readonly number[];
+  __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
   __loadState: AppRscInterceptLoadState;
   params: readonly string[];
   slotId: string | null;
@@ -561,6 +572,15 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
             notFound: intercept.notFound,
             __loadNotFound: intercept.__loadNotFound,
             notFoundTreePosition: intercept.notFoundTreePosition,
+            interceptForbiddens: intercept.interceptForbiddens,
+            interceptForbiddenTreePositions: intercept.interceptForbiddenTreePositions,
+            __loadInterceptForbiddens: intercept.__loadInterceptForbiddens,
+            interceptUnauthorizeds: intercept.interceptUnauthorizeds,
+            interceptUnauthorizedTreePositions: intercept.interceptUnauthorizedTreePositions,
+            __loadInterceptUnauthorizeds: intercept.__loadInterceptUnauthorizeds,
+            interceptErrors: intercept.interceptErrors,
+            interceptErrorTreePositions: intercept.interceptErrorTreePositions,
+            __loadInterceptErrors: intercept.__loadInterceptErrors,
             __loadState: {
               page: intercept.page,
               pageLoading: null,
@@ -607,21 +627,20 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           notFound: intercept.notFound,
           __loadNotFound: intercept.__loadNotFound,
           notFoundTreePosition: intercept.notFoundTreePosition,
-          forbidden: intercept.forbidden,
-          __loadForbidden: intercept.__loadForbidden,
-          forbiddenTreePosition: intercept.forbiddenTreePosition,
-          unauthorized: intercept.unauthorized,
-          __loadUnauthorized: intercept.__loadUnauthorized,
-          unauthorizedTreePosition: intercept.unauthorizedTreePosition,
+          interceptForbiddens: intercept.interceptForbiddens,
+          interceptForbiddenTreePositions: intercept.interceptForbiddenTreePositions,
+          __loadInterceptForbiddens: intercept.__loadInterceptForbiddens,
+          interceptUnauthorizeds: intercept.interceptUnauthorizeds,
+          interceptUnauthorizedTreePositions: intercept.interceptUnauthorizedTreePositions,
+          __loadInterceptUnauthorizeds: intercept.__loadInterceptUnauthorizeds,
+          interceptErrors: intercept.interceptErrors,
+          interceptErrorTreePositions: intercept.interceptErrorTreePositions,
+          __loadInterceptErrors: intercept.__loadInterceptErrors,
           __loadState: {
             page: intercept.page,
             pageLoading: null,
             notFound: intercept.notFound,
             notFoundLoading: null,
-            forbidden: intercept.forbidden,
-            forbiddenLoading: null,
-            unauthorized: intercept.unauthorized,
-            unauthorizedLoading: null,
             interceptLayoutsLoading: null,
           },
           params: intercept.params,
