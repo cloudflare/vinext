@@ -972,7 +972,25 @@ describe("KVCacheHandler", () => {
       }
     });
 
-    it.each(['{"stale":"soon"}', "{not json"])(
+    it("serves entries of a tag revalidated with an infinite expire stale indefinitely", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(1_000);
+        await handler.set("tagged", pageValue, { tags: ["posts"] });
+        vi.setSystemTime(2_000);
+        await handler.revalidateTag("posts", { expire: Infinity });
+
+        expect(JSON.parse(store.get("__tag:posts")!)).toEqual({ stale: 2_000 });
+        vi.setSystemTime(1e12);
+        await expect(new KVCacheHandler(kv as any).get("tagged")).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['{"stale":"soon"}', "{not json", "", "{}", '{"other":1}'])(
       "treats an unreadable profile marker %s as an invalidation",
       async (marker) => {
         await handler.set("tagged", pageValue, { tags: ["posts"] });

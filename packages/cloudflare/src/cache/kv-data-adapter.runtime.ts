@@ -105,9 +105,9 @@ type KVCacheEntry = {
  * Next.js's tags manifest (server/lib/incremental-cache/tags-manifest.external.ts).
  * A plain revalidateTag() writes a bare timestamp, read as `expired` with no
  * `stale`: it expires older entries at once, even when another isolate's clock
- * put it slightly ahead. A cacheLife profile writes JSON with both times, and
- * its `expired` applies once it passes. A marker that can't be parsed has a
- * NaN `expired` and invalidates everything.
+ * put it slightly ahead. A cacheLife profile writes JSON with `stale` and, unless
+ * the profile never expires, `expired`, which applies once it passes. A stored
+ * marker that isn't one of these has a NaN `expired` and invalidates everything.
  */
 type TagMarker = {
   stale?: number;
@@ -115,8 +115,8 @@ type TagMarker = {
 };
 
 function parseTagMarker(raw: string | null | undefined): TagMarker {
-  if (!raw) return {};
-  if (!raw.startsWith("{")) return { expired: Number(raw) };
+  if (raw === null || raw === undefined) return {};
+  if (!raw.startsWith("{")) return { expired: raw === "" ? Number.NaN : Number(raw) };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -126,6 +126,7 @@ function parseTagMarker(raw: string | null | undefined): TagMarker {
   if (!isUnknownRecord(parsed)) return { expired: Number.NaN };
   const { stale, expired } = parsed;
   if (
+    (stale === undefined && expired === undefined) ||
     (stale !== undefined && typeof stale !== "number") ||
     (expired !== undefined && typeof expired !== "number")
   ) {
@@ -617,7 +618,8 @@ export class KVCacheHandler implements CacheHandler {
         }
         // A cacheLife profile marks older entries stale now and expires them
         // once the profile's expire passes, like Next.js's tags manifest.
-        // Without an expire, an earlier expiry still stands.
+        // Without an expire, an earlier expiry still stands; an infinite
+        // expire never expires them, which JSON can't store as a number.
         const expire = durations?.expire;
         const expired =
           expire === undefined
@@ -625,7 +627,7 @@ export class KVCacheHandler implements CacheHandler {
             : now + expire * 1000;
         const marker: TagMarker = {
           stale: now,
-          ...(expired === undefined || Number.isNaN(expired) ? {} : { expired }),
+          ...(expired !== undefined && Number.isFinite(expired) ? { expired } : {}),
         };
         await this.kv.put(tagKey, JSON.stringify(marker));
         return marker;
