@@ -78,7 +78,9 @@ import {
   cancelQueuedAppPrefetchFetch,
   getAppPrefetchFetchClaimSequence,
   isAppPrefetchFetchClaimed,
+  markGatedAppPrefetchFetch,
   scheduleAppPrefetchFetch,
+  runAfterAppPrefetchRevalidationCooldown,
 } from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
@@ -657,17 +659,19 @@ function prefetchUrl(
           }
           const ownerLeaveCount = owner?.leaveCount;
           const probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
-          // The Link left meanwhile. The probe is best effort, so drop it.
-          if (owner && owner.leaveCount !== ownerLeaveCount) {
-            throw new DOMException("Prefetch is no longer wanted", "AbortError");
-          }
-          return fetch(probeRscUrl, {
-            method: "HEAD",
-            headers: probeHeaders,
-            credentials: "include",
-            priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
+          return runAfterAppPrefetchRevalidationCooldown(() => {
+            // The Link left meanwhile. The probe is best effort, so drop it.
+            if (owner && owner.leaveCount !== ownerLeaveCount) {
+              throw new DOMException("Prefetch is no longer wanted", "AbortError");
+            }
+            return fetch(probeRscUrl, {
+              method: "HEAD",
+              headers: probeHeaders,
+              credentials: "include",
+              priority,
+              // @ts-expect-error — purpose is a valid fetch option in some browsers
+              purpose: "prefetch",
+            });
           });
         };
         // A visible Link that reuses a pending request becomes one of its owners.
@@ -729,33 +733,35 @@ function prefetchUrl(
           autoPrefetch.prefetchShellFirst;
         const fetchPromise =
           autoPrefetch.cacheForNavigation && (gateViaRouteTree || gateViaLoadingShell)
-            ? (async () => {
-                if (gateViaLoadingShell) {
-                  await fetchLoadingShellForReuse();
-                  return fetchFullRscPayload();
-                }
-                return fetchRouteTreeGatedPrefetch({
-                  fetchFullRscPayload,
-                  fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
-                    scheduleOwnedLinkPrefetch(
-                      owned,
-                      (signal) =>
-                        fetch(routeTreeRscUrl, {
-                          headers: routeTreeHeaders,
-                          credentials: "include",
-                          priority,
-                          signal,
-                          // @ts-expect-error — purpose is a valid fetch option in some browsers
-                          purpose: "prefetch",
-                        }),
-                      priority,
-                    ),
-                  fullHref,
-                  headers,
-                  interceptionContext,
-                  mountedSlotsHeader,
-                });
-              })()
+            ? markGatedAppPrefetchFetch(
+                (async () => {
+                  if (gateViaLoadingShell) {
+                    await fetchLoadingShellForReuse();
+                    return fetchFullRscPayload();
+                  }
+                  return fetchRouteTreeGatedPrefetch({
+                    fetchFullRscPayload,
+                    fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
+                      scheduleOwnedLinkPrefetch(
+                        owned,
+                        (signal) =>
+                          fetch(routeTreeRscUrl, {
+                            headers: routeTreeHeaders,
+                            credentials: "include",
+                            priority,
+                            signal,
+                            // @ts-expect-error — purpose is a valid fetch option in some browsers
+                            purpose: "prefetch",
+                          }),
+                        priority,
+                      ),
+                    fullHref,
+                    headers,
+                    interceptionContext,
+                    mountedSlotsHeader,
+                  });
+                })(),
+              )
             : fetchFullRscPayload();
         trackOwnedLinkPrefetch(owned, fetchPromise);
         if (
@@ -1473,8 +1479,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       return;
     }
     const intentMode = unstable_dynamicOnHover ? "full-after-shell" : prefetchMode;
+    const instance = internalRef.current
+      ? observedLinkPrefetches.get(internalRef.current)
+      : undefined;
     if (unstable_dynamicOnHover && internalRef.current) {
-      const instance = observedLinkPrefetches.get(internalRef.current);
       if (instance) {
         instance.mode = "full-after-shell";
       }
@@ -1486,6 +1494,10 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       "high",
       normalizedRouteHref === normalizedHref ? undefined : normalizedRouteHref,
       locale,
+      // Like Next.js's rescheduled intent task, the request is dropped if the
+      // Link leaves before it starts, e.g. while the revalidation cooldown
+      // holds it.
+      instance?.isVisible && instance.routerMode === "app" ? instance : undefined,
     );
   }, [
     effectivePrefetchProp,

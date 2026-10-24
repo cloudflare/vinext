@@ -108,9 +108,12 @@ import {
 } from "./navigation-context-state.js";
 import {
   cancelAppPrefetchFetch,
+  isAppPrefetchFetchHeldByRevalidationCooldown,
+  markGatedAppPrefetchFetch,
   promoteAppPrefetchFetch,
   releaseAppPrefetchFetchSlot,
   scheduleAppPrefetchFetch,
+  waitForAppPrefetchUnlessHeldByRevalidationCooldown,
 } from "./internal/app-prefetch-fetch-queue.js";
 
 const HAS_PAGES_ROUTER = process.env.__VINEXT_HAS_PAGES_ROUTER !== "false";
@@ -1872,16 +1875,24 @@ export async function consumePrefetchResponseForNavigation(
   // it. Settled zero-stale entries remain unavailable to later navigations.
   const allowExpiredInFlightHandoff = entry.pending !== undefined;
   if (entry.pending !== undefined) {
+    // Next.js navigations never send or wait on a prefetch the revalidation
+    // cooldown holds; they fetch their own response.
+    if (isAppPrefetchFetchHeldByRevalidationCooldown(entry.fetchPromise)) return null;
     // This navigation is about to wait on the prefetch's request. If that
     // request is still queued behind the low-priority concurrency cap, waiting
     // would block the navigation on unrelated prefetch response bodies, so
     // start it now instead. No-op once the request is already in flight.
     const releaseClaim = promoteAppPrefetchFetch(entry.fetchPromise, options?.shouldConsume);
+    let settled: boolean;
     try {
-      await entry.pending.catch(() => {});
+      settled = await waitForAppPrefetchUnlessHeldByRevalidationCooldown(
+        entry.fetchPromise,
+        entry.pending,
+      );
     } finally {
       releaseClaim();
     }
+    if (!settled) return null;
     if (cache.get(cacheKey) !== entry) return null;
     // Re-checked for a navigation superseded while the request was in flight.
     if (options?.shouldConsume?.() === false) return null;
@@ -3198,24 +3209,26 @@ const _appRouter: AppRouterInstance = {
         );
       const fetchPromise =
         reusable && kind === "auto" && requiresRouteTreePrefetch
-          ? fetchRouteTreeGatedPrefetch({
-              fetchFullRscPayload,
-              fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
-                scheduleAppPrefetchFetch(
-                  (signal) =>
-                    fetch(routeTreeRscUrl, {
-                      headers: routeTreeHeaders,
-                      credentials: "include",
-                      priority: "low" as RequestInit["priority"],
-                      signal,
-                    }),
-                  "low",
-                ),
-              fullHref,
-              headers,
-              interceptionContext,
-              mountedSlotsHeader,
-            })
+          ? markGatedAppPrefetchFetch(
+              fetchRouteTreeGatedPrefetch({
+                fetchFullRscPayload,
+                fetchRouteTree: (routeTreeRscUrl, routeTreeHeaders) =>
+                  scheduleAppPrefetchFetch(
+                    (signal) =>
+                      fetch(routeTreeRscUrl, {
+                        headers: routeTreeHeaders,
+                        credentials: "include",
+                        priority: "low" as RequestInit["priority"],
+                        signal,
+                      }),
+                    "low",
+                  ),
+                fullHref,
+                headers,
+                interceptionContext,
+                mountedSlotsHeader,
+              }),
+            )
           : fetchFullRscPayload();
       prefetchRscResponse(
         rscUrl,

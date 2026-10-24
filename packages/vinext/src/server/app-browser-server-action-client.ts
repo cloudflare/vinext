@@ -3,6 +3,7 @@ import {
   createTemporaryReferenceSet,
   encodeReply,
 } from "@vitejs/plugin-rsc/browser";
+import { startAppPrefetchRevalidationCooldown } from "vinext/shims/internal/app-prefetch-fetch-queue";
 import { parseRenderedPathAndSearchHeader } from "vinext/shims/navigation";
 import { DANGEROUS_URL_BLOCK_MESSAGE, isDangerousScheme } from "vinext/shims/url-safety";
 import {
@@ -197,7 +198,10 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") deps.clearClientNavigationCaches();
+  if (revalidation !== "none") {
+    startAppPrefetchRevalidationCooldown();
+    deps.clearClientNavigationCaches();
+  }
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,
