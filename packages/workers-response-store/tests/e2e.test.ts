@@ -460,11 +460,11 @@ test("replacesRevision drops a refresh of a revision another write already repla
     assert.equal(await (await read("/refresh-race")).text(), value);
   }
 
-  // A refresh read before invalidate() or purge() replaces the state they left, as any
-  // write does.
-  for (const [path, mutate] of [
-    ["/refresh-race-invalidated", () => invalidate({ tags: ["refresh-race-invalidated"] })],
-    ["/refresh-race-purged", () => purge({ tags: ["refresh-race-purged"] })],
+  // One read before invalidate() is dropped too, and a read of the invalidated revision
+  // refreshes it. One read before purge() fills the tombstone, as any write does.
+  for (const [path, mutate, lateStored] of [
+    ["/refresh-race-invalidated", () => invalidate({ tags: ["refresh-race-invalidated"] }), false],
+    ["/refresh-race-purged", () => purge({ tags: ["refresh-race-purged"] }), true],
   ] as const) {
     await put(path, "first", { ...refresh, tags: [path.slice(1)] });
     const before = await read(path);
@@ -474,8 +474,15 @@ test("replacesRevision drops a refresh of a revision another write already repla
     assert.ok(revision, path);
     await mutate();
     const late = await put(path, "late", { ...refresh, replacesRevision: revision });
-    assert.equal(late.json.backingStoreUpdated, true, path);
-    assert.equal(await (await read(path)).text(), "late", path);
+    assert.equal(late.json.backingStoreUpdated, lateStored, path);
+    const after = await read(path);
+    await after.arrayBuffer();
+    const refresh2 = await put(path, "second", {
+      ...refresh,
+      replacesRevision: after.headers.get("X-Workers-Response-Store-Revision"),
+    });
+    assert.equal(refresh2.json.backingStoreUpdated, true, path);
+    assert.equal(await (await read(path)).text(), "second", path);
   }
 });
 

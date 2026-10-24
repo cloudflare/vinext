@@ -992,7 +992,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     replacesRevision?: number,
   ): Promise<PublicationResult> {
     return this.ctx.storage.transactionSync(() => {
-      const now = Date.now();
       const current = this.ctx.storage.sql
         .exec<EntryRow>(
           `SELECT entries.*,
@@ -1018,13 +1017,13 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
-        // A refresh of a revision another write has since replaced with a fresh copy. Anything
-        // else since its read (a tombstone, an invalidation) leaves it a refresh like any other.
+        // A refresh of a revision another refresh or invalidate() has since replaced: the
+        // newer one is fresh, or stale and refreshed by its own readers. After a tombstone
+        // there is nothing to refresh, so the write fills it.
         (replacesRevision !== undefined &&
+          !current.tombstoned &&
           current.active_revision !== null &&
-          current.active_revision > replacesRevision &&
-          current.fresh_until !== null &&
-          now < current.fresh_until) ||
+          current.active_revision > replacesRevision) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
@@ -1054,6 +1053,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
       // Like Next.js, a tag's pending `expire` deadline also expires entries
       // published before it.
+      const now = Date.now();
       const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
       const freshUntil = Math.min(metadata.freshUntil, deadline);
       const swrUntil = Math.min(metadata.swrUntil, deadline);

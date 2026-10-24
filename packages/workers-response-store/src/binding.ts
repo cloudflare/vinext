@@ -22,9 +22,9 @@ export type ResponseStorePutOptions = {
   coalesce?: boolean;
   /**
    * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
-   * that this write refreshes. While another write's fresh replacement of that revision is
-   * stored and readable, the write is dropped instead of replacing and purging that copy,
-   * and returns `{ backingStoreUpdated: false, edgePurgeAccepted: false }`.
+   * that this write refreshes. Once readers see a newer revision from another refresh or
+   * invalidate(), the write is dropped instead of replacing (and purging) it, and returns
+   * `{ backingStoreUpdated: false, edgePurgeAccepted: false }`. A tombstone is still filled.
    * A value that isn't a positive integer is ignored.
    */
   replacesRevision?: number;
@@ -864,13 +864,23 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
   /**
    * The revision a refresh replaces, once readers see a newer one in R2. Until then nothing
    * they can read has replaced it, e.g. after a publish whose R2 write never landed, so the
-   * refresh is written as usual.
+   * refresh is written as usual. The HEAD's ETag doubles as the R2 write's precondition.
    */
-  private async replacedInR2(keyHash: string, revision?: number): Promise<number | undefined> {
-    if (revision === undefined) return undefined;
-    const object = await this.env.CACHE_BODIES.head(this.r2ObjectKey(keyHash));
+  private async replacedInR2(
+    keyHash: string,
+    revision?: number,
+  ): Promise<{ replacesRevision?: number; etag?: string | null }> {
+    if (revision === undefined) return {};
+    const object = await this.env.CACHE_BODIES.head(this.r2ObjectKey(keyHash)).catch(
+      () => undefined,
+    );
+    if (object === undefined) return {};
     const latestRevision = metadataInteger(object?.customMetadata?.latestRevision);
-    return latestRevision !== undefined && latestRevision > revision ? revision : undefined;
+    return {
+      replacesRevision:
+        latestRevision !== undefined && latestRevision > revision ? revision : undefined,
+      etag: object?.etag ?? null,
+    };
   }
 
   private async reserveWrite(
@@ -1392,11 +1402,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           void response.body?.cancel().catch(() => {});
           // Dropped like a refresh the Store finds replaced: the leading write already replaced
           // that revision, purging its edge copy if needed.
-          if (
-            replacesRevision !== undefined &&
-            result.entry.activeRevision > replacesRevision &&
-            Date.now() < result.entry.freshUntil
-          ) {
+          if (replacesRevision !== undefined && result.entry.activeRevision > replacesRevision) {
             return { backingStoreUpdated: false, edgePurgeAccepted: false };
           }
           return {
@@ -1415,6 +1421,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
 
     const write = (async (): Promise<StoreResult> => {
       reservation ??= await this.reserveWrite(metadata, cacheKey, cacheTags);
+      const r2 = await this.replacedInR2(keyHash, replacesRevision);
       return this.storeResponse(
         metadata,
         request,
@@ -1423,8 +1430,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         options.expiryBehavior === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
-        undefined,
-        await this.replacedInR2(keyHash, replacesRevision),
+        r2.etag,
+        r2.replacesRevision,
       );
     })();
     let cleared = () => {};
