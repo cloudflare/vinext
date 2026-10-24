@@ -1315,6 +1315,19 @@ const tsconfigAliasCustomResolver = async function (
   return resolved ?? { id: updatedId };
 } as unknown as ResolverFunction;
 
+// Vite's alias matching: a RegExp is tested, a string matches the id itself
+// or a path below it.
+function aliasFindMatches(find: string | RegExp, id: string): boolean {
+  if (typeof find === "string") {
+    return id === find || id.startsWith(find.endsWith("/") ? find : `${find}/`);
+  }
+  // A g or y flag makes test() advance lastIndex, and Vite reuses this RegExp.
+  const { lastIndex } = find;
+  const matches = find.test(id);
+  find.lastIndex = lastIndex;
+  return matches;
+}
+
 /**
  * Convert the merged alias map into Vite alias entries, attaching the
  * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
@@ -1952,6 +1965,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const nextImageAliasTargetRE = new RegExp(
     `^${nextImageAliasTarget.split("/").map(escapeRegExp).join("[\\\\/]")}$`,
   );
+  // Whether a resolve.alias entry ahead of vinext's takes next/image. Set in
+  // configResolved.
+  let nextImageAliasedByUser = false;
 
   // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
   // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
@@ -4689,6 +4705,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // preprocessor options and `css.modules` settings are in place.
         sassComposesLoader.setResolvedConfig(config);
 
+        // Vite's alias plugin applies the first entry that matches next/image.
+        // User aliases come ahead of vinext's shim, so a project can point
+        // next/image at a wrapper that renders vinext/shims/image (#4262).
+        const nextImageAlias = config.resolve.alias.find(({ find }) =>
+          aliasFindMatches(find, "next/image"),
+        );
+        nextImageAliasedByUser =
+          nextImageAlias !== undefined &&
+          toSlash(nextImageAlias.replacement) !== nextImageAliasTarget;
+
         if (config.command === "build" && hasAppDir && hasPagesDir) {
           const [appRoutes, pageRoutes, apiRoutes] = await Promise.all([
             appRouter(appDir, nextConfig?.pageExtensions, fileMatcher),
@@ -4929,7 +4955,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // The RSC next/image entry references Image as vinext/shims/image.
           // Elsewhere that is next/image, so the browser and SSR load one image
           // module, the dep optimizer's when it has pre-bundled next/image.
-          if (cleanId === "vinext/shims/image" && this.environment?.name !== "rsc") {
+          // When the user's alias takes next/image, the explicit shim import
+          // stays the shim: the alias target may be the importer itself.
+          if (
+            cleanId === "vinext/shims/image" &&
+            this.environment?.name !== "rsc" &&
+            !nextImageAliasedByUser
+          ) {
             return this.resolve("next/image", importer, { skipSelf: true });
           }
 
