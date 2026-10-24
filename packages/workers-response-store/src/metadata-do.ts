@@ -1017,7 +1017,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
-        // A refresh of a revision another refresh or invalidate() has since replaced: the
+        // A refresh of a revision another write or invalidate() has since replaced: the
         // newer one is fresh, or stale and refreshed by its own readers. After a tombstone
         // there is nothing to refresh, so the write fills it.
         (replacesRevision !== undefined &&

@@ -22,8 +22,8 @@ export type ResponseStorePutOptions = {
   coalesce?: boolean;
   /**
    * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
-   * that this write refreshes. Once readers see a newer revision from another refresh or
-   * invalidate(), the write is dropped instead of replacing (and purging) it, and returns
+   * that this write refreshes. Once readers see a newer revision (another write, or an
+   * invalidate()), the write is dropped instead of replacing (and purging) it, and returns
    * `{ backingStoreUpdated: false, edgePurgeAccepted: false }`. A tombstone is still filled.
    * A value that isn't a positive integer is ignored.
    */

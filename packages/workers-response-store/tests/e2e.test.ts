@@ -477,6 +477,7 @@ test("replacesRevision drops a refresh of a revision another write already repla
     assert.equal(late.json.backingStoreUpdated, lateStored, path);
     const after = await read(path);
     await after.arrayBuffer();
+    assert.ok(after.headers.get("X-Workers-Response-Store-Revision"), path);
     const refresh2 = await put(path, "second", {
       ...refresh,
       replacesRevision: after.headers.get("X-Workers-Response-Store-Revision"),
