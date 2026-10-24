@@ -5823,6 +5823,56 @@ describe("app page dispatch", () => {
     );
   });
 
+  it("regenerates a page even when finding its shells fails", async () => {
+    let scheduledRender: (() => Promise<void>) | null = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement: createParamTextPageElement("fresh"),
+      cleanPathname: "/en/blog/hello",
+      generateStaticParams: async () => {
+        throw new Error("generateStaticParams failed");
+      },
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html><body>stale</body></html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
+        },
+      }),
+      params: { locale: "en", slug: "hello" },
+      request: new Request("https://example.test/en/blog/hello"),
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      await response.text();
+
+      if (!scheduledRender) throw new Error("expected the stale page to regenerate");
+      await runWithRequestContext(createRequestContext(), () => scheduledRender!());
+      expect(isrSet).toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledWith(
+        "[vinext] ISR fallback shell discovery error:",
+        expect.any(Error),
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("keeps generateStaticParams' dynamic usage out of the page it checks", async () => {
     const { options } = createPprBlogDispatchOptions({
       buildPageElement: createParamTextPageElement("fresh"),

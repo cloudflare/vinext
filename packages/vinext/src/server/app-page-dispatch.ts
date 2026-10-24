@@ -1179,8 +1179,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       renderFreshPageForCache: async () => {
         const revalidationTarget = await resolveCacheRenderTarget();
         if (options.pprRuntime && revalidationTarget.route === route) {
-          // A regeneration fills the path's missing shells, as a stored miss does.
-          await options.pprRuntime.produceMissingShells(options, currentRevalidateSeconds);
+          // A regeneration fills the path's missing shells, as a stored miss
+          // does, but a failure to find them doesn't fail the page.
+          await options.pprRuntime
+            .produceMissingShells(options, currentRevalidateSeconds)
+            .catch((error: unknown) => {
+              console.error("[vinext] ISR fallback shell discovery error:", error);
+            });
         }
 
         const revalidationDynamicConfig =
