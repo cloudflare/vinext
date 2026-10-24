@@ -182,6 +182,32 @@ export function createAppPprFallbackShells(
   return shells;
 }
 
+/**
+ * The shells a request may resume. Its matched params are percent-encoded, so
+ * they are decoded first, like the generateStaticParams values the build
+ * derives the same shells from.
+ */
+export function createAppPprRequestFallbackShells(
+  route: AppPprFallbackShellRoute,
+  requestParams: Record<string, string | string[]>,
+): AppPprFallbackShell[] {
+  const decodedParams: Record<string, string | string[]> = {};
+  for (const [name, value] of Object.entries(requestParams)) {
+    decodedParams[name] = Array.isArray(value)
+      ? value.map(decodeParamValue)
+      : decodeParamValue(value);
+  }
+  return createAppPprFallbackShells(route, decodedParams);
+}
+
+function decodeParamValue(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function rewriteAppPprFallbackShellHtmlNavigation(options: {
   html: string;
   isForceStatic?: boolean;

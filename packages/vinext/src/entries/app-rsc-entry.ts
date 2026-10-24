@@ -975,7 +975,7 @@ ${
   cacheComponents
     ? `import {
   appPagePprRuntime as __appPagePprRuntime,
-  createAppPprFallbackShells as __createAppPprFallbackShells,
+  createAppPprRequestFallbackShells as __createAppPprRequestFallbackShells,
 } from ${JSON.stringify(appPagePprRuntimePath)};`
     : ""
 }
@@ -1457,7 +1457,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   ${
     cacheComponents
       ? `createPprFallbackShells(route, params) {
-    return __createAppPprFallbackShells(route, params);
+    return __createAppPprRequestFallbackShells(route, params);
   },`
       : ""
   }

@@ -2,12 +2,30 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   appendAppPprFallbackShellResumeDataCache,
   createAppPprFallbackShells,
+  createAppPprRequestFallbackShells,
   hasAppPprFallbackShellPrelude,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
   rewriteAppPprFallbackShellHtmlNavigation,
   splitAppPprFallbackShellResumeDataCache,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
+
+describe("createAppPprRequestFallbackShells", () => {
+  it("encodes a request's kept params once, as the build does", () => {
+    const shells = createAppPprRequestFallbackShells(
+      { params: ["locale", "slug"], pattern: "/:locale/blog/:slug", rootParamNames: ["locale"] },
+      { locale: "caf%C3%A9", slug: "new-post" },
+    );
+
+    expect(shells).toEqual([
+      {
+        fallbackParamNames: ["slug"],
+        pathname: "/caf%C3%A9/blog/[slug]",
+        params: { locale: "café", slug: "[slug]" },
+      },
+    ]);
+  });
+});
 
 describe("createAppPprFallbackShells", () => {
   it("builds a cacheComponents fallback shell from known root params and missing child params", () => {
