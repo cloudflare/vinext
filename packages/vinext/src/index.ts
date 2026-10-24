@@ -1315,8 +1315,9 @@ const tsconfigAliasCustomResolver = async function (
   return resolved ?? { id: updatedId };
 } as unknown as ResolverFunction;
 
-// Vite's alias matching: a RegExp is tested, a string matches the id itself
-// or a path below it.
+// Vite's dev alias matching: a RegExp is tested, a string matches the id
+// itself or a path below it. Rolldown's build alias plugin does not match below
+// a string ending in "/"; this helper's broader match only skips a dedupe there.
 function aliasFindMatches(find: string | RegExp, id: string): boolean {
   if (typeof find === "string") {
     return id === find || id.startsWith(find.endsWith("/") ? find : `${find}/`);
@@ -4708,12 +4709,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Vite's alias plugin applies the first entry that matches next/image.
         // User aliases come ahead of vinext's shim, so a project can point
         // next/image at a wrapper that renders vinext/shims/image (#4262).
+        // vinext's own entry has no customResolver.
         const nextImageAlias = config.resolve?.alias?.find(({ find }) =>
           aliasFindMatches(find, "next/image"),
         );
         nextImageAliasedByUser =
           nextImageAlias !== undefined &&
-          toSlash(nextImageAlias.replacement) !== nextImageAliasTarget;
+          (nextImageAlias.customResolver !== undefined ||
+            toSlash(nextImageAlias.replacement) !== nextImageAliasTarget);
 
         if (config.command === "build" && hasAppDir && hasPagesDir) {
           const [appRoutes, pageRoutes, apiRoutes] = await Promise.all([

@@ -30,6 +30,16 @@ function nextImageAlias(fixtureDir: string) {
 const DEV_ALIAS_FORMS: Array<[string, AliasOptions]> = [
   ["a RegExp", nextImageAlias(FIXTURE_DIR)],
   ["an object key", { "next/image": WRAPPER_PATH }],
+  [
+    "a custom resolver over vinext's own replacement",
+    [
+      {
+        find: "next/image",
+        replacement: path.join(SHIMS_DIR, "image"),
+        customResolver: () => WRAPPER_PATH,
+      },
+    ],
+  ],
 ];
 
 // Records the environments where the wrapper's vinext/shims/image import was
