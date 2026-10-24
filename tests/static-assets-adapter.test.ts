@@ -272,7 +272,7 @@ describe("staticAssetsAdapter", () => {
     });
   });
 
-  it("leaves out a resume data cache over the Workers Static Assets file size limit", async () => {
+  it("leaves out a fallback shell whose resume data cache is over the Workers Static Assets file size limit", async () => {
     const root = createRoot();
     write(
       root,
@@ -313,10 +313,10 @@ describe("staticAssetsAdapter", () => {
         },
       },
     });
-    // Without its resume data cache, the route renders blocking.
+    // Without its shell, the route renders blocking.
     await expect(
       adapter.get(appIsrFallbackShellKey("/en/[slug]", "html", "build-a")),
-    ).resolves.toMatchObject({ value: { kind: "APP_PAGE", postponed: undefined } });
+    ).resolves.toBeNull();
   });
 
   it.each(
