@@ -11,6 +11,7 @@ import {
   hasUserSetPagesResponseHeader,
   markVinextStreamedApiResponse,
   parsePagesApiBody,
+  sendPagesApiError,
   type PagesRequestQuery,
   type PagesReqResRequest,
   type PagesApiReqResResponse,
@@ -211,6 +212,19 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
   }
 
   const { route, params } = options.match;
+  // Like apiResolver's single catch, report one error per request: a stream
+  // failure can reject both the response bridge and the handler.
+  let errorReport: Promise<void> | undefined;
+  const reportError = (error: unknown) =>
+    (errorReport ??= Promise.resolve(
+      options.reportRequestError?.(
+        error instanceof Error ? error : new Error(String(error)),
+        route.pattern,
+      ),
+    ));
+  // Settles after the Node handler and any report of its own rejection.
+  let handlerSettled: Promise<unknown> | undefined;
+  let handlerRunning = false;
 
   try {
     if (isEdgeApiRouteModule(route.module)) {
@@ -335,14 +349,14 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       }
       return response;
     };
-    const destroyAfterHandlerError = (error: unknown): never => {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      // Once a handler has started writing, the Fetch Response may already be
-      // on its way to the client. Error the bridge so a parked write callback
-      // and the response consumer both settle instead of abandoning the
-      // stream while the error is reported below.
-      res.destroy(normalizedError);
-      throw normalizedError;
+    const sendHandlerError = async (error: unknown) => {
+      await reportError(error);
+      // Next.js apiResolver answers a thrown handler with sendError() on the
+      // same `res`, so the 500 keeps the headers the handler already set and
+      // gets no Content-Type. A response that already started is finished
+      // with the message rather than aborted.
+      sendPagesApiError(res, 500, "Internal Server Error");
+      return { type: "handler" as const };
     };
 
     const responseReady = responsePromise.then((response) => ({
@@ -350,15 +364,19 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       response,
     }));
     // Schedule invocation after both sides of the race have rejection
-    // handlers attached. A synchronous throw may destroy the response bridge,
-    // which rejects responsePromise as well as the handler completion.
+    // handlers attached.
+    handlerRunning = true;
     const handlerCompletion = Promise.resolve()
       .then(() =>
         tracePagesApiHandler(route.pattern, () => handler(req, res), {
           recordErrors: options.edgeRuntime !== "node",
         }),
       )
-      .then(() => ({ type: "handler" as const }), destroyAfterHandlerError);
+      .finally(() => {
+        handlerRunning = false;
+      })
+      .then(() => ({ type: "handler" as const }), sendHandlerError);
+    handlerSettled = handlerCompletion;
 
     // A real Node ServerResponse is consumed by the socket while the API
     // handler is still running. Mirror that concurrency at the Fetch boundary:
@@ -367,9 +385,7 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
     // the handler to finish first.
     const firstSettled = await Promise.race([responseReady, handlerCompletion]);
     if (firstSettled.type === "response") {
-      const handlerLifecycle = handlerCompletion.then(completeHandler, (error) =>
-        options.reportRequestError?.(error, route.pattern),
-      );
+      const handlerLifecycle = handlerCompletion.then(completeHandler);
       // The body may already be complete (for example, res.end() followed by
       // awaited cleanup), so keeping only a floating promise is not enough on
       // Workers. Register the remaining handler lifecycle before returning;
@@ -392,10 +408,15 @@ async function _handlePagesApiRoute(options: HandlePagesApiRouteOptions): Promis
       );
     }
 
-    await options.reportRequestError?.(
-      error instanceof Error ? error : new Error(String(error)),
-      route.pattern,
-    );
+    // A stream failure can reject the response before the handler rejects
+    // (an awaited pipeline() destroys `res` first). apiResolver reports the
+    // handler's error, so this one is reported only if the handler completes.
+    // A handler still running must not hold the 500 back.
+    const report = handlerSettled
+      ? handlerSettled.then(() => reportError(error))
+      : reportError(error);
+    if (handlerRunning) getRequestExecutionContext()?.waitUntil(report);
+    else await report;
     return frameworkResponse(internalServerErrorResponse());
   }
 }

@@ -390,6 +390,18 @@ class PagesResponseStream extends Writable {
     }
   }
 
+  /**
+   * Next.js sendError(): answer on the same `res`, so the response keeps the
+   * headers user code already set. As on a Node ServerResponse, a written head
+   * keeps its status, a started body gets the message appended, and an ended
+   * response is left alone.
+   */
+  sendError(statusCode: number, message: string): void {
+    if (this.writableEnded || this.destroyed) return;
+    if (!this.headWritten && !this.resolved) this.resStatusCode = statusCode;
+    this.end(message);
+  }
+
   /** Whether user code set a matching header before the response committed. */
   hasUserSetHeader(matches: (lowerName: string) => boolean): boolean {
     for (const name of this.userSetHeaderNames) {
@@ -671,6 +683,15 @@ export function hasUserSetPagesResponseHeader(
   matches: (lowerName: string) => boolean,
 ): boolean {
   return res instanceof PagesResponseStream && res.hasUserSetHeader(matches);
+}
+
+/** Answer a failed Pages API handler like Next.js sendError(), on its own `res`. */
+export function sendPagesApiError(
+  res: PagesReqResResponse,
+  statusCode: number,
+  message: string,
+): void {
+  if (res instanceof PagesResponseStream) res.sendError(statusCode, message);
 }
 
 export function isVinextStreamedApiResponse(response: Response): boolean {
