@@ -70,3 +70,22 @@ test.describe("fallback shells on a warmed deploy", () => {
     expect(errors).toEqual([]);
   });
 });
+
+test.describe("fallback shells filled by warming", () => {
+  test.skip(!backend, "requires app-router-playground deployed with a cache backend");
+
+  test("resumes the shell warming stored with the generated path", async ({ baseURL, request }) => {
+    // Let the warm-time value go stale, so a shell rendered now would refresh it.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const id = randomUUID();
+    const response = await request.get(`${baseURL}/e2e/fallback-shell-warm/${id}`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["x-nextjs-postponed"]).toBe("1");
+    const html = await response.text();
+    expect(html).toContain(`<p id="param">${id}</p>`);
+    const renderedAt = Date.parse(html.match(/<p id="rendered-at">([^<]+)<\/p>/)?.[1] ?? "");
+    const respondedAt = Date.parse(response.headers()["date"] ?? "");
+    // The shell was rendered when the deploy warmed `generated`, not for this request.
+    expect(respondedAt - renderedAt).toBeGreaterThan(2_000);
+  });
+});
