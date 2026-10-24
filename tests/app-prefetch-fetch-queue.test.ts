@@ -112,6 +112,25 @@ describe("app prefetch fetch queue revalidation cooldown", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("drops held prefetches that are no longer wanted when the cooldown ends", async () => {
+    const queue = await loadQueue();
+    const fetcher = vi.fn(async () => new Response(""));
+    let wanted = true;
+
+    queue.startAppPrefetchRevalidationCooldown();
+    const low = queue.scheduleAppPrefetchFetch(fetcher, "low", () => wanted);
+    const high = queue.scheduleAppPrefetchFetch(fetcher, "high", () => wanted);
+    const cancelled = queue.scheduleAppPrefetchFetch(fetcher, "high");
+    const outcomes = Promise.allSettled([low, high, cancelled]);
+    queue.cancelQueuedAppPrefetchFetch(cancelled);
+    wanted = false;
+
+    await vi.advanceTimersByTimeAsync(300);
+    const results = await outcomes;
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected", "rejected"]);
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
   it("sends prefetches immediately without a revalidation", async () => {
     const queue = await loadQueue();
     const fetcher = vi.fn(async () => new Response(""));
