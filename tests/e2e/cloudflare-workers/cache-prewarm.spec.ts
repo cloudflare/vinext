@@ -407,6 +407,48 @@ test("a static page with no revalidate source is served from the configured cach
     .toBe(true);
 });
 
+// Ported from Next.js revalidateTag(tag, profile) semantics, as in
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+test("revalidateTag with a cacheLife profile serves the stale value while it regenerates", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(150_000);
+
+  const read = async () => {
+    const response = await request.get(`${baseURL}/use-cache-getter-args-tagged`);
+    expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+    const value = /data-testid="getter-args-tagged">([^<]+)</.exec(await response.text())?.[1];
+    expect(value).toMatch(/^getter-args-tagged:/);
+    return value!;
+  };
+  // Wait until the cached value is stored and served.
+  let before = await read();
+  await expect
+    .poll(
+      async () => {
+        const value = await read();
+        const reused = value === before;
+        before = value;
+        return reused;
+      },
+      { intervals: [1_000], timeout: 30_000 },
+    )
+    .toBe(true);
+
+  // The demo route revalidates with the "default" profile, so the next read
+  // still serves the stale value and the backend regenerates it.
+  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: "getter-args-tagged" },
+  });
+  expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  expect(await read()).toBe(before);
+  // KV colos may cache the earlier marker read for up to 60 seconds.
+  await expect.poll(read, { intervals: [1_000], timeout: 75_000 }).not.toBe(before);
+});
+
 test("useSearchParams() inside Suspense keeps the query out of a static page", async ({
   baseURL,
   request,
