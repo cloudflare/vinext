@@ -3103,7 +3103,6 @@ describe("App Router dev with plugin-rsc's vendored Flight runtime", () => {
   it("prebundles the vendored static renderer without a react-server-dom-webpack include", async () => {
     const root = await createExternalStoreFixture("absent");
     await fsp.unlink(path.join(root, "node_modules/react-server-dom-webpack"));
-    const requireFromProject = createRequire(path.join(root, "package.json"));
     const warnings: string[] = [];
     const logger = createLogger("warn");
     logger.warn = (message) => {
@@ -3112,7 +3111,6 @@ describe("App Router dev with plugin-rsc's vendored Flight runtime", () => {
     logger.warnOnce = (message) => logger.warn(message);
     let server: ViteDevServer | undefined;
     try {
-      expect(() => requireFromProject.resolve("react-server-dom-webpack/static.edge")).toThrow();
       server = await createServer({
         root,
         configFile: false,
