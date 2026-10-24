@@ -73,6 +73,19 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
   return { kind: "probe-fallback-shells", fallbackShells };
 }
 
+/** What generateStaticParams produces for a request, asked apart from its render. */
+async function resolveGeneratedStaticParams<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+) {
+  const { resolveAppPageGeneratedStaticParams } = await import("./app-page-request.js");
+  return runAppPageStaticGenerationWork(options, () =>
+    resolveAppPageGeneratedStaticParams({
+      generateStaticParams: options.generateStaticParams,
+      params: options.staticParamsValidationParams ?? options.params,
+    }),
+  );
+}
+
 /**
  * The shell a request resumes: the most specific one derived from params
  * generateStaticParams produced, or the route's own shell, which keeps no
@@ -84,16 +97,10 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
 async function resolveEligibleFallbackShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShells: readonly AppPagePprFallbackCacheShell[],
+  generated: Awaited<ReturnType<typeof resolveGeneratedStaticParams>>,
 ): Promise<AppPagePprFallbackCacheShell | null> {
-  const { hasGeneratedStaticParamsFor, resolveAppPageGeneratedStaticParams } =
-    await import("./app-page-request.js");
+  const { hasGeneratedStaticParamsFor } = await import("./app-page-request.js");
   const params = options.staticParamsValidationParams ?? options.params;
-  const generated = await runAppPageStaticGenerationWork(options, () =>
-    resolveAppPageGeneratedStaticParams({
-      generateStaticParams: options.generateStaticParams,
-      params,
-    }),
-  );
   if (generated?.isGenerated) return null;
   for (const fallbackShell of fallbackShells) {
     const fallbackParamNames = new Set(fallbackShell.fallbackParamNames);
@@ -107,6 +114,38 @@ async function resolveEligibleFallbackShell<TRoute extends AppPageDispatchRoute>
     }
   }
   return null;
+}
+
+/**
+ * Produce, in the background, the shells of a generated path that aren't
+ * stored. The build prerenders these with the path, so a deploy that warms its
+ * cache instead fills them when it renders the path.
+ */
+async function produceMissingFallbackShells<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  fallbackShells: readonly AppPagePprFallbackCacheShell[],
+  currentRevalidateSeconds: number | null,
+): Promise<void> {
+  // The build prerenders every shell itself.
+  if (process.env.VINEXT_PRERENDER === "1") return;
+  const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
+  const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
+  for (const fallbackShell of fallbackShells) {
+    const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
+    const key = options.isrFallbackShellHtmlKey(fallbackPathname);
+    (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
+      key,
+      async () => {
+        const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
+        if (cached !== null && cached.isExpired !== true) return;
+        options.isrDebug?.("RENDER (missing fallback shell)", fallbackPathname);
+        await coalesceFallbackShellProduction(key, () =>
+          produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds),
+        );
+      },
+      { routerKind: "App Router", routePath: options.route.pattern, routeType: "render" },
+    );
+  }
 }
 
 async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
@@ -204,10 +243,31 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceDynamic,
     );
     if (decision.kind !== "probe-fallback-shells") return null;
-    const fallbackShell = await resolveEligibleFallbackShell(options, decision.fallbackShells);
+    const generated = await resolveGeneratedStaticParams(options);
+    if (generated?.isGenerated) {
+      await produceMissingFallbackShells(
+        options,
+        decision.fallbackShells,
+        currentRevalidateSeconds,
+      );
+      return null;
+    }
+    const fallbackShell = await resolveEligibleFallbackShell(
+      options,
+      decision.fallbackShells,
+      generated,
+    );
     return fallbackShell
       ? serveFallbackShell(options, fallbackShell, currentRevalidateSeconds, isForceStatic)
       : null;
+  },
+  async produceMissingShells(options, currentRevalidateSeconds) {
+    const fallbackShells = options.pprFallbackCacheShells;
+    if (!fallbackShells || fallbackShells.length === 0) return;
+    const generated = await resolveGeneratedStaticParams(options);
+    if (generated?.isGenerated) {
+      await produceMissingFallbackShells(options, fallbackShells, currentRevalidateSeconds);
+    }
   },
   async warm(options) {
     const { warmPprFallbackShellCaches } = await import("./app-ppr-fallback-shell-render.js");
