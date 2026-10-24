@@ -161,6 +161,28 @@ export default defineConfig({
 
 Follow the [Nitro deployment guide](https://v3.nitro.build/deploy) for host-specific presets and output. On Cloudflare, prefer vinext's native integration for direct bindings, caching, image optimization, and the one-command deployment workflow.
 
+### Server dependencies
+
+On Node presets, Nitro copies a server external package (from `serverExternalPackages` or Next.js's default list) into `.output/server/node_modules` only when the server imports, `require()`s or `require.resolve()`s it, like Next.js output file tracing.
+
+Some packages are not copied:
+
+- a package preloaded with `node --import` or `-r`, such as an APM agent;
+- a `require()` or `require.resolve()` with a non-literal name, such as `require(name)`;
+- a `require` from a `createRequire` that isn't imported or `require()`d from `node:module`, such as `process.getBuiltinModule("module").createRequire`;
+- a `require.resolve()` in a module that declares its own `require`, or a call through a `createRequire` binding whose name another declaration in the module reuses;
+- a package that doesn't resolve from the importing file at build time;
+- a package whose `exports` can't be resolved with `import` conditions, such as one with only a `require` condition;
+- under the Pages Router, a package that only a dependency's own nested `node_modules` can resolve.
+
+Add these to Nitro's `traceDeps`, as you would add them to `outputFileTracingIncludes` in Next.js:
+
+```ts
+nitro({ traceDeps: ["dd-trace"] });
+```
+
+Nitro copies `traceDeps` packages the server doesn't import from version `3.0.260903-beta`.
+
 ### Middleware and static files
 
 In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. On presets where Nitro's own server serves the static output, such as `node-server` and `bun`, vinext runs requests for `public/` files through middleware and then serves the file from Nitro's output, so rewrites to public files work too. As in Next.js, `public/docs/index.html` is served only at `/docs/index.html`, not at `/docs`. As on Cloudflare Workers, middleware does not run for the `/_next/static` build output, which Nitro serves directly.

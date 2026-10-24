@@ -197,6 +197,11 @@ import {
   type NitroPublicFilesOptions,
 } from "./build/nitro-public-files.js";
 import {
+  mergeNitroTraceDeps,
+  nitroTracedExternals,
+  type NitroTraceDep,
+} from "./build/nitro-trace-deps.js";
+import {
   emitNextClientRuntimeManifests,
   getPagesManifestPage,
 } from "./build/next-client-runtime-manifests.js";
@@ -280,6 +285,7 @@ import {
   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
 } from "./plugins/rsc-client-shim-excludes.js";
 import { createServerExternalsManifestPlugin } from "./plugins/server-externals-manifest.js";
+import { createNitroRequiredExternalsPlugin } from "./plugins/nitro-required-externals.js";
 import { createTransitiveExternalsPlugin } from "./plugins/transitive-externals.js";
 // Keep this source-relative: resolving through vinext's package export can read
 // a stale built copy while developing or testing the source tree.
@@ -1760,8 +1766,12 @@ type NitroSetupContext = {
   options: NitroPublicFilesOptions & {
     buildDir?: string;
     exportConditions?: string[];
-    traceDeps?: string[];
+    node?: boolean;
+    noExternals?: boolean | (string | RegExp)[];
+    preset?: string;
+    traceDeps?: NitroTraceDep[];
   };
+  hooks: { afterEach(callback: (event: { name: string }) => void): () => void };
 };
 
 function createServerEnvironmentFileNameResolver(
@@ -1852,6 +1862,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // Whether vinext's Nitro runtime plugin runs requests for public files
   // through vinext and serves the files through Nitro's static handler.
   let nitroPublicFiles = false;
+  let nitroOptions: NitroSetupContext["options"] | undefined;
   let nitroPublicDir = "public";
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
@@ -8428,6 +8439,16 @@ export const loadServerActionClient = ${
     // standalone/node_modules/ — uses the bundler's own import graph instead of
     // fragile regex scanning of emitted files.
     createServerExternalsManifestPlugin(),
+    createNitroRequiredExternalsPlugin({
+      // Nitro's own condition for tracing externals instead of bundling them,
+      // read in `applyToEnvironment`, after every Nitro module's setup.
+      isEnabled: () => !!nitroOptions?.node && nitroOptions.noExternals !== true,
+      getTracedExternals: () => nitroTracedExternals(resolvedServerExternalPackages, nitroOptions),
+      // vinext's server environment output, which `renderChunk` already marked.
+      isNitroServiceOutput: (id) =>
+        !!nitroBuildDir &&
+        isPathInside(path.join(canonicalize(nitroBuildDir), "vite/services"), canonicalize(id)),
+    }),
     // Preserve importer-relative package identity for nested copies of
     // serverExternalPackages. Next.js refuses to externalize these requests
     // when their importer and project-root resolutions differ.
@@ -8590,6 +8611,9 @@ export const loadServerActionClient = ${
       },
       nitro: {
         setup: (nitro: NitroSetupContext) => {
+          // Nitro's prerenderer re-runs module setup with a Node preset, between
+          // the server environment builds and the main Nitro build.
+          if (nitro.options.preset !== "nitro-prerender") nitroOptions = nitro.options;
           nitroBuildDir = nitro.options.buildDir
             ? path.resolve(root, nitro.options.buildDir)
             : undefined;
@@ -8606,9 +8630,16 @@ export const loadServerActionClient = ${
           );
 
           if (resolvedServerExternalPackages.length > 0) {
-            nitro.options.traceDeps = [
-              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
-            ];
+            // Nitro reads `traceDeps` right after `build:before`. Merging once
+            // every handler of that hook has run (hookable's `afterEach`) sees
+            // an `!name` opt-out from any Nitro module, whatever its order.
+            nitro.hooks.afterEach((event) => {
+              if (event.name !== "build:before") return;
+              nitro.options.traceDeps = mergeNitroTraceDeps(
+                nitro.options.traceDeps,
+                resolvedServerExternalPackages,
+              );
+            });
           }
         },
       },
