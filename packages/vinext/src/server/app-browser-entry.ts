@@ -37,6 +37,8 @@ import {
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
+  invalidateBfcachePrefetchCacheEntries,
+  isConsumedPrefetchHeldOutsideBfcache,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
@@ -576,17 +578,35 @@ function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
 }
 
-function clearPrefetchState(): void {
-  invalidatePrefetchCache();
+function clearOptimisticRouteTemplates(): void {
   optimisticRouteTemplates.clear();
   optimisticRouteTemplateSources.clear();
   optimisticRouteTemplateLearning.clear();
+}
+
+function clearPrefetchState(): void {
+  invalidatePrefetchCache();
+  clearOptimisticRouteTemplates();
 }
 
 function clearClientNavigationCaches(): void {
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
   clearPrefetchState();
+  historyController.invalidateRestorableClientState();
+}
+
+/**
+ * A dynamic-only revalidation (`refresh()` in a Server Action) clears what
+ * Next.js keeps in its BFCache and leaves every other prefetch in place, except
+ * for the pages the action rendered. Templates may hold layouts from a dropped
+ * dynamic render; they are learned again from the prefetches that remain.
+ */
+function clearClientNavigationBfcache(committedHrefs: readonly string[]): void {
+  clientNavigationCacheGeneration += 1;
+  clearVisitedResponseCache();
+  invalidateBfcachePrefetchCacheEntries(committedHrefs);
+  clearOptimisticRouteTemplates();
   historyController.invalidateRestorableClientState();
 }
 
@@ -1160,6 +1180,7 @@ function storeVisitedResponseSnapshot(
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
   reuseAfterHistoryRestore: boolean = false,
+  heldOutsideBfcache: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   // Router-state fingerprints intentionally give requests for the same visible
@@ -1187,6 +1208,7 @@ function storeVisitedResponseSnapshot(
       requestMountedSlotsHeader,
       prefetchFallbackTtlMs,
       reuseAfterHistoryRestore,
+      heldOutsideBfcache,
     );
   }
   return () => {
@@ -1922,6 +1944,7 @@ function registerServerActionCallback(): void {
       .then(({ invokeClientServerAction }) =>
         invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
+          clearClientNavigationBfcache,
           clearClientNavigationCaches,
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
@@ -2565,6 +2588,7 @@ function bootstrapHydration(
         let navResponseExpiresAt: number | undefined;
         let navResponseUrl: string | null = null;
         let consumedPrefetchSnapshot: CachedRscResponse | undefined;
+        let consumedPrefetchHeldOutsideBfcache = false;
         let prefetchedElements: AppElements | undefined;
         let fallbackReuseDecision = reuseDecision;
         if (reuseDecision.kind === "consumePrefetch") {
@@ -2598,6 +2622,8 @@ function bootstrapHydration(
               navResponseUrl,
             );
             consumedPrefetchSnapshot = publication.snapshot;
+            consumedPrefetchHeldOutsideBfcache =
+              isConsumedPrefetchHeldOutsideBfcache(prefetchedResponse);
             prefetchedElements = publication.preparedElements;
             navResponseExpiresAt = publication.expiresAt;
           }
@@ -3025,6 +3051,7 @@ function bootstrapHydration(
               true,
               prefetchSnapshot,
               true,
+              consumedPrefetchHeldOutsideBfcache,
             );
           } else {
             const state = committedState;
@@ -3050,6 +3077,7 @@ function bootstrapHydration(
               true,
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
+              consumedPrefetchHeldOutsideBfcache,
             );
           }
         } catch {

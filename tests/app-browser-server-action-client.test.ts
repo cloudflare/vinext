@@ -96,6 +96,7 @@ describe("app browser server action client", () => {
         }),
         {
           basePath: "",
+          clearClientNavigationBfcache: vi.fn(),
           clearClientNavigationCaches: vi.fn(),
           clientRscCompatibilityId: null,
           commitSameUrlNavigatePayload: vi.fn(),
@@ -172,6 +173,7 @@ describe("app browser server action client", () => {
 
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
+      clearClientNavigationBfcache: vi.fn(),
       clearClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
@@ -248,6 +250,7 @@ describe("app browser server action client", () => {
 
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "/base",
+      clearClientNavigationBfcache: vi.fn(),
       clearClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
@@ -301,6 +304,7 @@ describe("app browser server action client", () => {
     await expect(
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
+        clearClientNavigationBfcache: vi.fn(),
         clearClientNavigationCaches,
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
@@ -343,6 +347,7 @@ describe("app browser server action client", () => {
     await expect(
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
+        clearClientNavigationBfcache: vi.fn(),
         clearClientNavigationCaches: vi.fn(),
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
@@ -401,6 +406,7 @@ describe("app browser server action client", () => {
 
     const result = invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
+      clearClientNavigationBfcache: vi.fn(),
       clearClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
@@ -456,10 +462,12 @@ describe("app browser server action client", () => {
           decode = () => resolve({ returnValue: { ok: true, data: "value" } });
         }) as ReturnType<typeof createFromFetch>,
       );
+      const clearClientNavigationBfcache = vi.fn();
       const clearClientNavigationCaches = vi.fn();
 
       const invoked = invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
+        clearClientNavigationBfcache,
         clearClientNavigationCaches,
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload: vi.fn(),
@@ -475,6 +483,7 @@ describe("app browser server action client", () => {
       // window ends 300ms after the action completes, as in Next.js.
       await vi.waitFor(() => expect(createFromFetch).toHaveBeenCalledOnce());
       expect(cooldownStarts.calls.length).toBe(0);
+      expect(clearClientNavigationBfcache).not.toHaveBeenCalled();
       expect(clearClientNavigationCaches).not.toHaveBeenCalled();
 
       decode();
@@ -482,8 +491,10 @@ describe("app browser server action client", () => {
       expect(cooldownStarts.calls.length).toBe(startsCooldown ? 1 : 0);
       if (startsCooldown) {
         // Started before the cache clear, so its re-prefetches are held.
+        const clear =
+          revalidatedHeader === "2" ? clearClientNavigationBfcache : clearClientNavigationCaches;
         expect(cooldownStarts.invocationCallOrder[0]).toBeLessThan(
-          clearClientNavigationCaches.mock.invocationCallOrder[0]!,
+          clear.mock.invocationCallOrder[0]!,
         );
       }
     },
@@ -526,10 +537,12 @@ describe("app browser server action client", () => {
       returnValue: { ok: true, data: "value-after-revalidation" },
     });
     const commitSameUrlNavigatePayload = vi.fn();
+    const clearClientNavigationBfcache = vi.fn();
     const clearClientNavigationCaches = vi.fn();
 
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
+      clearClientNavigationBfcache,
       clearClientNavigationCaches,
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
@@ -540,7 +553,12 @@ describe("app browser server action client", () => {
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
-    expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    // Next.js: a dynamic-only revalidation evicts only the BFCache. The page
+    // the action rendered is passed along, as Next.js writes that render to
+    // its BFCache.
+    expect(clearClientNavigationBfcache).toHaveBeenCalledTimes(1);
+    expect(clearClientNavigationBfcache).toHaveBeenCalledWith(["https://example.com/source"]);
+    expect(clearClientNavigationCaches).not.toHaveBeenCalled();
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
     const [elementsArg, , returnValueArg, revalidationArg, renderedPathAndSearchArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
@@ -589,11 +607,13 @@ describe("app browser server action client", () => {
       returnValue: { ok: true, data: undefined },
     });
     const commitSameUrlNavigatePayload = vi.fn();
+    const clearClientNavigationBfcache = vi.fn();
     const clearClientNavigationCaches = vi.fn();
 
     await expect(
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
+        clearClientNavigationBfcache,
         clearClientNavigationCaches,
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
@@ -606,6 +626,7 @@ describe("app browser server action client", () => {
     ).resolves.toBeUndefined();
 
     expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    expect(clearClientNavigationBfcache).not.toHaveBeenCalled();
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
     const [elementsArg, , returnValueArg, revalidationArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
@@ -647,6 +668,7 @@ describe("app browser server action client", () => {
 
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
+      clearClientNavigationBfcache: vi.fn(),
       clearClientNavigationCaches,
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,

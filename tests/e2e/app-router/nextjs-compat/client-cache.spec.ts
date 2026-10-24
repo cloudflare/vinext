@@ -390,6 +390,76 @@ test.describe("Next.js compat: client cache", () => {
     });
   }
 
+  test("a refresh() Server Action keeps prefetches and refetches only dynamic data", async ({
+    page,
+  }) => {
+    // Next.js evicts only its BFCache for a dynamic-only revalidation and keeps
+    // every prefetch without re-prefetching (server-action-reducer.ts calls
+    // invalidateEntirePrefetchCache() only for ActionDidRevalidateStaticAndDynamic):
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/client/components/router-reducer/reducers/server-action-reducer.ts
+    // Next.js parity, without Cache Components: "Server Action refresh()
+    // refreshes dynamic data only, not cached" in
+    // test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+    const fullRenderTarget = "/nextjs-compat/client-cache-full-render/1";
+    const linkTargets = [
+      `${ROOT}/0`,
+      `${ROOT}/1`,
+      `${ROOT}/default-stale/1`,
+      `${ROOT}/no-loading/1`,
+      fullRenderTarget,
+      "/nextjs-compat/client-cache-runtime-dynamic",
+      "/nextjs-compat/client-cache-late-dynamic",
+      "/nextjs-compat/client-cache-static-param/1",
+    ];
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    for (const pathname of linkTargets) {
+      await expect.poll(() => requestsFor(requests, pathname).length).toBeGreaterThan(0);
+    }
+    // A visited dynamic page is reused for its 30s dynamic stale time.
+    const visited = await navigateTo(page, "#client-cache-none", "2");
+    await navigateHome(page);
+    expect(await navigateTo(page, "#client-cache-none", "2")).toBe(visited);
+    await navigateHome(page);
+    // A visited prefetch={true} page stays in the prefetch cache.
+    const visitedFull = await navigateTo(page, "#client-cache-full", "0");
+    await navigateHome(page);
+    // The remounted home Links may re-prefetch an expired dynamic prefetch; let
+    // those requests land before counting the ones the action causes.
+    await expect
+      .poll(async () => {
+        const sent = requests.length;
+        await page.waitForTimeout(300);
+        return requests.length === sent;
+      })
+      .toBe(true);
+
+    requests.length = 0;
+    const actionResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.request().headers()["next-action"] !== undefined,
+    );
+    await page.click("#client-cache-refresh-action");
+    await (await actionResponse).finished();
+    // Allow for the revalidation cooldown and the prefetch queue before
+    // asserting that no link was re-prefetched.
+    await page.waitForTimeout(1_000);
+    expect(requests.filter((request) => linkTargets.includes(request.pathname))).toEqual([]);
+
+    // The visited response was evicted, so the dynamic page renders again.
+    const refreshed = await navigateTo(page, "#client-cache-none", "2");
+    expect(refreshed).not.toBe(visited);
+    expect(requestsFor(requests, `${ROOT}/2`).some((request) => !request.partial)).toBe(true);
+
+    // The visited prefetch={true} payload is still reused, as Next.js keeps a
+    // full prefetch in its segment cache, and nothing since the action has
+    // fetched it again.
+    await navigateHome(page);
+    expect(await navigateTo(page, "#client-cache-full", "0")).toBe(visitedFull);
+    expect(requestsFor(requests, `${ROOT}/0`)).toEqual([]);
+  });
+
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
     page,
   }) => {
