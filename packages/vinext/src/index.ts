@@ -4663,10 +4663,21 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           // defaults, so other plugins' explicit includes and opt-outs win.
           // Optimizers are created afterward, so these are still startup includes.
           const optionalWarnings = new Set<string>();
-          const isExcludedShim = (depId: string) =>
-            shimOptimizeDepsExclude.some(
+          const isExcludedShim = (depId: string) => {
+            // Vite expands a glob include such as next/* after this hook, from
+            // the installed package's files, so drop any glob over a package
+            // that owns a shim specifier.
+            if (/[*?[\]{}()!]/.test(depId)) {
+              const segments = depId.split("/");
+              const pkgName = segments.slice(0, depId.startsWith("@") ? 2 : 1).join("/");
+              return shimOptimizeDepsExclude.some(
+                (excluded) => excluded === pkgName || excluded.startsWith(`${pkgName}/`),
+              );
+            }
+            return shimOptimizeDepsExclude.some(
               (excluded) => depId === excluded || depId.startsWith(`${excluded}/`),
             );
+          };
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
             // Vite pre-bundles an included specifier even when it is also

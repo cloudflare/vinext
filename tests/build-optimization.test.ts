@@ -1153,6 +1153,12 @@ describe("optimizeDeps.exclude for vinext", () => {
             "vinext/shims/link",
             "some-lib",
             "some-lib > nested-dep",
+            // Vite expands globs later, from the installed package's files.
+            "next/*",
+            "vinext/shims/**",
+            "some-lib > next/{link,image}",
+            "some-lib/*",
+            "@scope/lib/*",
           ],
         },
       };
@@ -1169,6 +1175,8 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(client.optimizeDeps.include).toEqual([
         "some-lib",
         "some-lib > nested-dep",
+        "some-lib/*",
+        "@scope/lib/*",
         "vinext > @unpic/react",
         "vinext > ipaddr.js",
         "vinext > web-vitals",

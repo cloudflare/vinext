@@ -215,6 +215,14 @@ function createInstalledVinextProject(): string {
       "package.json": '{"name":"cjs-headers-lib","main":"index.js"}',
       "index.js": 'exports.libHeaders = () => require("next/headers").headers();',
     },
+    // Migrated apps often keep next installed. It has no exports field, so
+    // an include glob such as next/* expands to its top-level files.
+    next: {
+      "package.json": '{"name":"next","main":"index.js"}',
+      "index.js": "module.exports = {};",
+      "link.js": "module.exports = {};",
+      "navigation.js": "module.exports = {};",
+    },
   };
   for (const [name, files] of Object.entries(libraries)) {
     fs.mkdirSync(path.join(nodeModules, name));
@@ -260,7 +268,7 @@ const server = await createServer({
   // Cloudflare's Worker environments discover dependencies; Node dev does not.
   environments: { rsc: { optimizeDeps: { noDiscovery: false } } },
   // Vite pre-bundles included specifiers even when they are excluded.
-  optimizeDeps: { include: ["next/link", "cjs-link-lib > next/link"] },
+  optimizeDeps: { include: ["next/link", "next/*", "cjs-link-lib > next/link"] },
   server: { host: "127.0.0.1", port: 0 },
 });
 try {
