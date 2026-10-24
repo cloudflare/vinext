@@ -500,6 +500,7 @@ import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReady
 import "vinext/shims/cache-request-state";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
+export { createConfiguredImageOptimizer as __createConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
 import "vinext/cache-runtime";
