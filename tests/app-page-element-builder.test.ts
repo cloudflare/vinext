@@ -16,6 +16,7 @@ import type {
   AppPageRouteHead,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
+import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
@@ -95,6 +96,7 @@ vi.mock("../packages/vinext/src/shims/headers.js", () => ({
 // from the headers-state module directly.
 vi.mock("../packages/vinext/src/shims/internal/headers-state.js", () => ({
   getHeadersAccessPhase: () => "render",
+  isStaticGenerationAccessError: () => false,
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
@@ -366,6 +368,41 @@ describe("buildPageElements", () => {
     markRenderRequestApiUsageMock.mockClear();
     clientPageRootProps.length = 0;
     recordedTraceDescriptors.length = 0;
+  });
+
+  it("hands its special-error fallback the head with each branch's signal settled", async () => {
+    // Next.js 16.2.7 keeps the route's title when its generateViewport() calls
+    // notFound(), and resolves only the viewport through the not-found
+    // convention.
+    const prepared: AppPagePreparedRouteHead[] = [];
+    const route = createSyntheticRoute({
+      notFound: { default: () => null, viewport: { themeColor: "#404404" } } as AppPageModule,
+      notFoundTreePosition: 0,
+      page: {
+        default: () => null,
+        generateMetadata: () => ({ title: "Route title" }),
+        generateViewport: () => notFound(),
+      } as AppPageModule,
+    });
+    const base = createBaseOptions({ route });
+
+    const result = await buildPageElements({
+      ...base,
+      pageRequest: {
+        ...base.pageRequest,
+        onHeadPrepared: (head: AppPagePreparedRouteHead) => prepared.push(head),
+      },
+    });
+    resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].metadataPlacement).toBe("body");
+    await expect(prepared[0].metadata).resolves.toEqual(
+      expect.objectContaining({ title: "Route title" }),
+    );
+    await expect(prepared[0].viewport).resolves.toEqual(
+      expect.objectContaining({ themeColor: [{ color: "#404404" }] }),
+    );
   });
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
@@ -2992,7 +3029,8 @@ describe("buildPageElements", () => {
     await expect(fallbackFailureHead.outlet).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;403",
     });
-    await expect(fallbackFailureHead.viewport).resolves.toEqual({});
+    // Like Next.js's getNotFoundViewport().catch(() => null): no viewport tags.
+    await expect(fallbackFailureHead.viewport).resolves.toBeNull();
     expect(fallbackViewport).toHaveBeenCalledTimes(1);
   });
 

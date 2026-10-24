@@ -173,6 +173,35 @@ export type PreparedAppPageHead = Omit<ResolveAppPageHeadResult, "metadata" | "v
   viewport: Promise<ResolvedViewport>;
 };
 
+/**
+ * A route's head as one render prepared it, for a later render to reuse. Each
+ * branch already settled its own signals, so neither rejects.
+ */
+export type AppPagePreparedRouteHead = {
+  /** The `dynamic = "error"` access error either branch dropped, which still fails the render. */
+  accessError: Promise<Error | null>;
+  metadata: Promise<Metadata | null>;
+  /** Where that render places generateMetadata()'s tags: "body" streams them. */
+  metadataPlacement: "body" | "head";
+  /** `null` when its resolution failed, so the head has no viewport tags. */
+  viewport: Promise<Viewport | null>;
+};
+
+/**
+ * A special-error fallback for a signal the matched route's render threw keeps
+ * the route's own head: the head that render prepared, or, when it never
+ * started one, a fresh resolution with that render's query and placement.
+ */
+export type AppPageFallbackRouteHead = {
+  /** Whether metadata's `searchParams` reads count as dynamic usage, as in the render. */
+  observeSearchParams: boolean;
+  prepared: AppPagePreparedRouteHead | null;
+  /** The query the render read: a rewrite's, or none for a static render. */
+  searchParams: URLSearchParams;
+  /** Whether the render streams generated metadata into the body. */
+  streamMetadata: boolean;
+};
+
 type AppPageSearchParamsCollection = {
   hasSearchParams: boolean;
   pageSearchParams: AppPageSearchParams;

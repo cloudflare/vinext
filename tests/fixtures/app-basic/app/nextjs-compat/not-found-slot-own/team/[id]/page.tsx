@@ -1,6 +1,9 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 
+// The route's title, also when this page or its slot throws notFound().
+export const metadata = { title: "Team page" };
+
 async function LateMain(): Promise<never> {
   await Promise.resolve();
   notFound();

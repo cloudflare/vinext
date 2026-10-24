@@ -1539,6 +1539,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,
           isProduction: process.env.NODE_ENV === "production",
+          onHeadPrepared: buildOptions?.onHeadPrepared,
         }, layoutParamAccess, displayPathname, scriptNonce);
       },
       clientReuseManifest,

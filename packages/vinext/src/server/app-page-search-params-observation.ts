@@ -24,7 +24,7 @@ function markAppPageSearchParamsAccess(): void {
   markRenderRequestApiUsage("searchParams");
 }
 
-export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
+function createAppPageSearchParamsObserver(): ThenableParamsObserver {
   return {
     observeParamAccess() {
       markAppPageSearchParamsAccess();
@@ -33,6 +33,16 @@ export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
     // passing searchParams to a client component fails the render.
     observeThenRead: throwIfStaticGenerationAccessError,
   };
+}
+
+/**
+ * The observer a route's head hands generateMetadata() and generateViewport()
+ * for `searchParams`, or none when a read doesn't count (`force-static`).
+ */
+export function createAppPageMetadataSearchParamsObserver(
+  observe: boolean,
+): ThenableParamsObserver | undefined {
+  return observe ? createAppPageSearchParamsObserver() : undefined;
 }
 
 export function makeObservedAppPageSearchParamsThenable(
