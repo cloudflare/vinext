@@ -475,7 +475,7 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
   console.log(`Creating a new vinext app in ${root}.\n`);
   writeTemplate(root, appName, options.packageManager, options.initOptions);
 
-  await init({
+  const result = await init({
     root,
     port: false,
     skipCheck: true,
@@ -492,7 +492,11 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
     console.log("Initialized a git repository.\n");
   }
 
-  console.log(`Success! Created ${appName} at ${root}`);
+  console.log(
+    result.dependencyInstallNeedsApproval
+      ? `Created ${appName} at ${root}; dependency installation needs build-script approval.`
+      : `Success! Created ${appName} at ${root}`,
+  );
 }
 
 async function promptForDirectory(options: PlatformPromptOptions, yes: boolean): Promise<string> {
