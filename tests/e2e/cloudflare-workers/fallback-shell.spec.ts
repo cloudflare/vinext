@@ -31,12 +31,12 @@ test.describe("fallback shells on a warmed deploy", () => {
     expect(await response.text()).toContain('<p id="param">generated</p>');
   });
 
-  test("resumes the shell for params outside generateStaticParams", async ({
+  test("resumes the stored shell for params outside generateStaticParams", async ({
     baseURL,
     request,
   }) => {
-    const renderedAt = new Set<string>();
-    for (const id of [randomUUID(), randomUUID()]) {
+    const resume = async () => {
+      const id = randomUUID();
       const response = await request.get(`${baseURL}${route}/${id}`);
       expect(response.status()).toBe(200);
       expect(response.headers()["x-nextjs-postponed"]).toBe("1");
@@ -44,12 +44,18 @@ test.describe("fallback shells on a warmed deploy", () => {
       expect(response.headers()["cache-control"]).toContain("no-store");
       const html = await response.text();
       expect(html).toContain(`<p id="param">${id}</p>`);
-      const renderedAtMatch = html.match(/<p id="rendered-at">([^<]+)<\/p>/);
-      expect(renderedAtMatch).not.toBeNull();
-      renderedAt.add(renderedAtMatch![1]);
-    }
-    // Both requests resume the shell with its cached values.
-    expect(renderedAt.size).toBe(1);
+      const renderedAt = Date.parse(html.match(/<p id="rendered-at">([^<]+)<\/p>/)?.[1] ?? "");
+      expect(renderedAt).not.toBeNaN();
+      return { renderedAt, respondedAt: Date.parse(response.headers()["date"] ?? "") };
+    };
+
+    await resume();
+    // Let the shell's cached value go stale, so a shell rendered now would
+    // refresh it.
+    await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const { renderedAt, respondedAt } = await resume();
+    // The request resumed the stored shell with the value it was rendered with.
+    expect(respondedAt - renderedAt).toBeGreaterThan(1_500);
   });
 
   test("hydrates a resumed shell without errors", async ({ baseURL, page }) => {

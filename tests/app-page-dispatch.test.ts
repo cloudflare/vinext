@@ -5783,6 +5783,52 @@ describe("app page dispatch", () => {
     expect(buildPageElement).toHaveBeenCalled();
   });
 
+  it("shares a stale shell's regeneration with a request that finds the shell missing", async () => {
+    let settleWrite!: () => void;
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      () =>
+        new Promise<void>((resolve) => {
+          settleWrite = resolve;
+        }),
+    );
+    let regenerate: (() => Promise<void>) | null = null;
+    const dispatchFor = (slug: string, isrGet: DispatchOptions["isrGet"]) => {
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement(),
+        cleanPathname: `/en/blog/${slug}`,
+        isrGet,
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            return createStream(["<!DOCTYPE html><html><head></head><body>shell</body></html>"]);
+          },
+        }),
+        params: { locale: "en", slug },
+        request: new Request(`https://example.test/en/blog/${slug}`),
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          regenerate = renderFn;
+        },
+      });
+      return runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, isrSetFallbackShell }),
+      );
+    };
+
+    await (await dispatchFor("first", createPprBlogFallbackShellGetter(true))).text();
+    if (!regenerate) throw new Error("expected the stale shell to regenerate");
+    // An invalidation drops the stale shell while its regeneration renders.
+    const regeneration = runWithRequestContext(createRequestContext(), () => regenerate!());
+    await vi.waitFor(() => expect(isrSetFallbackShell).toHaveBeenCalledTimes(1));
+    const missing = dispatchFor(
+      "second",
+      vi.fn(async () => null),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    settleWrite();
+    await Promise.all([regeneration, missing]);
+
+    expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+  });
+
   it("serves stale static PPR fallback-shell HTML and regenerates the shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = createPprBlogFallbackShellGetter(true);

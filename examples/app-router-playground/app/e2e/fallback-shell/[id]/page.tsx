@@ -1,3 +1,4 @@
+import { cacheLife } from 'next/cache';
 import { Suspense } from 'react';
 
 // A route for tests/e2e/cloudflare-workers/fallback-shell.spec.ts: paths
@@ -8,6 +9,8 @@ export async function generateStaticParams() {
 
 async function getRenderedAt() {
   'use cache';
+  // Stale within a second, so a shell rendered later refreshes it.
+  cacheLife({ revalidate: 1 });
   return new Date().toISOString();
 }
 

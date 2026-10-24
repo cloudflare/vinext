@@ -180,7 +180,8 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
       (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
         key,
         async () => {
-          await produce();
+          // A request that finds the shell missing meanwhile joins this render.
+          await coalesceFallbackShellProduction(key, produce);
         },
         { routerKind: "App Router", routePath: options.route.pattern, routeType: "render" },
       );
