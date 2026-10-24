@@ -322,7 +322,8 @@ function createSlotLayoutElement(
 export type AppPageRouteHead = {
   metadata: Promise<Metadata | null>;
   outlet: Promise<null>;
-  viewport: Promise<Viewport>;
+  /** `null` when resolution failed: like Next.js, the head then has no viewport tags. */
+  viewport: Promise<Viewport | null>;
 };
 
 type MakeThenableParams = (params: AppPageParams, observer?: ThenableParamsObserver) => unknown;
@@ -829,7 +830,7 @@ async function AppPageHead(props: {
           trailingSlash={props.trailingSlash}
         />
       ) : null}
-      <ViewportHead viewport={viewport} />
+      {viewport ? <ViewportHead viewport={viewport} /> : null}
     </>
   );
 }

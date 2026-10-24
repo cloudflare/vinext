@@ -2,6 +2,8 @@ import Link from "next/link";
 
 const BASE = "/nextjs-compat/not-found-slot-own";
 
+export const metadata = { title: "Slot own layout" };
+
 /**
  * Test fixture: parallel slots with their own not-found.tsx. Next.js attaches
  * a segment's not-found boundary to its `children`, so a slot's own file

@@ -2806,23 +2806,28 @@ describe("App Router route-miss root layout redirects", () => {
     expect(body).toContain("Gated Not Found");
   });
 
-  // A generateMetadata() redirect from a fallback boundary must honor the same
-  // streaming-vs-blocking rule as matched pages: streaming-capable document
-  // requests get a 200 meta-refresh, html-limited bots get the blocking 307.
-  // Proves the fallback path threads serveStreamingMetadata (previously it
-  // always defaulted to streaming, even for bots).
-  it("serves a 200 meta-refresh for a fallback-boundary metadata redirect on streaming document requests", async () => {
+  // A redirect() from the generateMetadata() of the not-found boundary of a
+  // matched route that threw notFound() is dropped. Next.js renders that
+  // response as an error shell, whose metadata has no MetadataOutlet, so
+  // Next.js 16.2.7 (Turbopack, `next start`) answers 404 with no meta refresh
+  // for a streaming browser and no Location for an HTML-limited bot alike. A
+  // route miss renders the not-found tree as the page, so a redirect from its
+  // metadata still applies there.
+  it("drops a fallback-boundary metadata redirect on streaming document requests", async () => {
     const res = await fetch(`${baseUrl}/gated`, {
       redirect: "manual",
       headers: { "x-vinext-gated-metadata-redirect": "1" },
     });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
     expect(res.headers.get("content-type")).toContain("text/html");
-    expect(await res.text()).toContain("/result");
+    const html = await res.text();
+    expect(html).toContain("Gated Not Found");
+    expect(html).not.toMatch(/http-equiv="refresh"/);
   });
 
-  it("serves a blocking 307 for a fallback-boundary metadata redirect to html-limited bots", async () => {
+  it("drops a fallback-boundary metadata redirect for html-limited bots", async () => {
     const res = await fetch(`${baseUrl}/gated`, {
       redirect: "manual",
       headers: {
@@ -2831,8 +2836,11 @@ describe("App Router route-miss root layout redirects", () => {
       },
     });
 
-    expect(res.status).toBe(307);
-    expect(new URL(res.headers.get("location")!, baseUrl).pathname).toBe("/result");
+    expect(res.status).toBe(404);
+    expect(res.headers.get("location")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain("Gated Not Found");
+    expect(html).not.toMatch(/http-equiv="refresh"/);
   });
 });
 

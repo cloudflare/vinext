@@ -41,6 +41,7 @@ import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params
 import { after } from "../packages/vinext/src/shims/server.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
+import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
@@ -2981,7 +2982,125 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
+  it("hands the head the page's render prepared to its not-found fallback", async () => {
+    // Next.js's browser ends on the route's own head, which generateMetadata()
+    // resolved once during the render, so the fallback reuses it.
+    const preparedHead: AppPagePreparedRouteHead = {
+      accessError: Promise.resolve(null),
+      metadata: Promise.resolve({ title: "Prepared" }),
+      metadataPlacement: "body",
+      viewport: Promise.resolve({}),
+    };
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    // A rewrite gave the render a query the request URL doesn't carry.
+    const searchParams = new URLSearchParams("q=rewritten");
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, _params, _opts, _searchParams, _access, buildOptions) {
+        buildOptions?.onHeadPrepared?.(preparedHead);
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      searchParams,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        routeHead: {
+          observeSearchParams: true,
+          prepared: preparedHead,
+          searchParams,
+          streamMetadata: true,
+        },
+      }),
+      null,
+    );
+  });
+
+  it("hands a force-static render's empty, unobserved query to its not-found fallback", async () => {
+    // The render read no query, so a head resolved for its fallback reads none.
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      dynamicConfig: "force-static",
+      searchParams: new URLSearchParams("q=ignored"),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    await dispatchAppPage(options);
+
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        routeHead: expect.objectContaining({
+          observeSearchParams: false,
+          searchParams: new URLSearchParams(),
+        }),
+      }),
+      null,
+    );
+  });
+
+  it("never hands a PPR warm-up render's head to the final render's fallback", async () => {
+    // The warm-up render is discarded, so a final render that throws before
+    // its own head starts resolves the head afresh.
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const warmupHead: AppPagePreparedRouteHead = {
+      accessError: Promise.resolve(null),
+      metadata: Promise.resolve({ title: "Warm-up" }),
+      metadataPlacement: "head",
+      viewport: Promise.resolve({}),
+    };
+    let builds = 0;
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, _params, _opts, _searchParams, _access, buildOptions) {
+        builds += 1;
+        if (builds === 1) {
+          buildOptions?.onHeadPrepared?.(warmupHead);
+          return React.createElement("main", null, "page");
+        }
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(builds).toBe(2);
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ routeHead: expect.objectContaining({ prepared: null }) }),
+      null,
+    );
+  });
+
   it("renders not-found HTML when a progressive action calls notFound()", async () => {
+    // Next.js answers it with a not-found tree in place of the page
+    // (createNotFoundLoaderTree), so the page's head never applies.
     const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
     const renderHttpAccessFallbackPage = vi.fn(
       async () => new Response("<html>not found</html>", { status: 404 }),
@@ -4105,6 +4224,7 @@ describe("app page dispatch", () => {
         isForceStatic: false,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
+        onHeadPrepared: expect.any(Function),
         placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },

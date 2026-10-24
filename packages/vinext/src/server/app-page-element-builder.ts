@@ -15,11 +15,12 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  type AppPagePreparedRouteHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
 import {
-  resolveHttpAccessFallbackMetadata,
-  resolveHttpAccessFallbackViewport,
+  createRouteNotFoundHeadPlanOptions,
+  recoverAppPageRouteHead,
 } from "./app-page-http-access-fallback-metadata.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
@@ -46,12 +47,8 @@ import {
   traceGetLayoutOrPageModule,
 } from "./app-page-tracing.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { resolveAppPageParentHttpAccessBoundary, type AppPageParams } from "./app-page-boundary.js";
-import {
-  resolveAppPageSpecialError,
-  tagAppPagePageError,
-  tagAppPageSlotError,
-} from "./app-page-execution.js";
+import type { AppPageParams } from "./app-page-boundary.js";
+import { tagAppPagePageError, tagAppPageSlotError } from "./app-page-execution.js";
 import { sanitizeErrorForClient } from "./app-rsc-errors.js";
 import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
@@ -60,11 +57,11 @@ import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc
 import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
-  createAppPageSearchParamsObserver,
+  createAppPageMetadataSearchParamsObserver,
   makeObservedAppPageSearchParamsThenable,
 } from "./app-page-search-params-observation.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
-import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
+import { resolveAppPageBranchParams } from "./app-page-params.js";
 import {
   createAppPageRenderDependency,
   invokeAppComponent,
@@ -251,6 +248,12 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   placeStreamedMetadataInHead?: boolean;
   /** Whether streamed render errors must be sanitized for client transport. */
   isProduction?: boolean;
+  /**
+   * Receives the route's head once this render starts resolving it, so a
+   * special-error fallback after the render can reuse it rather than calling
+   * generateMetadata() again.
+   */
+  onHeadPrepared?: (head: AppPagePreparedRouteHead) => void;
 };
 
 export type BuildPageElementsOptions<
@@ -353,6 +356,7 @@ export async function buildPageElements<
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
+    onHeadPrepared,
   } = pageRequest;
 
   const pageModule: AppPageModule | null | undefined = route.page;
@@ -507,9 +511,9 @@ export async function buildPageElements<
     ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
     ...activeParallelRouteHeadInputs.map((input) => input.head),
   ];
-  const metadataSearchParamsObserver = observeMetadataSearchParamsAccess
-    ? createAppPageSearchParamsObserver()
-    : undefined;
+  const metadataSearchParamsObserver = createAppPageMetadataSearchParamsObserver(
+    observeMetadataSearchParamsAccess,
+  );
   const headOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
@@ -535,61 +539,6 @@ export async function buildPageElements<
   const metadataPlacement =
     hasDynamicMetadata && streamGeneratedHead && !placeStreamedMetadataInHead ? "body" : "head";
 
-  const resolveNotFoundFallbackPlanOptions = () => {
-    const routeBoundaryModule = route.notFound;
-    const parentBoundary = resolveAppPageParentHttpAccessBoundary({
-      layoutIndex: route.layouts.length,
-      rootForbiddenModule,
-      rootNotFoundModule,
-      rootUnauthorizedModule,
-      routeForbiddenModules: route.forbiddens,
-      routeNotFoundModules: route.notFounds,
-      routeUnauthorizedModules: route.unauthorizeds,
-      statusCode: 404,
-    });
-    const boundaryModule = routeBoundaryModule ?? parentBoundary.module;
-    const boundaryTreePosition = routeBoundaryModule
-      ? route.notFoundTreePosition
-      : parentBoundary.layoutIndex === null
-        ? null
-        : route.layoutTreePositions?.[parentBoundary.layoutIndex];
-    const boundaryParams =
-      boundaryModule && boundaryTreePosition != null
-        ? resolveAppPageSegmentParams(
-            route.routeSegments ?? [],
-            boundaryTreePosition,
-            effectiveParams,
-          )
-        : {};
-    return {
-      boundaryModule,
-      boundaryParams,
-      boundaryRouteSegments: (route.routeSegments ?? []).slice(0, boundaryTreePosition ?? 0),
-      errorConvention: "not-found" as const,
-      layoutModules: route.layouts,
-      layoutTreePositions: route.layoutTreePositions,
-      parallelBranches: activeParallelRouteHeadInputs,
-      params: effectiveParams,
-      primaryParallelBranch: primaryParallelRouteHeadInput,
-      routeSegments: route.routeSegments ?? null,
-    };
-  };
-
-  const resolveMetadataErrorTags = async (error: unknown) => {
-    const specialError = resolveAppPageSpecialError(error);
-    if (specialError?.kind !== "http-access-fallback") return null;
-
-    // Next resolves the not-found metadata convention for every HTTP access
-    // fallback. Errors from that fallback tag branch are suppressed because
-    // the original digest is still rethrown by the paired outlet.
-    return resolveHttpAccessFallbackMetadata({
-      applyFileBasedMetadata: options.applyFileBasedMetadata,
-      basePath: options.basePath ?? "",
-      ...resolveNotFoundFallbackPlanOptions(),
-      metadataRoutes,
-      routePath: route.pattern,
-    }).catch(() => null);
-  };
   const toClientError = (error: unknown) =>
     isProduction ? sanitizeErrorForClient(error, "production") : error;
   // generateMetadata() and generateViewport() run when Flight first renders the
@@ -600,6 +549,23 @@ export async function buildPageElements<
   // a revalidation) gets its own.
   const resolveHead = cache((): AppPageRouteHead => {
     const preparedHead = prepareAppPageHead(headOptions);
+    // Errors from the not-found fallback are suppressed because the original
+    // digest is still rethrown by the paired outlet.
+    const recoveredHead = recoverAppPageRouteHead(preparedHead, {
+      applyFileBasedMetadata: options.applyFileBasedMetadata,
+      basePath: options.basePath ?? "",
+      metadataRoutes,
+      resolvePlanOptions: () =>
+        createRouteNotFoundHeadPlanOptions({
+          parallelBranches: activeParallelRouteHeadInputs,
+          params: effectiveParams,
+          primaryParallelBranch: primaryParallelRouteHeadInput,
+          rootNotFoundModule,
+          route,
+        }),
+      routePath: route.pattern,
+    });
+    onHeadPrepared?.({ ...recoveredHead, metadataPlacement });
     // Late navigation signals reach the client through the outlet's Flight
     // digest, inside the route's boundaries.
     const outlet = Promise.all([preparedHead.metadata, preparedHead.viewport]).then(
@@ -609,17 +575,7 @@ export async function buildPageElements<
       },
     );
     void outlet.catch(() => null);
-    return {
-      metadata: preparedHead.metadata.catch(resolveMetadataErrorTags),
-      outlet,
-      viewport: preparedHead.viewport.catch((error: unknown) =>
-        resolveAppPageSpecialError(error)?.kind === "http-access-fallback"
-          ? resolveHttpAccessFallbackViewport(resolveNotFoundFallbackPlanOptions()).catch(
-              () => ({}),
-            )
-          : {},
-      ),
-    };
+    return { ...recoveredHead, outlet };
   });
 
   const pageProps: Record<string, unknown> = { params: makeThenableParams(effectiveParams) };

@@ -524,7 +524,9 @@ test.describe("Not Found", () => {
     await expect(page.locator("#slot-own-panel-layout")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-nf")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-segment-nf")).toHaveCount(0);
-    await expect(page).not.toHaveTitle("Not Found (panel slot)");
+    // Like Next.js once its error shell hydrates, the title is the route's own,
+    // not a not-found's.
+    await expect(page).toHaveTitle("Slot own layout");
 
     await page.goto(`${BASE}/nextjs-compat/not-found-slot-own`);
     await waitForAppRouterHydration(page);
@@ -534,6 +536,7 @@ test.describe("Not Found", () => {
     await expect(page.locator("#slot-own-panel-layout")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-nf")).toHaveCount(0);
     await expect(page.locator("#slot-own-panel-segment-nf")).toHaveCount(0);
+    await expect(page).toHaveTitle("Slot own layout");
   });
 
   test("a page's and a slot's notFound() keep the layout rendering the slot", async ({ page }) => {
@@ -555,18 +558,22 @@ test.describe("Not Found", () => {
       await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
       await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
       await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+      // The route's own title, never a not-found's.
+      await expect(page, id).toHaveTitle("Team page");
     }
     // Both boundaries hydrate caught, so React doesn't recover by client rendering.
     expect(errors).toEqual([]);
 
     await page.goto(`${BASE}/nextjs-compat/not-found-slot-own/team/ok`);
     await waitForAppRouterHydration(page);
+    await expect(page).toHaveTitle("Team page");
     for (const id of ["both", "late"]) {
       await page.getByRole("link", { name: `Team ${id}` }).click();
       await expect(page).toHaveURL(new RegExp(`/team/${id}$`));
       await expect(page.locator("#slot-own-team-layout #slot-own-segment-nf")).toBeVisible();
       await expect(page.locator("#slot-own-team-slot #slot-own-team-nf")).toBeVisible();
       await expect(page.locator("#slot-own-root-nf")).toHaveCount(0);
+      await expect(page, id).toHaveTitle("Team page");
     }
   });
 
