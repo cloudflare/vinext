@@ -155,12 +155,18 @@ type ResolveAppPageHeadOptions<TModule extends AppPageHeadModule = AppPageHeadMo
    * Branches whose head Next.js resolves but never shows, such as a slot
    * intercept beside the source page. Their own generateMetadata() and
    * generateViewport() run once, after every branch before them in the loader
-   * tree, and their errors reach `routeErrors` rather than the head.
+   * tree, and their errors reach `hiddenErrors` rather than the head.
    */
   hiddenParallelRoutes?: readonly AppPageHiddenParallelRoute<TModule>[] | null;
   layoutModules: readonly (TModule | null | undefined)[];
   layoutTreePositions?: readonly number[] | null;
   metadataRoutes: readonly MetadataFileRoute[];
+  /**
+   * The index in `parallelRoutes` of a shown branch whose own errors reach
+   * `hiddenErrors` rather than `routeErrors`, such as a slot intercept that
+   * heads the route: Next.js throws them in that page's own segment.
+   */
+  outletParallelRouteIndex?: number | null;
   pageModule?: TModule | null;
   parallelRoutes?: readonly AppPageHeadParallelRoute<TModule>[] | null;
   params: AppPageParams;
@@ -195,10 +201,18 @@ export type ResolveAppPageHeadResult = {
 };
 
 export type PreparedAppPageHead = Omit<ResolveAppPageHeadResult, "metadata" | "viewport"> & {
+  /**
+   * Rejects with the first own error, in loader-tree order, of an item of
+   * `hiddenParallelRoutes` or of `outletParallelRouteIndex`, or with the
+   * head's own failure when that outlet branch heads the route.
+   */
+  hiddenErrors: Promise<null>;
   metadata: Promise<Metadata | null>;
   /**
-   * Rejects with the first error, in loader-tree order, of `metadata`'s or
-   * `viewport`'s branches, `hiddenParallelRoutes` included.
+   * Rejects with the first own error, in loader-tree order, of every other
+   * item, or with the head's own failure. Those errors never wait on the
+   * outlet branch; what only the outlet branch settling makes known, a later
+   * item's failed merge or its error after reading `parent`, counts after them.
    */
   routeErrors: Promise<null>;
   viewport: Promise<ResolvedViewport>;
@@ -275,9 +289,24 @@ type AppPageHeadKind<TResolved, TValue> = {
   ) => Promise<TValue | null>;
 };
 
+/**
+ * Whose errors an item's are: the route's, or the slot's, thrown inside the
+ * slot by a hidden branch or the outlet branch.
+ */
+type AppPageHeadOwner = "route" | "slot";
+
 type AppPageHeadItem<TResolved, TValue> = {
-  /** Rejects with the item's own error: its resolver's, or merging its value. */
+  /**
+   * Rejects with the item's own error: its resolver's, but not one it took
+   * from `parent`, or merging its value.
+   */
   error: Promise<null>;
+  /**
+   * With `deferParentErrors`, `error` settles once the resolver settles or
+   * reads `parent`, and this rejects with what is only known after `parent`:
+   * merging its value, or its own error once it read `parent`.
+   */
+  deferredError: Promise<null> | null;
   /** Everything resolved before the item, with its value merged in. */
   resolved: Promise<TResolved>;
   result: Promise<TValue | null>;
@@ -286,7 +315,9 @@ type AppPageHeadItem<TResolved, TValue> = {
 /** Metadata or viewport, walked over the loader tree. */
 type AppPageHeadWalk<TResolved, TValue> = {
   /** Every item's own error, in loader-tree order, hidden branches included. */
-  errors: Promise<null>[];
+  errors: { error: Promise<null>; owner: AppPageHeadOwner }[];
+  /** The route's items' errors known only after the outlet branch, in loader-tree order. */
+  deferredErrors: Promise<null>[];
   /** Every shown item's value, merged in loader-tree order. */
   resolved: Promise<TResolved>;
   /** Each value of the route's segments. */
@@ -496,6 +527,48 @@ async function allInOrder<T extends readonly unknown[]>(
   const results: unknown[] = [];
   for (const promise of promises) results.push(await promise);
   return results as unknown as T;
+}
+
+/**
+ * A segment's `parent` that records a rejection its resolver saw, through
+ * `await` or any other `then()`, so that an error the resolver took from
+ * `parent` can be told from its own, even when both are the same value.
+ */
+class ObservedParent<T> extends Promise<T> {
+  static override get [Symbol.species]() {
+    return Promise;
+  }
+
+  rejection: { error: unknown } | null = null;
+  /** Whether the resolver read it, and what to call when it first does. */
+  read = false;
+  onRead: (() => void) | null = null;
+
+  // A Promise subclass's then() is what `await` calls, which is the point.
+  // oxlint-disable-next-line unicorn/no-thenable
+  override then<TResult1 = T, TResult2 = never>(
+    onFulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    if (!this.read) {
+      this.read = true;
+      this.onRead?.();
+    }
+    return super.then(onFulfilled, (error: unknown) => {
+      this.rejection = { error };
+      if (onRejected) return onRejected(error);
+      throw error;
+    });
+  }
+}
+
+function observeParent<T>(parent: Promise<T>): ObservedParent<T> {
+  const observed = new ObservedParent<T>((resolveParent, rejectParent) => {
+    parent.then(resolveParent, rejectParent);
+  });
+  // Handled without counting as the resolver's own read.
+  void Promise.prototype.then.call(observed, undefined, () => null);
+  return observed;
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {
@@ -711,13 +784,21 @@ function createHiddenHeadBranch<TModule extends AppPageHeadModule>(
  * value into that once both settle. Like Next.js's getResult, the resolver
  * starts now; like its accumulateMetadata and accumulateViewport, the merge
  * waits for the items before it, and its failure is the item's own error.
+ *
+ * With `deferParentErrors`, `error` never waits on `parent`: what can only be
+ * known after it goes to `deferredError` instead.
  */
 function startAppPageHeadItem<TResolved, TValue>(
   kind: AppPageHeadKind<TResolved, TValue>,
   segment: AppPageHeadSegment<AppPageHeadModule>,
   parent: Promise<TResolved>,
+  deferParentErrors = false,
 ): AppPageHeadItem<TResolved, TValue> {
-  const result = kind.resolve(segment, parent);
+  const observedParent = observeParent(parent);
+  const parentRead = new Promise<null>((resolve) => {
+    observedParent.onRead = () => resolve(null);
+  });
+  const result = kind.resolve(segment, observedParent);
   void result.catch(() => null);
   const resolved = parent.then((resolvedParent) =>
     result.then((value) => (value ? kind.merge(resolvedParent, value) : resolvedParent)),
@@ -726,16 +807,46 @@ function startAppPageHeadItem<TResolved, TValue>(
   // Once its value resolved, a failed merge is the item's own error, unless
   // the items before it failed first. Without a value there's nothing to
   // merge, so it doesn't wait for them.
-  const error = result.then((value) =>
-    value
-      ? parent.then(
-          () => resolved.then(() => null),
-          () => null,
-        )
-      : null,
+  const mergeError = result.then(
+    (value) =>
+      value
+        ? parent.then(
+            () => resolved.then(() => null),
+            () => null,
+          )
+        : null,
+    () => null,
+  );
+  // A resolver's error counts unless it took it from `parent`.
+  const ownError = result.then(
+    () => null,
+    (error: unknown) => {
+      const rejection = observedParent.rejection;
+      if (rejection && Object.is(rejection.error, error)) return null;
+      throw error;
+    },
+  );
+  void mergeError.catch(() => null);
+  void ownError.catch(() => null);
+  if (!deferParentErrors) {
+    const error = ownError.then(() => mergeError);
+    void error.catch(() => null);
+    return { deferredError: null, error, resolved, result };
+  }
+  // Whether the resolver read `parent` before it settled. Until it does, its
+  // error is its own, so it counts in place; once it does, it may wait on
+  // `parent`, so its error is deferred with its merge.
+  const readFirst = result.then(
+    () => observedParent.read,
+    () => observedParent.read,
+  );
+  const error = Promise.race([parentRead, readFirst.then((read) => (read ? null : ownError))]);
+  const deferredError = readFirst.then((read) =>
+    read ? ownError.then(() => mergeError) : mergeError,
   );
   void error.catch(() => null);
-  return { error, resolved, result };
+  void deferredError.catch(() => null);
+  return { deferredError, error, resolved, result };
 }
 
 /**
@@ -746,6 +857,17 @@ function startAppPageHeadItem<TResolved, TValue>(
  * page, then each slot's. A hidden branch starts in its slot's place, after
  * the layouts they share, from everything resolved there, and its values stay
  * out of the shown head.
+ *
+ * The items of a hidden branch and of the slot at `outletIndex` are the
+ * slot's. Like Next.js, which throws only the first error, an error of theirs
+ * counts only once everything before their branch resolved: one before it
+ * belongs to that earlier item, and never also throws inside the slot.
+ *
+ * The route's errors never wait on the outlet branch, whose resolvers may
+ * never settle. A route item after it counts its resolver's error in place
+ * until the resolver reads `parent`; what is only known after `parent`, a
+ * failed merge or an error after reading it, is deferred until every route
+ * error in place is known.
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
  */
 function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
@@ -753,12 +875,28 @@ function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
   route: AppPageHeadBranch<TModule>,
   slots: readonly AppPageHeadBranch<TModule>[],
   hiddenBranches: readonly AppPageHeadHiddenBranch<TModule>[],
+  outletIndex: number,
 ): AppPageHeadWalk<TResolved, TValue> {
-  const errors: Promise<null>[] = [];
+  const errors: AppPageHeadWalk<TResolved, TValue>["errors"] = [];
+  const deferredErrors: Promise<null>[] = [];
   let resolved: Promise<TResolved> = Promise.resolve(kind.initial);
+  // The branch parent the slot's items' errors wait for, or null for the route's.
+  let slotBranchParent: Promise<TResolved> | null = null;
+  // Whether the shown chain has passed an item of the outlet branch.
+  let afterOutlet = false;
   const start = (segment: AppPageHeadSegment<TModule>, parent: Promise<TResolved>) => {
-    const item = startAppPageHeadItem(kind, segment, parent);
-    errors.push(item.error);
+    const item = startAppPageHeadItem(kind, segment, parent, !slotBranchParent && afterOutlet);
+    if (item.deferredError) deferredErrors.push(item.deferredError);
+    if (slotBranchParent) {
+      const error = slotBranchParent.then(
+        () => item.error,
+        () => null,
+      );
+      void error.catch(() => null);
+      errors.push({ error, owner: "slot" });
+    } else {
+      errors.push({ error: item.error, owner: "route" });
+    }
     return item;
   };
   const startShown = (segment: AppPageHeadSegment<TModule>) => {
@@ -774,13 +912,17 @@ function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
       ) {
         continue;
       }
+      const shownBranchParent = slotBranchParent;
+      slotBranchParent = resolved;
       let parent = resolved;
       for (const segment of hidden.segments) parent = start(segment, parent).resolved;
+      slotBranchParent = shownBranchParent;
     }
   };
 
   const routeResults = route.segments.map(startShown);
   const slotResults = slots.map((slot, index) => {
+    slotBranchParent = index === outletIndex ? resolved : null;
     let layoutCount = 0;
     const results = slot.segments.map((segment) => {
       startHidden(index, layoutCount);
@@ -788,11 +930,13 @@ function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
       return startShown(segment);
     });
     if (!slot.segments.at(-1)?.page) startHidden(index, layoutCount);
+    slotBranchParent = null;
+    if (index === outletIndex && results.length > 0) afterOutlet = true;
     return results;
   });
   startHidden(-1, 0);
 
-  return { errors, resolved, route: routeResults, slots: slotResults };
+  return { deferredErrors, errors, resolved, route: routeResults, slots: slotResults };
 }
 
 /**
@@ -917,6 +1061,10 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   const hiddenBranches = (options.hiddenParallelRoutes ?? []).map((hidden) =>
     createHiddenHeadBranch(hidden, slots[hidden.parallelRouteIndex], options.params, routeSegments),
   );
+  const outletIndex =
+    options.outletParallelRouteIndex != null && options.outletParallelRouteIndex in slots
+      ? options.outletParallelRouteIndex
+      : -1;
   const segmentSearchParams = (segment: AppPageHeadSegment<AppPageHeadModule>) =>
     segment.page ? pageSearchParams : undefined;
   const segmentSearchParamsObserver = (segment: AppPageHeadSegment<AppPageHeadModule>) =>
@@ -944,6 +1092,7 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     route,
     slots,
     hiddenBranches,
+    outletIndex,
   );
   const viewportWalk = walkAppPageHead<TModule, ResolvedViewport, Viewport>(
     {
@@ -961,6 +1110,7 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     route,
     slots,
     hiddenBranches,
+    outletIndex,
   );
   const hasDynamicMetadata = hasAppPageDynamicMetadata(options);
 
@@ -1017,24 +1167,40 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   void metadata.catch(() => null);
   void viewport.catch(() => null);
   // The head's own failures once every item merged, such as file-based
-  // metadata's.
+  // metadata's. Next.js throws them from its single MetadataOutlet, in the
+  // page that heads the route: the outlet branch's when there is one.
   const metadataHeadError = metadataWalk.resolved.then(
     () => metadata.then(() => null),
     () => null,
   );
-  // Each item's own error in loader-tree order, a hidden branch's in its
-  // slot's place, as its errors reached the route before it left the head.
-  // Like Next.js's MetadataOutlet, the first of metadata's and viewport's
-  // errors to settle fails the route.
-  const routeErrors = Promise.all([
-    allInOrder([...metadataWalk.errors, metadataHeadError]),
-    allInOrder(viewportWalk.errors),
-  ]).then(() => null);
+  const headErrorOwner: AppPageHeadOwner = outletIndex === -1 ? "route" : "slot";
+  // Each owner's items' own errors in loader-tree order, a hidden branch's in
+  // its slot's place, then the route's deferred ones. Like Next.js's
+  // MetadataOutlet, the first of metadata's and viewport's errors to settle
+  // fails the outlet.
+  const errorsOf = (owner: AppPageHeadOwner) => {
+    const walkErrors = (walk: AppPageHeadWalk<unknown, unknown>, headErrors: Promise<null>[]) =>
+      allInOrder([
+        ...walk.errors.flatMap((item) => (item.owner === owner ? [item.error] : [])),
+        ...headErrors,
+      ]).then(() => (owner === "route" ? allInOrder(walk.deferredErrors) : null));
+    return Promise.all([
+      walkErrors(metadataWalk, headErrorOwner === owner ? [metadataHeadError] : []),
+      walkErrors(viewportWalk, []),
+    ]).then(() => null);
+  };
+  const hiddenErrors = errorsOf("slot");
+  void hiddenErrors.catch(() => null);
+  // The route's errors never wait on the outlet branch's resolvers, whose
+  // generateMetadata() or generateViewport() may never settle, and leave out
+  // an error a later slot took from it through `parent`.
+  const routeErrors = errorsOf("route");
   void routeErrors.catch(() => null);
 
   return {
     hasDynamicMetadata,
     hasSearchParams,
+    hiddenErrors,
     metadata,
     pageSearchParams,
     routeErrors,

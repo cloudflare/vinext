@@ -157,10 +157,12 @@ type AppPageDispatchIntercept<TPage = unknown> = {
   interceptNotFoundTreePositions?: readonly number[] | null;
   notFound?: unknown;
   notFoundTreePosition?: number | null;
-  forbidden?: unknown;
-  forbiddenTreePosition?: number | null;
-  unauthorized?: unknown;
-  unauthorizedTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -184,10 +186,12 @@ type AppPageDispatchInterceptOptions<TPage = unknown> = {
   interceptNotFoundBranchSegments?: readonly string[] | null;
   interceptNotFound?: unknown;
   interceptNotFoundTreePosition?: number | null;
-  interceptForbidden?: unknown;
-  interceptForbiddenTreePosition?: number | null;
-  interceptUnauthorized?: unknown;
-  interceptUnauthorizedTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
   interceptNotFounds?: readonly unknown[] | null;
   interceptNotFoundTreePositions?: readonly number[] | null;
   interceptPage: TPage;
@@ -696,10 +700,12 @@ function toInterceptOptions(
     interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
     interceptNotFound: intercept.notFound,
     interceptNotFoundTreePosition: intercept.notFoundTreePosition,
-    interceptForbidden: intercept.forbidden,
-    interceptForbiddenTreePosition: intercept.forbiddenTreePosition,
-    interceptUnauthorized: intercept.unauthorized,
-    interceptUnauthorizedTreePosition: intercept.unauthorizedTreePosition,
+    interceptForbiddens: intercept.interceptForbiddens,
+    interceptForbiddenTreePositions: intercept.interceptForbiddenTreePositions,
+    interceptUnauthorizeds: intercept.interceptUnauthorizeds,
+    interceptUnauthorizedTreePositions: intercept.interceptUnauthorizedTreePositions,
+    interceptErrors: intercept.interceptErrors,
+    interceptErrorTreePositions: intercept.interceptErrorTreePositions,
     interceptNotFounds: intercept.interceptNotFounds,
     interceptNotFoundTreePositions: intercept.interceptNotFoundTreePositions,
     interceptPage: intercept.page,

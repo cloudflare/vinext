@@ -1461,7 +1461,11 @@ describe("app page head resolution", () => {
       await expect(key === "generateMetadata" ? fromSlot.metadata : fromSlot.viewport).rejects.toBe(
         notFoundError,
       );
-      await expect(prepare(key, true).routeErrors).rejects.toBe(notFoundError);
+      // A hidden intercept's own error throws in its slot, and the later
+      // slot's is the route's.
+      const fromHidden = prepare(key, true);
+      await expect(fromHidden.hiddenErrors).rejects.toBe(notFoundError);
+      await expect(fromHidden.routeErrors).rejects.toBe(redirectError);
     }
   });
 
@@ -1645,7 +1649,7 @@ describe("app page head resolution", () => {
 
     await expect(prepared.metadata).resolves.toMatchObject({ title: "Feed page" });
     await prepared.viewport;
-    await prepared.routeErrors;
+    await prepared.hiddenErrors;
     expect(slotLayout.generateMetadata).toHaveBeenCalledTimes(1);
     expect(slotLayout.generateViewport).toHaveBeenCalledTimes(1);
     expect(interceptPage.generateViewport).toHaveBeenCalledTimes(1);
@@ -1659,41 +1663,435 @@ describe("app page head resolution", () => {
     ]);
   });
 
-  it("keeps a hidden slot intercept's errors out of the head but in the route's errors", async () => {
-    // The source route's head stays visible, yet the intercept's
-    // generateMetadata() and generateViewport() still run, and their errors
-    // still reach the route's outlet.
-    const metadataError = new Error("intercept metadata");
-    const viewportError = new Error("intercept viewport");
-    const prepare = (pageModule: Record<string, unknown>) =>
+  it("leaves a shown slot's own errors to its outlet, and an earlier one to the route's", async () => {
+    // Next.js throws a heading slot intercept's metadata errors in its page's
+    // segment. One its parent rejected with first, such as a layout's, still
+    // reaches the route, as later branches inherit it too.
+    const interceptError = new Error("intercept");
+    const layoutError = new Error("layout");
+    const prepare = (layoutThrows: boolean) =>
       prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [
+          layoutThrows
+            ? {
+                generateMetadata() {
+                  throw layoutError;
+                },
+              }
+            : { metadata: { title: "Layout" } },
+        ],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        outletParallelRouteIndex: 0,
+        parallelRoutes: [
+          {
+            pageModule: {
+              generateMetadata() {
+                throw interceptError;
+              },
+            },
+          },
+          { pageModule: { metadata: { keywords: ["later"] } } },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+    const own = prepare(false);
+    await expect(own.metadata).rejects.toBe(interceptError);
+    await expect(own.hiddenErrors).rejects.toBe(interceptError);
+    await expect(own.routeErrors).resolves.toBeNull();
+
+    const inherited = prepare(true);
+    await expect(inherited.routeErrors).rejects.toBe(layoutError);
+    await expect(inherited.hiddenErrors).resolves.toBeNull();
+  });
+
+  it("fails the route on its viewport error while a shown slot's own metadata is still pending", async () => {
+    // A viewport error is checked against the outlet's viewport only, so it
+    // never waits on the outlet's generateMetadata().
+    const viewportError = new Error("viewport");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      pageModule: {
+        generateViewport() {
+          throw viewportError;
+        },
+      },
+      parallelRoutes: [{ pageModule: { generateMetadata: () => new Promise(() => {}) } }],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      prepared.routeErrors.then(
+        () => null,
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+    ]);
+    expect(outcome).toBe(viewportError);
+  });
+
+  it("leaves a source page's error to the route, not a hidden slot intercept that inherits it", async () => {
+    // Next.js accumulates metadata in loader-tree order, so the source page's
+    // error comes first: it throws once, on the route, never also in the modal.
+    for (const kind of ["generateMetadata", "generateViewport"] as const) {
+      const pageError = new Error(`source page ${kind}`);
+      const prepared = prepareAppPageHead<Record<string, unknown>>({
         hiddenParallelRoutes: [
-          { parallelRouteIndex: 0, route: { pageModule }, sharedLayoutCount: 0 },
+          {
+            parallelRouteIndex: 0,
+            route: {
+              pageModule: {
+                async [kind](_props: unknown, parent: Promise<unknown>) {
+                  await parent;
+                  return {};
+                },
+              },
+            },
+            sharedLayoutCount: 0,
+          },
         ],
         layoutModules: [],
         metadataRoutes: [],
-        pageModule: { metadata: { title: "Feed page" } },
+        pageModule: {
+          [kind]() {
+            throw pageError;
+          },
+        },
         parallelRoutes: [{ pageModule: { metadata: { description: "Feed slot" } } }],
         params: {},
         routePath: "/",
         routeSegments: [],
       });
 
-    const fromMetadata = prepare({
-      generateMetadata() {
-        throw metadataError;
-      },
-    });
-    await expect(fromMetadata.metadata).resolves.toMatchObject({ title: "Feed page" });
-    await expect(fromMetadata.routeErrors).rejects.toBe(metadataError);
+      await expect(prepared.routeErrors, kind).rejects.toBe(pageError);
+      await expect(prepared.hiddenErrors, kind).resolves.toBeNull();
+    }
+  });
 
-    const fromViewport = prepare({
-      generateViewport() {
-        throw viewportError;
-      },
+  it("fails the route on a later slot's error while a shown slot's own metadata is still pending", async () => {
+    // The route checks each resolver's error as it rejects, so an outlet slot
+    // whose generateMetadata() never settles can't hold a later slot's error.
+    const laterError = new Error("later slot");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      parallelRoutes: [
+        { pageModule: { generateMetadata: () => new Promise(() => {}) } },
+        {
+          pageModule: {
+            generateMetadata() {
+              throw laterError;
+            },
+          },
+        },
+      ],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
     });
-    await expect(fromViewport.viewport).resolves.toBeDefined();
-    await expect(fromViewport.routeErrors).rejects.toBe(viewportError);
+
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      prepared.routeErrors.then(
+        () => null,
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+    ]);
+    expect(outcome).toBe(laterError);
+  });
+
+  it("never holds the route's errors behind the outlet slot", async () => {
+    // The route's errors never wait on the outlet slot, whose resolvers may
+    // never settle. A later route item's resolver error counts in loader-tree
+    // order until it reads `parent`. What only the outlet slot settling makes
+    // known, a failed merge or an error after reading `parent`, counts after
+    // every error in place, so an in-place error beats an earlier deferred one.
+    const pending = Symbol("pending");
+    const outletError = new Error("outlet slot");
+    const laterError = new Error("later slot");
+    const kinds = [
+      {
+        key: "generateMetadata",
+        middle: { description: "middle" },
+        value: { description: "value" },
+      },
+      {
+        key: "generateViewport",
+        failsToMerge: { themeColor: [null] },
+        middle: { themeColor: "red" },
+        value: { colorScheme: "dark" },
+      },
+    ] as const;
+    const cases = kinds.flatMap((kind) => {
+      const outlets = {
+        pending: () => new Promise(() => {}),
+        rejected() {
+          throw outletError;
+        },
+        resolved: () => kind.value,
+      };
+      const middles: Record<string, Record<string, unknown>> = {
+        absent: {},
+        null: { [kind.key]: () => null },
+        value: { [kind.key]: () => kind.middle },
+        "reads parent": {
+          async [kind.key](_props: unknown, parent: Promise<unknown>) {
+            await parent;
+            return kind.middle;
+          },
+        },
+        ...("failsToMerge" in kind
+          ? { "fails to merge": { [kind.key]: () => kind.failsToMerge } }
+          : {}),
+      };
+      const laters = {
+        throws() {
+          throw laterError;
+        },
+        resolves: () => kind.value,
+        async "reads parent, then throws"(_props: unknown, parent: Promise<unknown>) {
+          await parent;
+          throw laterError;
+        },
+      };
+      return Object.entries(outlets).flatMap(([outlet, outletResolver]) =>
+        Object.entries(middles).flatMap(([middle, middleModule]) =>
+          Object.entries(laters).map(([later, laterResolver]) => {
+            const prepared = prepareAppPageHead<Record<string, unknown>>({
+              layoutModules: [],
+              metadataRoutes: [],
+              outletParallelRouteIndex: 0,
+              parallelRoutes: [
+                { pageModule: { [kind.key]: outletResolver } },
+                { pageModule: middleModule },
+                { pageModule: { [kind.key]: laterResolver } },
+              ],
+              params: {},
+              routePath: "/",
+              routeSegments: [],
+            });
+            const expected =
+              later === "throws"
+                ? laterError
+                : outlet === "pending"
+                  ? pending
+                  : outlet === "rejected"
+                    ? null
+                    : middle === "fails to merge"
+                      ? TypeError
+                      : later === "resolves"
+                        ? null
+                        : laterError;
+            const label = `${kind.key}: ${outlet} outlet, ${middle} middle, later ${later}`;
+            return { expected, label, prepared };
+          }),
+        ),
+      );
+    });
+
+    const timeout = new Promise((resolve) => setTimeout(resolve, 100, pending));
+    const outcomes = await Promise.all(
+      cases.map(({ prepared }) =>
+        Promise.race([
+          prepared.routeErrors.then(
+            () => null,
+            (error: unknown) => error,
+          ),
+          timeout,
+        ]),
+      ),
+    );
+    for (const [index, { expected, label }] of cases.entries()) {
+      if (expected === TypeError) expect(outcomes[index], label).toBeInstanceOf(TypeError);
+      else expect(outcomes[index], label).toBe(expected);
+    }
+  });
+
+  it("settles the route while the outlet slot's generateViewport() is pending after its generateMetadata() failed", async () => {
+    // The route's errors never wait on the outlet branch, so its pending
+    // counterpart can't keep the route's outlet suspended.
+    const outletError = new Error("outlet slot");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      parallelRoutes: [
+        {
+          pageModule: {
+            generateMetadata() {
+              throw outletError;
+            },
+            generateViewport: () => new Promise(() => {}),
+          },
+        },
+      ],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    const timedOut = Symbol("timed out");
+    const settle = (errors: Promise<null>) =>
+      Promise.race([
+        errors.then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+        new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+      ]);
+    expect(await settle(prepared.hiddenErrors)).toBe(outletError);
+    expect(await settle(prepared.routeErrors)).toBe("resolved");
+  });
+
+  it("throws the outlet slot's earlier delayed signal over its later immediate one", async () => {
+    // Its own errors, too, are taken in loader-tree order.
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/elsewhere;307;",
+    });
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const prepared = prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [],
+        metadataRoutes: [],
+        outletParallelRouteIndex: 0,
+        parallelRoutes: [
+          {
+            layoutModules: [
+              {
+                async [key]() {
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                  throw notFoundError;
+                },
+              },
+            ],
+            layoutParams: [{}],
+            pageModule: {
+              [key]() {
+                throw redirectError;
+              },
+            },
+          },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+      await expect(prepared.hiddenErrors, key).rejects.toBe(notFoundError);
+      await expect(prepared.routeErrors, key).resolves.toBeNull();
+    }
+  });
+
+  it("fails the route on a later slot's own error even when it is the outlet slot's error", async () => {
+    // Only an error a later slot took from the outlet through `parent` stays
+    // the outlet's. The slot's own, even the same shared error, is the route's.
+    const sharedError = new Error("boom");
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const prepare = (laterReadsParent: boolean) =>
+        prepareAppPageHead<Record<string, unknown>>({
+          layoutModules: [],
+          metadataRoutes: [],
+          outletParallelRouteIndex: 0,
+          parallelRoutes: [
+            {
+              pageModule: {
+                [key]() {
+                  throw sharedError;
+                },
+              },
+            },
+            {
+              pageModule: laterReadsParent
+                ? {
+                    async [key](_props: unknown, parent: Promise<unknown>) {
+                      await parent;
+                      return {};
+                    },
+                  }
+                : {
+                    [key]() {
+                      throw sharedError;
+                    },
+                  },
+            },
+          ],
+          params: {},
+          routePath: "/",
+          routeSegments: [],
+        });
+
+      const own = prepare(false);
+      await expect(own.hiddenErrors, key).rejects.toBe(sharedError);
+      await expect(own.routeErrors, key).rejects.toBe(sharedError);
+
+      const inherited = prepare(true);
+      await expect(inherited.hiddenErrors, key).rejects.toBe(sharedError);
+      await expect(inherited.routeErrors, key).resolves.toBeNull();
+    }
+  });
+
+  it("throws a value that fails to merge as its own item's error, even when a later slot inherits it", async () => {
+    // Every generateViewport() can resolve and merging one still throw, as on
+    // JavaScript's `themeColor: [null]`. Next.js's accumulateViewport merges
+    // each value at its own place in the loader tree, so the failure is that
+    // item's: the route's for its page, the outlet slot's for that slot. A
+    // later slot that awaits `parent` takes the failure from it, which stays
+    // the earlier item's.
+    const laterSlot = {
+      pageModule: {
+        async generateViewport(_props: unknown, parent: Promise<unknown>) {
+          await parent;
+          return {};
+        },
+      },
+    };
+    const prepare = (owner: "page" | "slot", outletParallelRouteIndex: number | null) =>
+      prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [],
+        metadataRoutes: [],
+        outletParallelRouteIndex,
+        pageModule:
+          owner === "page"
+            ? { generateViewport: () => ({ themeColor: [null] }) }
+            : { metadata: {} },
+        parallelRoutes: [
+          owner === "slot"
+            ? { pageModule: { generateViewport: () => ({ themeColor: [null] }) } }
+            : { pageModule: { metadata: { title: "Slot" } } },
+          laterSlot,
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+    for (const [owner, outletParallelRouteIndex, failing] of [
+      ["page", null, "routeErrors"],
+      ["page", 0, "routeErrors"],
+      ["slot", null, "routeErrors"],
+      ["slot", 0, "hiddenErrors"],
+    ] as const) {
+      const label = `${owner} with outlet ${outletParallelRouteIndex}`;
+      const prepared = prepare(owner, outletParallelRouteIndex);
+      const mergeError: unknown = await prepared.viewport.catch((error: unknown) => error);
+      expect(mergeError, label).toBeInstanceOf(TypeError);
+      await expect(prepared[failing], label).rejects.toBe(mergeError);
+      await expect(
+        prepared[failing === "routeErrors" ? "hiddenErrors" : "routeErrors"],
+        label,
+      ).resolves.toBeNull();
+    }
   });
 
   it("uses parallel route slot page title when no primary page module is present", async () => {

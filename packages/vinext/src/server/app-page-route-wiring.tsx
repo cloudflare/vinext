@@ -220,9 +220,23 @@ export type AppPageSlotOverride<TModule extends AppPageModule = AppPageModule> =
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   loadingModules?: readonly (TModule | null | undefined)[] | null;
   loadingTreePositions?: readonly number[] | null;
+  /**
+   * Rendered beside the override's page, inside the slot's boundaries, as
+   * Next.js renders a page's MetadataOutlet in the page's own segment.
+   */
+  metadataOutlet?: ReactNode;
   /** The intercepting route's not-found.tsx files and their branch tree positions. */
   notFoundModules?: readonly (TModule | null | undefined)[] | null;
   notFoundTreePositions?: readonly number[] | null;
+  /** The intercepting route's forbidden.tsx files and their branch tree positions. */
+  forbiddenModules?: readonly (TModule | null | undefined)[] | null;
+  forbiddenTreePositions?: readonly number[] | null;
+  /** The intercepting route's unauthorized.tsx files and their branch tree positions. */
+  unauthorizedModules?: readonly (TModule | null | undefined)[] | null;
+  unauthorizedTreePositions?: readonly number[] | null;
+  /** The intercepting route's error.tsx files and their branch tree positions. */
+  errorModules?: readonly (AppPageErrorModule | null | undefined)[] | null;
+  errorTreePositions?: readonly number[] | null;
   /**
    * The page module to render for this slot. Optional — when omitted, the
    * slot's existing `page` is used (e.g. when the override only changes the
@@ -1610,6 +1624,43 @@ export function buildAppPageElements<
       const treePosition = slotNotFoundTreePositions?.[index];
       if (component && treePosition !== undefined) branchNotFounds.set(treePosition, component);
     }
+    // An intercepting route's forbidden.tsx and unauthorized.tsx files catch
+    // its signals in their own segments too, as its not-found.tsx files do, so
+    // a layout's own forbidden() reaches the boundary of the segment above.
+    const branchAccessBoundaries = new Map<
+      number,
+      { component: AppPageComponent; Boundary: typeof ForbiddenBoundary }[]
+    >();
+    if (overrideOrPageComponent && hasSlotTreeOverride) {
+      for (const [modules, treePositions, Boundary] of [
+        [slotOverride?.forbiddenModules, slotOverride?.forbiddenTreePositions, ForbiddenBoundary],
+        [
+          slotOverride?.unauthorizedModules,
+          slotOverride?.unauthorizedTreePositions,
+          UnauthorizedBoundary,
+        ],
+      ] as const) {
+        for (const [index, module] of (modules ?? []).entries()) {
+          const component = getDefaultExport(module);
+          const treePosition = treePositions?.[index];
+          if (!component || treePosition === undefined) continue;
+          const entries = branchAccessBoundaries.get(treePosition) ?? [];
+          entries.push({ component, Boundary });
+          branchAccessBoundaries.set(treePosition, entries);
+        }
+      }
+    }
+    // Its error.tsx files catch errors in their own segments too, including
+    // its page's generateMetadata() errors, as Next.js renders the page's
+    // MetadataOutlet in its segment. The slot's own error.tsx stays at its root.
+    const branchErrors = new Map<number, AppPageErrorComponent>();
+    if (overrideOrPageComponent && hasSlotTreeOverride) {
+      for (const [index, errorModule] of (slotOverride?.errorModules ?? []).entries()) {
+        const component = getErrorBoundaryExport(errorModule);
+        const treePosition = slotOverride?.errorTreePositions?.[index];
+        if (component && treePosition !== undefined) branchErrors.set(treePosition, component);
+      }
+    }
     // The id of the innermost of those boundaries above a component at
     // `treePosition`, which catches its notFound() on the client. The document
     // renders that boundary caught instead of the fallback above the layout
@@ -1661,7 +1712,12 @@ export function buildAppPageElements<
         // chain into one wire element. Key only the page leaf so dynamic
         // siblings reset page-local client state while the surrounding slot
         // layouts keep their state, matching Next.js segment ownership.
-        slotElement = <Fragment key={slotResetKey}>{slotElement}</Fragment>;
+        slotElement = (
+          <Fragment key={slotResetKey}>
+            {slotElement}
+            {slotOverride?.metadataOutlet}
+          </Fragment>
+        );
       }
       // Next.js gives each slot segment its own RedirectBoundary, so a slot
       // page's redirect() keeps the route's layouts mounted.
@@ -1742,6 +1798,8 @@ export function buildAppPageElements<
         ...branchLoadings.keys(),
         ...(slotErrorComponent ? [0] : []),
         ...branchNotFounds.keys(),
+        ...branchAccessBoundaries.keys(),
+        ...branchErrors.keys(),
         ...nestedBfcacheSegments.flatMap((segment) =>
           segment.treePosition === null ? [] : [segment.treePosition],
         ),
@@ -1797,10 +1855,33 @@ export function buildAppPageElements<
           </NotFoundBoundary>
         );
       }
-
-      if (treePosition === 0 && slotErrorComponent) {
+      // Next.js nesting per segment (outer to inner): Unauthorized > Forbidden > NotFound.
+      for (const { component: AccessComponent, Boundary } of branchAccessBoundaries.get(
+        treePosition,
+      ) ?? []) {
         slotElement = (
-          <ErrorBoundary resetKey={slotResetKey} fallback={slotErrorComponent}>
+          <Boundary
+            resetKey={resolveAppPageTemplateStateKey(branchSegments, treePosition, slotParams)}
+            fallback={<AccessComponent />}
+          >
+            {slotElement}
+          </Boundary>
+        );
+      }
+
+      const SegmentErrorComponent =
+        branchErrors.get(treePosition) ?? (treePosition === 0 ? slotErrorComponent : null);
+      if (SegmentErrorComponent) {
+        slotElement = (
+          <ErrorBoundary
+            resetKey={
+              treePosition === 0
+                ? slotResetKey
+                : resolveAppPageSegmentStateKey(branchSegments, treePosition, slotParams) ||
+                  slotResetKey
+            }
+            fallback={SegmentErrorComponent}
+          >
             {slotElement}
           </ErrorBoundary>
         );
