@@ -41,13 +41,10 @@ import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
 import { fnv1a64 } from "vinext/internal/utils/hash";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
 import type { AppPageParams } from "./app-page-boundary.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
-import type { ThenableParamsObserver } from "vinext/shims/thenable-params";
 import {
   createAppRenderDependency,
   invokeAppComponentMappingErrors,
   isReactOwnedAppComponent,
-  registerAppElementRenderDependencies,
   renderAfterAppDependencies,
   renderAppComponentWithDependencyBarrier,
   type AppComponentSettledCallback,
@@ -60,11 +57,7 @@ import {
   tagAppPageSlotError,
 } from "./app-page-execution.js";
 import { createAppPageLayoutGate, registerAppPageLayoutGate } from "./app-page-layout-gate.js";
-import {
-  resolveAppPageBranchParams,
-  resolveAppPageSegmentParamScopeKeys,
-  resolveAppPageSegmentParams,
-} from "./app-page-params.js";
+import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
   APP_RSC_RENDER_MODE_NAVIGATION,
@@ -281,7 +274,6 @@ type BuildAppPageRouteElementOptions<
    */
   renderElementWithMetadataOutlet?: ((metadataOutlet: ReactNode) => ReactNode) | null;
   globalErrorModule?: TErrorModule | null;
-  layoutParamAccess?: AppLayoutParamAccessTracker;
   makeThenableParams: MakeThenableParams;
   matchedParams: AppPageParams;
   metadataPlacement?: "body" | "head";
@@ -378,7 +370,7 @@ export type AppPageRouteHead = {
   viewport: Promise<Viewport | null>;
 };
 
-type MakeThenableParams = (params: AppPageParams, observer?: ThenableParamsObserver) => unknown;
+type MakeThenableParams = (params: AppPageParams) => unknown;
 
 type BuildAppPageElementsOptions<
   TModule extends AppPageModule = AppPageModule,
@@ -457,33 +449,12 @@ export function createAppPageTreePath(
   return `/${treePathSegments.join("/")}`;
 }
 
-function readFiniteRevalidateSeconds(module: AppPageModule | null | undefined): number | null {
-  const revalidate = module?.revalidate;
-  return typeof revalidate === "number" && Number.isFinite(revalidate) && revalidate > 0
-    ? revalidate
-    : null;
-}
-
-function recordLayoutSkipObservationScope(options: {
-  layoutId: string;
-  layoutModule: AppPageModule | null | undefined;
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined;
-  routeSegments: readonly string[] | null | undefined;
-  treePosition: number;
-}): void {
-  options.layoutParamAccess?.recordLayoutParamScope(
-    options.layoutId,
-    resolveAppPageSegmentParamScopeKeys(options.routeSegments, options.treePosition),
-  );
-  const revalidateSeconds = readFiniteRevalidateSeconds(options.layoutModule);
-  if (revalidateSeconds !== null) {
-    options.layoutParamAccess?.recordLayoutFiniteRevalidate(options.layoutId, revalidateSeconds);
-  }
-}
-
-export function probeAppPageLayoutWithTracking<TModule extends AppPageModule>(options: {
+/**
+ * Renders the layout at `layoutIndex` with a placeholder for its children, so
+ * whatever it or a component it renders throws comes out.
+ */
+export function probeAppPageLayout<TModule extends AppPageModule>(options: {
   layoutIndex: number;
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined;
   makeThenableParams: MakeThenableParams;
   matchedParams: AppPageParams;
   route: Pick<
@@ -492,41 +463,22 @@ export function probeAppPageLayoutWithTracking<TModule extends AppPageModule>(op
   >;
 }): unknown {
   const treePosition = options.route.layoutTreePositions?.[options.layoutIndex] ?? 0;
-  const treePath = createAppPageTreePath(options.route.routeSegments, treePosition);
-  const layoutId = AppElementsWire.encodeLayoutId(treePath);
-  const probe = () => {
-    const layoutModule = options.route.layouts[options.layoutIndex];
-    const LayoutComponent = getDefaultExport(layoutModule);
-    if (!LayoutComponent) return null;
-    recordLayoutSkipObservationScope({
-      layoutId,
-      layoutModule,
-      layoutParamAccess: options.layoutParamAccess,
-      routeSegments: options.route.routeSegments,
-      treePosition,
-    });
-    const layoutParams = resolveAppPageSegmentParams(
-      options.route.routeSegments,
-      treePosition,
-      options.matchedParams,
-    );
-    return probeReactServerSubtree(
-      <LayoutComponent
-        {...withUseCacheLayoutMarker(LayoutComponent, {
-          params: options.makeThenableParams(
-            layoutParams,
-            options.layoutParamAccess?.createThenableParamsObserver(layoutId),
-          ),
-        })}
-      >
-        {APP_PAGE_LAYOUT_PROBE_CHILD}
-      </LayoutComponent>,
-    );
-  };
-
-  return options.layoutParamAccess
-    ? options.layoutParamAccess.runLayoutProbe(layoutId, probe)
-    : probe();
+  const LayoutComponent = getDefaultExport(options.route.layouts[options.layoutIndex]);
+  if (!LayoutComponent) return null;
+  const layoutParams = resolveAppPageSegmentParams(
+    options.route.routeSegments,
+    treePosition,
+    options.matchedParams,
+  );
+  return probeReactServerSubtree(
+    <LayoutComponent
+      {...withUseCacheLayoutMarker(LayoutComponent, {
+        params: options.makeThenableParams(layoutParams),
+      })}
+    >
+      {APP_PAGE_LAYOUT_PROBE_CHILD}
+    </LayoutComponent>,
+  );
 }
 
 export function createAppPageLayoutEntries<
@@ -1219,7 +1171,6 @@ export function buildAppPageElements<
   );
   const layoutGate = createAppPageLayoutGate();
   const layoutDependenciesByIndex = new Map<number, AppRenderDependency>();
-  const renderDependenciesByElementId = new Map<string, AppRenderDependency>();
   const layoutDependenciesBefore: AppRenderDependency[][] = [];
   const slotDependenciesByLayoutIndex: AppRenderDependency[][] = [];
   const templateDependenciesById = new Map<string, AppRenderDependency>();
@@ -1414,7 +1365,6 @@ export function buildAppPageElements<
       if (getDefaultExport(layoutEntry.layoutModule)) {
         const layoutDependency = createAppRenderDependency();
         layoutDependenciesByIndex.set(layoutIndex, layoutDependency);
-        renderDependenciesByElementId.set(layoutEntry.id, layoutDependency);
         pageDependencies.push(layoutDependency);
       }
       slotDependenciesByLayoutIndex[layoutIndex] = [...pageDependencies];
@@ -1546,19 +1496,9 @@ export function buildAppPageElements<
       layoutEntry.treePosition,
       options.matchedParams,
     );
-    recordLayoutSkipObservationScope({
-      layoutId: layoutEntry.id,
-      layoutModule: layoutEntry.layoutModule,
-      layoutParamAccess: options.layoutParamAccess,
-      routeSegments: options.route.routeSegments,
-      treePosition: layoutEntry.treePosition,
-    });
 
     const layoutProps: Record<string, unknown> = {
-      params: options.makeThenableParams(
-        layoutParams,
-        options.layoutParamAccess?.createThenableParamsObserver(layoutEntry.id),
-      ),
+      params: options.makeThenableParams(layoutParams),
     };
 
     for (const slot of Object.values(options.route.slots ?? {})) {
@@ -2442,7 +2382,6 @@ export function buildAppPageElements<
         }
       : {},
   );
-  registerAppElementRenderDependencies(elements, renderDependenciesByElementId);
   registerAppPageLayoutGate(elements, layoutGate);
   return elements;
 }

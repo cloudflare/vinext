@@ -7,7 +7,6 @@ import {
   type AppElements,
   type AppElementsInterception,
   type AppElementsSlotBinding,
-  type LayoutFlags,
 } from "./app-elements.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
@@ -96,7 +95,6 @@ export type AppRouterState = {
   elements: AppElements;
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
-  layoutFlags: LayoutFlags;
   layoutIds: readonly string[];
   previousNextUrl: string | null;
   renderId: number;
@@ -113,7 +111,6 @@ export type AppRouterAction = {
   elements: AppElements;
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
-  layoutFlags: LayoutFlags;
   layoutIds: readonly string[];
   navigationSnapshot: ClientNavigationRenderSnapshot;
   operation: PendingOperationRecord;
@@ -696,7 +693,6 @@ export function createPendingNavigationCommitFromElements(
       interception: metadata.interception,
       interceptionContext: metadata.interceptionContext,
       layoutIds: metadata.layoutIds,
-      layoutFlags: metadata.layoutFlags,
       slotBindings: metadata.slotBindings,
       navigationSnapshot: options.navigationSnapshot,
       operation: createOperationRecord({

@@ -156,46 +156,6 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
 }
 
 /**
- * Measure dynamic usage in a child async scope without clearing the parent.
- * Concurrent work that already belongs to the request (such as deferred
- * metadata) keeps writing to the parent state and therefore remains visible
- * to the final cache policy.
- */
-export async function runWithIsolatedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean }> {
-  const runInChildState = async (childState: VinextHeadersShimState) => {
-    const result = await fn();
-    return { result, dynamicDetected: childState.dynamicUsageDetected };
-  };
-
-  if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.dynamicUsageDetected = false;
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState);
-      },
-    );
-  }
-
-  const parentState = _getState();
-  const childState: VinextHeadersShimState = {
-    ...parentState,
-    // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
-    dynamicUsageDetected: false,
-  };
-  return await _als.run(childState, () => runInChildState(childState));
-}
-
-/**
  * Run a pre-render probe without letting its dynamic API usage classify the
  * request. Next.js has no probe: only the render decides whether a page is
  * dynamic, and the render runs the probed layouts and page again. Returns the

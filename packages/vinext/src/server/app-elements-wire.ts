@@ -10,9 +10,7 @@ import type {
   CacheProofFallbackScope,
   CacheProofRejectionCode,
 } from "./cache-proof.js";
-import type { ClientReuseManifestSkipDisposition } from "./client-reuse-manifest.js";
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
-import { releaseAppElementRenderDependency } from "./app-render-dependency.js";
 import type { BfcacheSegmentIdentity } from "./bfcache-identity.js";
 import { compareStrings } from "../utils/compare.js";
 import { isUnknownRecord } from "../utils/record.js";
@@ -32,7 +30,6 @@ export const APP_DYNAMIC_STALE_TIME_KEY = "__dynamicStaleTime";
 export const APP_INTERCEPTION_KEY = "__interception";
 export const APP_INTERCEPTION_CONTEXT_KEY = "__interceptionContext";
 export const APP_LAYOUT_IDS_KEY = "__layoutIds";
-export const APP_LAYOUT_FLAGS_KEY = "__layoutFlags";
 export const APP_ROUTE_KEY = "__route";
 export const APP_ROOT_LAYOUT_KEY = "__rootLayout";
 export const APP_SKIPPED_LAYOUT_IDS_KEY = "__skippedLayoutIds";
@@ -52,7 +49,6 @@ export const APP_STATIC_SIBLINGS_KEY = "__staticSiblings";
 export const APP_UNMATCHED_SLOT_WIRE_VALUE = "__VINEXT_UNMATCHED_SLOT__";
 
 export const UNMATCHED_SLOT = Symbol.for("vinext.unmatchedSlot");
-const EMPTY_SKIPPED_LAYOUT_IDS: ReadonlySet<string> = new Set();
 
 function createCacheProofRejectionCodeSet<const T extends readonly CacheProofRejectionCode[]>(
   codes: T &
@@ -161,7 +157,6 @@ export type AppElementValue =
   | typeof UNMATCHED_SLOT
   | string
   | null
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -172,7 +167,6 @@ type AppWireElementValue =
   | ReactNode
   | string
   | null
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -183,25 +177,6 @@ type AppWireElementValue =
 export type AppElements = Readonly<Record<string, AppElementValue>>;
 export type AppWireElements = Readonly<Record<string, AppWireElementValue>>;
 
-/**
- * Per-layout static/dynamic flags. `"s"` = static (skippable on next nav);
- * `"d"` = dynamic (must always render).
- *
- * Lifecycle (partial — later PRs extend this):
- *
- *   1. PROBE   — probeAppPageLayouts (server/app-page-execution.ts) returns
- *                LayoutFlags for every layout in the route at render time.
- *
- *   2. ATTACH  — AppElementsWire.encodeOutgoingPayload writes `__layoutFlags`
- *                into the outgoing App Router payload record.
- *
- *   3. WIRE    — renderToReadableStream serializes the record as RSC row 0.
- *
- *   4. PARSE   — AppElementsWire.readMetadata extracts layoutFlags from the
- *                wire payload on the client side.
- */
-export type LayoutFlags = Readonly<Record<string, "s" | "d">>;
-
 export type AppElementsBfcacheSegmentIdentities = Readonly<Record<string, BfcacheSegmentIdentity>>;
 
 type AppElementsMetadata = {
@@ -211,7 +186,6 @@ type AppElementsMetadata = {
   interception: AppElementsInterception | null;
   interceptionContext: string | null;
   layoutIds: readonly string[];
-  layoutFlags: LayoutFlags;
   routeId: string;
   rootLayoutTreePath: string | null;
   bfcacheSegmentIdentities: AppElementsBfcacheSegmentIdentities;
@@ -246,15 +220,14 @@ type AppElementsWireMetadataEntries = Readonly<{
 
 /**
  * The outgoing wire payload shape. Includes ReactNode values for the
- * rendered tree plus metadata values like LayoutFlags attached under
- * known keys (e.g. __layoutFlags). Distinct from AppElements / AppWireElements
+ * rendered tree plus metadata values attached under known keys (e.g.
+ * __artifactCompatibility). Distinct from AppElements / AppWireElements
  * which only carry render-time values.
  */
 export type AppOutgoingElements = Readonly<
   Record<
     string,
     | ReactNode
-    | LayoutFlags
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
@@ -272,7 +245,6 @@ type AppElementsWireKeys = {
   readonly interception: typeof APP_INTERCEPTION_KEY;
   readonly interceptionContext: typeof APP_INTERCEPTION_CONTEXT_KEY;
   readonly layoutIds: typeof APP_LAYOUT_IDS_KEY;
-  readonly layoutFlags: typeof APP_LAYOUT_FLAGS_KEY;
   readonly rootLayout: typeof APP_ROOT_LAYOUT_KEY;
   readonly route: typeof APP_ROUTE_KEY;
   readonly bfcacheSegmentIdentities: typeof APP_BFCACHE_SEGMENT_IDENTITIES_KEY;
@@ -293,8 +265,6 @@ type AppElementsWireCodec = {
     artifactCompatibility?: ArtifactCompatibilityEnvelope;
     cacheEntryReuseProof?: CacheEntryReuseProof;
     dynamicStaleTimeSeconds?: number;
-    layoutFlags: LayoutFlags;
-    skipDisposition?: ClientReuseManifestSkipDisposition;
   }): ReactNode | AppOutgoingElements;
   encodePageId(routePath: string, interceptionContext: string | null): string;
   encodeRouteId(routePath: string, interceptionContext: string | null): string;
@@ -303,10 +273,6 @@ type AppElementsWireCodec = {
   isSlotId(key: string): boolean;
   parseElementKey(key: string): AppElementsWireElementKey | null;
   readMetadata(elements: Readonly<Record<string, unknown>>): AppElementsMetadata;
-  withLayoutFlags<T extends Record<string, unknown>>(
-    elements: T,
-    layoutFlags: LayoutFlags,
-  ): T & { [APP_LAYOUT_FLAGS_KEY]: LayoutFlags };
 };
 
 function appendInterceptionContext(identity: string, interceptionContext: string | null): string {
@@ -414,19 +380,6 @@ export function normalizeAppElements(elements: AppWireElements): AppElements {
   }
 
   return normalized;
-}
-
-function isLayoutFlagsRecord(value: unknown): value is LayoutFlags {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  for (const v of Object.values(value)) {
-    if (v !== "s" && v !== "d") return false;
-  }
-  return true;
-}
-
-function parseLayoutFlags(value: unknown): LayoutFlags {
-  if (isLayoutFlagsRecord(value)) return value;
-  return {};
 }
 
 function parseLayoutIdList(value: unknown, fieldName: string): readonly string[] {
@@ -622,7 +575,7 @@ function parseInterceptionMetadata(value: unknown): AppElementsInterception | nu
  * Used to distinguish the App Router payload object from bare React elements at
  * the render boundary. Narrows to `Readonly<Record<string, unknown>>` because
  * the outgoing payload carries heterogeneous values (ReactNodes for the rendered
- * tree, plus metadata like `__layoutFlags` which is a plain object). Delegates
+ * tree, plus metadata like `__artifactCompatibility`, a plain object). Delegates
  * to React's canonical `isValidElement` so we don't depend on React's internal
  * `$$typeof` marker scheme.
  */
@@ -633,29 +586,18 @@ export function isAppElementsRecord(value: unknown): value is Readonly<Record<st
   return true;
 }
 
-export function withLayoutFlags<T extends Record<string, unknown>>(
-  elements: T,
-  layoutFlags: LayoutFlags,
-): T & { [APP_LAYOUT_FLAGS_KEY]: LayoutFlags } {
-  return { ...elements, [APP_LAYOUT_FLAGS_KEY]: layoutFlags };
-}
-
 export function buildOutgoingAppPayload(input: {
   element: ReactNode | AppElements;
   artifactCompatibility?: ArtifactCompatibilityEnvelope;
   cacheEntryReuseProof?: CacheEntryReuseProof;
   dynamicStaleTimeSeconds?: number;
-  layoutFlags: LayoutFlags;
-  skipDisposition?: ClientReuseManifestSkipDisposition;
 }): ReactNode | AppOutgoingElements {
   if (!isAppElementsRecord(input.element)) {
     return input.element;
   }
-  const skippedLayoutIds = createSkippedLayoutIds(input.skipDisposition);
   const payload: Record<
     string,
     | ReactNode
-    | LayoutFlags
     | AppElementsBfcacheSegmentIdentities
     | ArtifactCompatibilityEnvelope
     | CacheEntryReuseProof
@@ -665,15 +607,7 @@ export function buildOutgoingAppPayload(input: {
     | readonly AppElementsSlotBinding[]
   > = {};
   for (const [key, value] of Object.entries(input.element)) {
-    if (skippedLayoutIds.has(key)) {
-      releaseAppElementRenderDependency(input.element, key);
-      continue;
-    }
     payload[key] = value === UNMATCHED_SLOT ? APP_UNMATCHED_SLOT_WIRE_VALUE : value;
-  }
-  payload[APP_LAYOUT_FLAGS_KEY] = input.layoutFlags;
-  if (skippedLayoutIds.size > 0) {
-    payload[APP_SKIPPED_LAYOUT_IDS_KEY] = [...skippedLayoutIds];
   }
   payload[APP_ARTIFACT_COMPATIBILITY_KEY] =
     input.artifactCompatibility ?? createArtifactCompatibilityEnvelope();
@@ -686,28 +620,14 @@ export function buildOutgoingAppPayload(input: {
   return payload;
 }
 
-function createSkippedLayoutIds(
-  skipDisposition: ClientReuseManifestSkipDisposition | undefined,
-): ReadonlySet<string> {
-  if (skipDisposition?.enabled !== true) return EMPTY_SKIPPED_LAYOUT_IDS;
-
-  const skippedLayoutIds = new Set<string>();
-  for (const id of skipDisposition.skippedEntryIds) {
-    if (parseAppElementsWireElementKey(id)?.kind === "layout") {
-      skippedLayoutIds.add(id);
-    }
-  }
-  return skippedLayoutIds;
-}
-
 function readArtifactCompatibilityMetadata(value: unknown): ArtifactCompatibilityEnvelope {
   if (value === undefined) return createArtifactCompatibilityEnvelope();
 
   const artifactCompatibility = parseArtifactCompatibilityEnvelope(value);
   // TODO(#726-COMPAT-04): hard-fail malformed compatibility metadata once
   // cache/skip consumers depend on this proof. During Wave01 the field is
-  // emitted as scaffolding, so bad or future-version values degrade like
-  // missing __layoutFlags instead of crashing render paths that do not read it.
+  // emitted as scaffolding, so bad or future-version values degrade to an
+  // empty envelope instead of crashing render paths that do not read it.
   return artifactCompatibility ?? createArtifactCompatibilityEnvelope();
 }
 
@@ -835,7 +755,6 @@ export function readAppElementsMetadata(
     throw new Error("[vinext] Invalid __rootLayout in App Router payload: expected string or null");
   }
 
-  const layoutFlags = parseLayoutFlags(elements[APP_LAYOUT_FLAGS_KEY]);
   const layoutIds = parseLayoutIds(elements[APP_LAYOUT_IDS_KEY]);
   const skippedLayoutIds = parseSkippedLayoutIds(elements[APP_SKIPPED_LAYOUT_IDS_KEY]);
   const slotBindings = parseSlotBindings(elements[APP_SLOT_BINDINGS_KEY], { layoutIds });
@@ -870,7 +789,6 @@ export function readAppElementsMetadata(
     interception,
     interceptionContext: interceptionContext ?? null,
     layoutIds,
-    layoutFlags,
     routeId,
     rootLayoutTreePath,
     bfcacheSegmentIdentities,
@@ -890,7 +808,6 @@ export const AppElementsWire: AppElementsWireCodec = {
     interception: APP_INTERCEPTION_KEY,
     interceptionContext: APP_INTERCEPTION_CONTEXT_KEY,
     layoutIds: APP_LAYOUT_IDS_KEY,
-    layoutFlags: APP_LAYOUT_FLAGS_KEY,
     rootLayout: APP_ROOT_LAYOUT_KEY,
     route: APP_ROUTE_KEY,
     bfcacheSegmentIdentities: APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
@@ -911,5 +828,4 @@ export const AppElementsWire: AppElementsWireCodec = {
   isSlotId: isAppElementsWireSlotId,
   parseElementKey: parseAppElementsWireElementKey,
   readMetadata: readAppElementsMetadata,
-  withLayoutFlags,
 };

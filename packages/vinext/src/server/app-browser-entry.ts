@@ -195,7 +195,6 @@ import {
   clearAppNavigationFailureTarget,
   installAppNavigationFailureListeners,
 } from "../client/app-nav-failure-handler.js";
-import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -222,7 +221,6 @@ import {
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import {
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
@@ -1425,7 +1423,6 @@ function BrowserRoot({
     interception: initialMetadata.interception,
     interceptionContext: initialMetadata.interceptionContext,
     layoutIds: initialMetadata.layoutIds,
-    layoutFlags: initialMetadata.layoutFlags,
     navigationSnapshot: initialNavigationSnapshot,
     previousNextUrl: null,
     renderId: 0,
@@ -2370,11 +2367,6 @@ function bootstrapHydration(
           ? initialBypassNavigationCache
           : earlyIntentDecision?.kind === "flightNavigation" &&
             earlyIntentDecision.bypassNavigationCache;
-        // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
-        // it never affects the cache-busting URL. Defer producing it until the
-        // visited-response cache miss is confirmed below — its producer iterates
-        // the visible layout ids and binary-searches a byte budget, which is
-        // pure waste on the cache-hit soft-nav path.
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
@@ -2708,17 +2700,6 @@ function bootstrapHydration(
         }
 
         if (!navResponse) {
-          // Produce the client reuse manifest only now that prefetch/optimistic
-          // paths did not satisfy the navigation and a real request is required.
-          // Computed from the nav-start router state so it matches the snapshot
-          // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-            if (clientReuseManifestHeader !== null) {
-              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-            }
-          }
           navResponse = await fetch(rscUrl, {
             headers: requestHeaders,
             credentials: "include",
@@ -3045,7 +3026,6 @@ function bootstrapHydration(
             const state = committedState;
             const committedElements = {
               ...state.elements,
-              [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
               [AppElementsWire.keys.layoutIds]: state.layoutIds,
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,

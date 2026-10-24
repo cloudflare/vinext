@@ -1,9 +1,4 @@
 import { Fragment, isValidElement, type ReactElement, type ReactNode } from "react";
-import {
-  probeAppPageLayouts,
-  type LayoutClassificationOptions,
-  type LayoutFlags,
-} from "./app-page-execution.js";
 import { isPromiseLike } from "../utils/promise.js";
 
 const DEFAULT_SUBTREE_PROBE_MAX_DEPTH = 32;
@@ -112,10 +107,9 @@ async function resolveReactLazyType(lazyType: ReactLazyType): Promise<unknown> {
 }
 
 /**
- * Invokes server-component children returned by a layout probe so per-layout
- * skip eligibility observes data dependencies created below the layout's
- * immediate function body. The real RSC render remains authoritative; probe
- * failures only make static-layout skip fall back to render-and-send.
+ * Invokes the server components a layout renders, so the error-path layout
+ * probe sees an HTTP access fallback thrown below the layout's own function
+ * body. The real RSC render remains authoritative.
  */
 export async function probeReactServerSubtree(
   node: unknown,
@@ -210,40 +204,4 @@ export async function probeReactServerSubtree(
   };
 
   await visit(node, 0);
-}
-
-type ProbeAppPageBeforeRenderResult = {
-  layoutFlags: LayoutFlags;
-};
-
-type ProbeAppPageBeforeRenderOptions = {
-  skipProbes?: boolean;
-  layoutCount: number;
-  probeLayoutAt: (layoutIndex: number) => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-  /** When provided, enables per-layout static/dynamic classification. */
-  classification?: LayoutClassificationOptions | null;
-};
-
-/**
- * Classifies the route's layouts before the render. A layout's redirect(),
- * notFound(), forbidden() and unauthorized() come from the render, as the
- * page's do: before the first byte for HTML, and as a Flight digest the client
- * router handles for RSC.
- */
-export async function probeAppPageBeforeRender(
-  options: ProbeAppPageBeforeRenderOptions,
-): Promise<ProbeAppPageBeforeRenderResult> {
-  if (options.skipProbes || options.layoutCount === 0) {
-    return { layoutFlags: {} };
-  }
-
-  return probeAppPageLayouts({
-    layoutCount: options.layoutCount,
-    probeLayoutAt: options.probeLayoutAt,
-    runWithSuppressedHookWarning(probe) {
-      return options.runWithSuppressedHookWarning(probe);
-    },
-    classification: options.classification,
-  });
 }

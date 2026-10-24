@@ -20,16 +20,10 @@ import {
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
-import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
-import {
-  createClientReuseManifest,
-  createClientReusePayloadHash,
-} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -10271,45 +10265,6 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: true,
-      }),
-    );
-  });
-
-  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
-    const manifest = createClientReuseManifest({
-      entries: [
-        {
-          artifactCompatibility: createArtifactCompatibilityEnvelope(),
-          id: "layout:/",
-          payloadHash: createClientReusePayloadHash("root-layout"),
-          privacy: "public",
-          variantCacheKey: "cp1:root",
-        },
-      ],
-      visibleCommitVersion: 1,
-    });
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-    });
-
-    const response = await handler(
-      new Request("https://example.test/docs/about.rsc", {
-        headers: {
-          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
-        },
-      }),
-      null,
-    );
-
-    expect(response.status).toBe(200);
-    expect(dispatchMatchedPage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        clientReuseManifest: expect.objectContaining({
-          kind: "parsed",
-        }),
         isRscRequest: true,
       }),
     );

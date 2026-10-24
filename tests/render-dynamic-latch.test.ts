@@ -1,5 +1,4 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   consumeDynamicUsage,
   headersContextFromRequest,
@@ -9,7 +8,6 @@ import {
   runWithConnectionProbe,
   runWithHeadersContext,
   runWithDetachedDynamicUsage,
-  runWithIsolatedDynamicUsage,
 } from "../packages/vinext/src/shims/headers.js";
 import { cacheForRequest } from "../packages/vinext/src/shims/cache-for-request.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
@@ -103,16 +101,7 @@ describe("render dynamic latch", () => {
     });
   });
 
-  it("sees dynamic usage inside a non-unified isolated scope", async () => {
-    await runWithHeadersContext(headersContext(), async () => {
-      const { dynamicDetected } = await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-      expect(dynamicDetected).toBe(true);
-      expect(consumeDynamicUsage()).toBe(false);
-      expect(isRenderDynamicLatched()).toBe(true);
-    });
-  });
-
-  it("sees dynamic usage inside a unified state mutation and an isolated scope", async () => {
+  it("sees dynamic usage inside a unified state mutation", async () => {
     await runWithRequestContext(createRequestContext(), async () => {
       await runWithHeadersContext(headersContext(), async () => {
         await runWithUnifiedStateMutation(
@@ -121,24 +110,6 @@ describe("render dynamic latch", () => {
           },
           () => markDynamicUsage(),
         );
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-      await runWithHeadersContext(headersContext(), async () => {
-        await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-        expect(consumeDynamicUsage()).toBe(false);
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-    });
-  });
-
-  it("sees dynamic usage inside the layout probe", async () => {
-    await runWithRequestContext(createRequestContext(), async () => {
-      await runWithHeadersContext(headersContext(), async () => {
-        const tracker = createAppLayoutParamAccessTracker();
-        await tracker.runLayoutProbe("layout:/", async () => {
-          markDynamicUsage();
-        });
-        expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(true);
       });
     });
@@ -188,13 +159,6 @@ describe("render dynamic latch", () => {
       expect(reloaded.isRenderDynamicLatched()).toBe(true);
     });
 
-    it("shares the latch it creates with an isolated child scope", async () => {
-      const reloaded = await reloadWithPreLatchFallback();
-
-      await reloaded.runWithIsolatedDynamicUsage(() => reloaded.markDynamicUsage());
-      expect(reloaded.isRenderDynamicLatched()).toBe(true);
-    });
-
     it("shares the latch it creates with a connection probe", async () => {
       const reloaded = await reloadWithPreLatchFallback();
 
@@ -212,9 +176,6 @@ describe("render dynamic latch", () => {
 
       expect(ctx.renderDynamicLatch.dynamic).toBe(true);
       await runWithRequestContext(ctx, async () => {
-        await runWithIsolatedDynamicUsage(() => {
-          expect(isRenderDynamicLatched()).toBe(true);
-        });
         expect(isRenderDynamicLatched()).toBe(true);
       });
     });
@@ -242,13 +203,6 @@ describe("render dynamic latch", () => {
       delete ctx.renderDynamicLatch;
       return ctx as ReturnType<typeof createRequestContext>;
     }
-
-    it("shares the latch with an isolated child scope", async () => {
-      await runWithRequestContext(preLatchRequestContext(), async () => {
-        await runWithIsolatedDynamicUsage(() => markDynamicUsage());
-        expect(isRenderDynamicLatched()).toBe(true);
-      });
-    });
 
     it("shares the latch with a connection probe", async () => {
       await runWithRequestContext(preLatchRequestContext(), async () => {

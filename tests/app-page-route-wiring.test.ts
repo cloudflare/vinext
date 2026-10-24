@@ -20,8 +20,6 @@ import {
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
-  buildOutgoingAppPayload,
-  isAppElementsRecord,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -31,11 +29,10 @@ import {
   type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
-  probeAppPageLayoutWithTracking,
+  probeAppPageLayout,
   resolveAppPageChildSegments,
   resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   APP_PAGE_NOT_FOUND_BOUNDARY_ID,
   resolveAppPageCaughtNotFoundBoundaries,
@@ -47,11 +44,6 @@ import {
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
-import {
-  createRequestContext,
-  getRequestContext,
-  runWithRequestContext,
-} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS,
   buildPageElements as buildResolvedPageElements,
@@ -630,9 +622,8 @@ describe("app page route wiring helpers", () => {
     ).toBe(legacyLoading);
   });
 
-  it("probes returned layout children with param and revalidate tracking", async () => {
+  it("probes the server components a layout returns", async () => {
     const calls: string[] = [];
-    const layoutParamAccess = createAppLayoutParamAccessTracker();
 
     function Child() {
       calls.push("child");
@@ -644,65 +635,46 @@ describe("app page route wiring helpers", () => {
       return createElement("section", null, createElement(Child));
     }
 
-    await probeAppPageLayoutWithTracking({
+    await probeAppPageLayout({
       layoutIndex: 0,
-      layoutParamAccess,
       makeThenableParams,
       matchedParams: {},
       route: {
         layoutTreePositions: [0],
-        layouts: [{ default: Layout, revalidate: 60 }],
+        layouts: [{ default: Layout }],
         routeSegments: ["dashboard"],
       },
     });
 
     expect(calls).toEqual(["layout", "child"]);
-    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
-      completeness: "complete",
-      finiteRevalidateSeconds: 60,
-    });
   });
 
   it("probes layout branches that render only when children are present", async () => {
     const calls: string[] = [];
-    const layoutParamAccess = createAppLayoutParamAccessTracker();
 
-    function ChromeThatUsesTaggedData() {
+    function Chrome() {
       calls.push("chrome");
-      getRequestContext().currentRequestTags.push("tag:dashboard-chrome");
       return null;
     }
 
     function Layout(props: { children?: ReactNode }) {
       calls.push("layout");
       if (!props.children) return null;
-      return createElement(
-        "section",
-        null,
-        createElement(ChromeThatUsesTaggedData),
-        props.children,
-      );
+      return createElement("section", null, createElement(Chrome), props.children);
     }
 
-    await runWithRequestContext(createRequestContext(), () =>
-      probeAppPageLayoutWithTracking({
-        layoutIndex: 0,
-        layoutParamAccess,
-        makeThenableParams,
-        matchedParams: {},
-        route: {
-          layoutTreePositions: [0],
-          layouts: [{ default: Layout }],
-          routeSegments: ["dashboard"],
-        },
-      }),
-    );
+    await probeAppPageLayout({
+      layoutIndex: 0,
+      makeThenableParams,
+      matchedParams: {},
+      route: {
+        layoutTreePositions: [0],
+        layouts: [{ default: Layout }],
+        routeSegments: ["dashboard"],
+      },
+    });
 
     expect(calls).toEqual(["layout", "chrome"]);
-    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
-      cacheTags: ["tag:dashboard-chrome"],
-      completeness: "complete",
-    });
   });
 
   it("streams generated metadata into the body for streaming-capable requests", async () => {
@@ -4642,62 +4614,6 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
-  });
-
-  it("releases skipped layout dependencies before serializing retained child entries", async () => {
-    let activeLocale = "en";
-
-    async function StaticLayout(props: Record<string, unknown>) {
-      await Promise.resolve();
-      activeLocale = "de";
-      return createElement("div", { "data-layout": "static" }, readChildren(props.children));
-    }
-
-    function LocalePage() {
-      return createElement("main", null, `page:${activeLocale}`);
-    }
-
-    const elements = buildAppPageElements({
-      element: createElement(LocalePage),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: StaticLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null],
-        routeSegments: ["skip-layout"],
-        slots: null,
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/skip-layout",
-      rootNotFoundModule: null,
-    });
-
-    const payload = buildOutgoingAppPayload({
-      element: elements,
-      layoutFlags: { "layout:/": "s" },
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/"],
-      },
-    });
-
-    expect(isAppElementsRecord(payload)).toBe(true);
-    if (!isAppElementsRecord(payload)) return;
-    expect(Object.hasOwn(payload, "layout:/")).toBe(false);
-
-    const body = await withTimeout(renderHtml(readChildren(payload["page:/skip-layout"])), 1_000);
-
-    expect(body).toContain("page:en");
   });
 
   it("renders template-only segments in the route entry even without a matching layout", async () => {

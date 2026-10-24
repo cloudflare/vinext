@@ -1,9 +1,6 @@
 import React from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import {
-  probeAppPageBeforeRender,
-  probeReactServerSubtree,
-} from "../packages/vinext/src/server/app-page-probe.js";
+import { probeReactServerSubtree } from "../packages/vinext/src/server/app-page-probe.js";
 
 describe("app page probe helpers", () => {
   it("probes server components returned below a layout result", async () => {
@@ -128,93 +125,5 @@ describe("app page probe helpers", () => {
       "App page layout subtree probe cannot safely inspect iterable children",
     );
     expect(sharedChildren.next().value).toMatchObject({ type: Child });
-  });
-
-  it("runs no layout without classification", async () => {
-    const probeLayoutAt = vi.fn(() => null);
-
-    const result = await probeAppPageBeforeRender({
-      layoutCount: 3,
-      probeLayoutAt,
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-    });
-
-    expect(probeLayoutAt).not.toHaveBeenCalled();
-    expect(result.layoutFlags).toEqual({});
-  });
-
-  it("leaves layout failures to the render and never reuses those layouts", async () => {
-    const layoutError = Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
-      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
-    });
-    const probedLayouts: number[] = [];
-
-    const result = await probeAppPageBeforeRender({
-      layoutCount: 3,
-      probeLayoutAt(layoutIndex) {
-        probedLayouts.push(layoutIndex);
-        if (layoutIndex === 1) {
-          throw layoutError;
-        }
-        return null;
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-      classification: {
-        buildTimeClassifications: new Map([
-          [0, "static"],
-          [1, "static"],
-        ]),
-        getLayoutId(layoutIndex) {
-          return ["layout:/", "layout:/shop", "layout:/shop/[id]"][layoutIndex];
-        },
-        async runWithIsolatedDynamicScope(fn) {
-          return { result: await fn(), dynamicDetected: false };
-        },
-      },
-    });
-
-    expect(probedLayouts).toEqual([2, 1, 0]);
-    expect(result.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/shop": "d",
-      "layout:/shop/[id]": "s",
-    });
-  });
-
-  it("propagates layoutFlags from layout probe result", async () => {
-    const probedLayouts: number[] = [];
-    const result = await probeAppPageBeforeRender({
-      layoutCount: 2,
-      probeLayoutAt(layoutIndex) {
-        probedLayouts.push(layoutIndex);
-        return null;
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-      classification: {
-        buildTimeClassifications: new Map([
-          [0, "static"],
-          [1, "dynamic"],
-        ]),
-        getLayoutId(layoutIndex) {
-          return ["layout:/", "layout:/admin"][layoutIndex];
-        },
-        async runWithIsolatedDynamicScope(fn) {
-          return { result: await fn(), dynamicDetected: false };
-        },
-      },
-    });
-
-    // A build-time dynamic layout's flag is final, so it doesn't run.
-    expect(probedLayouts).toEqual([0]);
-    expect(result.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/admin": "d",
-    });
   });
 });

@@ -134,9 +134,6 @@ export const VINEXT_PRERENDER_SPECIAL_ERROR_HEADER = "x-vinext-prerender-special
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
-/** Disabled-by-default client hint describing already-held App Router payload entries. */
-export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
-
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
  * thrown during render. The header value is the redirect target (path-only

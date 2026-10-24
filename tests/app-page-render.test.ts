@@ -4,25 +4,17 @@ import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
-  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
-  APP_SKIPPED_LAYOUT_IDS_KEY,
-  AppElementsWire,
   isAppElementsRecord,
   type AppOutgoingElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
   APP_ELEMENTS_SCHEMA_VERSION,
   ARTIFACT_COMPATIBILITY_SCHEMA_VERSION,
-  createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
   RSC_PAYLOAD_SCHEMA_VERSION,
 } from "../packages/vinext/src/server/artifact-compatibility.js";
-import type { LayoutClassificationOptions } from "../packages/vinext/src/server/app-page-execution.js";
-import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import { renderAppPageLifecycle } from "../packages/vinext/src/server/app-page-render.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   createAppPageLayoutGate,
   registerAppPageLayoutGate,
@@ -45,7 +37,7 @@ import {
   markRenderRequestApiUsage,
   peekDynamicUsage,
   runWithHeadersContext,
-  runWithIsolatedDynamicUsage,
+  runWithConnectionProbe,
 } from "../packages/vinext/src/shims/headers.js";
 import {
   CACHEABILITY_REQUEST_STATE,
@@ -57,11 +49,6 @@ import {
   type ExecutionContextLike,
   type PrerenderSpecialErrorMarker,
 } from "../packages/vinext/src/shims/request-context.js";
-import {
-  parseClientReuseManifestHeader,
-  type ClientReuseManifestParseResult,
-  type ClientReuseManifestSkipDisposition,
-} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
   NEXT_CACHE_TAGS_HEADER,
   NEXT_ROUTER_STALE_TIME_HEADER,
@@ -257,7 +244,6 @@ function createCommonOptions() {
         return `rsc:${pathname}`;
       },
       isrSet,
-      layoutCount: 0,
       loadSsrHandler,
       middlewareContext: {
         headers: null,
@@ -265,59 +251,16 @@ function createCommonOptions() {
       },
       navigationParams: { slug: "post" },
       params: { slug: "post" },
-      probeLayoutAt() {
-        return null;
-      },
       revalidateSeconds: null,
       renderErrorBoundaryResponse,
       renderPageSpecialError,
       renderToReadableStream,
       routePattern: "/posts/[slug]",
-      runWithSuppressedHookWarning<T>(probe: () => Promise<T>) {
-        return probe();
-      },
       waitUntil(promise: Promise<void>) {
         waitUntilPromises.push(promise);
       },
     },
   };
-}
-
-function createVerifiedStaticLayoutManifest(input: {
-  deploymentVersion: string;
-  layoutId: string;
-  rootBoundaryId: string;
-  routeId: string;
-  routePattern: string;
-}): ClientReuseManifestParseResult {
-  const artifactCompatibility = createArtifactCompatibilityEnvelope({
-    deploymentVersion: input.deploymentVersion,
-    graphVersion: createArtifactCompatibilityGraphVersion({
-      routePattern: input.routePattern,
-      rootBoundaryId: input.rootBoundaryId,
-    }),
-    rootBoundaryId: input.rootBoundaryId,
-  });
-
-  const header = createClientReuseManifestHeaderFromVisibleAppState({
-    elements: {
-      ...AppElementsWire.createMetadataEntries({
-        interceptionContext: null,
-        layoutIds: [input.layoutId],
-        rootLayoutTreePath: input.rootBoundaryId,
-        routeId: input.routeId,
-      }),
-      [AppElementsWire.keys.artifactCompatibility]: artifactCompatibility,
-      [AppElementsWire.keys.layoutFlags]: { [input.layoutId]: "s" },
-      [input.layoutId]: `retained-${input.layoutId}`,
-    },
-    visibleCommitVersion: 1,
-  });
-  if (header === null) {
-    throw new Error("Expected retained static layout manifest");
-  }
-
-  return parseClientReuseManifestHeader(header);
 }
 
 describe("clearRequestContext timing — issue #660", () => {
@@ -850,52 +793,6 @@ describe("app page render lifecycle", () => {
     });
     await Promise.all(common.waitUntilPromises);
     expect(common.isrSet).not.toHaveBeenCalled();
-  });
-
-  it("does not cache RSC responses when skip transport omits layout records", async () => {
-    const common = createCommonOptions();
-    const isrDebug = vi.fn();
-    let capturedElement: Record<string, unknown> | null = null;
-
-    const response = await renderAppPageLifecycle({
-      ...common.options,
-      element: {
-        [APP_ROOT_LAYOUT_KEY]: "/",
-        "layout:/": "root-layout",
-        "page:/posts/post": "post-page",
-      },
-      isProduction: true,
-      isRscRequest: true,
-      isrDebug,
-      renderToReadableStream(element) {
-        capturedElement = captureRecord(element);
-        return createStream(["flight-data"]);
-      },
-      revalidateSeconds: 60,
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/"],
-      },
-    });
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
-    await expect(response.text()).resolves.toBe("flight-data");
-
-    if (capturedElement === null) {
-      throw new Error("Expected renderToReadableStream to receive AppElements payload");
-    }
-    expect(Object.hasOwn(capturedElement, "layout:/")).toBe(false);
-    expect(capturedElement["page:/posts/post"]).toBe("post-page");
-    expect(common.waitUntilPromises).toHaveLength(0);
-    expect(common.isrSet).not.toHaveBeenCalled();
-    expect(isrDebug).toHaveBeenCalledWith(
-      "RSC cache write skipped (skip transport payload)",
-      "/posts/post",
-    );
   });
 
   it("persists the completed render's client stale time onto the cache entry", async () => {
@@ -1489,14 +1386,14 @@ describe("app page render lifecycle", () => {
   });
 
   it("never stores a candidate render that latched dynamic outside its own scope", async () => {
-    // A dynamic API in an isolated scope or in SSR opens the useSearchParams()
-    // gate with the real query, but never reaches the render's own dynamic
-    // flag.
+    // A dynamic API in a connection probe or in SSR opens the
+    // useSearchParams() gate with the real query, but never reaches the
+    // render's own dynamic flag.
     const common = createCommonOptions();
     await runWithHeadersContext(
       headersContextFromRequest(new Request("https://example.test/posts/post?q=secret")),
       async () => {
-        await runWithIsolatedDynamicUsage(() => {
+        await runWithConnectionProbe(() => {
           markDynamicUsage();
         });
 
@@ -1514,43 +1411,6 @@ describe("app page render lifecycle", () => {
         await response.text();
         await Promise.all(common.waitUntilPromises);
         expect(common.isrSet).not.toHaveBeenCalled();
-      },
-    );
-  });
-
-  it("stores a render whose layout probe alone used a dynamic API", async () => {
-    // The probe calls layouts outside React's render, where a value a layout
-    // stores through cache() is missing, so a component can fall back to a
-    // dynamic API the render never calls (#3671). Only the render counts.
-    const common = createCommonOptions();
-    await runWithHeadersContext(
-      headersContextFromRequest(new Request("https://example.test/posts/post")),
-      async () => {
-        const response = await renderAppPageLifecycle({
-          ...common.options,
-          consumeDynamicUsage,
-          isCacheCandidate: true,
-          isProduction: true,
-          classification: {
-            buildTimeClassifications: null,
-            getLayoutId: () => "layout:/",
-            runWithIsolatedDynamicScope: runWithIsolatedDynamicUsage,
-          },
-          layoutCount: 1,
-          peekDynamicUsage,
-          probeLayoutAt() {
-            markDynamicUsage();
-            markRenderRequestApiUsage("headers");
-            return null;
-          },
-          revalidateSeconds: 30,
-        });
-
-        expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-        await response.text();
-        await Promise.all(common.waitUntilPromises);
-        expect(common.isrSet).toHaveBeenCalledTimes(2);
-        expect(peekDynamicUsage()).toBe(false);
       },
     );
   });
@@ -4052,27 +3912,18 @@ describe("static routes under the default revalidate = false", () => {
   });
 });
 
-describe("layoutFlags injection into RSC payload", () => {
+describe("outgoing RSC payload metadata", () => {
   function createRscOptions(overrides: {
-    cleanPathname?: string;
-    clientReuseManifest?: ClientReuseManifestParseResult;
     element?: Record<string, ReactNode>;
-    layoutParamAccess?: ReturnType<typeof createAppLayoutParamAccessTracker>;
-    layoutCount?: number;
     pageTags?: string[];
-    probeLayoutAt?: (index: number) => unknown;
-    classification?: LayoutClassificationOptions | null;
-    routePattern?: string;
-    skipDisposition?: ClientReuseManifestSkipDisposition;
   }) {
     let capturedElement: Record<string, unknown> | null = null;
 
     const options = {
-      cleanPathname: overrides.cleanPathname ?? "/test",
+      cleanPathname: "/test",
       clearRequestContext: vi.fn(),
       consumeDynamicUsage: vi.fn(() => false),
       createRscOnErrorHandler: () => () => {},
-      clientReuseManifest: overrides.clientReuseManifest,
       getDraftModeCookieHeader: () => null,
       getFontLinks: () => [],
       getFontPreloads: () => [],
@@ -4091,13 +3942,10 @@ describe("layoutFlags injection into RSC payload", () => {
       isrHtmlKey: (p: string) => `html:${p}`,
       isrRscKey: (p: string) => `rsc:${p}`,
       isrSet: vi.fn().mockResolvedValue(undefined),
-      layoutParamAccess: overrides.layoutParamAccess,
-      layoutCount: overrides.layoutCount ?? 0,
       loadSsrHandler: vi.fn(),
       middlewareContext: { headers: null, status: null },
       navigationParams: {},
       params: {},
-      probeLayoutAt: overrides.probeLayoutAt ?? (() => null),
       revalidateSeconds: null,
       renderErrorBoundaryResponse: async () => null,
       renderPageSpecialError: async () => new Response("error", { status: 500 }),
@@ -4105,11 +3953,8 @@ describe("layoutFlags injection into RSC payload", () => {
         capturedElement = captureRecord(el);
         return createStream(["flight-data"]);
       },
-      routePattern: overrides.routePattern ?? "/test",
-      runWithSuppressedHookWarning: <T>(probe: () => Promise<T>) => probe(),
+      routePattern: "/test",
       element: overrides.element ?? { "page:/test": "test-page" },
-      classification: overrides.classification,
-      skipDisposition: overrides.skipDisposition,
     };
 
     return {
@@ -4122,124 +3967,6 @@ describe("layoutFlags injection into RSC payload", () => {
       },
     };
   }
-
-  it("injects __layoutFlags with 's' when classification detects a static layout", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: { "layout:/": "root-layout", "page:/test": "test-page" },
-      layoutCount: 1,
-      probeLayoutAt: () => null,
-      classification: {
-        getLayoutId: () => "layout:/",
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
-  });
-
-  // Next.js runs no layout for a pre-PPR prefetch with no loading boundary
-  // (walkTreeWithFlightRouterState()):
-  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
-  it("probes no layout for a route-tree-only loading-shell prefetch", async () => {
-    const probeLayoutAt = vi.fn(() => null);
-    // Only a layout classified static is probed.
-    const staticLayouts: LayoutClassificationOptions = {
-      buildTimeClassifications: new Map([
-        [0, "static"],
-        [1, "static"],
-      ]),
-      getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/test"),
-      async runWithIsolatedDynamicScope(fn) {
-        const result = await fn();
-        return { result, dynamicDetected: false };
-      },
-    };
-    const routeTreeOnly = createRscOptions({
-      element: {
-        [AppElementsWire.keys.route]: "route:/test",
-        "page:/test": null,
-        "route:/test": null,
-      } as Record<string, ReactNode>,
-      layoutCount: 2,
-      probeLayoutAt,
-      classification: staticLayouts,
-    });
-    await renderAppPageLifecycle({
-      ...routeTreeOnly.options,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
-    expect(probeLayoutAt).not.toHaveBeenCalled();
-
-    // A shell that renders a loading boundary still probes its layouts.
-    const loadingShell = createRscOptions({
-      element: {
-        [AppElementsWire.keys.route]: "route:/test",
-        "page:/test": null,
-        "route:/test": "route-loading-shell",
-      } as Record<string, ReactNode>,
-      layoutCount: 2,
-      probeLayoutAt,
-      classification: staticLayouts,
-    });
-    await renderAppPageLifecycle({
-      ...loadingShell.options,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
-    expect(probeLayoutAt).toHaveBeenCalledTimes(2);
-
-    // A render that may be stored always probes its layouts.
-    const storable = createRscOptions({
-      element: {
-        [AppElementsWire.keys.route]: "route:/test",
-        "page:/test": null,
-        "route:/test": null,
-      } as Record<string, ReactNode>,
-      layoutCount: 2,
-      probeLayoutAt,
-      classification: staticLayouts,
-    });
-    await renderAppPageLifecycle({
-      ...storable.options,
-      isCacheCandidate: true,
-      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-    });
-    expect(probeLayoutAt).toHaveBeenCalledTimes(4);
-  });
-
-  it("injects __layoutFlags with 'd' for dynamic layouts", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: { "layout:/": "root-layout", "page:/test": "test-page" },
-      layoutCount: 1,
-      probeLayoutAt: () => null,
-      classification: {
-        getLayoutId: () => "layout:/",
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: true };
-        },
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "d" });
-  });
-
-  it("injects empty __layoutFlags when classification is not provided (backward compat)", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: { "layout:/": "root-layout", "page:/test": "test-page" },
-      layoutCount: 1,
-      probeLayoutAt: () => null,
-    });
-
-    await renderAppPageLifecycle(options);
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({});
-  });
 
   it("injects concrete artifact compatibility metadata from the render boundary", async () => {
     const originalBuildId = process.env.__VINEXT_BUILD_ID;
@@ -4301,227 +4028,6 @@ describe("layoutFlags injection into RSC payload", () => {
     const outgoingPayload = getCapturedElement();
     expect(outgoingPayload).not.toHaveProperty("__renderObservation");
     expect(JSON.stringify(outgoingPayload)).not.toContain("_N_T_/(marketing)/pricing/page");
-  });
-
-  it("injects __layoutFlags for multiple independently classified layouts", async () => {
-    let callCount = 0;
-    const { options, getCapturedElement } = createRscOptions({
-      element: {
-        "layout:/": "root-layout",
-        "layout:/blog": "blog-layout",
-        "page:/blog/post": "post-page",
-      },
-      layoutCount: 2,
-      probeLayoutAt: () => null,
-      classification: {
-        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          callCount++;
-          const result = await fn();
-          // probeAppPageLayouts iterates from layoutCount-1 down to 0:
-          // call 1 → layout index 1 (blog) → dynamic
-          // call 2 → layout index 0 (root) → static
-          return { result, dynamicDetected: callCount === 1 };
-        },
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
-      "layout:/": "s",
-      "layout:/blog": "d",
-    });
-  });
-
-  it("__layoutFlags includes flags for ALL layouts even when some are skipped", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: {
-        "layout:/": "root-layout",
-        "layout:/blog": "blog-layout",
-        "page:/blog/post": "post-page",
-      },
-      layoutCount: 2,
-      probeLayoutAt: () => null,
-      classification: {
-        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-    // layoutFlags must include ALL layout flags, even for skipped layouts
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
-      "layout:/": "s",
-      "layout:/blog": "s",
-    });
-  });
-
-  it("applies enabled static-layout skip transport after preserving all layout flags", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: {
-        "layout:/": "root-layout",
-        "layout:/blog": "blog-layout",
-        "page:/blog/post": "post-page",
-      },
-      layoutCount: 2,
-      probeLayoutAt: () => null,
-      classification: {
-        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/blog"],
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-    expect(getCapturedElement()["layout:/"]).toBe("root-layout");
-    expect(Object.hasOwn(getCapturedElement(), "layout:/blog")).toBe(false);
-    expect(getCapturedElement()["page:/blog/post"]).toBe("post-page");
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({
-      "layout:/": "s",
-      "layout:/blog": "s",
-    });
-  });
-
-  it("does not apply skip transport while producing an HTML response", async () => {
-    const common = createCommonOptions();
-    let capturedElement: Record<string, unknown> | null = null;
-
-    await renderAppPageLifecycle({
-      ...common.options,
-      element: {
-        "layout:/": "root-layout",
-        "layout:/blog": "blog-layout",
-        "page:/blog/post": "post-page",
-      },
-      layoutCount: 2,
-      classification: {
-        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/blog"),
-        buildTimeClassifications: null,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-      isRscRequest: false,
-      renderToReadableStream(element) {
-        capturedElement = captureRecord(element);
-        return createStream(["flight-data"]);
-      },
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/blog"],
-      },
-    });
-
-    if (capturedElement === null) {
-      throw new Error("Expected renderToReadableStream to be called");
-    }
-    expect(capturedElement["layout:/"]).toBe("root-layout");
-    expect(capturedElement["layout:/blog"]).toBe("blog-layout");
-    expect(capturedElement["page:/blog/post"]).toBe("post-page");
-  });
-
-  it("keeps the layout in the payload when final skip verification rejects dynamic usage", async () => {
-    const originalBuildId = process.env.__VINEXT_BUILD_ID;
-    process.env.__VINEXT_BUILD_ID = "deploy-test";
-    const layoutId = "layout:/blog";
-    const tracker = createAppLayoutParamAccessTracker();
-    const clientReuseManifest = createVerifiedStaticLayoutManifest({
-      deploymentVersion: "deploy-test",
-      layoutId,
-      rootBoundaryId: "/",
-      routeId: "route:/blog/hello",
-      routePattern: "/blog/[slug]",
-    });
-    const { options, getCapturedElement } = createRscOptions({
-      cleanPathname: "/blog/hello",
-      clientReuseManifest,
-      element: {
-        [APP_ROOT_LAYOUT_KEY]: "/",
-        [layoutId]: "blog-layout",
-        "page:/blog/hello": "post-page",
-      },
-      layoutCount: 1,
-      layoutParamAccess: tracker,
-      probeLayoutAt() {
-        return tracker.runLayoutProbe(layoutId, () => {
-          markDynamicUsage();
-        });
-      },
-      classification: {
-        getLayoutId: () => layoutId,
-        buildTimeClassifications: null,
-        isLayoutObservationDynamic: () => false,
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-      routePattern: "/blog/[slug]",
-    });
-
-    try {
-      await runWithRequestContext(createRequestContext(), () => renderAppPageLifecycle(options));
-    } finally {
-      if (originalBuildId === undefined) {
-        delete process.env.__VINEXT_BUILD_ID;
-      } else {
-        process.env.__VINEXT_BUILD_ID = originalBuildId;
-      }
-    }
-
-    expect(getCapturedElement()[layoutId]).toBe("blog-layout");
-    expect(getCapturedElement()["page:/blog/hello"]).toBe("post-page");
-    expect(getCapturedElement()[APP_LAYOUT_FLAGS_KEY]).toEqual({ [layoutId]: "s" });
-    expect(Object.hasOwn(getCapturedElement(), APP_SKIPPED_LAYOUT_IDS_KEY)).toBe(false);
-  });
-
-  it("wire payload layoutFlags uses only the shorthand 's'/'d' values, never tagged reasons", async () => {
-    const { options, getCapturedElement } = createRscOptions({
-      element: {
-        "layout:/": "root-layout",
-        "layout:/admin": "admin-layout",
-        "page:/admin/users": "users-page",
-      },
-      layoutCount: 2,
-      probeLayoutAt: () => null,
-      classification: {
-        buildTimeClassifications: new Map([
-          [0, "static"],
-          [1, "dynamic"],
-        ]),
-        getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/admin"),
-        async runWithIsolatedDynamicScope(fn) {
-          const result = await fn();
-          return { result, dynamicDetected: false };
-        },
-      },
-    });
-
-    await renderAppPageLifecycle(options);
-
-    const wireFlags = getCapturedElement()[APP_LAYOUT_FLAGS_KEY];
-    expect(wireFlags).toEqual({ "layout:/": "s", "layout:/admin": "d" });
-
-    for (const [_id, flag] of Object.entries(wireFlags as Record<string, unknown>)) {
-      expect(flag === "s" || flag === "d").toBe(true);
-    }
   });
 });
 

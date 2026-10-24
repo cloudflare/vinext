@@ -15,7 +15,6 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
@@ -43,7 +42,6 @@ const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
 type CreateRscRequestHeadersOptions = {
-  clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
@@ -374,13 +372,6 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
 
-  if (
-    options.clientReuseManifestHeader !== undefined &&
-    options.clientReuseManifestHeader !== null
-  ) {
-    headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, options.clientReuseManifestHeader);
-  }
-
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   if (renderMode !== APP_RSC_RENDER_MODE_NAVIGATION) {
     headers.set(VINEXT_RSC_RENDER_MODE_HEADER, renderMode);
@@ -409,7 +400,6 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
   return true;
 }
 
@@ -433,7 +423,6 @@ export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boo
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
   return true;
 }
 

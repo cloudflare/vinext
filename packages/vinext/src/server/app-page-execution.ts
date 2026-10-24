@@ -1,5 +1,3 @@
-import type { LayoutFlags } from "./app-elements.js";
-import type { ClassificationReason } from "../build/layout-classification-types.js";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
@@ -17,10 +15,7 @@ import {
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
 import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
-import { runWithConnectionProbe } from "vinext/shims/headers";
 import { isHTTPAccessFallbackError, isThrownNavigationError } from "vinext/shims/navigation-errors";
-
-export type { LayoutFlags };
 
 /**
  * Marker we tag onto a thrown redirect/notFound error when it originates from
@@ -250,50 +245,6 @@ type BuildAppPageSpecialErrorResponseOptions = {
   request: Request;
   serveStreamingMetadata?: boolean;
   specialError: AppPageSpecialError;
-};
-
-type ProbeAppPageLayoutsResult = {
-  layoutFlags: LayoutFlags;
-};
-
-export type LayoutClassificationOptions = {
-  /** Build-time classifications from segment config or module graph, keyed by layout index. */
-  buildTimeClassifications?: ReadonlyMap<number, "static" | "dynamic"> | null;
-  /**
-   * Per-layout classification reasons keyed by layout index. Requires
-   * `VINEXT_DEBUG_CLASSIFICATION` at BOTH lifecycle points: at build time so
-   * the plugin patches the `__VINEXT_CLASS_REASONS` dispatch stub, and at
-   * runtime so the route object actually calls it. Setting the flag only at
-   * runtime leaves the stub returning `null`, and every build-time classified
-   * layout will fall through to `{ layer: "no-classifier" }` in the debug
-   * channel. The hot path never reads this and the wire payload is unchanged.
-   */
-  buildTimeReasons?: ReadonlyMap<number, ClassificationReason> | null;
-  /**
-   * Emits one log line per layout with the classification reason, keyed by
-   * layout ID. Set by the generator when `VINEXT_DEBUG_CLASSIFICATION` is
-   * active. When undefined, the probe loop skips debug emission entirely.
-   */
-  debugClassification?: (layoutId: string, reason: ClassificationReason) => void;
-  /** Maps layout index to its layout ID (e.g. "layout:/blog"). */
-  getLayoutId: (layoutIndex: number) => string;
-  /**
-   * Returns whether the completed per-layout observation makes static reuse
-   * unsafe even if the older dynamic scope did not report dynamic usage.
-   */
-  isLayoutObservationDynamic?: (layoutId: string) => boolean;
-  /** Runs a function with isolated dynamic usage tracking per layout. */
-  runWithIsolatedDynamicScope: <T>(
-    fn: () => T | Promise<T>,
-  ) => Promise<{ result: T; dynamicDetected: boolean }>;
-};
-
-type ProbeAppPageLayoutsOptions = {
-  layoutCount: number;
-  probeLayoutAt: (layoutIndex: number) => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-  /** When provided, enables per-layout static/dynamic classification. */
-  classification?: LayoutClassificationOptions | null;
 };
 
 function getAppPageStatusText(statusCode: number): string {
@@ -708,104 +659,6 @@ export async function buildAppPageSpecialErrorResponse(
     }),
     options.middlewareContext,
   );
-}
-
-/**
- * Classifies each layout as static or dynamic for skip transport. See the
- * `LayoutFlags` type docblock in app-elements.ts for lifecycle. A layout's
- * redirect(), notFound(), forbidden() or unauthorized() comes from the render,
- * as the page's does, so the probe ignores what a layout throws.
- */
-export async function probeAppPageLayouts(
-  options: ProbeAppPageLayoutsOptions,
-): Promise<ProbeAppPageLayoutsResult> {
-  const layoutFlags: Record<string, "s" | "d"> = {};
-  const cls = options.classification ?? null;
-  if (!cls) return { layoutFlags };
-
-  await options.runWithSuppressedHookWarning(async () => {
-    for (let layoutIndex = options.layoutCount - 1; layoutIndex >= 0; layoutIndex--) {
-      const buildTimeResult = cls.buildTimeClassifications?.get(layoutIndex);
-      const layoutId = cls.getLayoutId(layoutIndex);
-
-      if (buildTimeResult) {
-        // Build-time classified (Layer 1 or Layer 2): no dynamic isolation. A
-        // dynamic layout is final. A static one still runs so its observation
-        // can override it, since skip reads that observation too.
-        // A layout that throws is never reused: its entry is the error the
-        // render throws again.
-        let threw = false;
-        if (buildTimeResult === "static") {
-          await runWithConnectionProbe(async () => {
-            try {
-              await options.probeLayoutAt(layoutIndex);
-            } catch {
-              threw = true;
-            }
-          });
-        }
-        // Compute the final flag before reporting so the emitted debug reason
-        // always agrees with `layoutFlags[layoutId]`. A runtime observation can
-        // override a build-time `static` decision to dynamic; in that case we
-        // report a `runtime-probe` reason rather than the stale build-time one.
-        const observationDynamic =
-          buildTimeResult === "static" &&
-          (threw || cls.isLayoutObservationDynamic?.(layoutId) === true);
-        const layoutDynamic = buildTimeResult === "dynamic" || observationDynamic;
-        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
-        if (cls.debugClassification) {
-          if (observationDynamic) {
-            cls.debugClassification(layoutId, {
-              layer: "runtime-probe",
-              outcome: "dynamic",
-            });
-          } else {
-            // `no-classifier` is the documented fallback for a layout that was
-            // build-time classified but whose reason payload is absent — either
-            // because the build was run without `VINEXT_DEBUG_CLASSIFICATION` or
-            // because no Layer 1/2 classifier attached a reason. This is the sole
-            // producer of the variant; see `layout-classification-types.ts`.
-            cls.debugClassification(
-              layoutId,
-              cls.buildTimeReasons?.get(layoutIndex) ?? { layer: "no-classifier" },
-            );
-          }
-        }
-        continue;
-      }
-
-      // Layer 3: probe with isolated dynamic scope to detect per-layout
-      // dynamic API usage (headers(), cookies(), connection(), etc.)
-      try {
-        const { dynamicDetected } = await cls.runWithIsolatedDynamicScope(async () => {
-          const outcome = await runWithConnectionProbe(() => options.probeLayoutAt(layoutIndex));
-          return outcome.completed ? outcome.result : null;
-        });
-        const observationDynamic = cls.isLayoutObservationDynamic?.(layoutId) === true;
-        const layoutDynamic = dynamicDetected || observationDynamic;
-        layoutFlags[layoutId] = layoutDynamic ? "d" : "s";
-        if (cls.debugClassification) {
-          cls.debugClassification(layoutId, {
-            layer: "runtime-probe",
-            outcome: layoutDynamic ? "dynamic" : "static",
-          });
-        }
-      } catch (error) {
-        // Probe failed — conservatively treat as dynamic. The render throws
-        // the error again.
-        layoutFlags[layoutId] = "d";
-        if (cls.debugClassification) {
-          cls.debugClassification(layoutId, {
-            layer: "runtime-probe",
-            outcome: "dynamic",
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    }
-  });
-
-  return { layoutFlags };
 }
 
 export async function readAppPageBinaryStream(

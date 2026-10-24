@@ -107,15 +107,10 @@ import {
   toLinkPrefetchRoutes,
 } from "./entries/app-browser-entry.js";
 import {
-  collectRouteClassificationManifest,
-  type RouteClassificationManifest,
-} from "./build/route-classification-manifest.js";
-import {
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
 } from "./build/report.js";
-import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import {
   createRscScanGlobImportsPlugin,
@@ -1952,13 +1947,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
-  // Build-time layout classification manifests, captured for each generated
-  // RSC virtual module and consumed in renderChunk to patch that module's
-  // `__VINEXT_CLASS` stub with a real dispatch table. Multi-stage outputs emit
-  // both the ordinary RSC graph and a response-only graph in the same build,
-  // so one mutable manifest would be consumed by whichever chunk rendered
-  // first and leave the other graph's classifier as the null stub.
-  const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
@@ -1991,13 +1979,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // configResolved.
   let nextImageAliasedByUser = false;
 
-  // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
-  // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
-  // slashes, so we must canonicalize anything we hand to the classifier and
+  // Rolldown stores module IDs as canonicalized filesystem paths
+  // (fs.realpathSync.native) with forward slashes, so we must canonicalize
   // anything we ask the module graph for — including the separator
   // normalization (toSlash), since tryRealpathSync wraps realpathSync.native,
-  // which keeps backslashes on Windows. The shim files exist in the vinext
-  // package before plugin init, so realpath is safe to evaluate eagerly.
+  // which keeps backslashes on Windows.
   const canonicalize = (p: string): string => toSlash(tryRealpathSync(p) ?? p);
   // Owned by this vinext() instance and cleared on each config resolution
   // (an inline plugin survives server.restart()). Also used by the middleware
@@ -2019,14 +2005,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
-  const dynamicShimPaths: ReadonlySet<string> = new Set(
-    [
-      resolveShimModulePath(shimsDir, "headers"),
-      resolveShimModulePath(shimsDir, "server"),
-      resolveShimModulePath(shimsDir, "cache"),
-    ].map(canonicalize),
-  );
-
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
   // VINEXT_OPTIMIZE_DEPS_EXCLUDE plus every bare specifier vinext resolves to
@@ -5333,15 +5311,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;
-            // Collect Layer 1 (segment config) classifications for all layouts.
-            // Layer 2 (module graph) runs later in renderChunk once Rollup's
-            // module info is available.
-            // Invariant: each manifest must be built from the same `routes`
-            // value passed to its generator below so that layout indices in the
-            // manifest correspond 1:1 to the route.layouts arrays used during
-            // codegen. renderChunk consumes the manifest for that virtual module.
             if (id !== RESOLVED_APP_REQUEST_ENTRY) {
-              rscClassificationManifests.set(id, collectRouteClassificationManifest(routes));
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
@@ -5521,114 +5491,6 @@ export const loadServerActionClient = ${
           if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
             return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
           }
-        },
-      },
-
-      // Layer 2 build-time layout classification. The generated RSC entry
-      // emits a `function __VINEXT_CLASS(routeIdx) { return null; }` stub;
-      // this hook patches it with a switch-statement dispatch table so the
-      // runtime probe loop in app-page-execution.ts can skip the Layer 3
-      // per-layout dynamic-isolation probe for layouts we proved static or
-      // dynamic at build time.
-      //
-      // @vitejs/plugin-rsc runs the RSC environment build in two phases:
-      // a scan phase that discovers client references, and a final build
-      // phase that emits the real RSC entry. We only patch when we actually
-      // see the stub in a chunk — the scan phase produces a tiny stub chunk
-      // that does not contain our code.
-      //
-      // This MUST run in `renderChunk` with `order: "pre"`, NOT in
-      // `generateBundle`: when server environments are minified (the default —
-      // see `vinext:server-minify-defaults`), rolldown's minifier renames the
-      // top-level `__VINEXT_CLASS` function and mangles its `routeIdx`
-      // parameter by the time `generateBundle` runs, so the stub regex would
-      // never match and build-time classification would silently no-op (every
-      // route would fall back to the Layer 3 runtime probe). `renderChunk`
-      // with `order: "pre"` runs before minification, so the stub is still in
-      // its readable form; the patched body is then minified along with the
-      // rest of the chunk, which is fine because the runtime calls the function
-      // by reference rather than by name.
-      renderChunk: {
-        order: "pre",
-        handler(code, chunk) {
-          // Only run in the RSC environment. SSR/client builds never contain
-          // the __VINEXT_CLASS stub so there is nothing to patch there, and
-          // pulling ModuleInfo from the wrong graph would give nonsense
-          // results.
-          if (this.environment?.name !== "rsc") return null;
-          // Cheap pre-filter: skip chunks that don't mention the stub at all
-          // (e.g. the scan-phase chunk and every non-entry chunk).
-          const hasClassificationStub = code.includes("__VINEXT_CLASS");
-          if (!hasClassificationStub) return null;
-
-          // Both generated App RSC graphs can be present in one multi-entry
-          // build. Associate the chunk with the virtual module that generated
-          // its route table so each graph receives (and consumes) its own
-          // manifest regardless of render order.
-          const rscEntryId = [RESOLVED_RSC_ENTRY, RESOLVED_APP_RESPONSE_ENTRY].find((id) =>
-            chunk.moduleIds.includes(id),
-          );
-          if (!rscEntryId) return null;
-          const rscClassificationManifest = rscClassificationManifests.get(rscEntryId);
-          if (!rscClassificationManifest) return null;
-
-          // Patching per-chunk (rather than scanning the whole bundle in
-          // generateBundle) assumes the stub body and its per-route call sites
-          // are emitted into the same chunk. That holds with current codegen:
-          // both live in the single RSC entry module, so they never split
-          // across chunks. If a future codegen change hoisted the call sites
-          // into a separate chunk, this hook would patch the stub but leave the
-          // callers referencing the original — revisit the hook scope then.
-
-          const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
-
-          // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
-          // (above) so they are constructed once per plugin instance instead of
-          // on every renderChunk invocation. The macOS realpath quirk
-          // (/var/folders/... → /private/var/folders/...) still applies to
-          // every path we hand to the classifier.
-
-          // Adapter: the classifier in `build/layout-classification.ts` uses
-          // `dynamicImportedIds` (matches the old-Rollup field name we used when
-          // we wrote it). Rolldown's current ModuleInfo exposes it as
-          // `dynamicallyImportedIds` (the new Rollup field name). Keep the
-          // translation in one place so future call sites don't have to remember.
-          const moduleInfo = {
-            getModuleInfo: (moduleId: string) => {
-              const info = this.getModuleInfo(moduleId);
-              if (!info) return null;
-              return {
-                importedIds: info.importedIds ?? [],
-                dynamicImportedIds: info.dynamicallyImportedIds ?? [],
-              };
-            },
-          };
-
-          const patchPlan =
-            hasClassificationStub && rscClassificationManifest
-              ? planRouteClassificationInjection({
-                  canonicalizeLayoutPath: canonicalize,
-                  chunks: [{ code, fileName: chunk.fileName }],
-                  dynamicShimPaths,
-                  enableDebugReasons: enableClassificationDebug,
-                  manifest: rscClassificationManifest,
-                  moduleInfo,
-                })
-              : { kind: "skip" as const };
-          const nextCode = patchPlan.kind === "skip" ? code : patchPlan.code;
-          if (patchPlan.kind === "skip") return null;
-
-          // Consume the manifest exactly once for this generated RSC module.
-          // Keeping the sibling entry's manifest intact lets a multi-entry
-          // build patch both graphs while still preventing stale state from
-          // leaking into a later non-standard rebuild path.
-          rscClassificationManifests.delete(rscEntryId);
-
-          // The patched body is longer than the stub, so any existing source
-          // map would be stale. RSC entry source maps are not served or
-          // consumed, so nulling the map is safe and prevents stale-map
-          // confusion in tooling.
-          return { code: nextCode, map: null };
         },
       },
     },
