@@ -125,6 +125,17 @@ async function storedEntriesNaming(pathname: string): Promise<unknown[]> {
     .filter((entry) => JSON.stringify(entry).includes(pathname));
 }
 
+// Writes run in waitUntil after the response returns, so hold the absence
+// through the window waitForStoredEntries polls for a publication, checking
+// after every delay, including the last.
+async function assertNeverStored(pathname: string): Promise<void> {
+  assert.deepEqual(await storedEntriesNaming(pathname), []);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(await storedEntriesNaming(pathname), []);
+  }
+}
+
 // Whether the R2 body backing each entry holds the entry's active revision.
 // The store publishes metadata before it uploads the body, and reads MISS
 // until the upload lands.
@@ -407,6 +418,113 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(secondRsc.status, 200);
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
   });
+
+  // Next.js keys its response cache by pathname, so one entry answers every
+  // host an app serves:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/templates/app-page.ts
+  test("shares one App Router entry across the hosts an app serves", async () => {
+    type Init = Parameters<Miniflare["dispatchFetch"]>[1];
+    const onHost = (host: string, pathname: string, init?: Init) =>
+      miniflare.dispatchFetch(`https://${host}${pathname}`, init);
+    const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
+    const entries: Array<[string, Init | undefined, number]> = [
+      ["/static-default", undefined, 200],
+      ["/static-default.rsc?_rsc=", rscInit, 200],
+      ["/api/host-shared", undefined, 200],
+      ["/metadata-storage/status-404/opengraph-image", undefined, 404],
+      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200],
+    ];
+    for (const [pathname, init, status] of entries) {
+      const entryPath = new URL(pathname, "https://app.test").pathname.replace(/\.rsc$/, "");
+      const before = (await responseEntries(entryPath)).length;
+      const fill = await onHost("tenant-a.test", pathname, init);
+      const fillBody = await fill.text();
+      assert.equal(fill.status, status, `${pathname}: ${fillBody}`);
+      assert.equal(fill.headers.get("x-vinext-cache"), "MISS", pathname);
+      await waitForStoredEntries(() => responseEntries(entryPath), before + 1);
+
+      for (const host of ["tenant-b.test", "tenant-b.test:8443"]) {
+        const hit = await onHost(host, pathname, init);
+        assert.equal(hit.status, status, pathname);
+        assert.equal(hit.headers.get("x-vinext-cache"), "HIT", `${host}${pathname}`);
+        assert.equal(await hit.text(), fillBody, `${host}${pathname}`);
+      }
+    }
+
+    // The shared redirect keeps the absolute target the page wrote.
+    const redirect = await onHost(
+      "tenant-b.test",
+      "/special-error/absolute-redirect.rsc?_rsc=",
+      rscInit,
+    );
+    assert.match(
+      await redirect.text(),
+      /NEXT_REDIRECT;;https%3A%2F%2Ftenant-a\.test%2Fstatic-default/,
+    );
+  });
+
+  // Next.js sends the target a route handler's redirect() received, so the
+  // entry every host shares stores no host.
+  test("stores a route handler redirect with the target it received", async () => {
+    const before = (await responseEntries("/api/host-redirect")).length;
+    const fill = await miniflare.dispatchFetch("https://tenant-a.test/api/host-redirect", {
+      redirect: "manual",
+    });
+    await fill.arrayBuffer();
+    assert.equal(fill.status, 307);
+    assert.equal(fill.headers.get("location"), "/static-default");
+    await waitForStoredEntries(() => responseEntries("/api/host-redirect"), before + 1);
+    const [entry] = (await responseEntries("/api/host-redirect")).slice(-1);
+    assert.ok(entry);
+    assert.deepEqual(
+      (entry.responseHeaders as Array<[string, string]>).find(([name]) => name === "location"),
+      ["location", "/static-default"],
+    );
+    const hit = await miniflare.dispatchFetch("https://tenant-b.test/api/host-redirect", {
+      redirect: "manual",
+    });
+    await hit.arrayBuffer();
+    assert.equal(hit.status, 307);
+    assert.equal(hit.headers.get("x-vinext-cache"), "HIT");
+    assert.equal(hit.headers.get("location"), "/static-default");
+  });
+
+  test("never shares a route handler response that read the host", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/api/host-echo`);
+      assert.equal(response.status, 200);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.equal(((await response.json()) as { host: string }).host, host);
+    }
+    await assertNeverStored("/api/host-echo");
+  }, 15_000);
+
+  test("never shares a page that read the host under a public config policy", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/config-policy-host`);
+      const body = await response.text();
+      assert.equal(response.status, 200, body);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.ok(htmlValue(body, "host"));
+    }
+    await assertNeverStored("/config-policy-host");
+  }, 15_000);
+
+  test("never shares a route handler redirect that read the host", async () => {
+    const hosts = ["tenant-a.test", "tenant-b.test", "tenant-a.test", "tenant-b.test"];
+    for (const host of hosts) {
+      const response = await miniflare.dispatchFetch(`https://${host}/api/redirect-to-host`, {
+        redirect: "manual",
+      });
+      await response.arrayBuffer();
+      assert.equal(response.status, 307);
+      assert.notEqual(response.headers.get("x-vinext-cache"), "HIT", host);
+      assert.equal(response.headers.get("location"), `/static-default?from=${host}`);
+    }
+    await assertNeverStored("/api/redirect-to-host");
+  }, 15_000);
 
   test("never stores a dynamic-segment route without generateStaticParams", async () => {
     const first = await request("/dynamic-segment/a");

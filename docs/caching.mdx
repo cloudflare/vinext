@@ -492,6 +492,14 @@ With Workers Response Store and Workers Cache, some responses aren't stored unde
 
 In production, most App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, unless middleware or a `next.config` `headers()` rule sets `Cache-Control`.
 
+## Hosts
+
+Next.js keeps one cache entry per path whatever the host, so an app served on several domains shares its cached pages. A render that reads the host, such as `headers().get("host")` in a page or `request.nextUrl.hostname` in a route handler, is dynamic and isn't stored, so one host's response can't reach another.
+
+- **KV and in-memory:** keys leave out the host.
+- **Workers Response Store:** App Router entries leave out the host. Pages Router entries keep it in their keys.
+- **Workers Cache:** Cloudflare [keys an entry](https://developers.cloudflare.com/workers/cache/cache-keys/) by its path and query, entrypoint, `ctx.props`, Worker version and a few request headers that name another host, such as `X-Forwarded-Host`, but not by the host itself. vinext puts the request's full URL, host included, into the key it adds and into the props it passes, so every host fills and stores its own copy.
+
 ## Freshness and revalidation
 
 vinext follows Next.js-style cache semantics:

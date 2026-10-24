@@ -447,23 +447,72 @@ export function resolveAppPageSpecialErrorStoredHeaders(
   return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
+const REDIRECT_BASES = [
+  { host: "a.redirect-base.vinext.invalid", protocol: "https:" },
+  { host: "b.redirect-base.vinext.invalid", protocol: "http:" },
+];
+
+function resolveAgainstPlaceholder(
+  location: string,
+  requestUrl: string,
+  placeholder: (typeof REDIRECT_BASES)[number],
+) {
+  const base = new URL(requestUrl);
+  base.protocol = placeholder.protocol;
+  base.host = placeholder.host;
+  base.port = "";
+  const resolved = new URL(location, base);
+  return { relative: resolved.origin === base.origin, resolved };
+}
+
 /**
- * Returns a path-relative form (`/foo?bar`) of an absolute URL when it shares
- * the request's origin; otherwise returns the URL verbatim. Used so the digest
- * we embed in the flight payload matches Next.js's convention — the digest
- * stores the path the developer passed to `redirect("/about")`, not a
- * fully-qualified URL like `https://example.com/about`.
+ * A URL reference as the URL parser reads it, with every byte a header value
+ * cannot carry percent-encoded. The parser trims C0 controls and spaces and
+ * drops tabs and newlines; percent-decoding reverses the rest, including in a
+ * host, so the client resolves it as it would the raw target.
  */
-function sameOriginPathOrAbsolute(location: string, requestUrl: string): string {
+function toHeaderSafeUrlReference(location: string): string {
+  return (
+    location
+      // oxlint-disable-next-line no-control-regex -- the URL parser trims these
+      .replace(/^[\u0000-\u0020]+|[\u0000-\u0020]+$/g, "")
+      .replace(/[\t\n\r]/g, "")
+      .replace(/[^\u0021-\u007e]+/g, (chars) =>
+        Array.from(
+          new TextEncoder().encode(chars),
+          (byte) => `%${byte.toString(16).toUpperCase().padStart(2, "0")}`,
+        ).join(""),
+      )
+  );
+}
+
+/**
+ * The redirect target embedded in the flight digest and its streamed
+ * side-channel header. An absolute target stays in the digest as `redirect()`
+ * received it, as in Next.js's digest, so every host that shares the cache
+ * entry is sent to the same place; the header carries the same reference made
+ * header-safe, so a protocol-relative or scheme-relative target still resolves
+ * against the page each client fetched. A relative target resolves against the
+ * request's path to a path-only form, which the client resolves against its
+ * own origin. Resolving against two placeholder origins tells these apart the
+ * way the URL parser does, never depends on the request's origin, and cannot
+ * mistake an absolute target naming one placeholder for a relative one.
+ */
+function resolveRedirectTargets(
+  location: string,
+  requestUrl: string,
+): { digestUrl: string; headerUrl: string } {
   try {
-    const resolved = new URL(location, requestUrl);
-    const requestOrigin = new URL(requestUrl).origin;
-    if (resolved.origin !== requestOrigin) {
-      return resolved.toString();
+    const [first, second] = REDIRECT_BASES.map((placeholder) =>
+      resolveAgainstPlaceholder(location, requestUrl, placeholder),
+    );
+    if (!first.relative || !second.relative) {
+      return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
     }
-    return `${resolved.pathname}${resolved.search}${resolved.hash}`;
+    const { pathname, search, hash } = first.resolved;
+    return { digestUrl: `${pathname}${search}${hash}`, headerUrl: `${pathname}${search}${hash}` };
   } catch {
-    return location;
+    return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
   }
 }
 
@@ -507,7 +556,7 @@ export async function buildAppPageSpecialErrorResponse(
       options.specialError.location,
       options.basePath,
     );
-    const digestUrl = sameOriginPathOrAbsolute(prefixedLocation, options.request.url);
+    const { digestUrl, headerUrl } = resolveRedirectTargets(prefixedLocation, options.request.url);
     const digest = formatNextRedirectDigest({
       type: options.specialError.type ?? "replace",
       url: digestUrl,
@@ -541,11 +590,6 @@ export async function buildAppPageSpecialErrorResponse(
       Boolean(options.buildRscRedirectFlightStream) && options.isRscRequest;
 
     if (shouldEmbedRedirectInFlight && options.buildRscRedirectFlightStream) {
-      // Reduce the resolved (absolute) URL back to a path-only form for
-      // same-origin redirects. Next.js's digest stores the raw URL passed to
-      // `redirect()` (typically a path like "/about"), and the client router's
-      // `router.push(url)` happily accepts paths. Cross-origin targets keep
-      // their absolute form, matching Next.js's external-redirect handling.
       const stream = options.buildRscRedirectFlightStream({ digest });
 
       const headers = new Headers({
@@ -563,7 +607,7 @@ export async function buildAppPageSpecialErrorResponse(
       // Framework-owned redirect semantics must win over middleware headers.
       // The Flight digest remains authoritative; these headers are only the
       // early client side-channel for following it without decoding first.
-      headers.set(VINEXT_RSC_REDIRECT_HEADER, digestUrl);
+      headers.set(VINEXT_RSC_REDIRECT_HEADER, headerUrl);
       headers.set(VINEXT_RSC_REDIRECT_TYPE_HEADER, options.specialError.type ?? "replace");
       const pendingCookies = options.getAndClearPendingCookies?.() ?? [];
       for (const cookie of pendingCookies) {

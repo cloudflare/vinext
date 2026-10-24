@@ -172,6 +172,7 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+  createSharedAppCacheIdentity,
   createSharedAppPageCacheIdentity,
   isStaticCandidateAppPageDispatch,
   prepareSharedAppPageDispatch,
@@ -352,8 +353,9 @@ function readCacheabilityRequestProjection(
 
 function adapterUsesQueryFreeCacheIdentity(): boolean {
   const adapter = getCdnCacheAdapter();
-  // The identity is query-free, so it is safe only behind completed-response
-  // admission, which refuses App pages without a negative searchParams proof.
+  // The identity is host-free, and query-free for pages, so it is safe only
+  // behind completed-response admission, which refuses dynamic renders and
+  // App pages without a negative searchParams proof.
   return (
     adapter.requiresCompletedResponseAdmission === true &&
     adapter.responseStageCacheIdentity === "query-free"
@@ -1442,21 +1444,25 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               new URL(rscPath, dispatchRequest.url).toString(),
             );
           }
-          // Shared dispatches are GET/HEAD only. A next.config public policy
-          // is admitted whatever the render read, so it keeps the full-URL
+          // Shared dispatches are GET/HEAD only. Every host shares one entry,
+          // as in Next.js. A next.config public policy is admitted whatever
+          // the render read of the query, so a page keeps the query in its
           // identity, as Next.js CDN caching does. Interception and mounted-slot
           // payloads stay contextual, as the RSC canonicalization above does.
           const cacheIdentity =
-            cache === "shared" &&
-            responseStagePolicy === null &&
-            stageProps.kind === "app-page" &&
-            stageProps.matchKind !== "interception" &&
-            stageProps.interceptionContext === null &&
-            stageProps.interceptionId === null &&
-            stageProps.mountedSlotsHeader === null &&
-            adapterUsesQueryFreeCacheIdentity()
-              ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
-              : undefined;
+            cache !== "shared" ||
+            stageProps.kind === "app-full-request" ||
+            stageProps.kind === "hybrid-pages" ||
+            !adapterUsesQueryFreeCacheIdentity()
+              ? undefined
+              : stageProps.kind === "app-page" &&
+                  responseStagePolicy === null &&
+                  stageProps.matchKind !== "interception" &&
+                  stageProps.interceptionContext === null &&
+                  stageProps.interceptionId === null &&
+                  stageProps.mountedSlotsHeader === null
+                ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
+                : createSharedAppCacheIdentity(dispatchRequest, stageProps);
           let response = await dispatchResponseStage(
             dispatchRequest,
             stageProps,

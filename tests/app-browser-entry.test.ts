@@ -9033,6 +9033,24 @@ describe("app browser RSC redirect lifecycle", () => {
     });
   });
 
+  // The server sends a scheme-relative redirect() target as written, so the
+  // client resolves it against the page it fetched, as the Flight digest is.
+  it.each([
+    ["https://example.com", "/docs/foo"],
+    ["http://example.com", "https://foo/"],
+  ])("resolves a streamed https:foo target from %s against the fetched page", (origin, href) => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/docs/page",
+      historyUpdateMode: "replace",
+      origin,
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "https:foo",
+    });
+
+    expect(decision).toMatchObject({ href });
+  });
+
   it("lets explicit push redirects upgrade an initiating replace navigation", () => {
     const decision = navigationPlanner.classifyRscFetchResult({
       clientCompatibilityId: null,

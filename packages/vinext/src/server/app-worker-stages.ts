@@ -7,14 +7,15 @@ import {
   type CacheabilityManifest,
 } from "./cacheability-manifest.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
-import type {
-  VinextResponseStageCacheability,
-  VinextResponseStageDispatchOptions,
-  VinextResponseStageTransport,
+import {
+  VINEXT_CACHE_IDENTITY_ORIGIN,
+  type VinextResponseStageCacheability,
+  type VinextResponseStageDispatchOptions,
+  type VinextResponseStageTransport,
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 12;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -130,6 +131,43 @@ export function prepareSharedAppPageDispatch(
     : request;
 }
 
+type SharedAppCacheIdentity = NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]>;
+
+/** App Router dispatches whose shared cache entry every host can reuse. */
+export type SharedAppCacheIdentityProps = Exclude<
+  AppWorkerResponseStageProps,
+  { kind: "app-full-request" | "hybrid-pages" }
+>;
+
+function sharedAppCacheIdentity(
+  requestUrl: string,
+  init: { headers: Headers; method: string },
+  props: SharedAppCacheIdentityProps,
+): SharedAppCacheIdentity {
+  // Next.js keys its response cache by pathname, so the identity names one
+  // origin for every host. Admission refuses a render that read the host.
+  const url = new URL(requestUrl);
+  return {
+    props: { ...props, requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+    request: new Request(`${VINEXT_CACHE_IDENTITY_ORIGIN}${url.pathname}${url.search}`, init),
+  };
+}
+
+/**
+ * Build the cache identity of a shared App Router dispatch: the dispatched
+ * request and props under the cache identity origin.
+ */
+export function createSharedAppCacheIdentity(
+  request: Request,
+  props: SharedAppCacheIdentityProps,
+): SharedAppCacheIdentity {
+  return sharedAppCacheIdentity(
+    request.url,
+    { headers: new Headers(request.headers), method: request.method },
+    props,
+  );
+}
+
 /**
  * Build the query-free cache identity of a shared App page dispatch. The user
  * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
@@ -139,7 +177,7 @@ export function prepareSharedAppPageDispatch(
 export function createSharedAppPageCacheIdentity(
   request: Request,
   props: AppMatchedWorkerResponseStageProps,
-): NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]> {
+): SharedAppCacheIdentity {
   const queryFree = withoutAppPageDispatchQuery(request.url, props);
   const headers = new Headers(request.headers);
   if (!props.isRscRequest) {
@@ -148,10 +186,11 @@ export function createSharedAppPageCacheIdentity(
     // props. Transports key these Vary fields, so keep them out of the key.
     for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
   }
-  return {
-    props: queryFree.props,
-    request: new Request(queryFree.url, { headers, method: request.method }),
-  };
+  return sharedAppCacheIdentity(
+    queryFree.url,
+    { headers, method: request.method },
+    queryFree.props,
+  );
 }
 
 /**

@@ -313,7 +313,12 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
   );
   // The opaque URL already partitions these selectors. Keep every Vary field
   // present so cache-selection rules agree on the selected representation.
-  return new Request(url, { headers: CACHE_REQUEST_VARY_HEADERS, method: "GET" });
+  return new Request(url, {
+    headers: CACHE_REQUEST_VARY_HEADERS,
+    method: "GET",
+    // A stored redirect is the response; following it would look up its target.
+    redirect: "manual",
+  });
 }
 
 /**
