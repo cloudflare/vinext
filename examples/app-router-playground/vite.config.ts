@@ -10,7 +10,7 @@ import path from "node:path";
 
 // The deployed fallback shell e2e builds the playground with a cache backend.
 const cacheBackend = process.env.VINEXT_CACHE_BACKEND;
-const cache =
+const cacheConfig =
   cacheBackend === "kv"
     ? {
         data: kvDataAdapter({
@@ -89,7 +89,7 @@ export default defineConfig({
 
     // vinext plugin (provides all next/* shims, routing, SSR, RSC).
     // @vitejs/plugin-rsc is auto-registered when app/ is detected.
-    vinext({ images: { optimizer: imagesOptimizer() }, ...(cache ? { cache } : {}) }),
+    vinext({ images: { optimizer: imagesOptimizer() }, cache: cacheConfig }),
 
     // Cloudflare Workers plugin — builds for workerd runtime.
     // The worker entry runs in the RSC environment, with SSR as a child.
