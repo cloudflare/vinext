@@ -40,6 +40,11 @@ const DEFAULT_RUN_WORKER_FIRST = ["/*", ...BUILD_OUTPUT_EXCLUSIONS];
 const HTML_HANDLING = "none";
 const STATIC_ASSETS_CACHE_ROUTE = "/_vinext/static-cache/*";
 const RESPONSE_STORE_WRANGLER_CONFIG = "wrangler.response-store.jsonc";
+const NATIVE_MODULE_STUB_FILE = "empty-stub.js";
+const NATIVE_MODULE_STUB_SOURCE = `// Native Node modules cannot run in Cloudflare Workers.
+// vinext init aliases them to this file in vite.config.ts.
+export default {};
+`;
 
 const RESPONSE_STORE_BINDING = "RESPONSE_STORE";
 const RESPONSE_STORE_ENTRYPOINT = "ResponseStoreService";
@@ -193,6 +198,23 @@ export function validateCloudflarePlatformSetup(
   }
 }
 
+/**
+ * Write the `empty-stub.js` file that native-module aliases in the Vite config
+ * point at. Only writes when the config references it and the file is missing,
+ * so an existing hand-written stub is kept.
+ */
+function writeNativeModuleStub(
+  root: string,
+  viteConfigPath: string,
+  viteConfigCode: string,
+): string | undefined {
+  if (!viteConfigCode.includes(NATIVE_MODULE_STUB_FILE)) return undefined;
+  const stubPath = path.join(path.dirname(viteConfigPath), NATIVE_MODULE_STUB_FILE);
+  if (fs.existsSync(stubPath)) return undefined;
+  fs.writeFileSync(stubPath, NATIVE_MODULE_STUB_SOURCE, "utf-8");
+  return path.relative(root, stubPath) || NATIVE_MODULE_STUB_FILE;
+}
+
 export function setupCloudflarePlatform(
   context: CloudflarePlatformSetupContext,
   cloudflare: CloudflareInitOptions,
@@ -225,6 +247,8 @@ export function setupCloudflarePlatform(
   let generatedViteConfig = false;
   let skippedViteConfig = false;
   let preservedExistingGenerateScopedName = false;
+  let viteConfigPath = path.join(context.root, "vite.config.ts");
+  let viteConfigCode = "";
   if (context.existingViteConfigPath) {
     const currentConfig = fs.readFileSync(context.existingViteConfigPath, "utf-8");
     let updatedConfig = updateViteConfigForCloudflare(
@@ -254,6 +278,8 @@ export function setupCloudflarePlatform(
     } else {
       skippedViteConfig = true;
     }
+    viteConfigPath = context.existingViteConfigPath;
+    viteConfigCode = updatedConfig;
   } else {
     const configContent = context.isAppRouter
       ? generateAppRouterViteConfig(
@@ -278,9 +304,12 @@ export function setupCloudflarePlatform(
         );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), configContent, "utf-8");
     generatedViteConfig = true;
+    viteConfigCode = configContent;
   }
 
   const generatedPlatformFiles: string[] = [];
+  const stubFile = writeNativeModuleStub(context.root, viteConfigPath, viteConfigCode);
+  if (stubFile) generatedPlatformFiles.push(stubFile);
   if (!wranglerPath) {
     fs.writeFileSync(
       path.join(context.root, "wrangler.jsonc"),
@@ -377,6 +406,8 @@ function setupCfPlatform(
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding";
   let generatedViteConfig = false;
   let preservedExistingGenerateScopedName = false;
+  let viteConfigPath = path.join(context.root, "vite.config.ts");
+  let viteConfigCode = "";
   if (context.existingViteConfigPath) {
     const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
     let updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
@@ -393,6 +424,8 @@ function setupCfPlatform(
       fs.writeFileSync(context.existingViteConfigPath, updated, "utf-8");
       generatedViteConfig = true;
     }
+    viteConfigPath = context.existingViteConfigPath;
+    viteConfigCode = updated;
   } else {
     const viteConfig = context.isAppRouter
       ? generateAppRouterViteConfig(
@@ -415,10 +448,13 @@ function setupCfPlatform(
         );
     fs.writeFileSync(path.join(context.root, "vite.config.ts"), viteConfig, "utf-8");
     generatedViteConfig = true;
+    viteConfigCode = viteConfig;
   }
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const stubFile = writeNativeModuleStub(context.root, viteConfigPath, viteConfigCode);
+  if (stubFile) generatedPlatformFiles.push(stubFile);
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
