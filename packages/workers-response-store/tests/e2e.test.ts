@@ -487,7 +487,8 @@ test("replacesRevision drops a refresh of a revision another write already repla
   }
 });
 
-test("replacesRevision still refreshes what readers see when a newer revision never reached R2", async () => {
+test("replacesRevision drops a refresh of a fresh revision still on its way to R2, until it goes stale", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
   const options = {
     cacheControl: "public, max-age=1, stale-while-revalidate=60",
     noRevalidator: true,
@@ -501,7 +502,7 @@ test("replacesRevision still refreshes what readers see when a newer revision ne
   const replacesRevision = stale.headers.get("X-Workers-Response-Store-Revision");
   assert.ok(replacesRevision);
 
-  // A fresh publish committed in the metadata DO whose R2 write never landed.
+  // Another refresh's fresh publish, committed in the metadata DO before its R2 write.
   const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
     name: metadataName,
   });
@@ -510,12 +511,19 @@ test("replacesRevision still refreshes what readers see when a newer revision ne
       active_revision = latest_revision + 1, fresh_until = ?`,
     Date.now() + 60_000,
   );
-  const refresh = await put("/refresh-race-unwritten", "second", {
+  const refresh = {
     ...options,
     cacheControl: "public, max-age=60, stale-while-revalidate=60",
     replacesRevision,
-  });
-  assert.equal(refresh.json.backingStoreUpdated, true);
+  };
+  const dropped = await put("/refresh-race-unwritten", "second", refresh);
+  assert.deepEqual(dropped.json, { backingStoreUpdated: false, edgePurgeAccepted: false });
+  assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), []);
+
+  // Once that revision is stale without reaching R2, readers still see the one they refresh.
+  await storage.exec(`UPDATE entries SET fresh_until = ?`, Date.now() - 1);
+  const healed = await put("/refresh-race-unwritten", "second", refresh);
+  assert.equal(healed.json.backingStoreUpdated, true);
   assert.equal(await (await read("/refresh-race-unwritten")).text(), "second");
 });
 

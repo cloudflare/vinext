@@ -42,6 +42,12 @@ export type PurgeReservation = {
   tombstoneSequence: number;
 };
 
+/** The revision a refresh read stale, and whether readers see a newer one in R2. */
+export type RefreshedRevision = {
+  revision: number;
+  replacedInR2: boolean;
+};
+
 type TombstoneDrainResult = {
   cursor?: string;
   failures: string[];
@@ -96,7 +102,7 @@ export type CacheMetadataStub = DurableObjectStub & {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey?: string,
-    replacesRevision?: number,
+    replaces?: RefreshedRevision,
   ): Promise<PublicationResult>;
   invalidatePublishedRevision(keyHash: string, revision: number): Promise<TombstoneDrainResult>;
   getEntry(keyHash: string): Promise<StoredEntry | null>;
@@ -989,7 +995,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     metadata: CandidateMetadata,
     claimId?: string,
     reservationObjectKey = metadata.objectKey,
-    replacesRevision?: number,
+    replaces?: RefreshedRevision,
   ): Promise<PublicationResult> {
     return this.ctx.storage.transactionSync(() => {
       const current = this.ctx.storage.sql
@@ -1018,12 +1024,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
         // A refresh of a revision another write or invalidate() has since replaced: the
-        // newer one is fresh, or stale and refreshed by its own readers. After a tombstone
-        // there is nothing to refresh, so the write fills it.
-        (replacesRevision !== undefined &&
+        // newer one is fresh, or stale where readers see it in R2, and refreshed by them. A
+        // stale one they can't see never reached R2. After a tombstone there is nothing to
+        // refresh. In both cases the write goes ahead.
+        (replaces !== undefined &&
           !current.tombstoned &&
           current.active_revision !== null &&
-          current.active_revision > replacesRevision) ||
+          current.active_revision > replaces.revision &&
+          (replaces.replacedInR2 ||
+            (current.fresh_until !== null && Date.now() < current.fresh_until))) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
