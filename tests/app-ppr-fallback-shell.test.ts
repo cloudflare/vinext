@@ -97,15 +97,23 @@ describe("createAppPprFallbackShells", () => {
     });
   });
 
-  it("derives no shell from a value that reads as a placeholder once decoded", () => {
+  it("derives no shell from a value equal to its param's placeholder", () => {
     const route = { params: ["locale", "slug"], pattern: "/:locale/:slug", rootParamNames: [] };
-
-    const pathnames = createAppPprFallbackShells(route, { locale: "[locale]", slug: "a" }).map(
-      (shell) => shell.pathname,
-    );
+    const pathnamesFor = (locale: string) =>
+      createAppPprFallbackShells(route, { locale, slug: "a" }).map((shell) => shell.pathname);
 
     // `/%5Blocale%5D/[slug]` would share `/[locale]/[slug]`'s decoded key.
-    expect(pathnames).toEqual(["/[locale]/[slug]"]);
+    expect(pathnamesFor("[locale]")).toEqual(["/[locale]/[slug]"]);
+    expect(pathnamesFor("[en]")).toEqual(["/%5Ben%5D/[slug]", "/[locale]/[slug]"]);
+  });
+
+  it("keeps a root param's bracket-shaped value, which no shell leaves out", () => {
+    const shells = createAppPprFallbackShells(
+      { params: ["locale", "slug"], pattern: "/:locale/:slug", rootParamNames: ["locale"] },
+      { locale: "[locale]", slug: "a" },
+    );
+
+    expect(shells.map((shell) => shell.pathname)).toEqual(["/%5Blocale%5D/[slug]"]);
   });
 
   it("orders nested fallback shells from most specific child prefix to root-only", () => {
