@@ -564,7 +564,8 @@ export default { plugins: [vinext()] };
       `import vinext from ${JSON.stringify(VINEXT_ENTRY_URL)};\nexport default { plugins: [vinext()] };\n`,
     );
     // A lock from before the current boot whose PID now belongs to a live,
-    // unrelated process (this test runner).
+    // unrelated process (this test runner). Linux compares the boot ID;
+    // other platforms fall back to the pre-boot startedAt.
     const lockPath = getLockfilePath(root);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
     fs.writeFileSync(
@@ -576,6 +577,7 @@ export default { plugins: [vinext()] };
         appUrl: "http://localhost:3000",
         startedAt: Date.now() - os.uptime() * 1000 - 60_000,
         cwd: root,
+        bootId: "previous-boot",
       }),
     );
     child = spawn(process.execPath, [VITE_CLI_PATH, "dev", "--port", "0"], {

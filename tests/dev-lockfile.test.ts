@@ -100,6 +100,15 @@ describe("readBootId", () => {
     mockBootId("0a1b2c3d-boot");
     expect(readBootId()).toBe("0a1b2c3d-boot");
   });
+
+  it("returns undefined when the platform has no boot ID", () => {
+    const readFileSync = fs.readFileSync;
+    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) => {
+      if (file === BOOT_ID_PATH) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      return readFileSync(file, options);
+    }) as typeof fs.readFileSync);
+    expect(readBootId()).toBeUndefined();
+  });
 });
 
 describe("predatesCurrentBoot", () => {
@@ -111,7 +120,7 @@ describe("predatesCurrentBoot", () => {
     expect(predatesCurrentBoot({ startedAt: Date.now() })).toBe(false);
   });
 
-  it("returns false for a lock written just after the derived boot time", () => {
+  it("tolerates a lock that predates the derived boot time by under a second", () => {
     // os.uptime() is whole seconds on macOS, so a lock written right after
     // boot can appear to predate it slightly.
     expect(predatesCurrentBoot({ startedAt: bootTime() - 1_000 })).toBe(false);
