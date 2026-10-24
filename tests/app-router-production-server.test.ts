@@ -555,6 +555,31 @@ describe("App Router Production server (startProdServer)", () => {
     expect(rawCookies).toEqual(cookies);
   });
 
+  // Next.js writes middleware response headers onto the Node response before a
+  // Pages API handler runs, so the handler's setHeader() replaces them while
+  // headers it leaves alone, and middleware's cookie, are kept.
+  it("lets a hybrid Node Pages API route's own headers replace middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/middleware-header-precedence`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("cache-control")).toBe("no-store");
+    expect(res.headers.get("www-authenticate")).toBe('Bearer realm="handler"');
+    expect(res.headers.get("x-header-precedence")).toBe("handler");
+    expect(res.headers.get("proxy-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.getSetCookie()).toEqual([
+      "middleware-cookie=1; Path=/",
+      "handler-cookie=1; Path=/",
+    ]);
+    await expect(res.text()).resolves.toBe("unauthorized");
+  });
+
+  it("keeps middleware headers on a hybrid Pages API route's error response", async () => {
+    const res = await fetch(`${baseUrl}/api/middleware-header-precedence?throw=1`);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("www-authenticate")).toBe('Basic realm="middleware"');
+    expect(res.headers.get("x-header-precedence")).toBe("middleware");
+    expect(res.headers.getSetCookie()).toEqual(["middleware-cookie=1; Path=/"]);
+  });
+
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
     // request.url))`, so routing this request would echo the target's origin.

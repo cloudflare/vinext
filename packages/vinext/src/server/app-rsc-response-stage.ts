@@ -318,6 +318,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           // A transported length belongs to neither the Pages render nor API
           // body. User code remains free to author the final Content-Length.
           preHandlerHeaders?.delete("Content-Length");
+          const middlewareResponseHeaders =
+            props.middlewareResponseHeaders === null
+              ? null
+              : new Headers(props.middlewareResponseHeaders);
           const renderPagesFallback = options.renderPagesFallback;
           let pagesResponse = await runOutsideWorkStoreScope(() =>
             renderPagesFallback({
@@ -333,7 +337,9 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
               isDataRequest: props.isDataRequest,
               isRscRequest: props.isRscRequest,
               matchKind: props.matchKind,
-              middlewareContext,
+              middlewareContext: middlewareResponseHeaders
+                ? { ...middlewareContext, headers: middlewareResponseHeaders }
+                : middlewareContext,
               initialResponseHeaders: preHandlerHeaders,
               pathname: props.resolvedUrl,
               pagesDataRequest: props.isDataRequest ? request : null,
@@ -344,9 +350,12 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           if (!pagesResponse) {
             return new Response("Invalid vinext App response stage", { status: 404 });
           }
-          if (preHandlerHeaders) {
-            pagesResponse = stripInheritedResponseStageCookies(pagesResponse, preHandlerHeaders);
+          // The request stage re-adds middleware's cookies ahead of these.
+          const inheritedHeaders = new Headers(preHandlerHeaders);
+          for (const cookie of middlewareResponseHeaders?.getSetCookie() ?? []) {
+            inheritedHeaders.append("Set-Cookie", cookie);
           }
+          pagesResponse = stripInheritedResponseStageCookies(pagesResponse, inheritedHeaders);
           return pagesResponse;
         }
 

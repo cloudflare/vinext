@@ -30,5 +30,17 @@ export function middleware(request: NextRequest) {
   ) {
     response.cookies.set("session", session.value, { path: "/", httpOnly: true, maxAge: 600 });
   }
+  // The Node Pages API handler's own headers must replace these, as in
+  // Next.js; the edge route keeps vinext's middleware-wins merge.
+  if (
+    request.nextUrl.pathname === "/api/middleware-header-precedence" ||
+    request.nextUrl.pathname === "/api/middleware-header-precedence-edge"
+  ) {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Cache-Control", "private, max-age=7");
+    response.headers.set("x-header-precedence", "middleware");
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+  }
   return response;
 }

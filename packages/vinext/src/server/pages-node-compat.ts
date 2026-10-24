@@ -112,6 +112,8 @@ type PagesRequestCookiesCarrier = {
 type CreatePagesReqResOptions = {
   body: unknown;
   initialResponseHeaders?: Headers;
+  /** Middleware response headers, installed on `res` before user code runs. */
+  middlewareResponseHeaders?: Headers | null;
   query: PagesRequestQuery;
   request: Request;
   url: string;
@@ -284,6 +286,9 @@ class PagesResponseStream extends Writable {
   // Null-prototype like Node's header map, so names such as `constructor` or
   // `__proto__` are ordinary headers.
   private readonly resHeaders: PagesReqResHeaders = Object.create(null);
+  private middlewareSetCookieHeaders: readonly string[] = [];
+  private seeding = false;
+  private readonly userSetHeaderNames = new Set<string>();
   private resolved = false;
   // Node's ServerResponse commits its head on writeHead(), not only on the
   // first body write.
@@ -349,6 +354,48 @@ class PagesResponseStream extends Writable {
     validateAppendedHeader(name, value);
     this.setHeaderValue(name, value, { append: true });
     return this as PagesReqResResponse;
+  }
+
+  /**
+   * Install middleware response headers before the API handler runs, as
+   * Next.js's router server does, so the handler's own `setHeader()` replaces
+   * a middleware value. Middleware cookies stay first even when the handler
+   * replaces Set-Cookie (Next.js `patchSetHeaderWithCookieSupport`).
+   */
+  seedMiddlewareResponseHeaders(headers: Headers): void {
+    this.seedResponseHeaders(headers);
+    const cookies = headers.getSetCookie();
+    if (cookies.length === 0) return;
+    this.seeding = true;
+    try {
+      this.setHeaderValue("Set-Cookie", cookies, { append: true });
+    } finally {
+      this.seeding = false;
+    }
+    this.middlewareSetCookieHeaders = [...this.middlewareSetCookieHeaders, ...cookies];
+  }
+
+  /** Install framework-owned headers without recording them as user writes. */
+  seedResponseHeaders(headers: Headers, options: { cookies?: boolean } = {}): void {
+    this.seeding = true;
+    try {
+      for (const [name, value] of headers) {
+        if (name.toLowerCase() !== "set-cookie")
+          this.setHeaderValue(name, value, { append: false });
+      }
+      const cookies = options.cookies ? headers.getSetCookie() : [];
+      if (cookies.length > 0) this.setHeaderValue("Set-Cookie", cookies, { append: false });
+    } finally {
+      this.seeding = false;
+    }
+  }
+
+  /** Whether user code set a matching header before the response committed. */
+  hasUserSetHeader(matches: (lowerName: string) => boolean): boolean {
+    for (const name of this.userSetHeaderNames) {
+      if (matches(name)) return true;
+    }
+    return false;
   }
 
   getHeader(name: string): PagesReqResHeaderValue | undefined {
@@ -510,6 +557,17 @@ class PagesResponseStream extends Writable {
     options: { append: boolean },
   ): void {
     const key = name.toLowerCase();
+    if (!this.seeding && !this.resolved) this.userSetHeaderNames.add(key);
+    const middlewareCookies = this.middlewareSetCookieHeaders;
+    if (key === "set-cookie" && !options.append && middlewareCookies.length > 0) {
+      // Next.js patchSetHeaderWithCookieSupport keeps middleware cookies ahead
+      // of a replacement unless the handler passes back (a prefix of) the
+      // middleware cookies themselves.
+      const values = Array.isArray(value) ? value.map(String) : [String(value)];
+      if (!(Array.isArray(value) && values.every((cookie, i) => cookie === middlewareCookies[i]))) {
+        value = [...new Set([...middlewareCookies, ...values])];
+      }
+    }
     // Like Node, keep header arrays (and appended values) as a list of the
     // original values so getHeader() returns every value in its own type.
     const existing = this.resHeaders[key];
@@ -607,6 +665,14 @@ export function markVinextStreamedApiResponse(response: Response): void {
   (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse = true;
 }
 
+/** Whether user code set a matching header on a Pages `res` before it committed. */
+export function hasUserSetPagesResponseHeader(
+  res: PagesReqResResponse,
+  matches: (lowerName: string) => boolean,
+): boolean {
+  return res instanceof PagesResponseStream && res.hasUserSetHeader(matches);
+}
+
 export function isVinextStreamedApiResponse(response: Response): boolean {
   return (response as ResponseWithVinextStreamedApiBody).__vinextStreamedApiResponse === true;
 }
@@ -636,16 +702,15 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
     resolveResponse = resolve;
     rejectResponse = reject;
   });
-  const res: PagesReqResResponse = new PagesResponseStream(
-    resolveResponse,
-    rejectResponse,
-  ) as PagesReqResResponse;
-  for (const [name, value] of options.initialResponseHeaders ?? []) {
-    if (name.toLowerCase() === "set-cookie") continue;
-    res.setHeader(name, value);
+  const stream = new PagesResponseStream(resolveResponse, rejectResponse);
+  const res = stream as PagesReqResResponse;
+  if (options.initialResponseHeaders) {
+    stream.seedResponseHeaders(options.initialResponseHeaders, { cookies: true });
   }
-  const initialCookies = options.initialResponseHeaders?.getSetCookie() ?? [];
-  if (initialCookies.length > 0) res.setHeader("Set-Cookie", initialCookies);
+  // Before the preview API: its expired preview cookies follow middleware's.
+  if (options.middlewareResponseHeaders) {
+    stream.seedMiddlewareResponseHeaders(options.middlewareResponseHeaders);
+  }
   attachPagesPreviewApi(req, res);
 
   return { req, res, responsePromise };

@@ -5,6 +5,7 @@ import {
 import { gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  applyMiddlewareHeadersToStagedPagesApiResponse,
   renderPagesFallback,
   type PagesEntry,
 } from "../packages/vinext/src/server/app-pages-bridge.js";
@@ -677,7 +678,17 @@ describe("renderPagesFallback", () => {
   });
 
   it("routes /api and /api/* through handleApiRoute and applies middleware context", async () => {
-    const handleApiRoute = vi.fn((_req: Request, _url: string) => new Response("api-response"));
+    const handleApiRoute = vi.fn(
+      (
+        _req: Request,
+        _url: string,
+        _ctx?: unknown,
+        _origin?: string,
+        _runtime?: string,
+        _initialHeaders?: Headers,
+        _middlewareHeaders?: Headers,
+      ) => new Response("api-response"),
+    );
     const mwHeaders = new Headers({ "x-res-mw": "value" });
     const deps = {
       ...defaultDeps,
@@ -701,7 +712,11 @@ describe("renderPagesFallback", () => {
     expect(handleApiRoute.mock.calls[0][1]).toBe("/api/foo/bar");
     expect(res).not.toBeNull();
     expect(res!.status).toBe(201);
-    expect(res!.headers.get("x-res-mw")).toBe("value");
+    // Next.js installs middleware headers on the Node response before the
+    // handler runs, so the API route receives them instead of a later merge
+    // overriding the handler's own values.
+    expect(handleApiRoute.mock.calls[0][6]?.get("x-res-mw")).toBe("value");
+    expect(res!.headers.get("x-res-mw")).toBeNull();
     expect(await res!.text()).toBe("api-response");
   });
 
@@ -988,5 +1003,27 @@ describe("renderPagesFallback", () => {
 
     expect(renderPage).toHaveBeenCalledTimes(1);
     expect(res).toBeNull();
+  });
+});
+
+describe("applyMiddlewareHeadersToStagedPagesApiResponse", () => {
+  it("keeps the staged response's headers and puts middleware cookies first", () => {
+    const response = new Response("ok", {
+      headers: [
+        ["WWW-Authenticate", 'Bearer realm="handler"'],
+        ["Set-Cookie", "handler=1; Path=/"],
+      ],
+    });
+    const middlewareHeaders = new Headers([
+      ["WWW-Authenticate", 'Basic realm="middleware"'],
+      ["x-middleware", "1"],
+      ["Set-Cookie", "middleware=1; Path=/"],
+    ]);
+
+    const merged = applyMiddlewareHeadersToStagedPagesApiResponse(response, middlewareHeaders);
+
+    expect(merged.headers.get("www-authenticate")).toBe('Bearer realm="handler"');
+    expect(merged.headers.get("x-middleware")).toBe("1");
+    expect(merged.headers.getSetCookie()).toEqual(["middleware=1; Path=/", "handler=1; Path=/"]);
   });
 });

@@ -14,7 +14,7 @@ import type {
 } from "./multi-stage.js";
 import { isTrustedPrerenderState, type TrustedPrerenderState } from "./prerender-route-params.js";
 
-export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 11;
+export const APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION = 12;
 export const APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER = "x-vinext-app-metadata-stage-no-match";
 const STATIC_FILE_SIGNAL_TOKEN_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -98,8 +98,14 @@ type HybridPagesWorkerResponseStageProps = AppWorkerResponseStageEnvelope & {
   isDataRequest: boolean;
   isRscRequest: boolean;
   matchKind: "dynamic" | "static";
-  /** Complete response-header snapshot installed before request-time Pages user code runs. */
+  /**
+   * Complete response-header snapshot installed before request-time Pages user
+   * code runs. For an API route it holds only next.config headers; middleware's
+   * travel separately so the API route can apply them per runtime.
+   */
   preHandlerHeaders: Array<[string, string]> | null;
+  /** Middleware response headers for an API route; `null` for a page. */
+  middlewareResponseHeaders: Array<[string, string]> | null;
   resourceKind: "api" | "page";
   requestUrl: string;
   resolvedUrl: string;
@@ -261,6 +267,8 @@ export function isAppWorkerResponseStageProps(
       typeof hybrid.isRscRequest === "boolean" &&
       (hybrid.matchKind === "dynamic" || hybrid.matchKind === "static") &&
       (hybrid.preHandlerHeaders === null || isSerializedHeaders(hybrid.preHandlerHeaders)) &&
+      (hybrid.middlewareResponseHeaders === null ||
+        isSerializedHeaders(hybrid.middlewareResponseHeaders)) &&
       (hybrid.resourceKind === "api" || hybrid.resourceKind === "page") &&
       typeof hybrid.requestUrl === "string" &&
       typeof hybrid.resolvedUrl === "string" &&
