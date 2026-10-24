@@ -32,7 +32,7 @@ import {
   loadNavigationRuntimeRouteManifest,
 } from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
-import { waitForAppPrefetchRevalidationCooldown } from "./internal/app-prefetch-fetch-queue.js";
+import { runAfterAppPrefetchRevalidationCooldown } from "./internal/app-prefetch-fetch-queue.js";
 import {
   getMountedSlotsHeader,
   getPrefetchInterceptionContext,
@@ -368,7 +368,7 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               )
                 return;
               prefetched.add(cacheKey);
-              const fetchPromise = waitForAppPrefetchRevalidationCooldown().then(() =>
+              const fetchPromise = runAfterAppPrefetchRevalidationCooldown(() =>
                 fetch(rscUrl, {
                   headers,
                   credentials: "include",

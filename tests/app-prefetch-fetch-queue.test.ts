@@ -29,20 +29,19 @@ describe("app prefetch fetch queue revalidation cooldown", () => {
     queue.startAppPrefetchRevalidationCooldown();
     void queue.scheduleAppPrefetchFetch(fetcher, "low");
     void queue.scheduleAppPrefetchFetch(fetcher, "high");
-    let probeReleased = false;
-    void queue.waitForAppPrefetchRevalidationCooldown().then(() => {
-      probeReleased = true;
-    });
+    const probe = vi.fn(() => "probe");
+    const probeResult = queue.runAfterAppPrefetchRevalidationCooldown(probe);
     await flushMicrotasks();
     expect(fetcher).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(299);
     expect(fetcher).not.toHaveBeenCalled();
-    expect(probeReleased).toBe(false);
+    expect(probe).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(1);
     expect(fetcher).toHaveBeenCalledTimes(2);
-    expect(probeReleased).toBe(true);
+    expect(probe).toHaveBeenCalledTimes(1);
+    await expect(probeResult).resolves.toBe("probe");
   });
 
   it("keeps the concurrency cap when the cooldown releases held prefetches", async () => {
@@ -131,14 +130,31 @@ describe("app prefetch fetch queue revalidation cooldown", () => {
     expect(fetcher).not.toHaveBeenCalled();
   });
 
+  it("checks the cooldown when an out-of-queue prefetch is sent, not before", async () => {
+    const queue = await loadQueue();
+    const send = vi.fn(async () => new Response(""));
+
+    // The caller's own async work (building the request URL) runs first.
+    const sent = Promise.resolve().then(() => queue.runAfterAppPrefetchRevalidationCooldown(send));
+    queue.startAppPrefetchRevalidationCooldown();
+    await flushMicrotasks();
+    expect(send).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(300);
+    expect(send).toHaveBeenCalledTimes(1);
+    await expect(sent).resolves.toBeInstanceOf(Response);
+  });
+
   it("sends prefetches immediately without a revalidation", async () => {
     const queue = await loadQueue();
     const fetcher = vi.fn(async () => new Response(""));
 
     void queue.scheduleAppPrefetchFetch(fetcher, "high");
     void queue.scheduleAppPrefetchFetch(fetcher, "low");
-    await flushMicrotasks();
+    void queue.runAfterAppPrefetchRevalidationCooldown(fetcher);
+    // An out-of-queue prefetch is sent in the same task as the check.
     expect(fetcher).toHaveBeenCalledTimes(2);
-    await expect(queue.waitForAppPrefetchRevalidationCooldown()).resolves.toBeUndefined();
+    await flushMicrotasks();
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 });

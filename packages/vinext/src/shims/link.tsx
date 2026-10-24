@@ -80,7 +80,7 @@ import {
   isAppPrefetchFetchClaimed,
   markGatedAppPrefetchFetch,
   scheduleAppPrefetchFetch,
-  waitForAppPrefetchRevalidationCooldown,
+  runAfterAppPrefetchRevalidationCooldown,
 } from "./internal/app-prefetch-fetch-queue.js";
 
 type NavigateEvent = {
@@ -659,18 +659,19 @@ function prefetchUrl(
           }
           const ownerLeaveCount = owner?.leaveCount;
           const probeRscUrl = await createRscRequestUrl(fullHref, probeHeaders);
-          await waitForAppPrefetchRevalidationCooldown();
-          // The Link left meanwhile. The probe is best effort, so drop it.
-          if (owner && owner.leaveCount !== ownerLeaveCount) {
-            throw new DOMException("Prefetch is no longer wanted", "AbortError");
-          }
-          return fetch(probeRscUrl, {
-            method: "HEAD",
-            headers: probeHeaders,
-            credentials: "include",
-            priority,
-            // @ts-expect-error — purpose is a valid fetch option in some browsers
-            purpose: "prefetch",
+          return runAfterAppPrefetchRevalidationCooldown(() => {
+            // The Link left meanwhile. The probe is best effort, so drop it.
+            if (owner && owner.leaveCount !== ownerLeaveCount) {
+              throw new DOMException("Prefetch is no longer wanted", "AbortError");
+            }
+            return fetch(probeRscUrl, {
+              method: "HEAD",
+              headers: probeHeaders,
+              credentials: "include",
+              priority,
+              // @ts-expect-error — purpose is a valid fetch option in some browsers
+              purpose: "prefetch",
+            });
           });
         };
         // A visible Link that reuses a pending request becomes one of its owners.

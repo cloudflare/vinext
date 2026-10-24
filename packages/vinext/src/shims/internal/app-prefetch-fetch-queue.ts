@@ -104,10 +104,22 @@ export async function waitForAppPrefetchUnlessHeldByRevalidationCooldown(
   }
 }
 
-/** Resolves once no revalidation cooldown holds prefetch requests. */
-export function waitForAppPrefetchRevalidationCooldown(): Promise<void> {
-  if (revalidationCooldownTimer === null) return Promise.resolve();
-  return new Promise((resolve) => cooldownWaiters.push(resolve));
+/**
+ * Run `send`, which issues a prefetch request outside the queue, once no
+ * revalidation cooldown holds prefetches. It runs in the same task as the check,
+ * so a cooldown can't start between the two.
+ */
+export function runAfterAppPrefetchRevalidationCooldown<T>(send: () => T | Promise<T>): Promise<T> {
+  if (revalidationCooldownTimer !== null) {
+    return new Promise((resolve) =>
+      cooldownWaiters.push(() => resolve(runAfterAppPrefetchRevalidationCooldown(send))),
+    );
+  }
+  try {
+    return Promise.resolve(send());
+  } catch (error) {
+    return Promise.reject(error);
+  }
 }
 
 function drainDefaultAppPrefetchQueue(): void {
