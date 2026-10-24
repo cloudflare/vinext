@@ -2,11 +2,10 @@ import { describe, expect, it } from "vite-plus/test";
 import { generateRscEntry } from "../packages/vinext/src/entries/app-rsc-entry.js";
 import type { AppRoute } from "../packages/vinext/src/routing/app-router.js";
 
-describe("RSC Flight hint fix", () => {
-  it("generateRscEntry delegates renderToReadableStream hint normalization", () => {
-    // The RSC entry should shadow renderToReadableStream with a wrapper that
-    // rewrites Flight HL hint "stylesheet" → "style" at the stream source,
-    // so all consumers (SSR embed, client-side nav, server actions) get clean data.
+describe("RSC renderer wrapper", () => {
+  it("generateRscEntry wraps renderToReadableStream with createRscRenderer", () => {
+    // The RSC entry shadows renderToReadableStream with a wrapper that keeps a
+    // consumer's cancellation from being reported as a render error.
     const route: AppRoute = {
       pattern: "/",
       pagePath: "/tmp/test/app/page.tsx",
