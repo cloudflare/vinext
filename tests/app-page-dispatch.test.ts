@@ -46,6 +46,10 @@ import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-runtime.js";
 import {
+  _getResumeDataCacheCollector,
+  _getResumeDataCacheSeed,
+} from "../packages/vinext/src/shims/cache-request-state.js";
+import {
   runWithExecutionContext,
   type ExecutionContextLike,
 } from "../packages/vinext/src/shims/request-context.js";
@@ -1309,6 +1313,33 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(200);
     expect(refreshInForeground[0]).toBe(true);
+  });
+
+  it("seeds a PPR fallback shell's final render with what its warmup collected", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const caches: { collector: unknown; seed: unknown }[] = [];
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () => {
+      caches.push({ collector: _getResumeDataCacheCollector(), seed: _getResumeDataCacheSeed() });
+      return React.createElement("main", null, "page");
+    });
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage(options),
+    );
+
+    expect(response.status).toBe(200);
+    expect(caches).toHaveLength(2);
+    expect(caches[0]!.seed).toBeNull();
+    expect(caches[1]!.seed).not.toBeNull();
+    expect(caches[1]!.seed).toBe(caches[0]!.collector);
   });
 
   afterEach(() => {
