@@ -6,11 +6,6 @@ import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 
 export type RscRawRenderer = (model: unknown, options?: unknown) => ReadableStream<Uint8Array>;
 
-export type RscRawPrerenderer = (
-  model: unknown,
-  options?: unknown,
-) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
-
 const noop = (): void => {};
 
 export function createRscRenderer(render: RscRawRenderer): RscRawRenderer {
