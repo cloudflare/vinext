@@ -113,9 +113,10 @@ describe.each(DEV_ALIAS_FORMS)(
       }
     }, 60_000);
 
+    // Closing waits for the dep optimizer, which is slow on a loaded machine.
     afterAll(async () => {
       await server?.close();
-    });
+    }, 30_000);
 
     it("renders the stock image through the wrapper", async () => {
       // Checked before the request, which would never finish otherwise.
@@ -148,7 +149,7 @@ describe("next/image not aliased by the user (dev)", () => {
 
   afterAll(async () => {
     await server?.close();
-  });
+  }, 30_000);
 
   // The browser and SSR share next/image's module, including its dep optimizer
   // pre-bundle when there is one.

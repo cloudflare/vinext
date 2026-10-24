@@ -1315,13 +1315,10 @@ const tsconfigAliasCustomResolver = async function (
   return resolved ?? { id: updatedId };
 } as unknown as ResolverFunction;
 
-// Vite's dev alias matching: a RegExp is tested, a string matches the id
-// itself or a path below it. Rolldown's build alias plugin does not match below
-// a string ending in "/"; this helper's broader match only skips a dedupe there.
+// Vite's alias plugin matching: a RegExp is tested, a string matches the id
+// itself or a path below it.
 function aliasFindMatches(find: string | RegExp, id: string): boolean {
-  if (typeof find === "string") {
-    return id === find || id.startsWith(find.endsWith("/") ? find : `${find}/`);
-  }
+  if (typeof find === "string") return id === find || id.startsWith(`${find}/`);
   // A g or y flag makes test() advance lastIndex, and Vite reuses this RegExp.
   const { lastIndex } = find;
   const matches = find.test(id);
