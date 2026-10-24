@@ -55,7 +55,7 @@ function createBinding(keyHash: string) {
   const binding = new ResponseStoreBinding(ctx as never, {} as never);
   const internals = binding as unknown as Internals;
   internals.deriveCacheKey = async () => ({ cacheKey: `https://store.test/${keyHash}`, keyHash });
-  internals.getMetadata = () => ({ markReplacedEdgeCopiesPurged: async () => {} });
+  internals.getMetadata = () => ({});
   return { binding, internals, lifetimes };
 }
 
@@ -69,7 +69,7 @@ describe("Response Store shared work lifetime", () => {
     const purge = createDeferred<boolean>();
     const storeResponse = vi.fn(async () => ({
       edgePurgeRequired: true,
-      entry: { keyHash: "put-lifetime", activeRevision: 1 },
+      entry: { keyHash: "put-lifetime" },
       published: true,
     }));
     const updateEdgeCacheByTags = vi.fn(() => purge.promise);

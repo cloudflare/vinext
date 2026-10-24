@@ -124,7 +124,6 @@ export type CacheMetadataStub = DurableObjectStub & {
   listPendingEdgePurges(limit: number, tombstoneSequence?: number): Promise<PurgedEntry[]>;
   markTombstonesEdgePurged(entries: PurgedEntry[]): Promise<void>;
   markTombstonesEdgePurgedThrough(tombstoneSequence: number): Promise<void>;
-  markReplacedEdgeCopiesPurged(keyHash: string, revision: number): Promise<void>;
   inspect(): Promise<StoredEntry[]>;
 };
 
@@ -150,7 +149,6 @@ type EntryRow = Record<string, SqlStorageValue> & {
   expiry_behavior: string | null;
   cache_tags: string | null;
   tombstoned: number;
-  edge_fresh_until?: number | null;
 };
 
 type PurgeEntryRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision" | "object_key">;
@@ -300,8 +298,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           revalidator_args TEXT,
           expiry_behavior TEXT,
           cache_tags TEXT,
-          tombstoned INTEGER NOT NULL DEFAULT 0,
-          edge_fresh_until INTEGER
+          tombstoned INTEGER NOT NULL DEFAULT 0
         );
         CREATE INDEX IF NOT EXISTS entries_cache_key ON entries(cache_key);
         CREATE INDEX IF NOT EXISTS entries_active_object_key
@@ -365,12 +362,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 8) return;
+        if (migrations.size === 7) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -473,12 +470,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             `);
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (8)");
-        }
-        if (!migrations.has(9)) {
-          if (!schemas.find(({ name }) => name === "entries")?.sql.includes("edge_fresh_until")) {
-            ctx.storage.sql.exec("ALTER TABLE entries ADD COLUMN edge_fresh_until INTEGER");
-          }
-          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
         }
       });
       ctx.storage.sql.exec(`
@@ -1057,36 +1048,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
       const freshUntil = Math.min(metadata.freshUntil, deadline);
       const swrUntil = Math.min(metadata.swrUntil, deadline);
-      // Like a first write, replacing a stale entry without a revalidator needs no purge:
-      // its edge copy ended when it went stale. Earlier copies still need it until they
-      // expire too, unless a later purge was accepted, and so do copies an invalidate()
-      // made stale early while its own purge of them is queued.
-      const replacedEdgeCopyExpired =
-        current.revalidator_id === null &&
-        !current.tombstoned &&
-        current.fresh_until !== null &&
-        now >= current.fresh_until &&
-        now >= (current.edge_fresh_until ?? 0) &&
-        this.ctx.storage.sql
-          .exec(
-            "SELECT 1 FROM pending_r2_tombstones WHERE key_hash = ? AND edge_purge_complete = 0",
-            keyHash,
-          )
-          .toArray().length === 0;
-      // Until when an edge copy of a replaced revision may still be served. One with a
-      // revalidator may be served stale indefinitely, e.g. on an error, until a purge.
-      const edgeFreshUntil =
-        current.active_revision === null || replacedEdgeCopyExpired
-          ? (current.edge_fresh_until ?? null)
-          : current.revalidator_id === null
-            ? Math.max(current.edge_fresh_until ?? 0, current.fresh_until ?? 0)
-            : Number.MAX_SAFE_INTEGER;
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
-          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0,
-          edge_fresh_until = ?
+          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,
@@ -1100,7 +1066,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
-        edgeFreshUntil,
         keyHash,
         revision,
         revision,
@@ -1137,6 +1102,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         cacheTags: metadata.cacheTags,
       };
 
+      // Like a first write, replacing a stale entry without a revalidator needs no purge:
+      // its edge copy ended when it went stale. One an invalidate() made stale early still
+      // needs it while invalidate()'s own purge of the earlier copies is queued.
+      const replacedEdgeCopyExpired =
+        current.revalidator_id === null &&
+        !current.tombstoned &&
+        current.fresh_until !== null &&
+        now >= current.fresh_until &&
+        this.ctx.storage.sql
+          .exec(
+            "SELECT 1 FROM pending_r2_tombstones WHERE key_hash = ? AND edge_purge_complete = 0",
+            keyHash,
+          )
+          .toArray().length === 0;
       return {
         edgePurgeRequired:
           published && current.active_revision !== null && !replacedEdgeCopyExpired,
@@ -1144,15 +1123,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         published,
       };
     });
-  }
-
-  async markReplacedEdgeCopiesPurged(keyHash: string, revision: number): Promise<void> {
-    // A newer revision may have replaced copies this purge did not cover.
-    this.ctx.storage.sql.exec(
-      "UPDATE entries SET edge_fresh_until = NULL WHERE key_hash = ? AND active_revision = ?",
-      keyHash,
-      revision,
-    );
   }
 
   async invalidatePublishedRevision(
@@ -1671,12 +1641,6 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   markTombstonesEdgePurged(entries: PurgedEntry[]): void {
     this.ctx.storage.transactionSync(() => {
       for (const batch of batches(entries, MAX_SQL_PARAMETERS / 2)) {
-        this.clearPurgedEdgeWatermarks(
-          `tombstones.edge_invalidate = 0 AND (${batch
-            .map(() => "(tombstones.key_hash = ? AND tombstones.revision = ?)")
-            .join(" OR ")})`,
-          ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
-        );
         this.ctx.storage.sql.exec(
           `UPDATE pending_r2_tombstones SET edge_purge_complete = 1 WHERE ${batch
             .map(() => "(key_hash = ? AND revision = ?)")
@@ -1689,29 +1653,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   }
 
   markTombstonesEdgePurgedThrough(tombstoneSequence: number): void {
-    this.clearPurgedEdgeWatermarks(
-      "tombstones.r2_complete = 1 AND tombstones.edge_purge_complete = 0 AND tombstones.tombstone_sequence <= ?",
-      tombstoneSequence,
-    );
     this.ctx.storage.sql.exec(
       `DELETE FROM pending_r2_tombstones
       WHERE r2_complete = 1 AND edge_purge_complete = 0 AND tombstone_sequence <= ?`,
       tombstoneSequence,
-    );
-  }
-
-  // An accepted purge of a tombstone removed every earlier edge copy of its entry, unless
-  // a newer revision has replaced copies since.
-  private clearPurgedEdgeWatermarks(tombstoneFilter: string, ...parameters: (number | string)[]) {
-    this.ctx.storage.sql.exec(
-      `UPDATE entries SET edge_fresh_until = NULL
-      WHERE edge_fresh_until IS NOT NULL AND EXISTS (
-        SELECT 1 FROM pending_r2_tombstones AS tombstones
-        WHERE tombstones.key_hash = entries.key_hash
-          AND (entries.active_revision IS NULL OR entries.active_revision <= tombstones.revision)
-          AND (${tombstoneFilter})
-      )`,
-      ...parameters,
     );
   }
 
