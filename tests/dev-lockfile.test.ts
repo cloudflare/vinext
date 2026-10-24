@@ -84,11 +84,22 @@ function beforeBoot(): number {
 
 const BOOT_ID_PATH = "/proc/sys/kernel/random/boot_id";
 
+/**
+ * Make the boot ID file read as `contents`, or fail with ENOENT when
+ * `contents` is undefined, on every platform.
+ */
+function mockBootIdFile(contents: string | undefined): void {
+  const readFileSync = fs.readFileSync;
+  vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) => {
+    if (file !== BOOT_ID_PATH) return readFileSync(file, options);
+    if (contents === undefined) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    return contents;
+  }) as typeof fs.readFileSync);
+}
+
 /** Make `readBootId()` report `bootId`, on every platform. */
 function mockBootId(bootId: string): void {
-  const readFileSync = fs.readFileSync;
-  vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) =>
-    file === BOOT_ID_PATH ? `${bootId}\n` : readFileSync(file, options)) as typeof fs.readFileSync);
+  mockBootIdFile(`${bootId}\n`);
 }
 
 describe("readBootId", () => {
@@ -102,11 +113,12 @@ describe("readBootId", () => {
   });
 
   it("returns undefined when the platform has no boot ID", () => {
-    const readFileSync = fs.readFileSync;
-    vi.spyOn(fs, "readFileSync").mockImplementation(((file: fs.PathOrFileDescriptor, options) => {
-      if (file === BOOT_ID_PATH) throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
-      return readFileSync(file, options);
-    }) as typeof fs.readFileSync);
+    mockBootIdFile(undefined);
+    expect(readBootId()).toBeUndefined();
+  });
+
+  it("returns undefined for an empty boot ID file", () => {
+    mockBootIdFile("\n");
     expect(readBootId()).toBeUndefined();
   });
 });
@@ -120,10 +132,10 @@ describe("predatesCurrentBoot", () => {
     expect(predatesCurrentBoot({ startedAt: Date.now() })).toBe(false);
   });
 
-  it("tolerates a lock that predates the derived boot time by under a second", () => {
-    // os.uptime() is whole seconds on macOS, so a lock written right after
-    // boot can appear to predate it slightly.
-    expect(predatesCurrentBoot({ startedAt: bootTime() - 1_000 })).toBe(false);
+  it("tolerates a lock that predates the derived boot time by a few seconds", () => {
+    // os.uptime() is whole seconds on macOS and NTP slews the wall clock, so
+    // a lock written right after boot can appear to predate it slightly.
+    expect(predatesCurrentBoot({ startedAt: bootTime() - 4_000 })).toBe(false);
   });
 
   it("returns true for a lock written before this boot", () => {
@@ -140,6 +152,13 @@ describe("predatesCurrentBoot", () => {
     // the derived boot time past a live server's startedAt.
     mockBootId("current-boot");
     expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "current-boot" })).toBe(false);
+  });
+
+  it("falls back to the wall clock when the lock has a boot ID but the system has none", () => {
+    // e.g. a lock written in a Linux container, read where /proc is unavailable.
+    mockBootIdFile(undefined);
+    expect(predatesCurrentBoot({ startedAt: Date.now(), bootId: "previous-boot" })).toBe(false);
+    expect(predatesCurrentBoot({ startedAt: beforeBoot(), bootId: "previous-boot" })).toBe(true);
   });
 });
 
@@ -290,7 +309,7 @@ describe("tryAcquireLockfile", () => {
     expect(result.existing).toEqual(existing);
   });
 
-  it("takes over a lock from a previous boot even when its PID is alive", () => {
+  it("takes over a lock whose boot ID differs from the current one even when its PID is alive", () => {
     mockBootId("current-boot");
     const stale = baseInfo({ pid: process.pid, bootId: "previous-boot", cwd: root });
     const lockPath = getLockfilePath(root);
