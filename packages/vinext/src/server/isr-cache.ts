@@ -105,24 +105,20 @@ export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | 
   const stored = await getDataCacheHandler().get(key);
   if (stored) return toIsrCacheEntry(stored);
   const packaged = await getExplicitCdnCacheAdapter()?.get(key);
-  return toIsrCacheEntry(packaged ? withAgeCacheState(packaged) : null);
+  return toIsrCacheEntry(packaged ? withPackagedCacheState(packaged) : null);
 }
 
 /**
- * A packaged entry records only when it was built and its lifetime, so its age
- * decides whether it is stale or expired, as a data-cache entry's would.
+ * A packaged shell can't see `revalidatePath()` or `revalidateTag()`, so it is
+ * served stale: reading it stores a replacement in the data cache, where they
+ * act, and an invalidation that drops that replacement serves the packaged
+ * shell stale again instead of fresh. Past its expire it is a miss.
  */
-function withAgeCacheState(entry: CacheHandlerValue): CacheHandlerValue {
+function withPackagedCacheState(entry: CacheHandlerValue): CacheHandlerValue {
   if (entry.cacheState !== undefined) return entry;
-  const age = Date.now() - entry.lastModified;
-  const { expire, revalidate } = entry.cacheControl ?? {};
-  if (typeof expire === "number" && age > expire * 1000) {
-    return { ...entry, cacheState: "expired" };
-  }
-  if (typeof revalidate === "number" && age > revalidate * 1000) {
-    return { ...entry, cacheState: "stale" };
-  }
-  return entry;
+  const expire = entry.cacheControl?.expire;
+  const isExpired = typeof expire === "number" && Date.now() - entry.lastModified > expire * 1000;
+  return { ...entry, cacheState: isExpired ? "expired" : "stale" };
 }
 
 /** Store a PPR fallback shell in the data cache, where {@link isrGetFallbackShell} reads it. */

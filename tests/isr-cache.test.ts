@@ -1153,10 +1153,10 @@ describe("isrGetFallbackShell", () => {
   afterEach(() => setCdnCacheAdapter(new DefaultCdnCacheAdapter()));
 
   it.each([
-    { age: 30, state: { isStale: false } },
+    { age: 30, state: { isStale: true } },
     { age: 90, state: { isStale: true } },
     { age: 150, state: { isStale: true, isExpired: true } },
-  ])("ages a packaged shell like a stored one ($age s old)", async ({ age, state }) => {
+  ])("serves a packaged shell stale until it expires ($age s old)", async ({ age, state }) => {
     setCacheHandler(new MemoryCacheHandler());
     setCdnCacheAdapter({
       async get() {
