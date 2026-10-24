@@ -113,6 +113,7 @@ const projectServers = {
       "app-router-prod/prefetch-queue-viewport.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
+      "app-router/nextjs-compat/segment-cache-dynamic-params.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {

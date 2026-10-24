@@ -68,6 +68,11 @@ export function markAppRscResponseConfigHeadersApplied(response: Response): Resp
   return response;
 }
 
+/** Whether a response's final target pipeline has already applied config headers. */
+export function isAppRscResponseConfigHeadersApplied(response: Response): boolean {
+  return configHeadersAlreadyApplied.has(response);
+}
+
 /** Apply only the matching next.config headers for an App Router request. */
 export async function applyAppRscConfigHeaders(
   headers: Headers,

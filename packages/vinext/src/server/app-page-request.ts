@@ -730,6 +730,37 @@ export async function validateAppPageDynamicParams(
   return null;
 }
 
+type ValidateAppPageRouteDynamicParamsOptions = {
+  dynamicConfig?: string;
+  dynamicParamsConfig?: boolean;
+  generateStaticParams?: ValidateAppPageDynamicParamsOptions["generateStaticParams"];
+  isDynamicRoute: boolean;
+  isProduction: boolean;
+  params: AppPageParams;
+};
+
+/**
+ * Next.js rejects a `dynamicParams = false` miss while routing, before any of
+ * the route's segments render: it serves `/_not-found` instead.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/base-server.ts
+ */
+export function validateAppPageRouteDynamicParams(
+  options: ValidateAppPageRouteDynamicParamsOptions,
+): Promise<Response | null> {
+  // Next.js' production force-dynamic routes are absent from the prerender
+  // manifest, so they never enter its generated-path fallback gate. Dev still
+  // resolves and exact-matches generateStaticParams for the same route.
+  if (options.isProduction && options.dynamicConfig === "force-dynamic") {
+    return Promise.resolve(null);
+  }
+  return validateAppPageDynamicParams({
+    enforceStaticParamsOnly: options.dynamicParamsConfig === false,
+    generateStaticParams: options.generateStaticParams,
+    isDynamicRoute: options.isDynamicRoute,
+    params: options.params,
+  });
+}
+
 async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
   options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
