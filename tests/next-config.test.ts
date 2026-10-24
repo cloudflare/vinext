@@ -134,52 +134,6 @@ export default { env: { NEXT_PACKAGE_VERSION: nextPackage.version } };
   });
 });
 
-describe("NODE_ENV while loading next.config", () => {
-  // `NODE_ENV` is typed read-only on `process.env`.
-  const env = process.env as Record<string, string | undefined>;
-  let tmpDir: string;
-  let previousNodeEnv: string | undefined;
-
-  beforeEach(() => {
-    tmpDir = makeTempDir();
-    previousNodeEnv = env.NODE_ENV;
-    delete env.NODE_ENV;
-    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
-    fs.writeFileSync(
-      path.join(tmpDir, "next.config.mjs"),
-      "export default { env: { CONFIG_NODE_ENV: String(process.env.NODE_ENV) } };\n",
-    );
-  });
-
-  afterEach(() => {
-    if (previousNodeEnv === undefined) delete env.NODE_ENV;
-    else env.NODE_ENV = previousNodeEnv;
-    fs.rmSync(tmpDir, { recursive: true, force: true });
-  });
-
-  it("evaluates a production phase with NODE_ENV=production and leaves it unset", async () => {
-    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
-
-    expect(config?.env?.CONFIG_NODE_ENV).toBe("production");
-    expect(env.NODE_ENV).toBeUndefined();
-  });
-
-  it("evaluates the development phase with NODE_ENV=development and leaves it unset", async () => {
-    const config = await loadNextConfig(tmpDir, PHASE_DEVELOPMENT_SERVER);
-
-    expect(config?.env?.CONFIG_NODE_ENV).toBe("development");
-    expect(env.NODE_ENV).toBeUndefined();
-  });
-
-  it("keeps an explicitly set NODE_ENV", async () => {
-    env.NODE_ENV = "test";
-    const config = await loadNextConfig(tmpDir, PHASE_PRODUCTION_BUILD);
-
-    expect(config?.env?.CONFIG_NODE_ENV).toBe("test");
-    expect(env.NODE_ENV).toBe("test");
-  });
-});
-
 describe("deprecated config warnings", () => {
   afterEach(() => {
     vi.restoreAllMocks();

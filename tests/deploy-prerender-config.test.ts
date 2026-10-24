@@ -553,6 +553,31 @@ export function createBuilder(config) {
     );
   });
 
+  it("loads disk config and its callbacks with NODE_ENV=production when it is unset", async () => {
+    vi.stubEnv("NODE_ENV", undefined);
+    writeProject("true");
+    writeFile(
+      "next.config.mjs",
+      [
+        "const loadNodeEnv = String(process.env.NODE_ENV);",
+        "export default {",
+        '  output: "export",',
+        "  generateBuildId: () => `${loadNodeEnv}:${process.env.NODE_ENV}`,",
+        "};",
+        "",
+      ].join("\n"),
+    );
+    const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+    await deploy({ root: tmpDir, skipBuild: true });
+
+    expect(runPrerenderMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        nextConfig: expect.objectContaining({ buildId: "production:production" }),
+      }),
+    );
+  });
+
   it("loads Vite config even when disk config already enables static export", async () => {
     writeProject("true");
     writeFile("next.config.mjs", 'export default { output: "export" };\n');

@@ -1144,29 +1144,8 @@ export async function loadNextConfig(
   phase: string = DEFAULT_PHASE,
 ): Promise<NextConfig | null> {
   return withConfigRoot(root, () =>
-    withPhaseNodeEnv(phase, () =>
-      withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase)),
-    ),
+    withNextPackageIdentity(() => loadNextConfigWithPackageIdentity(root, phase)),
   );
-}
-
-// Vite's `runnerImport` resolves its config with the "serve" command, which
-// sets an unset NODE_ENV to "development" process-wide. Config plugins branch
-// on NODE_ENV (fumadocs-mdx starts a file watcher in development), so a
-// production load would take the dev path and keep the process alive. Mirror
-// the Next.js CLI default instead (`next dev` -> development, every other
-// command -> production) and restore the unset NODE_ENV once the load is done.
-async function withPhaseNodeEnv<T>(phase: string, callback: () => Promise<T>): Promise<T> {
-  // `NODE_ENV` is typed read-only on `process.env`.
-  const env = process.env as Record<string, string | undefined>;
-  if (env.NODE_ENV) return callback();
-  const nodeEnv = phase === PHASE_DEVELOPMENT_SERVER ? "development" : "production";
-  env.NODE_ENV = nodeEnv;
-  try {
-    return await callback();
-  } finally {
-    if (env.NODE_ENV === nodeEnv) delete env.NODE_ENV;
-  }
 }
 
 async function loadNextConfigWithPackageIdentity(
