@@ -198,10 +198,6 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") {
-    startAppPrefetchRevalidationCooldown();
-    deps.clearClientNavigationCaches();
-  }
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,
@@ -224,6 +220,14 @@ export async function invokeClientServerAction(
     Promise.resolve(flightResponse),
     { temporaryReferences },
   );
+  // Next.js invalidates and starts the cooldown once the action response is
+  // decoded (server-action-reducer.ts), so the window ends 300ms after the
+  // action completes. The cooldown starts first so it holds the re-prefetches
+  // the cache clear triggers.
+  if (revalidation !== "none") {
+    startAppPrefetchRevalidationCooldown();
+    deps.clearClientNavigationCaches();
+  }
   if (
     revalidation === "none" &&
     shouldClearClientNavigationCachesForServerActionResult(result, revalidation)

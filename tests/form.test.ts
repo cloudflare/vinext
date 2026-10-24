@@ -84,7 +84,13 @@ function createFormDataClass({ supportsSubmitter }: { supportsSubmitter: boolean
 
 function renderClientForm(
   props: Record<string, unknown>,
-  { effects = [] }: { effects?: Array<() => void | (() => void)> } = {},
+  {
+    effects = [],
+    layoutEffects = effects,
+  }: {
+    effects?: Array<() => void | (() => void)>;
+    layoutEffects?: Array<() => void | (() => void)>;
+  } = {},
 ) {
   // `forwardRef()` exposes the wrapped render function on `.render`, which lets us
   // exercise the submit handler directly without adding a DOM renderer just for this shim.
@@ -116,7 +122,9 @@ function renderClientForm(
     useMemo: (fn: () => unknown) => fn(),
     useState: (init: unknown) => [init, () => {}],
     useReducer: (_reducer: unknown, init: unknown) => [init, () => {}],
-    useLayoutEffect: () => {},
+    useLayoutEffect(effect: () => void | (() => void)) {
+      layoutEffects.push(effect);
+    },
     useImperativeHandle: () => {},
     useDebugValue: () => {},
     useDeferredValue: (val: unknown) => val,
@@ -1030,10 +1038,12 @@ describe("Form prefetch prop", () => {
       vi.stubGlobal("fetch", fetch);
       vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
 
-      const { ref } = renderClientForm({ action: "/search" }, { effects });
+      const layoutEffects: Array<() => void | (() => void)> = [];
+      const { ref } = renderClientForm({ action: "/search" }, { effects, layoutEffects });
       const form = {} as HTMLFormElement;
       ref(form);
-      const cleanups = effects.map((effect) => effect());
+      const layoutCleanups = layoutEffects.map((effect) => effect());
+      for (const effect of effects) effect();
 
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       try {
@@ -1055,8 +1065,10 @@ describe("Form prefetch prop", () => {
         }
         await vi.advanceTimersByTimeAsync(299);
         expect(fetch).not.toHaveBeenCalled();
+        // The commit that detaches the form runs only its layout cleanups;
+        // passive ones may run after the cooldown releases the request.
         if (unmounts) {
-          for (const cleanup of cleanups) cleanup?.();
+          for (const cleanup of layoutCleanups) cleanup?.();
         }
 
         await vi.advanceTimersByTimeAsync(1);

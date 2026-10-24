@@ -1914,6 +1914,33 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("ignores hover on a Link that isn't visible yet", async () => {
+    // Next.js: rescheduleLinkPrefetch in client/components/links.ts schedules
+    // nothing for an instance that isn't visible, so no request is held by the
+    // revalidation cooldown and sent after the Link has gone.
+    for (const duringCooldown of [false, true]) {
+      stubIntersectionObserver();
+      const result = await renderIsolatedLink({
+        href: "/viewport-prefetch-target",
+        nodeEnv: "production",
+      });
+
+      try {
+        if (duringCooldown) {
+          const { startAppPrefetchRevalidationCooldown } =
+            await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+          startAppPrefetchRevalidationCooldown();
+        }
+        result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+        await new Promise((resolve) => setTimeout(resolve, 350));
+        await flushPrefetchTasks();
+        expect(result.fetch).not.toHaveBeenCalled();
+      } finally {
+        result.restoreNodeEnv();
+      }
+    }
+  });
+
   it("preserves Pages Router viewport, explicit, and intent prefetches for a bot user agent", async () => {
     const botWindowOverrides = {
       __NEXT_DATA__: {

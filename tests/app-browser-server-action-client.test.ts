@@ -450,13 +450,17 @@ describe("app browser server action client", () => {
           }),
         ),
       );
-      vi.mocked(createFromFetch).mockResolvedValueOnce({
-        returnValue: { ok: true, data: "value" },
-      });
+      let decode!: () => void;
+      vi.mocked(createFromFetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          decode = () => resolve({ returnValue: { ok: true, data: "value" } });
+        }) as ReturnType<typeof createFromFetch>,
+      );
+      const clearClientNavigationCaches = vi.fn();
 
-      await invokeClientServerAction("action-id", [], actionInitiation, {
+      const invoked = invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
-        clearClientNavigationCaches: vi.fn(),
+        clearClientNavigationCaches,
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload: vi.fn(),
         navigationPlanner,
@@ -465,10 +469,23 @@ describe("app browser server action client", () => {
         syncCurrentHistoryState: vi.fn(),
         syncServerActionHttpFallbackHead: vi.fn(),
       });
+      const cooldownStarts = vi.mocked(startAppPrefetchRevalidationCooldown).mock;
 
-      expect(vi.mocked(startAppPrefetchRevalidationCooldown).mock.calls.length).toBe(
-        startsCooldown ? 1 : 0,
-      );
+      // Nothing is invalidated or held until the response is decoded, so the
+      // window ends 300ms after the action completes, as in Next.js.
+      await vi.waitFor(() => expect(createFromFetch).toHaveBeenCalledOnce());
+      expect(cooldownStarts.calls.length).toBe(0);
+      expect(clearClientNavigationCaches).not.toHaveBeenCalled();
+
+      decode();
+      await invoked;
+      expect(cooldownStarts.calls.length).toBe(startsCooldown ? 1 : 0);
+      if (startsCooldown) {
+        // Started before the cache clear, so its re-prefetches are held.
+        expect(cooldownStarts.invocationCallOrder[0]).toBeLessThan(
+          clearClientNavigationCaches.mock.invocationCallOrder[0]!,
+        );
+      }
     },
   );
 

@@ -22,7 +22,7 @@ import {
   forwardRef,
   useActionState,
   useCallback,
-  useEffect,
+  useLayoutEffect,
   useRef,
   type FormHTMLAttributes,
   type ForwardedRef,
@@ -305,8 +305,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   // Viewport-based prefetch: when the form enters the viewport, prefetch the
   // RSC payload for the action URL. App Router only; disabled in dev (matches
   // Next.js behavior). Gated by `prefetch !== false` and string action.
-  // Reference: link.tsx IntersectionObserver wiring pattern.
-  useEffect(() => {
+  // Reference: link.tsx IntersectionObserver wiring pattern. A layout effect, as
+  // in link.tsx, so unmounting drops a prefetch the revalidation cooldown holds
+  // in the commit that detaches the form, before the cooldown can release it.
+  useLayoutEffect(() => {
     if (typeof action !== "string") return;
     if (prefetch === false || process.env.NODE_ENV !== "production") return;
     // External destinations remain valid form markup and native navigation
