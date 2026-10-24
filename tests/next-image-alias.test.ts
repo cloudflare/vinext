@@ -27,19 +27,29 @@ function nextImageAlias(fixtureDir: string) {
   return [{ find: /^next\/image$/, replacement: path.join(fixtureDir, "app/image-wrapper.tsx") }];
 }
 
+// A customResolver also moves builds from rolldown's native alias plugin to
+// Vite's JS one.
+function customResolverAlias(fixtureDir: string) {
+  return [
+    {
+      find: "next/image",
+      replacement: path.join(SHIMS_DIR, "image"),
+      customResolver: () => path.join(fixtureDir, "app/image-wrapper.tsx"),
+    },
+  ];
+}
+
+const CUSTOM_RESOLVER_FORM = "a custom resolver over vinext's own replacement";
+
 const DEV_ALIAS_FORMS: Array<[string, AliasOptions]> = [
   ["a RegExp", nextImageAlias(FIXTURE_DIR)],
   ["an object key", { "next/image": WRAPPER_PATH }],
-  [
-    "a custom resolver over vinext's own replacement",
-    [
-      {
-        find: "next/image",
-        replacement: path.join(SHIMS_DIR, "image"),
-        customResolver: () => WRAPPER_PATH,
-      },
-    ],
-  ],
+  [CUSTOM_RESOLVER_FORM, customResolverAlias(FIXTURE_DIR)],
+];
+
+const PRODUCTION_ALIAS_FORMS: Array<[string, (fixtureDir: string) => AliasOptions]> = [
+  ["a RegExp", nextImageAlias],
+  [CUSTOM_RESOLVER_FORM, customResolverAlias],
 ];
 
 // Records the environments where the wrapper's vinext/shims/image import was
@@ -150,54 +160,57 @@ describe("next/image not aliased by the user (dev)", () => {
   });
 });
 
-describe("next/image aliased to a wrapper of vinext/shims/image (production)", () => {
-  const wrapperImports = new Map<string, string[]>();
-  let fixtureDir = "";
-  let server: Server | undefined;
-  let baseUrl = "";
+describe.each(PRODUCTION_ALIAS_FORMS)(
+  "next/image aliased by %s to a wrapper of vinext/shims/image (production)",
+  (_form, aliasFor) => {
+    const wrapperImports = new Map<string, string[]>();
+    let fixtureDir = "";
+    let server: Server | undefined;
+    let baseUrl = "";
 
-  beforeAll(async () => {
-    fixtureDir = await createIsolatedFixture(FIXTURE_DIR, "vinext-next-image-alias-");
-    fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"private":true,"type":"module"}');
-    const builder = await createBuilder({
-      root: fixtureDir,
-      configFile: false,
-      plugins: [vinext({ appDir: fixtureDir }), recordWrapperImports(wrapperImports)],
-      resolve: { alias: nextImageAlias(fixtureDir) },
-      logLevel: "silent",
-    });
-    await builder.buildApp();
-    // Build module ids are canonical paths.
-    const shimId = toSlash(fs.realpathSync.native(SHIM_PATH));
-    for (const environment of ENVIRONMENTS) {
-      const imports = wrapperImports.get(environment);
-      if (!imports?.includes(shimId)) {
-        throw new Error(
-          `${environment} build: the wrapper imports ${JSON.stringify(imports)}, not the shim`,
-        );
+    beforeAll(async () => {
+      fixtureDir = await createIsolatedFixture(FIXTURE_DIR, "vinext-next-image-alias-");
+      fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"private":true,"type":"module"}');
+      const builder = await createBuilder({
+        root: fixtureDir,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureDir }), recordWrapperImports(wrapperImports)],
+        resolve: { alias: aliasFor(fixtureDir) },
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      // Build module ids are canonical paths.
+      const shimId = toSlash(fs.realpathSync.native(SHIM_PATH));
+      for (const environment of ENVIRONMENTS) {
+        const imports = wrapperImports.get(environment);
+        if (!imports?.includes(shimId)) {
+          throw new Error(
+            `${environment} build: the wrapper imports ${JSON.stringify(imports)}, not the shim`,
+          );
+        }
       }
-    }
 
-    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
-    ({ server } = await startProdServer({
-      port: 0,
-      host: "127.0.0.1",
-      outDir: path.join(fixtureDir, "dist"),
-      noCompression: true,
-    }));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("Expected a TCP address");
-    baseUrl = `http://127.0.0.1:${address.port}`;
-  }, 120_000);
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      ({ server } = await startProdServer({
+        port: 0,
+        host: "127.0.0.1",
+        outDir: path.join(fixtureDir, "dist"),
+        noCompression: true,
+      }));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("Expected a TCP address");
+      baseUrl = `http://127.0.0.1:${address.port}`;
+    }, 120_000);
 
-  afterAll(() => {
-    server?.close();
-    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
-  });
+    afterAll(() => {
+      server?.close();
+      if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
+    });
 
-  it("renders the stock image through the wrapper", async () => {
-    const { res, html } = await fetchHtml(baseUrl, "/");
-    expect(res.status).toBe(200);
-    expectStockImage(html);
-  });
-});
+    it("renders the stock image through the wrapper", async () => {
+      const { res, html } = await fetchHtml(baseUrl, "/");
+      expect(res.status).toBe(200);
+      expectStockImage(html);
+    });
+  },
+);
