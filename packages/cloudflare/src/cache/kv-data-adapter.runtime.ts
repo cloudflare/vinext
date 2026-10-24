@@ -36,6 +36,7 @@ import {
 import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 import { createKvKeySpace, resolveKvExpirationTtlSeconds, type KvKeySpace } from "./kv-key.js";
+import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
 export { ENTRY_PREFIX } from "./kv-key.js";
 
@@ -98,6 +99,43 @@ type KVCacheEntry = {
   /** Effective cache-control policy used for response headers. */
   cacheControl?: CacheControlMetadata;
 };
+
+/**
+ * When a revalidated tag's entries turn stale and when they expire, like
+ * Next.js's tags manifest (server/lib/incremental-cache/tags-manifest.external.ts).
+ * A plain revalidateTag() writes a bare timestamp, read as `expired` with no
+ * `stale`: it expires older entries at once, even when another isolate's clock
+ * put it slightly ahead. A cacheLife profile writes JSON with both times, and
+ * its `expired` applies once it passes. A marker that can't be parsed has a
+ * NaN `expired` and invalidates everything.
+ */
+type TagMarker = {
+  stale?: number;
+  expired?: number;
+};
+
+function parseTagMarker(raw: string | null | undefined): TagMarker {
+  if (!raw) return {};
+  if (!raw.startsWith("{")) return { expired: Number(raw) };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { expired: Number.NaN };
+  }
+  if (!isUnknownRecord(parsed)) return { expired: Number.NaN };
+  const { stale, expired } = parsed;
+  if (
+    (stale !== undefined && typeof stale !== "number") ||
+    (expired !== undefined && typeof expired !== "number")
+  ) {
+    return { expired: Number.NaN };
+  }
+  return {
+    ...(stale === undefined ? {} : { stale }),
+    ...(expired === undefined ? {} : { expired }),
+  };
+}
 
 /** Prefix used by revalidatePath for path-based tags. */
 const PATH_TAG_PREFIX = "_N_T_";
@@ -191,8 +229,8 @@ export class KVCacheHandler implements CacheHandler {
   private ctx: ExecutionContextLike | undefined;
   private ttlSeconds: number;
 
-  /** Local in-memory cache for tag invalidation timestamps. Avoids redundant KV reads. */
-  private _tagCache = new Map<string, { timestamp: number; fetchedAt: number; order: number }>();
+  /** Local in-memory cache for tag invalidation markers. Avoids redundant KV reads. */
+  private _tagCache = new Map<string, { marker: TagMarker; fetchedAt: number; order: number }>();
   /** Monotonic ordering for concurrent tag-cache fills and local invalidations. */
   private _tagCacheOrder = 0;
   /** TTL (ms) for local tag cache entries. After this, re-fetch from KV. */
@@ -323,6 +361,9 @@ export class KVCacheHandler implements CacheHandler {
     if (this._hasRevalidatedTag(softTags, entry.lastModified)) {
       return null;
     }
+    // A tag revalidated with a cacheLife profile serves older entries stale
+    // while they revalidate, until the profile's expire time passes.
+    const hasStaleTag = this._hasStaleTag([...entryTags, ...softTags], entry.lastModified);
 
     if (entry.expireAt !== undefined && entry.expireAt !== null && Date.now() > entry.expireAt) {
       this._deleteEntryReadInBackground(kvKey);
@@ -335,6 +376,7 @@ export class KVCacheHandler implements CacheHandler {
     const requestedRevalidateAt =
       requestedRevalidate === undefined ? null : entry.lastModified + requestedRevalidate * 1000;
     const isStale =
+      hasStaleTag ||
       (entry.revalidateAt !== null && now > entry.revalidateAt) ||
       (requestedRevalidateAt !== null && now > requestedRevalidateAt);
 
@@ -384,7 +426,7 @@ export class KVCacheHandler implements CacheHandler {
       const current = tagCache.get(tag);
       if (current && current.order >= order) continue;
       const marker = markers.get(this._tagKey(tag));
-      tagCache.set(tag, { timestamp: marker ? Number(marker) : 0, fetchedAt: now, order });
+      tagCache.set(tag, { marker: parseTagMarker(marker), fetchedAt: now, order });
     }
   }
 
@@ -416,20 +458,33 @@ export class KVCacheHandler implements CacheHandler {
   }
 
   /**
-   * Report whether any tag has an invalidation marker at or after `lastModified`.
+   * Report whether any tag expired an entry last modified at `lastModified`:
+   * its marker's expire time is at or after `lastModified` and, for a cacheLife
+   * profile's marker, has passed.
    * Call `_primeTagCache` for the same tags first — a tag with no cache entry
    * counts as never invalidated. Pass `requireFresh` to call it before a prime,
    * so an entry past `tagCacheTtlMs` does not answer for a tag it never re-read.
    */
   private _hasRevalidatedTag(tags: string[], lastModified: number, requireFresh = false): boolean {
-    const now = requireFresh ? Date.now() : 0;
+    const now = Date.now();
     for (const tag of tags) {
       const cached = this._tagCache.get(tag);
-      if (!cached || cached.timestamp === 0) continue;
+      if (cached?.marker.expired === undefined) continue;
       if (requireFresh && now - cached.fetchedAt >= this._tagCacheTtl) continue;
-      if (Number.isNaN(cached.timestamp) || cached.timestamp >= lastModified) {
+      const { stale, expired } = cached.marker;
+      const pending = stale !== undefined && expired > now;
+      if (Number.isNaN(expired) || (expired >= lastModified && !pending)) {
         return true;
       }
+    }
+    return false;
+  }
+
+  /** Report whether any primed tag was marked stale after `lastModified`. */
+  private _hasStaleTag(tags: string[], lastModified: number): boolean {
+    for (const tag of tags) {
+      const stale = this._tagCache.get(tag)?.marker.stale;
+      if (stale !== undefined && stale > lastModified) return true;
     }
     return false;
   }
@@ -544,21 +599,44 @@ export class KVCacheHandler implements CacheHandler {
     });
   }
 
-  async revalidateTag(tags: string | string[], _durations?: { expire?: number }): Promise<void> {
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
     const tagList = Array.isArray(tags) ? tags : [tags];
     const now = Date.now();
     const validTags = tagList.filter((t) => validateTag(t) !== null);
-    // Store invalidation timestamp for each tag. Markers never expire: an
+    // Store an invalidation marker for each tag. Markers never expire: an
     // entry can outlive any marker TTL, for example one written under a longer
     // `ttlSeconds` before a config change. Newer entries pass the marker by
     // `lastModified`, and there is one small marker per revalidated tag.
-    await Promise.all(validTags.map((tag) => this.kv.put(this._tagKey(tag), String(now))));
+    const markers = await Promise.all(
+      validTags.map(async (tag): Promise<TagMarker> => {
+        const tagKey = this._tagKey(tag);
+        if (!isStaleTagInvalidation(durations)) {
+          // A bare timestamp expires the tag now. Older releases read it too.
+          await this.kv.put(tagKey, String(now));
+          return { expired: now };
+        }
+        // A cacheLife profile marks older entries stale now and expires them
+        // once the profile's expire passes, like Next.js's tags manifest.
+        // Without an expire, an earlier expiry still stands.
+        const expire = durations?.expire;
+        const expired =
+          expire === undefined
+            ? parseTagMarker(await this.kv.get(tagKey)).expired
+            : now + expire * 1000;
+        const marker: TagMarker = {
+          stale: now,
+          ...(expired === undefined || Number.isNaN(expired) ? {} : { expired }),
+        };
+        await this.kv.put(tagKey, JSON.stringify(marker));
+        return marker;
+      }),
+    );
     const order = ++this._tagCacheOrder;
     // Update local tag cache immediately so invalidations are reflected
     // without waiting for the TTL to expire
-    for (const tag of validTags) {
-      this._tagCache.set(tag, { timestamp: now, fetchedAt: now, order });
-    }
+    validTags.forEach((tag, index) => {
+      this._tagCache.set(tag, { marker: markers[index], fetchedAt: now, order });
+    });
   }
 
   /**
