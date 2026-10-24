@@ -161,8 +161,9 @@ const BOOT_TIME_TOLERANCE_MS = 5_000;
  * so without a boot ID on both sides (macOS, Windows, and Linux locks written
  * by older vinext or where `/proc` is unreadable) a forward step larger than
  * the uptime at which a server started makes its lock look stale, e.g. a VM
- * resuming after the host slept. The second `vinext dev` then takes over and Vite picks another port,
- * the same outcome as the acquisition race tolerated below.
+ * resuming after the host slept. The second `vinext dev` then takes over, as
+ * in the acquisition race tolerated below: Vite moves it to another port, or
+ * it fails to bind with `strictPort`.
  *
  * Known limitation: Windows Fast Startup shuts down by hibernating the
  * kernel, so `os.uptime()` keeps counting and a lock left by that shutdown is
@@ -294,11 +295,13 @@ export function tryAcquireLockfile(opts: AcquireOptions): AcquireResult {
 
   const existing = readLockfile(lockfilePath);
   if (existing) {
-    // A lock naming the acquiring process itself was left by an earlier
-    // process that had the same PID, e.g. before a container restart: the new
-    // PID namespace hands out PIDs deterministically, while the host's boot ID
-    // and uptime don't change. A Vite restart within one process reuses its
-    // lock and never gets here.
+    // A lock naming the acquiring process itself can't be ours: a Vite
+    // restart within one process reuses its lock and never gets here. It was
+    // written by another process with the same PID, typically before a
+    // container restart, where the new PID namespace hands out PIDs
+    // deterministically while the host's boot ID and uptime don't change.
+    // (A live server in another PID namespace sharing this directory can also
+    // match; PIDs never identified processes across namespaces.)
     const alive =
       existing.pid !== info.pid && !predatesCurrentBoot(existing) && isPidAlive(existing.pid);
     if (alive) {
