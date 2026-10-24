@@ -1,5 +1,105 @@
 # vinext
 
+## 1.3.1
+
+### Bug Fixes
+
+#### App Router
+
+- classify an intercepted prefetch by its intercepting page (#4237)
+- never reuse an automatic prefetch whose page rendered dynamically (#4231)
+- never render a dynamically rendered page in an automatic prefetch (#4230)
+- read the browser query in useSearchParams after hydration (#4250)
+- canonicalize contextual RSC requests reached through a rewrite (#4253)
+- match Next.js when a slot default or a page beside a slot's own not-found calls notFound() (#4224)
+- render a sibling intercepting layout while its sync page suspends (#4225)
+- render an ancestor loading boundary once below nested layouts (#4220)
+- link client reference stylesheets as anonymous when crossOrigin is unset (#4192)
+- render a parallel slot's own not-found inside the slot in the document (#4184)
+- link client reference stylesheets with the configured crossOrigin (#4186)
+- hint client reference scripts with the configured crossOrigin (#4181)
+- hint client reference scripts with the CSP nonce (#4174)
+- finish the navigation when a sibling intercepting layout doesn't render its page (#4172)
+- render a parallel slot's own not-found inside the slot (#4168)
+- render a sibling intercepting route's own forbidden and unauthorized (#4169)
+- catch a parallel slot layout's notFound() above the layout rendering it (#4167)
+- reset a segment's error boundary on a pathname change (#4166)
+- stream client components that await at their top level (#4135)
+- commit server-component HMR updates as transitions (#4164)
+- catch a parallel slot's notFound() above its layout in the document (#4155)
+- render a sibling intercepting route's own not-found (#4157)
+- clear access boundaries on pathname change under intercepted routes (#4156)
+- render built-in forbidden and unauthorized pages (#4154)
+- commit search+hash and prefetched navigations as transitions (#4146)
+- wrap every segment's not-found, forbidden and unauthorized boundaries in the tree (#4148)
+- render the boundary above a layout that calls notFound() (#4145)
+- let ancestor layout not-found boundaries catch page signals (#4137)
+- defer full-render link re-prefetches of dynamic routes after cache invalidation (#4136)
+- keep search-transition content on screen during response recovery (#4134)
+
+#### Misc
+
+- **Dev:** treat a dev lock left behind by a restart as stale (#4257)
+- **Cache:** serve entries of a tag revalidated with a cacheLife profile stale until it expires (#4256)
+- **Pages Router:** keep a middleware Cache-Control on getServerSideProps notFound pages (#4236)
+- **Link:** drop queued prefetches once their Link unmounts or leaves the viewport (#4180)
+- **Image:** preserve deprecated prop annotations (#4177)
+- **Fonts:** infer formats for extensionless Google font URLs (#4178)
+- **Prod Server:** default NODE_ENV to production in startProdServer (#4182)
+- **Config:** percent-encode config redirect Locations like Next.js (#4139)
+- **Pages:** send the private no-store default on getServerSideProps redirects (#4141)
+- **Metadata:** render openGraph emails, phone numbers, fax numbers and alternate locales (#4171)
+- **Config:** honor statusCode on next.config redirects (#4140)
+- **Metadata:** accept a single openGraph video or audio entry like Next.js (#4143)
+- **CLI:** default NODE_ENV to production in vinext start (#4153)
+
+### Performance
+
+#### App Router
+
+- embed inline RSC chunks as UTF-8 bytes without a UTF-16 round trip (#4243)
+- load ipaddr.js only on routes that render next/image (#4239)
+- name client reference chunks in their Flight rows (#4194)
+- load client reference loaders from their own chunk (#4193)
+- escape RSC payload scripts only where HTML requires it (#4187)
+- forward unchanged Fizz bytes in the SSR HTML transform (#4190)
+- load the client entry's chunks at low priority (#4183)
+- preload the RouteManifest chunk at low priority (#4185)
+
+#### Link
+
+- render plain links on the server without the client hooks (#4214)
+- skip revalidating the navigation runtime on every Link render (#4202)
+- skip repeated per-Link runtime and location work (#4189)
+- reuse App Router prefetch module imports across prefetches (#4188)
+
+#### Pages Router
+
+- keep the App Router runtime off pages that don't use next/navigation (#4227)
+- load page-owned client shims only on pages that use them (#4226)
+- preload the page and _app chunks in the initial HTML (#4223)
+
+#### Server
+
+- drop the React Flight stylesheet hint rewrite (#4242)
+- fold response start tracing and after() close tracking into the deferred stream wrapper (#4210)
+- read deferred streams directly and coalesce re-wrapped ones (#4209)
+- read the RSC stream directly in the preload hint pass (#4211)
+
+#### Misc
+
+- **Client:** compile startup chunks eagerly with V8's explicit compile hint (#4247)
+- **SSR:** render HTML with React's Node Fizz build on Node (#4191)
+- **OG:** avoid resolving tracked imports twice (#4175)
+
+### Contributors
+
+- @Godsenal
+- @james-elicx
+- @MumuTW
+- @RaphaelFakhri
+- @yoohahn
+
 ## 1.3.0
 
 Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
@@ -36,7 +136,7 @@ Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the h
 - stop prerender servers expiring idle keep-alive sockets (#4119)
 - keep the build ID out of client JS (#4101)
 - cache the Server Actions key and keep build IDs out of client JS (#3784)
-- list Pages routes in _buildManifest.js sortedPages (#4035)
+- list Pages routes in \_buildManifest.js sortedPages (#4035)
 
 #### Config
 
@@ -56,7 +156,7 @@ Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the h
 #### Server
 
 - fail `vinext start` when the port is in use (#4073)
-- detect the locale of raw _next/data URLs in NextURL (#4103)
+- detect the locale of raw \_next/data URLs in NextURL (#4103)
 - run JS Server Actions against the final route (#4061)
 - decide progressive actions after late routing (#4037)
 - skip progressive actions for multipart route handlers (#3905)

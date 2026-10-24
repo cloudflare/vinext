@@ -1,5 +1,15 @@
 # @vinext/cloudflare
 
+## 1.2.1
+
+### Bug Fixes
+
+- **Cloudflare:** serve KV entries of a tag revalidated with a cacheLife profile stale until it expires (#4258)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.2.0
 
 Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
