@@ -747,9 +747,13 @@ fi
 # vinext loads CJS next.config.js in `"type": "module"` packages via a temp
 # .cjs sibling (see config/next-config.ts), so we don't rewrite the user's
 # config file here.
+#
+# The harness runs under jest, which sets NODE_ENV=test. Like Next.js's own
+# next-start mode (test/lib/next-modes/next-start.ts), the build must not
+# inherit it: a deployment builds with NODE_ENV unset.
 if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1
-  "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
+  NODE_ENV="" "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
 else
   VITE_BIN="./node_modules/.bin/vite"
   if [ ! -x "${VITE_BIN}" ]; then
@@ -757,7 +761,7 @@ else
     exit 1
   fi
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender >> "${BUILD_LOG}" 2>&1
-  "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
+  NODE_ENV="" "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 fi
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests

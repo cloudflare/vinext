@@ -51,6 +51,15 @@ export function getRscOutputPath(
   return toOutputUrlPath(urlPath).replace(/^\//, "") + ".rsc";
 }
 
+/**
+ * Determine the private resume data cache path for a prerendered fallback
+ * shell, which the shell entry's `postponed` value is seeded from.
+ */
+export function getPostponedOutputPath(urlPath: string): string {
+  if (urlPath === "/") return "index.postponed";
+  return toOutputUrlPath(urlPath).replace(/^\//, "") + ".postponed";
+}
+
 /** Determine the binary artifact path for a prerendered App Route response. */
 export function getAppRouteOutputPath(urlPath: string): string {
   if (urlPath === "/") return "index.route";

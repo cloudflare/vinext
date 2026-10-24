@@ -37,6 +37,10 @@ import {
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import {
+  collectFetchResumeDataCacheEntry,
+  readFetchResumeDataCacheEntry,
+} from "./resume-data-cache.js";
 import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
 
 export {
@@ -1443,6 +1447,16 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const handler = getDataCacheHandler();
     let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
+    // A resumed fallback shell reads the response it was built with first,
+    // whatever its age, unless this request revalidated one of its tags.
+    const resumeEntry = mustBypassPendingRevalidation
+      ? undefined
+      : readFetchResumeDataCacheEntry(cacheKey);
+    if (resumeEntry) {
+      collectFetchResumeDataCacheEntry(cacheKey, resumeEntry);
+      return recordFetchOutcome(buildCachedFetchResponse(resumeEntry, input), "hit", cacheReason);
+    }
+
     // Try cache first
     try {
       let cached = mustBypassPendingRevalidation
@@ -1469,6 +1483,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           revalidateSeconds,
         );
         const cachedData = cached.value.data;
+        collectFetchResumeDataCacheEntry(cacheKey, cachedData);
         return recordFetchOutcome(buildCachedFetchResponse(cachedData, input), "hit", cacheReason);
       }
 
@@ -1483,6 +1498,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
         }
 
         const staleData = cached.value.data;
+        collectFetchResumeDataCacheEntry(cacheKey, staleData);
 
         // Background refetch — deduped so only one in-flight refetch runs
         // per cache key, preventing thundering herd on popular endpoints.
@@ -1543,6 +1559,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
     if (cacheValue) {
+      collectFetchResumeDataCacheEntry(cacheKey, cacheValue.data);
       handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,

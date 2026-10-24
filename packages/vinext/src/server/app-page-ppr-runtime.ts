@@ -4,6 +4,9 @@ import {
   getPprFallbackShellState,
   runWithPprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
+import { _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
+import { markDynamicUsage } from "vinext/shims/internal/headers-state";
+import { parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
   hasSearchParams,
   shouldReadAppPageCache,
@@ -74,6 +77,8 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
 ): Promise<Response | null> {
   const { readAppPageFallbackShellCacheResponse } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
+  // Shells run from the most specific, so the first dynamic one is resumed.
+  let isDynamicShellFound = false;
   for (const fallbackShell of fallbackShells) {
     const fallbackShellResponse = await readAppPageFallbackShellCacheResponse({
       clearRequestContext: options.clearRequestContext,
@@ -86,6 +91,19 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       middlewareHeaders: options.middlewareContext.headers,
       middlewareStatus: options.middlewareContext.status,
       revalidateSeconds: currentRevalidateSeconds ?? 0,
+      resumeDynamicShell(postponed, hasPrelude) {
+        isDynamicShellFound = true;
+        // Like Next.js, a route served from a shell resumes on every request
+        // instead of storing the concrete page, while an empty shell's route
+        // renders blocking and is stored.
+        if (hasPrelude) markDynamicUsage();
+        // vinext resumes the shell as a full render whose cached parts come
+        // from the values the shell was built with. React's postponed state
+        // isn't spliced into the shell's document.
+        const resumeDataCache = parseResumeDataCache(postponed);
+        _setResumeDataCacheSeed(resumeDataCache);
+        return resumeDataCache !== null;
+      },
       rewriteHtml(html) {
         return rewriteAppPprFallbackShellHtmlNavigation({
           html,
@@ -97,6 +115,7 @@ async function probePprFallbackShellCache<TRoute extends AppPageDispatchRoute>(
       },
     });
     if (fallbackShellResponse) return fallbackShellResponse;
+    if (isDynamicShellFound) return null;
   }
   return null;
 }

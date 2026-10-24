@@ -43,6 +43,7 @@ import { buildAppPageCacheTags, buildAppRouteCacheTags } from "./app-page-cache.
 import {
   getAppRouteOutputPath,
   getOutputPath,
+  getPostponedOutputPath,
   getRscOutputPath,
 } from "../utils/prerender-output-paths.js";
 import {
@@ -179,6 +180,7 @@ export async function seedMemoryCacheFromPrerender(
         expireSeconds,
         staleSeconds,
         tags,
+        isFallbackShell,
       )
     ) {
       await seedRsc(
@@ -253,17 +255,25 @@ async function seedHtml(
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
   tags: string[] | undefined,
+  isFallbackShell: boolean,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
   const fullPath = path.join(prerenderDir, relPath);
   if (!fs.existsSync(fullPath)) return false;
 
+  // A fallback shell's resume data cache, which a request resuming it reads.
+  const postponedPath = isFallbackShell
+    ? path.join(prerenderDir, getPostponedOutputPath(pathname))
+    : null;
   const htmlValue: CachedAppPageValue = {
     kind: "APP_PAGE",
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
     headers,
-    postponed: undefined,
+    postponed:
+      postponedPath && fs.existsSync(postponedPath)
+        ? fs.readFileSync(postponedPath, "utf-8")
+        : undefined,
     status,
   };
 

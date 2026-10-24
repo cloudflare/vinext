@@ -1,4 +1,7 @@
-import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import {
+  makeHangingPromise,
+  suppressHangingPromiseAbortRejections,
+} from "./internal/make-hanging-promise.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 
 export type PprFallbackShellState = {
@@ -29,6 +32,9 @@ type PprFallbackShellCacheTask = {
   // The `cacheEpoch` the task was created in. A task that settles in a later
   // epoch (after a warmup->final transition) must not decrement the counter.
   epoch: number;
+  // Uncounted while the task waits for its encoded arguments, see
+  // `waitForPprFallbackShellCacheInput`.
+  isAwaitingInput: boolean;
   isIgnored: boolean;
   isPending: boolean;
 };
@@ -37,8 +43,6 @@ const pprFallbackShellAls = getOrCreateAls<PprFallbackShellState>("vinext.pprFal
 const pprFallbackShellCacheTaskStackAls = getOrCreateAls<PprFallbackShellCacheTask[]>(
   "vinext.pprFallbackShell.cacheTaskStack.als",
 );
-
-function noop(): void {}
 
 function scheduleAfterTask(callback: () => void): () => void {
   let firstTimer: ReturnType<typeof setTimeout> | null = setTimeout(() => {
@@ -123,6 +127,10 @@ function scheduleAbortIfReady(state: PprFallbackShellState): void {
 function completeCacheTask(state: PprFallbackShellState, task: PprFallbackShellCacheTask): void {
   if (!task.isPending) return;
   task.isPending = false;
+  if (task.isAwaitingInput) {
+    task.isAwaitingInput = false;
+    return;
+  }
   // A task created in an earlier epoch was already accounted for when
   // `preparePprFallbackShellFinalRender` reset `pendingCacheTasks` to 0, so a
   // late settle must not decrement the freshly-reset counter below zero (which
@@ -180,6 +188,7 @@ export function trackPprFallbackShellCacheTask<T>(
   state.pendingCacheTasks++;
   const task: PprFallbackShellCacheTask = {
     epoch: state.cacheEpoch,
+    isAwaitingInput: false,
     isIgnored: false,
     isPending: true,
   };
@@ -199,6 +208,50 @@ export function trackPprFallbackShellCacheTask<T>(
   });
 }
 
+/**
+ * Wait for a cache function's arguments without holding the shell open.
+ *
+ * Like Next.js's `createHangingInputAbortSignal`, a cache function only counts
+ * as pending once its arguments are encoded: an argument derived from fallback
+ * `params` never resolves, and the shell must still settle and abort around it.
+ * An argument that another cache produces still resolves before the shell
+ * settles, because that cache is itself pending.
+ */
+export function waitForPprFallbackShellCacheInput<T>(input: Promise<T>): Promise<T> {
+  const state = getPprFallbackShellState();
+  const task = pprFallbackShellCacheTaskStackAls.getStore()?.at(-1);
+  if (
+    state === null ||
+    task === undefined ||
+    !task.isPending ||
+    task.isAwaitingInput ||
+    task.epoch !== state.cacheEpoch
+  ) {
+    return input;
+  }
+
+  task.isAwaitingInput = true;
+  state.pendingCacheTasks--;
+  scheduleCacheReadyIfSettled(state);
+  const resumeTask = () => {
+    if (!task.isAwaitingInput) return;
+    task.isAwaitingInput = false;
+    if (task.epoch !== state.cacheEpoch) return;
+    cancelPendingCacheReady(state);
+    state.pendingCacheTasks++;
+  };
+  return input.then(
+    (value) => {
+      resumeTask();
+      return value;
+    },
+    (error: unknown) => {
+      resumeTask();
+      throw error;
+    },
+  );
+}
+
 export function createPprFallbackShellSuspensePromiseForState<T>(
   state: PprFallbackShellState,
   expression: string,
@@ -207,13 +260,12 @@ export function createPprFallbackShellSuspensePromiseForState<T>(
   if (state.phase === "final") {
     scheduleAbortIfReady(state);
   }
-  const promise = makeHangingPromise<T>(
-    state.abortController.signal,
-    state.routePattern,
-    expression,
-  );
-  promise.catch(noop);
-  return promise;
+  // Like Next.js's unhandled-rejection filter for aborted prerenders, the
+  // shell's abort must not reject what user code derived from these promises
+  // (`params.then(...)`, an async helper awaiting `params`): nothing may be
+  // listening by then. They stay pending and the aborted render drops them.
+  suppressHangingPromiseAbortRejections(state.abortController.signal);
+  return makeHangingPromise<T>(state.abortController.signal, state.routePattern, expression);
 }
 
 function markPprFallbackShellDynamicBoundaryForState(state: PprFallbackShellState): void {

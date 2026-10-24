@@ -2,6 +2,8 @@ import { createInlineScriptTag } from "./html.js";
 import { createNavigationRuntimeRscMetadataScript } from "./app-ssr-stream.js";
 
 const PPR_DYNAMIC_FALLBACK_SHELL_MARKER = "<!--vinext-ppr-dynamic-fallback-shell-->";
+const PPR_RESUME_DATA_CACHE_TRAILER_START = "<!--vinext-ppr-resume-data-cache:";
+const PPR_RESUME_DATA_CACHE_TRAILER_END = "-->";
 
 type AppPprFallbackShellRoute = {
   params: readonly string[];
@@ -34,6 +36,61 @@ export function isAppPprDynamicFallbackShellHtml(html: string): boolean {
   return html.includes(PPR_DYNAMIC_FALLBACK_SHELL_MARKER);
 }
 
+/**
+ * Carry a fallback shell's resume data cache to the build after its HTML. The
+ * cache is complete once the shell's body ends, and a header could not hold
+ * it. Only a trusted fallback-shell prerender request gets the trailer, and
+ * build/prerender.ts removes it before the shell is written.
+ */
+export function appendAppPprFallbackShellResumeDataCache(
+  stream: ReadableStream<Uint8Array>,
+  readResumeDataCache: () => string | null,
+): ReadableStream<Uint8Array> {
+  return stream.pipeThrough(
+    new TransformStream<Uint8Array, Uint8Array>({
+      flush(controller) {
+        const resumeDataCache = readResumeDataCache();
+        if (resumeDataCache === null) return;
+        // `>` occurs only inside JSON strings, where `\u003e` is the same
+        // value, so the comment cannot end early.
+        controller.enqueue(
+          new TextEncoder().encode(
+            PPR_RESUME_DATA_CACHE_TRAILER_START +
+              resumeDataCache.replaceAll(">", "\\u003e") +
+              PPR_RESUME_DATA_CACHE_TRAILER_END,
+          ),
+        );
+      },
+    }),
+  );
+}
+
+export function splitAppPprFallbackShellResumeDataCache(html: string): {
+  html: string;
+  resumeDataCache: string | null;
+} {
+  const start = html.lastIndexOf(PPR_RESUME_DATA_CACHE_TRAILER_START);
+  if (start === -1 || !html.endsWith(PPR_RESUME_DATA_CACHE_TRAILER_END)) {
+    return { html, resumeDataCache: null };
+  }
+  return {
+    html: html.slice(0, start),
+    resumeDataCache: html.slice(
+      start + PPR_RESUME_DATA_CACHE_TRAILER_START.length,
+      html.length - PPR_RESUME_DATA_CACHE_TRAILER_END.length,
+    ),
+  };
+}
+
+/**
+ * A shell whose fallback params suspend outside every Suspense boundary has an
+ * empty prelude: only vinext's own scripts, no document. Like Next.js, such a
+ * route renders blocking, without the shell's resume data cache.
+ */
+export function hasAppPprFallbackShellPrelude(html: string): boolean {
+  return /^\s*<!doctype html>/i.test(html);
+}
+
 function routeRootParamNames(route: AppPprFallbackShellRoute): Set<string> {
   return new Set(route.rootParamNames ?? []);
 }
@@ -61,7 +118,6 @@ export function createAppPprFallbackShells(
   matchedParams: Record<string, string | string[]>,
 ): AppPprFallbackShell[] {
   const rootParamNames = routeRootParamNames(route);
-  if (rootParamNames.size === 0) return [];
 
   let minKeptParamCount = 0;
   for (const rootParamName of rootParamNames) {

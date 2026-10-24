@@ -16,6 +16,7 @@ import { normalizePregeneratedPathname } from "vinext/internal/server/pregenerat
 import {
   getAppRouteOutputPath,
   getOutputPath,
+  getPostponedOutputPath,
   getRscOutputPath,
 } from "vinext/internal/utils/prerender-output-paths";
 import {
@@ -57,8 +58,10 @@ function writeCacheAsset(
   sourcePath: string,
   route: PrerenderManifestRoute,
   contents?: string,
+  postponedPath?: string,
 ): boolean {
   if (!fs.existsSync(sourcePath)) return false;
+  const hasPostponed = postponedPath !== undefined && fs.existsSync(postponedPath);
 
   const id = cacheAssetId(key);
   const extension = kind;
@@ -77,12 +80,14 @@ function writeCacheAsset(
     ...(policy ? { cacheControl: policy } : {}),
     ...(headers ? { headers } : {}),
     ...(route.responseStatus !== undefined ? { status: route.responseStatus } : {}),
+    ...(hasPostponed ? { postponed: true as const } : {}),
   };
 
   fs.mkdirSync(outputDir, { recursive: true });
   const outputPath = path.join(outputDir, `${id}.${extension}`);
   if (contents === undefined) fs.copyFileSync(sourcePath, outputPath);
   else fs.writeFileSync(outputPath, contents);
+  if (hasPostponed) fs.copyFileSync(postponedPath, path.join(outputDir, `${id}.postponed`));
   index[id] = metadata;
   return true;
 }
@@ -112,9 +117,8 @@ export function finalizeStaticAssetsPrerenderOutput(
     const pathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(pathname);
     if (route.router === "app") {
-      const appKey = isFallbackShellArtifactPath(pathname, route)
-        ? appIsrFallbackShellKey
-        : appIsrCacheKey;
+      const isFallbackShell = isFallbackShellArtifactPath(pathname, route);
+      const appKey = isFallbackShell ? appIsrFallbackShellKey : appIsrCacheKey;
       count += Number(
         writeCacheAsset(
           outputDir,
@@ -123,6 +127,10 @@ export function finalizeStaticAssetsPrerenderOutput(
           "html",
           path.join(prerenderDir, getOutputPath(pathname, manifest.trailingSlash ?? false)),
           route,
+          undefined,
+          // Like seeding on Node, a fallback shell carries the resume data
+          // cache its build render collected.
+          isFallbackShell ? path.join(prerenderDir, getPostponedOutputPath(pathname)) : undefined,
         ),
       );
       count += Number(
