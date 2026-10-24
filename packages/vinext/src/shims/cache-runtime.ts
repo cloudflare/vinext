@@ -1053,11 +1053,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           recordRequestScopedCacheControl(existing.cacheControl);
-          collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
-            body: existing.value.data.body,
-            cacheControl: existing.cacheControl,
-            tags: existing.value.tags ?? [],
-          });
+          // vinext always stores a lifetime. Without one, a custom handler's
+          // entry may be short-lived, so a resumed request runs it again.
+          if (existing.cacheControl) {
+            collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
+              body: existing.value.data.body,
+              cacheControl: existing.cacheControl,
+              tags: existing.value.tags ?? [],
+            });
+          }
           if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
           return result;
         } catch {
