@@ -1983,17 +1983,39 @@ function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
   // The App Router context only seeds hydration, through getServerSnapshot.
   // Once hydrated, the browser URL wins, as in Next.js: a force-static page
   // renders an empty query on the server but reads the real one in the browser.
+  const hasAppContext = getNavigationContext() !== null;
   const pagesCtx = _getPagesNavigationContext();
-  if (!getNavigationContext() && pagesCtx) {
+  if (!hasAppContext && pagesCtx) {
     return getReadonlyPagesSearchParams(pagesCtx.searchParams);
   }
 
-  const cached = getClientNavigationState()?.cachedReadonlySearchParams;
-  if (cached) return cached;
+  const state = getClientNavigationState();
+  if (state) {
+    if (hasAppContext) adoptHydrationSearchParams(state);
+    return state.cachedReadonlySearchParams;
+  }
   if (_cachedEmptyClientSearchParams === null) {
     _cachedEmptyClientSearchParams = new ReadonlyURLSearchParams();
   }
   return _cachedEmptyClientSearchParams;
+}
+
+let _comparedHydrationSearchParams: ReadonlyURLSearchParams | null = null;
+
+/**
+ * Keep the hydrated search params object when the browser URL has the same
+ * query. React compares the two snapshots by identity once hydrated, so a new
+ * object would re-render every useSearchParams() caller and re-run effects
+ * keyed on it, where Next.js keeps one object from the first render.
+ */
+function adoptHydrationSearchParams(state: ClientNavigationState): void {
+  const hydrated = getServerSearchParamsSnapshot();
+  if (hydrated === state.cachedReadonlySearchParams) return;
+  if (hydrated === _comparedHydrationSearchParams) return;
+  _comparedHydrationSearchParams = hydrated;
+  if (hydrated.toString() === state.cachedReadonlySearchParams.toString()) {
+    state.cachedReadonlySearchParams = hydrated;
+  }
 }
 
 function syncCommittedUrlStateFromLocation(): boolean {

@@ -33,6 +33,23 @@ test("force-static useSearchParams is empty in SSR and reads the browser query a
   expect(errors).toEqual([]);
 });
 
+test("useSearchParams keeps the hydrated object when the browser query matches", async ({
+  page,
+}) => {
+  // A new object with the same query would re-run effects keyed on it.
+  await page.goto("/static-test");
+  await waitForAppRouterHydration(page);
+  await page.evaluate(
+    () =>
+      new Promise((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(resolve, 50))),
+      ),
+  );
+  const searchParams = page.getByTestId("force-static-search-params");
+  await expect(searchParams).toHaveText("N/A");
+  await expect(searchParams).toHaveAttribute("data-search-params-objects", "1");
+});
+
 test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {
   const errors = collectPageErrors(page);
 
