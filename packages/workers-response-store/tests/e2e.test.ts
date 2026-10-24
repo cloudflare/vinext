@@ -542,6 +542,34 @@ test("purgeExisting keeps purging after replacing an entry with a revalidator un
   assert.equal(await (await read("/replaced-revalidator")).text(), "fifth");
 });
 
+test("an accepted invalidate() purge lets the next stale replacement skip its purge", async () => {
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit");
+  const tags = ["invalidated-after-refused"];
+  await put("/invalidated-after-refused", "first", { tags });
+  const refused = await put("/invalidated-after-refused", "second", {
+    noRevalidator: true,
+    purgeExisting: true,
+    tags,
+  });
+  assert.deepEqual(refused.json, { backingStoreUpdated: true, edgePurgeAccepted: false });
+
+  await worker.fetch("https://user.test/admin/edge-purge?mode=success");
+  assert.deepEqual((await invalidate({ tags })).json, {
+    backingStoreUpdated: true,
+    edgePurgeAccepted: true,
+  });
+  const replacement = await put("/invalidated-after-refused", "third", {
+    noRevalidator: true,
+    purgeExisting: true,
+    tags,
+  });
+  assert.deepEqual(replacement.json, { backingStoreUpdated: true, edgePurgeAccepted: true });
+  assert.equal(
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length,
+    1,
+  );
+});
+
 test("put clears a miss cached while the write is in flight", async () => {
   const write = put("/miss-during-put", "stored-after-delayed-put", { bodyDelayMs: 200 });
   let pendingObjects = 0;

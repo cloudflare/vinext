@@ -573,6 +573,13 @@ test("stores data entries without expire as stale indefinitely, like Next.js", a
   expect(await policy({ cacheControl: { revalidate: 60, expire: Infinity } })).toBe(
     "public, max-age=60, stale-while-revalidate=315360000",
   );
+  // One that never goes stale still hard-expires at a finite `expire`, e.g. from cacheLife.
+  expect(await policy({ cacheControl: { revalidate: Infinity, expire: 600 } })).toBe(
+    "public, max-age=600",
+  );
+  expect(await policy({ cacheControl: { revalidate: false, expire: 2.2 } })).toBe(
+    "public, max-age=3",
+  );
 });
 
 test("leaves a stale replayable hit to the Store's own refresh", async () => {

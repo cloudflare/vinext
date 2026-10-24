@@ -1671,6 +1671,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   markTombstonesEdgePurged(entries: PurgedEntry[]): void {
     this.ctx.storage.transactionSync(() => {
       for (const batch of batches(entries, MAX_SQL_PARAMETERS / 2)) {
+        this.clearPurgedEdgeWatermarks(
+          `tombstones.edge_invalidate = 0 AND (${batch
+            .map(() => "(tombstones.key_hash = ? AND tombstones.revision = ?)")
+            .join(" OR ")})`,
+          ...batch.flatMap((entry) => [entry.keyHash, entry.revision]),
+        );
         this.ctx.storage.sql.exec(
           `UPDATE pending_r2_tombstones SET edge_purge_complete = 1 WHERE ${batch
             .map(() => "(key_hash = ? AND revision = ?)")
@@ -1683,10 +1689,29 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
   }
 
   markTombstonesEdgePurgedThrough(tombstoneSequence: number): void {
+    this.clearPurgedEdgeWatermarks(
+      "tombstones.r2_complete = 1 AND tombstones.edge_purge_complete = 0 AND tombstones.tombstone_sequence <= ?",
+      tombstoneSequence,
+    );
     this.ctx.storage.sql.exec(
       `DELETE FROM pending_r2_tombstones
       WHERE r2_complete = 1 AND edge_purge_complete = 0 AND tombstone_sequence <= ?`,
       tombstoneSequence,
+    );
+  }
+
+  // An accepted purge of a tombstone removed every earlier edge copy of its entry, unless
+  // a newer revision has replaced copies since.
+  private clearPurgedEdgeWatermarks(tombstoneFilter: string, ...parameters: (number | string)[]) {
+    this.ctx.storage.sql.exec(
+      `UPDATE entries SET edge_fresh_until = NULL
+      WHERE edge_fresh_until IS NOT NULL AND EXISTS (
+        SELECT 1 FROM pending_r2_tombstones AS tombstones
+        WHERE tombstones.key_hash = entries.key_hash
+          AND (entries.active_revision IS NULL OR entries.active_revision <= tombstones.revision)
+          AND (${tombstoneFilter})
+      )`,
+      ...parameters,
     );
   }
 

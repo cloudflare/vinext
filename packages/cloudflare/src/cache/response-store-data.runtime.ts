@@ -310,7 +310,8 @@ function deserialize(value: string): StoredCacheEntry | null {
 
 function cachePolicy(revalidate: number | false | undefined, expire: number | undefined): string {
   if (revalidate === false || revalidate === undefined) {
-    return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
+    // Never stale, but still hard-expired at a finite `expire` (e.g. from cacheLife).
+    return `public, max-age=${expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(1, Math.ceil(expire))}`;
   }
   // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
   // hard-expires: past `revalidate` it is served stale and refreshed in the background.
