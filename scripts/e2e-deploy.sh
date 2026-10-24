@@ -751,16 +751,24 @@ fi
 # The harness runs under jest, which sets NODE_ENV=test. Like Next.js's own
 # next-start mode (test/lib/next-modes/next-start.ts), the build must not
 # inherit it: a deployment builds with NODE_ENV unset.
+# VINEXT_E2E_NO_PRERENDER=1 builds without prerendering, as a Cloudflare deploy
+# that warms its cache instead does, so the runtime must produce every artifact.
+PRERENDER_BUILD_FLAG="--prerender-all"
+PRERENDER_INIT_FLAG="--prerender"
+if [ "${VINEXT_E2E_NO_PRERENDER:-}" = "1" ]; then
+  PRERENDER_BUILD_FLAG=""
+  PRERENDER_INIT_FLAG=""
+fi
 if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1
-  NODE_ENV="" "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
+  NODE_ENV="" "${VINEXT_BIN}" build ${PRERENDER_BUILD_FLAG} >> "${BUILD_LOG}" 2>&1
 else
   VITE_BIN="./node_modules/.bin/vite"
   if [ ! -x "${VITE_BIN}" ]; then
     echo "pnpm install failed: ${VITE_BIN} not found or not executable" >&2
     exit 1
   fi
-  "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender >> "${BUILD_LOG}" 2>&1
+  "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force ${PRERENDER_INIT_FLAG} >> "${BUILD_LOG}" 2>&1
   NODE_ENV="" "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 fi
 
