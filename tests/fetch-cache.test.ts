@@ -1295,6 +1295,27 @@ describe("fetch cache shim", () => {
     expect(state.pendingCacheTasks).toBe(0);
   });
 
+  it("doesn't hold a fallback shell open while a cacheable fetch's body is pending", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/posts/[slug]",
+    });
+
+    // A body derived from fallback params never resolves.
+    void runWithPprFallbackShellState(state, () =>
+      fetch("https://api.example.com/shell-hanging-body", {
+        body: new ReadableStream(),
+        duplex: "half",
+        method: "POST",
+        next: { revalidate: 60 },
+      } as RequestInit),
+    );
+    await vi.waitFor(() => expect(state.pendingCacheTasks).toBe(0));
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("refetches an expired entry instead of collecting it into the shell's resume data cache", async () => {
     await fetch("https://api.example.com/expired-rdc", { next: { revalidate: 60 } });
 

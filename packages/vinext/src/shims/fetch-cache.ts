@@ -37,7 +37,10 @@ import {
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import { trackPprFallbackShellCacheTask } from "./ppr-fallback-shell.js";
+import {
+  trackPprFallbackShellCacheTask,
+  waitForPprFallbackShellCacheInput,
+} from "./ppr-fallback-shell.js";
 import {
   collectFetchResumeDataCacheEntry,
   readFetchResumeDataCacheEntry,
@@ -1428,7 +1431,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
       }
       let cacheKey: string;
       try {
-        cacheKey = await buildFetchCacheKey(input, fetchInit);
+        // A body that waits on fallback params never resolves, so its key
+        // doesn't hold the shell open, as a cache function's arguments don't.
+        cacheKey = await waitForPprFallbackShellCacheInput(buildFetchCacheKey(input, fetchInit));
         // Cache-key generation may consume and stash request bodies on fetchInit;
         // normalize again so the real fetch receives the restored body.
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
