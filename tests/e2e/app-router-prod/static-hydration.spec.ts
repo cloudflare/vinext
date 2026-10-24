@@ -16,10 +16,18 @@ test("statically prerendered useSearchParams reads the browser query after hydra
   expect(rscRequests).toBe(0);
 });
 
-test("force-static hydration keeps search params empty", async ({ page }) => {
+test("force-static useSearchParams is empty in SSR and reads the browser query after hydration", async ({
+  page,
+  request,
+}) => {
+  // force-static embeds an empty query in the server-rendered HTML...
+  const html = await (await request.get("/static-test?value=hidden")).text();
+  expect(html).toMatch(/data-testid="force-static-search-params"[^>]*>N\/A</);
+
+  // ...and React switches to the live browser URL snapshot once hydrated.
   await page.goto("/static-test?value=hidden");
   await waitForAppRouterHydration(page);
-  await expect(page.getByTestId("force-static-search-params")).toHaveText("N/A");
+  await expect(page.getByTestId("force-static-search-params")).toHaveText("hidden");
 });
 
 test("a client page reads its searchParams prop from the URL in the browser", async ({ page }) => {

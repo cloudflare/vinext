@@ -1980,10 +1980,12 @@ let _cachedEmptyClientSearchParams: ReadonlyURLSearchParams | null = null;
  * be visible until the next commit.
  */
 function getSearchParamsSnapshot(): ReadonlyURLSearchParams {
-  if (getNavigationContext()) return getServerSearchParamsSnapshot();
-
+  // The App Router context is the SSR/hydration snapshot only. In particular,
+  // force-static embeds an empty query even when the browser URL has one.
+  // React switches to this live snapshot after hydration; retaining the server
+  // context here would hide the query until the first navigation.
   const pagesCtx = _getPagesNavigationContext();
-  if (pagesCtx) {
+  if (!getNavigationContext() && pagesCtx) {
     return getReadonlyPagesSearchParams(pagesCtx.searchParams);
   }
 
