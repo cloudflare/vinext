@@ -116,7 +116,8 @@ type TagMarker = {
 
 function parseTagMarker(raw: string | null | undefined): TagMarker {
   if (raw === null || raw === undefined) return {};
-  if (!raw.startsWith("{")) return { expired: raw === "" ? Number.NaN : Number(raw) };
+  // revalidateTag() writes String(Date.now()); anything else is malformed.
+  if (!raw.startsWith("{")) return { expired: /^\d+$/.test(raw) ? Number(raw) : Number.NaN };
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);

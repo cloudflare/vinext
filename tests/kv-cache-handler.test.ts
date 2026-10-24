@@ -990,7 +990,7 @@ describe("KVCacheHandler", () => {
       }
     });
 
-    it.each(['{"stale":"soon"}', "{not json", "", "{}", '{"other":1}'])(
+    it.each(['{"stale":"soon"}', "{not json", "", " ", "12abc", "{}", '{"other":1}'])(
       "treats an unreadable profile marker %s as an invalidation",
       async (marker) => {
         await handler.set("tagged", pageValue, { tags: ["posts"] });
