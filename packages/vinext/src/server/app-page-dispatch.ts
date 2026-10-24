@@ -521,6 +521,43 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
    * render no client is waiting on, such as its regeneration or a warm-up.
    */
   renderWholeDocument?: boolean;
+  /**
+   * These options rebuilt for another request, such as a fallback shell's, so
+   * every callback that closes over the request renders that one instead.
+   */
+  withRequest?: (request: AppPageDispatchRequest) => DispatchAppPageOptions<TRoute>;
+};
+
+/** The request a page dispatch's options are built from. */
+export type AppPageDispatchRequest = {
+  actionError?: unknown;
+  actionFailed?: boolean;
+  bypassInterceptionContextCache: boolean;
+  cachePathname: string;
+  clientReuseManifest: ClientReuseManifestParseResult;
+  cleanPathname: string;
+  displayPathname: string;
+  formState: ReactFormState | null;
+  interceptionContext: string | null;
+  interceptionId: string | null;
+  interceptionPathname: string;
+  isProgressiveActionRender: boolean;
+  isRscRequest: boolean;
+  middlewareContext: AppPageMiddlewareContext;
+  mountedSlotsHeader: string | null;
+  params: AppPageParams;
+  pprFallbackCacheShells: readonly AppPagePprFallbackCacheShell[] | null;
+  pprFallbackShell?: NonNullable<DispatchAppPageOptions<AppPageDispatchRoute>["pprFallbackShell"]>;
+  renderedConcreteUrlPaths?: ReadonlySet<string>;
+  renderedPathAndSearch: string | null;
+  renderMode: AppRscRenderMode;
+  renderWholeDocument: boolean;
+  request: Request;
+  rootParams?: RootParams;
+  scriptNonce?: string;
+  searchParams: URLSearchParams;
+  skipStaticParamsValidation?: boolean;
+  staticParamsValidationParams?: AppPageParams;
 };
 
 /**
@@ -699,6 +736,31 @@ async function runAppPageRevalidationContext<TResult>(
   }
 }
 
+/**
+ * Run work a request needs that the build runs apart from any render, such as
+ * asking generateStaticParams which paths it produces, so the request's render
+ * state neither reaches it nor sees what it does.
+ */
+export function runAppPageStaticGenerationWork<TRoute extends AppPageDispatchRoute, TResult>(
+  options: DispatchAppPageOptions<TRoute>,
+  work: () => Promise<TResult>,
+): Promise<TResult> {
+  return runAppPageRevalidationContext(
+    {
+      cleanPathname: options.cleanPathname,
+      currentFetchCacheMode: options.fetchCache ?? null,
+      draftModeSecret: options.draftModeSecret,
+      dynamicConfig: options.dynamicConfig,
+      params: options.params,
+      rootParams: options.rootParams,
+      routePattern: options.route.pattern,
+      routeSegments: options.route.routeSegments,
+      setNavigationContext: options.setNavigationContext,
+    },
+    work,
+  );
+}
+
 function toInterceptOptions(
   interceptionContext: string | null,
   intercept: AppPageDispatchIntercept,
@@ -800,16 +862,20 @@ export async function renderAppPageFallbackShell<TRoute extends AppPageDispatchR
     fallbackParamNames: shell.fallbackParamNames,
     routePattern: route.pattern,
   };
-  const shellOptions: DispatchAppPageOptions<TRoute> = {
-    ...options,
+  if (!options.withRequest) throw new Error("[vinext] A fallback shell needs its own request.");
+  // The build's prerender request for the shell. A shell keeps every root param.
+  const shellOptions = options.withRequest({
     actionError: undefined,
     actionFailed: false,
     bypassInterceptionContextCache: false,
+    cachePathname: pathname,
+    clientReuseManifest: { kind: "absent" },
     cleanPathname: pathname,
-    clientReuseManifest: undefined,
     displayPathname: pathname,
     formState: null,
     interceptionContext: null,
+    interceptionId: null,
+    interceptionPathname: pathname,
     isProgressiveActionRender: false,
     isRscRequest: false,
     middlewareContext: { headers: null, status: null },
@@ -819,16 +885,17 @@ export async function renderAppPageFallbackShell<TRoute extends AppPageDispatchR
     pprFallbackShell,
     renderedConcreteUrlPaths: undefined,
     renderedPathAndSearch: shell.pathname,
-    renderMode: undefined,
+    renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
     renderWholeDocument: false,
     request: new Request(
       new URL(`${options.basePath ?? ""}${shell.pathname}`, options.request.url),
     ),
+    rootParams: options.rootParams,
     scriptNonce: undefined,
     searchParams: new URLSearchParams(),
     skipStaticParamsValidation: true,
     staticParamsValidationParams: undefined,
-  };
+  });
   return runAppPageRevalidationContext(
     {
       cleanPathname: pathname,

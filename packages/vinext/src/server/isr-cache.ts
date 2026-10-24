@@ -276,12 +276,36 @@ const pendingOnDemandRegenerations = (_g[_PENDING_ON_DEMAND_REGEN_KEY] ??= new M
   Promise<unknown>
 >()) as Map<string, Promise<unknown>>;
 
+// Like Next.js ResponseCache, requests that find no fallback shell share one
+// blocking render of it.
+const _PENDING_FALLBACK_SHELL_KEY = Symbol.for("vinext.isrCache.pendingFallbackShellProductions");
+const pendingFallbackShellProductions = (_g[_PENDING_FALLBACK_SHELL_KEY] ??= new Map<
+  string,
+  Promise<unknown>
+>()) as Map<string, Promise<unknown>>;
+
 /** Coalesce same-key synchronous on-demand revalidations. */
 export function coalesceOnDemandRevalidation<T>(
   key: string,
   renderFn: () => Promise<T>,
 ): Promise<T> {
-  const pending = pendingOnDemandRegenerations.get(key) as Promise<T> | undefined;
+  return coalesceRender(pendingOnDemandRegenerations, key, renderFn);
+}
+
+/** Coalesce same-key blocking renders of a missing fallback shell. */
+export function coalesceFallbackShellProduction<T>(
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  return coalesceRender(pendingFallbackShellProductions, key, renderFn);
+}
+
+function coalesceRender<T>(
+  pendingRenders: Map<string, Promise<unknown>>,
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  const pending = pendingRenders.get(key) as Promise<T> | undefined;
   if (pending) return pending;
 
   // Defer invocation until after the promise is registered, matching Next.js's
@@ -290,12 +314,12 @@ export function coalesceOnDemandRevalidation<T>(
     Promise.resolve()
       .then(renderFn)
       .finally(() => {
-        if (pendingOnDemandRegenerations.get(key) === promise) {
-          pendingOnDemandRegenerations.delete(key);
+        if (pendingRenders.get(key) === promise) {
+          pendingRenders.delete(key);
         }
       }),
   );
-  pendingOnDemandRegenerations.set(key, promise);
+  pendingRenders.set(key, promise);
   return promise;
 }
 

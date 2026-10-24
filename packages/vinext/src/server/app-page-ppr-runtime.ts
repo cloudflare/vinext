@@ -9,6 +9,7 @@ import { markDynamicUsage } from "vinext/shims/internal/headers-state";
 import { createResumeDataCache, parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
   hasSearchParams,
+  runAppPageStaticGenerationWork,
   shouldReadAppPageCache,
   type AppPageDispatchRoute,
   type AppPagePprRuntime,
@@ -87,10 +88,12 @@ async function resolveEligibleFallbackShell<TRoute extends AppPageDispatchRoute>
   const { hasGeneratedStaticParamsFor, resolveAppPageGeneratedStaticParams } =
     await import("./app-page-request.js");
   const params = options.staticParamsValidationParams ?? options.params;
-  const generated = await resolveAppPageGeneratedStaticParams({
-    generateStaticParams: options.generateStaticParams,
-    params,
-  });
+  const generated = await runAppPageStaticGenerationWork(options, () =>
+    resolveAppPageGeneratedStaticParams({
+      generateStaticParams: options.generateStaticParams,
+      params,
+    }),
+  );
   if (generated?.isGenerated) return null;
   for (const fallbackShell of fallbackShells) {
     const fallbackParamNames = new Set(fallbackShell.fallbackParamNames);
@@ -115,6 +118,7 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   const { serveAppPageFallbackShellCacheEntry } = await import("./app-page-cache.js");
   const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
   const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
+  const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
   // The build keys a shell by its decoded pathname, like a concrete page.
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
   const key = options.isrFallbackShellHtmlKey(fallbackPathname);
@@ -135,7 +139,7 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
       cached ? "RENDER (expired fallback shell)" : "RENDER (fallback shell)",
       fallbackPathname,
     );
-    cached = await produce();
+    cached = await coalesceFallbackShellProduction(key, produce);
     if (cached === null) return null;
   }
 
