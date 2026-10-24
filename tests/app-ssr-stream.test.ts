@@ -13,8 +13,13 @@ import {
   createRscEmbedTransform,
   createTickBufferedTransform,
   fixPreloadAs,
+  navigationRuntimeRscBootstrapExpression,
   waitAtLeastOneReactRenderTask,
 } from "../packages/vinext/src/server/app-ssr-stream.js";
+import { scriptSafeJsonStringify } from "../packages/vinext/src/server/html.js";
+
+const utf8 = (value: string): Uint8Array => new TextEncoder().encode(value);
+const text = (bytes: Uint8Array | null): string => (bytes ? new TextDecoder().decode(bytes) : "");
 
 it("serializes dynamic stale time into the hydration bootstrap", () => {
   expect(
@@ -114,8 +119,8 @@ function createByteStream(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 
 function createNoopRscEmbedTransform() {
   return {
-    flush: () => "",
-    finalize: async () => "",
+    flush: () => null,
+    finalize: async () => new Uint8Array(),
     getRawBuffer: async () => new ArrayBuffer(0),
   };
 }
@@ -131,7 +136,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     expect(new TextDecoder().decode(rawBuffer)).toBe("chunk1chunk2");
 
     // Embed scripts still work
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
     expect(finalScripts).toContain('Symbol.for("vinext.navigationRuntime")');
     expect(finalScripts).toContain(".done=true");
     expect(finalScripts).toContain('.rsc.push("chunk1chunk2")');
@@ -140,11 +145,32 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
   it("coalesces adjacent text chunks into one inline Flight script", async () => {
     const transform = createRscEmbedTransform(createTextStream(Array(1_000).fill("chunk")));
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts.match(/\.rsc\.push\(/g)).toHaveLength(1);
     expect(finalScripts.match(/<script/g)).toHaveLength(2);
     expect(finalScripts).toContain(`.rsc.push("${"chunk".repeat(1_000)}")`);
+  });
+
+  it("embeds text exactly as script-safe JSON of the decoded text", async () => {
+    // Escaped or ASCII-sensitive text next to multi-byte characters, including
+    // U+2028/U+2029 and a byte order mark, which the embed handles as bytes.
+    const chunks = [
+      '\uFEFF0:"caf\u00e9 \u{1F600} \\ \u0000\u0007\b\t\n\f\r\u001f"\n',
+      '1:"</script><SCRIPT></ScRiPt ><!-- <scrip <!- <p>&amp; \u2028\u2029 \u00e2\u0080\u00a8"\n',
+      "2:T3,\u00e9\u00e2\n",
+    ];
+    const transform = createRscEmbedTransform(createTextStream(chunks), "n\u00f6nce");
+
+    const finalScripts = text(await transform.finalize());
+
+    expect(finalScripts).toContain(
+      '<script nonce="n\u00f6nce">' +
+        navigationRuntimeRscBootstrapExpression() +
+        ".rsc.push(" +
+        scriptSafeJsonStringify(chunks.join("")) +
+        ")</script>",
+    );
   });
 
   it("optionally mirrors text chunks into the Next.js inline Flight transport", async () => {
@@ -153,7 +179,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       scriptNonce: "test-nonce",
     });
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain(
       '<script nonce="test-nonce">(self.__next_f=self.__next_f||[]).push([0])</script>',
@@ -184,7 +210,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
 
     expect(await new Response(replayed).text()).toBe("firstsecond");
     expect(await new Response(transform.replay()).text()).toBe("firstsecond");
-    expect(transform.flush()).toContain('.rsc.push("firstsecond")');
+    expect(text(transform.flush())).toContain('.rsc.push("firstsecond")');
   });
 
   it("keeps a replay open after the last byte when asked", async () => {
@@ -222,13 +248,13 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const transform = createRscEmbedTransform(stream, { mirrorNextFlight: () => mirror });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const firstScripts = transform.flush();
+    const firstScripts = text(transform.flush());
     expect(firstScripts).not.toContain("self.__next_f");
 
     mirror = true;
     streamController.enqueue(new TextEncoder().encode("second"));
     streamController.close();
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts.match(/self\.__next_f=self\.__next_f\|\|\[\]/g)).toHaveLength(1);
     expect(finalScripts).toContain('self.addEventListener("DOMContentLoaded"');
@@ -253,13 +279,13 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const rawBuffer = transform.getRawBuffer();
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(transform.flush()).not.toContain("self.__next_f");
+    expect(text(transform.flush())).not.toContain("self.__next_f");
     streamController.enqueue(new TextEncoder().encode("second"));
     streamController.close();
     expect(new TextDecoder().decode(await rawBuffer)).toBe("firstsecond");
 
     mirror = true;
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     const firstIndex = finalScripts.indexOf('self.__next_f.push([1,"first"])');
     expect(firstIndex).toBeGreaterThan(-1);
@@ -271,7 +297,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       mirrorNextFlight: () => false,
     });
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).not.toContain("self.__next_f");
   });
@@ -279,7 +305,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
   it("does not mirror Next.js inline Flight chunks by default", async () => {
     const transform = createRscEmbedTransform(createTextStream(["chunk"]));
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).not.toContain("self.__next_f");
   });
@@ -295,7 +321,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const transform = createRscEmbedTransform(stream, { mirrorNextFlight: true });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const progressiveScripts = transform.flush();
+    const progressiveScripts = text(transform.flush());
     expect(progressiveScripts).toContain('self.__next_f.push([1,"partial"])');
     expect(progressiveScripts).toContain('self.addEventListener("DOMContentLoaded"');
 
@@ -314,10 +340,10 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const transform = createRscEmbedTransform(stream, { mirrorNextFlight: true });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
-    const firstScripts = transform.flush();
+    const firstScripts = text(transform.flush());
     streamController.enqueue(new TextEncoder().encode("second"));
     streamController.close();
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     const listeners = new Map<string, () => void>();
     const self = {
@@ -361,7 +387,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     });
 
     initialCacheKind = "dynamic";
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain('"initialCacheKind":"dynamic"');
     expect(finalScripts).toContain('"dynamicStaleTimeSeconds":30');
@@ -377,7 +403,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       }),
     });
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain('"initialCacheKind":"static"');
     expect(finalScripts).not.toContain("dynamicStaleTimeSeconds");
@@ -396,7 +422,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     });
 
     staleTimeSeconds = 30;
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain('"staleTimeSeconds":30');
     expect(finalScripts.indexOf("staleTimeSeconds")).toBeLessThan(
@@ -423,7 +449,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const rawText = new TextDecoder().decode(rawBuffer);
     expect(rawText).toBe(':HL["/a.css","stylesheet"]');
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
     expect(finalScripts).toContain("stylesheet");
     expect(finalScripts).toContain(".done=true");
   });
@@ -437,7 +463,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
     const expectedBytes = concatUint8Arrays(flightChunks);
 
     const transform = createRscEmbedTransform(createByteStream(flightChunks));
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
     const self: Record<PropertyKey, unknown> = {};
     const context = createContext({ self });
 
@@ -466,7 +492,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       ]),
     );
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
     const firstIndex = finalScripts.indexOf('.rsc.push("first")');
     const binaryIndex = finalScripts.indexOf('.rsc.push([3,"/w=="])');
     const remainingTextIndex = finalScripts.indexOf('.rsc.push("secondthird")');
@@ -484,7 +510,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       { mirrorNextFlight: true },
     );
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain('.rsc.push([3,"/wABAgM="])');
     expect(finalScripts).toContain('self.__next_f.push([3,"/wABAgM="])');
@@ -495,7 +521,7 @@ describe("createRscEmbedTransform raw buffer (#981)", () => {
       createByteStream([new Uint8Array([0x41, 0xc3]), new Uint8Array([0xff])]),
     );
 
-    const finalScripts = await transform.finalize();
+    const finalScripts = text(await transform.finalize());
 
     expect(finalScripts).toContain('.rsc.push([3,"QcM="])');
     expect(finalScripts).toContain('.rsc.push([3,"/w=="])');
@@ -724,8 +750,8 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Simulate React Fizz emitting the closing tags BEFORE flush appends
       // trailing flight chunks / preinit scripts.
       const rsc = {
-        flush: () => "",
-        finalize: async () => '<script id="trailing-rsc">rsc()</script>',
+        flush: () => null,
+        finalize: async () => utf8('<script id="trailing-rsc">rsc()</script>'),
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");
@@ -746,8 +772,8 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // When `<head>` never appears, injectHTML falls back to end-of-stream
       // emission. The closing tags must still come last.
       const rsc = {
-        flush: () => "",
-        finalize: async () => "",
+        flush: () => null,
+        finalize: async () => new Uint8Array(),
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "<meta data-injected='1'/>", "");
@@ -764,8 +790,8 @@ describe("createTickBufferedTransform pre-head splice", () => {
       // Defense-in-depth: if React Fizz somehow ends without `</body></html>`,
       // we still emit a well-formed document close.
       const rsc = {
-        flush: () => "",
-        finalize: async () => "",
+        flush: () => null,
+        finalize: async () => new Uint8Array(),
         getRawBuffer: async () => new ArrayBuffer(0),
       };
       const transform = createTickBufferedTransform(rsc, "", "");
@@ -811,8 +837,8 @@ async function runTickedTransform(
 ): Promise<Uint8Array[]> {
   let flushes = 0;
   const rscEmbed = {
-    flush: () => `<script>rsc(${++flushes})</script>`,
-    finalize: async () => "<script>done()</script>",
+    flush: () => utf8(`<script>rsc(${++flushes})</script>`),
+    finalize: async () => utf8("<script>done()</script>"),
     getRawBuffer: async () => new ArrayBuffer(0),
   };
   const encoder = new TextEncoder();

@@ -333,7 +333,7 @@ describe("RSC stream hint helpers", () => {
       },
     });
     const embed = createRscEmbedTransform(normalizeReactFlightPreloadHints(source));
-    const scripts = await embed.finalize();
+    const scripts = new TextDecoder().decode(await embed.finalize());
 
     expect(scripts).toContain('.rsc.push([3,"/w=="])');
     expect(new Uint8Array(await embed.getRawBuffer())).toEqual(payload);
