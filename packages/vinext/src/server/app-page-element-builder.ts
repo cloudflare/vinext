@@ -15,6 +15,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  slotInterceptKeepsSourceHead,
   type AppPagePreparedRouteHead,
   type ApplyAppPageFileBasedMetadata,
 } from "./app-page-head.js";
@@ -126,6 +127,20 @@ function createSiblingInterceptPageSlot(
     Outlet: Outlet as unknown as AppPageComponent,
     Starter: Starter as unknown as AppPageComponent,
   };
+}
+
+/** How many leading layouts two branches of one slot have in common. */
+function countSharedLeadingLayouts(
+  visibleLayouts: readonly unknown[] | null | undefined,
+  hiddenLayouts: readonly unknown[] | null | undefined,
+): number {
+  const visible = visibleLayouts ?? [];
+  const hidden = hiddenLayouts ?? [];
+  let count = 0;
+  while (count < visible.length && count < hidden.length && visible[count] === hidden[count]) {
+    count++;
+  }
+  return count;
 }
 
 function resolveInterceptLayoutParams(
@@ -507,16 +522,76 @@ export async function buildPageElements<
         ownerTreePosition: route.routeSegments?.length ?? 0,
       }
     : null;
+  // A slot intercept keeps the source route's head when a page comes before
+  // its slot on Next.js's findHeadInCache walk, such as the source page in
+  // `children`; otherwise the intercepting render heads the route, as a
+  // sibling intercept, which replaces `children`, always does. The server
+  // still resolves a hidden intercept's metadata, and its errors, such as
+  // notFound(), still reach the route's outlet.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/find-head-in-cache.ts
+  const isSlotIntercept = opts?.interceptPage != null && !isSiblingIntercept;
+  const interceptSlotKey = isSlotIntercept ? (opts?.interceptSlotKey ?? null) : null;
+  const sourceParallelRouteInputs = interceptSlotKey
+    ? resolveActiveParallelRouteHeadInputs({
+        layoutTreePositions: route.layoutTreePositions,
+        params,
+        routeSegments: route.routeSegments ?? [],
+        slotParams: slotParamOverrides,
+        slots: route.slots ?? null,
+      })
+    : null;
+  const keepsSourceHead =
+    interceptSlotKey !== null &&
+    sourceParallelRouteInputs !== null &&
+    slotInterceptKeepsSourceHead({
+      interceptSlotKey,
+      route,
+      sourceParallelRoutes: sourceParallelRouteInputs,
+    });
+  const headParallelRouteInputs =
+    keepsSourceHead && sourceParallelRouteInputs
+      ? sourceParallelRouteInputs
+      : activeParallelRouteHeadInputs;
   const parallelRoutes = [
     ...(primaryParallelRouteHeadInput ? [primaryParallelRouteHeadInput.head] : []),
-    ...activeParallelRouteHeadInputs.map((input) => input.head),
+    ...headParallelRouteInputs.map((input) => input.head),
   ];
+  // The intercept continues its slot's branch past the layouts it shares with
+  // the visible branch, which resolves them once for both: the slot's own
+  // layout and any layout above both pages, like `@modal/feed/layout.tsx`
+  // over `@modal/feed/page.tsx` and `@modal/feed/(.)photo/page.tsx`.
+  const interceptHeadInput =
+    keepsSourceHead && interceptSlotKey
+      ? activeParallelRouteHeadInputs.find((input) => input.slotKey === interceptSlotKey)
+      : undefined;
+  const interceptSlotIndex = interceptHeadInput
+    ? headParallelRouteInputs.findIndex((input) => input.slotKey === interceptSlotKey)
+    : -1;
+  const hiddenParallelRoutes = interceptHeadInput
+    ? [
+        {
+          parallelRouteIndex:
+            interceptSlotIndex === -1
+              ? -1
+              : interceptSlotIndex + (primaryParallelRouteHeadInput ? 1 : 0),
+          route: interceptHeadInput.head,
+          sharedLayoutCount:
+            interceptSlotIndex === -1
+              ? 0
+              : countSharedLeadingLayouts(
+                  headParallelRouteInputs[interceptSlotIndex].head.layoutModules,
+                  interceptHeadInput.head.layoutModules,
+                ),
+        },
+      ]
+    : null;
   const metadataSearchParamsObserver = createAppPageMetadataSearchParamsObserver(
     observeMetadataSearchParamsAccess,
   );
   const headOptions = {
     applyFileBasedMetadata: options.applyFileBasedMetadata,
     basePath: options.basePath ?? "",
+    hiddenParallelRoutes,
     layoutModules: route.layouts,
     layoutTreePositions: route.layoutTreePositions,
     metadataRoutes,
@@ -555,9 +630,11 @@ export async function buildPageElements<
       applyFileBasedMetadata: options.applyFileBasedMetadata,
       basePath: options.basePath ?? "",
       metadataRoutes,
+      // The not-found head recovers from the same branches as the visible
+      // head: the source tree's, when a slot intercept keeps the source head.
       resolvePlanOptions: () =>
         createRouteNotFoundHeadPlanOptions({
-          parallelBranches: activeParallelRouteHeadInputs,
+          parallelBranches: headParallelRouteInputs,
           params: effectiveParams,
           primaryParallelBranch: primaryParallelRouteHeadInput,
           rootNotFoundModule,
@@ -568,12 +645,9 @@ export async function buildPageElements<
     onHeadPrepared?.({ ...recoveredHead, metadataPlacement });
     // Late navigation signals reach the client through the outlet's Flight
     // digest, inside the route's boundaries.
-    const outlet = Promise.all([preparedHead.metadata, preparedHead.viewport]).then(
-      () => null,
-      (error: unknown) => {
-        throw toClientError(error);
-      },
-    );
+    const outlet = preparedHead.routeErrors.then(null, (error: unknown) => {
+      throw toClientError(error);
+    });
     void outlet.catch(() => null);
     return { ...recoveredHead, outlet };
   });

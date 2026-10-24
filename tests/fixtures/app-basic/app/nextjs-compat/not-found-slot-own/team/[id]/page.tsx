@@ -1,7 +1,8 @@
 import { Suspense } from "react";
 import { notFound } from "next/navigation";
 
-// The route's title, also when this page or its slot throws notFound().
+// The @team slot page's title wins over this one, as Turbopack orders a
+// layout's children before its slots.
 export const metadata = { title: "Team page" };
 
 async function LateMain(): Promise<never> {

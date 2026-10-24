@@ -2474,7 +2474,6 @@ describe("metadata title templates", () => {
         metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
       },
       {
-        contributesTitle: false,
         metadata: {
           openGraph: { title: "Slot OG title" },
           title: { default: "Slot", template: "%s | Slot" },
@@ -2484,11 +2483,12 @@ describe("metadata title templates", () => {
 
     // mergeMetadataEntries does raw segment merging only; post-processing is
     // applied separately by postProcessMetadata (called by mergeMetadata and by
-    // resolveAppPageHead after file-based metadata is applied).
+    // resolveAppPageHead after file-based metadata is applied). The page's
+    // template does not wrap the later slot title.
     expect(result).toEqual({
       description: "Page",
       openGraph: { title: "Slot OG title" },
-      title: "Page | Root",
+      title: "Slot | Root",
     });
   });
 });

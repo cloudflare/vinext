@@ -550,7 +550,8 @@ describe("app page boundary render helpers", () => {
   it("keeps the route's own head when the route's render threw the signal", async () => {
     // Next.js 16.2.7 answers such a document with an error shell headed by the
     // not-found metadata, then renders the route's own Flight payload in the
-    // browser, so the visitor ends with the route's head, the page's metadata.
+    // browser, so the visitor ends with the route's head: the page's metadata,
+    // then the slot page's, which Turbopack merges after it.
     const common = createCommonOptions();
     const seenSearchParams: unknown[] = [];
     const pageModule = {
@@ -568,6 +569,13 @@ describe("app page boundary render helpers", () => {
       page: pageModule,
       pattern: "/posts/[slug]",
       routeSegments: ["posts", "[slug]"],
+      slots: {
+        sidebar: {
+          layoutIndex: 0,
+          name: "sidebar",
+          page: { default: () => null, metadata: { title: "Sidebar page title" } },
+        },
+      },
     };
 
     const response = await renderAppPageHttpAccessFallback<TestModule>({
@@ -590,7 +598,7 @@ describe("app page boundary render helpers", () => {
     expect(response?.status).toBe(404);
     const html = await response?.text();
     expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
-    expect(html).toContain("<title>Post page title</title>");
+    expect(html).toContain("<title>Sidebar page title</title>");
     expect(html).toContain('content="Post page description"');
     expect(html).toContain('data-boundary="not-found"');
     expect(seenSearchParams).toEqual([{ ref: "rewritten" }]);
@@ -1465,6 +1473,61 @@ describe("app page boundary render helpers", () => {
       statusCode: 404,
     });
   }
+
+  it("keeps the source route's head for a slot intercept whose render threw the signal", async () => {
+    // Next.js's client renders the head of the first leaf on a children-first
+    // walk of its router tree that skips `default` segments. A slot intercept
+    // leaves the source page in `children`; without one, the walk reaches the
+    // intercept's leaf, headed by the intercepting render.
+    const interceptPage = {
+      default: () => null,
+      metadata: { title: "Intercept page title" },
+    } satisfies TestModule;
+    const renderPayload = async (page: TestModule | null) => {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1" },
+          interceptSlotKey: "modal",
+        },
+        isRscRequest: true,
+        matchedParams: {},
+        renderToReadableStream: renderWirePayloadToStream,
+        request: new Request("https://example.com/photo/1.rsc"),
+        requestUrl: "https://example.com/photo/1.rsc",
+        route: {
+          ...(page
+            ? {}
+            : {
+                childrenSlot: { id: "children:/", ownerTreePath: "/", state: "unmatched" as const },
+              }),
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout, metadata: { title: "Root layout title" } }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page,
+          pattern: "/",
+          routeSegments: [],
+          slots: { modal: { layoutIndex: 0, name: "modal", page: null } },
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(404);
+      return response?.text();
+    };
+
+    const payload = await renderPayload({ default: () => null });
+    expect(payload).toContain("Root layout title");
+    expect(payload).not.toContain("Intercept page title");
+    expect(payload).not.toContain("notfound title");
+
+    const slotOnlyPayload = await renderPayload(null);
+    expect(slotOnlyPayload).toContain("Intercept page title");
+    expect(slotOnlyPayload).not.toContain("notfound title");
+  });
 
   it("reuses the head the route's render prepared, so its generateMetadata() runs once", async () => {
     const common = createCommonOptions();
