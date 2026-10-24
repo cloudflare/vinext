@@ -4708,7 +4708,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Vite's alias plugin applies the first entry that matches next/image.
         // User aliases come ahead of vinext's shim, so a project can point
         // next/image at a wrapper that renders vinext/shims/image (#4262).
-        const nextImageAlias = config.resolve.alias.find(({ find }) =>
+        const nextImageAlias = config.resolve?.alias?.find(({ find }) =>
           aliasFindMatches(find, "next/image"),
         );
         nextImageAliasedByUser =
