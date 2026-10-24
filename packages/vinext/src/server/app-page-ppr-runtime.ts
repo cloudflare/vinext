@@ -151,4 +151,4 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
   },
 };
 
-export { createAppPprFallbackShells } from "./app-ppr-fallback-shell.js";
+export { createAppPprRequestFallbackShells } from "./app-ppr-fallback-shell.js";

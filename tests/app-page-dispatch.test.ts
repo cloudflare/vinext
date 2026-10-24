@@ -5729,7 +5729,7 @@ describe("app page dispatch", () => {
       pprFallbackCacheShells: [
         {
           fallbackParamNames: ["slug"],
-          params: { locale: "caf%C3%A9", slug: "[slug]" },
+          params: { locale: "café", slug: "[slug]" },
           pathname: "/caf%C3%A9/blog/[slug]",
         },
       ],
