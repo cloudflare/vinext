@@ -217,6 +217,20 @@ describe("fallback shell resume data cache transport", () => {
     expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
   });
 
+  it("round-trips a resume data cache that holds the trailer's own start", async () => {
+    const resumeDataCache = JSON.stringify({
+      cache: { key: { tags: ["<!--vinext-ppr-resume-data-cache:"] } },
+      fetch: {},
+    });
+    const html = "<!DOCTYPE html><html><body>shell</body></html>";
+    const split = splitAppPprFallbackShellResumeDataCache(
+      await readAppended(html, resumeDataCache),
+    );
+
+    expect(split.html).toBe(html);
+    expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
+  });
+
   it("leaves a shell without a resume data cache unchanged", async () => {
     const html = "<!DOCTYPE html><html><body>shell</body></html>";
 

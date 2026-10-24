@@ -1578,6 +1578,19 @@ export async function prerenderApp({
       }
     };
 
+    // Without complete params, the shells come from the params the route's
+    // layouts generated, so a required root param like `/en/[slug]` is kept.
+    const queueParentFallbackShells = (
+      route: (typeof routes)[number],
+      parentParamSets: readonly Record<string, string | string[]>[],
+      revalidate: number | false,
+    ): void => {
+      const queuedRouteUrls = new Set<string>();
+      for (const parentParams of parentParamSets.length > 0 ? parentParamSets : [{}]) {
+        queueFallbackShells(route, parentParams, revalidate, queuedRouteUrls);
+      }
+    };
+
     for (const route of routes) {
       const renderEntryPath = getAppRouteRenderEntryPath(route);
 
@@ -1722,7 +1735,7 @@ export async function prerenderApp({
               });
             } else {
               results.push({ route: route.pattern, status: "skipped", reason: "no-static-params" });
-              queueFallbackShells(route, {}, revalidate, new Set());
+              queueParentFallbackShells(route, parentParamSets, revalidate);
             }
             continue;
           }
@@ -1735,7 +1748,7 @@ export async function prerenderApp({
               status: "skipped",
               reason: "empty-static-params",
             });
-            queueFallbackShells(route, {}, revalidate, new Set());
+            queueParentFallbackShells(route, parentParamSets, revalidate);
             continue;
           }
 

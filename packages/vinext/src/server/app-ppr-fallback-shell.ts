@@ -51,12 +51,13 @@ export function appendAppPprFallbackShellResumeDataCache(
       flush(controller) {
         const resumeDataCache = readResumeDataCache();
         if (resumeDataCache === null) return;
-        // `>` occurs only inside JSON strings, where `\u003e` is the same
-        // value, so the comment cannot end early.
+        // `<` and `>` occur only inside JSON strings, where `\u003c` and
+        // `\u003e` are the same values, so the comment cannot end early and
+        // never holds another trailer start.
         controller.enqueue(
           new TextEncoder().encode(
             PPR_RESUME_DATA_CACHE_TRAILER_START +
-              resumeDataCache.replaceAll(">", "\\u003e") +
+              resumeDataCache.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e") +
               PPR_RESUME_DATA_CACHE_TRAILER_END,
           ),
         );
