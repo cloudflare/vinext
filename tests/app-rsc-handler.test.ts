@@ -1174,7 +1174,7 @@ describe("createAppRscHandler", () => {
       // per-navigation hash and the user's `_rsc` pairs leave the identity.
       expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
       expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([""]);
-      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc=");
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc");
     });
 
     it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
