@@ -710,6 +710,13 @@ test("refreshes only the revision the Store reported stale", async () => {
         });
         expect(await write(), String(revision)).not.toHaveProperty("replacesRevision");
       }
+
+      // The Store regenerates a replayable entry itself, so its caller's later write (e.g. one
+      // lowering its revalidate) is no refresh.
+      store.response?.headers.set("X-Vinext-Response-Store-Replayable", "1");
+      await expect(readAs("BLOB-STALE", "16")).resolves.not.toHaveProperty("cacheState");
+      expect(await write()).not.toHaveProperty("replacesRevision");
+      store.response?.headers.delete("X-Vinext-Response-Store-Replayable");
     });
 
     // A request's own invalidation makes its later writes fills, even one overlapping a read.
