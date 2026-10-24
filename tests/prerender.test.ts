@@ -2649,9 +2649,17 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
   async function prerenderDynamicRootParamRoute(
     cacheComponents: boolean,
     fallbackShellResumeDataCache?: string,
+    previousFallbackPostponed?: string,
   ) {
     const root = tmpDir("vinext-prerender-ppr-shell-");
     const outDir = path.join(root, "out");
+    if (previousFallbackPostponed !== undefined) {
+      fs.mkdirSync(path.join(outDir, "en", "blog"), { recursive: true });
+      fs.writeFileSync(
+        path.join(outDir, "en", "blog", "[slug].postponed"),
+        previousFallbackPostponed,
+      );
+    }
     const appDir = path.join(root, "app");
     const pageDir = path.join(appDir, "[locale]", "blog", "[slug]");
     fs.mkdirSync(pageDir, { recursive: true });
@@ -2757,6 +2765,16 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
 
     expect(fallbackHtml).not.toContain("vinext-ppr-resume-data-cache");
     expect(fallbackPostponed).toBe(resumeDataCache);
+  });
+
+  it("removes an earlier build's resume data cache when the shell no longer has one", async () => {
+    const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
+      true,
+      undefined,
+      JSON.stringify({ cache: { stale: { body: "e30=" } }, fetch: {} }),
+    );
+
+    expect(fallbackPostponed).toBeNull();
   });
 
   it("does not queue fallback-shell artifacts when cacheComponents is disabled", async () => {

@@ -25,6 +25,9 @@ import {
   type StaticAssetCacheMetadata,
 } from "./static-assets-adapter.shared.js";
 
+// https://developers.cloudflare.com/workers/platform/limits/#static-assets
+const WORKERS_STATIC_ASSET_MAX_BYTES = 25 * 1024 * 1024;
+
 function cacheAssetId(key: string): string {
   return createHash("sha256").update(key).digest("hex");
 }
@@ -61,7 +64,12 @@ function writeCacheAsset(
   postponedPath?: string,
 ): boolean {
   if (!fs.existsSync(sourcePath)) return false;
-  const hasPostponed = postponedPath !== undefined && fs.existsSync(postponedPath);
+  // An oversized sidecar would fail the whole deploy. Without one, the route
+  // renders blocking instead of resuming its shell.
+  const hasPostponed =
+    postponedPath !== undefined &&
+    fs.existsSync(postponedPath) &&
+    fs.statSync(postponedPath).size <= WORKERS_STATIC_ASSET_MAX_BYTES;
 
   const id = cacheAssetId(key);
   const extension = kind;
