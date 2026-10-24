@@ -1474,7 +1474,10 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   isDev: process.env.NODE_ENV !== "production",
   draftModeSecret: __draftModeSecret,
   devForwardedMiddlewareContextKey: ${JSON.stringify(config?.devForwardedMiddlewareContextKey ?? null)},
-  dispatchMatchedPage({
+  dispatchMatchedPage(__pageArgs) {
+    // Rebuilt for a fallback shell, so its callbacks render the shell's request.
+    function __createAppPageDispatchOptions(__dispatchArgs) {
+    const {
     bypassInterceptionContextCache,
     cachePathname,
     clientReuseManifest,
@@ -1505,7 +1508,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     searchParams,
     renderMode,
     renderWholeDocument,
-  }) {
+    } = __dispatchArgs;
     const PageComponent = route.page?.default;
     const __segmentConfigBranches = __resolveRouteSegmentConfigBranches(route);
     const __segmentConfig = __resolveRouteSegmentConfig(route, __segmentConfigBranches);
@@ -1526,7 +1529,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       routePatternParts: route.patternParts,
       routeSegments: route.routeSegments,
     });
-    return __dispatchAppPage({
+    return {
       basePath: __basePath,
       bypassInterceptionContextCache,
       ensureRouteLoaded: __ensureRouteLoaded,
@@ -1697,7 +1700,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       setNavigationContext,
       renderMode,
       renderWholeDocument,
-    });
+      withRequest(requestArgs) {
+        return __createAppPageDispatchOptions({ ...__dispatchArgs, ...requestArgs });
+      },
+    };
+    }
+    return __dispatchAppPage(__createAppPageDispatchOptions(__pageArgs));
   },
   async dispatchMatchedRouteHandler({
     bypassInterceptionContextCache,
