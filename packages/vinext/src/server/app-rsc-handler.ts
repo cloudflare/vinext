@@ -185,6 +185,7 @@ import {
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
 import {
+  adapterSharedCacheIdentity,
   adapterUsesSharedCacheIdentity,
   pagesCacheIdentityOrigin,
   pagesPageSharesAcrossHosts,
@@ -1447,6 +1448,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           // the render read of the query, so a page keeps the query in its
           // identity, as Next.js CDN caching does. Interception and mounted-slot
           // payloads stay contextual, as the RSC canonicalization above does.
+          // A host-free identity keeps the query of every dispatch.
           const cacheIdentity =
             cache !== "shared" ||
             stageProps.kind === "app-full-request" ||
@@ -1454,6 +1456,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             !adapterUsesSharedCacheIdentity()
               ? undefined
               : stageProps.kind === "app-page" &&
+                  adapterSharedCacheIdentity() === "query-free" &&
                   responseStagePolicy === null &&
                   stageProps.matchKind !== "interception" &&
                   stageProps.interceptionContext === null &&
@@ -2323,8 +2326,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           const renderRequest = responseStageRequest(stageRequest);
           // Next.js keys a static page's response cache entry by its path, so
           // one entry answers every host that is not a configured i18n domain.
+          // A probe classifies the shared dispatch, so it renders as one.
           const sharedAcrossHosts =
-            cache === "shared" &&
+            (cache === "shared" || responseStageProbeMode !== null) &&
             resourceKind === "page" &&
             pagesPageSharesAcrossHosts({ dataKind, runsInitialProps }) &&
             adapterUsesSharedCacheIdentity();
@@ -2363,7 +2367,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           let response = await dispatchResponseStage(
             renderRequest,
             hybridProps,
-            sharedAcrossHosts
+            cache === "shared" && sharedAcrossHosts
               ? {
                   cache,
                   cacheIdentity: createSharedHybridPagesCacheIdentity(

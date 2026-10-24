@@ -73,8 +73,8 @@ export type VinextResponseStageDispatchOptions = {
   /**
    * Shared cache identity of an App Router GET/HEAD dispatch, or of a Pages
    * page the build found static (getStaticProps or none), supplied only to
-   * adapters that declare `responseStageCacheIdentity: "query-free"` and
-   * require completed-response admission. A transport given one partitions
+   * adapters that declare a `responseStageCacheIdentity` and require
+   * completed-response admission. A transport given one partitions
    * its baseline lookup and stored entry by this request's method and complete
    * URL plus these complete serialized props, instead of the dispatched request
    * and props, and replays this identity for background regeneration, or the
@@ -96,15 +96,16 @@ export type VinextResponseStageDispatchOptions = {
    * hosts. A getStaticProps page's `_app` getInitialProps shares its entry,
    * as in Next.js, which keys it by path.
    *
-   * An App page identity also drops the user query from the URL and
-   * `resolvedUrl`, keeping framework representation selectors: the `.rsc`
-   * suffix, the render mode, and, for RSC requests only, the one validated
-   * `_rsc` value. That is safe only because completed-response admission
-   * refuses a cacheable App page response unless its render proved it never
-   * read `searchParams`. The dispatched request still carries the real query
-   * for the render itself. A page identity keeps the query when a
-   * `next.config` public cache policy applies (cached per full URL, as Next.js
-   * CDN caching is), and for interception and mounted-slot dispatches.
+   * Under `responseStageCacheIdentity: "query-free"`, an App page identity
+   * also drops the user query from the URL and `resolvedUrl`, keeping
+   * framework representation selectors: the `.rsc` suffix, the render mode,
+   * and, for RSC requests only, the one validated `_rsc` value. That is safe
+   * only because completed-response admission refuses a cacheable App page
+   * response unless its render proved it never read `searchParams`. The
+   * dispatched request still carries the real query for the render itself. A
+   * page identity keeps the query when a `next.config` public cache policy
+   * applies (cached per full URL, as Next.js CDN caching is), and for
+   * interception and mounted-slot dispatches.
    */
   cacheIdentity?: {
     props: unknown;

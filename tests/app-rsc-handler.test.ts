@@ -1026,7 +1026,9 @@ describe("createAppRscHandler", () => {
 
   describe("shared cache identity", () => {
     function useQueryFreeIdentityAdapter(
-      overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},
+      overrides: Partial<
+        Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission" | "responseStageCacheIdentity">
+      > = {},
     ): void {
       setCdnCacheAdapter({
         buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
@@ -1499,6 +1501,42 @@ describe("createAppRscHandler", () => {
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route?tab=latest`,
       ]);
+    });
+
+    // Workers Cache keys the dispatched path and query, so its identity only
+    // names one origin, and the dispatch keeps the query for the render.
+    it("keeps the query and selector headers in a host-free page identity", async () => {
+      useQueryFreeIdentityAdapter({ responseStageCacheIdentity: "host-free" });
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      const identities = [];
+      for (const origin of ["https://tenant-a.example", "http://tenant-b.example:8080"]) {
+        dispatchResponseStage.mockClear();
+        await handler(
+          new Request(`${origin}/docs/about?tab=latest`, { headers: { "Next-Url": "/feed" } }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(request.url).toBe(`${origin}/docs/about?tab=latest`);
+        expect(props).toMatchObject({ requestOrigin: origin, resolvedUrl: "/about?tab=latest" });
+        expect(options.cacheIdentity!.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        });
+        expect(options.cacheIdentity!.request.headers.get("Next-Url")).toBe("/feed");
+        identities.push({
+          method: options.cacheIdentity!.request.method,
+          props: options.cacheIdentity!.props,
+          url: options.cacheIdentity!.request.url,
+        });
+      }
+      expect(identities[0]).toEqual(identities[1]);
+      expect(identities[0]!.url).toBe(`${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about?tab=latest`);
     });
 
     // Next.js keys a static Pages page by its path, while vinext's Pages ISR
@@ -2942,6 +2980,46 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
       kind: "hybrid-pages",
       cacheability: { probeMode: "probe" },
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
+  // A probe renders as the shared dispatch, whose entry every host shares.
+  it("marks a hybrid Pages probe shared across hosts as the shared dispatch would be", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseStageCacheIdentity: "host-free",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("probe")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page", "none") ?? null,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+      "probe",
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "hybrid-pages",
+      cacheability: { probeMode: "probe" },
+      sharedAcrossHosts: true,
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });

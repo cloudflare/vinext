@@ -3,16 +3,19 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { detectDomainLocale, normalizeDomainHostname } from "../utils/domain-locale.js";
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "./multi-stage.js";
 
+/** The core cache identity the configured adapter keys shared dispatches by, if any. */
+export function adapterSharedCacheIdentity(): "host-free" | "query-free" | null {
+  const adapter = getCdnCacheAdapter();
+  // The identity is host-free, and query-free for App pages when the adapter
+  // asks, so it is safe only behind completed-response admission, which
+  // refuses dynamic renders and App pages without a negative searchParams proof.
+  if (adapter.requiresCompletedResponseAdmission !== true) return null;
+  return adapter.responseStageCacheIdentity ?? null;
+}
+
 /** Whether the configured adapter keys shared dispatches by a core cache identity. */
 export function adapterUsesSharedCacheIdentity(): boolean {
-  const adapter = getCdnCacheAdapter();
-  // The identity is host-free, and query-free for App pages, so it is safe
-  // only behind completed-response admission, which refuses dynamic renders
-  // and App pages without a negative searchParams proof.
-  return (
-    adapter.requiresCompletedResponseAdmission === true &&
-    adapter.responseStageCacheIdentity === "query-free"
-  );
+  return adapterSharedCacheIdentity() !== null;
 }
 
 /**
