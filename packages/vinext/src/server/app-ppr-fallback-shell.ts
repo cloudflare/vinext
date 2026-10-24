@@ -114,6 +114,11 @@ function pushParamValue(segments: string[], value: string | string[] | undefined
   return true;
 }
 
+function isPlaceholderLikeValue(value: string | string[] | undefined): boolean {
+  const values = Array.isArray(value) ? value : [value];
+  return values.some((item) => item?.startsWith("[") === true && item.endsWith("]"));
+}
+
 export function createAppPprFallbackShells(
   route: AppPprFallbackShellRoute,
   matchedParams: Record<string, string | string[]>,
@@ -159,7 +164,9 @@ export function createAppPprFallbackShells(
         }
 
         const value = matchedParams[paramName];
-        if (!pushParamValue(segments, value)) {
+        // A shell is keyed by its decoded pathname, where a value like
+        // `[slug]` would read as a placeholder and share another shell's entry.
+        if (isPlaceholderLikeValue(value) || !pushParamValue(segments, value)) {
           isValidShell = false;
           break;
         }
