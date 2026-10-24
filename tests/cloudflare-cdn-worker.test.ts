@@ -79,6 +79,7 @@ function pagesPageProps(
     requestHost: "example.com",
     renderOptions,
     resolvedUrl,
+    sharedAcrossHosts: false,
     stagedHeaders: null,
   };
 }

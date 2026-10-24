@@ -168,21 +168,27 @@ import {
   markRouteCacheabilityDynamic,
   preserveRouteCacheabilityResponsePolicy,
 } from "vinext/shims/cacheability-classification";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import {
   APP_METADATA_RESPONSE_STAGE_NO_MATCH_HEADER,
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   createSharedAppCacheIdentity,
   createSharedAppPageCacheIdentity,
+  createSharedHybridPagesCacheIdentity,
   isStaticCandidateAppPageDispatch,
   prepareSharedAppPageDispatch,
   withoutAppPageDispatchQuery,
   type AppMatchedWorkerResponseStageProps,
   type AppWorkerResponseStageProps,
   type DispatchAppWorkerResponseStage,
+  type HybridPagesWorkerResponseStageProps,
   type RenderAppWorkerResponseStageLocally,
 } from "./app-worker-stages.js";
 import type { VinextCacheabilityProbeMode } from "./multi-stage.js";
+import {
+  adapterUsesSharedCacheIdentity,
+  pagesCacheIdentityOrigin,
+  pagesPageSharesAcrossHosts,
+} from "./shared-cache-identity.js";
 import { parseCacheabilityManifest, type CacheabilityManifest } from "./cacheability-manifest.js";
 import {
   consumePagesResponseStagePolicyOwner,
@@ -349,17 +355,6 @@ function readCacheabilityRequestProjection(
     };
   }
   return parsedCacheabilityRequestProjection.manifest;
-}
-
-function adapterUsesQueryFreeCacheIdentity(): boolean {
-  const adapter = getCdnCacheAdapter();
-  // The identity is host-free, and query-free for pages, so it is safe only
-  // behind completed-response admission, which refuses dynamic renders and
-  // App pages without a negative searchParams proof.
-  return (
-    adapter.requiresCompletedResponseAdmission === true &&
-    adapter.responseStageCacheIdentity === "query-free"
-  );
 }
 
 function hasUrlParserDotSegment(pathname: string): boolean {
@@ -597,6 +592,7 @@ type RenderPagesFallbackOptions = {
     resourceKind: "api" | "page",
     dataKind?: PagesRouteDataKind,
     hasRequestAwareDocument?: boolean,
+    runsInitialProps?: boolean,
   ) => Promise<Response>;
   isDataRequest?: boolean;
   isRscRequest: boolean;
@@ -606,6 +602,8 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /** The shared cache entry answers every host; a request-time render is not stored. */
+  sharedAcrossHosts?: boolean;
   url: URL;
 };
 
@@ -1453,7 +1451,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             cache !== "shared" ||
             stageProps.kind === "app-full-request" ||
             stageProps.kind === "hybrid-pages" ||
-            !adapterUsesQueryFreeCacheIdentity()
+            !adapterUsesSharedCacheIdentity()
               ? undefined
               : stageProps.kind === "app-page" &&
                   responseStagePolicy === null &&
@@ -2308,6 +2306,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           resourceKind: "api" | "page",
           dataKind?: PagesRouteDataKind,
           hasRequestAwareDocument?: boolean,
+          runsInitialProps?: boolean,
         ) => {
           const pagesOnDemandRevalidate =
             resourceKind === "page" &&
@@ -2322,40 +2321,58 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
                 ? "shared"
                 : "bypass";
           const renderRequest = responseStageRequest(stageRequest);
+          // Next.js keys a static page's response cache entry by its path, so
+          // one entry answers every host that is not a configured i18n domain.
+          const sharedAcrossHosts =
+            cache === "shared" &&
+            resourceKind === "page" &&
+            pagesPageSharesAcrossHosts({ dataKind, runsInitialProps }) &&
+            adapterUsesSharedCacheIdentity();
+          const hybridProps: HybridPagesWorkerResponseStageProps = {
+            kind: "hybrid-pages",
+            buildId: options.buildId,
+            cacheability: {
+              ...responseStageCacheability(resolvedUrl),
+              policyHeaders: await loadResponseStagePolicy(),
+              ...(isDataRequest ? { representation: "pages-data" as const } : {}),
+            },
+            allowRscDocumentFallback:
+              didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
+            appRouteMatch: match
+              ? { isDynamic: match.route.isDynamic, pattern: match.route.pattern }
+              : null,
+            canonicalPathname,
+            cleanPathname,
+            draftModeCookie,
+            isDataRequest,
+            isRscRequest,
+            matchKind,
+            middlewareCookieOverlay,
+            preHandlerHeaders:
+              cache === "shared" && resourceKind === "page" && dataKind === "static"
+                ? null
+                : [...(await loadPreHandlerResponseHeaders())],
+            protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+            requestOrigin: url.origin,
+            resourceKind,
+            requestUrl: request.url,
+            resolvedUrl: pagesRouteUrl,
+            scriptNonce: scriptNonce ?? null,
+            sharedAcrossHosts,
+          };
           let response = await dispatchResponseStage(
             renderRequest,
-            {
-              kind: "hybrid-pages",
-              buildId: options.buildId,
-              cacheability: {
-                ...responseStageCacheability(resolvedUrl),
-                policyHeaders: await loadResponseStagePolicy(),
-                ...(isDataRequest ? { representation: "pages-data" as const } : {}),
-              },
-              allowRscDocumentFallback:
-                didMiddlewareRewritePathname || allowInternalRscDocumentFallback,
-              appRouteMatch: match
-                ? { isDynamic: match.route.isDynamic, pattern: match.route.pattern }
-                : null,
-              canonicalPathname,
-              cleanPathname,
-              draftModeCookie,
-              isDataRequest,
-              isRscRequest,
-              matchKind,
-              middlewareCookieOverlay,
-              preHandlerHeaders:
-                cache === "shared" && resourceKind === "page" && dataKind === "static"
-                  ? null
-                  : [...(await loadPreHandlerResponseHeaders())],
-              protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
-              requestOrigin: url.origin,
-              resourceKind,
-              requestUrl: request.url,
-              resolvedUrl: pagesRouteUrl,
-              scriptNonce: scriptNonce ?? null,
-            },
-            { cache },
+            hybridProps,
+            sharedAcrossHosts
+              ? {
+                  cache,
+                  cacheIdentity: createSharedHybridPagesCacheIdentity(
+                    renderRequest,
+                    hybridProps,
+                    pagesCacheIdentityOrigin(request.url, options.i18nConfig),
+                  ),
+                }
+              : { cache },
           );
           const policyOwner =
             resourceKind === "page"

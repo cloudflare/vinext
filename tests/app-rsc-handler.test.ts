@@ -19,6 +19,7 @@ import {
 } from "../packages/vinext/src/server/app-worker-stages.js";
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
+import type { PagesRouteDataKind } from "../packages/vinext/src/server/pages-route-data-kind.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
 import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
@@ -1498,6 +1499,89 @@ describe("createAppRscHandler", () => {
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route?tab=latest`,
       ]);
+    });
+
+    // Next.js keys a static Pages page by its path, while vinext's Pages ISR
+    // key keeps a configured i18n domain.
+    it("names one origin for every host of a static hybrid Pages page", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      let dataKind: PagesRouteDataKind = "static";
+      let runsInitialProps = false;
+      const handler = createHandler({
+        configHeaders: [],
+        i18nConfig: {
+          defaultLocale: "en",
+          domains: [{ defaultLocale: "fr", domain: "example.fr", http: true }],
+          locales: ["en", "fr"],
+        },
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(
+            options.request,
+            "page",
+            dataKind,
+            false,
+            runsInitialProps,
+          ) ?? null,
+      });
+      const dispatch = async (url: string) => {
+        dispatchResponseStage.mockClear();
+        await handler(new Request(url), null, false, dispatchResponseStage);
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(request.url).toBe(url);
+        expect(props).toMatchObject({ requestOrigin: new URL(url).origin, requestUrl: url });
+        return { props, options };
+      };
+
+      for (const kind of ["static", "none"] as const) {
+        dataKind = kind;
+        const identities = [];
+        for (const url of [
+          "https://tenant-a.example/docs/pages?tab=latest",
+          "http://tenant-b.example:8080/docs/pages?tab=latest",
+        ]) {
+          const { props, options } = await dispatch(url);
+          expect(props).toMatchObject({ kind: "hybrid-pages", sharedAcrossHosts: true });
+          expect(options.cacheIdentity!.regenerateFromDispatch).toBe(true);
+          identities.push({
+            props: options.cacheIdentity!.props,
+            url: options.cacheIdentity!.request.url,
+          });
+        }
+        expect(identities[0]).toEqual(identities[1]);
+        expect(identities[0]).toMatchObject({
+          props: {
+            requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+            requestUrl: `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/pages?tab=latest`,
+            sharedAcrossHosts: true,
+          },
+          url: `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/pages?tab=latest`,
+        });
+
+        const { options } = await dispatch("https://example.fr:8443/docs/pages");
+        expect(options.cacheIdentity!.request.url).toBe("http://example.fr/docs/pages");
+        expect(options.cacheIdentity!.props).toMatchObject({
+          requestOrigin: "http://example.fr",
+          requestUrl: "http://example.fr/docs/pages",
+        });
+      }
+
+      // A getServerSideProps page, or one whose getInitialProps runs, renders
+      // per request and keeps the host in its key.
+      for (const [kind, initialProps] of [
+        ["server", false],
+        ["none", true],
+      ] as const) {
+        dataKind = kind;
+        runsInitialProps = initialProps;
+        const { props, options } = await dispatch("https://tenant-a.example/docs/pages");
+        expect(props).toMatchObject({ sharedAcrossHosts: false });
+        expect(options).toEqual({ cache: "shared" });
+      }
     });
   });
 
@@ -3594,6 +3678,7 @@ describe("createAppRscHandler", () => {
         resolvedUrl: "/pages",
         resourceKind: "page",
         scriptNonce: null,
+        sharedAcrossHosts: false,
       },
       { cache: "shared" },
     );
