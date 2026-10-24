@@ -847,15 +847,16 @@ async function writeFetchCacheResponse(
   tags: string[],
   revalidateSeconds: number,
   options?: { cloneForReturn?: boolean },
-): Promise<void> {
+): Promise<CachedFetchValue | null> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
-  if (!cacheValue) return;
+  if (!cacheValue) return null;
 
   await handler.set(cacheKey, cacheValue, {
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
   });
+  return cacheValue;
 }
 
 async function lowerFetchCacheRevalidateIfNeeded(
@@ -1493,7 +1494,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          const freshValue = await writeFetchCacheResponse(
+            handler,
+            cacheKey,
+            freshResponse,
+            tags,
+            revalidateSeconds,
+          );
+          if (freshValue) collectFetchResumeDataCacheEntry(cacheKey, freshValue.data);
           return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
 

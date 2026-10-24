@@ -64,8 +64,9 @@ const { createRequestContext, runWithRequestContext } =
   await import("../packages/vinext/src/shims/unified-request-context.js");
 const { registerFrameworkTracingIntegration } =
   await import("../packages/vinext/src/server/tracer.js");
-const { _peekRequestScopedCacheLife } =
+const { _peekRequestScopedCacheLife, _setResumeDataCacheCollector } =
   await import("../packages/vinext/src/shims/cache-request-state.js");
+const { createResumeDataCache } = await import("../packages/vinext/src/shims/resume-data-cache.js");
 
 describe("fetch cache shim", () => {
   let cleanup: (() => void) | null = null;
@@ -1244,6 +1245,28 @@ describe("fetch cache shim", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("collects a foreground-refreshed fetch into the shell's resume data cache", async () => {
+    await fetch("https://api.example.com/foreground-stale-rdc", { next: { revalidate: 1 } });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    const collector = createResumeDataCache();
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      _setResumeDataCacheCollector(collector);
+      await fetch("https://api.example.com/foreground-stale-rdc", { next: { revalidate: 1 } });
+    });
+
+    const [entry] = collector.fetch.values();
+    expect(collector.fetch.size).toBe(1);
+    expect(JSON.parse(Buffer.from(entry.body, "base64").toString()).count).toBe(2);
   });
 
   it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
