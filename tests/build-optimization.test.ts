@@ -1210,6 +1210,55 @@ describe("optimizeDeps.exclude for vinext", () => {
     }
   }, 15000);
 
+  it("keeps shims out of server optimizers that other plugins create", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-custom-server-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      const userPlugin = { name: "user-optimizer-plugin" };
+      const custom: any = {
+        consumer: "server",
+        optimizeDeps: {
+          exclude: ["already-excluded"],
+          rolldownOptions: { plugins: [userPlugin] },
+        },
+      };
+      const client: any = { consumer: "client", optimizeDeps: {} };
+      (mainPlugin as any).configEnvironment("custom-worker", custom);
+      (mainPlugin as any).configEnvironment("client", client);
+
+      expect(custom.optimizeDeps.exclude).toEqual(
+        expect.arrayContaining(["already-excluded", "vinext", "next/link", "next/headers"]),
+      );
+      const pluginNames = custom.optimizeDeps.rolldownOptions.plugins.map((p: any) => p.name);
+      expect(pluginNames).toContain("user-optimizer-plugin");
+      expect(pluginNames).toContain("builtin:esm-external-require");
+      // The browser optimizer already turns require() of excluded ids into imports.
+      expect(client.optimizeDeps.rolldownOptions).toBeUndefined();
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
   it("resolves React's edge Fizz entries in Cloudflare server environments", async () => {
     const vinext = (await import("../packages/vinext/src/index.js")).default;
     const plugins = vinext();

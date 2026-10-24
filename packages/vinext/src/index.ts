@@ -4086,13 +4086,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Pages Router builds (which don't set per-environment configs)
         // also preserve entries from earlier plugins.
         const depOptimizeNodeEnvOptions = getDepOptimizeNodeEnvOptions(nodeEnvDefine);
-        const serverDepOptimizeOptions = {
-          ...depOptimizeNodeEnvOptions,
-          rolldownOptions: {
-            ...depOptimizeNodeEnvOptions.rolldownOptions,
-            plugins: [createShimRequirePlugin()],
-          },
-        };
         // Apply the define to the default optimizer and explicitly to server
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
@@ -4297,7 +4290,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     "react-server-dom-webpack/static.edge",
                   ]),
                 ],
-                ...serverDepOptimizeOptions,
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: options.rscOutDir ?? "dist/server",
@@ -4380,7 +4373,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   ? {}
                   : { include: ["react-dom/server", "react-dom/static"] }),
                 entries: optimizeEntries,
-                ...serverDepOptimizeOptions,
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: options.ssrOutDir ?? "dist/server/ssr",
@@ -4529,7 +4522,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
                   "ipaddr.js",
                 ]),
-                ...serverDepOptimizeOptions,
+                ...depOptimizeNodeEnvOptions,
               },
               build: {
                 outDir: "dist/server",
@@ -4589,7 +4582,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? [configuredPlugins]
                 : []),
             importMetaUrlCapability.optimizeDepsPlugin,
+            createShimRequirePlugin(),
           ];
+          // Covers server environments vinext does not create, such as other
+          // plugins' Worker environments.
+          config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
+            config.optimizeDeps.exclude ?? [],
+            shimOptimizeDepsExclude,
+          );
         }
 
         if (
@@ -4615,14 +4615,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
           config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
             config.optimizeDeps.exclude ?? [],
-            shimOptimizeDepsExclude,
             PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
           );
-          config.optimizeDeps.rolldownOptions ??= {};
-          config.optimizeDeps.rolldownOptions.plugins = [
-            config.optimizeDeps.rolldownOptions.plugins,
-            createShimRequirePlugin(),
-          ];
         }
 
         const configuredExtensions =
