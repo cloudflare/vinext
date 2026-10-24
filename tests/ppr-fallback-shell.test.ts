@@ -7,6 +7,7 @@ import {
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
   trackPprFallbackShellCacheTask,
+  waitForPprFallbackShellCacheInput,
   waitForPprFallbackShellCacheReady,
 } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 
@@ -117,7 +118,68 @@ describe("ppr fallback shell cache task tracking", () => {
     expect(reachedAfterSuspend).toBe(false);
 
     state.abortController.abort();
-    await tracked.catch(() => undefined);
+    await delay(5);
+    // The abort leaves the suspension pending instead of rejecting it.
+    expect(reachedAfterSuspend).toBe(false);
+    void tracked;
+  });
+  it("does not wait for a cache task whose arguments never resolve", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let reachedAfterInput = false;
+
+    runWithPprFallbackShellState(state, () => {
+      const hangingInput = createPprFallbackShellSuspensePromise<void>("`params`");
+      void trackPprFallbackShellCacheTask(async () => {
+        await waitForPprFallbackShellCacheInput(hangingInput ?? Promise.resolve());
+        reachedAfterInput = true;
+      }, "default");
+    });
+
+    await waitForPprFallbackShellCacheReady(state);
+    expect(state.pendingCacheTasks).toBe(0);
+    expect(reachedAfterInput).toBe(false);
+    state.abortController.abort();
+  });
+
+  it("counts a cache task again once its arguments resolve", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/:locale/blog/:slug",
+    });
+    let resolveInput!: () => void;
+    let finishTask!: () => void;
+    let isReady = false;
+
+    const tracked = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        await waitForPprFallbackShellCacheInput(
+          new Promise<void>((resolve) => (resolveInput = resolve)),
+        );
+        await new Promise<void>((resolve) => (finishTask = resolve));
+      }, "default"),
+    );
+    // Like an argument another cache produces: still pending work.
+    const producer = runWithPprFallbackShellState(state, () =>
+      trackPprFallbackShellCacheTask(async () => {
+        await delay(5);
+        resolveInput();
+      }, "default"),
+    );
+    const ready = waitForPprFallbackShellCacheReady(state).then(() => {
+      isReady = true;
+    });
+
+    await producer;
+    await delay(5);
+    expect(isReady).toBe(false);
+    expect(state.pendingCacheTasks).toBe(1);
+    finishTask();
+    await tracked;
+    await ready;
+    expect(state.pendingCacheTasks).toBe(0);
   });
 });
 

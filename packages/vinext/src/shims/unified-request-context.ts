@@ -131,6 +131,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
+    resumeDataCacheCollector: null,
+    resumeDataCacheSeed: null,
     unstableCacheObservations: new Map(),
     unstableCacheRevalidation: "foreground",
     _privateCache: null,

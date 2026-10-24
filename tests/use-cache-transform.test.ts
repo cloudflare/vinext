@@ -554,6 +554,24 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("registerCachedFunction($$import_getData");
   });
 
+  it("wraps a file-level cached layout's default export, like Next.js", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives",
+    )!;
+    const transform = unwrapHook(plugin.transform)!;
+    const result = await transform.call(
+      { environment: { name: "rsc", mode: "build" } },
+      [
+        `"use cache";`,
+        `export default async function Layout({ children }) { return children; }`,
+      ].join("\n"),
+      path.join(APP_FIXTURE_DIR, "app", "cached-layout", "layout.tsx"),
+    );
+    expect(result!.code).toContain("registerCachedFunction(Layout");
+  });
+
   it("accepts configured cache kinds containing punctuation", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
