@@ -1269,6 +1269,53 @@ describe("fetch cache shim", () => {
     expect(JSON.parse(Buffer.from(entry.body, "base64").toString()).count).toBe(2);
   });
 
+  it("holds a fallback shell open while a cacheable fetch is pending", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    let respond!: () => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          respond = () => resolve(new Response(JSON.stringify({ count: 1 })));
+        }),
+    );
+    const state = createPprFallbackShellState({
+      fallbackParamNames: ["slug"],
+      routePattern: "/posts/[slug]",
+    });
+
+    const pending = runWithPprFallbackShellState(state, () =>
+      fetch("https://api.example.com/shell-pending", { next: { revalidate: 60 } }),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    expect(state.pendingCacheTasks).toBe(1);
+
+    respond();
+    await pending;
+    expect(state.pendingCacheTasks).toBe(0);
+  });
+
+  it("refetches an expired entry instead of collecting it into the shell's resume data cache", async () => {
+    await fetch("https://api.example.com/expired-rdc", { next: { revalidate: 60 } });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.expireAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+
+    const collector = createResumeDataCache();
+    await runWithRequestContext(createRequestContext(), async () => {
+      _setResumeDataCacheCollector(collector);
+      const res = await fetch("https://api.example.com/expired-rdc", { next: { revalidate: 60 } });
+      expect((await res.json()).count).toBe(2);
+    });
+
+    const [entry] = collector.fetch.values();
+    expect(JSON.parse(Buffer.from(entry.body, "base64").toString()).count).toBe(2);
+  });
+
   it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
     const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
       next: { revalidate: 60 },
