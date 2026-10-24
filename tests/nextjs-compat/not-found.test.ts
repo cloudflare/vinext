@@ -389,13 +389,18 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain("Not Found (panel slot)</title>");
   });
 
-  // Like Next.js once its error shell hydrates, the document keeps the page's
-  // title when the slot ("missing") or both ("both") threw notFound().
-  it.each(["ok", "missing", "both"])("keeps the route's own title (%s)", async (id) => {
-    const { html } = await fetchHtml(baseUrl, `/nextjs-compat/not-found-slot-own/team/${id}`);
-    expect(html).toContain("<title>Team page</title>");
-    expect(html).not.toContain("<title>Not Found");
-  });
+  // Turbopack orders a layout's children before its slots, so an active slot
+  // page's title wins over the page's, also when both threw notFound().
+  // Observed in Next.js 16.2.7 with Turbopack (webpack keeps the page's).
+  it.each(["ok", "missing", "both"])(
+    "an active slot page's title wins over the page's (%s)",
+    async (id) => {
+      const { html } = await fetchHtml(baseUrl, `/nextjs-compat/not-found-slot-own/team/${id}`);
+      expect(html).toContain("<title>Team slot page</title>");
+      expect(html).not.toContain("<title>Team page</title>");
+      expect(html).not.toContain("<title>Not Found");
+    },
+  );
 
   // Next.js 16.2.7 flushes its error shell at once (35ms to first byte against
   // a 3s generateMetadata()), and the route's title follows later.

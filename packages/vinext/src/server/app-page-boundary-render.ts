@@ -34,6 +34,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  slotInterceptKeepsSourceHead,
   resolveAppPageHead,
   type ActiveParallelRouteHeadInput,
   type AppPageFallbackRouteHead,
@@ -183,6 +184,7 @@ export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> 
   params?: AppPageParams;
   pattern?: string;
   routeSegments?: readonly string[];
+  childrenSlot?: AppPageRouteWiringRoute<TModule>["childrenSlot"];
   segmentForbiddens?: readonly (TModule | null | undefined)[] | null;
   segmentForbiddenTreePositions?: readonly number[] | null;
   segmentNotFounds?: readonly (TModule | null | undefined)[] | null;
@@ -864,26 +866,49 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
           if (routeHead.prepared) return routeHead.prepared;
           // The render threw before its head started, so it resolves here, from
           // the whole route rather than the layouts the fallback renders, with
-          // the same branches and query as the route's own render.
+          // the same branches and query as the route's own render. Like
+          // Next.js's findHeadInCache, a slot intercept keeps the source
+          // route's head when a page comes before its slot, and a sibling
+          // intercept's page heads the route.
           const fullRouteSegments = route.routeSegments ?? [];
           const routePrimaryParallelBranch = resolvePrimaryParallelBranch(fullRouteSegments);
-          const routeParallelBranches = resolveActiveParallelRouteHeadInputs({
-            interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
-            interceptLayouts: intercept?.interceptLayouts ?? null,
-            interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
-            interceptNotFoundBranchSegments: intercept?.interceptNotFoundBranchSegments ?? null,
-            interceptNotFound: intercept?.interceptNotFound ?? null,
-            interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
-            interceptPage: intercept?.interceptPage ?? null,
-            interceptParams: intercept?.interceptParams ?? null,
-            interceptSlotKey: intercept?.interceptSlotKey ?? null,
-            interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+          const sourceParallelBranches = resolveActiveParallelRouteHeadInputs({
             layoutTreePositions: route.layoutTreePositions,
             params: options.matchedParams,
             routeSegments: fullRouteSegments,
             slotParams,
             slots: route.slots ?? null,
           });
+          const interceptSlotKey =
+            intercept?.interceptPage != null && !isSiblingIntercept
+              ? (intercept.interceptSlotKey ?? null)
+              : null;
+          const routeParallelBranches =
+            interceptSlotKey === null ||
+            slotInterceptKeepsSourceHead({
+              interceptSlotKey,
+              route,
+              sourceParallelRoutes: sourceParallelBranches,
+            })
+              ? sourceParallelBranches
+              : resolveActiveParallelRouteHeadInputs({
+                  interceptBranchSegments: intercept?.interceptBranchSegments ?? null,
+                  interceptLayouts: intercept?.interceptLayouts ?? null,
+                  interceptLayoutSegments: intercept?.interceptLayoutSegments ?? null,
+                  interceptNotFoundBranchSegments:
+                    intercept?.interceptNotFoundBranchSegments ?? null,
+                  interceptNotFound: intercept?.interceptNotFound ?? null,
+                  interceptNotFoundTreePosition: intercept?.interceptNotFoundTreePosition ?? null,
+                  interceptPage: intercept?.interceptPage ?? null,
+                  interceptParams: intercept?.interceptParams ?? null,
+                  interceptSlotKey,
+                  interceptSourcePageSegments: intercept?.interceptSourcePageSegments ?? null,
+                  layoutTreePositions: route.layoutTreePositions,
+                  params: options.matchedParams,
+                  routeSegments: fullRouteSegments,
+                  slotParams,
+                  slots: route.slots ?? null,
+                });
           const routeLayoutModules = route.layouts ?? options.rootLayouts;
           const headOptions = {
             applyFileBasedMetadata: options.applyFileBasedMetadata,
