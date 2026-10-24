@@ -1530,7 +1530,7 @@ async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageD
   );
   if (layoutCount === 0) return null;
   // The render's own dynamic usage already decides how the fallback is stored.
-  const { result } = await runWithDetachedDynamicUsage(() =>
+  return await runWithDetachedDynamicUsage(() =>
     options.runWithSuppressedHookWarning(async () => {
       for (let layoutIndex = 0; layoutIndex < layoutCount; layoutIndex++) {
         const outcome = await runWithConnectionProbe(async () => {
@@ -1550,7 +1550,6 @@ async function findAppPageLayoutSubtreeSpecialErrorIndex<TRoute extends AppPageD
       return null;
     }),
   );
-  return result;
 }
 
 /**

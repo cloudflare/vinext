@@ -21,7 +21,6 @@ import {
   setCacheHandler,
   unstable_cache,
 } from "../packages/vinext/src/shims/cache.js";
-import { runWithDetachedCacheObservations } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   createRequestContext,
   getRequestContext,
@@ -264,50 +263,27 @@ describe("render dynamic latch", () => {
   });
 
   describe("detached dynamic usage", () => {
-    it("reports a probe's dynamic usage without marking the request", async () => {
+    it("keeps a probe's dynamic usage out of the request", async () => {
       await runWithRequestContext(createRequestContext(), async () => {
-        const outcome = await runWithDetachedDynamicUsage(() => markDynamicUsage());
-        expect(outcome.dynamicDetected).toBe(true);
+        await runWithDetachedDynamicUsage(() => markDynamicUsage());
         expect(consumeDynamicUsage()).toBe(false);
         expect(isRenderDynamicLatched()).toBe(false);
       });
     });
 
-    it("keeps a probe's fetch observations and cacheLife out of the request", async () => {
+    it("keeps a probe's fetch tags and cacheLife out of the request", async () => {
       await runWithRequestContext(createRequestContext(), async () => {
         await runWithDetachedDynamicUsage(() => {
           const probeContext = getRequestContext();
-          probeContext.cacheableFetchUrls.add("https://api.example.test/cached");
           probeContext.currentRequestTags.push("probe-tag");
           probeContext.dynamicFetchUrls.add("https://api.example.test/dynamic");
           probeContext.requestScopedCacheLife = { revalidate: 1 };
         });
 
         const context = getRequestContext();
-        expect([...context.cacheableFetchUrls]).toEqual([]);
         expect(context.currentRequestTags).toEqual([]);
         expect([...context.dynamicFetchUrls]).toEqual([]);
         expect(context.requestScopedCacheLife).toBeNull();
-      });
-    });
-
-    it("returns the probe's cacheLife from scopes that reset the request slot", async () => {
-      await runWithRequestContext(createRequestContext(), async () => {
-        const outcome = await runWithDetachedDynamicUsage(async () => {
-          await runWithUnifiedStateMutation(
-            (context) => {
-              context.requestScopedCacheLife = null;
-            },
-            () => cacheLife({ stale: 45, revalidate: 60, expire: 300 }),
-          );
-          // A background regeneration's claims stay out of the probe's.
-          await runWithDetachedCacheObservations(async () => {
-            cacheLife({ stale: 10, revalidate: 60, expire: 300 });
-          });
-        });
-
-        expect(outcome.cacheLife?.stale).toBe(45);
-        expect(getRequestContext().requestScopedCacheLife).toBeNull();
       });
     });
 
@@ -392,7 +368,7 @@ describe("render dynamic latch", () => {
         });
       });
 
-      it("keeps its cacheLife out of a probe and an enclosing cache", async () => {
+      it("keeps its cacheLife out of an enclosing cache", async () => {
         const getValue = createStaleRead("refresh-probe");
         await runScenario(async (refreshes) => {
           const readOuter = registerCachedFunction(async () => {
@@ -403,11 +379,9 @@ describe("render dynamic latch", () => {
             return value;
           }, "test:refresh-probe:outer");
 
-          const outcome = await runWithDetachedDynamicUsage(() => readOuter());
-
-          expect(outcome.result).toBe("stale");
+          expect(await readOuter()).toBe("stale");
           expect(refreshes).toHaveLength(1);
-          expect(outcome.cacheLife?.stale).toBe(45);
+          expect(getRequestContext().requestScopedCacheLife?.stale).toBe(45);
         });
       });
     });
