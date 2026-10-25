@@ -7565,6 +7565,50 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
+  it.each(["background", "foreground"] as const)(
+    "a use cache %s regeneration passes the stale entry it replaces",
+    async (unstableCacheRevalidation) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      const handler = new MemoryCacheHandler();
+      setCacheHandler(handler);
+      try {
+        let callCount = 0;
+        const cached = registerCachedFunction(async () => {
+          callCount++;
+          return { data: callCount };
+        }, `test:stale-entry-${unstableCacheRevalidation}`);
+        await cached();
+        for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+
+        const get = vi.spyOn(handler, "get");
+        const set = vi.spyOn(handler, "set");
+        const regenerations: Promise<unknown>[] = [];
+        const result = await runWithRequestContext(
+          createRequestContext({
+            executionContext: { waitUntil: (promise) => regenerations.push(promise) },
+            unstableCacheRevalidation,
+          }),
+          () => cached(),
+        );
+        expect(result).toEqual({ data: unstableCacheRevalidation === "background" ? 1 : 2 });
+        await Promise.all(regenerations);
+
+        const staleEntry = await get.mock.results[0]?.value;
+        expect(staleEntry).toMatchObject({ cacheState: "stale" });
+        expect(callCount).toBe(2);
+        expect(set).toHaveBeenCalledOnce();
+        expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
   it("a use cache hit re-registers its client stale time on the request scope", async () => {
     // The enclosing render's minimum is what gets persisted onto the page cache
     // entry. If a warm `use cache` hit contributed revalidate/expire but dropped

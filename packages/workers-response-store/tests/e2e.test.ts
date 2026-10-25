@@ -543,6 +543,8 @@ test("replacesRevision drops a refresh of a fresh revision still on its way to R
 test("replacesRevision doesn't coalesce a refresh into a leader older than its revision", async () => {
   const path = "/refresh-race-old-leader";
   const tags = [path.slice(1)];
+  const edgeCalls = async () =>
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length;
   await put(path, "first", { noRevalidator: true, tags });
   await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
   // The leader replaces the fresh copy, and stays coalescible while its purge is pending.
@@ -553,12 +555,11 @@ test("replacesRevision doesn't coalesce a refresh into a leader older than its r
     tags,
   });
   for (let attempt = 0; attempt < 50; attempt++) {
-    const calls = (await (
-      await worker.fetch("https://user.test/admin/edge-calls")
-    ).json()) as unknown[];
-    if (calls.length === 1) break;
+    if ((await edgeCalls()) === 1) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+  // The leader has published and is waiting on its purge.
+  assert.equal(await edgeCalls(), 1);
   await invalidate({ tags });
   const stale = await read(path);
   assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");

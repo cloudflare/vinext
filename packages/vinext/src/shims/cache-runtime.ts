@@ -878,8 +878,11 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
       // Execute the function and store its result. A background regeneration doesn't
-      // propagate: the request already used the stale value.
-      const generate = async (propagate: boolean): Promise<TResult> => {
+      // propagate: the request already used the stale value, which it passes as staleEntry.
+      const generate = async (
+        propagate: boolean,
+        staleEntry?: CacheHandlerValue,
+      ): Promise<TResult> => {
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
           callFn,
           callArgs,
@@ -973,9 +976,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               // Write the useful entry last. A bounded LRU that can retain only
               // one of the pair must keep the specific value, not the redirect.
               cacheValue.data.url = specificCacheKey;
-              await handler.set(specificCacheKey, cacheValue, cacheContext);
+              await handler.set(specificCacheKey, cacheValue, {
+                ...cacheContext,
+                // The stale entry this write refreshes, so a handler can tell a refresh
+                // from a write.
+                ...(staleEntry && specificCacheKey === cacheKey ? { staleEntry } : {}),
+              });
             } else {
-              await handler.set(cacheKey, cacheValue, cacheContext);
+              await handler.set(cacheKey, cacheValue, {
+                ...cacheContext,
+                ...(staleEntry ? { staleEntry } : {}),
+              });
             }
           } catch {
             // A handler failure skips caching but must not fail the render.
@@ -1005,14 +1016,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           recordRequestScopedCacheControl(existing.cacheControl);
-          if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
+          if (existing.cacheState === "stale") {
+            const staleEntry = existing;
+            regenerateInBackground(id, () => generate(false, staleEntry));
+          }
           return result;
         } catch {
           // Corrupted entry, fall through to re-execute
         }
       }
 
-      return generate(true);
+      return generate(true, existing?.cacheState === "stale" ? existing : undefined);
     }, cacheVariant);
   };
 
