@@ -275,7 +275,13 @@ export class KVCacheHandler implements CacheHandler {
 
   async get(key: string, _ctx?: Record<string, unknown>): Promise<CacheHandlerValue | null> {
     const kvKey = this._entryKey(key);
-    const softTags = validUniqueTags(readStringArrayField(_ctx, "softTags"));
+    // Like Next.js's IncrementalCache, a fetch's own tags count whatever the
+    // entry carries: another fetch of the same request may have stored it
+    // under different tags.
+    const softTags = validUniqueTags([
+      ...readStringArrayField(_ctx, "softTags"),
+      ...(_ctx?.kind === "FETCH" ? readStringArrayField(_ctx, "tags") : []),
+    ]);
     // Soft tags are known before the entry arrives, so their markers ride the
     // same hop instead of costing a round trip after it.
     const entryRead = this._entryReadOptions

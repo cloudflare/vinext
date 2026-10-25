@@ -406,6 +406,45 @@ test("does not resolve soft-tag expiration when the data entry misses", async ()
   expect(store.tagExpirationCalls).toHaveLength(0);
 });
 
+test("checks a FETCH read's own tags that its entry doesn't carry", async () => {
+  const fetchEntry = (tags: string[], tagExpiration: number) => {
+    const store = new TestStore();
+    store.response = new Response(
+      JSON.stringify({
+        lastModified: 1000,
+        value: {
+          kind: "FETCH",
+          data: { headers: {}, body: "", status: 200, url: "https://example.com" },
+          tags,
+        },
+      }),
+      { headers: { "X-Workers-Response-Store": "BLOB-FRESH" } },
+    );
+    store.tagExpiration = tagExpiration;
+    return { handler: new WorkersResponseStoreCacheHandler(store), store };
+  };
+
+  const untracked = fetchEntry(["other"], 2000);
+  await expect(
+    untracked.handler.get("key", { kind: "FETCH", tags: ["mine", "other"] }),
+  ).resolves.toBeNull();
+  // The Store already tracks the tags an entry carries.
+  expect(untracked.store.tagExpirationCalls).toEqual([[encodeCloudflareCacheTag("mine")]]);
+
+  const tracked = fetchEntry(["mine"], 2000);
+  await expect(
+    tracked.handler.get("key", { kind: "FETCH", tags: ["mine"] }),
+  ).resolves.not.toBeNull();
+  // Only a fetch read's own tags count.
+  await expect(
+    tracked.handler.get("key", { kind: "APP_PAGE", tags: ["other"] }),
+  ).resolves.not.toBeNull();
+  expect(tracked.store.tagExpirationCalls).toHaveLength(0);
+
+  const older = fetchEntry(["other"], 500);
+  await expect(older.handler.get("key", { kind: "FETCH", tags: ["mine"] })).resolves.not.toBeNull();
+});
+
 test("treats an eager soft-tag failure as a miss after finishing the response body", async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   let releaseBody!: () => void;
