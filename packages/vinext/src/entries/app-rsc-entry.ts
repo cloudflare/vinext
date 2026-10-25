@@ -1822,6 +1822,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       hasPageRoute: __hasPageRoute,
+      currentRoute: routeMatch?.route ?? null,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
