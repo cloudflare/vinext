@@ -656,6 +656,79 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("hard-navigates away from the global-not-found document", async () => {
+    const previousWindow = (globalThis as any).window;
+    const previousDocument = (globalThis as any).document;
+    const location = {
+      href: "http://localhost/does-not-exist",
+      origin: "http://localhost",
+      pathname: "/does-not-exist",
+      search: "",
+      hash: "",
+      assign: vi.fn(),
+      replace: vi.fn(),
+    };
+    const win = {
+      location,
+      history: {
+        state: null,
+        pushState: vi.fn(),
+        replaceState: vi.fn(),
+      },
+      scrollX: 0,
+      scrollY: 0,
+      scrollTo: vi.fn(),
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    };
+    const navigate = vi.fn(async () => {});
+    const navigateExternal = vi.fn(async () => {});
+
+    (globalThis as any).window = win;
+    (globalThis as any).document = {
+      documentElement: {
+        getAttribute: (name: string) => (name === "data-global-not-found" ? "true" : null),
+      },
+      getElementById: vi.fn(() => null),
+      getElementsByName: vi.fn(() => []),
+    };
+
+    try {
+      vi.resetModules();
+      const { NAVIGATION_RUNTIME_KEY } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      (win as any)[NAVIGATION_RUNTIME_KEY] = {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          navigate,
+          navigateExternal,
+        },
+      };
+      const { navigateClientSide } = await import("../packages/vinext/src/shims/navigation.js");
+
+      await navigateClientSide("/", "push", true, true);
+
+      expect(navigateExternal).toHaveBeenCalledWith("/", "push");
+      expect(navigate).not.toHaveBeenCalled();
+      expect(location.assign).not.toHaveBeenCalled();
+    } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousDocument === undefined) {
+        delete (globalThis as any).document;
+      } else {
+        (globalThis as any).document = previousDocument;
+      }
+      vi.resetModules();
+    }
+  });
+
   it("treats streamed App Router redirect meta as an MPA navigation", async () => {
     const previousWindow = (globalThis as any).window;
     const previousDocument = (globalThis as any).document;

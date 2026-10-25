@@ -2687,6 +2687,12 @@ function hardNavigateTo(fullHref: string, mode: "push" | "replace"): void {
   }
 }
 
+/** True when the visible document was rendered from `app/global-not-found.tsx`. */
+function isGlobalNotFoundDocument(): boolean {
+  if (typeof document === "undefined") return false;
+  return document.documentElement.getAttribute("data-global-not-found") === "true";
+}
+
 /**
  * Reset any link still showing a `useLinkStatus()` pending state that did not
  * initiate the navigation now starting (e.g. a programmatic router.push, a form
@@ -2830,6 +2836,20 @@ export async function navigateClientSide(
     if (earlyIntent.scroll) {
       scrollToHashTarget(earlyIntent.hash);
     }
+    return;
+  }
+
+  // Leaving the global-not-found document swaps the root layout tree; soft RSC
+  // navigation cannot remount it correctly (Next.js 4007b6bce).
+  if (isGlobalNotFoundDocument() && earlyIntent.kind === "flightNavigation") {
+    const mpaNavigate = getNavigationRuntime()?.functions.navigateExternal;
+    if (mpaNavigate) {
+      await mpaNavigate(fullHref, mode);
+      return;
+    }
+
+    hardNavigateTo(fullHref, mode);
+    await new Promise<void>(() => {});
     return;
   }
 

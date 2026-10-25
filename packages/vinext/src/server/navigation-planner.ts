@@ -1041,8 +1041,16 @@ function classifyRootBoundaryTransition(
   currentRootBoundaryId: string | null,
   nextRootBoundaryId: string | null,
 ): RootBoundaryTransition {
-  if (currentRootBoundaryId === null || nextRootBoundaryId === null) {
+  // `app/global-not-found.tsx` replaces the root layout for route-miss 404s and
+  // does not share a root-boundary id with normal app routes. Navigation to or
+  // from that document is a root-layout change and must hard-navigate — mirrors
+  // Next.js render-tree NOT_FOUND_SEGMENT_KEY handling (4007b6bce).
+  if (currentRootBoundaryId === null && nextRootBoundaryId === null) {
     return "rootBoundaryUnknown";
+  }
+
+  if (currentRootBoundaryId === null || nextRootBoundaryId === null) {
+    return "rootBoundaryChanged";
   }
 
   return currentRootBoundaryId === nextRootBoundaryId
