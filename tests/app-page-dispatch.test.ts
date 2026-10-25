@@ -49,6 +49,7 @@ import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-ru
 import {
   _getResumeDataCacheCollector,
   _getResumeDataCacheSeed,
+  _isOnDemandRevalidate,
 } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   runWithExecutionContext,
@@ -67,7 +68,6 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
-import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
