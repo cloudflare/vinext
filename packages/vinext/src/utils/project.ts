@@ -502,12 +502,36 @@ function detectMDXFromConfig(root: string): boolean {
   return false;
 }
 
+/** Drops comments and string contents so text matching only sees code. */
+function stripCommentsAndStrings(content: string): string {
+  let code = "";
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    if (char === "/" && content[i + 1] === "/") {
+      while (i + 1 < content.length && content[i + 1] !== "\n") i++;
+    } else if (char === "/" && content[i + 1] === "*") {
+      const end = content.indexOf("*/", i + 2);
+      i = end === -1 ? content.length : end + 1;
+      code += " ";
+    } else if (char === '"' || char === "'" || char === "`") {
+      let end = i + 1;
+      while (end < content.length && content[end] !== char) end += content[end] === "\\" ? 2 : 1;
+      code += char + char;
+      i = end;
+    } else {
+      code += char;
+    }
+  }
+  return code;
+}
+
 /**
  * Next.js copies a set legacy `experimental.cacheComponents` over the
  * top-level key (warnOptionHasBeenMovedOutOfExperimental), so a literal
  * inside the `experimental` block wins over one outside it.
  */
-function configEnablesCacheComponents(content: string): boolean {
+function configEnablesCacheComponents(source: string): boolean {
+  let content = stripCommentsAndStrings(source);
   const cacheComponents = /\bcacheComponents\s*:\s*(true|false)\b/;
   const experimental = /\bexperimental\s*:\s*\{/.exec(content);
   if (experimental) {
