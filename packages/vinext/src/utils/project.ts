@@ -502,54 +502,12 @@ function detectMDXFromConfig(root: string): boolean {
   return false;
 }
 
-/** Drops comments and string values so text matching only sees code. */
-function stripCommentsAndStrings(content: string): string {
-  let code = "";
-  for (let i = 0; i < content.length; i++) {
-    const char = content[i];
-    if (char === "/" && content[i + 1] === "/") {
-      while (i + 1 < content.length && content[i + 1] !== "\n") i++;
-    } else if (char === "/" && content[i + 1] === "*") {
-      const end = content.indexOf("*/", i + 2);
-      i = end === -1 ? content.length : end + 1;
-      code += " ";
-    } else if (char === '"' || char === "'" || char === "`") {
-      let end = i + 1;
-      while (end < content.length && content[end] !== char) end += content[end] === "\\" ? 2 : 1;
-      // Keep quoted property names (`"cacheComponents": true`) as bare keys.
-      code += /^\s*:/.test(content.slice(end + 1)) ? content.slice(i + 1, end) : char + char;
-      i = end;
-    } else {
-      code += char;
-    }
-  }
-  return code;
-}
-
 /**
  * Next.js copies a set legacy `experimental.cacheComponents` over the
- * top-level key (warnOptionHasBeenMovedOutOfExperimental), so a literal
- * direct property of the `experimental` block wins over one outside it.
+ * top-level key (warnOptionHasBeenMovedOutOfExperimental).
  */
-function configEnablesCacheComponents(source: string): boolean {
-  let content = stripCommentsAndStrings(source);
-  const cacheComponents = /\bcacheComponents\s*:\s*(true|false)\b/;
-  const experimental = /\bexperimental\s*:\s*\{/.exec(content);
-  if (experimental) {
-    // Only the block's direct properties count, not keys of nested objects.
-    let directProperties = "";
-    let end = experimental.index + experimental[0].length;
-    for (let depth = 1; end < content.length; end++) {
-      const char = content[end];
-      if (char === "{" || char === "[") depth++;
-      else if ((char === "}" || char === "]") && --depth === 0) break;
-      else if (depth === 1) directProperties += char;
-    }
-    const legacy = cacheComponents.exec(directProperties)?.[1];
-    if (legacy) return legacy === "true";
-    content = content.slice(0, experimental.index) + content.slice(end + 1);
-  }
-  // Outside a legacy override, any literal `true` counts (errs towards caching).
+function configEnablesCacheComponents(content: string): boolean {
+  if (/\bexperimental\s*:\s*\{[^}]*\bcacheComponents\s*:\s*false\b/.test(content)) return false;
   return /\bcacheComponents\s*:\s*true\b/.test(content);
 }
 
