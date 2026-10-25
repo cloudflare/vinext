@@ -179,6 +179,17 @@ describe("App Router integration", () => {
     expect(html).toContain("<p>cached layout with marker-named slots</p>");
   });
 
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
+  it('dedupes React.cache inside "use cache" across its body and rendered components', async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/use-cache-react-cache");
+    expect(res.status).toBe(200);
+    const a = html.match(/<p id="a">([^<]+)<\/p>/)?.[1];
+    const b = html.match(/<p id="b">([^<]+)<\/p>/)?.[1];
+    expect(a).toBeTruthy();
+    expect(b).toBe(a);
+  });
+
   it("loads the current source App Router request handler in source-checkout tests", async () => {
     const response = await fetch(`${baseUrl}/`);
     expect(response.status).toBe(200);

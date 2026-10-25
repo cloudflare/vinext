@@ -350,7 +350,7 @@ function uint8ToStream(bytes: Uint8Array): ReadableStream<Uint8Array> {
 }
 
 async function serializeCacheResult<TResult>(
-  result: TResult,
+  result: PromiseLike<TResult>,
   rsc: RscModule,
 ): Promise<SerializedCacheResult<TResult>> {
   let serializationError: { value: unknown } | undefined;
@@ -1299,7 +1299,10 @@ async function runCachedFunctionWithContext<
   // oxlint-disable-next-line @typescript-eslint/no-explicit-any
   args: any[],
   variant: string,
-  collectResult?: (result: Awaited<ReturnType<T>>, context: CacheContext) => Promise<TCollected>,
+  collectResult?: (
+    result: PromiseLike<Awaited<ReturnType<T>>>,
+    context: CacheContext,
+  ) => Promise<TCollected>,
 ): Promise<CachedFunctionResult<Awaited<ReturnType<T>>, TCollected>> {
   const parentCtx = cacheContextStorage.getStore();
 
@@ -1344,11 +1347,19 @@ async function runCachedFunctionWithContext<
   const workUnitType: "cache" | "private-cache" = variant === "private" ? "private-cache" : "cache";
   const result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
     cacheContextStorage.run(ctx, async () => {
-      const value = await fn(...args);
-      if (collectResult) {
-        collectedResult = await collectResult(value, ctx);
-      }
-      return value;
+      if (!collectResult) return await fn(...args);
+      // Like Next.js's `createLazyResult`, the function only runs once the
+      // collector awaits it. Serialization awaits it inside its Flight render,
+      // so the function body and the components it returns share that
+      // render's React.cache scope.
+      let value: Promise<Awaited<ReturnType<T>>> | undefined;
+      const lazyValue: PromiseLike<Awaited<ReturnType<T>>> = {
+        // oxlint-disable-next-line unicorn/no-thenable
+        then: (onFulfilled, onRejected) =>
+          (value ??= new Promise((resolve) => resolve(fn(...args)))).then(onFulfilled, onRejected),
+      };
+      collectedResult = await collectResult(lazyValue, ctx);
+      return await lazyValue;
     }),
   );
 
