@@ -1450,6 +1450,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const handler = getDataCacheHandler();
     let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
+    // A stale entry this fetch refreshes, kept for the miss path below if the
+    // refresh fails.
+    let staleEntry: CacheHandlerValue | undefined;
+
     // Try cache first
     try {
       let cached = mustBypassPendingRevalidation
@@ -1483,6 +1487,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        staleEntry = cached;
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
           await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
@@ -1558,6 +1563,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           fetchCache: true,
           tags,
           revalidate: revalidateSeconds,
+          ...(staleEntry ? { staleEntry } : {}),
         })
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);

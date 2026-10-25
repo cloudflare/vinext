@@ -1259,6 +1259,38 @@ describe("fetch cache shim", () => {
     expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
   });
 
+  it("a failed foreground fetch refresh still passes the stale entry to the fallback write", async () => {
+    await fetch("https://api.example.com/foreground-stale-retry", {
+      next: { revalidate: 1 },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+    const get = vi.spyOn(handler, "get");
+    const set = vi.spyOn(handler, "set");
+    fetchMock.mockRejectedValueOnce(new Error("upstream reset"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-stale-retry", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+    consoleError.mockRestore();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const staleEntry = await get.mock.results[0]?.value;
+    expect(staleEntry).toMatchObject({ cacheState: "stale" });
+    expect(set).toHaveBeenCalledOnce();
+    expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
+  });
+
   it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
     const res1 = await fetch("https://api.example.com/foreground-shorter-revalidate", {
       next: { revalidate: 60 },
