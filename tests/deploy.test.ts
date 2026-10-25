@@ -1444,6 +1444,25 @@ describe("detectProject", () => {
     writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
     expect(detectProject(tmpDir).hasISR).toBe(true);
   });
+
+  it.each([
+    ["export default { experimental: { cacheComponents: true } };", true],
+    [
+      "export default { cacheComponents: true, experimental: { turbo: { rules: {} }, cacheComponents: false } };",
+      false,
+    ],
+    ["export default { experimental: { cacheComponents: false }, cacheComponents: true };", false],
+    ["export default { cacheComponents: false, experimental: { cacheComponents: true } };", true],
+    ["export default { experimental: { ppr: true }, cacheComponents: true };", true],
+    ["export default { experimental: { ppr: true } };", false],
+  ])(
+    "lets a legacy experimental.cacheComponents override the top-level key: %s",
+    (config, expected) => {
+      mkdir(tmpDir, "app");
+      writeFile(tmpDir, "next.config.ts", config);
+      expect(detectProject(tmpDir).hasISR).toBe(expected);
+    },
+  );
 });
 
 describe("route cacheability probe manifest deployment", () => {

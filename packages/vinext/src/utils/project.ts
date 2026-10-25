@@ -502,6 +502,28 @@ function detectMDXFromConfig(root: string): boolean {
   return false;
 }
 
+/**
+ * Next.js copies a set legacy `experimental.cacheComponents` over the
+ * top-level key (warnOptionHasBeenMovedOutOfExperimental), so a literal
+ * inside the `experimental` block wins over one outside it.
+ */
+function configEnablesCacheComponents(content: string): boolean {
+  const cacheComponents = /\bcacheComponents\s*:\s*(true|false)\b/;
+  const experimental = /\bexperimental\s*:\s*\{/.exec(content);
+  if (experimental) {
+    const start = experimental.index + experimental[0].length;
+    let end = start;
+    for (let depth = 1; end < content.length; end++) {
+      if (content[end] === "{") depth++;
+      else if (content[end] === "}" && --depth === 0) break;
+    }
+    const legacy = cacheComponents.exec(content.slice(start, end))?.[1];
+    if (legacy) return legacy === "true";
+    content = content.slice(0, experimental.index) + content.slice(end + 1);
+  }
+  return cacheComponents.exec(content)?.[1] === "true";
+}
+
 function detectCacheComponents(root: string): boolean {
   const configFiles = [
     "next.config.ts",
@@ -514,9 +536,7 @@ function detectCacheComponents(root: string): boolean {
     const configPath = path.join(root, fileName);
     if (!fs.existsSync(configPath)) continue;
     try {
-      if (/\bcacheComponents\s*:\s*true\b/.test(fs.readFileSync(configPath, "utf-8"))) {
-        return true;
-      }
+      if (configEnablesCacheComponents(fs.readFileSync(configPath, "utf-8"))) return true;
     } catch {
       // ignore unreadable config files
     }
