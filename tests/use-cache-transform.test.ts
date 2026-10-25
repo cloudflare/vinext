@@ -1064,6 +1064,25 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(code).toContain('"acceptsSecondArgument":true');
   });
 
+  it("records the arity of file-level cached functions exported by name", async () => {
+    const code = await transformRsc(
+      [
+        `"use cache";`,
+        `const getRandomValue = async () => Math.random();`,
+        `async function getValue(previousState, formData) {`,
+        `  return formData;`,
+        `}`,
+        `export { getRandomValue, getValue as aliased };`,
+      ].join("\n"),
+    );
+    const options = getCacheWrapperOptionsByName(code);
+    expect(options.getRandomValue).toMatchObject({
+      argumentCount: 0,
+      acceptsSecondArgument: false,
+    });
+    expect(options.aliased).toMatchObject({ argumentCount: 2, acceptsSecondArgument: true });
+  });
+
   it("records when a cached function omits the second argument", async () => {
     const code = await transformRsc(
       `export async function generateMetadata() {\n  "use cache";\n  return {};\n}`,
