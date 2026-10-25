@@ -1,0 +1,64 @@
+{
+  "ApiRoute": {
+    "hello": "Hello {name}!"
+  },
+  "AsyncComponent": {
+    "basic": "AsyncComponent",
+    "markup": "Markup with <important>bold content</important>",
+    "rich": "This is a <important>rich</important> text."
+  },
+  "Client": {
+    "description": "This page hydrates on the client side.",
+    "title": "Client"
+  },
+  "ClientCounter": {
+    "count": "Current count: {count}",
+    "increment": "Increment"
+  },
+  "Counter": {
+    "count": "Current count:",
+    "increment": "Increment"
+  },
+  "Index": {
+    "description": "This is the home page.",
+    "rich": "This is a <b>rich</b> text.",
+    "title": "Home"
+  },
+  "JustIn": {
+    "title": "Just in"
+  },
+  "LocaleLayout": {
+    "description": "This is an example of using next-intl in the `app` directory.",
+    "title": "next-intl example"
+  },
+  "LocaleSwitcher": {
+    "switchLocale": "Switch to {locale, select, de {German} en {English} es {Spanish} ja {Japanese} nl {Dutch} other {Unknown}}"
+  },
+  "Navigation": {
+    "about": "About (MDX)",
+    "client": "Client page",
+    "home": "Home",
+    "nested": "Nested page",
+    "newsArticle": "News article #{articleId}"
+  },
+  "Nested": {
+    "description": "This is a nested page.",
+    "title": "Nested"
+  },
+  "NewsArticle": {
+    "title": "News article #{articleId}"
+  },
+  "NotFound": {
+    "title": "This page was not found (404)"
+  },
+  "OpenGraph": {
+    "title": "next-intl example"
+  },
+  "ServerActions": {
+    "item": "Item #{id}"
+  },
+  "ZodFormExample": {
+    "task": "Enter a task",
+    "taskEmpty": "Please enter a task."
+  }
+}

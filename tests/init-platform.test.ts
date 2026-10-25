@@ -6,6 +6,7 @@ import {
   parseDataCacheArg,
   parseCdnCacheArg,
   parseImageOptimizationArg,
+  parseNameArg,
   parseResponseStoreModeArg,
   parsePrerenderArg,
   parseWarmCdnCacheArg,
@@ -25,6 +26,35 @@ describe("parsePlatformArg", () => {
   it("rejects missing and unsupported values", () => {
     expect(() => parsePlatformArg(["--platform"])).toThrow("requires a value");
     expect(() => parsePlatformArg(["--platform=vercel"])).toThrow('Unsupported platform "vercel"');
+  });
+});
+
+describe("parseNameArg", () => {
+  it("parses both supported flag forms", () => {
+    expect(parseNameArg(["--name", "storefront"])).toBe("storefront");
+    expect(parseNameArg(["--name=storefront-production-2"])).toBe("storefront-production-2");
+    expect(parseNameArg(["--platform=cloudflare"])).toBeUndefined();
+  });
+
+  it("rejects missing values", () => {
+    expect(() => parseNameArg(["--name"])).toThrow("--name requires a Worker name");
+    expect(() => parseNameArg(["--name", "--force"])).toThrow("--name requires a Worker name");
+    expect(() => parseNameArg(["--name="])).toThrow("--name requires a Worker name");
+  });
+
+  it.each([
+    "Storefront",
+    "store_front",
+    "store front",
+    "-storefront",
+    "storefront-",
+    "a".repeat(64),
+  ])("rejects the invalid Worker name %j", (name) => {
+    expect(() => parseNameArg([`--name=${name}`])).toThrow(`Invalid --name value "${name}"`);
+  });
+
+  it("accepts a Worker name at the length limit", () => {
+    expect(parseNameArg([`--name=${"a".repeat(63)}`])).toBe("a".repeat(63));
   });
 });
 
@@ -125,7 +155,7 @@ describe("Cloudflare init choices", () => {
     });
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       "  Choose a data cache:\n    1. Cloudflare KV (default)\n    2. None\n  Data cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
     ]);
@@ -473,6 +503,20 @@ describe("resolveInitOptions", () => {
     ).rejects.toThrow("--legacy-wrangler-cloudflare-init requires --platform=cloudflare");
   });
 
+  it("passes --name through only for Cloudflare init", async () => {
+    const options = await resolveInitOptions(
+      ["--platform=cloudflare", "--name=storefront", "--cdn-cache=none"],
+      { env: {}, isInteractive: false },
+    );
+    expect(options.cloudflare?.name).toBe("storefront");
+    await expect(
+      resolveInitOptions(["--platform=node", "--name=storefront"], {
+        env: {},
+        isInteractive: false,
+      }),
+    ).rejects.toThrow("--name requires --platform=cloudflare");
+  });
+
   it("keeps prerender available for Node init", async () => {
     await expect(
       resolveInitOptions(["--platform=node", "--prerender"], {
@@ -565,7 +609,7 @@ describe("resolveInitOptions", () => {
 
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       "  Choose a Workers Response Store mode:\n    1. Service binding (default)\n    2. Self-contained\n  Response Store mode [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: ",
@@ -647,7 +691,7 @@ describe("resolveInitOptions", () => {
 
     expect(prompts).toEqual([
       "  Enable caching? [y/N]: ",
-      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only; App Router only)\n  CDN cache [1]: ",
+      "  Choose a CDN cache:\n    1. Workers Response Store (default)\n    2. Workers Cache\n    3. Data cache\n    4. Static Assets (read-only)\n  CDN cache [1]: ",
       "  Choose image optimization:\n    1. Cloudflare Images (default)\n    2. None\n  Image optimization [1]: ",
       "  Pre-render all static routes after build? (not served by Cloudflare deploy unless using Static Assets) [y/N]: ",
     ]);

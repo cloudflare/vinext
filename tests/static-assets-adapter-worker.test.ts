@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -23,7 +24,7 @@ function write(root: string, relativePath: string, contents: string): void {
 
 describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
   let root = "";
-  let worker: { url: Promise<URL>; dispose(): Promise<void> } | undefined;
+  let worker: { raw: { teardown(): Promise<void> } } | undefined;
   let baseUrl = "";
 
   beforeAll(async () => {
@@ -106,10 +107,20 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           logLevel: "none";
           watch: false;
           server: { port: 0 };
+          inspector: false;
         };
-      }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
+      }): Promise<{
+        url: Promise<URL>;
+        raw: {
+          once(
+            event: "error",
+            listener: (error: Error | { source: string; reason: string; cause?: unknown }) => void,
+          ): void;
+          teardown(): Promise<void>;
+        };
+      }>;
     };
-    worker = await wrangler.unstable_startWorker({
+    const started = await wrangler.unstable_startWorker({
       config: path.join(root, "dist/server/wrangler.json"),
       dev: {
         remote: false,
@@ -117,13 +128,30 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         logLevel: "none",
         watch: false,
         server: { port: 0 },
+        // The tests never use the inspector. With it on, wrangler probes for a
+        // free port near 9229, which parallel test processes can race for, and
+        // waits on an inspector WebSocket that never settles `url` if it errors.
+        inspector: false,
       },
     });
-    baseUrl = (await worker.url).origin;
+    worker = started;
+    // wrangler reports startup failures as `error` events and leaves `url`
+    // pending, so fail with the cause instead of waiting out the hook timeout.
+    const startupError = new Promise<never>((_, reject) => {
+      started.raw.once("error", (error) => {
+        reject(
+          error instanceof Error
+            ? error
+            : new Error(`${error.source}: ${error.reason}`, { cause: error.cause }),
+        );
+      });
+    });
+    baseUrl = (await Promise.race([started.url, startupError])).origin;
   }, 180_000);
 
   afterAll(async () => {
-    await worker?.dispose();
+    // `dispose()` waits for a startup that may never finish; tear down directly.
+    await worker?.raw.teardown();
     if (root) fs.rmSync(root, { recursive: true, force: true });
   });
 
@@ -155,6 +183,107 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
     expect(rsc.headers.get("x-vinext-cache")).toBe("HIT");
     expect(await rsc.text()).toContain("served from prerender assets");
   });
+
+  it("keeps serving cache hits after a request is cancelled while loading the cache index", async () => {
+    const require = createRequire(
+      fs.realpathSync(path.join(CLOUDFLARE_NODE_MODULES, "wrangler/package.json")),
+    );
+    const { Miniflare } = (await import(pathToFileURL(require.resolve("miniflare")).href)) as {
+      Miniflare: new (options: Record<string, unknown>) => {
+        dispatchFetch(url: string): Promise<Response>;
+        dispose(): Promise<void>;
+      };
+    };
+    const dist = path.join(root, "dist/server");
+    const config = JSON.parse(fs.readFileSync(path.join(dist, "wrangler.json"), "utf8")) as {
+      compatibility_date: string;
+      compatibility_flags?: string[];
+    };
+    const modules = fs
+      .readdirSync(dist, { recursive: true, encoding: "utf8" })
+      .filter((file) => file.endsWith(".js") && file !== "index.js");
+
+    let indexRequested!: () => void;
+    const indexRequest = new Promise<void>((resolve) => (indexRequested = resolve));
+    let indexFetches = 0;
+    let releaseIndex!: () => void;
+    const indexReleased = new Promise<void>((resolve) => (releaseIndex = resolve));
+    // Production cancels a request when its client disconnects. Workerd does
+    // the same to a service-binding request whose caller has finished, so the
+    // front worker abandons the first app request while it awaits the index.
+    const miniflare = new Miniflare({
+      workers: [
+        {
+          name: "front",
+          modules: true,
+          compatibilityDate: config.compatibility_date,
+          serviceBindings: {
+            APP: "app",
+            INDEX_REQUESTED: () => indexRequest.then(() => new Response()),
+          },
+          script: `export default {
+  async fetch(request, env) {
+    if (new URL(request.url).pathname !== "/abandon") return env.APP.fetch("https://app.local/");
+    const app = env.APP.fetch("https://app.local/").then(
+      (response) => "app responded before loading the index: " + response.status,
+      (error) => "app failed before loading the index: " + error,
+    );
+    const indexRequested = env.INDEX_REQUESTED.fetch("https://signal.local/").then(() => "abandoned");
+    return new Response(await Promise.race([indexRequested, app]));
+  },
+};`,
+        },
+        {
+          name: "app",
+          compatibilityDate: config.compatibility_date,
+          compatibilityFlags: config.compatibility_flags ?? [],
+          modules: ["index.js", ...modules].map((file) => ({
+            path: file,
+            type: "ESModule",
+            contents: fs.readFileSync(path.join(dist, file), "utf8"),
+          })),
+          serviceBindings: {
+            async ASSETS(request: Request) {
+              const { pathname } = new URL(request.url);
+              if (pathname.endsWith("/static-cache/index.json")) {
+                indexFetches++;
+                indexRequested();
+                await indexReleased;
+              }
+              const file = path.join(root, "dist/client", decodeURIComponent(pathname));
+              return fs.existsSync(file) && fs.statSync(file).isFile()
+                ? new Response(fs.readFileSync(file))
+                : new Response(null, { status: 404 });
+            },
+          },
+        },
+      ],
+    });
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const abandoned = await miniflare.dispatchFetch("https://front.local/abandon");
+      expect(await abandoned.text()).toBe("abandoned");
+
+      const later = miniflare.dispatchFetch("https://front.local/");
+      // Give the later request time to reach the pending index fetch, which a
+      // second index fetch would show up as.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
+      releaseIndex();
+      const response = await Promise.race([
+        later,
+        new Promise<null>((resolve) => (timeout = setTimeout(() => resolve(null), 10_000))),
+      ]);
+      expect(response, "request after the cancelled one never settled").not.toBeNull();
+      expect(response!.status).toBe(200);
+      expect(response!.headers.get("x-vinext-cache")).toBe("HIT");
+      expect(await response!.text()).toContain("served from prerender assets");
+      // The later request shared the cancelled request's fetch, which kept running.
+      expect(indexFetches).toBe(1);
+    } finally {
+      clearTimeout(timeout);
+      await miniflare.dispose();
+    }
+  }, 30_000);
 
   it("does not expose the packaged cache through public asset URLs", async () => {
     const artifacts = fs.readdirSync(path.join(root, "dist/client/_vinext/static-cache"));

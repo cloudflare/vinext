@@ -123,7 +123,7 @@ jobs:
           COVERAGE: ${{ github.event_name == 'push' && '--coverage' || '' }}
           SHARD_INDEX: ${{ matrix.shardIndex }}
           SHARD_TOTAL: ${{ matrix.shardTotal }}
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() }}
         with:
           name: blob-report-${{ matrix.shardIndex }}
@@ -141,7 +141,7 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           path: .vitest-reports
           pattern: blob-report-*
@@ -149,13 +149,13 @@ jobs:
       # --coverage tells vitest to invoke coverageProvider.mergeReports() on the
       # coverage data embedded in each shard's blob, producing a unified report.
       # Only enabled on push-to-main, matching the shard config above.
-      - run: vp test run --merge-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
+      - run: vp test run --merge-reports=.vitest-reports ${{ github.event_name == 'push' && '--coverage' || '' }}
         env:
           CI: true
       - name: Publish coverage matrix to job summary
         if: ${{ !cancelled() && hashFiles('coverage/coverage-summary.json') != '' }}
         run: node scripts/coverage-summary.mjs >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: ${{ !cancelled() && hashFiles('coverage/index.html') != '' }}
         with:
           name: coverage-html
@@ -231,6 +231,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Run vinext init
         working-directory: ${{ runner.temp }}/cna-test
@@ -332,6 +339,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Run Cloudflare init
         working-directory: ${{ runner.temp }}/cna-cloudflare
@@ -428,6 +442,13 @@ jobs:
         run: |
           node "$GITHUB_WORKSPACE/scripts/configure-local-vinext-types.mjs" "${{ runner.temp }}"
           vp add "${{ runner.temp }}"/vinext-[0-9]*.tgz "${{ runner.temp }}"/cloudflare-workers-response-store-*.tgz "${{ runner.temp }}"/vinext-cloudflare-*.tgz
+          # Install the @vitejs/plugin-rsc and React versions the repo is tested
+          # with. An unversioned install can resolve an older release under
+          # pnpm's minimumReleaseAge default, which vinext rejects.
+          RSC_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('@vitejs/plugin-rsc/package.json').version")
+          vp add -D "@vitejs/plugin-rsc@$RSC_VERSION"
+          REACT_VERSION=$(cd "$GITHUB_WORKSPACE/packages/vinext" && node -p "require('react-server-dom-webpack/package.json').version")
+          vp add "react@$REACT_VERSION" "react-dom@$REACT_VERSION" "react-server-dom-webpack@$REACT_VERSION"
 
       - name: Build generated Cloudflare project
         working-directory: ${{ runner.temp }}/cva-cloudflare
@@ -482,6 +503,14 @@ jobs:
             label: app-router-prefetch-searchparams
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-encoded-basepath-i18n
+            label: app-router-encoded-basepath-i18n
+            shardIndex: 1
+            shardTotal: 1
+          - project: use-params-app-pages
+            label: use-params-app-pages
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router
             label: app-router 3/3
             shardIndex: 3
@@ -526,6 +555,38 @@ jobs:
             label: cloudflare-sentry-app
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-next-intl
+            label: cloudflare-next-intl
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-prefix-never
+            label: cloudflare-next-intl-locale-prefix-never
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-trailing-slash
+            label: cloudflare-next-intl-trailing-slash
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-base-path
+            label: cloudflare-next-intl-base-path
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains
+            label: cloudflare-next-intl-domains
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-domains-locale-prefix
+            label: cloudflare-next-intl-domains-locale-prefix
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-locale-cookie-false
+            label: cloudflare-next-intl-locale-cookie-false
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-next-intl-example
+            label: cloudflare-next-intl-example
+            shardIndex: 1
+            shardTotal: 1
           - project: cloudflare-sentry-app-workers-cache
             label: cloudflare-sentry-app-workers-cache
             shardIndex: 1
@@ -546,6 +607,10 @@ jobs:
             label: cloudflare-pages-router-dev
             shardIndex: 1
             shardTotal: 1
+          - project: cloudflare-dev-run-worker-first
+            label: cloudflare-dev-run-worker-first
+            shardIndex: 1
+            shardTotal: 1
           - project: static-export
             label: static-export
             shardIndex: 1
@@ -556,6 +621,10 @@ jobs:
             shardTotal: 1
           - project: cloudflare-static-export
             label: cloudflare-static-export
+            shardIndex: 1
+            shardTotal: 1
+          - project: cloudflare-static-assets-pages
+            label: cloudflare-static-assets-pages
             shardIndex: 1
             shardTotal: 1
           - project: static-export-basepath
@@ -574,6 +643,14 @@ jobs:
             label: app-router-nitro-dev
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-nitro-server
+            label: app-router-nitro-server
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-nitro
+            label: pages-router-nitro
+            shardIndex: 1
+            shardTotal: 1
           - project: standalone-output
             label: standalone-output
             shardIndex: 1
@@ -584,6 +661,10 @@ jobs:
             shardTotal: 1
           - project: ppr-impact-demo
             label: ppr-impact-demo
+            shardIndex: 1
+            shardTotal: 1
+          - project: cacheability-components
+            label: cacheability-components
             shardIndex: 1
             shardTotal: 1
           - project: app-front-redirect-issue
@@ -600,6 +681,14 @@ jobs:
             shardTotal: 1
           - project: nextjs-worker-cloudflare
             label: nextjs-worker-cloudflare
+            shardIndex: 1
+            shardTotal: 1
+          - project: module-federation
+            label: module-federation
+            shardIndex: 1
+            shardTotal: 1
+          - project: module-federation-cloudflare
+            label: module-federation-cloudflare
             shardIndex: 1
             shardTotal: 1
     steps:
@@ -676,7 +765,7 @@ jobs:
           CI: true
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
 
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: failure()
         with:
           name: playwright-report-${{ matrix.project }}-${{ matrix.shardIndex }}-${{ matrix.shardTotal }}

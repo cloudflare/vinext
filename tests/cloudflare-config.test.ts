@@ -141,7 +141,7 @@ describe("typed Cloudflare cache config", () => {
         bucket: "example-cache-bodies",
       }),
     ).toEqual({
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
         CacheMetadata: { type: "durable-object", storage: "sqlite" },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
@@ -178,7 +178,7 @@ describe("typed Cloudflare cache config", () => {
         observability: { enabled: true },
         workersDev: false,
         previewUrls: false,
-        cache: { enabled: true },
+        cache: { enabled: false },
         exports: {
           CacheMetadata: { type: "durable-object", storage: "sqlite" },
           ResponseStoreBinding: { type: "worker", cache: { enabled: true } },

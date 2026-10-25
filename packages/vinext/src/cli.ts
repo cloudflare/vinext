@@ -162,6 +162,10 @@ async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
 
+  // Like `next start`, default to production so React and other packages
+  // load their production builds, which omit dev-only error details.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   loadDotenv({
     root: process.cwd(),
     mode: "production",
@@ -266,6 +270,10 @@ async function typegen() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("typegen");
 
+  // Like `next typegen`, default to production so next.config and its
+  // callbacks take their production paths.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
   loadDotenv({
     root,
@@ -368,6 +376,7 @@ function printHelp(cmd?: string) {
     --no-install         Update dependency entries without installing them
     --force              Overwrite existing vite.config.ts
     --platform <target>  Deployment target: cloudflare or node
+    --name <name>        Cloudflare Worker name (default: derived from package.json)
     --prerender          Configure Vite builds to pre-render static routes
                          (Cloudflare deploy won't serve them unless using Static Assets)
     --warm-cache         Add cache warming to the Cloudflare deploy script
@@ -459,7 +468,7 @@ function printHelp(cmd?: string) {
     --version      Show version
 
   Examples:
-    vinext dev                         Start dev server on port 3000
+    vinext dev                         Start dev server
     vinext dev --port 4000             Start dev server on port 4000
     vinext build                       Build for production
     vinext typegen                     Generate route helper types

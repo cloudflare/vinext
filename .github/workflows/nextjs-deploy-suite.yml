@@ -147,6 +147,9 @@ jobs:
           VINEXT_BUILD: "0"
           NEXTJS_PREPARE: "1"
           NEXTJS_PREPARE_ONLY: "1"
+          # The React-dependent test expectation updates follow the React
+          # installed in the vinext tree under test, including backfills.
+          VINEXT_DIR: ${{ inputs.backfill-date && format('{0}/historical-vinext', github.workspace) || github.workspace }}
           # The Next.js workspace pulls `playwright-chromium` as a transitive
           # dep, whose postinstall downloads Chrome via the Playwright CDN.
           # Since 2026-05-22 that postinstall has wedged on this runner after
@@ -248,7 +251,7 @@ jobs:
       # be re-submitted manually (e.g. if the live POST hiccupped) or
       # inspected when debugging misclassifications.
       - name: Upload suite router classification
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: nextjs-suite-routers
           path: |
@@ -355,7 +358,7 @@ jobs:
 
       - name: Upload test results
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-results-${{ strategy.job-index }}
           path: next.js/test/**/*.results.json
@@ -364,7 +367,7 @@ jobs:
 
       - name: Upload deploy debug logs
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-debug-${{ strategy.job-index }}
           path: reports/nextjs-deploy-debug/
@@ -381,7 +384,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Download all test results
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: test-results-*
           path: results
@@ -590,7 +593,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: deploy-suite-report
           # Include both files: the human-readable report and the

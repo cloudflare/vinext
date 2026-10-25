@@ -2,9 +2,10 @@ import MagicString from "magic-string";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path, { toSlash } from "pathslash";
-import { parseAst, type Alias, type ESTree, type Plugin } from "vite";
+import type { Alias, ESTree, Plugin } from "vite";
 import {
   DYNAMIC_IMPORT_PRESCAN,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   walkAst,
@@ -118,9 +119,9 @@ function transformExtensionlessImports(
 ): TransformResult {
   const lang = scriptParserLanguage(id)!;
 
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang });
+    ast = parseProgram(code, { lang });
   } catch {
     return null;
   }

@@ -46,6 +46,8 @@ CHECKS=(
   "workers-cache                /       vinext cache adapters"
   "kv                           /       vinext cache adapters"
   "static-assets-cache          /       vinext Static Assets cache"
+  "static-assets-pages          /       Static Assets Pages Router"
+  "static-assets-pages-i18n     /fr/    Static Assets Pages i18n"
   "static-export                /       Static by design"
   "static-export                /catalog/pocket-observatory/  Pocket Observatory"
   "static-export                /products/atlas/              Atlas Field Kit"

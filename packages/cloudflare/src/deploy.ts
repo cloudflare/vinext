@@ -12,7 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import { spawn, type SpawnOptions } from "node:child_process";
-import { parseArgs as nodeParseArgs } from "node:util";
+import { parseArgs as nodeParseArgs, stripVTControlCharacters } from "node:util";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -121,6 +121,8 @@ export type DeployOptions = {
   root: string;
   /** Deploy to preview environment (default: production) */
   preview?: boolean;
+  /** Deploy to Preview deployment, supported only by cf. */
+  target?: { type: "preview"; name?: string };
   /** Wrangler environment name from wrangler.jsonc env.<name> */
   env?: string;
   /** Custom project name for the Worker */
@@ -171,8 +173,6 @@ export type DeployOptions = {
   warmCdnPromote?: boolean;
   /** Delay between successful warmup and promotion in milliseconds */
   warmCdnPromotionDelay?: number;
-  /** Include PPR fallback-shell placeholder paths during CDN warmup */
-  warmCdnIncludeFallbacks?: boolean;
   /** Select CDN pre-warm routes using traffic analytics */
   experimentalTPR?: boolean;
   /** TPR: traffic coverage percentage target (0–100, default: 90) */
@@ -327,6 +327,8 @@ const deployArgOptions = {
   "no-promote": { type: "boolean", default: false },
   "warm-cache-no-promote": { type: "boolean", default: false },
   "warm-cache-promotion-delay": { type: "string" },
+  // Accepted but ignored: warming a placeholder path renders that literal URL,
+  // never a fallback shell.
   "warm-cache-include-fallbacks": { type: "boolean", default: false },
   "traffic-aware-warm-cache": { type: "boolean", default: false },
   "traffic-aware-coverage": { type: "string" },
@@ -380,7 +382,9 @@ export function parseDeployArgs(args: string[]) {
   values["warm-cache-readiness-probe-delay"] ??= values["warm-cdn-readiness-probe-delay"];
   values["warm-cache-no-promote"] ||= values["warm-cdn-no-promote"];
   values["warm-cache-promotion-delay"] ??= values["warm-cdn-promotion-delay"];
-  values["warm-cache-include-fallbacks"] ||= values["warm-cdn-include-fallbacks"];
+  if (values["warm-cache-include-fallbacks"] || values["warm-cdn-include-fallbacks"]) {
+    console.warn("[vinext] --warm-cache-include-fallbacks is deprecated and has no effect.");
+  }
   values["traffic-aware-warm-cache"] ||= values["experimental-traffic-aware-warm-cache"];
   const trafficAwareWarmCache = values["traffic-aware-warm-cache"] || values["experimental-tpr"];
   const warming = values["warm-cache"] || trafficAwareWarmCache;
@@ -503,7 +507,6 @@ export function parseDeployArgs(args: string[]) {
             ),
             values["warm-cache-promotion-delay"],
           ),
-    warmCdnIncludeFallbacks: values["warm-cache-include-fallbacks"],
     experimentalTPR: trafficAwareWarmCache,
     tprCoverage: parseIntArg(
       "traffic-aware-coverage",
@@ -552,6 +555,19 @@ export async function withCloudflareEnv<T>(
     } else {
       delete process.env.CLOUDFLARE_ENV;
     }
+  }
+}
+
+/** Cloudflare Vite Plugin reads this flag when evaluating the typed config and emitting Build Output. */
+export async function withCloudflarePreviewBuild<T>(fn: () => Promise<T>): Promise<T> {
+  const hadPrevious = "CLOUDFLARE_PREVIEW_BUILD" in process.env;
+  const previous = process.env.CLOUDFLARE_PREVIEW_BUILD;
+  process.env.CLOUDFLARE_PREVIEW_BUILD = "true";
+  try {
+    return await fn();
+  } finally {
+    if (hadPrevious) process.env.CLOUDFLARE_PREVIEW_BUILD = previous;
+    else delete process.env.CLOUDFLARE_PREVIEW_BUILD;
   }
 }
 
@@ -690,9 +706,14 @@ export function isCfCliInstalled(
   return resolvePackageJson(root) !== null;
 }
 
-export function buildCfDeployArgs(options: Pick<DeployOptions, "preview" | "env">): CfDeployArgs {
+export function buildCfDeployArgs(
+  options: Pick<DeployOptions, "preview" | "env" | "target">,
+): CfDeployArgs {
   const mode = options.env || (options.preview ? "preview" : undefined);
-  const args = ["deploy", "--prebuilt"];
+  const isPreviewDeploy = options.target?.type === "preview";
+  const args = isPreviewDeploy ? ["previews", "deploy"] : ["deploy"];
+  if (isPreviewDeploy && options.target?.name) args.push(options.target.name);
+  args.push("--prebuilt");
   if (mode) args.push("--mode", validateWranglerEnvName(mode));
   return { args, mode };
 }
@@ -824,12 +845,15 @@ export async function runWranglerDeploy(
 
 export async function runCfDeploy(
   root: string,
-  options: Pick<DeployOptions, "preview" | "env">,
+  options: Pick<DeployOptions, "preview" | "env" | "target">,
   execute: typeof spawn = spawn,
 ): Promise<string> {
   const { args, mode } = buildCfDeployArgs(options);
+  const isPreview = options.target?.type === "preview";
   console.log(
-    mode ? `\n  Deploying Build Output in mode: ${mode}...` : "\n  Deploying Build Output...",
+    mode
+      ? `\n  Deploying ${isPreview ? "Preview " : ""}Build Output in mode: ${mode}...`
+      : "\n  Deploying Build Output...",
   );
   const child = execute(process.execPath, [resolveCfBin(root), ...args], {
     cwd: root,
@@ -837,9 +861,11 @@ export async function runCfDeploy(
     shell: false,
   });
   let output = "";
+  let stdout = "";
   child.stdout?.on("data", (chunk: Buffer | string) => {
     const text = chunk.toString();
     output += text;
+    stdout += text;
     process.stdout.write(text);
   });
   child.stderr?.on("data", (chunk: Buffer | string) => {
@@ -854,12 +880,37 @@ export async function runCfDeploy(
       else
         reject(
           new Error(
-            `cf deploy failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
+            `cf ${isPreview ? "previews deploy" : "deploy"} failed with ${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}.`,
           ),
         );
     });
   });
+  if (isPreview) {
+    return (
+      parseCfPreviewUrl(stdout) ??
+      parseWorkerDeploymentUrl(output) ??
+      "(Preview URL not detected in cf output)"
+    );
+  }
   return parseWorkerDeploymentUrl(output) ?? "(URL not detected in cf output)";
+}
+
+/** `cf previews deploy` prints a JSON result; prefer the named Preview URL over the deployment URL. */
+function parseCfPreviewUrl(stdout: string): string | null {
+  const text = stripVTControlCharacters(stdout);
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end < start) return null;
+  let result: { preview_urls?: unknown; deployment_urls?: unknown };
+  try {
+    result = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  for (const urls of [result.preview_urls, result.deployment_urls]) {
+    if (Array.isArray(urls) && typeof urls[0] === "string") return urls[0];
+  }
+  return null;
 }
 
 export function hasCdnWarmRequests(
@@ -2111,7 +2162,28 @@ function withPromotedVersionWarmupNote(error: unknown): Error {
 
 // ─── Main Entry ──────────────────────────────────────────────────────────────
 
+/** Worker Previews skip production-only steps, so reject options that would otherwise be ignored. */
+function assertPreviewDeployOptions(options: DeployOptions): void {
+  const unsupported = Object.entries({
+    preview: options.preview,
+    name: options.name !== undefined,
+    config: options.config !== undefined,
+    warmCdnCache: options.warmCdnCache,
+    warmCdnTarget: options.warmCdnTarget !== undefined,
+    warmCdnCertify: options.warmCdnCertify,
+    warmCdnPromote: options.warmCdnPromote === false,
+    experimentalTPR: options.experimentalTPR,
+  })
+    .filter(([, isSet]) => isSet)
+    .map(([option]) => option);
+  if (unsupported.length > 0) {
+    throw new Error(`Worker Preview deployments do not support: ${unsupported.join(", ")}.`);
+  }
+}
+
 export async function deploy(options: DeployOptions): Promise<void> {
+  const isPreview = options.target?.type === "preview";
+  if (isPreview) assertPreviewDeployOptions(options);
   if (options.warmCdnTarget !== undefined && !options.warmCdnCache && !options.experimentalTPR) {
     throw new Error("--warm-cache-target requires --warm-cache or --traffic-aware-warm-cache.");
   }
@@ -2121,6 +2193,9 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (deployEnv) validateWranglerEnvName(deployEnv);
   const root = path.resolve(options.root);
   const deploymentTool = resolveDeploymentTool(root);
+  if (isPreview && deploymentTool !== "cf") {
+    throw new Error("Worker Previews require a cloudflare.config.ts project and the cf CLI.");
+  }
   if (deploymentTool === "cf" && options.name) {
     throw new Error(
       "--name is not supported for cloudflare.config.ts projects. Set `name` in cloudflare.config.ts instead.",
@@ -2128,9 +2203,23 @@ export async function deploy(options: DeployOptions): Promise<void> {
   }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
   const wranglerFallbackEnv = deploymentTool === "cf" ? undefined : deployEnv;
+  // Like `next build`, default NODE_ENV to production for the whole command.
+  // Vite's config loading otherwise sets an unset NODE_ENV to development, so
+  // next.config, its callbacks and config plugins would take their dev paths
+  // (fumadocs-mdx starts a file watcher and the deploy never exits).
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
   loadDotenv({ root, mode: viteMode });
 
-  console.log("\n  vinext-cloudflare deploy\n");
+  // The Preview flag must be present before Vite loads the configuration,
+  // including the eager metadata pass, and while the multi-environment build runs.
+  // Like `cf previews deploy`, Previews select only the Vite mode and leave CLOUDFLARE_ENV alone.
+  const cloudflareEnv = isPreview ? undefined : deployEnv;
+  const withBuildContext = <T>(fn: () => Promise<T>): Promise<T> =>
+    withCloudflareEnv(cloudflareEnv, () => (isPreview ? withCloudflarePreviewBuild(fn) : fn()));
+
+  console.log(
+    isPreview ? "\n  vinext-cloudflare previews deploy\n" : "\n  vinext-cloudflare deploy\n",
+  );
 
   // Step 1: Detect project structure
   const info = detectProject(root);
@@ -2203,13 +2292,24 @@ export async function deploy(options: DeployOptions): Promise<void> {
     return;
   }
 
+  // Like `cf previews deploy --prebuilt`, upload the existing Preview Build Output
+  // without evaluating the current config or post-processing the output.
+  if (isPreview && options.skipBuild) {
+    console.log("\n  Skipping build (--skip-build)");
+    printDeployUrl(
+      "Preview URL",
+      await runCfDeploy(root, { env: viteMode, target: options.target }),
+    );
+    return;
+  }
+
   // This load is intentionally eager: inline `vinext({ nextConfig })` can decide
   // export/prerender behavior, so deploy cannot safely short-circuit before reading it.
-  const viteConfigMetadata = await withCloudflareEnv(deployEnv, () =>
+  const viteConfigMetadata = await withBuildContext(() =>
     loadDeployViteConfigMetadata(info.root, viteMode),
   );
   const cdnAdapterConfig = resolveCdnAdapterConfig(viteConfigMetadata.cacheConfig);
-  const nextConfig = await withCloudflareEnv(deployEnv, async () => {
+  const nextConfig = await withBuildContext(async () => {
     const inlineNextConfig = viteConfigMetadata.nextConfig;
     const rawNextConfig = inlineNextConfig
       ? await resolveNextConfigInput(inlineNextConfig, PHASE_PRODUCTION_BUILD)
@@ -2246,14 +2346,16 @@ export async function deploy(options: DeployOptions): Promise<void> {
   if (prerenderDecision && !shouldPrerenderLocally) {
     const trigger =
       prerenderDecision.reason === "flag" ? "--prerender-all" : "vinext prerender config";
-    const replacement = options.warmCdnCache
-      ? "Routes will be rendered and warmed through the staged Worker instead."
-      : "Use --warm-cache to render and warm routes through the deployed Worker instead.";
+    const replacement = isPreview
+      ? "Preview deployments render these routes on request."
+      : options.warmCdnCache
+        ? "Routes will be rendered and warmed through the staged Worker instead."
+        : "Use --warm-cache to render and warm routes through the deployed Worker instead.";
     console.warn(`\n  Warning: ${trigger} is ignored by Cloudflare deploy. ${replacement}`);
   }
   // Step 5: Build
   if (!options.skipBuild) {
-    await runBuild(info, deployEnv, viteMode);
+    await withBuildContext(() => runBuild(info, cloudflareEnv, viteMode));
   } else {
     console.log("\n  Skipping build (--skip-build)");
   }
@@ -2428,7 +2530,6 @@ export async function deploy(options: DeployOptions): Promise<void> {
           if (!discovery) return { loadingShellPaths: [], paths: [], rscPaths: [] };
           return createPrerenderWarmPlan(root, discovery, {
             includeCanonicalRsc: hasCanonicalRscWarmup,
-            includeFallbackShells: options.warmCdnIncludeFallbacks,
             strict: options.warmCdnCertify === true || !options.dangerouslyPromoteOnCdnWarmError,
           });
         },
@@ -2477,7 +2578,7 @@ export async function deploy(options: DeployOptions): Promise<void> {
       const upload = runCfVersionUpload(root, wranglerOptions);
       url = upload.previewUrl ?? "(Preview URL not detected in cf output)";
     } else if (deploymentTool === "cf") {
-      url = await runCfDeploy(root, wranglerOptions);
+      url = await runCfDeploy(root, { ...wranglerOptions, target: options.target });
     } else {
       url = await runWranglerDeploy(root, {
         ...wranglerOptions,
@@ -2486,7 +2587,14 @@ export async function deploy(options: DeployOptions): Promise<void> {
     }
   }
 
+  printDeployUrl(
+    isPreview ? "Preview URL" : options.warmCdnPromote === false ? "Version URL" : "Deployed to",
+    url,
+  );
+}
+
+function printDeployUrl(label: string, url: string): void {
   console.log("\n  ─────────────────────────────────────────");
-  console.log(`  ${options.warmCdnPromote === false ? "Version URL" : "Deployed to"}: ${url}`);
+  console.log(`  ${label}: ${url}`);
   console.log("  ─────────────────────────────────────────\n");
 }

@@ -7,7 +7,9 @@ on:
     types: [opened, synchronize, reopened, closed]
 
 concurrency:
-  group: deploy-${{ github.event_name }}-${{ github.ref }}
+  # A merged PR's `closed` run has github.ref set to the base branch, so key PR runs by
+  # number: closing then cancels that PR's in-flight deploy before preview cleanup runs.
+  group: deploy-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions: {}
@@ -36,11 +38,14 @@ jobs:
         id: names
         shell: bash
         run: |
+          # Never redeploy over a live Worker: after a deploy the previous version
+          # keeps serving some requests for up to a minute, and the store keys
+          # all data by the client's version ID, so those requests miss.
           if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
             prefix="pr-${{ github.event.pull_request.number }}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             service_name="${prefix}-rs-service"
           else
-            prefix="main"
+            prefix="main-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
             service_name="vinext-workers-response-store-service-poc"
           fi
           {
@@ -109,7 +114,7 @@ jobs:
           vp run test:live
 
       - name: Clean up live Response Store Workers
-        if: always() && github.event_name == 'pull_request'
+        if: always()
         continue-on-error: true
         working-directory: packages/workers-response-store
         env:
@@ -127,7 +132,6 @@ jobs:
     # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
     if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     name: Deploy ${{ matrix.example.name }}
-    needs: response_store
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -194,6 +198,16 @@ jobs:
           - name: static-assets-cache
             project: static-assets-cache
             working_directory: examples/static-assets-cache
+            # PRs deploy a native Worker Preview with `vinext-cloudflare previews deploy`.
+            worker_preview: true
+          - name: static-assets-pages
+            project: static-assets-pages
+            working_directory: examples/static-assets-pages
+            wrangler_config: dist/server/wrangler.json
+          - name: static-assets-pages-i18n
+            project: static-assets-pages-i18n
+            working_directory: examples/static-assets-pages-i18n
+            wrangler_config: dist/server/wrangler.json
           - name: static-export
             project: static-export
             working_directory: examples/static-export
@@ -250,7 +264,8 @@ jobs:
         run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
 
       - name: Build example
-        if: matrix.example.static_export != true
+        # `previews deploy` builds the Preview Build Output itself.
+        if: matrix.example.static_export != true && !(github.event_name == 'pull_request' && matrix.example.worker_preview)
         run: |
           if [[ -f cloudflare.config.ts ]]; then
             vp run build
@@ -365,12 +380,23 @@ jobs:
           command: versions upload --config ${{ matrix.example.wrangler_config }} --preview-alias pr-${{ github.event.pull_request.number }}
 
       - name: Deploy Build Output Preview Version with cf
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != ''
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) != '' && !matrix.example.worker_preview
         working-directory: ${{ matrix.example.working_directory }}
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: vp exec cf workers versions create --prebuilt --mode production --preview-alias pr-${{ github.event.pull_request.number }}
+
+      # The Worker Preview serves at the same pr-<number>-<worker> workers.dev hostname
+      # as a preview alias, so the smoke test and deployed E2E target it unchanged.
+      - name: Deploy Worker Preview with vinext-cloudflare
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.worker_preview
+        working-directory: ${{ matrix.example.working_directory }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+        run: vp exec vinext-cloudflare previews deploy "$PREVIEW_NAME"
 
       - name: Deploy Named Preview Worker
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && hashFiles(format('{0}/cloudflare.config.ts', matrix.example.working_directory)) == '' && matrix.example.worker_name
@@ -424,6 +450,10 @@ jobs:
             args+=(--warm-cache-certify)
           fi
           vp exec vinext-cloudflare deploy "${args[@]}"
+
+      - name: Install browser for cache policy E2E
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
+        run: vp exec playwright install chromium
 
       - name: Verify deployed cache prewarm
         if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && matrix.example.prewarm_e2e == true
@@ -503,6 +533,13 @@ jobs:
           VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-cache.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-cache.vinext.workers.dev' }}
         run: vp exec playwright test tests/e2e/cloudflare-static-assets
 
+      - name: Test deployed Pages Router Static Assets cache
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-static-assets-pages
+          VINEXT_E2E_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages.vinext.workers.dev' }}
+          VINEXT_E2E_I18N_BASE_URL: ${{ github.event_name == 'pull_request' && format('https://pr-{0}-static-assets-pages-i18n.vinext.workers.dev', github.event.pull_request.number) || 'https://static-assets-pages-i18n.vinext.workers.dev' }}
+        run: vp exec playwright test tests/e2e/cloudflare-static-assets-pages
+
   cleanup-response-store:
     name: Clean up Workers Response Store services
     if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
@@ -540,6 +577,30 @@ jobs:
           WORKER_NAME: pr-${{ github.event.pull_request.number }}-kv
         run: vp exec wrangler delete "$WORKER_NAME" --force
 
+      # Worker Previews outlive their PR. The pinned Wrangler and cf cannot delete them
+      # yet, so call the Workers API behind `wrangler preview delete`. Keep the Worker
+      # list in sync with the `worker_preview` examples; error 10025 means already deleted.
+      - name: Delete Worker Previews
+        # Run even if an earlier cleanup step failed, e.g. a PR closed before its kv Worker existed.
+        if: ${{ !cancelled() && github.event.action == 'closed' }}
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          PREVIEW_NAME: pr-${{ github.event.pull_request.number }}
+        run: |
+          for worker in static-assets-cache; do
+            response="$(mktemp)"
+            status="$(curl -sS -o "$response" -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+              "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/workers/workers/$worker/previews/$PREVIEW_NAME")"
+            # A 404 for any other reason (wrong path or Worker name) must still fail.
+            if [[ "$status" != 2* ]] && ! jq -e '.errors[]? | select(.code == 10025)' "$response" >/dev/null; then
+              echo "Failed to delete Worker Preview $PREVIEW_NAME for $worker (HTTP $status):"
+              cat "$response"
+              exit 1
+            fi
+          done
+
   comment:
     name: Comment Preview URLs
     runs-on: ubuntu-latest
@@ -567,6 +628,8 @@ jobs:
               { name: 'workers-cache', project: 'workers-cache' },
               { name: 'kv', project: 'kv' },
               { name: 'static-assets-cache', project: 'static-assets-cache' },
+              { name: 'static-assets-pages', project: 'static-assets-pages' },
+              { name: 'static-assets-pages-i18n', project: 'static-assets-pages-i18n' },
               { name: 'static-export', project: 'static-export' },
               { name: 'web', project: 'vinext-web', production: 'https://vinext.dev' },
             ];

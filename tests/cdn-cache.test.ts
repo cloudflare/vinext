@@ -40,7 +40,13 @@ import {
   triggerBackgroundRegeneration,
   buildPagesCacheValue,
 } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  _drainPendingRevalidations,
+  _runWithCacheState,
+} from "../packages/vinext/src/shims/cache-request-state.js";
+import { registerCdnPurgeRoutes } from "../packages/vinext/src/shims/cdn-purge-routes.js";
 import { setHeadersAccessPhase } from "../packages/vinext/src/shims/headers.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 
 function resetAdapters(): void {
   setDataCacheHandler(new MemoryCacheHandler());
@@ -135,9 +141,18 @@ describe("data cache handler aliases", () => {
 
       expect(load).not.toHaveBeenCalled();
       const proxy = getDataCacheHandler();
-      await Promise.all([proxy.get("a"), proxy.get("b")]);
+      // The load is shared by every later request, so it keeps the request that
+      // starts it alive until it settles.
+      const creator = { waitUntil: vi.fn() };
+      const joiner = { waitUntil: vi.fn() };
+      await Promise.all([
+        runWithExecutionContext(creator, () => proxy.get("a")),
+        runWithExecutionContext(joiner, () => proxy.get("b")),
+      ]);
 
       expect(load).toHaveBeenCalledOnce();
+      expect(creator.waitUntil).toHaveBeenCalledOnce();
+      expect(joiner.waitUntil).not.toHaveBeenCalled();
       expect(getDataCacheHandler()).toBe(configured);
     } finally {
       for (const [key, value] of previous) {
@@ -304,6 +319,7 @@ describe("getCdnCacheAdapter / setCdnCacheAdapter", () => {
 class EdgeCdnAdapter implements CdnCacheAdapter {
   readonly ownsBackgroundRevalidation = false;
   readonly purges: string[] = [];
+  readonly calls: Array<{ tags: string[]; durations?: { expire?: number } }> = [];
   writes = 0;
 
   async get(): Promise<null> {
@@ -316,8 +332,10 @@ class EdgeCdnAdapter implements CdnCacheAdapter {
     if (!input.cacheControl) return { "Cache-Control": "no-store" };
     return { "Cache-Control": "no-store", "CDN-Cache-Control": input.cacheControl };
   }
-  async revalidateTag(tags: string | string[]): Promise<void> {
-    for (const tag of Array.isArray(tags) ? tags : [tags]) this.purges.push(tag);
+  async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
+    const tagList = Array.isArray(tags) ? tags : [tags];
+    this.calls.push({ tags: tagList, durations });
+    for (const tag of tagList) this.purges.push(tag);
   }
 }
 
@@ -387,31 +405,172 @@ describe("revalidation propagates to both data cache and CDN adapter", () => {
 
   it("revalidateTag invalidates the data cache and purges the CDN", async () => {
     const { dataRevalidate, edge } = spyAdapters();
-    await Promise.resolve(revalidateTag("posts"));
+    await settleScheduledRevalidation(() => revalidateTag("posts"));
     expect(dataRevalidate).toHaveBeenCalledWith("posts", undefined);
     expect(edge.purges).toEqual(["posts"]);
   });
 
   it("revalidatePath invalidates the data cache and purges the CDN", async () => {
     const { dataRevalidate, edge } = spyAdapters();
-    await Promise.resolve(revalidatePath("/blog"));
+    await settleScheduledRevalidation(() => revalidatePath("/blog"));
     // Same encoded tag is sent to both layers.
     expect(dataRevalidate).toHaveBeenCalledTimes(1);
     const tag = dataRevalidate.mock.calls[0][0];
     expect(edge.purges).toEqual([tag]);
   });
 
+  it("revalidatePath skips the CDN purge for a path only force-dynamic routes serve", async () => {
+    const { dataRevalidate, edge } = spyAdapters();
+    registerCdnPurgeRoutes({
+      metadataRoutes: [],
+      routes: [
+        { forceDynamic: true, patternParts: ["dashboard"], routeSegments: ["dashboard"] },
+        { forceDynamic: false, patternParts: ["blog"], routeSegments: ["blog"] },
+      ],
+    });
+    try {
+      await runInPhase("action", async () => {
+        revalidatePath("/dashboard", "layout");
+        revalidatePath("/blog", "layout");
+        await _drainPendingRevalidations();
+      });
+    } finally {
+      delete (globalThis as Record<PropertyKey, unknown>)[Symbol.for("vinext.cdnPurgeRoutes")];
+    }
+    expect(dataRevalidate.mock.calls.map(([tag]) => tag)).toEqual([
+      "_N_T_/dashboard/layout",
+      "_N_T_/blog/layout",
+    ]);
+    expect(edge.calls).toEqual([{ tags: ["_N_T_/blog/layout"], durations: undefined }]);
+  });
+
   it("updateTag invalidates the data cache and purges the CDN", async () => {
     const { dataRevalidate, edge } = spyAdapters();
     // updateTag may only be called from within a Server Action.
-    const previousPhase = setHeadersAccessPhase("action");
-    try {
-      await Promise.resolve(updateTag("cart"));
-    } finally {
-      setHeadersAccessPhase(previousPhase);
-    }
+    await runInPhase("action", async () => {
+      updateTag("cart");
+      await _drainPendingRevalidations();
+    });
     expect(dataRevalidate).toHaveBeenCalledTimes(1);
     expect(dataRevalidate.mock.calls[0][0]).toBe("cart");
     expect(edge.purges).toEqual(["cart"]);
   });
+
+  it("batches a Server Action's CDN purges into one call per profile at the drain", async () => {
+    const { dataRevalidate, edge } = spyAdapters();
+    await runInPhase("action", async () => {
+      revalidatePath("/a", "layout");
+      revalidatePath("/b", "layout");
+      revalidateTag("posts");
+      revalidateTag("posts");
+      revalidateTag("feed", "max");
+      // The data cache is invalidated per call right away, so reads later in
+      // the action see it; only the edge purge waits for the drain.
+      expect(dataRevalidate).toHaveBeenCalledTimes(5);
+      await Promise.resolve();
+      expect(edge.calls).toEqual([]);
+      await _drainPendingRevalidations();
+    });
+    expect(edge.calls).toEqual([
+      { tags: ["_N_T_/a/layout", "_N_T_/b/layout", "posts"], durations: undefined },
+      { tags: ["feed"], durations: { expire: 31536000 } },
+    ]);
+  });
+
+  it("batches CDN purges queued by a Route Handler", async () => {
+    const { edge } = spyAdapters();
+    await runInPhase("route-handler", async () => {
+      revalidateTag("a");
+      revalidateTag("b");
+      await _drainPendingRevalidations();
+    });
+    expect(edge.calls).toEqual([{ tags: ["a", "b"], durations: undefined }]);
+  });
+
+  it("does not fail the drain when the CDN purge fails", async () => {
+    spyAdapters();
+    const failure = new Error("1134: Unable to purge, rate limit reached");
+    setCdnCacheAdapter(
+      Object.assign(new EdgeCdnAdapter(), {
+        async revalidateTag() {
+          throw failure;
+        },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await runInPhase("action", async () => {
+        revalidatePath("/dashboard", "layout");
+        await expect(_drainPendingRevalidations()).resolves.toBeUndefined();
+      });
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("[vinext] CDN cache invalidation failed"),
+        failure,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("logs a CDN purge failure outside a request boundary instead of rejecting", async () => {
+    spyAdapters();
+    const failure = new Error("purge failed");
+    setCdnCacheAdapter(
+      Object.assign(new EdgeCdnAdapter(), {
+        async revalidateTag() {
+          throw failure;
+        },
+      }),
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const waitUntil = vi.fn<(promise: Promise<unknown>) => void>();
+    try {
+      void runWithExecutionContext({ waitUntil }, () => revalidateTag("posts"));
+      await expect(waitUntil.mock.calls[0][0]).resolves.toBeUndefined();
+      expect(consoleError).toHaveBeenCalledWith(
+        expect.stringContaining("[vinext] CDN cache invalidation failed"),
+        failure,
+      );
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
+  it("skips the CDN purge for a tag whose data-cache invalidation failed", async () => {
+    const failure = new Error("store down");
+    setDataCacheHandler({
+      async get() {
+        return null;
+      },
+      async set() {},
+      async revalidateTag(tags) {
+        if (tags === "broken") throw failure;
+      },
+    });
+    const edge = new EdgeCdnAdapter();
+    setCdnCacheAdapter(edge);
+    await runInPhase("action", async () => {
+      revalidateTag("broken");
+      revalidateTag("ok");
+      await expect(_drainPendingRevalidations()).rejects.toBe(failure);
+    });
+    expect(edge.calls).toEqual([{ tags: ["ok"], durations: undefined }]);
+  });
 });
+
+async function settleScheduledRevalidation(fn: () => void): Promise<void> {
+  const scheduled: Promise<unknown>[] = [];
+  void runWithExecutionContext({ waitUntil: (promise) => scheduled.push(promise) }, fn);
+  await Promise.all(scheduled);
+}
+
+function runInPhase(phase: "action" | "route-handler", fn: () => Promise<void>): Promise<void> {
+  return _runWithCacheState(async () => {
+    const previousPhase = setHeadersAccessPhase(phase);
+    try {
+      await fn();
+    } finally {
+      setHeadersAccessPhase(previousPhase);
+    }
+  });
+}

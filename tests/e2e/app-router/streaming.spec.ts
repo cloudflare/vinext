@@ -3,7 +3,6 @@
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/sse.test.ts
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/pages-router/e2e/streaming.test.ts
- * Tests: ON-5 in TRACKING.md
  *
  * OpenNext verifies that streaming responses arrive incrementally — messages
  * appear one at a time with delays between them, confirming the response is

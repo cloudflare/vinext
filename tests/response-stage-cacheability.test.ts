@@ -1,3 +1,4 @@
+import { handlePagesApiRoute } from "../packages/vinext/src/server/pages-api-route.js";
 import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   finalizeRequestStageCacheabilityProbe,
@@ -568,6 +569,7 @@ describe("response-stage cacheability", () => {
         const state = contextState(context)!;
         state.route = { kind: "app-route", pattern: "/api/explicit" };
         state.completedResponseBody = true;
+        state.outcome = { cacheable: true, cacheControl: "public, s-maxage=60" };
         state.explicitResponseCachePolicy = true;
         return new Response("complete", {
           headers: { "Cache-Control": "public, s-maxage=60" },
@@ -580,14 +582,14 @@ describe("response-stage cacheability", () => {
     await expect(response.text()).resolves.toBe("complete");
   });
 
-  it("admits an explicitly public Pages API response after clean body completion", async () => {
+  it("keeps a Pages API out of shared storage despite a public browser policy", async () => {
     const response = await withResponseStageCacheability(
       {
         buildId: "build-a",
         cache: "shared",
         context: baseContext(),
         rawManifest: null,
-        registerCacheAdapters: registerAdapter,
+        registerCacheAdapters: () => setCdnCacheAdapter(new CloudflareCdnCacheAdapter()),
         request: new Request("https://example.com/api/public", {
           headers: { Accept: "application/json" },
         }),
@@ -602,8 +604,60 @@ describe("response-stage cacheability", () => {
     );
 
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=60");
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toContain("no-store");
     await expect(response.json()).resolves.toEqual({ public: true });
   });
+
+  it.each(["node", "edge"])(
+    "retains the explicit provider opt-in for a %s Pages API",
+    async (runtime) => {
+      const response = await withResponseStageCacheability(
+        {
+          buildId: "build-a",
+          cache: "shared",
+          context: baseContext(),
+          rawManifest: null,
+          registerCacheAdapters: () => setCdnCacheAdapter(new CloudflareCdnCacheAdapter()),
+          request: new Request("https://example.com/api/public"),
+          resolvedRoutePathname: "/api/public",
+        },
+        async (context) => {
+          contextState(context)!.route = { kind: "pages-api", pattern: "/api/public" };
+          return handlePagesApiRoute({
+            ctx: context,
+            request: new Request("https://example.com/api/public"),
+            url: "/api/public",
+            match: {
+              params: {},
+              route: {
+                pattern: "/api/public",
+                module: {
+                  config: { runtime },
+                  default:
+                    runtime === "edge"
+                      ? () =>
+                          new Response("public", {
+                            headers: {
+                              "Cache-Control": "private, max-age=300",
+                              "Cloudflare-CDN-Cache-Control": "max-age=60",
+                            },
+                          })
+                      : (_req, res) => {
+                          res.setHeader("Cache-Control", "private, max-age=300");
+                          res.setHeader("Cloudflare-CDN-Cache-Control", "max-age=60");
+                          res.end("public");
+                        },
+                },
+              },
+            },
+          });
+        },
+      );
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("public, max-age=60");
+      await expect(response.text()).resolves.toBe("public");
+    },
+  );
 
   it("keeps a Pages API private without an explicit public policy", async () => {
     const response = await withResponseStageCacheability(
@@ -693,7 +747,7 @@ describe("response-stage metadata route admission", () => {
   }
 
   it.each(["GET", "HEAD"])(
-    "admits a dynamic opengraph-image on its own public Cache-Control for %s",
+    "admits a pure opengraph-image with its framework static policy for %s",
     async (method) => {
       const { response, state } = await renderEventImage({
         method,
@@ -702,15 +756,44 @@ describe("response-stage metadata route admission", () => {
 
       expect(state?.route).toEqual({ kind: "app-route", pattern: PATTERN });
       expect(response.status).toBe(200);
-      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(YEAR);
-      expect(response.headers.get("Cache-Control")).toBe("public, max-age=0, must-revalidate");
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
+        "public, max-age=31536000, stale-while-revalidate=31536000",
+      );
+      expect(response.headers.get("Cache-Control")).toBe(YEAR);
       expect(response.headers.get("Content-Type")).toBe("image/png");
       await expect(response.text()).resolves.toBe("png-bytes");
     },
   );
 
+  it.each(["private, max-age=300", "no-store", "public, max-age=1"])(
+    "stores pure metadata independently of browser %s",
+    async (cacheControl) => {
+      const { response } = await renderEventImage({
+        response: png({ "Cache-Control": cacheControl }),
+      });
+      expect(response.headers.get("Cache-Control")).toBe(cacheControl);
+      expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
+        "public, max-age=31536000, stale-while-revalidate=31536000",
+      );
+      await expect(response.text()).resolves.toBe("png-bytes");
+    },
+  );
+
+  // Next allows redirects and 404 metadata in the full route cache.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/export/routes/app-route.ts
+  it.each([307, 404])("admits static metadata status %s", async (status) => {
+    const { response, state } = await renderEventImage({
+      response: png({ "Cache-Control": "private, max-age=300" }, status),
+    });
+    expect(response.status).toBe(status);
+    expect(state?.outcome?.cacheable).toBe(true);
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe(
+      "public, max-age=31536000, stale-while-revalidate=31536000",
+    );
+    expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+  });
+
   it.each([
-    ["the route opts out with no-store", { response: png({ "Cache-Control": "no-store" }) }],
     [
       "the route sets a cookie",
       { response: png({ "Cache-Control": YEAR, "Set-Cookie": "seen=1; Path=/" }) },
@@ -723,14 +806,17 @@ describe("response-stage metadata route admission", () => {
       "the request carries authorization",
       { headers: { Authorization: "Bearer token" }, response: png({ "Cache-Control": YEAR }) },
     ],
+    ["the route returns a 400", { response: png({ "Cache-Control": YEAR }, 400) }],
     ["the route fails with a 5xx", { response: png({ "Cache-Control": YEAR }, 503) }],
     ["the request is not a read", { method: "POST", response: png({ "Cache-Control": YEAR }) }],
-    ["the route relies on the framework default", { response: png({}) }],
-  ])("keeps a metadata route private when %s", async (_label, options) => {
+  ])("rejects metadata shared storage when %s", async (_label, options) => {
     const { response } = await renderEventImage(options);
 
-    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBeNull();
-    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    const policy = new CloudflareCdnCacheAdapter().responsePolicy;
+    expect(policy.hasExplicitNonCacheablePolicy(response.headers)).toBe(true);
+    expect(response.headers.get("Cache-Control")).toBe(
+      options.response().headers.get("Cache-Control") ?? "no-store, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("png-bytes");
   });
 });

@@ -1,6 +1,6 @@
 import type { NextI18nConfig } from "../config/next-config.js";
 import type { HeadersAccessPhase } from "vinext/shims/headers";
-import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
+import { isrCacheControl, resolveRouteExpireSeconds, type ISRCacheEntry } from "./isr-cache.js";
 import type { RouteHandlerMiddlewareContext } from "./app-route-handler-response.js";
 import {
   applyRouteHandlerMiddlewareContext,
@@ -12,6 +12,7 @@ import { markKnownDynamicAppRoute } from "./app-route-handler-runtime.js";
 import { resolveAppRouteHandlerSpecialError } from "./app-route-handler-policy.js";
 import { makeThenableParams } from "vinext/shims/thenable-params";
 import {
+  completeAppRouteHandlerResponse,
   runAppRouteHandler,
   traceAppRouteHandlerExecution,
   type AppRouteDebugLogger,
@@ -37,6 +38,7 @@ type ReadAppRouteHandlerCacheOptions = {
   handlerFn: AppRouteHandlerFunction;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   isAutoHead: boolean;
   appendResponseLink?: boolean;
   isrDebug?: AppRouteDebugLogger;
@@ -130,6 +132,7 @@ export async function readAppRouteHandlerCacheResponse(
                     handlerFn: options.handlerFn,
                     i18n: options.i18n,
                     trailingSlash: options.trailingSlash,
+                    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
                     markDynamicUsage: options.markDynamicUsage,
                     params: options.params === null ? null : makeThenableParams(options.params),
                     request: new Request(options.requestUrl, { method: "GET" }),
@@ -149,11 +152,17 @@ export async function readAppRouteHandlerCacheResponse(
           }
           if ("specialError" in tracedResult) return;
 
-          const { dynamicUsedInHandler, response } = tracedResult.handlerResult;
+          const { dynamicUsedInHandler, response, didAccessDynamicRequest } =
+            tracedResult.handlerResult;
           assertSupportedAppRouteHandlerResponse(response);
 
-          if (dynamicUsedInHandler) {
-            markKnownDynamicAppRoute(options.routePattern);
+          const completed = await completeAppRouteHandlerResponse(response);
+          const lateDynamicUsage = options.consumeDynamicUsage();
+          const becameDynamic =
+            dynamicUsedInHandler || lateDynamicUsage || didAccessDynamicRequest();
+          if (!completed.completed || becameDynamic || response.headers.has("set-cookie")) {
+            void completed.response.body?.cancel().catch(() => {});
+            if (becameDynamic) markKnownDynamicAppRoute(options.routePattern);
             options.isrDebug?.("route regen skipped (dynamic usage)", options.cleanPathname);
             return;
           }
@@ -162,11 +171,20 @@ export async function readAppRouteHandlerCacheResponse(
             options.cleanPathname,
             options.getCollectedFetchTags(),
           );
-          const routeCacheValue = await buildAppRouteCacheValue(response);
+          const routeCacheValue = await buildAppRouteCacheValue(
+            completed.response,
+            response.headers.get("Cache-Control") ?? undefined,
+          );
           await options.isrSet(routeKey, routeCacheValue, {
-            cacheControl: isrCacheControl(options.revalidateSeconds, {
-              expireSeconds: options.expireSeconds,
-            }),
+            cacheControl: isrCacheControl(
+              options.revalidateSeconds === Infinity ? false : options.revalidateSeconds,
+              {
+                expireSeconds: resolveRouteExpireSeconds(
+                  options.revalidateSeconds,
+                  options.expireSeconds,
+                ),
+              },
+            ),
             tags: routeTags,
           });
           options.isrDebug?.("route regen complete", routeKey);

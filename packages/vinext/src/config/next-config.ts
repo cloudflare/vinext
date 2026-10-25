@@ -13,11 +13,11 @@ import { randomUUID } from "node:crypto";
 import type { PluginOption } from "vite";
 import commonjs from "vite-plugin-commonjs";
 import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
-import { normalizePageExtensions } from "../routing/file-matcher.js";
+import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
-import { applyLocaleToRoutes, isExternalUrl } from "./config-matchers.js";
+import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
 export const VINEXT_NEXT_CONFIG_PLUGIN_PROPERTY = "__vinextNextConfig";
@@ -182,7 +182,13 @@ export type HasCondition = {
 export type NextRedirect = {
   source: string;
   destination: string;
-  permanent: boolean;
+  /** `true` answers 308, `false` 307. Ignored when `statusCode` is set. */
+  permanent?: boolean;
+  /**
+   * Explicit redirect status, taking precedence over `permanent` as in Next.js
+   * `getRedirectStatus` (lib/redirect-status.ts).
+   */
+  statusCode?: 301 | 302 | 303 | 307 | 308;
   has?: HasCondition[];
   missing?: HasCondition[];
   /**
@@ -200,6 +206,12 @@ export type NextRedirect = {
    * `.nextjs-ref/packages/next/src/lib/load-custom-routes.ts:26`.
    */
   basePath?: false;
+  /**
+   * Internal: set by `applyLocaleToRoutes` on the `/${defaultLocale}` variant.
+   * Next.js `processRoutes` prefixes that variant's destination with the
+   * basePath without turning a bare `/` into the bare basePath.
+   */
+  defaultLocaleVariant?: true;
 };
 
 export type NextRewrite = {
@@ -280,6 +292,17 @@ export type NextConfig = {
   crossOrigin?: "anonymous" | "use-credentials";
   /** Whether to add trailing slashes */
   trailingSlash?: boolean;
+  /**
+   * Skip the automatic trailing-slash redirects and keep `<Link>`/router
+   * hrefs exactly as written.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/skipTrailingSlashRedirect
+   */
+  skipTrailingSlashRedirect?: boolean;
+  /**
+   * Compress responses from the Node production server. Defaults to true.
+   * @see https://nextjs.org/docs/app/api-reference/config/next-config-js/compress
+   */
+  compress?: boolean;
   /** Keep the original request URL visible to middleware/proxy. */
   skipProxyUrlNormalize?: boolean;
   /** @deprecated Use `skipProxyUrlNormalize` instead. */
@@ -506,6 +529,9 @@ export type ResolvedNextConfig = {
    */
   assetPrefix: string;
   trailingSlash: boolean;
+  skipTrailingSlashRedirect: boolean;
+  /** Whether the Node production server compresses responses (`compress`, default true). */
+  compress: boolean;
   skipProxyUrlNormalize: boolean;
   typescript: { tsconfigPath?: string };
   output: "" | "export" | "standalone";
@@ -784,6 +810,17 @@ function warnConfigLoadFailure(filename: string, err: Error): void {
 }
 
 /**
+ * The `defaultConfig` handed to a function-form next.config. Next.js passes
+ * its full `defaultConfig` (packages/next/src/server/config-shared.ts); vinext
+ * passes the subset configs are known to read, with values matching Next.js,
+ * so `[...defaultConfig.pageExtensions, "page.js"]` works. Fresh per call so a
+ * config that mutates it cannot leak into later loads.
+ */
+function createFunctionConfigDefaults(): NextConfig {
+  return { pageExtensions: [...DEFAULT_PAGE_EXTENSIONS], compress: true };
+}
+
+/**
  * Resolve a Next-style config value, calling it if it's a function-form config
  * (Next.js supports `module.exports = (phase, opts) => config`).
  */
@@ -793,7 +830,7 @@ async function resolveConfigValue(
 ): Promise<NextConfig> {
   if (typeof config === "function") {
     const result = await config(phase, {
-      defaultConfig: {},
+      defaultConfig: createFunctionConfigDefaults(),
     });
     return result as NextConfig;
   }
@@ -1052,6 +1089,15 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   for (const [propertyPath, warning] of warnings) {
     if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
   }
+  // Next.js drops nullish nested values before warning about a moved key.
+  const experimental = readOptionalRecord(config.experimental);
+  for (const key of ["skipTrailingSlashRedirect", "cacheComponents"] as const) {
+    if (experimental?.[key] != null) {
+      warnConfigOnce(
+        `\`experimental.${key}\` has been moved to \`${key}\`. Please update your ${configFileName} file accordingly.`,
+      );
+    }
+  }
 }
 
 export async function resolveNextConfigInput(
@@ -1203,7 +1249,7 @@ async function loadNextConfigWithPackageIdentity(
               `const cjsExports = cjsModule && cjsModule.exports;\n` +
               `const cjsValue = cjsExports != null && (cjsExports !== cjsInitial || (typeof cjsExports === "object" && Object.keys(cjsExports).length > 0)) ? cjsExports : undefined;\n` +
               `const value = cjsValue ?? configModule.default ?? configModule;\n` +
-              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: {} }) : value;\n`
+              `export default typeof value === "function" ? await value(${phaseLiteral}, { defaultConfig: ${JSON.stringify(createFunctionConfigDefaults())} }) : value;\n`
             );
           },
         },
@@ -1349,11 +1395,13 @@ function resolveDeploymentId(configDeploymentId: unknown): string | undefined {
 /**
  * Resolve the App Router RSC compatibility identity for a build.
  *
- * This token is baked into the client bundle and echoed by the server in the
- * `X-Vinext-RSC-Compatibility-Id` response header; browser navigation rejects
- * RSC payloads whose token differs (deploy skew) without exposing the raw
- * build ID. When the user pins a `deploymentId` we reuse it (already stable
- * across plugin instances); otherwise we mint a random UUID.
+ * The server sends this token with each page (the navigation bootstrap) and in
+ * the `X-Vinext-RSC-Compatibility-Id` response header; browser navigation
+ * rejects RSC payloads whose token differs from its page's (deploy skew)
+ * without exposing the raw build ID. It is never inlined into the client
+ * bundle, where a per-build value would rename chunks on every build. When
+ * the user pins a `deploymentId` we reuse it (already stable across plugin
+ * instances); otherwise we mint a random UUID.
  *
  * NOTE: like `resolveBuildId`, this is non-deterministic in the no-deploymentId
  * case, so a single `vite build` that instantiates the plugin more than once
@@ -1678,6 +1726,162 @@ function normalizeI18nConfig(value: unknown): NextI18nConfig | null {
 }
 
 /**
+ * Fail config loading on an invalid source, as Next.js fails the build
+ * (load-custom-routes.ts checkCustomRoutes), instead of silently skipping a
+ * redirect or security header per request.
+ */
+function validateConfigSources(type: string, routes: ReadonlyArray<{ source: unknown }>): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    const error = configSourceError(route?.source);
+    if (!error) continue;
+    invalid.push(`  ${describeSource(route?.source)}: ${error}`);
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} source${invalid.length === 1 ? "" : "s"}:\n${invalid.join("\n")}`,
+    );
+  }
+}
+
+/**
+ * A route source for an error message. Only a string is shown as is; any
+ * other value, such as a BigInt, may not serialize.
+ */
+function describeSource(source: unknown): string {
+  return typeof source === "string"
+    ? JSON.stringify(source)
+    : `(${source === null ? "null" : typeof source})`;
+}
+
+const CONDITION_TYPES = new Set(["header", "cookie", "query", "host"]);
+
+/**
+ * Fail config loading on a malformed has/missing list or item, with the rules
+ * of Next.js's checkCustomRoutes (load-custom-routes.ts). The matchers rely on
+ * these shapes.
+ */
+function validateConfigConditions(
+  type: string,
+  routes: ReadonlyArray<{ source: unknown; has?: unknown; missing?: unknown }>,
+): void {
+  const invalid: string[] = [];
+  for (const route of routes) {
+    const source = describeSource(route?.source);
+    for (const field of ["has", "missing"] as const) {
+      const items = route?.[field];
+      if (items === undefined) continue;
+      if (!Array.isArray(items)) {
+        invalid.push(`  ${source}: \`${field}\` must be undefined or an array`);
+        continue;
+      }
+      for (const item of items as unknown[]) {
+        const condition = (item ?? {}) as { type?: unknown; key?: unknown; value?: unknown };
+        const parts: string[] = [];
+        if (!CONDITION_TYPES.has(condition.type as string)) parts.push("invalid type");
+        if (typeof condition.key !== "string" && condition.type !== "host") {
+          parts.push("invalid key");
+        }
+        if (condition.value !== undefined && typeof condition.value !== "string") {
+          parts.push("invalid value");
+        }
+        if (condition.value === undefined && condition.type === "host") {
+          parts.push('value is required for "host" type');
+        }
+        if (parts.length > 0) {
+          invalid.push(
+            `  ${source}: \`${field}\` item: ${parts.join(", ")} for ${describeConfigValue(item)}`,
+          );
+        }
+      }
+    }
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js ${type} has/missing condition${invalid.length === 1 ? "" : "s"}:\n` +
+        `${invalid.join("\n")}\n` +
+        "Each item must be { type: header, cookie, query or host, key: string, value?: string }, " +
+        "with a value and no key required for host.",
+    );
+  }
+}
+
+const REDIRECT_STATUS_CODES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * Fail config loading on a redirect without a valid status, with the rules of
+ * Next.js's checkRedirect (load-custom-routes.ts): `statusCode` must be one of
+ * the redirect statuses, and `permanent` a boolean when it is absent.
+ */
+function validateRedirectStatuses(redirects: ReadonlyArray<NextRedirect>): void {
+  const invalid: string[] = [];
+  for (const redirect of redirects) {
+    const parts: string[] = [];
+    if (redirect.statusCode && !REDIRECT_STATUS_CODES.has(redirect.statusCode)) {
+      parts.push("`statusCode` is not undefined or valid statusCode");
+    }
+    if (typeof redirect.permanent !== "boolean" && !redirect.statusCode) {
+      parts.push("`permanent` is not set to `true` or `false`");
+    }
+    if (parts.length > 0) {
+      invalid.push(`  ${describeSource(redirect.source)}: ${parts.join(", ")}`);
+    }
+  }
+  if (invalid.length > 0) {
+    throw new Error(
+      `Invalid next.config.js redirect${invalid.length === 1 ? "" : "s"}:\n` +
+        `${invalid.join("\n")}\n` +
+        `Valid redirect statusCode values are ${[...REDIRECT_STATUS_CODES].join(", ")}`,
+    );
+  }
+}
+
+/** JSON for a config value, or its type when JSON cannot serialize it. */
+function describeConfigValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? `(${typeof value})`;
+  } catch {
+    return `(${typeof value})`;
+  }
+}
+
+/**
+ * The sources Next.js's processRoutes builds from `routes` by adding the
+ * basePath and locale prefixes, which checkCustomRoutes then checks again
+ * (load-custom-routes.ts). vinext adds basePath at match time instead, so
+ * these exist only for that check.
+ */
+function processedRouteSources(
+  routes: ReadonlyArray<NextRedirect | NextRewrite | NextHeader>,
+  type: "redirect" | "rewrite" | "header",
+  options: { basePath: string; i18n: NextI18nConfig | null; trailingSlash: boolean },
+): Array<{ source: string }> {
+  const { basePath, i18n, trailingSlash } = options;
+  // escapeStringRegexp, which also escapes "-".
+  const escape = (value: string) => value.replace(/[|\\{}()[\]^$+*?.-]/g, "\\$&");
+  const suffixFor = (source: string) => (source === "/" && !trailingSlash ? "" : source);
+  const defaultLocales =
+    i18n && type === "redirect"
+      ? [...(i18n.domains ?? []).map((domain) => domain.defaultLocale), i18n.defaultLocale]
+      : [];
+  const sources: Array<{ source: string }> = [];
+  for (const route of routes) {
+    const sourceBasePath = basePath && route.basePath !== false ? basePath : "";
+    let source = route.source;
+    if (i18n && route.locale !== false) {
+      if ("destination" in route && route.destination?.startsWith("/")) {
+        for (const locale of defaultLocales) {
+          sources.push({ source: `${sourceBasePath}/${locale}${suffixFor(source)}` });
+        }
+      }
+      source = `/:nextInternalLocale(${i18n.locales.map(escape).join("|")})${suffixFor(source)}`;
+    }
+    sources.push({ source: `${sourceBasePath}${source === "/" && sourceBasePath ? "" : source}` });
+  }
+  return sources;
+}
+
+/**
  * Resolve a NextConfig into a fully-resolved ResolvedNextConfig.
  * Awaits async functions for redirects/rewrites/headers.
  */
@@ -1694,6 +1898,8 @@ export async function resolveNextConfig(
       basePath: "",
       assetPrefix: "",
       trailingSlash: false,
+      skipTrailingSlashRedirect: false,
+      compress: true,
       skipProxyUrlNormalize: false,
       typescript: {},
       output: "",
@@ -1809,6 +2015,34 @@ export async function resolveNextConfig(
 
   {
     const allRewrites = [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback];
+    // Before the checks below read their fields, so a missing entry is
+    // reported rather than crashing them.
+    validateConfigSources("redirect", redirects);
+    validateConfigSources("rewrite", allRewrites);
+    validateConfigConditions("redirect", redirects);
+    validateRedirectStatuses(redirects);
+    validateConfigConditions("rewrite", allRewrites);
+
+    // Like Next.js' checkCustomRoutes (packages/next/src/lib/load-custom-routes.ts),
+    // reject a `basePath: false` rewrite to an internal destination: nothing
+    // outside the basePath resolves, so only an external URL is valid there.
+    const invalidBasePathRewrites = allRewrites.filter(
+      (rewrite) =>
+        rewrite.basePath === false &&
+        !(rewrite.destination.startsWith("http://") || rewrite.destination.startsWith("https://")),
+    );
+    if (invalidBasePathRewrites.length > 0) {
+      throw new Error(
+        invalidBasePathRewrites
+          .map(
+            (rewrite) =>
+              `The route ${rewrite.source} rewrites urls outside of the basePath. Please use a destination that starts with \`http://\` or \`https://\` https://nextjs.org/docs/messages/invalid-external-rewrite`,
+          )
+          .concat(`Invalid rewrite${invalidBasePathRewrites.length === 1 ? "" : "s"} found`)
+          .join("\n"),
+      );
+    }
+
     const externalRewrites = allRewrites.filter((rewrite) => isExternalUrl(rewrite.destination));
 
     if (externalRewrites.length > 0) {
@@ -1833,6 +2067,28 @@ export async function resolveNextConfig(
     headers = await config.headers();
   }
 
+  validateConfigSources("header", headers);
+  validateConfigConditions("header", headers);
+  // Next.js checks the routes again after adding the basePath and locale
+  // prefixes.
+  if (config.basePath || i18n) {
+    const processOptions = {
+      basePath: config.basePath ?? "",
+      i18n,
+      trailingSlash: config.trailingSlash ?? false,
+    };
+    validateConfigSources("redirect", processedRouteSources(redirects, "redirect", processOptions));
+    validateConfigSources(
+      "rewrite",
+      processedRouteSources(
+        [...rewrites.beforeFiles, ...rewrites.afterFiles, ...rewrites.fallback],
+        "rewrite",
+        processOptions,
+      ),
+    );
+    validateConfigSources("header", processedRouteSources(headers, "header", processOptions));
+  }
+
   // Probe wrapped webpack config for client and server resolution. Alias and
   // MDX extraction use the client result, matching the previous behavior.
   const webpackProbe = await probeWebpackConfig(config, root, options.dev ?? false);
@@ -1846,6 +2102,9 @@ export async function resolveNextConfig(
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = readOptionalRecord(config.experimental);
+  // Next.js copies a set legacy `experimental.cacheComponents` over the
+  // top-level key (warnOptionHasBeenMovedOutOfExperimental).
+  const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -1885,7 +2144,7 @@ export async function resolveNextConfig(
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
-    if (!config.cacheComponents) {
+    if (!cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
     if (!prefetchInlining) {
@@ -1959,7 +2218,7 @@ export async function resolveNextConfig(
 
   // Warn when experimental.cachedNavigations is set without cacheComponents.
   // Next.js throws in this case; vinext warns because the feature is a no-op without it.
-  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+  if (experimental?.cachedNavigations === true && !cacheComponents) {
     console.warn(
       "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
         "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
@@ -2053,6 +2312,13 @@ export async function resolveNextConfig(
     basePath: config.basePath ?? "",
     assetPrefix: normalizeAssetPrefix(config.assetPrefix),
     trailingSlash: config.trailingSlash ?? false,
+    // Next.js copies the legacy `experimental.skipTrailingSlashRedirect` over
+    // the top-level key (warnOptionHasBeenMovedOutOfExperimental), after
+    // dropping nullish nested values, so only a set legacy value overrides it.
+    skipTrailingSlashRedirect:
+      (experimental?.skipTrailingSlashRedirect ?? config.skipTrailingSlashRedirect) === true,
+    // Next.js disables compression only for an explicit `compress: false`.
+    compress: config.compress !== false,
     skipProxyUrlNormalize:
       config.skipProxyUrlNormalize ?? config.skipMiddlewareUrlNormalize ?? false,
     typescript:
@@ -2070,7 +2336,7 @@ export async function resolveNextConfig(
       : [],
     instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
     instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
-    cacheComponents: config.cacheComponents ?? false,
+    cacheComponents,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

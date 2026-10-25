@@ -1,12 +1,13 @@
 import { headers as nextHeaders } from "next/headers";
 import { NextRequest, NextResponse, NextFetchEvent } from "next/server";
 import { recordMiddlewareInvocation } from "./instrumentation-state";
+import { REQUEST_SIGNAL_OVERRIDE_HEADER } from "./lib/request-signal-probe";
 
 /**
  * App Router middleware that uses NextRequest-specific APIs.
  * This tests that the middleware receives a NextRequest (not a plain Request).
  *
- * Also covers OpenNext compat tests (ON-11):
+ * Also covers OpenNext compat tests:
  * - Redirect with cookie setting
  * - Rewrite (URL stays, content from another page)
  * - Rewrite with custom status code
@@ -17,11 +18,60 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Client-disconnect coverage: tests/node-request-cancellation.test.ts
+  if (pathname === "/api/request-signal") {
+    if (!request.nextUrl.searchParams.has("override")) return NextResponse.next();
+    const headers = new Headers(request.headers);
+    headers.set(REQUEST_SIGNAL_OVERRIDE_HEADER, "1");
+    return NextResponse.next({ request: { headers } });
+  }
+
+  // Middleware cookies must precede the Pages API route's res.appendHeader
+  // cookies. Coverage: tests/app-router-production-server.test.ts
+  if (pathname === "/api/pages-append-header") {
+    const response = NextResponse.next();
+    response.cookies.set("mw", "1");
+    return response;
+  }
+
   if (pathname === "/internal-header-secret.txt") {
     return new Response("blocked by middleware", {
       status: 403,
       headers: { "content-type": "text/plain" },
     });
+  }
+
+  // Matched by the decoded-form `/members only/:path*` source below.
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  if (pathname.startsWith("/members%20only/") && request.cookies.get("members")?.value !== "1") {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+
+  if (pathname === "/middleware-image-rewrite") {
+    return NextResponse.rewrite(new URL("/_next/image?url=%2Fheart.png&w=640&q=75", request.url));
+  }
+
+  // The image endpoint passes through middleware before it reads a source.
+  if (pathname === "/_next/image" || pathname === "/_vinext/image") {
+    const source = request.nextUrl.searchParams.get("url");
+    if (source === "/image-endpoint-guarded.png") {
+      return new Response("image endpoint blocked by middleware", {
+        status: 403,
+        headers: { "content-type": "text/plain" },
+      });
+    }
+    if (source === "/image-endpoint-replaced.png") {
+      const target = request.nextUrl.clone();
+      target.searchParams.set("url", "/heart.png");
+      return NextResponse.rewrite(target);
+    }
+    const response = NextResponse.next();
+    response.headers.set("x-mw-image-endpoint", "true");
+    return response;
   }
 
   if (pathname === "/static-file-header-collision.txt") {
@@ -56,8 +106,27 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     });
   }
 
+  // `nextUrl` keeps the basePath, which a rewrite destination needs to
+  // resolve when the fixture is built with one.
   if (pathname === "/%61dmin") {
-    return NextResponse.rewrite(new URL("/admin", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/admin";
+    return NextResponse.rewrite(target);
+  }
+
+  // Without a basePath, these unprefixed destinations resolve. Behind one,
+  // they resolve nothing, as in Next.js.
+  if (pathname === "/middleware-rewrite-unprefixed/page") {
+    return NextResponse.rewrite(new URL("/about", request.url));
+  }
+  if (pathname === "/middleware-rewrite-unprefixed/file") {
+    return NextResponse.rewrite(new URL("/heart.png", request.url));
+  }
+  if (pathname === "/middleware-rewrite-unprefixed/control") {
+    // nextUrl keeps the basePath, so this destination resolves either way.
+    const target = request.nextUrl.clone();
+    target.pathname = "/about";
+    return NextResponse.rewrite(target);
   }
 
   if (pathname.startsWith("/encoded-parity/middleware/")) {
@@ -80,6 +149,56 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/nextjs-compat/action-node-mw" && request.method === "POST") {
     await request.text();
     return NextResponse.next();
+  }
+
+  // next.config.ts adds config headers to /external-headers/* and proxies its
+  // before-files, after-files and fallback paths to the local upstream.
+  // Middleware proxies /external-headers/middleware/* there itself.
+  if (pathname.startsWith("/external-headers/")) {
+    const upstreamPort = request.headers.get("x-test-upstream-port");
+    const middlewarePath = pathname.slice("/external-headers/middleware".length);
+    const response =
+      pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
+        : NextResponse.next();
+    const search = request.nextUrl.searchParams;
+    if (search.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    if (search.has("middleware-header")) response.headers.set("x-mw-response-header", "1");
+    if (search.has("middleware-cache-control")) {
+      response.headers.set("Cache-Control", "private, max-age=7");
+    }
+    return response;
+  }
+
+  // next.config.ts adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (pathname === "/config-cookie-redirect" || pathname === "/config-cookie-response") {
+    const response =
+      pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : new NextResponse("from middleware");
+    if (request.nextUrl.searchParams.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (request.nextUrl.searchParams.has("empty-middleware-cookie")) {
+      response.headers.set("Set-Cookie", "");
+    }
+    return response;
+  }
+  if (pathname === "/api/config-cookie" && request.nextUrl.searchParams.has("middleware-cookie")) {
+    const response = NextResponse.next();
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+  // Next.js ignores an empty middleware Set-Cookie.
+  if (
+    pathname === "/api/config-cookie" &&
+    request.nextUrl.searchParams.has("empty-middleware-cookie")
+  ) {
+    return NextResponse.next({ headers: { "Set-Cookie": "" } });
   }
 
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
@@ -112,8 +231,32 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     response.headers.set("x-mw-has-session", "true");
   }
 
+  if (pathname === "/api/auth-challenge" || pathname === "/api/pages-auth-challenge") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("x-auth-source", "middleware");
+    return response;
+  }
+
+  // Sliding-session refresh: re-issue the session cookie with a renewed
+  // expiry. The route handler's logout/rotation cookie must still win.
+  if (pathname === "/api/session-refresh" && sessionToken) {
+    response.cookies.set("session", sessionToken.value, {
+      path: "/",
+      httpOnly: true,
+      maxAge: 600,
+    });
+    return response;
+  }
+
   // Redirect /middleware-redirect to /about (with cookie, like OpenNext)
   // Ref: opennextjs-cloudflare middleware.ts — redirect with set-cookie header
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (pathname === "/middleware-redirect-double-slash") {
+    return NextResponse.redirect(`${request.nextUrl.origin}//`);
+  }
+
   if (pathname === "/middleware-redirect") {
     return NextResponse.redirect(new URL("/about", request.url), {
       headers: { "set-cookie": "middleware-redirect=success; Path=/" },
@@ -123,7 +266,9 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Rewrite /middleware-rewrite to render / content (URL stays the same)
   // Ref: opennextjs-cloudflare middleware.ts — NextResponse.rewrite
   if (pathname === "/middleware-rewrite") {
-    return NextResponse.rewrite(new URL("/", request.url));
+    const target = request.nextUrl.clone();
+    target.pathname = "/";
+    return NextResponse.rewrite(target);
   }
 
   // Used by Vitest: nextjs-compat/hooks.test.ts — verifies usePathname()
@@ -449,18 +594,25 @@ export const config = {
   runtime: "nodejs",
   matcher: [
     "/about",
+    "/api/request-signal",
     "/exists-but-not-routed",
     "/pages-data-rewrite-source",
     "/middleware-redirect",
+    "/middleware-redirect-double-slash",
     "/middleware-rewrite",
     "/middleware-rewritten-use-pathname",
     "/middleware-external-rewrite",
     "/middleware-rewrite-query",
     "/middleware-rewrite-keep-original-query",
     "/middleware-rewrite-status",
+    "/middleware-rewrite-unprefixed/:path*",
     "/middleware-blocked",
     "/internal-header-secret.txt",
     "/static-file-header-collision.txt",
+    "/members only/:path*",
+    "/_next/image",
+    "/_vinext/image",
+    "/middleware-image-rewrite",
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
@@ -471,8 +623,16 @@ export const config = {
     "/headers/override-from-middleware",
     "/header-override-delete",
     "/api/header-override-delete",
+    "/api/session-refresh",
+    "/api/auth-challenge",
+    "/api/pages-auth-challenge",
+    "/api/config-cookie",
+    "/config-cookie-redirect",
+    "/config-cookie-response",
+    "/external-headers/:path*",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-append-header",
     "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

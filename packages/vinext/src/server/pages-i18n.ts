@@ -48,6 +48,24 @@ const normalizeHostname = normalizeDomainHostname;
 export { detectDomainLocale };
 
 /**
+ * Return the configured locale that the first pathname segment names, compared
+ * case-insensitively (`/EN/about` -> `"en"`), or `undefined` when there is none.
+ * The configured casing is returned, not the request's.
+ *
+ * Ported from Next.js: packages/next/src/shared/lib/i18n/normalize-locale-path.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/i18n/normalize-locale-path.ts
+ */
+export function detectPathnameLocale(
+  pathname: string,
+  locales: readonly string[],
+): string | undefined {
+  // The first segment is the empty string before the leading "/".
+  const segment = pathname.split("/", 2)[1]?.toLowerCase();
+  if (!segment) return undefined;
+  return locales.find((locale) => locale.toLowerCase() === segment);
+}
+
+/**
  * Prepend the default locale prefix to a pathname when i18n is configured and
  * the path does not already carry a locale prefix. Mirrors Next.js's
  * server-side path normalisation in `resolve-routes.ts` (lines ~250-263):
@@ -65,7 +83,9 @@ export { detectDomainLocale };
  *   - `/__vinext/*` (vinext-internal endpoints)
  *
  * Returns the input unchanged when i18n is not configured or when the path
- * already starts with one of the configured locales. The host-based default
+ * already starts with one of the configured locales (compared
+ * case-insensitively, like Next.js's `normalizeLocalePath`, so `/EN/about`
+ * is left alone rather than becoming `/en/EN/about`). The host-based default
  * locale (i18n.domains[].defaultLocale) is preferred over the global default
  * when supplied, matching Next.js's `domainLocale.defaultLocale` branch.
  *
@@ -75,28 +95,50 @@ export { detectDomainLocale };
  * `:locale`. After normalisation the request looks like `/en/to-sv` and
  * the rule matches with `:locale=en`.
  *
+ * `restoreRootTrailingSlash` makes the root `/en/` rather than `/en`; header
+ * callers compute it with `shouldRestoreLocaleRootTrailingSlash`. Redirect
+ * and rewrite callers do not pass it yet.
+ *
  * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
  */
 export function normalizeDefaultLocalePathname(
   pathname: string,
   i18n: NextI18nConfig | null | undefined,
-  options: { hostname?: string | null } = {},
+  options: { hostname?: string | null; restoreRootTrailingSlash?: boolean } = {},
 ): string {
   if (!i18n) return pathname;
   // Don't touch internal paths.
   if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return pathname;
   // If the path already starts with a known locale, leave it alone.
-  const parts = pathname.split("/", 3);
-  // parts[0] is the empty string before the leading "/", parts[1] is the first segment.
-  if (parts[1] && i18n.locales.includes(parts[1])) return pathname;
+  if (detectPathnameLocale(pathname, i18n.locales)) return pathname;
 
   // Pick the default locale: prefer the domain-mapped one when host matches.
   const domainLocale = detectDomainLocale(i18n.domains, options.hostname ?? undefined);
   const defaultLocale = domainLocale?.defaultLocale ?? i18n.defaultLocale;
 
-  if (pathname === "/") return `/${defaultLocale}`;
+  if (pathname === "/") {
+    return options.restoreRootTrailingSlash ? `/${defaultLocale}/` : `/${defaultLocale}`;
+  }
   return `/${defaultLocale}${pathname}`;
+}
+
+/**
+ * Whether Next.js re-adds the root's trailing slash after splicing in the
+ * default locale: the raw request pathname (basePath included, so `/docs`
+ * stays `/docs/en` while `/docs/` becomes `/docs/en/`) ends with `/`, and
+ * `trailingSlash` is on without `skipProxyUrlNormalize`.
+ *
+ * Ported from Next.js: packages/next/src/server/lib/router-utils/resolve-routes.ts
+ * (`hadTrailingSlash` + `maybeAddTrailingSlash`).
+ */
+export function shouldRestoreLocaleRootTrailingSlash(
+  rawPathname: string,
+  config: { trailingSlash?: boolean; skipProxyUrlNormalize?: boolean },
+): boolean {
+  return Boolean(
+    config.trailingSlash && !config.skipProxyUrlNormalize && rawPathname.endsWith("/"),
+  );
 }
 
 /**

@@ -17,6 +17,7 @@ import {
   MemoryCacheHandler,
 } from "../packages/vinext/src/shims/cache.js";
 import { buildAppPageCacheTags } from "../packages/vinext/src/server/app-page-cache.js";
+import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
 import {
   _drainPendingRevalidations,
   _runWithCacheState,
@@ -240,11 +241,31 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^docs:cache:__hash:[0-9a-f]{64}$/);
 
       kv.get.mockClear();
       expect(await prefixedHandler.get(logicalKey)).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(storedKey);
+    });
+
+    it("keeps oversized logical keys whose fnv1a64 digests collide in separate entries", async () => {
+      // Found by a collision search: the two root param values leave fnv1a64
+      // in the same state, so the full keys collide too. A request choosing
+      // one value must not read the entry cached for the other.
+      const key = (tenant: string) =>
+        `use-cache:build:e2e:fn-id:args:root-params:[["tenant","${tenant}${"x".repeat(500)}"]]`;
+      const privateKey = key("9321894c994f7f38");
+      const publicKey = key("573a3dc6dd8b8674");
+      expect(fnv1a64(privateKey)).toBe(fnv1a64(publicKey));
+
+      await handler.set(privateKey, { ...pageValue, html: "<html>private</html>" });
+
+      const storedKey = kv.put.mock.calls.at(-1)![0] as string;
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
+      expect(await handler.get(publicKey)).toBeNull();
+      expect(await handler.get(privateKey)).toMatchObject({
+        value: { html: "<html>private</html>" },
+      });
     });
 
     it("measures multibyte logical keys by UTF-8 byte length", async () => {
@@ -254,7 +275,7 @@ describe("KVCacheHandler", () => {
 
       const storedKey = kv.put.mock.calls.at(-1)![0] as string;
       expect(new TextEncoder().encode(storedKey).length).toBeLessThanOrEqual(512);
-      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{16}$/);
+      expect(storedKey).toMatch(/^cache:__hash:[0-9a-f]{64}$/);
       expect(await handler.get(logicalKey)).not.toBeNull();
     });
 
@@ -292,6 +313,19 @@ describe("KVCacheHandler", () => {
 
       expect(await freshHandler.get("tagged-with-long-tag")).not.toBeNull();
       expect(kv.get).toHaveBeenCalledWith(tagKey);
+    });
+
+    it("honors tag markers stored before oversized entry keys moved to SHA-256", async () => {
+      // Markers are permanent and outlive entries with short keys, so a tag
+      // revalidated before an upgrade must still invalidate those entries.
+      const tag = "posts:all";
+      store.set(`__tag:__hash:${fnv1a64(tag)}`, String(Date.now()));
+      store.set(
+        "cache:invalidated-before-upgrade",
+        validEntry(pageValue, { tags: [tag], lastModified: Date.now() - 1_000 }),
+      );
+
+      expect(await handler.get("invalidated-before-upgrade")).toBeNull();
     });
   });
 
@@ -840,6 +874,131 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
 
+    // Adapted from Next.js's tags manifest (areTagsStale / areTagsExpired):
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/tags-manifest.external.ts
+    it("serves entries of a tag revalidated with a profile stale until it expires, across handler instances", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(1_000_000);
+        const value = {
+          kind: "FETCH" as const,
+          data: { headers: {}, body: "posts", url: "https://example.test/posts" },
+          revalidate: 3600,
+        };
+        await handler.set("tagged", value, { revalidate: 3600, tags: ["posts"] });
+        await handler.set("soft-tagged", value, { revalidate: 3600 });
+
+        vi.setSystemTime(1_001_000);
+        await handler.revalidateTag("posts", { expire: 60 });
+
+        // Another isolate reads the persisted marker.
+        let reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("tagged")).resolves.toMatchObject({ cacheState: "stale" });
+        await expect(reader.get("soft-tagged", { softTags: ["posts"] })).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+        expect(store.has("cache:tagged")).toBe(true);
+
+        // An entry written after the revalidation is fresh.
+        vi.setSystemTime(1_002_000);
+        await handler.set("fresh", value, { revalidate: 3600, tags: ["posts"] });
+        expect((await reader.get("fresh"))?.cacheState).toBeUndefined();
+
+        // Once the profile's expire time passes, every entry written before it
+        // is gone. One written later is kept.
+        vi.setSystemTime(1_062_000);
+        await handler.set("after-expiry", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(1_062_001);
+        reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("tagged")).resolves.toBeNull();
+        await expect(reader.get("soft-tagged", { softTags: ["posts"] })).resolves.toBeNull();
+        await expect(reader.get("fresh")).resolves.toBeNull();
+        await expect(reader.get("after-expiry")).resolves.not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("serves stale after the public revalidateTag with a cacheLife profile name", async () => {
+      await handler.set(
+        "posts",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "cached posts", url: "https://example.test/posts" },
+          revalidate: 3600,
+        },
+        { revalidate: 3600, tags: ["posts"] },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2));
+
+      setCacheHandler(handler);
+      try {
+        await _runWithCacheState(async () => {
+          revalidateTag("posts", "hours");
+          await _drainPendingRevalidations();
+        });
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+
+      await expect(new KVCacheHandler(kv as any).get("posts")).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+    });
+
+    it("keeps an earlier expiry when a profile without expire revalidates the tag", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const value = {
+          kind: "FETCH" as const,
+          data: { headers: {}, body: "posts", url: "" },
+          revalidate: 3600,
+        };
+        vi.setSystemTime(1_000);
+        await handler.set("before-expiry", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(2_000);
+        await handler.revalidateTag("posts");
+        vi.setSystemTime(3_000);
+        await handler.set("before-stale", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(4_000);
+        await handler.revalidateTag("posts", {});
+
+        expect(JSON.parse(store.get("__tag:posts")!)).toEqual({ stale: 4_000, expired: 2_000 });
+        const reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("before-expiry")).resolves.toBeNull();
+        await expect(reader.get("before-stale")).resolves.toMatchObject({ cacheState: "stale" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("serves entries of a tag revalidated with an infinite expire stale indefinitely", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(1_000);
+        await handler.set("tagged", pageValue, { tags: ["posts"] });
+        vi.setSystemTime(2_000);
+        await handler.revalidateTag("posts", { expire: Infinity });
+
+        expect(JSON.parse(store.get("__tag:posts")!)).toEqual({ stale: 2_000 });
+        vi.setSystemTime(1e12);
+        await expect(new KVCacheHandler(kv as any).get("tagged")).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['{"stale":"soon"}', "{not json", "", " ", "12abc", "{}", '{"other":1}'])(
+      "treats an unreadable profile marker %s as an invalidation",
+      async (marker) => {
+        await handler.set("tagged", pageValue, { tags: ["posts"] });
+        store.set("__tag:posts", marker);
+        await expect(new KVCacheHandler(kv as any).get("tagged")).resolves.toBeNull();
+      },
+    );
+
     it("expires a revalidate = false entry after 30 days and keeps its invalidation marker", async () => {
       await handler.set(
         "static-tagged",
@@ -891,6 +1050,49 @@ describe("KVCacheHandler", () => {
       // A marker outlives entries written under any earlier ttlSeconds.
       await new KVCacheHandler(kv as any, { ttlSeconds: 60 }).revalidateTag("posts");
       expect(kv.put).toHaveBeenLastCalledWith("__tag:posts", expect.stringMatching(/^\d+$/));
+    });
+
+    it("keeps an entry in KV until its expire when that outlasts the TTL", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(1_000);
+      // cacheLife("max"): stale after 30 days, servable as stale for a year.
+      await handler.set(
+        "max-profile",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" }, revalidate: 2_592_000 } as any,
+        { cacheControl: { revalidate: 2_592_000, expire: 31_536_000, stale: 300 } },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:max-profile", expect.any(String), {
+        expirationTtl: 31_536_000,
+        metadata: { tags: [] },
+      });
+
+      vi.setSystemTime(1_000 + 31 * 24 * 60 * 60 * 1000);
+      const hit = await handler.get("max-profile");
+      expect(hit?.cacheState).toBe("stale");
+
+      // A shorter expire keeps the configured TTL, and a fractional one rounds up.
+      await handler.set(
+        "short-expire",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" } } as any,
+        {
+          cacheControl: { revalidate: 60, expire: 3600 },
+        },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:short-expire", expect.any(String), {
+        expirationTtl: 30 * 24 * 3600,
+        metadata: { tags: [] },
+      });
+      await handler.set(
+        "fractional-expire",
+        { kind: "FETCH", data: { headers: {}, body: "{}", url: "" } } as any,
+        {
+          cacheControl: { revalidate: 60, expire: 2_592_000.5 },
+        },
+      );
+      expect(kv.put).toHaveBeenLastCalledWith("cache:fractional-expire", expect.any(String), {
+        expirationTtl: 2_592_001,
+        metadata: { tags: [] },
+      });
     });
 
     it.each([

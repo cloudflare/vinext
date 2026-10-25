@@ -154,6 +154,9 @@ export const performanceRuns = sqliteTable(
     mainLatest: index("idx_performance_runs_main_latest")
       .on(table.measuredAt)
       .where(sql`${table.kind} = 'main'`),
+    pullRequestBase: index("idx_performance_runs_pr_base")
+      .on(table.baseSha)
+      .where(sql`${table.kind} = 'pull_request'`),
   }),
 );
 
@@ -211,6 +214,9 @@ export const performanceMeasurements = sqliteTable(
       table.label,
       table.implementationLabel,
     ),
+    // The profile sweep's NOT EXISTS check and the foreign-key check on every
+    // performance_profile_objects delete look rows up by this column.
+    profileObject: index("idx_performance_measurements_profile_object").on(table.profileObjectKey),
   }),
 );
 

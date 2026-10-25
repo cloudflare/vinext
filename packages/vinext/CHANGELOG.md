@@ -1,5 +1,440 @@
 # vinext
 
+## 1.3.0
+
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
+### Features
+
+- **Build:** emit hash-only client chunk and CSS file names (#3615)
+- **App Router:** group client references by route (#3697)
+
+### Bug Fixes
+
+#### App
+
+- keep route handler auth challenges after middleware's (#4050)
+- order middleware Set-Cookie before route handler cookies (#4026)
+- keep route handler request.signal aborting after GC (#4022)
+
+#### App Router
+
+- write the history entry before the destination replaces the page (#4127)
+- only ship route handler paths the client needs (#4109)
+- stop CSS-importing pages from reading searchParams in dev (#4031)
+- load the browser route manifest from its own chunk (#4116)
+- read the static export deployment version from the initial page (#3802)
+- read the RSC compatibility ID from the page, not the bundle (#3797)
+- suspend the tree during hard navigations so redirect boundaries can't loop (#4063)
+- use React 19.3's #441 message for sanitized server errors (#4049)
+- keep root params in stale page regeneration (#4004)
+- stop dynamic = "error" searchParams from hanging the RSC stream (#4002)
+
+#### Build
+
+- honor user client entry, chunk and asset file names (#3614)
+- stop prerender servers expiring idle keep-alive sockets (#4119)
+- keep the build ID out of client JS (#4101)
+- cache the Server Actions key and keep build IDs out of client JS (#3784)
+- list Pages routes in _buildManifest.js sortedPages (#4035)
+
+#### Config
+
+- match redirects, rewrites and headers sources with path-to-regexp (#4062)
+- run config and matcher regexes as written, like Next.js (#4106)
+- match i18n headers() only in their locale-prefixed form (#4088)
+- substitute matched params into headers() keys and values (#4087)
+- match headers() sources with path-to-regexp like Next.js (#4030)
+- reject basePath: false rewrites to internal destinations (#4058)
+
+#### Nitro
+
+- keep Vite's build manifests out of the static output (#4086)
+- run middleware before serving public files (#4065)
+- serve public files that the router resolves (#4064)
+
+#### Server
+
+- fail `vinext start` when the port is in use (#4073)
+- detect the locale of raw _next/data URLs in NextURL (#4103)
+- run JS Server Actions against the final route (#4061)
+- decide progressive actions after late routing (#4037)
+- skip progressive actions for multipart route handlers (#3905)
+
+#### Misc
+
+- **Pages Router:** stop shipping Pages API route paths to the client (#4129)
+- **Hybrid:** ship App route handler patterns with hashed static segments (#4128)
+- **Dev Overlay:** ignore window error events without an error value (#4126)
+- **Optimize Imports:** only stop at use client modules in RSC (#4102)
+- **Image:** bundle ipaddr.js in production server builds (#4105)
+- **Actions:** resolve progressive bound references through the route-scoped manifest (#4089)
+- **Actions:** authorize server references in fetch action arguments (#3991)
+- **Optimize Imports:** support @heroui/react in Server Components (#4099)
+- **Use Cache:** match Next.js erroring searchParams in "use cache" pages (#4028)
+- **Pages:** keep res.revalidate() in-process when the App entry has no context (#4032)
+- **Image:** allow getImageProps in Server Components (#4055)
+- apply config and middleware headers to external rewrites like Next.js (#4081)
+- order next.config Set-Cookie like Next.js (#4054)
+- **Cache:** skip CDN purges for paths only force-dynamic routes serve (#4076)
+- **Pages:** support res.appendHeader in API routes (#4051)
+- **Cache:** batch CDN tag purges per request and log purge failures (#4074)
+- resolve nothing for rewrite destinations outside basePath (#4059)
+- **OG:** import @vercel/og again after a failed import (#4052)
+- **Middleware:** run Node middleware against the server's own origin (#4033)
+- **Init:** upgrade a declared @vitejs/plugin-react below vinext's peer range (#4047)
+- **Plugins:** skip unsupported @vitejs/plugin-react copies the app resolves (#4043)
+- **Dynamic:** keep the request that starts a server next/dynamic load alive until it settles (#4046)
+- **Prod Server:** don't serve Pages public files outside basePath (#4025)
+- **Cloudflare:** keep the request that starts isolate-shared work alive until it settles (#4024)
+
+### Performance
+
+#### App Router
+
+- preload only the rendered route's client references during SSR (#4114)
+- walk client reference graphs once for every reference (#4112)
+- follow only the barrel re-exports a client reference uses (#4111)
+- cache client reference group exclusion checks per module (#4110)
+
+#### Misc
+
+- **Pages:** keep dev Pages client asset dependency lists across loads (#4108)
+- **Config:** compile headers() param templates once per param set (#4098)
+
+### Contributors
+
+- @Arthur031221
+- @caumeira
+- @james-elicx
+- @owjs3901
+- @pitahashi
+- @tamujin
+- @Tiscs
+
+## 1.2.1
+
+### Bug Fixes
+
+#### App Router
+
+- match prefetch and visited cache entries for // pathnames on the app origin (#3999)
+- keep router.prefetch destinations for // pathnames on the app origin (#3987)
+- keep RSC request URLs for // pathnames on the app origin (#3981)
+- don't report a platform-cancelled render as a server error (#3994)
+
+#### Misc
+
+- **Dev:** stop Pages Worker deps re-optimizing during Cloudflare startup (#4019)
+- **Build:** resolve output-root externals from nested chunks (#4021)
+- **Init:** set up Tailwind PostCSS when Next uses the Turbopack loader (#4016)
+- **Dev:** stop defaulting the vite dev port to 3000 (#4009)
+- **Cloudflare:** serve Vite module URLs before runWorkerFirst in dev (#4010)
+- **Deps:** require React 19.3.1 (#3995)
+- **Headers:** share RequestCookies method symbols across shim module instances (#4001)
+- **Nitro:** stop generating Nitro SWR route rules from revalidate exports (#3979)
+- **Head:** drop on\* attributes in any case from next/head tags (#3984)
+- **Middleware:** match matcher paths case-sensitively like Next.js (#3978)
+- **Build:** compile "use cache" imports in browser Web Workers as references (#3980)
+- **Server:** 404 absolute-form request targets on Node entries (#3986)
+- **Navigation:** never treat a same-origin // pathname as a protocol-relative local path (#3992)
+- **Image:** keep encoded dot segments in \_next/static sources literal on Workers (#3982)
+- **Image:** reject image sources whose dot segments resolve to a protocol-relative path (#3983)
+- **Server:** only trust NextRequest.ip/geo from Cloudflare metadata or a trusted proxy (#3989)
+- **i18n:** keep relative hrefs on the configured locale domain (#3990)
+
+### Performance
+
+- replace deprecated parseAst and read imports from oxc's module record (#3997)
+
+### Contributors
+
+- @james-elicx
+
+## 1.2.0
+
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
+### Features
+
+- **Init:** add --name to set the Cloudflare Worker name (#3863)
+
+### Bug Fixes
+
+#### Actions
+
+- answer a plain 500 when a form action without JavaScript throws (#3903)
+- send a failed fetch action's result as a rejected promise (#3902)
+- evaluate server action modules outside the request scope (#3823)
+
+#### App Router
+
+- honour data-scroll-behavior="smooth" during route-change scroll (#3958)
+- bound dynamicParams=false static-param checks to the request (#3930)
+- proxy external config rewrites with middleware's request headers (#3885)
+- gate SSR useSearchParams() in cacheComponents cache candidates (#3878)
+- treat host-derived nextUrl reads as dynamic in route handlers (#3857)
+- ignore non-Flight prefetch responses (#3826)
+- drop an unauthorized interception source from non-RSC server actions (#3808)
+
+#### Build
+
+- honour clientOutDir for the client environment (#3952)
+- limit the plugin-rsc scan glob workaround to 0.5.36 and 0.5.37 (#3970)
+- keep server-only imports from middleware and API routes out of Pages client bundles (#3936)
+- compile Server Function imports in browser Web Workers as references (#3819)
+- reject server-only imports in browser Web Worker bundles (#3815)
+
+#### Cache
+
+- don't store an unstable_cache result under arguments changed before its callback ran (#3969)
+- key and send cached fetch requests as they were when fetch was called (#3948)
+- key ArrayBuffer and typed array body chunks by their bytes (#3942)
+- keep in-memory tag invalidations from expiring (#3941)
+- tag encoded Pages ISR paths with their decoded identity (#3940)
+- key cached fetch bodies built into a Request (#3884)
+- treat x-api-key as a credential for shared response caches (#3879)
+- key fetch cache and dedupe by cf.resolveOverride (#3874)
+- key oversized cache identities by a SHA-256 digest (#3876)
+- rerun an unstable_cache nested in another's callback (#3867)
+- keep fetch patching out of next/cache client graphs (#3855)
+- key unstable_cache by an unambiguous, fixed-size digest (#3847)
+- key unstable_cache by callback source even with keyParts (#3822)
+- reject forged captures for inline "use cache" functions (#3812)
+
+#### Cloudflare
+
+- never follow a redirect during deploy-time path discovery (#3932)
+- make --warm-cache-include-fallbacks a no-op (#3906)
+- answer a stored page's conditional request as Next.js does (#3832)
+- never store a conditional request's 304 in the Response Store (#3827)
+- keep Workers Cache off Worker-wide in every generated config (#3820)
+- scaffold runWorkerFirst for public files during init and apply middleware's request overrides (#3804)
+
+#### Config
+
+- match Next.js skipTrailingSlashRedirect behavior (#3946)
+- collapse tab/newline-separated leading slashes in redirect destinations (#3935)
+- match Next.js redirect query encoding and escape client rewrite params (#3810)
+
+#### Dynamic
+
+- add next/dynamic preload metadata to transpilePackages dependencies (#3793)
+- only add a Suspense boundary for ssr: false or a loading component in the App Router (#3791)
+- render the same element shape on the client so useId matches (#3792)
+- render script preloads inside the next/dynamic Suspense boundary (#3790)
+- key next/dynamic preloads for modules outside the Vite root (#3786)
+
+#### Image
+
+- emit the image endpoint under basePath like Next.js (#3961)
+- admit Workers App Router image requests through middleware (#3890)
+- answer 400 for a local image source that yields no image (#3943)
+- fetch local image sources through middleware (#3937)
+- admit App Router Node image requests through middleware (#3881)
+
+#### Pages
+
+- only expose res.revalidate() on API route responses (#3938)
+- keep rendering and storing getStaticProps pages whose response was sent (#3873)
+- render shared ISR status pages for their own pathname (#3856)
+- splice custom Documents at per-render placeholders (#3850)
+- splice the page at <Main /> instead of matching marker text in Document data (#3829)
+- regenerate stale ISR entries with a full document render (#3861)
+- keep raw-text markup out of the ISR shell splice (#3852)
+- reject server-only behind a "use server" directive in Pages-only client builds (#3828)
+- compare getStaticPaths catch-all params element-wise (#3824)
+- keep header and cookie redirect conditions out of the client bundle (#3825)
+- strip data exports assigned inside nested statements from client builds (#3818)
+
+#### Pages Router
+
+- honour data-scroll-behavior="smooth" during the shallow scroll reset (#3964)
+- serve stored getStaticProps entries without rerunning getStaticPaths (#3928)
+- route .html request paths as written in dev (#3934)
+- keep the Host header out of the production request path (#3925)
+
+#### Server
+
+- cancel discarded response bodies with the request signal's reason (#3945)
+- log uncaught errors on running servers instead of crashing (#3929)
+- stop serving public files through double-encoded path aliases (#3846)
+
+#### Misc
+
+- **Middleware:** apply a rewrite that also carries x-middleware-next (#3951)
+- **Deps:** require @vitejs/plugin-rsc 0.5.37 to bind Server Action closures to their action id (#3947)
+- **Dev:** never honor a client-supplied forwarded middleware context (#3939)
+- **Script:** escape <script openers in hoisted beforeInteractive bodies (#3933)
+- **Fetch Cache:** keep no process-wide state from fetches outside a request (#3926)
+- **Dev:** keep original stack trace frames within Vite's server.fs rules (#3927)
+- **Rewrites:** stop host captures from retargeting the external rewrite proxy (#3895)
+- **Routing:** serialize rewrite destination templates and route dev data by raw path (#3872)
+- **Middleware:** apply page matchers to raw Pages data URLs (#3893)
+- **Prerender:** write /index artifacts apart from the root page's (#3888)
+- **PPR:** key fallback shells apart from the pages of their literal paths (#3891)
+- **Preview:** run Node Pages Router builds in vite preview (#3839)
+- serve client build files outside \_next/static before routing (#3838)
+- **Metadata:** substitute streamed icon keys with a replacer function (#3868)
+- **Router:** route hybrid Pages fallbacks by the raw request pathname (#3859)
+- **Init:** disable the Workers Cache left by an earlier setup when switching CDN cache (#3814)
+- **i18n:** detect locale prefixes case-insensitively before config rule matching (#3811)
+
+### Performance
+
+- **Cloudflare:** skip getStaticPaths when Workers Cache revalidates a stored Pages entry (#3960)
+- **Pages Router:** skip getStaticPaths when Response Store regenerates a stored entry (#3959)
+- **App Router:** forward large non-hint Flight rows instead of carrying them (#3717)
+
+### Contributors
+
+- @james-elicx
+- @jeffreywescott
+- @jgeurts
+- @MattieTK
+- @williamrogersdev
+
+## 1.1.0
+
+### Features
+
+- **Prerender:** write a page's special error that escapes the shell with its status (#3716)
+
+### Bug Fixes
+
+#### App Router
+
+- render an encoded static page instead of its dynamic sibling (#3776)
+- bound a prefetched layout redirect by the probe's cacheLife (#3754)
+- follow redirect() from a prefetched Link navigation (#3749)
+- authorize an interception source as a direct request to it (#3654)
+- resolve an interception source through its proxy rewrite (#3648)
+- restore streamed metadata and the \_\_next_f mirror for the stack's deploy-suite regressions (#3736)
+- put generated metadata in <head> of a page that may be stored, as Next.js does (#3714)
+- stream a special error a Suspense boundary caught as a 200, as Next.js does (#3711)
+- store an RSC-first ISR render with its real status, and never cache unmatched 404s (#3710)
+- keep a shallow history write made after the optimistic shell commits (#3706)
+- store a page's special-error render in the ISR cache (#3702)
+- stop refetching a page that redirects to itself; remove the leftover page probe (#3701)
+- let only the render decide whether a page is dynamic (#3698)
+- leave streamed generated metadata out of loading-shell prefetches (#3705)
+- share React cache() between generateMetadata and the page render (#3660)
+
+#### Cache
+
+- hash use cache argument keys synchronously so hits resolve before the shell flushes (#3783)
+- use Flight arguments for cache identity and replay (#3600)
+- accept a class as the cache adapter's default export and reject non-callable exports with a clear error (#3480)
+
+#### Server
+
+- compress RSC responses in the production server (#3732)
+- propagate client disconnects to request signals (#3692)
+- redirect repeated slashes and backslashes like Next.js (#3684)
+
+#### Misc
+
+- **Pages Router:** keep an encoded dynamic render out of its sibling's ISR entry (#3777)
+- **Fonts:** ignore font caches written before the path-free format (#3770)
+- **Fonts:** write cached font CSS without the checkout's path (#3530)
+- **Image:** send x-nextjs-cache and x-vinext-cache: MISS on /\_next/image responses (#3734)
+- **Headers:** stop completed connection probes leaking their caller's async context (#3731)
+- **Middleware:** accept variable-length alternation branches in matcher safety analysis (#3663)
+- **Cloudflare:** render Response Store and Workers Cache regenerations and warm-ups whole (#3737)
+- **Dev:** keep the dev server alive when a request body is cancelled (#3726)
+- **Use Cache:** serve stale entries and regenerate them in the background (#3713)
+- **Config:** pass the real defaultConfig to function-form next.config (#3687)
+- **CSS:** derive drafts.customMedia from lightningCssFeatures.include (#3681)
+- **Pages:** pass the original data URL as req.url in the Worker request stage (#3472)
+- **Use Cache:** regenerate entries past their expire instead of serving them (#3703)
+- **Cjs:** drop the CommonJS export facade from ESM like Next.js (#3667)
+
+### Performance
+
+- **App Router:** stop probing the page before RSC renders (#3699)
+
+### Contributors
+
+- @Adnan-Husayn
+- @AhmedElBanna80
+- @james-elicx
+- @mhsnook
+- @SisyphusZheng
+- @sppidy
+- @Tiscs
+
+## 1.0.1
+
+### Bug Fixes
+
+#### Dev
+
+- keep vite-plugin-commonjs out of vinext's inlined deps during the dep scan (#3620)
+- ignore client-supplied forwarded middleware context (#3617)
+- pre-bundle use-sync-external-store in the App Router client (#3542)
+- ignore generated .vinext files in the watcher (#3556)
+
+#### Shims
+
+- null a framed GET/HEAD body on a NextRequest's Request input (#3649)
+- drop a framed GET/HEAD body from a Request init in NextRequest (#3621)
+- keep a Request init's method, headers and body in NextRequest (#3612)
+- support stable catchError and retry APIs (#3566)
+
+#### Misc
+
+- **Cache:** separate browser headers from framework storage policy (#3540)
+- **Cloudflare:** serve prerendered Pages Router from Static Assets (#3603)
+- **Nitro:** serve App Router apps in Nitro dev and preview (#3608)
+- **Pages:** include locale in domain ISR cache identity (#3598)
+- **App Router:** release the refresh abort handle once supplemental requests settle (#3572)
+- **Build:** prerender before emitting standalone output (#3579)
+- **CLI:** recognize symlinked vite entrypoints (#3571) (#3573)
+- **Config:** preserve quoted JSON in dotenv files (#3568)
+- **Router:** preserve middleware and rewrites for missing static assets (#3541)
+- **Cloudflare:** support colon cache tags in KV (#3569)
+- **Plugins:** accept HTML comment end variants in request prescan (#3574)
+- **Tracing:** forward native Workers span metadata (#3564)
+- **Init:** list Response Store deployment in next steps (#3536)
+
+### Performance
+
+#### Build
+
+- skip vite-plugin-commonjs for modules it never rewrites (#3594)
+- skip the scan-time typeof window fold when it cannot change imports (#3596)
+- reuse OG HarfBuzz patch and jsx-in-js transforms across passes (#3590)
+- skip stylesheet processing in RSC scan builds (#3589)
+- prefilter optimize-imports matcher on quoted package source (#3550)
+- skip unused sourcemaps in vinext source transforms (#3552)
+- avoid repeated realpath calls in middleware export validation (#3553)
+
+#### SSR
+
+- track dynamic usage without loading the next/headers implementation (#3558)
+- stop loading browser runtime modules for shared helpers (#3559)
+- import the render abort check without server-only modules (#3549)
+
+#### Misc
+
+- **Pages:** stop the export-all transform filter from backtracking (#3606)
+- **Pages:** avoid repeated SSR asset manifest scans (#3599)
+- **OG:** speed up OG asset readFileSync scan and package-root lookups (#3588)
+- **Plugins:** prescan for require.context calls before parsing (#3562)
+- **App Router:** keep the route scanner out of the RSC runtime graph (#3557)
+- **Plugins:** skip parsing modules without rewritable dynamic requests (#3555)
+- **Dev:** keep the App Router combined handler external in dev (#3548)
+
+### Contributors
+
+- @ash1day
+- @h-a-n-a
+- @james-elicx
+- @jantimon
+- @NriotHrreion
+- @SammyTourani
+- @Yi-111-a
+
 ## 1.0.0
 
 ### Features

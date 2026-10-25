@@ -9,7 +9,7 @@ export type StaticAssetsAdapterOptions = {
 /**
  * Read-only page cache backed by Workers Static Assets.
  *
- * Locally prerendered App Router HTML, RSC, and metadata responses are copied
+ * Locally prerendered Pages HTML/data and App HTML, RSC, and metadata are copied
  * into `dist/client` after the build. Runtime cache writes and invalidations are
  * intentionally no-ops; a new deployment replaces the cache contents.
  */

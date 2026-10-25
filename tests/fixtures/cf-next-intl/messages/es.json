@@ -1,0 +1,64 @@
+{
+  "ApiRoute": {
+    "hello": "¡Hola {name}!"
+  },
+  "AsyncComponent": {
+    "basic": "AsyncComponent",
+    "markup": "Markup with <important>bold content</important>",
+    "rich": "This is a <important>rich</important> text."
+  },
+  "Client": {
+    "description": "Esta página se hidrata en el lado del cliente.",
+    "title": "Cliente"
+  },
+  "ClientCounter": {
+    "count": "Conteo actual: {count}",
+    "increment": "Incrementar"
+  },
+  "Counter": {
+    "count": "Conteo actual:",
+    "increment": "Incrementar"
+  },
+  "Index": {
+    "description": "Esta es la página de inicio.",
+    "rich": "Este es un texto <b>importante</b>.",
+    "title": "Inicio"
+  },
+  "JustIn": {
+    "title": "Recién llegado"
+  },
+  "LocaleLayout": {
+    "description": "Este es un ejemplo de cómo usar next-intl en el directorio app.",
+    "title": "Ejemplo next-intl"
+  },
+  "LocaleSwitcher": {
+    "switchLocale": "Cambiar a {locale, select, de {Alemán} en {Inglés} es {Español} ja {Japonés} nl {Neerlandés} other {Desconocido}}"
+  },
+  "Navigation": {
+    "about": "Acerca de (MDX)",
+    "client": "Página del cliente",
+    "home": "Inicio",
+    "nested": "Página anidada",
+    "newsArticle": "Noticias #{articleId}"
+  },
+  "Nested": {
+    "description": "Esta es una página anidada.",
+    "title": "Anidada"
+  },
+  "NewsArticle": {
+    "title": "Noticias #{articleId}"
+  },
+  "NotFound": {
+    "title": "Esta página no se encontró (404)"
+  },
+  "OpenGraph": {
+    "title": "Ejemplo next-intl"
+  },
+  "ServerActions": {
+    "item": "Artículo #{id}"
+  },
+  "ZodFormExample": {
+    "task": "Introduce una tarea",
+    "taskEmpty": "Por favor ingrese una tarea."
+  }
+}

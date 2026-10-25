@@ -1325,11 +1325,11 @@ describe("fetch cache shim", () => {
 
   it("preserves Request bodies for stale background revalidation", async () => {
     const seenBodies: string[] = [];
-    fetchMock.mockImplementation(async (input: string | URL | Request, _init?: RequestInit) => {
+    fetchMock.mockImplementation(async (input: string | URL | Request, init?: RequestInit) => {
       requestCount++;
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-      const body = input instanceof Request ? await input.clone().text() : "";
+      const body = input instanceof Request ? await new Request(input, init).text() : "";
       seenBodies.push(body);
       return new Response(JSON.stringify({ url, count: requestCount, body }), {
         status: 200,
@@ -1822,7 +1822,7 @@ describe("fetch cache shim", () => {
     const init = call[1] as RequestInit;
     expect(init).toBeDefined();
     expect((init as any).next).toBeUndefined();
-    expect((init as any).headers).toEqual({ "X-Custom": "value" });
+    expect(new Headers(init.headers).get("x-custom")).toBe("value");
   });
 
   it("strips next property for no-store fetches too", async () => {
@@ -3251,6 +3251,210 @@ describe("fetch cache shim", () => {
       expect((await res2.json()).count).toBe(2);
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
+
+    // Workers sends the bytes of these chunks, so they're keyed by those bytes.
+    it.each([
+      ["DataView", (bytes: Uint8Array) => new DataView(bytes.buffer, 2, 2)],
+      ["ArrayBuffer", (bytes: Uint8Array) => bytes.buffer.slice(2, 4)],
+      ["Uint16Array", (bytes: Uint8Array) => new Uint16Array(bytes.buffer, 2, 1)],
+    ])("keys a ReadableStream body with %s chunks by their bytes", async (_name, toChunk) => {
+      // Each chunk covers bytes 2 and 3 of the buffer.
+      const read = async (byte: number, outside = 0) => {
+        startNewFetchCacheScope();
+        const res = await fetch("https://api.example.com/body-stream-view-chunks", {
+          method: "POST",
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(toChunk(Uint8Array.of(outside, outside, 0, byte, outside)));
+              controller.close();
+            },
+          }),
+          next: { revalidate: 60 },
+        });
+        return (await res.json()).count;
+      };
+
+      expect(await read(0x61)).toBe(1);
+      expect(await read(0x62)).toBe(2);
+      // Bytes outside the chunk aren't sent, so they aren't keyed.
+      expect(await read(0x61, 0xff)).toBe(1);
+    });
+
+    // Runtimes send the bytes a view's internal slots cover, whatever its own
+    // buffer, byteOffset and byteLength properties say.
+    describe.each([
+      ["Uint8Array", (buffer: ArrayBuffer) => new Uint8Array(buffer, 2, 2)],
+      ["DataView", (buffer: ArrayBuffer) => new DataView(buffer, 2, 2)],
+      ["Uint16Array", (buffer: ArrayBuffer) => new Uint16Array(buffer, 2, 1)],
+    ])("a %s with shadowed byte range properties", (name, toView) => {
+      const shadowedView = (byte: number) => {
+        const view = toView(Uint8Array.of(0, 0, 0, byte).buffer);
+        const decoy = new Uint8Array(2);
+        Object.defineProperties(view, {
+          buffer: { value: decoy.buffer },
+          byteOffset: { value: 0 },
+          byteLength: { value: decoy.byteLength },
+        });
+        return view;
+      };
+
+      it.each([
+        ["body", (view: ArrayBufferView): BodyInit => view as BodyInit],
+        [
+          "ReadableStream chunk",
+          (view: ArrayBufferView): BodyInit =>
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(view);
+                controller.close();
+              },
+            }),
+        ],
+      ])("is keyed as a %s by the bytes it covers", async (source, toBody) => {
+        const read = async (byte: number) => {
+          startNewFetchCacheScope();
+          const res = await fetch(`https://api.example.com/body-shadowed-view/${name}/${source}`, {
+            method: "POST",
+            body: toBody(shadowedView(byte)),
+            next: { revalidate: 60 },
+          });
+          return (await res.json()).count;
+        };
+
+        expect(await read(0x61)).toBe(1);
+        expect(await read(0x62)).toBe(2);
+        expect(await read(0x61)).toBe(1);
+      });
+    });
+
+    it("sends every chunk of a ReadableStream body with mixed chunk types", async () => {
+      await fetch("https://api.example.com/body-stream-mixed-chunks", {
+        method: "POST",
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(Uint8Array.of(0x61));
+            controller.enqueue(new DataView(Uint8Array.of(0x62).buffer));
+            controller.enqueue(Uint8Array.of(0x63));
+            controller.close();
+          },
+        }),
+        next: { revalidate: 60 },
+      });
+
+      const body = (fetchMock.mock.calls[0][1] as RequestInit).body;
+      expect([...new Uint8Array(await new Response(body).arrayBuffer())]).toEqual([
+        0x61, 0x62, 0x63,
+      ]);
+    });
+
+    // Bodies such as async iterables are built into a Request as fetch would,
+    // and keyed by that Request's bytes.
+    describe("bodies built into a Request", () => {
+      const read = async (body: unknown, init: RequestInit = {}) => {
+        startNewFetchCacheScope();
+        const res = await fetch("https://api.example.com/body-built-request", {
+          method: "POST",
+          body: body as BodyInit,
+          duplex: "half",
+          next: { revalidate: 60 },
+          ...init,
+        } as RequestInit);
+        return (await res.json()).count as number;
+      };
+      // The request as fetch sends it, with any init body in place of its own.
+      const sent = (callIndex: number) => {
+        const [input, init] = fetchMock.mock.calls[callIndex];
+        return new Request(input, init);
+      };
+      async function* iterable(...chunks: string[]) {
+        for (const chunk of chunks) yield new TextEncoder().encode(chunk);
+      }
+
+      it("keys async iterable bodies by their bytes and sends each body", async () => {
+        expect(await read(iterable('{"user":', '"a"}'))).toBe(1);
+        expect(await read(iterable('{"user":', '"b"}'))).toBe(2);
+        expect(await read(iterable('{"user":"a"}'))).toBe(1);
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+        expect(await sent(0).text()).toBe('{"user":"a"}');
+        expect(await sent(1).text()).toBe('{"user":"b"}');
+      });
+
+      it("keys bodies the runtime converts to strings by that string", async () => {
+        expect(await read({ toString: () => "a" })).toBe(1);
+        expect(await read({ toString: () => "b" })).toBe(2);
+        expect(await read({ toString: () => "a" })).toBe(1);
+        expect(sent(0).headers.get("content-type")).toBe("text/plain;charset=UTF-8");
+        expect(await sent(1).text()).toBe("b");
+      });
+
+      it("sends objects shaped like FormData or a Blob as the runtime does", async () => {
+        // An array has keys() and a Response has arrayBuffer(), but neither is
+        // a FormData or Blob body.
+        expect(await read([1, 2])).toBe(1);
+        expect(await read([1, 3])).toBe(2);
+        expect(await read(new Response("payload"))).toBe(3);
+        expect(await sent(0).text()).toBe("1,2");
+        expect(await sent(2).text()).toBe("[object Response]");
+      });
+
+      it("keys a form body's bytes as sent", async () => {
+        const form = { headers: { "content-type": "application/x-www-form-urlencoded" } };
+        expect(await read({ toString: () => "a=%41" }, form)).toBe(1);
+        expect(await read({ toString: () => "a=A" }, form)).toBe(2);
+        expect(await read({ toString: () => "a=%41" }, form)).toBe(1);
+      });
+
+      it("rejects a body fetch would reject before reading it", async () => {
+        let pulls = 0;
+        async function* body() {
+          pulls++;
+          yield new TextEncoder().encode("a");
+        }
+        await expect(read(body(), { method: "GET" })).rejects.toThrow(TypeError);
+        expect(pulls).toBe(0);
+        expect(fetchMock).not.toHaveBeenCalled();
+      });
+
+      it("keys a Request body's ArrayBuffer chunks by their bytes", async () => {
+        const readRequest = async (byte: number) => {
+          startNewFetchCacheScope();
+          const request = new Request("https://api.example.com/body-request-buffer-chunks", {
+            method: "POST",
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue(Uint8Array.of(byte).buffer);
+                controller.close();
+              },
+            }),
+            duplex: "half",
+          } as RequestInit);
+          const res = await fetch(request, { next: { revalidate: 60 } });
+          return (await res.json()).count;
+        };
+        expect(await readRequest(0x61)).toBe(1);
+        expect(await readRequest(0x62)).toBe(2);
+        expect(await readRequest(0x61)).toBe(1);
+      });
+
+      it("fetches a Request body with string chunks uncached", async () => {
+        const request = () =>
+          new Request("https://api.example.com/body-request-string-chunks", {
+            method: "POST",
+            body: new ReadableStream({
+              start(controller) {
+                controller.enqueue("a");
+                controller.close();
+              },
+            }),
+            duplex: "half",
+          } as RequestInit);
+        startNewFetchCacheScope();
+        await fetch(request(), { next: { revalidate: 60 } });
+        startNewFetchCacheScope();
+        await fetch(request(), { next: { revalidate: 60 } });
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      });
+    });
   });
 
   // ── Cache key: header inclusion (all headers minus blocklist) ──────
@@ -3374,10 +3578,316 @@ describe("fetch cache shim", () => {
     });
   });
 
+  // ── Requests changed after fetch is called ──────────────────────────
+
+  // fetch copies its request when it is called. A cached fetch's key is built,
+  // and it is sent, only after awaits, so a request the caller changes in the
+  // meantime must be neither sent nor keyed with the change. Otherwise a key
+  // built for one request caches the response to another.
+  describe("a request changed after fetch is called", () => {
+    type WorkersInit = RequestInit & { cf?: Record<string, unknown> };
+    type ChangedRequest = { input: string | URL | Request; init?: WorkersInit; change(): void };
+
+    const url = "https://api.example.com/changed-request";
+    const encode = (value: string) => new TextEncoder().encode(value);
+    const stream = (chunk: Uint8Array) =>
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(chunk);
+          controller.close();
+        },
+      });
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        const request = new Request(input, init);
+        const cf =
+          (init as WorkersInit | undefined)?.cf ?? (input as { cf?: Record<string, unknown> }).cf;
+        const sent = [
+          request.url,
+          ...request.headers.values(),
+          await request.text(),
+          JSON.stringify(cf),
+        ].join(" ");
+        return Response.json({ sent, count: requestCount });
+      });
+    });
+
+    it.each<[string, () => ChangedRequest]>([
+      [
+        "a URL",
+        () => {
+          const input = new URL(`${url}?user=alice`);
+          return { input, change: () => input.searchParams.set("user", "bobby") };
+        },
+      ],
+      [
+        "a Headers object",
+        () => {
+          const headers = new Headers({ "x-user": "alice" });
+          return { input: url, init: { headers }, change: () => headers.set("x-user", "bobby") };
+        },
+      ],
+      [
+        "a headers record",
+        () => {
+          const headers: Record<string, string> = { "x-user": "alice" };
+          return { input: url, init: { headers }, change: () => (headers["x-user"] = "bobby") };
+        },
+      ],
+      [
+        "a headers array",
+        () => {
+          const headers: [string, string][] = [["x-user", "alice"]];
+          return { input: url, init: { headers }, change: () => (headers[0][1] = "bobby") };
+        },
+      ],
+      [
+        "a Request's headers",
+        () => {
+          const input = new Request(url, { headers: { "x-user": "alice" } });
+          return { input, change: () => input.headers.set("x-user", "bobby") };
+        },
+      ],
+      [
+        "a RequestInit cf",
+        () => {
+          const cf = { resolveOverride: "alice.example.com" };
+          return { input: url, init: { cf }, change: () => (cf.resolveOverride = "bobby") };
+        },
+      ],
+      [
+        "a Request's cf",
+        () => {
+          const cf = { resolveOverride: "alice.example.com" };
+          // Node's Request drops `cf`; workerd's Request carries it.
+          const input = new Request(url);
+          Object.defineProperty(input, "cf", { value: cf, configurable: true });
+          return { input, change: () => (cf.resolveOverride = "bobby") };
+        },
+      ],
+      [
+        "a cf option's nested value",
+        () => {
+          const cf = { cacheTags: ["alice"] };
+          return { input: url, init: { cf }, change: () => (cf.cacheTags[0] = "bobby") };
+        },
+      ],
+      [
+        "a cf option's nested value beside one JSON can't hold",
+        () => {
+          const cf = { image: { format: "alice", ignored: () => {} } };
+          return { input: url, init: { cf }, change: () => (cf.image.format = "bobby") };
+        },
+      ],
+      [
+        "a Uint8Array body",
+        () => {
+          const body = encode("alice");
+          return {
+            input: url,
+            init: { method: "POST", body },
+            change: () => body.set(encode("bobby")),
+          };
+        },
+      ],
+      [
+        "a URLSearchParams body",
+        () => {
+          const body = new URLSearchParams({ user: "alice" });
+          return {
+            input: url,
+            init: { method: "POST", body },
+            change: () => body.set("user", "bobby"),
+          };
+        },
+      ],
+      [
+        "a FormData body",
+        () => {
+          const body = new FormData();
+          body.set("user", "alice");
+          return {
+            input: url,
+            init: { method: "POST", body },
+            change: () => body.set("user", "bobby"),
+          };
+        },
+      ],
+      [
+        "a FormData body's File name",
+        () => {
+          const file = new File(["data"], "alice.txt");
+          const body = new FormData();
+          body.set("file", file);
+          return {
+            input: url,
+            init: { method: "POST", body },
+            change: () => Object.defineProperty(file, "name", { value: "bobby.txt" }),
+          };
+        },
+      ],
+      [
+        "a ReadableStream body's chunk",
+        () => {
+          const chunk = encode("alice");
+          return {
+            input: url,
+            init: { method: "POST", body: stream(chunk), duplex: "half" } as WorkersInit,
+            change: () => chunk.set(encode("bobby")),
+          };
+        },
+      ],
+      [
+        "a Request body's chunk",
+        () => {
+          const chunk = encode("alice");
+          const input = new Request(url, {
+            method: "POST",
+            body: stream(chunk),
+            duplex: "half",
+          } as RequestInit);
+          return { input, change: () => chunk.set(encode("bobby")) };
+        },
+      ],
+    ])("%s isn't sent or keyed with the change", async (_, changedRequest) => {
+      const read = async ({ input, init }: ChangedRequest) =>
+        (await fetch(input, { ...init, next: { revalidate: 60 } })).json();
+
+      // Change the request while its cached response is read: after its key
+      // is built, and before it is sent.
+      const handler = getCacheHandler();
+      const get = handler.get.bind(handler);
+      const request = changedRequest();
+      vi.spyOn(handler, "get").mockImplementationOnce(async (...args) => {
+        request.change();
+        return get(...args);
+      });
+
+      const response = await read(request);
+      expect(response.sent).toContain("alice");
+      expect(response.sent).not.toContain("bobby");
+      // The same request, unchanged, reads that response from the cache.
+      expect(await read(changedRequest())).toEqual(response);
+    });
+  });
+
+  // ── Workers cf.resolveOverride ──────────────────────────────────────
+
+  describe("cf.resolveOverride in cache keys", () => {
+    type WorkersInit = RequestInit & { cf?: Record<string, unknown> };
+
+    // Node's Request drops `cf`; workerd's Request carries it.
+    function requestWithCf(url: string, cf: Record<string, unknown>): Request {
+      const request = new Request(url);
+      Object.defineProperty(request, "cf", { value: cf, configurable: true });
+      return request;
+    }
+
+    function readOrigin(input: string | URL | Request, init?: RequestInit): unknown {
+      const initCf = (init as WorkersInit | undefined)?.cf;
+      if (initCf !== undefined) return initCf.resolveOverride ?? null;
+      return (input as { cf?: { resolveOverride?: unknown } }).cf?.resolveOverride ?? null;
+    }
+
+    beforeEach(() => {
+      fetchMock.mockImplementation(async (input, init) => {
+        requestCount++;
+        return new Response(
+          JSON.stringify({ origin: readOrigin(input, init), count: requestCount }),
+        );
+      });
+    });
+
+    async function cachedFetch(cf: Record<string, unknown>) {
+      const init: WorkersInit = { cf, next: { revalidate: 60 } };
+      return (await fetch("https://api.example.com/tenant-data", init)).json();
+    }
+
+    it("keeps different origins in separate persistent entries", async () => {
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+
+      startNewFetchCacheScope();
+      expect(await cachedFetch({ resolveOverride: "origin-a.example.com" })).toEqual({
+        origin: "origin-a.example.com",
+        count: 1,
+      });
+      expect(await cachedFetch({ resolveOverride: "origin-b.example.com" })).toEqual({
+        origin: "origin-b.example.com",
+        count: 2,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("ignores cf properties that do not select the origin", async () => {
+      await cachedFetch({ resolveOverride: "origin-a.example.com", cacheTtl: 5 });
+
+      startNewFetchCacheScope();
+      const cached = await cachedFetch({
+        resolveOverride: "origin-a.example.com",
+        cacheTtlByStatus: { "100-599": -1 },
+        cacheTags: ["tenant-a"],
+      });
+      expect(cached).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("keys a Request input's resolveOverride, replaced by a RequestInit cf", async () => {
+      const request = requestWithCf("https://api.example.com/request-cf", {
+        resolveOverride: "origin-a.example.com",
+      });
+
+      const inherited = await fetch(request, { next: { revalidate: 60 } });
+      expect(await inherited.json()).toEqual({ origin: "origin-a.example.com", count: 1 });
+
+      startNewFetchCacheScope();
+      const overrideInit: WorkersInit = {
+        cf: { resolveOverride: "origin-b.example.com" },
+        next: { revalidate: 60 },
+      };
+      const overridden = await fetch(request, overrideInit);
+      expect(await overridden.json()).toEqual({ origin: "origin-b.example.com", count: 2 });
+
+      startNewFetchCacheScope();
+      const plain = await fetch("https://api.example.com/request-cf", { next: { revalidate: 60 } });
+      expect(await plain.json()).toEqual({ origin: null, count: 3 });
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+
+    it("dedupes render fetches only within the same origin", async () => {
+      const fetchOrigin = (cf: Record<string, unknown>) => {
+        const init: WorkersInit = { cf, cache: "no-store" };
+        return fetch("https://api.example.com/tenant-dedupe", init).then((res) => res.json());
+      };
+
+      const [a1, b, a2] = await Promise.all([
+        fetchOrigin({ resolveOverride: "origin-a.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-b.example.com" }),
+        fetchOrigin({ resolveOverride: "origin-a.example.com", cacheTtl: 5 }),
+      ]);
+
+      expect(a1).toEqual({ origin: "origin-a.example.com", count: 1 });
+      expect(b).toEqual({ origin: "origin-b.example.com", count: 2 });
+      expect(a2).toEqual(a1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+  });
+
   // ── Body restoration after cache key generation ───────────────────
 
   describe("body restoration (_ogBody)", () => {
-    it("ReadableStream body is correctly passed to real fetch after cache key generation", async () => {
+    // Next.js sends a stream body as the bytes it was keyed by, too.
+    it("ReadableStream body is sent as the bytes its cache key was built from", async () => {
       const stream = new ReadableStream({
         start(controller) {
           controller.enqueue(new TextEncoder().encode("stream-body-content"));
@@ -3391,27 +3901,10 @@ describe("fetch cache shim", () => {
         next: { revalidate: 60 },
       });
 
-      // Verify the mock was called and the body was preserved as a stream
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const call = fetchMock.mock.calls[0];
-      const init = call[1] as RequestInit;
-      expect(init.body).toBeInstanceOf(ReadableStream);
-      const reader = (init.body as ReadableStream<Uint8Array>).getReader();
-      const chunks: Uint8Array[] = [];
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
-      const length = chunks.reduce((acc, chunk) => acc + chunk.byteLength, 0);
-      const full = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of chunks) {
-        full.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      const decoded = new TextDecoder().decode(full);
-      expect(decoded).toBe("stream-body-content");
+      const init = fetchMock.mock.calls[0][1] as RequestInit;
+      expect(init.body).toBeInstanceOf(Uint8Array);
+      expect(new TextDecoder().decode(init.body as Uint8Array)).toBe("stream-body-content");
     });
 
     it("Blob body is correctly passed to real fetch after cache key generation", async () => {
@@ -3472,10 +3965,11 @@ describe("fetch cache shim", () => {
       await fetch(request, { next: { revalidate: 60 } });
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const call = fetchMock.mock.calls[0];
-      const forwardedRequest = call[0] as Request;
-      expect(forwardedRequest).toBeInstanceOf(Request);
-      expect(await forwardedRequest.text()).toBe("request-body-content");
+      const [forwardedRequest, forwardedInit] = fetchMock.mock.calls[0];
+      expect(forwardedRequest).toBe(request);
+      expect(await new Request(forwardedRequest, forwardedInit).text()).toBe(
+        "request-body-content",
+      );
     });
 
     it("already-consumed Request bodies bypass cache key generation and defer to the underlying fetch", async () => {

@@ -1,5 +1,6 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
+import type { MiddlewareResponseMergeOptions } from "./middleware-response-headers.js";
 import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
@@ -48,10 +49,10 @@ type RenderPagesFallbackDependencies = {
     requestHeaders: Headers,
     middlewareRequestHeaders: Headers,
   ) => Headers | null;
-  decodePathParams: (pathname: string) => string;
   applyRouteHandlerMiddlewareContext: (
     response: Response,
     middlewareContext: AppMiddlewareContext,
+    options?: MiddlewareResponseMergeOptions,
   ) => Response;
   /**
    * Returns the `__prerender_bypass` Set-Cookie header emitted by a
@@ -79,6 +80,7 @@ type RenderPagesFallbackOptions = {
   initialResponseHeaders?: Headers;
   matchKind?: "dynamic" | "static";
   middlewareContext: AppMiddlewareContext;
+  /** Raw (still percent-encoded) Pages route URL; defaults to `url.pathname`. */
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
@@ -132,7 +134,6 @@ export async function renderPagesFallback(
   const {
     loadPagesEntry,
     buildRequestHeaders,
-    decodePathParams,
     applyRouteHandlerMiddlewareContext,
     getDraftModeCookieHeader,
   } = dependencies;
@@ -145,20 +146,28 @@ export async function renderPagesFallback(
     ? buildRequestHeaders(request.headers, middlewareContext.requestHeaders)
     : null;
 
-  let pagesRequest = request;
-  if (pagesRequestHeaders) {
-    pagesRequest = cloneRequestWithHeaders(request, pagesRequestHeaders);
-  }
+  // Matching only reads headers. Moving the body into a header-overriding
+  // clone before a Pages route claims the request would leave it unusable for
+  // the App Router when no Pages route matches.
+  const matchRequest = pagesRequestHeaders
+    ? new Request(request.url, { headers: pagesRequestHeaders, method: request.method })
+    : request;
+  const claimPagesRequest = () =>
+    pagesRequestHeaders ? cloneRequestWithHeaders(request, pagesRequestHeaders) : request;
 
   const queryIndex = pathname.indexOf("?");
   const pagesPathname = queryIndex === -1 ? pathname : pathname.slice(0, queryIndex);
   const pagesSearch = queryIndex === -1 ? url.search || "" : pathname.slice(queryIndex);
-  const pagesUrl = decodePathParams(pagesPathname) + pagesSearch;
+  // `pathname` is the raw Pages route identity, as in the Pages-only pipeline:
+  // the route trie decodes dynamic captures once. Decoding it here would let
+  // `/%66r/...` select the `fr` locale (and `/%61bout` select `/about`) after
+  // middleware matched the encoded spelling, and decode dynamic params twice.
+  const pagesUrl = pagesPathname + pagesSearch;
   if (pagesPathname.startsWith("/api/") || pagesPathname === "/api") {
     if (typeof pagesEntry.handleApiRoute !== "function") return null;
     const hasApiMatcher = typeof pagesEntry.matchApiRoute === "function";
     const apiMatch = hasApiMatcher
-      ? (pagesEntry.matchApiRoute?.(pagesUrl, pagesRequest) ?? null)
+      ? (pagesEntry.matchApiRoute?.(pagesUrl, matchRequest) ?? null)
       : null;
     if (hasApiMatcher && apiMatch === null) return null;
     if (apiMatch !== null && matchKind === "static" && apiMatch.route.isDynamic) return null;
@@ -171,12 +180,16 @@ export async function renderPagesFallback(
         return null;
       }
     }
+    if (apiMatch !== null) {
+      beginRouteCacheability("pages-api", apiMatch.route.pattern);
+    }
     const executionContext = getRequestExecutionContext();
+    const pagesRequest = claimPagesRequest();
     const apiArgs = [
       pagesRequest,
       pagesUrl,
-      undefined,
-      executionContext?.trustedRevalidateOrigin ?? new URL(pagesRequest.url).origin,
+      executionContext ?? undefined,
+      executionContext?.trustedRevalidateOrigin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
     const pagesApiResponse = await (initialResponseHeaders
@@ -184,7 +197,12 @@ export async function renderPagesFallback(
       : pagesEntry.handleApiRoute(...apiArgs));
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
-      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext),
+      // A Node-runtime Pages API handler in Next.js writes to the response that
+      // already holds middleware's headers, so its challenges replace
+      // middleware's rather than joining them.
+      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext, {
+        appendResponseChallenges: false,
+      }),
       draftCookie,
     );
   }
@@ -192,7 +210,7 @@ export async function renderPagesFallback(
   if (typeof pagesEntry.renderPage !== "function") return null;
   const hasPageMatcher = typeof pagesEntry.matchPageRoute === "function";
   const pageMatch = hasPageMatcher
-    ? (pagesEntry.matchPageRoute?.(pagesUrl, pagesRequest) ?? null)
+    ? (pagesEntry.matchPageRoute?.(pagesUrl, matchRequest) ?? null)
     : null;
   if (hasPageMatcher && pageMatch === null) return null;
   if (pageMatch !== null && matchKind === "static" && pageMatch.route.isDynamic) return null;
@@ -209,6 +227,7 @@ export async function renderPagesFallback(
     // admission finalizer can apply the Pages manifest decision.
     beginRouteCacheability("pages-page", pageMatch.route.pattern);
   }
+  const pagesRequest = claimPagesRequest();
   const renderRequest = pagesDataRequest
     ? cloneRequestWithUrl(pagesRequest, pagesDataRequest.url)
     : pagesRequest;
@@ -216,7 +235,7 @@ export async function renderPagesFallback(
     renderRequest,
     pagesUrl,
     {},
-    undefined,
+    getRequestExecutionContext() ?? undefined,
     middlewareContext.requestHeaders,
   ] as const;
   const pagesRes = isDataRequest

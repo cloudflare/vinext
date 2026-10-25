@@ -108,7 +108,8 @@ jobs:
             benchmarks/vinext/node_modules \
             benchmarks/nextjs/app \
             benchmarks/nextjs/.next \
-            benchmarks/nextjs/node_modules; do
+            benchmarks/nextjs/node_modules \
+            benchmarks/pages-large; do
             if [ -L "$path" ]; then
               echo "Performance mutable path may not be a symlink: $path" >&2
               exit 1
@@ -200,7 +201,7 @@ jobs:
           done
 
       - name: Setup Vite+
-        uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
+        uses: voidzero-dev/setup-vp@68f39c78aaf39be468cabd2afb09c162574c84af # v1.21.2
         with:
           node-version: "24"
           cache: true
@@ -256,6 +257,7 @@ jobs:
               benchmarks/vinext/node_modules/.vite-temp
               benchmarks/nextjs/.next
               benchmarks/nextjs/node_modules
+              benchmarks/pages-large
             )
             for relative_path in "${paths[@]}"; do
               local path="$root/$relative_path"
@@ -411,7 +413,7 @@ jobs:
           sudo chmod -R a+rX "$VINEXT_PERF_RESULTS_ROOT"
 
       - name: Upload performance artifacts
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: performance-results
           path: |

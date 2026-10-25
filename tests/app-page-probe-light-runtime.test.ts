@@ -7,10 +7,9 @@ const appPageProbePath = new URL(
 );
 
 describe("app page probe cold runtime", () => {
-  it("does not load the full use cache runtime for page props marking", async () => {
+  it("does not load the full use cache runtime", async () => {
     const source = await readFile(appPageProbePath, "utf8");
 
-    expect(source).toContain("vinext/shims/internal/app-page-props-cache-key");
     expect(source).not.toContain("vinext/shims/cache-runtime");
   });
 });

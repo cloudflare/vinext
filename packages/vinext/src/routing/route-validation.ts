@@ -1,5 +1,5 @@
 /**
- * Dynamic route validation adapted from Next.js' sorted-routes implementation.
+ * Dynamic route validation and sorting adapted from Next.js' sorted-routes implementation.
  * Source:
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/sorted-routes.ts
  */
@@ -125,26 +125,57 @@ class UrlNode {
     child.insertSegments(urlPaths.slice(1), slugNames, isCatchAll);
   }
 
-  assertOptionalCatchAllSpecificity(prefix = "/"): void {
-    if (!this.placeholder && this.optionalRestSlugName !== null) {
+  /**
+   * Flatten the tree into route-priority order: static children
+   * alphabetically, then the dynamic, catch-all and optional catch-all
+   * children. Throws when a route shares a level with an optional catch-all.
+   */
+  smoosh(prefix = "/"): string[] {
+    const childrenPaths = [...this.children.keys()]
+      .filter((segment) => segment !== "[]" && segment !== "[...]" && segment !== "[[...]]")
+      .sort();
+
+    const routes = childrenPaths.flatMap((segment) =>
+      this.children.get(segment)!.smoosh(`${prefix}${segment}/`),
+    );
+
+    if (this.slugName !== null) {
+      routes.push(...this.children.get("[]")!.smoosh(`${prefix}[${this.slugName}]/`));
+    }
+
+    if (!this.placeholder) {
       const route = prefix === "/" ? "/" : prefix.slice(0, -1);
-      throw new Error(
-        `You cannot define a route with the same specificity as a optional catch-all route ("${route}" and "${route}[[...${this.optionalRestSlugName}]]").`,
+      if (this.optionalRestSlugName !== null) {
+        throw new Error(
+          `You cannot define a route with the same specificity as a optional catch-all route ("${route}" and "${route}[[...${this.optionalRestSlugName}]]").`,
+        );
+      }
+
+      routes.unshift(route);
+    }
+
+    if (this.restSlugName !== null) {
+      routes.push(...this.children.get("[...]")!.smoosh(`${prefix}[...${this.restSlugName}]/`));
+    }
+
+    if (this.optionalRestSlugName !== null) {
+      routes.push(
+        ...this.children.get("[[...]]")!.smoosh(`${prefix}[[...${this.optionalRestSlugName}]]/`),
       );
     }
 
-    for (const [segment, child] of this.children) {
-      const nextPrefixSegment =
-        segment === "[]"
-          ? `[${this.slugName}]`
-          : segment === "[...]"
-            ? `[...${this.restSlugName}]`
-            : segment === "[[...]]"
-              ? `[[...${this.optionalRestSlugName}]]`
-              : segment;
-      child.assertOptionalCatchAllSpecificity(`${prefix}${nextPrefixSegment}/`);
-    }
+    return routes;
   }
+}
+
+/**
+ * Sort Next.js-format page paths (e.g. "/posts/[id]") into route-priority
+ * order, matching Next.js' `getSortedRoutes`.
+ */
+export function getSortedRoutes(pages: readonly string[]): string[] {
+  const root = new UrlNode();
+  for (const page of pages) root.insert(page);
+  return root.smoosh();
 }
 
 export function patternToNextFormat(pattern: string): string {
@@ -179,5 +210,5 @@ export function validateRoutePatterns(patterns: readonly string[]): void {
     seenPatterns.add(normalizedPattern);
     root.insert(patternToNextFormat(normalizedPattern));
   }
-  root.assertOptionalCatchAllSpecificity();
+  root.smoosh();
 }

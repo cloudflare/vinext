@@ -85,6 +85,8 @@ if [ "${NEXTJS_PREPARE:-0}" = "1" ]; then
   )
 fi
 
+node "${SCRIPT_DIR}/patch-nextjs-react-errors.mjs" "${NEXTJS_DIR}" "${VINEXT_DIR:-${REPO_DIR}}"
+
 if [ "${NEXTJS_PREPARE_ONLY:-0}" = "1" ]; then
   exit 0
 fi

@@ -13,6 +13,7 @@ import {
   createOptimizedImportSourceMatcher,
   createOptimizeImportsPlugin,
   DEFAULT_OPTIMIZE_PACKAGES,
+  SUBPATH_OPTIMIZE_PACKAGES,
 } from "../packages/vinext/src/plugins/optimize-imports.js";
 import type { Plugin } from "vite-plus";
 import vinext from "../packages/vinext/src/index.js";
@@ -89,6 +90,24 @@ describe("vinext:optimize-imports plugin", () => {
     expect(hasOptimizedImport(`import "lucide-react";`)).toBe(false);
     expect(hasOptimizedImport(`import { Sun /*; */ } from "lucide-react";`)).toBe(true);
     expect(hasOptimizedImport(`function f(){}import { Sun } from "lucide-react";`)).toBe(true);
+  });
+
+  it("matches subpath imports only for subpath packages", () => {
+    const hasOptimizedImport = createOptimizedImportSourceMatcher(
+      ["radix-ui"],
+      ["react-aria-components"],
+    );
+
+    expect(hasOptimizedImport(`import { X } from "react-aria-components/Toast";`)).toBe(true);
+    expect(hasOptimizedImport(`import { X } from "react-aria-components";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "react-aria-components-x/Toast";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "radix-ui/Slot";`)).toBe(false);
+    expect(hasOptimizedImport(`import { X } from "radix-ui";`)).toBe(true);
+    expect(
+      createOptimizedImportSourceMatcher(["radix-ui"])(
+        `import { X } from "react-aria-components/Toast";`,
+      ),
+    ).toBe(false);
   });
 
   it("rejects unquoted, partial or non-import mentions of optimized packages", () => {
@@ -372,6 +391,49 @@ export { Mo as Listbox };`;
     expect(map!.get("parse")).toBeDefined();
   });
 
+  it("records the directive boundaries that re-exports pass through", async () => {
+    const entryPath = "/fake/wildcard-boundary/index.js";
+    const files: Record<string, string> = {
+      [entryPath]: `export * from "./client.js";\nexport * from "./actions.js";\nexport { Button } from "./button.js";`,
+      "/fake/wildcard-boundary/client.js": `"use client";\nexport { Dialog } from "./dialog.js";\nexport * as Icons from "./icons.js";\nexport * from "./client-actions.js";`,
+      "/fake/wildcard-boundary/client-actions.js": `"use server";\nexport { save } from "./save.js";`,
+      "/fake/wildcard-boundary/actions.js": `"use server";\nexport { submit } from "./submit.js";`,
+    };
+
+    const map = await buildBarrelExportMap(entryPath, (fp) => Promise.resolve(files[fp] ?? null));
+
+    // RSC stops at any directive; SSR only at "use server" and "use cache".
+    expect(map!.get("Dialog")).toEqual({
+      source: "/fake/wildcard-boundary/dialog.js",
+      isNamespace: false,
+      originalName: "Dialog",
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: undefined,
+    });
+    expect(map!.get("Icons")).toEqual({
+      source: "/fake/wildcard-boundary/icons.js",
+      isNamespace: true,
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: undefined,
+    });
+    // The outermost boundary wins for each environment.
+    expect(map!.get("save")).toMatchObject({
+      source: "/fake/wildcard-boundary/save.js",
+      rscBoundary: "/fake/wildcard-boundary/client.js",
+      ssrBoundary: "/fake/wildcard-boundary/client-actions.js",
+    });
+    expect(map!.get("submit")).toMatchObject({
+      source: "/fake/wildcard-boundary/submit.js",
+      rscBoundary: "/fake/wildcard-boundary/actions.js",
+      ssrBoundary: "/fake/wildcard-boundary/actions.js",
+    });
+    expect(map!.get("Button")).toEqual({
+      source: "/fake/wildcard-boundary/button.js",
+      isNamespace: false,
+      originalName: "Button",
+    });
+  });
+
   it("does not overwrite existing exports when wildcard sub-module has same name", async () => {
     // If the barrel already defines `format` explicitly, the wildcard should not overwrite it
     const entryPath = "/fake/wildcard-nooverwrite/index.js";
@@ -422,6 +484,7 @@ export { Button } from "./button";`;
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("lucide-react");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("radix-ui");
     expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("antd");
+    expect(DEFAULT_OPTIMIZE_PACKAGES).toContain("@heroui/react");
   });
 
   it("resolves nested subdirectory wildcard re-exports to the correct absolute path", async () => {
@@ -588,7 +651,9 @@ describe("vinext:optimize-imports transform", () => {
   async function setupTransform(
     packageName: string,
     barrelContents: string,
-  ): Promise<(code: string, id: string) => Promise<ReturnType<(...args: any[]) => any>>> {
+  ): Promise<
+    (code: string, id: string, envName?: string) => Promise<ReturnType<(...args: any[]) => any>>
+  > {
     // Create tmp project with a fake package in node_modules.
     // The package name must be in DEFAULT_OPTIMIZE_PACKAGES (or configured via
     // next.config.js) for the plugin's buildStart to include it.
@@ -618,9 +683,9 @@ describe("vinext:optimize-imports transform", () => {
     if (buildStartHook) await buildStartHook.call(plugin);
 
     const transform = unwrapHook(plugin.transform)!;
-    // Return a caller that fakes the environment context as RSC (server)
-    return async (code: string, id: string) =>
-      await (transform as any).call({ ...plugin, environment: { name: "rsc" } }, code, id);
+    // Return a caller that fakes the environment context, RSC by default
+    return async (code: string, id: string, envName = "rsc") =>
+      await (transform as any).call({ ...plugin, environment: { name: envName } }, code, id);
   }
 
   afterEach(() => {
@@ -760,6 +825,78 @@ describe("vinext:optimize-imports transform", () => {
     expect(result!.code).not.toContain(`from "./button"`);
     const expected = path.posix.join(tmpDir, "node_modules", "ramda", "button");
     expect(importLines[0]).toContain(expected);
+  });
+
+  it('stops at a "use client" entry in RSC but not in SSR', async () => {
+    // antd is in DEFAULT_OPTIMIZE_PACKAGES, and its entry starts with "use client".
+    const call = await setupTransform("antd", `"use client";\nexport { Button } from "./button";`);
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "antd");
+    const code = `import { Button } from "antd";`;
+    const rscResult = await call(code, "/app/page.tsx", "rsc");
+    expect(rscResult!.code).toContain(
+      `import { Button } from ${JSON.stringify(path.posix.join(pkgDir, "index.js"))}`,
+    );
+
+    const ssrResult = await call(code, "/app/page.tsx", "ssr");
+    expect(ssrResult!.code).toContain(
+      `import { Button } from ${JSON.stringify(path.posix.join(pkgDir, "button"))}`,
+    );
+  });
+
+  it("only registers the packages this environment imports for resolveId", async () => {
+    tmpDir = toSlash(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-test-"))),
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const pkgDir = path.join(tmpDir, "node_modules", "antd");
+    fs.mkdirSync(pkgDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({ name: "antd", type: "module", main: "./index.js" }),
+    );
+    fs.writeFileSync(
+      path.join(pkgDir, "index.js"),
+      `"use client";\nexport { Slot } from "@radix-ui/react-slot";`,
+    );
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    const buildStartHook = unwrapHook((plugin as any).buildStart);
+    if (buildStartHook) await buildStartHook.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const resolveId = unwrapHook(plugin.resolveId)!;
+    const rsc = { ...plugin, environment: { name: "rsc" }, resolve: vi.fn() };
+    const ssr = { ...plugin, environment: { name: "ssr" }, resolve: vi.fn() };
+
+    // SSR imports Slot from @radix-ui/react-slot, but RSC imports it from the
+    // "use client" entry, whichever environment transforms first.
+    for (const context of [ssr, rsc]) {
+      await (transform as any).call(context, `import { Slot } from "antd";`, "/app/page.tsx");
+      await (resolveId as any).call(context, "@radix-ui/react-slot", "/app/other.tsx");
+    }
+    expect(ssr.resolve).toHaveBeenCalledOnce();
+    expect(rsc.resolve).not.toHaveBeenCalled();
+  });
+
+  it('stops at "use server" modules in SSR', async () => {
+    const call = await setupTransform("antd", `export * from "./actions.js";`);
+    const pkgDir = path.posix.join(tmpDir, "node_modules", "antd");
+    fs.writeFileSync(
+      path.join(pkgDir, "actions.js"),
+      `"use server";\nexport { submit } from "./submit.js";`,
+    );
+    const code = `import { submit } from "antd";`;
+    for (const envName of ["rsc", "ssr"]) {
+      const result = await call(code, "/app/page.tsx", envName);
+      expect(result!.code).toContain(
+        `import { submit } from ${JSON.stringify(path.posix.join(pkgDir, "actions.js"))}`,
+      );
+    }
   });
 
   it("produces separate statements for namespace and named imports from the same source", async () => {
@@ -1047,5 +1184,171 @@ describe("vinext:optimize-imports transform", () => {
     expect(ssrResultKnown).not.toBeNull();
     expect(ssrResultKnown!.code).not.toContain(`from "antd"`);
     expect(ssrResultKnown!.code).toContain("btn");
+  });
+});
+
+describe("vinext:optimize-imports subpath imports", () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    for (const dir of tmpDirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  /**
+   * Lay out react-aria-components the way heroui reaches it: the "./Toast"
+   * subpath entry re-exports a private module (module-scope createContext),
+   * imports "client-only", and re-exports ToastQueue from a react-stately copy
+   * nested under react-aria-components.
+   */
+  async function setup(toastEntry?: string) {
+    const tmpDir = toSlash(
+      fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "vinext-optimize-subpath-"))),
+    );
+    tmpDirs.push(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "test-app", type: "module" }),
+    );
+    const racDir = `${tmpDir}/node_modules/react-aria-components`;
+    fs.mkdirSync(`${racDir}/dist/exports`, { recursive: true });
+    fs.mkdirSync(`${racDir}/dist/private`, { recursive: true });
+    const toastEntryPath = `${racDir}/dist/exports/Toast.mjs`;
+    fs.writeFileSync(
+      toastEntryPath,
+      toastEntry ??
+        [
+          `import {UNSTABLE_Toast as $t, UNSTABLE_ToastRegion as $r} from "../private/Toast.mjs";`,
+          `import "client-only";`,
+          `import {ToastQueue as $q$re_export$UNSTABLE_ToastQueue} from "react-stately/useToastState";`,
+          `export {$t as UNSTABLE_Toast, $r as UNSTABLE_ToastRegion, $q$re_export$UNSTABLE_ToastQueue as UNSTABLE_ToastQueue};`,
+        ].join("\n"),
+    );
+    const nestedStately = `${racDir}/node_modules/react-stately/dist/exports/useToastState.mjs?v=abc`;
+    const resolveCalls: Array<[string, string]> = [];
+    const resolve = async (source: string, importer: string) => {
+      resolveCalls.push([source, importer]);
+      if (source === "react-aria-components/Toast") return { id: `${toastEntryPath}?v=abc` };
+      if (source === "react-stately/useToastState" && importer === toastEntryPath) {
+        return { id: nestedStately };
+      }
+      if (source === "react-aria-components/External")
+        return { id: "rac-external", external: true };
+      return null;
+    };
+
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => tmpDir,
+    ) as Plugin;
+    await unwrapHook((plugin as any).buildStart)!.call(plugin);
+    const transform = unwrapHook(plugin.transform)!;
+    const call = async (envName: string, code: string, id: string) =>
+      await (transform as any).call(
+        { ...plugin, environment: { name: envName }, resolve },
+        code,
+        id,
+      );
+    return { call, racDir, nestedStately, resolveCalls };
+  }
+
+  const heroToastQueue =
+    "/app/node_modules/@heroui/react/dist/components/toast/toast-queue.js?v=abc";
+
+  it("optimizes react-aria-components subpaths by default", () => {
+    expect(SUBPATH_OPTIMIZE_PACKAGES).toContain("react-aria-components");
+  });
+
+  it("accepts dev ids with a ?v= query", () => {
+    const plugin = createOptimizeImportsPlugin(
+      () => undefined,
+      () => "/fake/root",
+    ) as Plugin;
+    const include = (plugin.transform as any).filter.id.include as RegExp;
+    expect(include.test("/app/node_modules/pkg/dist/index.js?v=1a2b3c")).toBe(true);
+    expect(include.test("/app/page.tsx")).toBe(true);
+    expect(include.test("/app/style.css?v=1a2b3c")).toBe(false);
+  });
+
+  it("rewrites a subpath import in RSC to the nested package the entry resolves", async () => {
+    const { call, nestedStately, resolveCalls, racDir } = await setup();
+    const result = await call(
+      "rsc",
+      `"use strict";\nimport { UNSTABLE_ToastQueue } from 'react-aria-components/Toast';\nnew UNSTABLE_ToastQueue();`,
+      heroToastQueue,
+    );
+
+    expect(result!.code).toContain(
+      `import { ToastQueue as UNSTABLE_ToastQueue } from ${JSON.stringify(nestedStately)};`,
+    );
+    expect(result!.code).not.toContain("react-aria-components/Toast");
+    // The subpath resolves from the importer; its package sources from the entry.
+    expect(resolveCalls).toEqual([
+      ["react-aria-components/Toast", heroToastQueue],
+      ["react-stately/useToastState", `${racDir}/dist/exports/Toast.mjs`],
+    ]);
+  });
+
+  it("rewrites names defined in a private module to its file", async () => {
+    const { call, racDir } = await setup();
+    const result = await call(
+      "rsc",
+      `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      "/app/page.tsx",
+    );
+    expect(result!.code).toContain(
+      `import { UNSTABLE_Toast } from ${JSON.stringify(`${racDir}/dist/private/Toast.mjs`)};`,
+    );
+  });
+
+  it("leaves subpath imports alone outside RSC", async () => {
+    const { call } = await setup();
+    const code = `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`;
+    expect(await call("ssr", code, heroToastQueue)).toBeNull();
+    expect(await call("client", code, heroToastQueue)).toBeNull();
+  });
+
+  it('skips "use client" importers in RSC', async () => {
+    const { call } = await setup();
+    const result = await call(
+      "rsc",
+      `"use client";\nimport { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+      "/app/node_modules/@heroui/react/dist/components/toast/toast.js?v=abc",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("does not follow re-exports out of a boundary subpath entry", async () => {
+    const { call } = await setup(
+      `"use client";\nexport { UNSTABLE_Toast } from "../private/Toast.mjs";`,
+    );
+    const result = await call(
+      "rsc",
+      `import { UNSTABLE_Toast } from "react-aria-components/Toast";`,
+      "/app/page.tsx",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("leaves the import unchanged when a source cannot be resolved", async () => {
+    const { call } = await setup();
+    // External subpath entry.
+    expect(
+      await call("rsc", `import { X } from "react-aria-components/External";`, "/app/page.tsx"),
+    ).toBeNull();
+    // Unknown name in the entry.
+    expect(
+      await call("rsc", `import { Missing } from "react-aria-components/Toast";`, "/app/page.tsx"),
+    ).toBeNull();
+    // Package source that does not resolve from the entry.
+    const { call: call2 } = await setup(
+      `export { ToastQueue as UNSTABLE_ToastQueue } from "react-stately/missing";`,
+    );
+    expect(
+      await call2(
+        "rsc",
+        `import { UNSTABLE_ToastQueue } from "react-aria-components/Toast";`,
+        "/app/page.tsx",
+      ),
+    ).toBeNull();
   });
 });

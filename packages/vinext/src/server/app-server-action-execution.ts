@@ -16,6 +16,8 @@ import {
   setCurrentForceDynamicFetchDefault,
 } from "vinext/shims/fetch-cache";
 import type { ReactFormState } from "react-dom/client";
+import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/shims/root-params";
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
@@ -65,6 +67,8 @@ import {
   isServerActionNotFoundError,
 } from "./server-action-not-found.js";
 import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-error-responses.js";
+import { hasDigest } from "./app-rsc-errors.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -83,10 +87,13 @@ type AppServerActionErrorReporter = (
   },
 ) => void;
 
-type AppServerActionDecoder = (body: FormData) => Promise<unknown>;
+/** React's `decodeAction()`; bound references resolve through `serverManifest`. */
+type AppServerActionDecoder = (body: FormData, serverManifest: object) => Promise<unknown>;
+/** React's `decodeFormState()`, which decodes the bound references again. */
 type AppServerActionFormStateDecoder = (
   actionResult: unknown,
   body: FormData,
+  serverManifest: object,
 ) => Promise<ReactFormState | undefined>;
 
 type ReadFormDataWithLimit = (request: Request, maxBytes: number) => Promise<FormData>;
@@ -222,6 +229,34 @@ type DecodeServerActionReplyOptions<TTemporaryReferences> = {
   temporaryReferences: TTemporaryReferences;
 };
 
+/**
+ * Run a server-reference load or decode outside every request scope.
+ *
+ * Server reference modules are imported on the first request that names them
+ * — `loadServerAction()` imports the action's module, and the decoders import
+ * any reference the body carries — and a dynamic `import()` carries
+ * AsyncLocalStorage into the module's top-level evaluation. Module-scope
+ * `cookies()`/`headers()` would then capture that first caller's request for
+ * every later caller in the isolate. Next.js evaluates action modules outside
+ * the request store, where those calls throw.
+ *
+ * The result is awaited inside the callback because `decodeReply()` returns a
+ * lazy thenable that only resolves (and imports) its references once awaited.
+ *
+ * The imports are shared with every later request that names the same modules,
+ * and the server-reference loader cannot see this request's execution context
+ * once it has been left, so the request is kept alive here until they settle.
+ * From here a request that starts a load cannot be told apart from one that
+ * joins it, so each keeps its own decode alive; it awaits that decode anyway.
+ */
+function loadOutsideRequestScopes<T>(load: () => T | PromiseLike<T>): Promise<T> {
+  const ctx = getRequestExecutionContext();
+  return shareIsolatePromise(
+    runOutsideRequestScopes(async () => await load()),
+    ctx,
+  );
+}
+
 export type HandleProgressiveServerActionRequestOptions = {
   actionId: string | null;
   allowedOrigins: string[];
@@ -230,19 +265,22 @@ export type HandleProgressiveServerActionRequestOptions = {
   cleanPathname: string;
   clearRequestContext: () => void;
   contentType: string;
+  /** plugin-rsc's server manifest, which resolves any export of a server-reference module. */
+  createServerManifest: () => object;
   decodeAction: AppServerActionDecoder;
   decodeFormState: AppServerActionFormStateDecoder;
   getAndClearPendingCookies: () => string[];
   getDraftModeCookieHeader: () => string | null | undefined;
   forwardAction?: (actionId: string) => Promise<Response | null>;
-  validateActionReferences?: (actionIds: readonly string[]) => boolean;
+  /** Whether these Server Actions belong to the current route. */
+  validateActionReferences: (actionIds: readonly string[]) => boolean;
   /**
    * Whether the posted-to route resolves to an App Router *page* (as opposed to
    * a route handler or no match). Multipart form POSTs to a page are always
    * server-action attempts in Next.js, so a body that decodes to no action must
    * surface as 404 action-not-found rather than rendering the page. Route
-   * handlers (which run *after* this dispatch in vinext) legitimately receive
-   * raw multipart POSTs, so they must still fall through. See issue #1340.
+   * handlers and Pages routes never reach this dispatch (#3886); unmatched
+   * routes fall through. See issue #1340.
    */
   hasPageRoute: boolean;
   maxActionBodySize: number;
@@ -254,69 +292,47 @@ export type HandleProgressiveServerActionRequestOptions = {
   setHeadersAccessPhase: (phase: HeadersAccessPhase) => HeadersAccessPhase;
 };
 
-function parseBoundProgressiveActionReference(
-  body: FormData,
-  referencePrefix: string,
-): { actionId: string; referencedActionIds: string[] } | null {
-  const fieldPrefix = `$ACTION_${referencePrefix}:`;
-  const chunks = new Map<string, unknown>();
-  for (const [key, value] of body) {
-    if (!key.startsWith(fieldPrefix) || typeof value !== "string") continue;
-    const chunkId = key.slice(fieldPrefix.length);
-    if (chunks.has(chunkId)) return null;
-    try {
-      chunks.set(chunkId, JSON.parse(value));
-    } catch {
-      return null;
-    }
-  }
-
-  const rootMetadata = chunks.get("0");
-  if (
-    typeof rootMetadata !== "object" ||
-    rootMetadata === null ||
-    typeof Reflect.get(rootMetadata, "id") !== "string"
-  ) {
+/**
+ * Read the action a bound `$ACTION_REF_` submission names, which Next.js checks
+ * before decoding (`areAllActionIdsValid()`). The bound arguments are left to
+ * React, which resolves their references through the route-scoped manifest.
+ */
+function readBoundProgressiveActionId(body: FormData, referencePrefix: string): string | null {
+  const descriptors = body.getAll(`$ACTION_${referencePrefix}:0`);
+  if (descriptors.length !== 1 || typeof descriptors[0] !== "string") return null;
+  let descriptor: unknown;
+  try {
+    descriptor = JSON.parse(descriptors[0]);
+  } catch {
     return null;
   }
+  const actionId =
+    typeof descriptor === "object" && descriptor !== null
+      ? Reflect.get(descriptor, "id")
+      : undefined;
+  return typeof actionId === "string" ? actionId : null;
+}
 
-  const actionId = Reflect.get(rootMetadata, "id");
-  const referencedActionIds = new Set<string>([actionId]);
-  for (const chunk of chunks.values()) {
-    const values: unknown[] = [chunk];
-    while (values.length > 0) {
-      const value = values.pop();
-      if (typeof value === "string") {
-        if (!value.startsWith("$h")) continue;
-        const [encodedChunkId, ...path] = value.slice(2).split(":");
-        const chunkId = Number.parseInt(encodedChunkId, 16);
-        if (!Number.isSafeInteger(chunkId) || chunkId < 0) return null;
-        let metadata = chunks.get(String(chunkId));
-        for (const segment of path) {
-          if (
-            typeof metadata !== "object" ||
-            metadata === null ||
-            !Object.hasOwn(metadata, segment)
-          ) {
-            return null;
-          }
-          metadata = Reflect.get(metadata, segment);
-        }
-        if (
-          typeof metadata !== "object" ||
-          metadata === null ||
-          typeof Reflect.get(metadata, "id") !== "string"
-        ) {
-          return null;
-        }
-        referencedActionIds.add(Reflect.get(metadata, "id"));
-      } else if (typeof value === "object" && value !== null) {
-        values.push(...Object.values(value));
+/**
+ * Scope the manifest React resolves server references through to the current
+ * route's Server Actions, as Next.js scopes its server module map to the
+ * current page. React then fails to resolve any other id wherever a payload
+ * carries it, so that module never loads. A denied lookup throws because React
+ * retries a missing `module#a#b` as module `module#a` with export `b`, which
+ * would reach a non-action export of an owned module.
+ */
+function createRouteServerManifest(
+  manifest: object,
+  validateActionReferences: (actionIds: readonly string[]) => boolean,
+): object {
+  return new Proxy(manifest, {
+    get(target, id, receiver) {
+      if (typeof id === "string" && !validateActionReferences([id])) {
+        throw new Error(`Server reference "${id}" is not a Server Action of this route.`);
       }
-    }
-  }
-
-  return { actionId, referencedActionIds: [...referencedActionIds] };
+      return Reflect.get(target, id, receiver);
+    },
+  });
 }
 
 export type HandleServerActionRscRequestOptions<
@@ -349,8 +365,15 @@ export type HandleServerActionRscRequestOptions<
     overrides?: AppRenderErrorContextOverrides,
   ) => (error: unknown) => unknown;
   createTemporaryReferenceSet: () => TTemporaryReferences;
+  /** plugin-rsc's server manifest, which resolves any export of a server-reference module. */
+  createServerManifest: () => object;
+  /**
+   * React's `decodeReply()`. Every server reference in the arguments resolves
+   * through `serverManifest`, so the manifest bounds which functions can decode.
+   */
   decodeReply: (
     body: string | FormData,
+    serverManifest: object,
     options: DecodeServerActionReplyOptions<TTemporaryReferences>,
   ) => Promise<unknown[]> | unknown[];
   draftModeSecret: string;
@@ -368,6 +391,12 @@ export type HandleServerActionRscRequestOptions<
   isEdgeRuntime?: boolean;
   isRscRequest: boolean;
   loadServerAction: (actionId: string) => Promise<unknown>;
+  /**
+   * Whether these Server Actions belong to the current route. Next.js resolves
+   * argument references through the current page's server module map, so an
+   * action owned by another route must not decode into a callable function.
+   */
+  validateActionReferences: (actionIds: readonly string[]) => boolean;
   /**
    * Match an action redirect target. Must use *request* route identity — the
    * raw, undecoded pathname — because the target is rendered as if the client
@@ -1100,6 +1129,30 @@ function shouldUseForwardedActionRedirectStatus<TRoute extends AppServerActionRo
   return currentRuntime !== targetRuntime;
 }
 
+/**
+ * A failed fetch action's result, as Next.js sends it: a rejected promise.
+ * React's Flight error channel reports the rejection through the render's
+ * onError and gives the client error its digest, where an Error value would
+ * reach the client without one.
+ */
+function createRejectedActionResult(error: unknown): Promise<never> {
+  const result = Promise.reject(error);
+  // The Flight render reads the rejection later; mark it handled now.
+  result.catch(() => {});
+  return result;
+}
+
+/**
+ * In development the render's onError logs a rejected action result unless it
+ * already has a digest; log those here, so each failure is logged once. As in
+ * Next.js, a thrown string is not logged in development.
+ */
+function logRejectedActionResult(error: unknown): void {
+  if (process.env.NODE_ENV === "production" || hasDigest(error)) {
+    console.error("[vinext] Server action error:", error);
+  }
+}
+
 function getActionHttpFallbackStatus(error: unknown): number | null {
   const digest = getNextErrorDigest(error);
   if (!digest) return null;
@@ -1223,20 +1276,12 @@ export async function handleProgressiveServerActionRequest(
       if (key.startsWith("$ACTION_ID_") || key.startsWith("$ACTION_REF_")) actionKey = key;
     }
     let directActionId: string | null = null;
-    let referencedActionIds: string[] = [];
     let invalidDirectActionReference = false;
     if (actionKey?.startsWith("$ACTION_ID_")) {
       directActionId = actionKey.slice("$ACTION_ID_".length);
-      referencedActionIds = [directActionId];
     } else if (actionKey?.startsWith("$ACTION_REF_")) {
-      const referencePrefix = actionKey.slice("$ACTION_REF_".length);
-      const reference = parseBoundProgressiveActionReference(body, referencePrefix);
-      if (reference) {
-        directActionId = reference.actionId;
-        referencedActionIds = reference.referencedActionIds;
-      } else {
-        invalidDirectActionReference = true;
-      }
+      directActionId = readBoundProgressiveActionId(body, actionKey.slice("$ACTION_REF_".length));
+      invalidDirectActionReference = directActionId === null;
     }
     if (invalidDirectActionReference) {
       return createActionNotFoundResponse(null, {
@@ -1244,28 +1289,28 @@ export async function handleProgressiveServerActionRequest(
         getAndClearPendingCookies: options.getAndClearPendingCookies,
       });
     }
-    if (directActionId && options.forwardAction) {
+    if (directActionId !== null && options.forwardAction) {
       const forwardResponse = await options.forwardAction(directActionId);
       if (forwardResponse) return forwardResponse;
     }
-    if (
-      options.validateActionReferences &&
-      !options.validateActionReferences(referencedActionIds)
-    ) {
+    if (directActionId !== null && !options.validateActionReferences([directActionId])) {
       return createActionNotFoundResponse(directActionId, {
         clearRequestContext: options.clearRequestContext,
         getAndClearPendingCookies: options.getAndClearPendingCookies,
       });
     }
 
-    const action = await options.decodeAction(body);
+    const serverManifest = createRouteServerManifest(
+      options.createServerManifest(),
+      options.validateActionReferences,
+    );
+    const action = await loadOutsideRequestScopes(() => options.decodeAction(body, serverManifest));
     if (!isAppServerActionFunction(action)) {
       // A multipart POST to a *page* is always a server-action attempt; a body
       // that decodes to no action means the referenced action doesn't exist
       // (e.g. the build has no server actions). Mirror Next.js' 404 +
-      // action-not-found rather than rendering the page. Route handlers run
-      // after this dispatch and legitimately receive raw multipart POSTs, so
-      // fall through for them (and for unmatched routes). See issue #1340.
+      // action-not-found rather than rendering the page. Unmatched routes
+      // fall through. See issue #1340.
       if (options.hasPageRoute) {
         return createActionNotFoundResponse(null, {
           clearRequestContext: options.clearRequestContext,
@@ -1299,6 +1344,7 @@ export async function handleProgressiveServerActionRequest(
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionError: unknown = undefined;
     let actionFailed = false;
+    let actionFailedWithError = false;
     let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
@@ -1315,9 +1361,9 @@ export async function handleProgressiveServerActionRequest(
       if (!actionRedirect) {
         actionError = error;
         actionFailed = true;
-        const isControlFlow =
-          getActionHttpFallbackStatus(error) !== null || isServerActionNotFoundError(error, null);
-        if (!isControlFlow) {
+        actionFailedWithError =
+          getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
+        if (actionFailedWithError) {
           console.error("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
@@ -1366,6 +1412,25 @@ export async function handleProgressiveServerActionRequest(
         actionPendingCookies.length > 0 || Boolean(actionDraftCookie),
       );
 
+      if (actionFailedWithError) {
+        // Next.js rethrows the error of an action submitted without
+        // JavaScript, so the server answers a plain 500 instead of rendering
+        // an error boundary. Middleware headers and the action's cookies still
+        // reach the response.
+        options.clearRequestContext();
+        const headers = new Headers();
+        mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
+        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
+        if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
+        return internalServerErrorResponse(
+          process.env.NODE_ENV === "production"
+            ? undefined
+            : "Server action failed: " + getServerActionFailureMessage(actionError),
+          { headers },
+        );
+      }
+
       if (actionFailed) {
         return {
           kind: "form-state",
@@ -1378,7 +1443,9 @@ export async function handleProgressiveServerActionRequest(
         };
       }
 
-      const formState = await options.decodeFormState(actionResult, body);
+      const formState = await loadOutsideRequestScopes(() =>
+        options.decodeFormState(actionResult, body, serverManifest),
+      );
       return {
         kind: "form-state",
         formState: formState ?? null,
@@ -1461,7 +1528,7 @@ export async function handleProgressiveServerActionRequest(
  * with status 500 carrying the rejected action result, so the nearest client
  * error boundary catches it (see action-handler.ts, the `isFetchAction` branch
  * of the generic error path). vinext mirrors that by rendering a Flight stream
- * with `returnValue: { ok: false }` and no page root (the action never ran, so
+ * with a rejected `returnValue: { ok: false }` and no page root (the action never ran, so
  * nothing was revalidated and the page render is skipped). A bare 413 plain
  * response would bypass the boundary and surface the wrong status/content-type.
  */
@@ -1481,29 +1548,14 @@ async function renderFetchActionBodyExceededResponse<
   >,
 ): Promise<Response> {
   const error = createBodyExceededError(options.maxActionBodySizeLabel);
-  console.error("[vinext] Server action error:", error);
-  options.reportRequestError(
-    error,
-    {
-      path: options.cleanPathname,
-      method: options.request.method,
-      headers: Object.fromEntries(options.request.headers.entries()),
-    },
-    {
-      routerKind: "App Router",
-      routePath: options.currentRouteMatch?.route.pattern ?? options.cleanPathname,
-      routeType: "action",
-      renderSource: "react-server-components-payload",
-      revalidateReason: undefined,
-    },
-  );
+  logRejectedActionResult(error);
   // Discard any side effects accumulated before the limit was hit.
   getAndClearActionRevalidationKind();
   options.getAndClearPendingCookies();
 
   const returnValue: AppServerActionReturnValue = {
     ok: false,
-    data: options.sanitizeErrorForClient(error),
+    data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
   };
   const temporaryReferences = options.createTemporaryReferenceSet();
   const onRenderError = options.createRscOnErrorHandler(
@@ -1550,6 +1602,8 @@ export async function handleServerActionRscRequest<
   if (options.request.method.toUpperCase() !== "POST" || !options.actionId) {
     return null;
   }
+  // Narrowed copy for the loader closures below.
+  const actionId = options.actionId;
 
   const csrfResponse = validateCsrfOrigin(options.request, options.allowedOrigins);
   if (csrfResponse) return csrfResponse;
@@ -1567,7 +1621,7 @@ export async function handleServerActionRscRequest<
     if (options.contentType.startsWith("multipart/form-data")) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1614,7 +1668,7 @@ export async function handleServerActionRscRequest<
     if (action === undefined) {
       let loadedAction: unknown;
       try {
-        loadedAction = await options.loadServerAction(options.actionId);
+        loadedAction = await loadOutsideRequestScopes(() => options.loadServerAction(actionId));
       } catch (error) {
         if (isServerActionNotFoundError(error, options.actionId)) {
           return createActionNotFoundResponse(options.actionId, {
@@ -1639,8 +1693,14 @@ export async function handleServerActionRscRequest<
       action = loadedAction;
     }
 
+    const serverManifest = createRouteServerManifest(
+      options.createServerManifest(),
+      options.validateActionReferences,
+    );
     const temporaryReferences = options.createTemporaryReferenceSet();
-    const args = await options.decodeReply(body, { temporaryReferences });
+    const args = await loadOutsideRequestScopes(() =>
+      options.decodeReply(body, serverManifest, { temporaryReferences }),
+    );
     let returnValue: AppServerActionReturnValue;
     let actionRedirect: AppServerActionRedirect | null = null;
     let actionStatus = 200;
@@ -1669,8 +1729,11 @@ export async function handleServerActionRscRequest<
             returnValue = { ok: false, data: error };
           } else {
             actionStatus = 500;
-            console.error("[vinext] Server action error:", error);
-            returnValue = { ok: false, data: options.sanitizeErrorForClient(error) };
+            logRejectedActionResult(error);
+            returnValue = {
+              ok: false,
+              data: createRejectedActionResult(options.sanitizeErrorForClient(error)),
+            };
           }
         }
       }

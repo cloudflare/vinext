@@ -7,9 +7,15 @@ import {
 import type { AppRscRequestHandler } from "../packages/vinext/src/server/app-rsc-handler.js";
 import { APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION } from "../packages/vinext/src/server/app-worker-stages.js";
 import {
+  markImageOptimizationSignal,
+  readImageOptimizationSignal,
+  serializeImageOptimizationSignalForTransport,
+} from "../packages/vinext/src/server/image-optimization.js";
+import {
   createStaticFileSignal,
   isStaticFileSignal,
   readStaticFileSignal,
+  readStaticFileSignalRequestHeaders,
   serializeStaticFileSignalForTransport,
 } from "../packages/vinext/src/server/static-file-signal.js";
 
@@ -199,6 +205,7 @@ describe("App request-stage dispatch", () => {
           resolvedRoutePathname: "/docs/upload",
         },
         draftModeCookie: null,
+        headRequest: false,
         kind: "app-full-request",
         middlewareCookieOverlay: null,
         prerenderDiscovery: true,
@@ -217,6 +224,93 @@ describe("App request-stage dispatch", () => {
     expect(isStaticFileSignal(response)).toBe(true);
     expect(readStaticFileSignal(response)).toBe(encodeURIComponent("/public/logo.svg"));
     expect(response.headers.has("x-vinext-stage-static-file")).toBe(false);
+  });
+
+  it("dispatches a full HEAD request as GET so a HEAD transport keeps the signal body", async () => {
+    const request = new Request("https://example.test/docs/logo.svg", {
+      method: "HEAD",
+      headers: { Cookie: "__prerender_bypass=draft-secret" },
+    });
+    const cf = { country: "NZ" };
+    Object.defineProperty(request, "cf", { value: cf, enumerable: true, configurable: true });
+    const dispatchResponseStage = vi.fn(async (stageRequest: Request, props) => {
+      if (props.kind !== "app-full-request") throw new Error("unexpected stage kind");
+      const response = serializeStaticFileSignalForTransport(
+        createStaticFileSignal(
+          "/logo.svg",
+          { headers: null, status: 200 },
+          new Headers({ "if-none-match": '"v1"' }),
+        ),
+        props.staticFileSignalToken,
+      );
+      // A transport with HTTP HEAD semantics drops the response body.
+      return stageRequest.method === "HEAD"
+        ? new Response(null, { headers: response.headers, status: response.status })
+        : response;
+    });
+
+    const response = await dispatchAppRequestStage(request, null, dispatchResponseStage, {
+      ...createOptions(),
+    });
+
+    const [stageRequest, props] = dispatchResponseStage.mock.calls[0];
+    expect(stageRequest.method).toBe("GET");
+    expect(Reflect.get(stageRequest, "cf")).toBe(cf);
+    expect(stageRequest.headers.get("cookie")).toBe("__prerender_bypass=draft-secret");
+    expect(props).toMatchObject({ headRequest: true, kind: "app-full-request" });
+    expect(readStaticFileSignal(response)).toBe(encodeURIComponent("/logo.svg"));
+    expect(readStaticFileSignalRequestHeaders(response)?.get("if-none-match")).toBe('"v1"');
+  });
+
+  it("restores an image optimization signal from a full HEAD request", async () => {
+    const request = new Request("https://example.test/docs/_next/image?url=%2Fa.png&w=64&q=75", {
+      method: "HEAD",
+      headers: { Cookie: "__prerender_bypass=draft-secret" },
+    });
+    const dispatchResponseStage = vi.fn(async (_request: Request, props) => {
+      if (props.kind !== "app-full-request") throw new Error("unexpected stage kind");
+      const middlewareHeaders = new Headers({ "x-mw": "1" });
+      middlewareHeaders.append("set-cookie", "a=1");
+      middlewareHeaders.append("set-cookie", "b=2");
+      return serializeImageOptimizationSignalForTransport(
+        markImageOptimizationSignal(Response.redirect("https://example.test/a.png", 302), {
+          middlewareHeaders,
+          requestHeaders: new Headers({ accept: "image/avif" }),
+          search: "?url=%2Fa.png&w=64&q=75",
+        }),
+        props.staticFileSignalToken,
+      );
+    });
+
+    const response = await dispatchAppRequestStage(request, null, dispatchResponseStage, {
+      ...createOptions(),
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://example.test/a.png");
+    expect(response.headers.has("x-vinext-stage-image-optimization")).toBe(false);
+    const signal = readImageOptimizationSignal(response);
+    expect(signal?.search).toBe("?url=%2Fa.png&w=64&q=75");
+    expect(signal?.middlewareHeaders.get("x-mw")).toBe("1");
+    expect(signal?.middlewareHeaders.getSetCookie()).toEqual(["a=1", "b=2"]);
+    expect(signal?.requestHeaders?.get("accept")).toBe("image/avif");
+  });
+
+  it("keeps an application's image transport header inert", async () => {
+    const request = new Request("https://example.test/docs/upload", { method: "POST" });
+    const response = await dispatchAppRequestStage(
+      request,
+      null,
+      async () =>
+        new Response("app body", {
+          headers: { "x-vinext-stage-image-optimization": "forged:302" },
+        }),
+      createOptions(),
+    );
+
+    expect(readImageOptimizationSignal(response)).toBeNull();
+    expect(response.headers.has("x-vinext-stage-image-optimization")).toBe(false);
+    await expect(response.text()).resolves.toBe("app body");
   });
 
   it("requires the adapter-owned response-stage dispatcher", async () => {

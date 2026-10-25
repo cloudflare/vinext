@@ -37,7 +37,7 @@ import { injectPregeneratedConcretePaths } from "./inject-pregenerated-paths.js"
 import { rememberCurrentServerEntryImportMtime, startProdServer } from "../server/prod-server.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { PHASE_PRODUCTION_BUILD } from "vinext/shims/constants";
-import { resolveBuiltRscEntryPath } from "./server-entry.js";
+import { resolveBuiltPagesEntryPath, resolveBuiltRscEntryPath } from "./server-entry.js";
 import type { VinextRouteRootConfig } from "../config/prerender.js";
 import { registerPrerenderCloudflareLoader } from "./prerender-cloudflare-loader.js";
 
@@ -184,6 +184,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
     options.routeRootConfig?.rscOutDir ?? path.join("dist", "server"),
   );
   const rscBundlePath = options.rscBundlePath ?? resolveBuiltRscEntryPath(configuredRscServerDir);
+  const pagesBundlePath =
+    options.pagesBundlePath ??
+    resolveBuiltPagesEntryPath(
+      path.resolve(root, options.routeRootConfig?.ssrOutDir ?? path.join("dist", "server")),
+    );
   // The emitted entry may live below its server root (for example
   // entries/app.js). Keep adjacent build metadata rooted at the configured
   // RSC output while resolving an explicit external entry from its own folder.
@@ -206,7 +211,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // output aligned with the bundle it was generated from. (Spreading
   // `loadedConfig` above is required so this assignment does not mutate the
   // shared loaded config.)
-  const builtBuildId = readBuiltBuildId(manifestDir) ?? readBuiltBuildId(serverDir);
+  const builtBuildId =
+    readBuiltBuildId(manifestDir) ??
+    readBuiltBuildId(appDir ? serverDir : path.dirname(pagesBundlePath));
   if (builtBuildId) {
     config.buildId = builtBuildId;
   }
@@ -232,11 +239,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // routes from being served as stale static files forever (bypassing
   // revalidation) when KV pre-population is added in the future.
   //
-  // output: 'export' builds use dist/client/ (handled by static-export.ts which
-  // passes its own outDir — this path is only reached for non-export builds).
+  // output: 'export' builds write into the client output directory
+  // (dist/client/ unless clientOutDir moves it) alongside the client assets.
   const outDir =
     mode === "export"
-      ? path.join(root, "dist", "client")
+      ? path.resolve(root, options.routeRootConfig?.clientOutDir ?? path.join("dist", "client"))
       : path.join(manifestDir, "prerendered-routes");
 
   // For hybrid builds (both app/ and pages/ present), start a single shared
@@ -328,7 +335,7 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         ...(sharedProdServer
           ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
           : {
-              pagesBundlePath: options.pagesBundlePath ?? path.join(manifestDir, "entry.js"),
+              pagesBundlePath,
             }),
         onProgress: ({ total, route }) => {
           if (pagesTotal === 0) {

@@ -6,13 +6,18 @@ import {
   AppElementsWire,
 } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
+import { tagAppPageSlotError } from "../packages/vinext/src/server/app-page-execution.js";
+import {
+  DEFAULT_FORBIDDEN_MODULE,
+  DEFAULT_NOT_FOUND_MODULE,
+  DEFAULT_UNAUTHORIZED_MODULE,
+} from "../packages/vinext/src/server/default-http-access-fallback-modules.js";
 import { createClientReuseManifestHeaderFromVisibleAppState } from "../packages/vinext/src/server/app-browser-client-reuse-manifest.js";
 import type { AppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   buildPageElements,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
-import { probeAppPage } from "../packages/vinext/src/server/app-page-probe.js";
 import {
   resolveAppPageSegmentParamScopeKeys,
   resolveAppPageSegmentParams,
@@ -33,8 +38,10 @@ import {
 } from "../packages/vinext/src/server/cache-proof.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
-import { after, connection } from "../packages/vinext/src/shims/server.js";
+import { after } from "../packages/vinext/src/shims/server.js";
+import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
+import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import { markAppPprDynamicFallbackShellHtml } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
@@ -69,15 +76,22 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import { VINEXT_INTERCEPTION_ID_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
   finalizeWorkerCacheabilityResponse,
 } from "../packages/vinext/src/server/cacheability-request.js";
 import {
+  usePathname,
   useSearchParams,
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
   DefaultCdnCacheAdapter,
@@ -89,7 +103,7 @@ import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-
 // payload the stand-in Flight render last serialized, once it has read the
 // stream's first chunk, and keeps draining the rest.
 const ssrFlight = vi.hoisted(() => ({ payload: undefined as unknown }));
-vi.mock("virtual:vite-rsc/client-references", () => ({ default: {} }));
+vi.mock("virtual:vite-rsc/client-references", () => ({ default: {}, routeClientReferences: null }));
 vi.mock("virtual:vinext-pages-client-assets", () => ({ default: {} }));
 vi.mock("@vitejs/plugin-rsc/ssr", () => ({
   async createFromReadableStream(stream: ReadableStream<Uint8Array>) {
@@ -110,6 +124,12 @@ type TestRoute = {
   error?: { default?: unknown } | null;
   errors?: readonly ({ default?: unknown } | null | undefined)[];
   forbiddens?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentForbiddens?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentForbiddenTreePositions?: readonly number[];
+  segmentNotFounds?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentNotFoundTreePositions?: readonly number[];
+  segmentUnauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
+  segmentUnauthorizedTreePositions?: readonly number[];
   isDynamic: boolean;
   layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
   layoutTreePositions?: readonly number[];
@@ -206,6 +226,14 @@ function findPageElement(payload: unknown): React.ReactElement | null {
   return null;
 }
 
+function findMetadataOutletElements(payload: unknown): React.ReactElement[] {
+  return Object.entries(captureRecord(payload)).flatMap(([key, value]) =>
+    key.startsWith("__vinext_streaming_metadata_outlet:") && React.isValidElement(value)
+      ? [value]
+      : [],
+  );
+}
+
 async function renderReactNodeText(node: unknown): Promise<string> {
   if (node === null || node === undefined || typeof node === "boolean") return "";
   if (typeof node === "string" || typeof node === "number" || typeof node === "bigint") {
@@ -243,7 +271,13 @@ function renderPagePayloadToStream(payload: unknown): ReadableStream<Uint8Array>
       }
       didRender = true;
       const pageElement = findPageElement(payload);
-      const text = pageElement ? await renderReactNodeText(pageElement) : "";
+      // Flight renders every entry, so the head resolves during the render.
+      // Its outlet awaits generateMetadata() and generateViewport(). None of
+      // these tests expects a head error, so a rejection fails the render.
+      const [text] = await Promise.all([
+        pageElement ? renderReactNodeText(pageElement) : "",
+        ...findMetadataOutletElements(payload).map((outlet) => renderReactNodeText(outlet)),
+      ]);
       controller.enqueue(new TextEncoder().encode(text));
       controller.close();
     },
@@ -345,6 +379,7 @@ function createRoute(overrides: Partial<TestRoute> = {}): TestRoute {
 
 type CreateDispatchOptionsOverrides = {
   buildPageElement?: DispatchOptions["buildPageElement"];
+  renderWholeDocument?: DispatchOptions["renderWholeDocument"];
   bypassInterceptionContextCache?: DispatchOptions["bypassInterceptionContextCache"];
   cleanPathname?: string;
   clearRequestContext?: DispatchOptions["clearRequestContext"];
@@ -379,12 +414,12 @@ type CreateDispatchOptionsOverrides = {
   pprFallbackShell?: DispatchOptions["pprFallbackShell"];
   pprRuntime?: DispatchOptions["pprRuntime"];
   probeLayoutAt?: DispatchOptions["probeLayoutAt"];
-  probePage?: DispatchOptions["probePage"];
   renderedConcreteUrlPaths?: DispatchOptions["renderedConcreteUrlPaths"];
   renderMode?: DispatchOptions["renderMode"];
   renderToReadableStream?: DispatchOptions["renderToReadableStream"];
   request?: Request;
   revalidateSeconds?: number | null;
+  rootParams?: DispatchOptions["rootParams"];
   resolveRouteFetchCacheMode?: DispatchOptions["resolveRouteFetchCacheMode"];
   resolveRouteRevalidateSeconds?: DispatchOptions["resolveRouteRevalidateSeconds"];
   resolveRouteDynamicConfig?: DispatchOptions["resolveRouteDynamicConfig"];
@@ -460,6 +495,9 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     isProduction: overrides.isProduction ?? false,
     isRscRequest: overrides.isRscRequest ?? false,
     isrGet,
+    isrFallbackShellHtmlKey(pathname: string) {
+      return `shell:${pathname}`;
+    },
     isrHtmlKey(pathname: string) {
       return `html:${pathname}`;
     },
@@ -480,7 +518,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     pprFallbackShell: overrides.pprFallbackShell,
     pprRuntime: overrides.pprRuntime,
     probeLayoutAt: overrides.probeLayoutAt ?? createLayoutParamProbe(route, params, []),
-    probePage: overrides.probePage ?? (() => null),
     renderedConcreteUrlPaths: overrides.renderedConcreteUrlPaths,
     renderMode: overrides.renderMode,
     renderErrorBoundaryPage: vi.fn(async () => null),
@@ -488,6 +525,8 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
     renderToReadableStream,
     request: overrides.request ?? new Request("https://example.test/posts/hello"),
     revalidateSeconds: overrides.revalidateSeconds ?? null,
+    rootParams: overrides.rootParams,
+    renderWholeDocument: overrides.renderWholeDocument,
     resolveRouteFetchCacheMode: overrides.resolveRouteFetchCacheMode,
     resolveRouteRevalidateSeconds: overrides.resolveRouteRevalidateSeconds,
     resolveRouteDynamicConfig: overrides.resolveRouteDynamicConfig,
@@ -555,7 +594,7 @@ function createPprBlogDispatchOptions(overrides: CreateDispatchOptionsOverrides 
 
 function createPprBlogFallbackShellGetter(stale: boolean) {
   return vi.fn(async (key: string) => {
-    if (key === "html:/en/blog/[slug]") {
+    if (key === "shell:/en/blog/[slug]") {
       return buildISRCacheEntry(
         buildCachedAppPageValue("<html><head></head><body>Locale: en</body></html>"),
         stale,
@@ -666,7 +705,6 @@ function createLayoutParamProbe(
 describe("app page dispatch", () => {
   it("does not probe layouts below an active ancestor loading boundary", async () => {
     const probeLayoutAt = vi.fn((_layoutIndex: number) => null);
-    const probePage = vi.fn(() => null);
     const route = createRoute({
       layouts: [{}, {}, {}],
       layoutTreePositions: [0, 1, 2],
@@ -675,7 +713,7 @@ describe("app page dispatch", () => {
       loadingTreePositions: [1],
       routeSegments: ["parent", "slow"],
     });
-    const { options } = createDispatchOptions({ probeLayoutAt, probePage, route });
+    const { options } = createDispatchOptions({ probeLayoutAt, route });
 
     const response = await dispatchAppPage(options);
     await response.text();
@@ -683,8 +721,535 @@ describe("app page dispatch", () => {
     // The loading at position 1 catches descendants, but not a layout at the
     // same position. Probe the root and co-located layout only.
     expect(probeLayoutAt.mock.calls.map(([layoutIndex]) => layoutIndex)).toEqual([1, 0]);
-    expect(probePage).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { digest: "NEXT_HTTP_ERROR_FALLBACK;404", status: 404 },
+    { digest: "NEXT_HTTP_ERROR_FALLBACK;403", status: 403 },
+  ])(
+    "renders the root $status boundary inside a first-layer route group's root layout",
+    async ({ digest, status }) => {
+      // app/(site)/layout is the root layout and app/ holds the boundary file.
+      const rootBoundary = { default: () => null };
+      const layouts = [{ default: () => null }, { default: () => null }];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [1, 2],
+        routeSegments: ["(site)", "[slug]"],
+        ...(status === 404
+          ? { segmentNotFounds: [rootBoundary], segmentNotFoundTreePositions: [0] }
+          : { segmentForbiddens: [rootBoundary], segmentForbiddenTreePositions: [0] }),
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>fallback</html>", { status }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === 1) throw Object.assign(new Error(digest), { digest });
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(status);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        status,
+        expect.objectContaining({ boundaryModule: rootBoundary, layouts: layouts.slice(0, 1) }),
+        null,
+      );
+    },
+  );
+
+  it("renders a boundary file above a deeper root layout inside that layout", async () => {
+    // app/(site)/not-found.tsx sits above the app/(site)/[lang]/layout.tsx
+    // root layout, which holds the <html> element.
+    const siteNotFound = { default: () => null };
+    const layouts = [{ default: () => null }, { default: () => null }];
+    const route = createRoute({
+      layouts,
+      layoutTreePositions: [2, 3],
+      routeSegments: ["(site)", "[lang]", "shop", "[id]"],
+      segmentNotFounds: [siteNotFound],
+      segmentNotFoundTreePositions: [1],
+    });
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      probeLayoutAt(layoutIndex) {
+        if (layoutIndex === 1) {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        }
+        return null;
+      },
+      route,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ boundaryModule: siteNotFound, layouts: layouts.slice(0, 1) }),
+      null,
+    );
+  });
+  it.each([
+    {
+      // The root layout lives in a first-layer route group, where Next.js
+      // also puts its built-in not-found.
+      name: "a first-layer route group",
+      layoutTreePositions: [1, 2],
+      routeSegments: ["(site)", "[slug]"],
+      throwingLayoutIndex: 1,
+      renderedLayoutCount: 1,
+    },
+    {
+      name: "a first-layer route group below the root layout",
+      layoutTreePositions: [0, 1, 3],
+      routeSegments: ["(group)", "posts", "[slug]"],
+      throwingLayoutIndex: 2,
+      renderedLayoutCount: 2,
+    },
+    {
+      name: "the root segment",
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["posts", "[slug]"],
+      throwingLayoutIndex: 2,
+      renderedLayoutCount: 1,
+    },
+    {
+      // app/[lang]/layout is the root layout and holds the <html> element.
+      name: "a root layout below app/",
+      layoutTreePositions: [1, 2],
+      routeSegments: ["[lang]", "shop"],
+      throwingLayoutIndex: 1,
+      renderedLayoutCount: 1,
+    },
+  ])(
+    "renders the built-in not-found for a layout's notFound() in $name",
+    async ({ layoutTreePositions, renderedLayoutCount, routeSegments, throwingLayoutIndex }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({ layouts, layoutTreePositions, routeSegments });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === throwingLayoutIndex) {
+            throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+              digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+            });
+          }
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: DEFAULT_NOT_FOUND_MODULE,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  // https://github.com/cloudflare/vinext/issues/4092
+  it.each([
+    {
+      // [lang]/not-found.tsx sits in a segment without a layout, so it
+      // replaces the shop layout, but every layout keeps its metadata.
+      name: "a segment boundary without a layout",
+      boundaryTreePositions: [1],
+      layoutTreePositions: [0, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: false,
+    },
+    {
+      // A file beside the page wraps only the page.
+      name: "a boundary beside the page",
+      boundaryTreePositions: [1, 3],
+      layoutTreePositions: [0, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 2,
+      builtIn: false,
+    },
+    {
+      // The root file renders inside the first-layer route group's layout.
+      name: "the root boundary below a first-layer route group",
+      boundaryTreePositions: [0],
+      layoutTreePositions: [0, 1, 2],
+      routeSegments: ["(site)", "posts", "[slug]"],
+      renderedLayoutCount: 2,
+      builtIn: false,
+    },
+    {
+      // Without a file, Next.js renders its built-in not-found at the root.
+      name: "no boundary file",
+      boundaryTreePositions: [],
+      layoutTreePositions: [0, 1],
+      routeSegments: ["posts", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: true,
+    },
+    {
+      // app/[lang]/layout is the root layout and holds the <html> element.
+      name: "a root layout below app/",
+      boundaryTreePositions: [],
+      layoutTreePositions: [1, 2],
+      routeSegments: ["[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: true,
+    },
+    {
+      // app/(site)/not-found.tsx renders inside the app/(site)/[lang] root
+      // layout rather than above it.
+      name: "a boundary file above a deeper root layout",
+      boundaryTreePositions: [1],
+      layoutTreePositions: [2, 3],
+      routeSegments: ["(site)", "[lang]", "shop", "[slug]"],
+      renderedLayoutCount: 1,
+      builtIn: false,
+    },
+  ])(
+    "renders a page's notFound() in $name",
+    async ({
+      boundaryTreePositions,
+      builtIn,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+    }) => {
+      const boundaries = boundaryTreePositions.map(() => ({ default: () => null }));
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentNotFounds: boundaries,
+        segmentNotFoundTreePositions: boundaryTreePositions,
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: builtIn ? DEFAULT_NOT_FOUND_MODULE : boundaries[boundaries.length - 1],
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  // Next.js gives the root segment its built-in forbidden and unauthorized
+  // pages when the app has no file, as it does for not-found.
+  // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
+  const builtInAccessPages = [
+    { statusCode: 403, builtInModule: DEFAULT_FORBIDDEN_MODULE },
+    { statusCode: 401, builtInModule: DEFAULT_UNAUTHORIZED_MODULE },
+  ];
+  const builtInAccessPlacements = [
+    {
+      name: "the root segment",
+      layoutTreePositions: [0, 1],
+      routeSegments: ["posts", "[slug]"],
+      renderedLayoutCount: 1,
+    },
+    {
+      // The first-layer route group inherits the root segment's page.
+      name: "a first-layer route group below the root layout",
+      layoutTreePositions: [0, 1, 3],
+      routeSegments: ["(group)", "posts", "[slug]"],
+      renderedLayoutCount: 2,
+    },
+    {
+      // The root layout lives in a first-layer route group.
+      name: "a first-layer route group root layout",
+      layoutTreePositions: [1, 3],
+      routeSegments: ["(site)", "posts", "[slug]"],
+      renderedLayoutCount: 1,
+    },
+  ];
+
+  it.each(
+    builtInAccessPages.flatMap((page) =>
+      builtInAccessPlacements.map((placement) => ({ ...page, ...placement })),
+    ),
+  )(
+    "renders the built-in $statusCode page for a page's signal in $name",
+    async ({
+      builtInModule,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+      statusCode,
+    }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentForbiddens: [],
+        segmentForbiddenTreePositions: [],
+        segmentUnauthorizeds: [],
+        segmentUnauthorizedTreePositions: [],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>denied</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          throw Object.assign(new Error(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`), {
+            digest: `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`,
+          });
+        },
+        route,
+      });
+      // The "/" route's file can belong to another route group's subtree.
+      options.rootForbiddenModule = { default: () => null };
+      options.rootUnauthorizedModule = { default: () => null };
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining({
+          boundaryModule: builtInModule,
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it.each(
+    builtInAccessPages.flatMap((page) =>
+      builtInAccessPlacements.map((placement) => ({ ...page, ...placement })),
+    ),
+  )(
+    "renders the built-in $statusCode page for a layout's signal in $name",
+    async ({
+      builtInModule,
+      layoutTreePositions,
+      renderedLayoutCount,
+      routeSegments,
+      statusCode,
+    }) => {
+      const layouts = layoutTreePositions.map(() => ({ default: () => null }));
+      const throwingLayoutIndex = layouts.length - 1;
+      const route = createRoute({
+        layouts,
+        layoutTreePositions,
+        routeSegments,
+        segmentForbiddens: [],
+        segmentForbiddenTreePositions: [],
+        segmentUnauthorizeds: [],
+        segmentUnauthorizedTreePositions: [],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>denied</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        probeLayoutAt(layoutIndex) {
+          if (layoutIndex === throwingLayoutIndex) {
+            throw Object.assign(new Error(`NEXT_HTTP_ERROR_FALLBACK;${statusCode}`), {
+              digest: `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`,
+            });
+          }
+          return null;
+        },
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining({
+          boundaryModule: builtInModule,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it.each([
+    // A slot's notFound() is caught above the layout that renders the slot,
+    // as Next.js attaches the boundaries only to each segment's `children`.
+    { name: "a parallel slot", slotLayoutIndex: 1, boundaryIndex: 0, renderedLayoutCount: 1 },
+    // A slot beside the root layout keeps it: Next.js re-renders the root
+    // layout around the root segment's not-found.
+    {
+      name: "a root layout's parallel slot",
+      slotLayoutIndex: 0,
+      boundaryIndex: 0,
+      renderedLayoutCount: 1,
+    },
+    // The page's is caught by the route's deepest boundary.
+    { name: "the page", slotLayoutIndex: null, boundaryIndex: 1, renderedLayoutCount: 2 },
+  ])(
+    "renders the boundary catching $name's notFound() that rejected the shell",
+    async ({ boundaryIndex, renderedLayoutCount, slotLayoutIndex }) => {
+      const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+      const boundaries = [{ default: () => null }, { default: () => null }];
+      const layouts = [{ default: () => null }, { default: () => null }];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [0, 1],
+        routeSegments: ["dashboard"],
+        segmentNotFounds: boundaries,
+        segmentNotFoundTreePositions: [0, 1],
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      const { options } = createDispatchOptions({
+        cleanPathname: "/dashboard",
+        // The RSC render reports the error the slot or page threw, and SSR
+        // rejects its shell with the error decoded from the Flight digest.
+        renderToReadableStream(_element, { onError }) {
+          const thrown = Object.assign(new Error(digest), { digest });
+          onError(
+            slotLayoutIndex === null ? thrown : tagAppPageSlotError(thrown, slotLayoutIndex),
+            undefined,
+            undefined,
+          );
+          return createStream(["flight"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        params: {},
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        404,
+        expect.objectContaining({
+          boundaryModule: boundaries[boundaryIndex],
+          // The head takes the deepest boundary file's metadata, as Next.js's does.
+          ...(slotLayoutIndex === null ? {} : { headBoundaryModule: boundaries[1] }),
+          headLayouts: layouts,
+          layouts: layouts.slice(0, renderedLayoutCount),
+        }),
+        null,
+      );
+    },
+  );
+
+  it.each([
+    { statusCode: 403, kind: "forbidden", layout: "server" },
+    { statusCode: 401, kind: "unauthorized", layout: "server" },
+    { statusCode: 403, kind: "forbidden", layout: "client" },
+    { statusCode: 401, kind: "unauthorized", layout: "client" },
+  ] as const)(
+    "handles a root layout's parallel slot's $kind() under a $layout root layout",
+    async ({ kind, layout, statusCode }) => {
+      // Next.js re-renders a server root layout with a named slot around its
+      // not-found only, so the root segment's forbidden or unauthorized file
+      // can't catch the slot's signal, and the built-in page renders without
+      // the root layout. A client root layout re-renders around all three.
+      const digest = `NEXT_HTTP_ERROR_FALLBACK;${statusCode}`;
+      const boundaries = [{ default: () => null }];
+      const layouts = [
+        {
+          default:
+            layout === "client"
+              ? Object.assign(() => null, { $$typeof: Symbol.for("react.client.reference") })
+              : () => null,
+        },
+      ];
+      const route = createRoute({
+        layouts,
+        layoutTreePositions: [0],
+        routeSegments: ["dashboard"],
+        ...(kind === "forbidden"
+          ? { segmentForbiddens: boundaries, segmentForbiddenTreePositions: [0] }
+          : { segmentUnauthorizeds: boundaries, segmentUnauthorizedTreePositions: [0] }),
+      });
+      const renderHttpAccessFallbackPage = vi.fn(
+        async () => new Response("<html>fallback</html>", { status: statusCode }),
+      );
+      const { options } = createDispatchOptions({
+        cleanPathname: "/dashboard",
+        renderToReadableStream(_element, { onError }) {
+          onError(
+            tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 0),
+            undefined,
+            undefined,
+          );
+          return createStream(["flight"]);
+        },
+        loadSsrHandler: async () => ({
+          async handleSsr() {
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        params: {},
+        route,
+      });
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+      const response = await dispatchAppPage(options);
+
+      expect(response.status).toBe(statusCode);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+        statusCode,
+        expect.objectContaining(
+          layout === "server"
+            ? {
+                boundaryModule:
+                  kind === "forbidden" ? DEFAULT_FORBIDDEN_MODULE : DEFAULT_UNAUTHORIZED_MODULE,
+                layouts: [],
+              }
+            : { boundaryModule: boundaries[0], layouts },
+        ),
+        null,
+      );
+    },
+  );
 
   it("disables streaming metadata while producing prerendered HTML", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
@@ -722,49 +1287,72 @@ describe("app page dispatch", () => {
     });
   });
 
-  it("does not run a speculative connection() page probe for HTML renders", async () => {
-    const probePage = vi.fn(async () => {
-      await connection();
-    });
-    const { options } = createDispatchOptions({ probePage });
-
-    const response = await Promise.race([
-      dispatchAppPage(options),
-      new Promise<never>((_, reject) => {
-        setTimeout(() => reject(new Error("dispatch timed out")), 250);
-      }),
-    ]);
-
-    expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
-  });
-
+  // Only a render that can never be stored may skip its layouts in a
+  // loading-shell prefetch without a loading boundary (buildAppPageElements).
   it.each([
-    ["force-dynamic", { dynamicConfig: "force-dynamic" as const }],
-    [
-      "draft mode",
-      {
-        request: new Request("https://example.test/posts/hello", {
-          headers: { Cookie: "__prerender_bypass=draft-secret" },
+    { name: "a production static route", overrides: { isProduction: true }, expected: false },
+    {
+      name: "a PPR fallback shell",
+      overrides: {
+        isProduction: true,
+        dynamicConfig: "force-dynamic" as const,
+        pprFallbackShell: { fallbackParamNames: ["slug"], routePattern: "/posts/[slug]" },
+      },
+      expected: false,
+    },
+    {
+      name: "a dynamic route without generateStaticParams",
+      overrides: { isProduction: true, route: createRoute({ isDynamic: true }) },
+      expected: true,
+    },
+    { name: "dev", overrides: { isProduction: false }, expected: true },
+    {
+      name: "a force-dynamic route",
+      overrides: { isProduction: true, dynamicConfig: "force-dynamic" as const },
+      expected: true,
+    },
+    {
+      name: "a draft-mode render",
+      overrides: {
+        isProduction: true,
+        request: new Request("https://example.com/posts/hello", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
         }),
       },
-    ],
-    ["progressive actions", { isProgressiveActionRender: true }],
-    ["revalidate zero", { revalidateSeconds: 0 }],
-  ])("does not probe queryless production HTML for %s", async (_name, overrides) => {
-    const probePage = vi.fn(() => null);
+      expected: true,
+    },
+    // Next.js renders layouts for every production prefetch with Cache
+    // Components (isRoutePPREnabled in walkTreeWithFlightRouterState()).
+    {
+      name: "a Cache Components draft-mode render",
+      overrides: {
+        isProduction: true,
+        pprRuntime: appPagePprRuntime,
+        request: new Request("https://example.com/posts/hello", {
+          headers: { cookie: "__prerender_bypass=draft-secret" },
+        }),
+      },
+      expected: false,
+    },
+    {
+      name: "a Cache Components dev render",
+      overrides: { isProduction: false, pprRuntime: appPagePprRuntime },
+      expected: true,
+    },
+  ])("marks $name as uncacheable: $expected", async ({ overrides, expected }) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
     const { options } = createDispatchOptions({
-      isProduction: true,
-      probePage,
-      revalidateSeconds: 60,
       ...overrides,
+      buildPageElement,
+      revalidateSeconds: 60,
     });
 
     const response = await dispatchAppPage(options);
+    await response.text();
 
-    expect(probePage).not.toHaveBeenCalled();
-    await expect(response.text()).resolves.toBe("<html>page</html>");
+    expect(buildPageElement.mock.calls[0]?.[5]?.isUncacheableRender).toBe(expected);
   });
 
   afterEach(() => {
@@ -778,9 +1366,6 @@ describe("app page dispatch", () => {
   });
 
   it("serves cached production HTML instead of revalidating params or rendering", async () => {
-    const probePage = vi.fn(() => {
-      throw new Error("cache hit must not execute page code");
-    });
     const { options } = createDispatchOptions({
       async buildPageElement() {
         throw new Error("cache hit should not render the page");
@@ -790,7 +1375,6 @@ describe("app page dispatch", () => {
       },
       isProduction: true,
       isrGet: vi.fn(async () => buildISRCacheEntry(buildCachedAppPageValue("<html>cached</html>"))),
-      probePage,
       revalidateSeconds: 60,
       route: createRoute({ isDynamic: true, params: ["slug"] }),
     });
@@ -798,7 +1382,6 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(response.status).toBe(200);
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached</html>");
   });
@@ -934,11 +1517,44 @@ describe("app page dispatch", () => {
     expect(ensureRouteLoaded).not.toHaveBeenCalled();
   });
 
+  it("bounds a redirect from a generated-param miss by the route's dynamic stale time (#3745)", async () => {
+    // A not-found boundary that calls redirect() answers an RSC request with
+    // a streamed redirect, which a prefetch may replay.
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () =>
+        new Response("flight", {
+          headers: { [VINEXT_RSC_REDIRECT_HEADER]: "/login" },
+        }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw new Error("unknown static params should not render the page");
+      },
+      async generateStaticParams() {
+        return [{ slug: "known" }];
+      },
+      isProduction: true,
+      isRscRequest: true,
+      revalidateSeconds: 0,
+      route: createRoute({ isDynamic: true, params: ["slug"] }),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage({
+      ...options,
+      dynamicParamsConfig: false,
+      dynamicStaleTimeSeconds: 45,
+    });
+
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalled();
+    expect(response.headers.get(VINEXT_RSC_REDIRECT_HEADER)).toBe("/login");
+    expect(response.headers.get(VINEXT_DYNAMIC_STALE_TIME_HEADER)).toBe("45");
+  });
+
   it("treats unproofed cached production HTML as a miss for query-bearing requests", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached empty query</html>")),
     );
-    const probePage = vi.fn(() => null);
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
@@ -954,7 +1570,6 @@ describe("app page dispatch", () => {
           });
         },
       }),
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -962,7 +1577,6 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBeNull();
     expect(response.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
@@ -971,7 +1585,6 @@ describe("app page dispatch", () => {
   });
 
   it("renders query-bearing HTML as a cache candidate and stores it when searchParams is unread", async () => {
-    const probePage = vi.fn(() => null);
     const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
     const ssrOptions: { isCacheCandidate?: boolean }[] = [];
     const waitUntilPromises: Promise<unknown>[] = [];
@@ -989,7 +1602,6 @@ describe("app page dispatch", () => {
           return createStream(["<html>page</html>"]);
         },
       }),
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("utm_source=google"),
     });
@@ -1001,7 +1613,6 @@ describe("app page dispatch", () => {
     // SSR keeps the query out of the output unless the render turns dynamic,
     // so a candidate miss reports MISS with or without a query.
     expect(ssrOptions).toEqual([{ isCacheCandidate: true }]);
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
     await expect(response.text()).resolves.toBe("<html>page</html>");
@@ -1466,13 +2077,6 @@ describe("app page dispatch", () => {
         return createStream([`<html>${renderedText}</html>`]);
       },
     });
-    const probePage = vi.fn((searchParams: URLSearchParams) =>
-      probeAppPage({
-        asyncRouteParams: makeThenableParams({}),
-        pageComponent: Page,
-        searchParams,
-      }),
-    );
 
     async function request(searchParams: URLSearchParams): Promise<{
       response: Response;
@@ -1485,7 +2089,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage: () => probePage(searchParams),
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1503,13 +2106,11 @@ describe("app page dispatch", () => {
     expect(queryless.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(queryless.text).toBe("<html>empty</html>");
     expect(cache.has("html:/query-proof")).toBe(false);
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(1);
 
     const withQuery = await request(new URLSearchParams({ q: "hello" }));
     expect(withQuery.response.headers.get("x-vinext-cache")).not.toBe("HIT");
     expect(withQuery.text).toBe("<html>hello</html>");
-    expect(probePage).not.toHaveBeenCalled();
     expect(pageExecutions).toBe(2);
   });
 
@@ -1588,7 +2189,6 @@ describe("app page dispatch", () => {
           return createStream([`<html>${renderedText}</html>`]);
         },
       });
-      const probePage = vi.fn(() => null);
 
       async function request(searchParams: URLSearchParams): Promise<Response> {
         const { options } = createDispatchOptions({
@@ -1598,7 +2198,6 @@ describe("app page dispatch", () => {
           isrGet,
           isrSet,
           loadSsrHandler,
-          probePage,
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1615,7 +2214,6 @@ describe("app page dispatch", () => {
       const queryless = await request(new URLSearchParams());
       expect(queryless.headers.get("x-vinext-cache")).not.toBe("HIT");
       expect(cache.has("html:/head-proof")).toBe(false);
-      expect(probePage).not.toHaveBeenCalled();
 
       const withQuery = await request(new URLSearchParams({ q: "hello" }));
       expect(withQuery.headers.get("x-vinext-cache")).not.toBe("HIT");
@@ -1714,9 +2312,6 @@ describe("app page dispatch", () => {
           isRscRequest: true,
           isrGet,
           isrSet,
-          probePage() {
-            return null;
-          },
           renderToReadableStream: renderPagePayloadToStream,
           revalidateSeconds: 60,
           route,
@@ -1739,24 +2334,20 @@ describe("app page dispatch", () => {
     },
   );
 
-  it("preserves deferred metadata dynamic usage across a concurrent layout probe", async () => {
-    let releaseMetadata!: () => void;
-    const metadataGate = new Promise<void>((resolve) => {
-      releaseMetadata = resolve;
-    });
-    let metadataObserved!: () => void;
-    const metadataObservedPromise = new Promise<void>((resolve) => {
-      metadataObserved = resolve;
-    });
+  it("keeps metadata dynamic usage from the render after a layout probe", async () => {
+    // generateMetadata() runs inside the render, after the layout probe's
+    // isolated dynamic scope has closed, so its searchParams read reaches the
+    // render's own dynamic usage.
+    let metadataStarted = false;
+    let metadataStartedDuringProbe: boolean | undefined;
     const layoutModule = {
       default: ({ children }: { children?: React.ReactNode }) => children ?? null,
     };
     const pageModule = {
       default: () => React.createElement("h1", null, "metadata body"),
       async generateMetadata(props: { searchParams: Promise<Record<string, unknown>> }) {
-        await metadataGate;
+        metadataStarted = true;
         await props.searchParams;
-        metadataObserved();
         return { title: "deferred metadata" };
       },
     };
@@ -1822,11 +2413,7 @@ describe("app page dispatch", () => {
       isrGet,
       isrSet,
       async probeLayoutAt() {
-        releaseMetadata();
-        await metadataObservedPromise;
-        return null;
-      },
-      probePage() {
+        metadataStartedDuringProbe = metadataStarted;
         return null;
       },
       renderToReadableStream: renderPagePayloadToStream,
@@ -1840,6 +2427,8 @@ describe("app page dispatch", () => {
     await response.text();
     await Promise.all(waitUntilPromises);
 
+    expect(metadataStartedDuringProbe).toBe(false);
+    expect(metadataStarted).toBe(true);
     expect(response.headers.get("cache-control")).toContain("no-store");
     expect(cache.has("rsc:/deferred-metadata-proof")).toBe(false);
   });
@@ -1911,9 +2500,6 @@ describe("app page dispatch", () => {
           });
         },
         params: {},
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -1951,15 +2537,9 @@ describe("app page dispatch", () => {
         ),
       ),
     );
-    const probePage = vi.fn(() => {
-      const unusedCommentOnlySearchParams = "searchParams";
-      expect(unusedCommentOnlySearchParams).toBe("searchParams");
-      return null;
-    });
     const { options } = createDispatchOptions({
       isProduction: true,
       isrGet,
-      probePage,
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -1967,12 +2547,11 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet).toHaveBeenCalled();
-    expect(probePage).not.toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toBe("<html>cached static page</html>");
   });
 
-  it("lets force-static override observed searchParams access", async () => {
+  it("serves force-static pages from the cache when the request has a query", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(buildCachedAppPageValue("<html>cached force static</html>")),
     );
@@ -1980,11 +2559,6 @@ describe("app page dispatch", () => {
       dynamicConfig: "force-static",
       isProduction: true,
       isrGet,
-      probePage() {
-        markDynamicUsage();
-        markRenderRequestApiUsage("searchParams");
-        return null;
-      },
       revalidateSeconds: 60,
       searchParams: new URLSearchParams("search=hello"),
     });
@@ -2001,7 +2575,6 @@ describe("app page dispatch", () => {
     // test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/search-params/segment-cache-search-params.test.ts
     const buildQueries: string[] = [];
-    const probeQueries: string[] = [];
     const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(
       async (_route, _params, _opts, searchParams) => {
@@ -2012,10 +2585,6 @@ describe("app page dispatch", () => {
     const { options } = createDispatchOptions({
       buildPageElement,
       isRscRequest: true,
-      probePage(searchParams) {
-        probeQueries.push(searchParams?.get("searchParam") ?? "empty");
-        return null;
-      },
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
       renderToReadableStream(element) {
         if (typeof element !== "string") {
@@ -2031,7 +2600,6 @@ describe("app page dispatch", () => {
 
     await expect(response.text()).resolves.toBe("empty");
     expect(buildQueries).toEqual([""]);
-    expect(probeQueries).toEqual(["empty"]);
     const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
     expect(navigationContext?.searchParams.toString()).toBe("");
   });
@@ -2112,7 +2680,6 @@ describe("app page dispatch", () => {
           },
           routePath: "/force-static-query",
         }).then(toDispatchElementRecord);
-      const probeQueries: string[] = [];
       const setNavigationContext = vi.fn<DispatchOptions["setNavigationContext"]>();
       const request = new Request("https://example.test/force-static-query?user=alice", {
         headers: {
@@ -2131,10 +2698,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage(searchParams) {
-          probeQueries.push(searchParams?.get("user") ?? "empty");
-          return null;
-        },
         request,
         renderToReadableStream: renderPagePayloadToStream,
         route,
@@ -2147,7 +2710,6 @@ describe("app page dispatch", () => {
       await expect(response.text()).resolves.toBe(isRscRequest ? "empty" : "<html>empty</html>");
       expect(metadataQueries).toEqual(["empty"]);
       expect(viewportQueries).toEqual(["empty"]);
-      expect(probeQueries).toEqual(isRscRequest ? ["empty"] : []);
       expect(pageHeaders).toEqual([null]);
       expect(pageDraftModes).toEqual([isDraftMode]);
       const navigationContext = setNavigationContext.mock.calls.at(-1)?.[0];
@@ -2302,9 +2864,6 @@ describe("app page dispatch", () => {
         isrGet,
         isrSet,
         loadSsrHandler,
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
         route,
@@ -2398,9 +2957,6 @@ describe("app page dispatch", () => {
             return createStream([`<html>${await new Response(rscStream).text()}</html>`]);
           },
         }),
-        probePage() {
-          throw new Error("loading.tsx should skip the eager page probe");
-        },
         params: {},
         renderToReadableStream: renderPagePayloadToStream,
         revalidateSeconds: 60,
@@ -2494,7 +3050,125 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toBe("<html>page</html>");
   });
 
+  it("hands the head the page's render prepared to its not-found fallback", async () => {
+    // Next.js's browser ends on the route's own head, which generateMetadata()
+    // resolved once during the render, so the fallback reuses it.
+    const preparedHead: AppPagePreparedRouteHead = {
+      accessError: Promise.resolve(null),
+      metadata: Promise.resolve({ title: "Prepared" }),
+      metadataPlacement: "body",
+      viewport: Promise.resolve({}),
+    };
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    // A rewrite gave the render a query the request URL doesn't carry.
+    const searchParams = new URLSearchParams("q=rewritten");
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, _params, _opts, _searchParams, _access, buildOptions) {
+        buildOptions?.onHeadPrepared?.(preparedHead);
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      searchParams,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        routeHead: {
+          observeSearchParams: true,
+          prepared: preparedHead,
+          searchParams,
+          streamMetadata: true,
+        },
+      }),
+      null,
+    );
+  });
+
+  it("hands a force-static render's empty, unobserved query to its not-found fallback", async () => {
+    // The render read no query, so a head resolved for its fallback reads none.
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      dynamicConfig: "force-static",
+      searchParams: new URLSearchParams("q=ignored"),
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    await dispatchAppPage(options);
+
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({
+        routeHead: expect.objectContaining({
+          observeSearchParams: false,
+          searchParams: new URLSearchParams(),
+        }),
+      }),
+      null,
+    );
+  });
+
+  it("never hands a PPR warm-up render's head to the final render's fallback", async () => {
+    // The warm-up render is discarded, so a final render that throws before
+    // its own head starts resolves the head afresh.
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const warmupHead: AppPagePreparedRouteHead = {
+      accessError: Promise.resolve(null),
+      metadata: Promise.resolve({ title: "Warm-up" }),
+      metadataPlacement: "head",
+      viewport: Promise.resolve({}),
+    };
+    let builds = 0;
+    const renderHttpAccessFallbackPage = vi.fn(
+      async () => new Response("<html>not found</html>", { status: 404 }),
+    );
+    const { options } = createDispatchOptions({
+      async buildPageElement(_route, _params, _opts, _searchParams, _access, buildOptions) {
+        builds += 1;
+        if (builds === 1) {
+          buildOptions?.onHeadPrepared?.(warmupHead);
+          return React.createElement("main", null, "page");
+        }
+        throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+          digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+        });
+      },
+      pprFallbackShell: {
+        fallbackParamNames: ["slug"],
+        routePattern: "/posts/[slug]",
+      },
+      pprRuntime: appPagePprRuntime,
+    });
+    options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+
+    const response = await dispatchAppPage(options);
+
+    expect(builds).toBe(2);
+    expect(response.status).toBe(404);
+    expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+      404,
+      expect.objectContaining({ routeHead: expect.objectContaining({ prepared: null }) }),
+      null,
+    );
+  });
+
   it("renders not-found HTML when a progressive action calls notFound()", async () => {
+    // Next.js answers it with a not-found tree in place of the page
+    // (createNotFoundLoaderTree), so the page's head never applies.
     const buildPageElement = vi.fn(async () => React.createElement("main", null, "page"));
     const renderHttpAccessFallbackPage = vi.fn(
       async () => new Response("<html>not found</html>", { status: 404 }),
@@ -3616,8 +4290,11 @@ describe("app page dispatch", () => {
     expect(buildOptions).toEqual([
       {
         isForceStatic: false,
+        isUncacheableRender: true,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
+        onHeadPrepared: expect.any(Function),
+        placeStreamedMetadataInHead: false,
         serveStreamingMetadata: true,
       },
     ]);
@@ -3765,7 +4442,8 @@ describe("app page dispatch", () => {
     await scheduledRender();
 
     expect(capturedWaitForAllReady).toBe(true);
-    expect(capturedServeStreamingMetadata).toBe(false);
+    // A request without a user agent streams metadata.
+    expect(capturedServeStreamingMetadata).toBe(true);
     expect(capturedFallbackToErrorDocument).toBeUndefined();
     expect(createRscOnErrorHandler).toHaveBeenCalledWith("/posts/hello", "/posts/[slug]", {
       revalidateReason: "stale",
@@ -3776,6 +4454,61 @@ describe("app page dispatch", () => {
     });
     expect(isrSet).toHaveBeenCalled();
     expect(afterRan).toBe(true);
+  });
+
+  it("exposes the request's root params to a stale HTML regeneration", async () => {
+    // Background regeneration runs in its own request context. Without the
+    // request's root params, `next/root-params` getters resolve to undefined
+    // and the regenerated entry is rendered for the wrong root segment.
+    const route = createRoute({ pattern: "/[lang]/posts", routeSegments: ["[lang]", "posts"] });
+    let scheduledRender: unknown = null;
+    let renderedLang: unknown = "unset";
+    const isrSet = vi.fn(async () => {});
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => {
+        renderedLang = await getRootParam("lang");
+        return React.createElement("main", null, "fresh");
+      },
+      cleanPathname: "/en/posts",
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef) {
+            captureOptions.capturedRscDataRef.value = Promise.resolve(
+              new TextEncoder().encode("fresh-flight").buffer,
+            );
+          }
+          void captureOptions?.sideStream?.cancel().catch(() => {});
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream() {
+        return createStream(["flight"]);
+      },
+      revalidateSeconds: 60,
+      rootParams: { lang: "en" },
+      route,
+      scheduleBackgroundRegeneration: (_key, renderFn) => {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+
+    expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+
+    expect(renderedLang).toBe("en");
+    expect(isrSet).toHaveBeenCalled();
   });
 
   it("regenerates stale HTML-captured RSC data under the plain key without interception context", async () => {
@@ -3823,6 +4556,573 @@ describe("app page dispatch", () => {
     expect(writtenKeys).toEqual(
       expect.arrayContaining(["html:/photos/123", "rsc:/photos/123:none:none"]),
     );
+  });
+
+  it.each([
+    {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      headers: undefined,
+      htmlHeaders: { link: "</font.woff2>; rel=preload" },
+      html: "<html>not found</html>",
+      status: 404,
+    },
+    {
+      digest: "NEXT_REDIRECT;replace;/target;307;",
+      headers: { location: "/target" },
+      htmlHeaders: { location: "/target" },
+      html: "",
+      status: 307,
+    },
+  ])(
+    "stores a stale regeneration whose shell ended in a $status",
+    async ({ digest, headers, htmlHeaders, html, status }) => {
+      let scheduledRender: unknown = null;
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        isrSet,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            throw Object.assign(new Error(digest), { digest });
+          },
+        }),
+        renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+      options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+        const link = "</font.woff2>; rel=preload";
+        const fallback = new Response("<html>not found</html>", {
+          headers: { link },
+          status: statusCode,
+        });
+        markFrameworkLinkHeaders(fallback.headers, link);
+        return fallback;
+      });
+
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("<html>stale</html>");
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale HTML response to schedule regeneration");
+      }
+      await scheduledRender();
+
+      expect(
+        isrSet.mock.calls.map(([key, value]) => ({
+          headers: value.headers,
+          html: value.html,
+          key,
+          rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+          status: value.status,
+        })),
+      ).toEqual([
+        { headers, html: "", key: "rsc:/posts/hello", rsc: "page-flight-with-digest", status },
+        { headers: htmlHeaders, html, key: "html:/posts/hello", rsc: undefined, status },
+      ]);
+      if (status === 404) {
+        // The stored document must not carry the request's query.
+        expect(options.renderHttpAccessFallbackPage).toHaveBeenCalledWith(
+          404,
+          expect.objectContaining({ isCacheCandidate: true }),
+          null,
+        );
+      }
+    },
+  );
+
+  it("stores only the renderer's Link from a stale 404 regeneration when middleware also sets one", async () => {
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const frameworkLink = "</font.woff2>; rel=preload";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      middlewareContext: { headers: new Headers({ link: "</mw.css>; rel=preload" }), status: null },
+      renderToReadableStream: () => createStream(["page-flight-with-digest"]),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+    options.renderHttpAccessFallbackPage = vi.fn(async (statusCode: number) => {
+      const fallback = new Response("<html>not found</html>", {
+        headers: { link: frameworkLink },
+        status: statusCode,
+      });
+      markFrameworkLinkHeaders(fallback.headers, frameworkLink);
+      return fallback;
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(isrSet.mock.calls.map(([key, value]) => [key, value.headers])).toEqual([
+      ["rsc:/posts/hello", undefined],
+      ["html:/posts/hello", { link: frameworkLink }],
+    ]);
+  });
+
+  it("does not store a regeneration whose page reads a dynamic API after its shell rejected", async () => {
+    // A root layout's `<Suspense><Session /></Suspense>` reads cookies() after
+    // the page's redirect() rejected the shell.
+    let scheduledRender: unknown = null;
+    let requestContextCleared = false;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      clearRequestContext() {
+        requestContextCleared = true;
+      },
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_REDIRECT;replace;/target;307;";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () =>
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("page-flight-with-digest"));
+            setTimeout(() => {
+              // Without a request context, cookies() rejects instead.
+              if (!requestContextCleared) markDynamicUsage();
+              controller.close();
+            }, 5);
+          },
+        }),
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    requestContextCleared = false;
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await expect(scheduledRender()).rejects.toThrow(
+      "Page changed from static to dynamic at runtime /posts/hello",
+    );
+    expect(isrSet.mock.calls.map(([, value]) => value.status)).not.toContain(307);
+  });
+
+  it("stores generateMetadata()'s special error that rejects a regeneration's shell with its status", async () => {
+    // As in Next.js, a regeneration that an html-limited bot triggers blocks
+    // on metadata, so the error rejects its shell, and it stores the 404.
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      request: new Request("https://example.test/posts/hello", {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+      }),
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          // SSR's copy of the error is decoded from its Flight digest,
+          // without the server-side metadata marker.
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+          });
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected stale HTML response to schedule regeneration");
+    }
+
+    await scheduledRender();
+    expect(isrSet.mock.calls.map(([key, value]) => [key, value.status])).toContainEqual([
+      expect.stringContaining("html:"),
+      404,
+    ]);
+  });
+
+  // An RSC regeneration writes only the RSC entry. Storing the bot's 404 there
+  // would leave it beside the previous document, so it keeps the entry.
+  it("keeps the entry when generateMetadata()'s special error rejects an RSC regeneration's shell", async () => {
+    const metadataNotFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isRscRequest: true,
+      request: new Request("https://example.test/posts/hello", {
+        headers: { "user-agent": "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+      }),
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          throw Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+          });
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        onError(
+          Object.assign(new Error(metadataNotFoundDigest), {
+            digest: metadataNotFoundDigest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    // The regeneration fails, as one whose shell another error rejected does.
+    await expect(scheduledRender()).rejects.toMatchObject({ digest: metadataNotFoundDigest });
+    expect(isrSet).not.toHaveBeenCalled();
+  });
+
+  // As in Next.js, a regeneration streams metadata as the request that
+  // triggered it does, so generateMetadata()'s special error rejects its
+  // shell only for an html-limited bot.
+  it.each([
+    { serveStreamingMetadata: true, userAgent: "Mozilla/5.0" },
+    { serveStreamingMetadata: false, userAgent: "Mozilla/5.0 (compatible; Twitterbot/1.0)" },
+  ])(
+    "builds a regeneration that $userAgent triggers with serveStreamingMetadata $serveStreamingMetadata",
+    async ({ serveStreamingMetadata, userAgent }) => {
+      let scheduledRender: unknown = null;
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        request: new Request("https://example.test/posts/hello", {
+          headers: { "user-agent": userAgent },
+        }),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      if (typeof scheduledRender !== "function") {
+        throw new Error("expected stale HTML response to schedule regeneration");
+      }
+      buildPageElement.mockClear();
+      await scheduledRender();
+
+      // Its document is rendered whole, so the metadata waits in <head>.
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata,
+      });
+    },
+  );
+
+  it("mirrors self.__next_f in a regenerated document that streams a caught special error", async () => {
+    let scheduledRender: unknown = null;
+    const mirrorPredicates: Array<unknown> = [];
+    const notFoundDigest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const { options } = createDispatchOptions({
+      isProduction: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+      ),
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          mirrorPredicates.push(captureOptions?.mirrorNextFlight);
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>fresh</html>"]);
+        },
+      }),
+      renderToReadableStream(_element, { onError }) {
+        // A loading.tsx caught the page's notFound(), so the shell rendered.
+        onError(
+          Object.assign(new Error(notFoundDigest), { digest: notFoundDigest }),
+          undefined,
+          undefined,
+        );
+        return createStream(["page-flight-with-digest"]);
+      },
+      revalidateSeconds: 60,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(mirrorPredicates).toHaveLength(1);
+    const mirror = mirrorPredicates[0];
+    expect(typeof mirror).toBe("function");
+    expect((mirror as () => boolean)()).toBe(true);
+  });
+
+  // Only a render vinext already completes before writing, such as a
+  // background regeneration, waits for streamed metadata in <head>. A request
+  // render streams it, even when the page may be stored.
+  it.each([
+    { name: "a cache candidate", overrides: {} },
+    { name: "a force-dynamic page", overrides: { dynamicConfig: "force-dynamic" } },
+    { name: "a dev render", overrides: { isProduction: false } },
+  ] as const)("streams the metadata of $name rendered for a request", async ({ overrides }) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      buildPageElement,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          return createStream(["<html>page</html>"]);
+        },
+      }),
+      revalidateSeconds: 60,
+      ...overrides,
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({ serveStreamingMetadata: true });
+    expect(buildPageElement.mock.calls[0]?.[5]?.placeStreamedMetadataInHead).not.toBe(true);
+  });
+
+  // An adapter asks for this when no client waits on the render, such as its
+  // regeneration or a deployment warm-up.
+  it.each([
+    { name: "a document", isRscRequest: false, waitForAllReady: true },
+    { name: "an RSC payload", isRscRequest: true, waitForAllReady: undefined },
+  ])(
+    "renders $name whole, with its streamed metadata in <head>, when asked",
+    async ({ isRscRequest, waitForAllReady }) => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const ssrOptions: unknown[] = [];
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isRscRequest,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            ssrOptions.push(captureOptions);
+            if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+              captureOptions.capturedRscDataRef.value = new Response(
+                captureOptions.sideStream,
+              ).arrayBuffer();
+            }
+            return createStream(["<html>page</html>"]);
+          },
+        }),
+        renderWholeDocument: true,
+        revalidateSeconds: 60,
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+
+      expect(buildPageElement.mock.calls[0]?.[5]).toMatchObject({
+        placeStreamedMetadataInHead: true,
+        serveStreamingMetadata: true,
+      });
+      // An RSC payload streams either way; only a document waits for SSR.
+      if (isRscRequest) {
+        expect(ssrOptions).toEqual([]);
+      } else {
+        expect(ssrOptions[0]).toMatchObject({ waitForAllReady });
+      }
+    },
+  );
+
+  it("stores an intercepted RSC regeneration whose shell ended in a 404", async () => {
+    const sourceRoute = createRoute({ params: [], pattern: "/feed", routeSegments: ["feed"] });
+    const currentRoute = createRoute({
+      params: ["id"],
+      pattern: "/photos/[id]",
+      routeSegments: ["photos", "[id]"],
+    });
+    let scheduledRender: unknown = null;
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      async buildPageElement(route) {
+        return route.pattern;
+      },
+      cleanPathname: "/photos/123",
+      findIntercept: () => ({
+        matchedParams: { id: "123" },
+        page: { default: "modal-page" },
+        slotKey: "modal@app/feed/@modal",
+        sourceRouteIndex: 1,
+      }),
+      getSourceRoute(sourceRouteIndex) {
+        return sourceRouteIndex === 1 ? sourceRoute : undefined;
+      },
+      interceptionContext: "/feed",
+      isProduction: true,
+      isRscRequest: true,
+      isrGet: vi.fn(async () =>
+        buildISRCacheEntry(
+          buildCachedAppPageValue(
+            "",
+            new TextEncoder().encode("stale-flight").buffer,
+            undefined,
+            buildQueryInvariantRenderObservation(),
+          ),
+          true,
+        ),
+      ),
+      isrSet,
+      loadSsrHandler: async () => ({
+        async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+          if (captureOptions?.capturedRscDataRef && captureOptions.sideStream) {
+            captureOptions.capturedRscDataRef.value = new Response(
+              captureOptions.sideStream,
+            ).arrayBuffer();
+          }
+          const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+          throw Object.assign(new Error(digest), { digest });
+        },
+      }),
+      renderToReadableStream: () => createStream(["modal-flight-with-digest"]),
+      resolveRouteRevalidateSeconds: (route) => (route === sourceRoute ? 60 : null),
+      revalidateSeconds: 60,
+      route: currentRoute,
+      scheduleBackgroundRegeneration(_key, renderFn) {
+        scheduledRender = renderFn;
+      },
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+    if (typeof scheduledRender !== "function") {
+      throw new Error("expected the stale entry to schedule regeneration");
+    }
+    await scheduledRender();
+
+    expect(
+      isrSet.mock.calls.map(([, value]) => ({
+        rsc: value.rscData ? new TextDecoder().decode(value.rscData) : undefined,
+        status: value.status,
+      })),
+    ).toEqual([{ rsc: "modal-flight-with-digest", status: 404 }]);
   });
 
   it.each(["page", "metadata"] as const)(
@@ -4388,7 +5688,7 @@ describe("app page dispatch", () => {
     });
 
     expect(response.status).toBe(404);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
@@ -4404,7 +5704,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -4425,8 +5725,9 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
-    expect(response.headers.get("x-vinext-cache")).toBeNull();
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
+    // The query-bearing render is a cache candidate, so its MISS is final.
+    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     await expect(response.text()).resolves.toContain("fresh render");
     expect(buildPageElement).toHaveBeenCalled();
   });
@@ -4443,7 +5744,7 @@ describe("app page dispatch", () => {
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
       "html:/en/blog/new-post",
-      "html:/en/blog/[slug]",
+      "shell:/en/blog/[slug]",
     ]);
     expect(response.headers.get("x-vinext-cache")).toBe("STALE");
     await expect(response.text()).resolves.toContain("Locale: en");
@@ -4454,7 +5755,7 @@ describe("app page dispatch", () => {
   it("falls through to a fresh render when the cached fallback shell requires resume", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = vi.fn(async (key: string) => {
-      if (key === "html:/en/blog/[slug]") {
+      if (key === "shell:/en/blog/[slug]") {
         return buildISRCacheEntry(
           buildCachedAppPageValue(
             markAppPprDynamicFallbackShellHtml(
@@ -4495,7 +5796,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/known-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -4517,7 +5818,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/hello world"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -4549,7 +5850,7 @@ describe("app page dispatch", () => {
     const response = await dispatchAppPage(options);
 
     expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/worker-known"]);
-    expect(isrGet).not.toHaveBeenCalledWith("html:/en/blog/[slug]");
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
     expect(buildPageElement).toHaveBeenCalled();
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
   });
@@ -5021,40 +6322,106 @@ describe("query-free App page ISR entries", () => {
     expect(JSON.stringify(value.headers ?? {})).not.toContain(canary);
   }
 
+  // A client component's notFound() rejects the shell during SSR itself.
+  // generateMetadata() threw the same digest in the RSC render, but runs only
+  // there, so the shell's 404 is the page's and is stored, as in Next.js.
+  it("stores a client component's SSR notFound() when generateMetadata() also threw a 404", async () => {
+    const { cache, isrGet, isrSet } = createCache();
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    function ClientNotFound(): React.ReactNode {
+      notFound();
+    }
+
+    const { response } = await dispatchQuery("", {
+      buildPageElement: async () =>
+        toDispatchElementRecord({
+          ...AppElementsWire.createMetadataEntries({
+            interceptionContext: null,
+            layoutIds: [],
+            rootLayoutTreePath: null,
+            routeId: ROUTE_ID,
+          }),
+          [ROUTE_ID]: React.createElement("main", null, React.createElement(ClientNotFound)),
+        }),
+      isrGet,
+      isrSet,
+      loadSsrHandler: createProductionSsrHandler([]),
+      renderToReadableStream(payload, { onError }) {
+        onError(
+          Object.assign(new Error(digest), {
+            digest,
+            [Symbol.for("vinext.appPage.metadataError")]: true,
+          }),
+          undefined,
+          undefined,
+        );
+        return serializePayloadToStream(payload);
+      },
+    });
+
+    expect(response.status).toBe(404);
+    const stored = cache.get("html:/posts/hello")?.value.value as CachedAppPageValue | undefined;
+    expect(stored?.status).toBe(404);
+  });
+
   // Ported from Next.js app-static.test.ts:4622-4700 and the plan's canary
   // test: useSearchParams() inside Suspense keeps the page cached with the
-  // fallback, and the stored entry never carries the query.
-  it("keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries", async () => {
-    const canary = crypto.randomUUID();
-    const { cache, isrGet, isrSet } = createCache();
-    const renders: (boolean | undefined)[] = [];
-    const overrides = { isrGet, isrSet, loadSsrHandler: createProductionSsrHandler(renders) };
+  // fallback, and the stored entry never carries the query. A cacheComponents
+  // build prerenders the same page as fully static, so it shares the rule,
+  // and also stores a dynamic route without generateStaticParams.
+  it.each([
+    { build: "a standard build", generateStaticParams: undefined, pprRuntime: undefined },
+    {
+      build: "a cacheComponents build",
+      generateStaticParams: undefined,
+      pprRuntime: appPagePprRuntime,
+    },
+    {
+      build: "a cacheComponents build without generateStaticParams",
+      generateStaticParams: null,
+      pprRuntime: appPagePprRuntime,
+    },
+  ])(
+    "keeps a canary query out of a static Suspense useSearchParams() page's HTML and RSC entries in $build",
+    async ({ generateStaticParams, pprRuntime }) => {
+      const canary = crypto.randomUUID();
+      const { cache, isrGet, isrSet } = createCache();
+      const renders: (boolean | undefined)[] = [];
+      const overrides = {
+        // Without generateStaticParams, the route's own lifetime makes it storable.
+        ...(generateStaticParams === null ? { generateStaticParams, revalidateSeconds: 60 } : {}),
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler(renders),
+        pprRuntime,
+      };
 
-    const miss = await dispatchQuery(`?canary=${canary}`, overrides);
+      const miss = await dispatchQuery(`?canary=${canary}`, overrides);
 
-    expect(renders).toEqual([true]);
-    expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
-    expect(miss.body).toContain("<p>search-fallback</p>");
-    expect(miss.body).not.toContain(canary);
-    expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
-    expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
-    expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
+      expect(renders).toEqual([true]);
+      expect(miss.response.headers.get("x-vinext-cache")).toBe("MISS");
+      expect(miss.body).toContain("<p>search-fallback</p>");
+      expect(miss.body).not.toContain(canary);
+      expect([...cache.keys()].sort()).toEqual(["html:/posts/hello", "rsc:/posts/hello"]);
+      expectEntryFreeOf(cache.get("html:/posts/hello"), canary);
+      expectEntryFreeOf(cache.get("rsc:/posts/hello"), canary);
 
-    const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
-    const storedRsc = new TextDecoder().decode(
-      (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
-    );
-    for (const search of ["", "?other=1"]) {
-      const html = await dispatchQuery(search, overrides);
-      expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
-      expect(html.body, search).toBe(stored.html);
-      const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
-      expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
-      expect(rsc.body, search).toBe(storedRsc);
-    }
-    expect(renders).toEqual([true]);
-    expect(isrSet).toHaveBeenCalledTimes(2);
-  });
+      const stored = cache.get("html:/posts/hello")!.value.value as CachedAppPageValue;
+      const storedRsc = new TextDecoder().decode(
+        (cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue).rscData,
+      );
+      for (const search of ["", "?other=1"]) {
+        const html = await dispatchQuery(search, overrides);
+        expect(html.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(html.body, search).toBe(stored.html);
+        const rsc = await dispatchQuery(search, { ...overrides, isRscRequest: true });
+        expect(rsc.response.headers.get("x-vinext-cache"), search).toBe("HIT");
+        expect(rsc.body, search).toBe(storedRsc);
+      }
+      expect(renders).toEqual([true]);
+      expect(isrSet).toHaveBeenCalledTimes(2);
+    },
+  );
 
   // A client page that reads searchParams, built by the production element
   // builder from the query the dispatcher hands it. An RSC-only render never
@@ -5118,6 +6485,97 @@ describe("query-free App page ISR entries", () => {
       expect(hit.body, search).toBe(miss.body);
     }
     expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
+  // An RSC-only miss resolves its status by rendering the document's shell
+  // from the completed payload. The payload can complete after the response
+  // has left and the request's context is cleared, so the shell pass must
+  // carry its own navigation context.
+  it.each([
+    { name: "a notFound() that rejects the shell with its status", status: 404, suspense: false },
+    { name: "a notFound() inside Suspense as a 200", status: 200, suspense: true },
+  ])("stores $name after the request context is cleared", async ({ status, suspense }) => {
+    const { cache, isrGet, isrSet } = createCache();
+    let navigation: NavigationContext | null = null;
+    let cleared = false;
+    const shellRenders: { cleared: boolean; pathname: string }[] = [];
+    function NotFoundPage(): React.ReactNode {
+      shellRenders.push({ cleared, pathname: usePathname() });
+      notFound();
+    }
+    const page = React.createElement(NotFoundPage);
+    let releasePayload!: () => void;
+    const payloadReleased = new Promise<void>((resolve) => {
+      releasePayload = resolve;
+    });
+
+    const { body, response } = await dispatchQuery(
+      "",
+      {
+        buildPageElement: async () =>
+          toDispatchElementRecord({
+            ...AppElementsWire.createMetadataEntries({
+              interceptionContext: null,
+              layoutIds: [],
+              rootLayoutTreePath: null,
+              routeId: ROUTE_ID,
+            }),
+            [ROUTE_ID]: suspense
+              ? React.createElement(
+                  React.Suspense,
+                  { fallback: React.createElement("p", null, "loading") },
+                  page,
+                )
+              : page,
+          }),
+        clearRequestContext() {
+          setHeadersContext(null);
+          navigation = null;
+        },
+        getNavigationContext: () => navigation,
+        isRscRequest: true,
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler([]),
+        renderToReadableStream(payload, { onError }) {
+          // The stand-in Flight render doesn't run components, so report the
+          // page's notFound() as Flight would.
+          try {
+            notFound();
+          } catch (error) {
+            onError(error, undefined, undefined);
+          }
+          return serializePayloadToStream(payload).pipeThrough(
+            new TransformStream<Uint8Array, Uint8Array>({ flush: () => payloadReleased }),
+          );
+        },
+        setNavigationContext(next) {
+          navigation = next;
+        },
+      },
+      undefined,
+      () => {
+        // The response has left: clear the request's context before the
+        // payload completes.
+        setHeadersContext(null);
+        navigation = null;
+        cleared = true;
+        releasePayload();
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(body).not.toBe("");
+    // React renders a Suspense boundary's failed content again before
+    // falling back to the client.
+    expect(shellRenders.length).toBeGreaterThan(0);
+    expect(shellRenders).toEqual(
+      shellRenders.map(() => ({ cleared: true, pathname: "/posts/hello" })),
+    );
+    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
+    const stored = cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue;
+    expect(stored.status).toBe(status);
+    expect(new TextDecoder().decode(stored.rscData)).toBe(body);
   });
 
   // A dynamic-segment route without generateStaticParams is ƒ: it renders
@@ -5381,7 +6839,7 @@ describe("query-free App page ISR entries", () => {
             const representation = isRscRequest ? "RSC" : "HTML";
             expect(render.events, representation).toEqual(["stream", "headers", "cacheLife"]);
             expect(response.headers.get("cache-control"), representation).toBe(
-              "public, max-age=0, must-revalidate",
+              "private, max-age=0, must-revalidate",
             );
             expect(response.headers.get("cloudflare-cdn-cache-control"), representation).toMatch(
               /^public, max-age=60(,|$)/,

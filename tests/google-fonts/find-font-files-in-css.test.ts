@@ -5,6 +5,29 @@ import { findFontFilesInCss } from "../../packages/vinext/src/build/google-fonts
 // https://github.com/vercel/next.js/blob/canary/packages/font/src/google/find-font-files-in-css.test.ts
 
 describe("findFontFilesInCss", () => {
+  it.each([
+    ["https://fonts.gstatic.com/l/font?kit=a=b&skey=c&v=v20", "format('woff2')", "woff2"],
+    ["https://fonts.gstatic.com/l/font?kit=a%2Bb&skey=c", 'format("woff")', "woff"],
+    ["https://fonts.gstatic.com/l/font", "format('truetype')", "ttf"],
+    ["https://fonts.gstatic.com/l/font", "format('opentype')", "otf"],
+    ["https://fonts.gstatic.com/l/font", "format('embedded-opentype')", "eot"],
+    ["https://fonts.gstatic.com/l/font", "", "woff2"],
+    ["https://fonts.gstatic.com/l/font", "format('unknown')", "woff2"],
+    ["https://fonts.gstatic.com/s/font.ttf?kit=a&v=1#font", "format('woff2')", "ttf"],
+    ["https://fonts.gstatic.com/l/font?kit=a.woff", "format('woff2')", "woff2"],
+  ])("resolves the extension of %s %s as %s", (url, format, ext) => {
+    const css = `/* latin */
+@font-face {
+  src: url(${url}) ${format};
+}
+@font-face {
+  src: url(${url}) ${format};
+}`;
+    expect(findFontFilesInCss(css, ["latin"])).toEqual([
+      { googleFontFileUrl: url, preloadFontFile: true, ext },
+    ]);
+  });
+
   it("finds all font files and preloads only requested subsets", () => {
     const css = `/* cyrillic */
 @font-face { src: url(/fonts/inter-cyrillic.woff2) format('woff2'); }
@@ -17,14 +40,17 @@ describe("findFontFilesInCss", () => {
       {
         googleFontFileUrl: "/fonts/inter-cyrillic.woff2",
         preloadFontFile: false,
+        ext: "woff2",
       },
       {
         googleFontFileUrl: "/fonts/inter-latin.woff2",
         preloadFontFile: true,
+        ext: "woff2",
       },
       {
         googleFontFileUrl: "/fonts/inter-latin-ext.woff2",
         preloadFontFile: false,
+        ext: "woff2",
       },
     ]);
   });
@@ -37,6 +63,7 @@ describe("findFontFilesInCss", () => {
       {
         googleFontFileUrl: "/fonts/inter-latin.woff2",
         preloadFontFile: false,
+        ext: "woff2",
       },
     ]);
   });
@@ -51,6 +78,7 @@ describe("findFontFilesInCss", () => {
       {
         googleFontFileUrl: "/fonts/inter-latin.woff2",
         preloadFontFile: true,
+        ext: "woff2",
       },
     ]);
   });

@@ -70,6 +70,13 @@ export class HistoryStateSnapshotCache<TState> {
     }
   }
 
+  /** Point every entry that remembered `previous` at `next` instead. */
+  replaceState(previous: TState, next: TState): void {
+    for (const snapshot of this.#snapshots.values()) {
+      if (snapshot.state === previous) snapshot.state = next;
+    }
+  }
+
   resolveRestore(options: {
     currentBfcacheVersion: number;
     guarded: boolean;
@@ -159,6 +166,10 @@ export class RestorableClientStateController<TState> {
       historyIndex: options.historyIndex,
       state: options.state,
     });
+  }
+
+  replaceHistoryStateSnapshots(previous: TState, next: TState): void {
+    this.#snapshots.replaceState(previous, next);
   }
 
   resolveHistoryStateSnapshotRestore(

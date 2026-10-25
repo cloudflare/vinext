@@ -164,8 +164,8 @@ async function runQueries(
   // compat_file_results rows therefore need no migration or backfill: changing
   // a suite's policy immediately reclassifies every recorded run. Only
   // non-supported suites need rows because supported is the default.
-  const outOfScopeValues = sql.join(
-    NON_SUPPORTED_SUITES.map((suite) => sql`(${suite})`),
+  const outOfScopeSuites = sql.join(
+    NON_SUPPORTED_SUITES.map((suite) => sql`${suite}`),
     sql.raw(", "),
   );
 
@@ -187,8 +187,12 @@ async function runQueries(
     // shares the same `r.created_at`. Standard SQL (e.g. PostgreSQL
     // with default settings) rejects this; if the query is ever ported,
     // add `r.created_at` to the GROUP BY or wrap it in `MIN()`/`MAX()`.
+    //
+    // `supported` is computed once per row in the subquery. Joining a VALUES
+    // CTE instead scans the whole CTE for every file row (millions of rows
+    // read), and repeating the IN list in each SUM would exceed D1's
+    // bound-parameter limit.
     db.all(sql`
-      WITH out_of_scope(suite) AS (VALUES ${outOfScopeValues})
       SELECT
         r.run_key AS run_key,
         r.created_at AS created_at,
@@ -196,36 +200,39 @@ async function runQueries(
         SUM(f.passed)  AS all_passed,
         SUM(f.failed)  AS all_failed,
         SUM(f.skipped) AS all_skipped,
-        SUM(CASE WHEN o.suite IS NULL THEN f.passed ELSE 0 END) AS all_supported_passed,
-        SUM(CASE WHEN o.suite IS NULL THEN f.failed ELSE 0 END) AS all_supported_failed,
+        SUM(CASE WHEN f.supported THEN f.passed ELSE 0 END) AS all_supported_passed,
+        SUM(CASE WHEN f.supported THEN f.failed ELSE 0 END) AS all_supported_failed,
         SUM(CASE WHEN m.router IN ('app','both') THEN f.total   ELSE 0 END) AS app_total,
         SUM(CASE WHEN m.router IN ('app','both') THEN f.passed  ELSE 0 END) AS app_passed,
         SUM(CASE WHEN m.router IN ('app','both') THEN f.failed  ELSE 0 END) AS app_failed,
         SUM(CASE WHEN m.router IN ('app','both') THEN f.skipped ELSE 0 END) AS app_skipped,
-        SUM(CASE WHEN m.router IN ('app','both') AND o.suite IS NULL THEN f.passed ELSE 0 END) AS app_supported_passed,
-        SUM(CASE WHEN m.router IN ('app','both') AND o.suite IS NULL THEN f.failed ELSE 0 END) AS app_supported_failed,
+        SUM(CASE WHEN m.router IN ('app','both') AND f.supported THEN f.passed ELSE 0 END) AS app_supported_passed,
+        SUM(CASE WHEN m.router IN ('app','both') AND f.supported THEN f.failed ELSE 0 END) AS app_supported_failed,
         SUM(CASE WHEN m.router IN ('pages','both') THEN f.total   ELSE 0 END) AS pages_total,
         SUM(CASE WHEN m.router IN ('pages','both') THEN f.passed  ELSE 0 END) AS pages_passed,
         SUM(CASE WHEN m.router IN ('pages','both') THEN f.failed  ELSE 0 END) AS pages_failed,
         SUM(CASE WHEN m.router IN ('pages','both') THEN f.skipped ELSE 0 END) AS pages_skipped,
-        SUM(CASE WHEN m.router IN ('pages','both') AND o.suite IS NULL THEN f.passed ELSE 0 END) AS pages_supported_passed,
-        SUM(CASE WHEN m.router IN ('pages','both') AND o.suite IS NULL THEN f.failed ELSE 0 END) AS pages_supported_failed,
+        SUM(CASE WHEN m.router IN ('pages','both') AND f.supported THEN f.passed ELSE 0 END) AS pages_supported_passed,
+        SUM(CASE WHEN m.router IN ('pages','both') AND f.supported THEN f.failed ELSE 0 END) AS pages_supported_failed,
         SUM(CASE WHEN m.router = 'both' THEN f.total   ELSE 0 END) AS both_total,
         SUM(CASE WHEN m.router = 'both' THEN f.passed  ELSE 0 END) AS both_passed,
         SUM(CASE WHEN m.router = 'both' THEN f.failed  ELSE 0 END) AS both_failed,
         SUM(CASE WHEN m.router = 'both' THEN f.skipped ELSE 0 END) AS both_skipped,
-        SUM(CASE WHEN m.router = 'both' AND o.suite IS NULL THEN f.passed ELSE 0 END) AS both_supported_passed,
-        SUM(CASE WHEN m.router = 'both' AND o.suite IS NULL THEN f.failed ELSE 0 END) AS both_supported_failed,
+        SUM(CASE WHEN m.router = 'both' AND f.supported THEN f.passed ELSE 0 END) AS both_supported_passed,
+        SUM(CASE WHEN m.router = 'both' AND f.supported THEN f.failed ELSE 0 END) AS both_supported_failed,
         SUM(CASE WHEN m.router IS NULL OR m.router = 'unknown' THEN f.total   ELSE 0 END) AS unknown_total,
         SUM(CASE WHEN m.router IS NULL OR m.router = 'unknown' THEN f.passed  ELSE 0 END) AS unknown_passed,
         SUM(CASE WHEN m.router IS NULL OR m.router = 'unknown' THEN f.failed  ELSE 0 END) AS unknown_failed,
         SUM(CASE WHEN m.router IS NULL OR m.router = 'unknown' THEN f.skipped ELSE 0 END) AS unknown_skipped,
-        SUM(CASE WHEN (m.router IS NULL OR m.router = 'unknown') AND o.suite IS NULL THEN f.passed ELSE 0 END) AS unknown_supported_passed,
-        SUM(CASE WHEN (m.router IS NULL OR m.router = 'unknown') AND o.suite IS NULL THEN f.failed ELSE 0 END) AS unknown_supported_failed
+        SUM(CASE WHEN (m.router IS NULL OR m.router = 'unknown') AND f.supported THEN f.passed ELSE 0 END) AS unknown_supported_passed,
+        SUM(CASE WHEN (m.router IS NULL OR m.router = 'unknown') AND f.supported THEN f.failed ELSE 0 END) AS unknown_supported_failed
       FROM compat_runs r
-      JOIN compat_file_results f ON f.run_id = r.id
+      JOIN (
+        SELECT run_id, suite, total, passed, failed, skipped,
+          suite NOT IN (${outOfScopeSuites}) AS supported
+        FROM compat_file_results
+      ) f ON f.run_id = r.id
       LEFT JOIN compat_suite_meta m ON m.suite = f.suite
-      LEFT JOIN out_of_scope o ON o.suite = f.suite
       WHERE r.kind = ${kind} AND r.created_at >= ${TREND_START}
       GROUP BY r.id
       ORDER BY r.created_at DESC
@@ -252,7 +259,14 @@ async function runQueries(
           })
           .from(compatFileResults)
           .leftJoin(compatSuiteMeta, eq(compatFileResults.suite, compatSuiteMeta.suite))
-          .where(and(eq(compatFileResults.kind, kind), eq(compatFileResults.runId, latestRun.id)))
+          // Unary + keeps SQLite on the run_id index; filtering kind through
+          // the (kind, suite) index walks every row of that kind.
+          .where(
+            and(
+              sql`+${compatFileResults.kind} = ${kind}`,
+              eq(compatFileResults.runId, latestRun.id),
+            ),
+          )
           .orderBy(compatFileResults.suite)
       ).map((r) => {
         const support = getSuiteSupport(r.suite);

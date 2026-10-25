@@ -1,0 +1,2 @@
+CREATE INDEX `idx_performance_measurements_profile_object` ON `performance_measurements` (`profile_object_key`);--> statement-breakpoint
+CREATE INDEX `idx_performance_runs_pr_base` ON `performance_runs` (`base_sha`) WHERE "performance_runs"."kind" = 'pull_request';

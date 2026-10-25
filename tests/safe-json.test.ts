@@ -6,7 +6,7 @@
  * a real attack vector that has been exploited in production SSR frameworks.
  */
 import { describe, it, expect } from "vite-plus/test";
-import { safeJsonStringify } from "../packages/vinext/src/server/html.js";
+import { safeJsonStringify, scriptSafeJsonStringify } from "../packages/vinext/src/server/html.js";
 
 // ---------------------------------------------------------------------------
 // Core escaping behavior
@@ -385,5 +385,46 @@ describe("safeJsonStringify", () => {
       expect(openTags).toHaveLength(1);
       expect(closeTags).toHaveLength(1);
     });
+  });
+});
+
+describe("scriptSafeJsonStringify", () => {
+  it("escapes only the sequences the HTML spec forbids in script content", () => {
+    expect(scriptSafeJsonStringify("a</script>b")).toBe('"a\\u003c/script>b"');
+    expect(scriptSafeJsonStringify("a</SCRIPT>b")).toBe('"a\\u003c/SCRIPT>b"');
+    expect(scriptSafeJsonStringify("a<sCrIpT src=x>b")).toBe('"a\\u003csCrIpT src=x>b"');
+    expect(scriptSafeJsonStringify("a<!--b-->c")).toBe('"a\\u003c!--b-->c"');
+  });
+
+  it("escapes U+2028 and U+2029", () => {
+    expect(scriptSafeJsonStringify("a\u2028b\u2029c")).toBe('"a\\u2028b\\u2029c"');
+  });
+
+  it("leaves other '<', '>' and '&' characters alone", () => {
+    const markup = '<p class="x">a &amp; b</p><br/><scrip>a < b > c<!-x</';
+    expect(scriptSafeJsonStringify(markup)).toBe(JSON.stringify(markup));
+  });
+
+  it("parses back to the original value", () => {
+    const values = [
+      '0:["$","div",null,{"dangerouslySetInnerHTML":{"__html":"</script><script>alert(1)</script>"}}]\n',
+      "<!-- comment --><p>&lt;</p>\u2028\u2029</ScRiPt <script",
+      [3, "/w=="],
+    ];
+    for (const value of values) {
+      expect(JSON.parse(scriptSafeJsonStringify(value))).toEqual(value);
+    }
+  });
+
+  it("cannot close or open a script element", () => {
+    const result = scriptSafeJsonStringify([
+      '</script><script>alert("xss")</script>',
+      "</SCRIPT ><!--<script>",
+    ]);
+    expect(result).not.toMatch(/<!--|<\/?script/i);
+  });
+
+  it("rejects top-level values without a JSON representation", () => {
+    expect(() => scriptSafeJsonStringify(undefined)).toThrow(TypeError);
   });
 });

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import { get as httpGet, request as httpRequest, type IncomingHttpHeaders } from "node:http";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -15,9 +15,17 @@ import {
   PHASE_DEVELOPMENT_SERVER,
   PHASE_PRODUCTION_BUILD,
 } from "../packages/vinext/src/shims/constants.js";
-import { PAGES_FIXTURE_DIR, buildPagesFixture, startFixtureServer } from "./helpers.js";
+import {
+  PAGES_FIXTURE_DIR,
+  buildPagesFixture,
+  EXTERNAL_REWRITE_HEADER_CASES,
+  expectRepeatedSlashRedirects,
+  requestExternalRewriteHeaders,
+  startFixtureServer,
+} from "./helpers.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
+import { SSR_MANIFEST_SHARED_CHUNKS_KEY } from "../packages/vinext/src/utils/manifest-paths.js";
 
 let captureFrameworkSpans = false;
 const capturedFrameworkSpans: ResolvedFrameworkSpanDescriptor[] = [];
@@ -37,6 +45,8 @@ const PAGES_APP_COMPONENT = `export default function App({ Component, pageProps 
 
 type ClientBuildManifestEntry = {
   file?: string;
+  name?: string;
+  isEntry?: boolean;
   css?: string[];
   assets?: string[];
 };
@@ -203,6 +213,10 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
   );
   fs.writeFileSync(path.join(stylesDir, "page.module.css"), ".pageText { margin-left: 29px; }\n");
   fs.writeFileSync(
+    path.join(stylesDir, "side-effect.css"),
+    ".side-effect-text { margin-bottom: 37px; }\n",
+  );
+  fs.writeFileSync(
     path.join(stylesDir, "type-only.module.css"),
     ".typeOnlyText { margin-right: 31px; }\n",
   );
@@ -227,6 +241,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     path.join(libDir, "reexport.ts"),
     'export { transitiveClassName } from "./transitive";\n',
   );
+  fs.writeFileSync(path.join(libDir, "side-effect.ts"), 'import "../styles/side-effect.css";\n');
   fs.writeFileSync(
     path.join(libDir, "type-only.ts"),
     'import "../styles/type-only.module.css";\n' +
@@ -250,6 +265,8 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
     pagePath,
     'import Head from "next/head";\n' +
       'import pageStyles from "@/styles/page.module.css";\n' +
+      'export {} from "@/lib/side-effect";\n' +
+      'import type {} from "@/lib/type-only";\n' +
       "export default function Home() {\n" +
       "  return <>\n" +
       '    <Head><style>{".global-css-pages-text { border-top-width: 0px; }"}</style></Head>\n' +
@@ -285,6 +302,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "/styles/app.module.css",
       "/styles/transitive.module.css",
       "/styles/page.module.css",
+      "/styles/side-effect.css",
     ],
     isrDevStylesheetHrefs: [
       "/styles/global%20style.css",
@@ -303,7 +321,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "styles/app.module.css",
       "styles/transitive.module.css",
     ],
-    pageManifestAssets: ["styles/page.module.css"],
+    pageManifestAssets: ["styles/page.module.css", "styles/side-effect.css"],
     isrManifestAssets: ["styles/isr.module.css"],
     errorManifestAssets: ["styles/error.module.css"],
     cssMarkers: [
@@ -311,6 +329,7 @@ function writePagesAppGlobalCssFixture(rootDir: string): PagesAppGlobalCssFixtur
       "padding-left: 17px",
       "margin-top: 19px",
       "margin-left: 29px",
+      "margin-bottom: 37px",
     ],
   };
 }
@@ -699,6 +718,20 @@ describe("Pages Router integration", () => {
     await server?.close();
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(baseUrl, { dev: true });
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${baseUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
   it("renders the index page with correct HTML", async () => {
     const res = await fetch(`${baseUrl}/`);
     expect(res.status).toBe(200);
@@ -1020,18 +1053,15 @@ describe("Pages Router integration", () => {
   it("sets the default Cache-Control header on getServerSideProps responses", async () => {
     const res = await fetch(`${baseUrl}/ssr`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
-  // Regression for #1461: when getServerSideProps overrides Cache-Control via
-  // res.setHeader, the user-provided value must reach the final HTTP response
-  // instead of being clobbered by the default.
-  it("preserves res.setHeader Cache-Control overrides set in getServerSideProps", async () => {
+  // Next.js development always overrides authored cache lifetimes.
+  // Production preservation is covered in pages-router-prod/production.spec.ts.
+  it("uses the development Cache-Control even when getServerSideProps sets one", async () => {
     const res = await fetch(`${baseUrl}/ssr-cache-control`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("public, max-age=42");
+    expect(res.headers.get("cache-control")).toBe("no-cache, must-revalidate");
   });
 
   it("getServerSideProps calling res.end() short-circuits the response", async () => {
@@ -1126,6 +1156,126 @@ describe("Pages Router integration", () => {
     const body = (await res.json()) as { pageProps?: Record<string, unknown> };
     expect(body.pageProps?.__N_REDIRECT).toBe("https://example.com/landing");
   });
+
+  // Next.js pages-handler.ts gives every getServerSideProps exit
+  // `revalidate: 0` before it answers the redirect or notFound, so a shared
+  // cache never stores the per-request result. Dev sends the same header.
+  it("sends the getServerSideProps Cache-Control default on redirect and notFound exits", async () => {
+    const dataHeaders = { Accept: "application/json", "x-nextjs-data": "1" };
+    const document = await fetch(`${baseUrl}/gssp-redirect`, { redirect: "manual" });
+    expect(document.status).toBe(307);
+    expect(document.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const data = await fetch(`${baseUrl}/_next/data/test-build-id/gssp-redirect.json`, {
+      headers: dataHeaders,
+    });
+    expect(data.status).toBe(200);
+    expect(data.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    const notFoundData = await fetch(
+      `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true`,
+      { headers: dataHeaders },
+    );
+    expect(notFoundData.status).toBe(404);
+    expect(notFoundData.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+
+    // The document 404 is a rendered page, which Next.js dev never caches.
+    const notFoundDocument = await fetch(`${baseUrl}/gssp-not-found?hiding=true`);
+    expect(notFoundDocument.status).toBe(404);
+    expect(notFoundDocument.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+  });
+
+  it("keeps a getServerSideProps Cache-Control on redirects", async () => {
+    const document = await fetch(`${baseUrl}/gssp-redirect-cache-control`, { redirect: "manual" });
+    expect(document.status).toBe(308);
+    expect(document.headers.get("cache-control")).toBe("public, s-maxage=60");
+
+    const data = await fetch(
+      `${baseUrl}/_next/data/test-build-id/gssp-redirect-cache-control.json`,
+      {
+        headers: { Accept: "application/json", "x-nextjs-data": "1" },
+      },
+    );
+    expect(data.status).toBe(200);
+    expect(data.headers.get("cache-control")).toBe("public, s-maxage=60");
+  });
+
+  it.each(["empty", "zero"])(
+    "treats a falsy getServerSideProps Cache-Control (%s) as unset on redirects",
+    async (value) => {
+      const document = await fetch(`${baseUrl}/gssp-redirect-cache-control?value=${value}`, {
+        redirect: "manual",
+      });
+      expect(document.status).toBe(308);
+      expect(document.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const data = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-redirect-cache-control.json?value=${value}`,
+        {
+          headers: { Accept: "application/json", "x-nextjs-data": "1" },
+        },
+      );
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    },
+  );
+
+  // Next.js applies middleware and next.config headers to the response before
+  // the page runs, so its `revalidate: 0` default only fills a missing
+  // Cache-Control. Next.js dev still answers the rendered 404 with its
+  // development page Cache-Control.
+  it.each(["mw-cache-control", "config-cache-control"])(
+    "keeps a %s Cache-Control on getServerSideProps redirect and notFound exits",
+    async (param) => {
+      const dataHeaders = { Accept: "application/json", "x-nextjs-data": "1" };
+      const document = await fetch(`${baseUrl}/gssp-redirect?${param}=1`, { redirect: "manual" });
+      expect(document.status).toBe(307);
+      expect(document.headers.get("cache-control")).toBe("public, max-age=60");
+
+      const data = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-redirect.json?${param}=1`,
+        {
+          headers: dataHeaders,
+        },
+      );
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe("public, max-age=60");
+
+      const notFoundData = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true&${param}=1`,
+        { headers: dataHeaders },
+      );
+      expect(notFoundData.status).toBe(404);
+      expect(notFoundData.headers.get("cache-control")).toBe("public, max-age=60");
+
+      // The handler's own Cache-Control still wins over the seeded one.
+      const ownNotFoundData = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true&own-cache-control=1&${param}=1`,
+        { headers: dataHeaders },
+      );
+      expect(ownNotFoundData.status).toBe(404);
+      expect(ownNotFoundData.headers.get("cache-control")).toBe("s-maxage=5");
+
+      for (const search of [
+        `hiding=true&${param}=1`,
+        `hiding=true&own-cache-control=1&${param}=1`,
+      ]) {
+        const notFoundDocument = await fetch(`${baseUrl}/gssp-not-found?${search}`);
+        expect(notFoundDocument.status).toBe(404);
+        expect(notFoundDocument.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+      }
+    },
+  );
 
   // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
@@ -1819,6 +1969,70 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Next.js API routes get a real Node ServerResponse, so res.appendHeader()
+  // (Node 18.3+) works and its cookies follow middleware's.
+  it("supports res.appendHeader in API routes after middleware cookies", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      httpGet(`${baseUrl}${path}`, (res) => {
+        res.resume();
+        resolve(res.headers["set-cookie"] ?? []);
+      }).on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
+  });
+
   it("handles dynamic API routes with query params", async () => {
     const res = await fetch(`${baseUrl}/api/users/123`);
     expect(res.status).toBe(200);
@@ -2260,6 +2474,12 @@ export const config = { matcher: "${matcher}" };
     expect(res.headers.get("location")).toBe("/about");
   });
 
+  it("answers a next.config.js redirect with its statusCode", async () => {
+    const res = await fetch(`${baseUrl}/status-code-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe("/about");
+  });
+
   // Ported from Next.js:
   // test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rewrites-redirects/rewrites-redirects.test.ts
@@ -2509,6 +2729,20 @@ export const config = { matcher: "${matcher}" };
     // The heavy component should be rendered server-side (ssr: true by default)
     expect(html).toContain("Heavy Component");
     expect(html).toContain("Loaded dynamically");
+  });
+
+  // Issue #3718 only changes the App Router: a Pages dynamic() without a
+  // loading option keeps its Suspense boundary on the server, matching the
+  // boundary the hydrating client renders. This differs from Next.js on
+  // purpose until Pages parity lands: Next's Pages next/dynamic
+  // (react-loadable) preloads before SSR and renders no boundary.
+  it("keeps the Suspense boundary for dynamic() without loading during SSR", async () => {
+    const res = await fetch(`${baseUrl}/dynamic-no-loading`);
+    expect(res.status).toBe(200);
+
+    const html = await res.text();
+    expect(html).toMatch(/<!--\$\??-->/);
+    expect(html).toContain("Loaded without loading option");
   });
 
   // --- Hydration ---
@@ -3182,6 +3416,30 @@ export const config = { matcher: "${matcher}" };
     expect(res.status).toBe(200);
   });
 
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("routes .html request paths as written in development", async () => {
+    const canonical = await fetch(`${baseUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${baseUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${baseUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
+  });
+
   // ── /_next/data JSON endpoint (issue #1330) ──────────────────────
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // ("should trigger middleware for data requests").
@@ -3592,6 +3850,12 @@ export default function Page(props) {
           expect.stringMatching(/^__prerender_bypass=; Expires=/),
           expect.stringMatching(/^__next_preview_data=; Expires=/),
         ]);
+        if (page === "gssp-not-found") {
+          // A shared cache must not replay the cookie cleanup.
+          expect(response.headers.get("cache-control")).toBe(
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+          );
+        }
       }
     }
   });
@@ -3835,6 +4099,22 @@ describe("Pages Router dev server origin check", () => {
       },
     );
     expect(res.status).toBe(400);
+  });
+
+  it("never redirects the image endpoint off-site for a source that resolves to //", async () => {
+    for (const source of [
+      "/a/..//evil.com",
+      "/..//evil.com",
+      "/a/%2e%2e//evil.com",
+      "/a/..\\/evil.com",
+    ]) {
+      const res = await fetch(
+        `${baseUrl}/_next/image?url=${encodeURIComponent(source)}&w=640&q=75`,
+        { redirect: "manual" },
+      );
+      expect(res.status, source).toBe(400);
+      expect(res.headers.get("location"), source).toBeNull();
+    }
   });
 });
 
@@ -4525,6 +4805,157 @@ describe("Virtual server entry generation", () => {
     }
   });
 
+  it("dev Pages client assets re-resolve only edited modules until tsconfig.json changes", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-reuse-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    // The assets module resolves each import of the modules it reads.
+    const resolveImporters: string[] = [];
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [
+        {
+          name: "record-resolve-importers",
+          enforce: "pre",
+          resolveId(_source, importer) {
+            if (importer) resolveImporters.push(toSlash(importer));
+            return null;
+          },
+        },
+        vinext({ appDir: tmpDir }),
+      ],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readAppManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+    const resolvedFrom = (file: string) =>
+      resolveImporters.some((importer) => importer.endsWith(file));
+
+    try {
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+      expect(resolvedFrom("/lib/transitive.ts")).toBe(true);
+
+      resolveImporters.length = 0;
+      fs.writeFileSync(fixture.appPath, fs.readFileSync(fixture.appPath, "utf-8") + "\n");
+      testServer.watcher.emit("change", fixture.appPath);
+
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+      expect(resolvedFrom("/pages/_app.tsx")).toBe(true);
+      expect(resolvedFrom("/lib/reexport.ts")).toBe(false);
+      expect(resolvedFrom("/lib/transitive.ts")).toBe(false);
+
+      // Like Vite, which invalidates every module when a tsconfig.json changes.
+      resolveImporters.length = 0;
+      testServer.watcher.emit("change", path.join(tmpDir, "tsconfig.json"));
+
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+      expect(resolvedFrom("/lib/transitive.ts")).toBe(true);
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets follow an imported stylesheet being created and deleted", async () => {
+    // Module ids are real paths, so run from a symlinked root, where the
+    // watcher reports other paths.
+    const realDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-created-"));
+    const linkDir = `${realDir}-link`;
+    fs.symlinkSync(realDir, linkDir);
+    const fixture = writePagesAppGlobalCssFixture(linkDir);
+    const latePath = path.join(linkDir, "styles", "late.css");
+    fs.writeFileSync(
+      path.join(linkDir, "lib", "transitive.ts"),
+      'import "../styles/late.css";\n' +
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+        "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+    );
+    const testServer = await createServer({
+      root: linkDir,
+      configFile: false,
+      plugins: [vinext({ appDir: linkDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readAppManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+
+    try {
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+
+      fs.writeFileSync(latePath, ".late-css { color: green; }\n");
+      testServer.watcher.emit("add", latePath);
+      expect(await readAppManifest()).toEqual([
+        "styles/global style.css",
+        "styles/app.module.css",
+        "styles/late.css",
+        "styles/transitive.module.css",
+      ]);
+
+      fs.rmSync(latePath);
+      testServer.watcher.emit("unlink", latePath);
+      expect(await readAppManifest()).toEqual(fixture.appManifestAssets);
+    } finally {
+      await testServer.close();
+      fs.rmSync(linkDir);
+      fs.rmSync(realDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets follow an imported stylesheet symlink being retargeted", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-app-css-retarget-"));
+    const fixture = writePagesAppGlobalCssFixture(tmpDir);
+    const themePath = path.join(tmpDir, "styles", "theme.css");
+    fs.mkdirSync(path.join(tmpDir, "themes"));
+    fs.writeFileSync(path.join(tmpDir, "themes", "light.css"), ".light { color: white; }\n");
+    fs.writeFileSync(path.join(tmpDir, "themes", "dark.css"), ".dark { color: black; }\n");
+    fs.symlinkSync(path.join(tmpDir, "themes", "light.css"), themePath);
+    fs.writeFileSync(
+      path.join(tmpDir, "lib", "transitive.ts"),
+      'import "../styles/theme.css";\n' +
+        'import transitiveStyles from "../styles/transitive.module.css";\n' +
+        "export const transitiveClassName = transitiveStyles.transitiveText;\n",
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+    const readAppManifest = async () => {
+      const assetsModule = await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      return (assetsModule.default as { ssrManifest?: Record<string, string[]> }).ssrManifest?.[
+        fixture.appPath
+      ];
+    };
+
+    try {
+      expect(await readAppManifest()).toContain("themes/light.css");
+
+      fs.rmSync(themePath);
+      testServer.watcher.emit("unlink", themePath);
+      fs.symlinkSync(path.join(tmpDir, "themes", "dark.css"), themePath);
+      testServer.watcher.emit("add", themePath);
+
+      const manifest = await readAppManifest();
+      expect(manifest).toContain("themes/dark.css");
+      expect(manifest).not.toContain("themes/light.css");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("dev Pages client assets do not treat Less as a built-in Next.js stylesheet", async () => {
     // Next.js built-in CSS rules cover css/scss/sass, not less:
     // .nextjs-ref/packages/next/src/build/webpack/config/blocks/css/index.ts regexLikeCss.
@@ -4564,6 +4995,47 @@ describe("Virtual server entry generation", () => {
       };
       expect(assets.ssrManifest?.[appPath.split(path.sep).join("/")]).toBeUndefined();
       expect(Object.values(assets.ssrManifest ?? {}).flat()).not.toContain("styles/site.less");
+    } finally {
+      await testServer.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dev Pages client assets resolve shimmed next/* imports through vinext", async () => {
+    // The stylesheet walker resolves from vinext's own load hook. Skipping
+    // vinext's resolveId there resolved next/navigation to real Next.js, which
+    // a server dep optimizer with discovery (the Cloudflare Worker) then
+    // registered and re-bundled mid-startup.
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-shim-assets-"));
+    fs.mkdirSync(path.join(tmpDir, "pages"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "_app.tsx"),
+      'import { usePathname } from "next/navigation";\n' +
+        "export default function App({ Component, pageProps }: any) {\n" +
+        "  usePathname();\n" +
+        "  return <Component {...pageProps} />;\n" +
+        "}\n",
+    );
+    fs.writeFileSync(
+      path.join(tmpDir, "pages", "index.tsx"),
+      "export default function Home() { return <div>Home</div>; }\n",
+    );
+    const testServer = await createServer({
+      root: tmpDir,
+      configFile: false,
+      plugins: [vinext({ appDir: tmpDir })],
+      environments: { ssr: { optimizeDeps: { noDiscovery: false } } },
+      server: { port: 0, cors: false },
+      logLevel: "silent",
+    });
+
+    try {
+      await testServer.ssrLoadModule("virtual:vinext-pages-client-assets");
+      const depsOptimizer = testServer.environments.ssr.depsOptimizer;
+      expect(depsOptimizer).toBeDefined();
+      expect(Object.keys(depsOptimizer!.metadata.discovered)).not.toContain("next/navigation");
+      expect(Object.keys(depsOptimizer!.metadata.optimized)).not.toContain("next/navigation");
     } finally {
       await testServer.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
@@ -4979,43 +5451,47 @@ describe("Plugin config", () => {
       const configPlugin = plugins.find((p) => p.name === "vinext:config");
       expect(configPlugin).toBeDefined();
 
+      // The compatibility ID and the per-build identity are server-only; the
+      // browser bundle gets "".
+      const readServerDefine = (vinextPlugins: any[], name: string) =>
+        vinextPlugins
+          .find((p) => p.name === "vinext:compiler-define-server")
+          .configEnvironment("rsc", {}, { command: "build" }).define[`process.env.${name}`];
+      const readServerRscBuildIdentity = (vinextPlugins: any[]) =>
+        readServerDefine(vinextPlugins, "__VINEXT_RSC_BUILD_IDENTITY");
       const result = await configPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
+      const rscBuildIdentity = readServerRscBuildIdentity(plugins);
+      const rscCompatibilityId = readServerDefine(plugins, "__VINEXT_RSC_COMPATIBILITY_ID");
       const repeatedResult = await configPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
 
-      expect(result.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
-      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).not.toBe(
-        JSON.stringify(buildId),
-      );
-      expect(JSON.parse(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"])).toMatch(
-        /^[0-9a-f-]{36}$/,
-      );
-      expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
-        result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"],
-      );
-      const rscBuildIdentity = result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"];
+      expect(readServerDefine(plugins, "__VINEXT_BUILD_ID")).toBe(JSON.stringify(buildId));
+      expect(result.define["process.env.__VINEXT_BUILD_ID"]).toBe("undefined");
+      expect(rscCompatibilityId).not.toBe(JSON.stringify(buildId));
+      expect(JSON.parse(rscCompatibilityId)).toMatch(/^[0-9a-f-]{36}$/);
+      expect(readServerDefine(plugins, "__VINEXT_RSC_COMPATIBILITY_ID")).toBe(rscCompatibilityId);
+      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
+      expect(repeatedResult.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
+      expect(result.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
       expect(JSON.parse(rscBuildIdentity)).toMatch(/^[0-9a-f]{32}$/);
-      expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe(
-        rscBuildIdentity,
-      );
+      expect(repeatedResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).toBe('""');
+      expect(readServerRscBuildIdentity(plugins)).toBe(rscBuildIdentity);
 
       const nextBuildPlugins = vinext({
         nextConfig: { generateBuildId: () => buildId },
       }) as any[];
       const nextBuildConfigPlugin = nextBuildPlugins.find((p) => p.name === "vinext:config");
-      const nextBuildResult = await nextBuildConfigPlugin.config(
+      await nextBuildConfigPlugin.config(
         { root: tmpDir, plugins: [] },
         { command: "build", mode: "production" },
       );
-      expect(nextBuildResult.define["process.env.__VINEXT_BUILD_ID"]).toBe(JSON.stringify(buildId));
-      expect(nextBuildResult.define["process.env.__VINEXT_RSC_BUILD_IDENTITY"]).not.toBe(
-        rscBuildIdentity,
-      );
+      expect(readServerDefine(nextBuildPlugins, "__VINEXT_BUILD_ID")).toBe(JSON.stringify(buildId));
+      expect(readServerRscBuildIdentity(nextBuildPlugins)).not.toBe(rscBuildIdentity);
     } finally {
       if (previousSharedRscBuildIdentity === undefined) {
         delete process.env.__VINEXT_SHARED_RSC_BUILD_IDENTITY;
@@ -5050,9 +5526,14 @@ describe("Plugin config", () => {
         { command: "build", mode: "production" },
       );
 
-      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe(
-        JSON.stringify("public-deployment-id"),
-      );
+      expect(
+        plugins
+          .find((p) => p.name === "vinext:compiler-define-server")
+          .configEnvironment("rsc", {}, { command: "build" }).define[
+          "process.env.__VINEXT_RSC_COMPATIBILITY_ID"
+        ],
+      ).toBe(JSON.stringify("public-deployment-id"));
+      expect(result.define["process.env.__VINEXT_RSC_COMPATIBILITY_ID"]).toBe('""');
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true });
     }
@@ -5129,6 +5610,7 @@ describe("Plugin config", () => {
         command: "serve",
         cacheDir: path.join(FIXTURE_DIR, "node_modules/.vite"),
         configFile: false,
+        environments: {},
         plugins: [
           { name: "vite:react-babel" },
           { name: "vite:react-refresh" },
@@ -5758,13 +6240,22 @@ export const config = { matcher: ["/protected"] };
 
     // Client bundle should be code-split: framework (React/ReactDOM) in its
     // own chunk, vinext runtime in another, and the entry bootstrap should be
-    // small (not a monolithic bundle containing all vendor code).
-    const frameworkChunk = jsFiles.find((f: string) => f.startsWith("framework-"));
-    const vinextChunk = jsFiles.find((f: string) => f.startsWith("vinext-"));
-    const entryChunk = jsFiles.find((f: string) => f.includes("vinext-client-entry"));
+    // small (not a monolithic bundle containing all vendor code). Chunk names
+    // live in the build manifest; emitted file names are hash-only.
+    const chunkFileByName = (name: string) => {
+      const file = Object.values(buildManifest).find((entry) => entry.name === name)?.file;
+      return file ? path.basename(file) : undefined;
+    };
+    const frameworkChunk = chunkFileByName("framework");
+    const vinextChunk = chunkFileByName("vinext");
+    const entryChunk = Object.values(buildManifest).find((entry) => entry.isEntry)?.file;
     expect(frameworkChunk).toBeDefined();
     expect(vinextChunk).toBeDefined();
     expect(entryChunk).toBeDefined();
+    for (const file of [frameworkChunk, vinextChunk, entryChunk]) {
+      expect(jsFiles).toContain(path.basename(file!));
+      expect(path.basename(file!)).toMatch(/^[\w-]{8}\.js$/);
+    }
 
     // The entry chunk should stay small: it contains the hydration bootstrap
     // and this fixture's generated route table, but not the React framework.
@@ -5772,8 +6263,8 @@ export const config = { matcher: ["/protected"] };
     // parity routes, so allow their generated route-table entries while
     // retaining a tight guard against framework code entering the bootstrap.
     if (entryChunk) {
-      const entrySize = fs.statSync(path.join(assetsDir, entryChunk)).size;
-      expect(entrySize).toBeLessThan(28 * 1024); // < 28 KB
+      const entrySize = fs.statSync(path.join(assetsDir, path.basename(entryChunk))).size;
+      expect(entrySize).toBeLessThan(36 * 1024); // < 36 KB, including storage-policy, encoded-path, config query-param, res.revalidate and getStaticPaths request-time fixture routes
     }
 
     const counterManifestEntry = Object.entries(manifest).find(
@@ -6466,6 +6957,143 @@ export async function getStaticPaths() {
     }
   });
 
+  // Next.js renders the 404 on the getServerSideProps res, so the 404 keeps the
+  // middleware Cache-Control, the handler's own one over it, or a later write
+  // from the 404 render's `_app`. A raw `[]` skips the default and emits no
+  // header, as Node does.
+  it.each([
+    {
+      kind: "ISR",
+      page: `export async function getStaticProps() {
+  return { props: {}, revalidate: 60 };
+}`,
+    },
+    { kind: "dynamic", page: "" },
+  ])(
+    "keeps the getServerSideProps res Cache-Control on a notFound rendered by a $kind 404",
+    async ({ kind, page }) => {
+      const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gssp-notfound-404-"));
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      const fixtureOutDir = path.join(tmpRoot, "dist");
+
+      try {
+        await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+        await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+        await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+        await fsp.writeFile(
+          path.join(tmpRoot, "next.config.mjs"),
+          `export default { generateBuildId: () => "cc-build" };\n`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "middleware.ts"),
+          `import { NextResponse } from "next/server";
+
+export function middleware(request) {
+  if (!request.nextUrl.searchParams.has("mw")) return NextResponse.next();
+  return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });
+}
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "_app.tsx"),
+          `import App from "next/app";
+
+export default function MyApp({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+
+MyApp.getInitialProps = async (appContext) => {
+  const { req, res } = appContext.ctx;
+  if (res && String(req?.url ?? "").includes("app-cache-control")) {
+    res.setHeader("Cache-Control", "public, max-age=7");
+  }
+  return App.getInitialProps(appContext);
+};
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "404.tsx"),
+          `${page}
+
+export default function Custom404() {
+  return <p id="not-found">custom 404</p>;
+}
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "missing.tsx"),
+          `export default function Page() {
+  return <p>unexpected page</p>;
+}
+
+export async function getServerSideProps({ query, res }) {
+  if (query.own !== undefined) res.setHeader("Cache-Control", "s-maxage=5");
+  if (query.arr !== undefined) res.setHeader("Cache-Control", query.arr === "empty-string" ? [""] : []);
+  return { notFound: true };
+}
+`,
+        );
+
+        await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        const prodServer = unwrapStartedProdServer(
+          await startProdServer({
+            port: 0,
+            host: "127.0.0.1",
+            outDir: fixtureOutDir,
+          }),
+        );
+
+        try {
+          const addr = prodServer.address() as { port: number };
+          const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+          const isr = kind === "ISR";
+          const requests = [
+            // The first request renders /404, so its `_app` write lands last.
+            {
+              search: "?mw=1&own=1&app-cache-control=1",
+              cacheControl: "public, max-age=7",
+              cacheState: isr ? "MISS" : null,
+            },
+            // The rest read the cached ISR /404 entry, which does not rerun `_app`.
+            {
+              search: "?mw=1&own=1&app-cache-control=1",
+              cacheControl: isr ? "s-maxage=5" : "public, max-age=7",
+            },
+            { search: "?mw=1", cacheControl: "public, max-age=60" },
+            { search: "?mw=1&own=1", cacheControl: "s-maxage=5" },
+            { search: "?own=1", cacheControl: "s-maxage=5" },
+            { search: "", cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate" },
+            { search: "?arr=empty", cacheControl: null },
+            { search: "?mw=1&arr=empty-string", cacheControl: "" },
+          ];
+          for (const { search, cacheControl, cacheState = isr ? "HIT" : null } of requests) {
+            const res = await fetch(`${baseUrl}/missing${search}`);
+            expect(res.status).toBe(404);
+            expect(res.headers.get("cache-control")).toBe(cacheControl);
+            expect(res.headers.get("x-nextjs-cache")).toBe(cacheState);
+            expect(await res.text()).toContain('<p id="not-found">custom 404</p>');
+          }
+
+          for (const [search, cacheControl] of [
+            ["?arr=empty", null],
+            ["?mw=1&arr=empty-string", ""],
+          ]) {
+            const data = await fetch(`${baseUrl}/_next/data/cc-build/missing.json${search}`);
+            expect(data.status).toBe(404);
+            expect(data.headers.get("cache-control")).toBe(cacheControl);
+          }
+        } finally {
+          await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+        }
+      } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("passes the original error to _error.getInitialProps when getServerSideProps throws", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gssp-throw-error-"));
     const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
@@ -6830,6 +7458,16 @@ export default function CounterPage() {
       const indexHtml = await indexRes.text();
       expect(indexHtml).toContain("Hello, vinext!");
       expect(indexHtml).toContain("__NEXT_DATA__");
+      // The two-call build registers no client metadata, so hydration scripts
+      // must come from the on-disk SSR manifest regardless of file names.
+      const clientScriptSrcs = [
+        ...indexHtml.matchAll(/<script type="module"[^>]*\bsrc="([^"]+)"/g),
+      ].map((match) => match[1]);
+      const sharedChunks: string[] = manifest[SSR_MANIFEST_SHARED_CHUNKS_KEY] ?? [];
+      expect(sharedChunks.length).toBeGreaterThan(0);
+      for (const file of sharedChunks) {
+        expect(clientScriptSrcs).toContain("/" + file);
+      }
       // Ported from Next.js: test/e2e/next-head/index.test.ts
       // https://github.com/vercel/next.js/blob/canary/test/e2e/next-head/index.test.ts
       const indexHeadContents = indexHtml.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
@@ -6872,7 +7510,7 @@ export default function CounterPage() {
       // metadata derived from getStaticProps must advance with the body rather
       // than remaining in the cached shell. Exercise vinext's natural stale
       // background path here: on-demand revalidation uses a different
-      // foreground-render path and would not cover renderPagesIsrHtml().
+      // foreground-render path and would not cover background regeneration.
       await new Promise((resolve) => setTimeout(resolve, 1_100));
       const staleRes = await fetch(`${prodUrl}/isr-second-render-state`);
       expect(staleRes.status).toBe(200);
@@ -7348,6 +7986,85 @@ describe("Production server middleware (Pages Router)", () => {
     }
   });
 
+  // Next.js 308s any raw path containing a backslash or a repeated slash to
+  // the collapsed path (base-server.ts / resolve-routes.ts).
+  it("redirects repeated slashes and backslashes like Next.js", async () => {
+    await expectRepeatedSlashRedirects(prodUrl);
+  });
+
+  it("never turns a same-origin double-slash middleware redirect protocol-relative", async () => {
+    const res = await fetch(`${prodUrl}/mw-redirect-double-slash`, { redirect: "manual" });
+    expect(res.status).toBe(307);
+    // The trailingSlash: false rule strips the redirect target to the root;
+    // it is never relativized to a protocol-relative `//`.
+    expect(res.headers.get("location")).toBe("/");
+  });
+
+  it("supports res.appendHeader in API routes after middleware cookies in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header`);
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
+  it("rejects res.appendHeader after the API route wrote its headers in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header-after-write`);
+    expect(res.status).toBe(200);
+    expect(res.headers.has("x-late")).toBe(false);
+    expect(await res.text()).toBe("start:ERR_HTTP_HEADERS_SENT");
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path in production",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(prodUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware, and middleware's
+  // own Set-Cookie replaces a config one.
+  it.each([
+    { path: "/config-cookie-page", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    { path: "/config-cookie-page?empty-middleware-cookie", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])(
+    "orders next.config Set-Cookie like Next.js for $path in production",
+    async ({ path, cookies }) => {
+      // Read raw headers: fetch() hides an empty Set-Cookie line.
+      const rawCookies = await new Promise<string[]>((resolve, reject) => {
+        httpGet(`${prodUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        }).on("error", reject);
+      });
+      expect(rawCookies).toEqual(cookies);
+    },
+  );
+
   it("redirects /old-page to /about via middleware", async () => {
     const res = await fetch(`${prodUrl}/old-page`, { redirect: "manual" });
     expect(res.status).toBe(307);
@@ -7391,6 +8108,29 @@ describe("Production server middleware (Pages Router)", () => {
         id: "id-1",
       },
     });
+  });
+
+  // Next.js keeps no fetch state outside a work store (patch-fetch.ts returns
+  // originFetch), so a Pages API route's fetches must not pile up for the
+  // life of the process or carry their no-store into later requests.
+  it("keeps no process-wide fetch state from Pages API route fetches in production", async () => {
+    // A page render installs the fetch patch for the whole process.
+    expect((await fetch(`${prodUrl}/about`)).status).toBe(200);
+
+    const id = `fallback-${Date.now()}`;
+    const res = await fetch(`${prodUrl}/api/fetch-request-url?id=${id}`);
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ id });
+
+    const fallback = (globalThis as Record<PropertyKey, unknown>)[
+      Symbol.for("vinext.fetchCache.fallback")
+    ] as { dynamicFetchUrls: Set<string>; currentFetchRevalidate: number | null };
+    // Only the route's own outgoing fetches, not this test's request to it.
+    const routeFetchUrls = [...fallback.dynamicFetchUrls].filter(
+      (url) => url.startsWith("http://127.0.0.1:9/upstream?") && url.includes(id),
+    );
+    expect(routeFetchUrls).toEqual([]);
+    expect(fallback.currentFetchRevalidate).toBeNull();
   });
 
   // Refs #1463: prod-server parity for the dev-server 405 check. POST to a
@@ -8125,6 +8865,30 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(404);
   });
 
+  // Next.js has no `.html` route aliases: `/about.html` is its own path.
+  // Routing it as `/about` would bypass middleware gated on `/about`.
+  it("routes .html request paths as written in production", async () => {
+    const canonical = await fetch(`${prodUrl}/middleware-protected-data`);
+    expect(canonical.status).toBe(403);
+
+    const cases = [
+      ["/middleware-protected-data.html", "only visible after middleware"],
+      ["/middleware-protected-data.html?x=1", "only visible after middleware"],
+      ["/index.html", "Hello, vinext!"],
+      ["/api/hello.html", "Hello from API!"],
+    ];
+    for (const [pathname, body] of cases) {
+      const response = await fetch(`${prodUrl}${pathname}`);
+      expect(response.status).toBe(404);
+      expect(await response.text()).not.toContain(body);
+    }
+
+    // `.html` stays part of the path, so a dynamic route still receives it.
+    const docs = await fetch(`${prodUrl}/docs/release/foo.html`);
+    expect(docs.status).toBe(200);
+    expect(await docs.text()).toMatch(/Path:\s*(<!--\s*-->)?\s*release\/foo\.html/);
+  });
+
   // ── /_next/data JSON endpoint in production (issue #1330) ─────────
   // Ported from Next.js: test/e2e/middleware-general/test/index.test.ts
   // ("should trigger middleware for data requests", "should normalize data
@@ -8228,6 +8992,109 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(await res.json()).toEqual({});
     });
+
+    // Next.js pages-handler.ts gives every getServerSideProps exit
+    // `revalidate: 0` before it answers the redirect or notFound, so a shared
+    // cache never stores the per-request result.
+    it("sends the getServerSideProps Cache-Control default on redirect and notFound exits", async () => {
+      const document = await fetch(`${prodUrl}/gssp-redirect`, { redirect: "manual" });
+      expect(document.status).toBe(307);
+      expect(document.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect.json`);
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const notFoundData = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/gssp-not-found.json?hiding=true`,
+      );
+      expect(notFoundData.status).toBe(404);
+      expect(notFoundData.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const notFoundDocument = await fetch(`${prodUrl}/gssp-not-found?hiding=true`);
+      expect(notFoundDocument.status).toBe(404);
+      expect(notFoundDocument.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+    });
+
+    it("keeps a getServerSideProps Cache-Control on redirects", async () => {
+      const document = await fetch(`${prodUrl}/gssp-redirect-cache-control`, {
+        redirect: "manual",
+      });
+      expect(document.status).toBe(308);
+      expect(document.headers.get("cache-control")).toBe("public, s-maxage=60");
+
+      const data = await fetch(
+        `${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect-cache-control.json`,
+      );
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe("public, s-maxage=60");
+    });
+
+    it.each(["empty", "zero"])(
+      "treats a falsy getServerSideProps Cache-Control (%s) as unset on redirects",
+      async (value) => {
+        const document = await fetch(`${prodUrl}/gssp-redirect-cache-control?value=${value}`, {
+          redirect: "manual",
+        });
+        expect(document.status).toBe(308);
+        expect(document.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+
+        const data = await fetch(
+          `${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect-cache-control.json?value=${value}`,
+        );
+        expect(data.status).toBe(200);
+        expect(data.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+      },
+    );
+
+    // Next.js applies middleware and next.config headers to the response
+    // before the page runs, so its `revalidate: 0` default only fills a
+    // missing Cache-Control.
+    it.each(["mw-cache-control", "config-cache-control"])(
+      "keeps a %s Cache-Control on getServerSideProps redirect and notFound exits",
+      async (param) => {
+        const document = await fetch(`${prodUrl}/gssp-redirect?${param}=1`, {
+          redirect: "manual",
+        });
+        expect(document.status).toBe(307);
+        expect(document.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect.json?${param}=1`);
+        expect(data.status).toBe(200);
+        expect(data.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const notFoundData = await fetch(
+          `${prodUrl}/_next/data/${BUILD_ID}/gssp-not-found.json?hiding=true&${param}=1`,
+        );
+        expect(notFoundData.status).toBe(404);
+        expect(notFoundData.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const notFoundDocument = await fetch(`${prodUrl}/gssp-not-found?hiding=true&${param}=1`);
+        expect(notFoundDocument.status).toBe(404);
+        expect(notFoundDocument.headers.get("cache-control")).toBe("public, max-age=60");
+
+        // The handler's own Cache-Control still wins over the seeded one.
+        for (const pathname of [`/_next/data/${BUILD_ID}/gssp-not-found.json`, "/gssp-not-found"]) {
+          const ownNotFound = await fetch(
+            `${prodUrl}${pathname}?hiding=true&own-cache-control=1&${param}=1`,
+          );
+          expect(ownNotFound.status).toBe(404);
+          expect(ownNotFound.headers.get("cache-control")).toBe("s-maxage=5");
+        }
+      },
+    );
   });
 });
 
@@ -8603,6 +9470,25 @@ export default class CustomDocument extends Document {
     expectFragmentsInOrder(headContents, ['id="head-marker-content"', 'name="document-child"']);
   });
 
+  it("keeps collected head tags when a dev HTML transform drops the Head marker", async () => {
+    const transform = devServer.transformIndexHtml.bind(devServer);
+    const transformSpy = vi
+      .spyOn(devServer, "transformIndexHtml")
+      .mockImplementation(async (...args) =>
+        (await transform(...args)).replace(/ data-vinext-head-open="[^"]*"/, ""),
+      );
+    try {
+      const response = await fetch(`${devUrl}/`);
+      expect(response.status).toBe(200);
+      const html = await response.text();
+      const headContents = html.match(/<head[^>]*>([\s\S]*?)<\/head>/i)?.[1] ?? "";
+      expect(headContents).toContain('name="page-head"');
+      expect(html).not.toContain("VINEXT_SSR_HEAD");
+    } finally {
+      transformSpy.mockRestore();
+    }
+  });
+
   it.each(["dev", "prod"] as const)(
     "uses direct document html and styles without rendering the page in %s",
     async (mode) => {
@@ -8618,6 +9504,26 @@ export default class CustomDocument extends Document {
       expect(html).not.toContain('id="app-shell"');
     },
   );
+
+  it("does not watch the filesystem root for a root URL with a query in dev", async () => {
+    // Vite 8.3.3 maps transformIndexHtml("/?q") onto the project root and then
+    // watches `/` for each inline <style> proxy module, crawling the whole disk.
+    const watcher = devServer.watcher;
+    const add = watcher.add.bind(watcher);
+    const watchedPaths: unknown[] = [];
+    const addSpy = vi.spyOn(watcher, "add").mockImplementation((paths) => {
+      watchedPaths.push(paths);
+      return paths === "/" ? watcher : add(paths);
+    });
+    try {
+      const response = await fetch(`${devUrl}/?manualDocumentHtml=true`);
+      expect(response.status).toBe(200);
+      expect(await response.text()).toContain("data-manual-document-style");
+    } finally {
+      addSpy.mockRestore();
+    }
+    expect(watchedPaths).not.toContain("/");
+  });
 
   it.each(["dev", "prod"] as const)(
     // Next.js builds a base context with req/res and passes `{ ...ctx, renderPage }`
@@ -8832,7 +9738,11 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(transferEncoding)).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    // The fixture holds its Suspense boundary for 600ms after render starts.
+    // Measure the shell against the response end rather than the request
+    // start, since a cold first request spends time loading modules before
+    // rendering begins. A buffering compressor would deliver both together.
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(response.rawBody.byteLength).toBeGreaterThan(0);
     expect(response.rawSnapshot.byteLength).toBeGreaterThan(0);
@@ -8860,7 +9770,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(response.endMs).toBeGreaterThanOrEqual(400);
     expect(partialHtml).toContain("Loading delayed chunk...");
     expect(partialHtml).not.toContain("Delayed stream content loaded");
@@ -8944,7 +9854,7 @@ describe("Production Pages Router SSR streaming", () => {
     expect(response.headers["content-length"]).toBeUndefined();
     expect(String(response.headers["transfer-encoding"])).toBe("chunked");
     expect(response.firstChunkMs).toBeGreaterThanOrEqual(0);
-    expect(response.firstChunkMs).toBeLessThan(400);
+    expect(response.endMs - response.firstChunkMs).toBeGreaterThanOrEqual(200);
     expect(partialHtml).toContain("Loading delayed gSSP chunk...");
     expect(partialHtml).not.toContain("Delayed gSSP stream content loaded");
     expect(finalHtml).toContain("Streaming gSSP Content-Length Test");
@@ -9043,6 +9953,12 @@ describe("Production server next.config.js features (Pages Router)", () => {
     const res = await fetch(`${prodUrl}/old-about`, { redirect: "manual" });
     expect(res.status).toBe(308); // permanent redirect
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  it("answers a next.config.js redirect with its statusCode in production", async () => {
+    const res = await fetch(`${prodUrl}/status-code-redirect`, { redirect: "manual" });
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toBe("/about");
   });
 
   it("applies redirects with repeated dynamic params in production", async () => {
@@ -10196,6 +11112,42 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitHtml).toContain('<div id="app-router-pathname">/gsp-string</div>');
     });
   }
+
+  // Next.js ignores a response App.getInitialProps sent for a getStaticProps
+  // page (`isResSent(res) && !isSSG`): the visitor gets the sent response, but
+  // the page is still rendered and stored.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/render.tsx
+  it("stores a GSP page whose App.getInitialProps sent the response in prod", async () => {
+    const missResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+    expect(missResponse.status).toBe(302);
+    expect(missResponse.headers.get("location")).toBe("/missing");
+    await missResponse.body?.cancel();
+
+    await vi.waitFor(async () => {
+      const hitResponse = await fetch(`${prodUrl}/gsp-sent-response`, { redirect: "manual" });
+      expect(hitResponse.status).toBe(200);
+      expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
+      expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
+    });
+  });
+
+  // Next.js dev sets its development page Cache-Control after the 404 render,
+  // so custom App code cannot make a per-request notFound document cacheable.
+  it("keeps the development Cache-Control on a getServerSideProps notFound in dev", async () => {
+    const response = await fetch(`${devUrl}/gssp-not-found`);
+    expect(response.status).toBe(404);
+    expect(response.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+    await response.body?.cancel();
+
+    // The getServerSideProps default is set before the 404 render, so a
+    // custom App that ends that render early still sends it.
+    const ended = await fetch(`${devUrl}/gssp-not-found?end=true`);
+    expect(ended.status).toBe(404);
+    expect(await ended.text()).toBe("ended by App.getInitialProps");
+    expect(ended.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+  });
 });
 
 describe("Pages production asset manifest reuse", () => {
@@ -10239,9 +11191,15 @@ export default function Page() { return <p>manifest reuse</p>; }
           pathToFileURL(path.join(root, "dist/vinext-client-assets.js")).href
         );
         const scans = { manifest: 0, cssGraph: 0, lazyChunks: 0 };
-        const frameworkFile = Object.values(assets.ssrManifest as Record<string, string[]>)
-          .flat()
-          .find((file) => file.includes("/framework-"))!;
+        const clientBuildManifest = JSON.parse(
+          await fsp.readFile(path.join(root, "dist/client/.vite/manifest.json"), "utf-8"),
+        ) as Record<string, ClientBuildManifestEntry>;
+        const frameworkFile = Object.values(clientBuildManifest).find(
+          (chunk) => chunk.name === "framework",
+        )!.file!;
+        const vinextRuntimeFile = Object.values(clientBuildManifest).find(
+          (chunk) => chunk.name === "vinext",
+        )!.file!;
         // Model a large app without making the test compile thousands of pages.
         for (let i = 0; i < 3000; i++) {
           assets.ssrManifest[`components/unused-${i}.tsx`] = [frameworkFile];
@@ -10285,9 +11243,14 @@ export default function Page() { return <p>manifest reuse</p>; }
         expect(first).toContain("manifest reuse");
         expect(first).toContain('rel="stylesheet"');
         expect(first).toContain(frameworkFile);
+        // Hash-only names carry no chunk name; shared chunks still get tags
+        // through the registered build list, even for a caller's manifest copy.
+        expect(first).toContain(`src="/${vinextRuntimeFile}"`);
         expect(first).not.toContain("lazy-2999.js");
         const initialScans = { ...scans };
-        expect(initialScans.manifest).toBe(registered ? 0 : 2);
+        // A caller-supplied manifest is indexed once for page lookups; shared
+        // chunks come from the registered build list without a scan.
+        expect(initialScans.manifest).toBe(registered ? 0 : 1);
         expect(initialScans.cssGraph).toBe(0);
         expect(initialScans.lazyChunks).toBeGreaterThan(0);
         for (let i = 0; i < 3; i++) expect(await render()).toBe(first);

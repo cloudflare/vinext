@@ -1,6 +1,6 @@
 import { resolveCachedRscResponseExpiresAt, type CachedRscResponse } from "vinext/shims/navigation";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
-import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import { parseRscRequestPath, stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 
 type VisitedResponseCacheNavigationKind = "navigate" | "refresh" | "traverse";
 
@@ -69,7 +69,7 @@ export function isVisitedResponseCacheEntryFresh(
 
 function normalizeVisitedResponseCacheLookupUrl(rscUrl: string): string | null {
   try {
-    const url = new URL(rscUrl, "http://vinext.local");
+    const url = parseRscRequestPath(rscUrl);
     stripRscCacheBustingSearchParam(url);
     return `${url.pathname}${url.search}`;
   } catch {

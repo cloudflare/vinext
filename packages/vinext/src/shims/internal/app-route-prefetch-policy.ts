@@ -10,7 +10,13 @@
  * mirrors the layering of `internal/app-route-detection.ts`.
  */
 import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
-import { createRouteTrieCache, matchRouteWithTrie } from "../../routing/route-matching.js";
+import {
+  createRouteTrieCache,
+  matchRouteWithTrie,
+  matchRouteWithTrieRawPathname,
+} from "../../routing/route-matching.js";
+import { matchRoutePatternPrefix, matchRoutePatternRaw } from "../../routing/route-pattern.js";
+import { splitPathSegments } from "../../routing/utils.js";
 import { stripBasePath } from "../../utils/base-path.js";
 
 declare global {
@@ -39,11 +45,18 @@ export type AppRoutePrefetchPolicy = {
    * How the dynamic stale-time signal affects this prefetch. Navigation data
    * takes it verbatim, explicit full prefetches fall back to the static window
    * only when it is zero, and loading shells ignore it because their contents
-   * are static.
+   * are static. "learning-only" keeps a dynamic render out of navigation reuse
+   * and holds it for the static window instead.
    */
-  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore";
+  dynamicStaleTime: "verbatim" | "full-prefetch" | "ignore" | "learning-only";
   fallbackTtl: "dynamic" | "static";
   prefetchShellFirst: boolean;
+  /**
+   * The route renders dynamically (`rendersDynamically`), so the prefetch
+   * never renders its page: an href with search params fetches the loading
+   * shell instead of the page with empty search params.
+   */
+  rendersDynamically?: true;
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
@@ -77,7 +90,50 @@ export function canAutoPrefetchFullAppRoute(href: string): boolean {
   return resolveAutoAppRoutePrefetch(href).cacheForNavigation;
 }
 
-export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolicy {
+/**
+ * Whether the page the href renders is dynamic. Under an interception context
+ * that one of the route's intercepting pages matches, that page renders
+ * instead, and Next.js classifies it as its own route. When several match,
+ * any dynamic one counts. The intercepted response also renders the route the
+ * context resolves to, which can be a dynamic descendant of the intercept's
+ * source, so that route counts too.
+ */
+function resolveRendersDynamically(
+  routes: VinextLinkPrefetchRoute[],
+  route: VinextLinkPrefetchRoute,
+  interceptionContext: string | null,
+  pathname: string,
+): boolean {
+  if (interceptionContext !== null && route.intercepts) {
+    // Raw segments, as the server's intercept gate matches the still-encoded
+    // target and source: `/%70hotos/1` isn't `/photos/:id`, and `/%61dmin`
+    // doesn't claim an `/admin` intercept.
+    const pathParts = splitPathSegments(pathname);
+    const contextParts = splitPathSegments(interceptionContext);
+    const matching = route.intercepts.filter(
+      (intercept) =>
+        matchRoutePatternRaw(pathParts, intercept.targetPatternParts) !== null &&
+        matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
+    );
+    if (matching.length > 0) {
+      return (
+        matching.some((intercept) => intercept.rendersDynamically === true) ||
+        matchRouteWithTrieRawPathname(interceptionContext, routes, linkPrefetchRouteTrieCache)
+          ?.route.rendersDynamically === true
+      );
+    }
+  }
+  return route.rendersDynamically === true;
+}
+
+/**
+ * `interceptionContext` is the prefetch's interception context
+ * (`getPrefetchInterceptionContext`).
+ */
+export function resolveAutoAppRoutePrefetch(
+  href: string,
+  interceptionContext: string | null = null,
+): AppRoutePrefetchPolicy {
   if (typeof window === "undefined") return NO_APP_ROUTE_PREFETCH;
 
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
@@ -120,21 +176,46 @@ export function resolveAutoAppRoutePrefetch(href: string): AppRoutePrefetchPolic
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
     (ENCODED_PATH_DELIMITER_RE.test(routeUrl.pathname) ||
       (isFullyDynamicRootRoute && !requiresRouteTreePrefetch));
+  // Next.js's automatic prefetch of a route it renders dynamically never
+  // renders the page. It stops at the nearest loading boundary below the shared
+  // layout, or sends only the route tree when there is none
+  // (`walkTreeWithFlightRouterState`), and keeps that for `staleTimes.static`.
+  // The loading shell is vinext's equivalent. A full prefetch would render the
+  // page for a payload that is only fresh for `staleTimes.dynamic` (0 by
+  // default).
+  const rendersDynamically = resolveRendersDynamically(
+    routes,
+    route,
+    interceptionContext,
+    routeUrl.pathname,
+  );
   const cacheForNavigation =
     !hasSearchParams &&
     !hasCacheComponentsLearningOnlyDynamicPath &&
     (requiresRouteTreePrefetch ||
-      (!route.canPrefetchLoadingShell && route.requiresDynamicNavigationRequest !== true));
+      (!route.canPrefetchLoadingShell &&
+        route.requiresDynamicNavigationRequest !== true &&
+        !rendersDynamically));
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
-    // commit loading.js immediately. Dynamic routes without loading-shell
-    // fallbacks can be cached for navigation unless their active parallel
-    // branches must be derived from the click-time target tree.
+    // commit loading.js immediately. Other routes that may be static can be
+    // cached for navigation unless their active parallel branches must be
+    // derived from the click-time target tree.
     cacheForNavigation,
-    dynamicStaleTime: cacheForNavigation ? "verbatim" : "ignore",
+    // Without Cache Components, Next.js's automatic prefetch of a route it
+    // renders dynamically never carries the page (see above). A full prefetch
+    // of a route that turns out dynamic while rendering, which the build can't
+    // classify, is kept the same way: never reused by a navigation, and fresh
+    // for the static period.
+    dynamicStaleTime: !cacheForNavigation
+      ? "ignore"
+      : String(process.env.__NEXT_CACHE_COMPONENTS) === "true"
+        ? "verbatim"
+        : "learning-only",
     fallbackTtl: "static",
     prefetchShellFirst: requiresRouteTreePrefetch || hasSearchParams || !route.isDynamic,
+    ...(rendersDynamically ? { rendersDynamically: true } : {}),
     ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
   };

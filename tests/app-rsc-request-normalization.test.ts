@@ -77,17 +77,25 @@ function normalized(result: Response | NormalizedRscRequest): NormalizedRscReque
 // ── Protocol-relative URL guard ─────────────────────────────────────────────
 
 describe("normalizeRscRequest — protocol-relative URL guard", () => {
-  it("returns 404 for // path so trailing-slash redirect cannot emit open-redirect Location", () => {
+  it("308s a // path to the collapsed same-origin path, like Next.js", () => {
     // Regression for: trailing-slash 308 echoes //evil.com → open redirect.
-    const result = normalizeRscRequest(req("//evil.com/path"), "");
+    const result = normalizeRscRequest(req("//evil.com/path?a=1"), "");
     expect(result).toBeInstanceOf(Response);
-    expect((result as Response).status).toBe(404);
+    expect((result as Response).status).toBe(308);
+    expect((result as Response).headers.get("location")).toBe("/evil.com/path?a=1");
   });
 
-  it("returns 404 for /\\ path (browsers normalize \\ to / in Location headers)", () => {
+  it("308s a /\\ path to the collapsed path (the URL parser turns \\ into /)", () => {
     const result = normalizeRscRequest(req("/\\evil.com"), "");
     expect(result).toBeInstanceOf(Response);
-    expect((result as Response).status).toBe(404);
+    expect((result as Response).status).toBe(308);
+    expect((result as Response).headers.get("location")).toBe("/evil.com");
+  });
+
+  it("308s repeated slashes inside a basePath before the basePath check", () => {
+    const result = normalizeRscRequest(req("/docs//"), "/docs");
+    expect((result as Response).status).toBe(308);
+    expect((result as Response).headers.get("location")).toBe("/docs/");
   });
 
   it("returns 404 for /%5C encoded backslash (survives segment-wise decode, then echoed in Location)", () => {
@@ -107,7 +115,8 @@ describe("normalizeRscRequest — protocol-relative URL guard", () => {
     // would miss it. Verify the guard still fires on the raw url.pathname.
     const result = normalizeRscRequest(req("//evil.com"), "");
     expect(result).toBeInstanceOf(Response);
-    expect((result as Response).status).toBe(404);
+    expect((result as Response).status).toBe(308);
+    expect((result as Response).headers.get("location")).toBe("/evil.com");
   });
 
   it("does not block a normal leading-slash path", () => {
@@ -214,12 +223,10 @@ describe("normalizeRscRequest — basePath", () => {
 // ── Path normalization ───────────────────────────────────────────────────────
 
 describe("normalizeRscRequest — path normalization", () => {
-  it("collapses double slashes within a path (not at the start)", () => {
-    // //foo is caught by the protocol-relative guard (correctly). Mid-path
-    // double slashes like /foo//bar are not open-redirect shaped and must
-    // be collapsed by normalizePath.
-    const result = normalized(normalizeRscRequest(req("/foo//bar"), ""));
-    expect(result.pathname).toBe("/foo/bar");
+  it("308s double slashes within a path to the collapsed path, like Next.js", () => {
+    const result = normalizeRscRequest(req("/foo//bar"), "");
+    expect((result as Response).status).toBe(308);
+    expect((result as Response).headers.get("location")).toBe("/foo/bar");
   });
 
   it("resolves single-dot segments", () => {

@@ -97,6 +97,8 @@ import {
 import {
   beginAppRouterScrollIntent,
   clearAppRouterScrollIntent,
+  getPendingAppRouterScrollIntent,
+  isLatestAppRouterScrollIntent,
 } from "../packages/vinext/src/shims/app-router-scroll-state.js";
 import * as navigationShim from "../packages/vinext/src/shims/navigation.js";
 import {
@@ -532,6 +534,36 @@ async function resolveTestPendingNavigationCommitDispositionDecision(
   });
 }
 
+function noopCommitEffect() {
+  return { writeHistory: () => {}, publish: () => {} };
+}
+
+function createCommitEffectMock() {
+  return { writeHistory: vi.fn(), publish: vi.fn() };
+}
+
+function expectCommitEffectNotRun(commitEffect: ReturnType<typeof createCommitEffectMock>) {
+  expect(commitEffect.writeHistory).not.toHaveBeenCalled();
+  expect(commitEffect.publish).not.toHaveBeenCalled();
+}
+
+function expectCommitEffectRunOnce(
+  commitEffect: ReturnType<typeof createCommitEffectMock>,
+  commit?: { keepCurrentUrl: boolean; releaseSnapshot: boolean },
+) {
+  if (commit) {
+    expect(commitEffect.writeHistory).toHaveBeenCalledExactlyOnceWith({
+      keepCurrentUrl: commit.keepCurrentUrl,
+    });
+    expect(commitEffect.publish).toHaveBeenCalledExactlyOnceWith({
+      releaseSnapshot: commit.releaseSnapshot,
+    });
+  } else {
+    expect(commitEffect.writeHistory).toHaveBeenCalledTimes(1);
+    expect(commitEffect.publish).toHaveBeenCalledTimes(1);
+  }
+}
+
 function createControllerHarness(
   initialState: AppRouterState = createState(),
   deps?: Parameters<typeof createAppBrowserNavigationController>[0],
@@ -596,7 +628,7 @@ async function dispatchTestNavigationPayload(options: {
   const commitDispatched = options.waitForNextVisibleCommitDispatch();
   void options.controller.renderNavigationPayload({
     actionType: "navigate",
-    createNavigationCommitEffect: () => () => {},
+    createNavigationCommitEffect: noopCommitEffect,
     historyUpdateMode: "push",
     navigationCommitKind: options.navigationCommitKind,
     navigationInitiationState: options.navigationInitiationState,
@@ -985,6 +1017,20 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe("/rewrite?_rsc=prefetch-digest");
   });
 
+  it("keeps same-origin prefetch response pathnames that start with // on the app origin", () => {
+    const responseUrl = resolvePrefetchNavigationResponseUrl({
+      additionalRscUrls: [],
+      origin: "https://example.com",
+      responseUrl: "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+      visibleRscUrl: "/.//a//attacker.example/z",
+    });
+
+    expect(responseUrl).toBe("/.//a//attacker.example/z?_rsc=prefetch-digest");
+    expect(new URL(responseUrl, "https://example.com/current").href).toBe(
+      "https://example.com//a//attacker.example/z?_rsc=prefetch-digest",
+    );
+  });
+
   it("preserves cross-origin prefetch response URLs for navigation validation", () => {
     expect(
       resolvePrefetchNavigationResponseUrl({
@@ -1156,10 +1202,10 @@ describe("app browser entry navigation scheduling", () => {
     expect(resolveServerActionOperationLane("staticAndDynamic")).toBe("refresh");
   });
 
-  it("restores action HTTP fallback errors from response status", () => {
+  it("restores action HTTP fallback errors from response status", async () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
-    const fallback = normalizeServerActionThrownValue(new Error("sanitized"), 404);
+    const fallback = await normalizeServerActionThrownValue(new Error("sanitized"), 404);
 
     expect(fallback).toBeInstanceOf(Error);
     if (fallback instanceof Error && "digest" in fallback) {
@@ -1186,10 +1232,17 @@ describe("app browser entry navigation scheduling", () => {
     ).toBe(false);
   });
 
-  it("preserves ordinary server action errors for 500 responses", () => {
+  it("preserves ordinary server action errors for 500 responses", async () => {
     const error = new Error("sanitized action failure");
 
-    expect(normalizeServerActionThrownValue(error, 500)).toBe(error);
+    await expect(normalizeServerActionThrownValue(error, 500)).resolves.toBe(error);
+  });
+
+  it("returns the rejection of a failed action result as the thrown value", async () => {
+    // Next.js sends a failed action's result as a rejected promise.
+    const error = Object.assign(new Error("sanitized action failure"), { digest: "123" });
+
+    await expect(normalizeServerActionThrownValue(Promise.reject(error), 500)).resolves.toBe(error);
   });
 
   it("uses text/plain action response bodies as boundary errors", async () => {
@@ -1523,7 +1576,7 @@ describe("app browser entry navigation scheduling", () => {
     function assertNoTransitionOverride(controller: Controller) {
       void renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
         nextElements: Promise.resolve(createResolvedElements("route:/dashboard", "/")),
@@ -2852,6 +2905,34 @@ describe("app browser entry state helpers", () => {
     expect(nextState.slotBindings).toEqual(currentBindings);
   });
 
+  it("reloads instead of classifying an HMR replacement when the route manifest fails to load", async () => {
+    const { controller, detach, stateRef } = createControllerHarness(
+      createState({
+        rootLayoutTreePath: "/",
+        routeId: "route:/settings",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/settings",
+          {},
+        ),
+      }),
+      { basePath: "/base", loadRouteManifest: () => Promise.resolve(false) },
+    );
+    const { assign } = stubWindow("https://example.com/base/settings");
+
+    try {
+      // Snapshot paths have basePath stripped.
+      await controller.hmrReplaceTree(
+        Promise.resolve(createResolvedElements("route:/settings/account", "/")),
+        createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      );
+
+      expect(assign).toHaveBeenCalledWith("/base/settings");
+      expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
   it("does not let a pending HMR replacement overwrite a navigation commit", async () => {
     const { controller, stateRef, setBrowserRouterState } = createControllerHarness();
     let resolveHmrPayload!: (elements: AppElements) => void;
@@ -2905,7 +2986,7 @@ describe("app browser entry state helpers", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/navigation",
@@ -2951,7 +3032,7 @@ describe("app browser entry state helpers", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/navigation",
@@ -3441,7 +3522,7 @@ describe("app browser navigation controller", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements,
@@ -3485,6 +3566,8 @@ describe("app browser navigation controller", () => {
 
     try {
       const pendingRouterState = controller.beginPendingBrowserRouterState();
+      const resolvedPendingState = vi.fn();
+      void pendingRouterState.promise.then(resolvedPendingState);
       const navId = controller.beginNavigation();
       let resolvePayload!: (elements: AppElements) => void;
       const nextElements = new Promise<AppElements>((resolve) => {
@@ -3494,7 +3577,7 @@ describe("app browser navigation controller", () => {
       const result = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/marketing",
@@ -3524,8 +3607,10 @@ describe("app browser navigation controller", () => {
       resolvePayload(createResolvedElements("route:/marketing", "/", null, {}, ["layout:/stale"]));
 
       await expect(result).resolves.toBe("hard-navigate");
-      await expect(pendingRouterState.promise).resolves.toBe(stateRef.current);
-      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing");
+      await Promise.resolve();
+      expect(pendingRouterState.settled).toBe(true);
+      expect(resolvedPendingState).not.toHaveBeenCalled();
+      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/marketing", "assign");
       expect(stateRef.current.routeId).toBe("route:/app");
     } finally {
       detach();
@@ -3557,7 +3642,7 @@ describe("app browser navigation controller", () => {
   it("queues pre-paint commit effects and resolves the pending browser-router state on dispatch", async () => {
     const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     const createNavigationCommitEffect = vi.fn(() => commitEffect);
     const nextElements = Promise.resolve(
       createResolvedElements("route:/dashboard", "/", null, {
@@ -3586,11 +3671,138 @@ describe("app browser navigation controller", () => {
         routeId: "route:/dashboard",
       });
       expect(createNavigationCommitEffect).toHaveBeenCalledTimes(1);
-      expect(commitEffect).not.toHaveBeenCalled();
+      expectCommitEffectNotRun(commitEffect);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
     } finally {
       detach();
     }
+  });
+
+  describe("navigation commit phases", () => {
+    async function renderQueuedCommit() {
+      const harness = createControllerHarness();
+      const pendingRouterState = harness.controller.beginPendingBrowserRouterState();
+      const commitEffect = createCommitEffectMock();
+      void renderCurrentStateNavigationPayload(harness.controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: harness.stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId: harness.controller.beginNavigation(),
+      });
+      const { renderId } = await pendingRouterState.promise;
+      return { ...harness, commitEffect, renderId };
+    }
+
+    it("writes history when the commit begins and publishes it in the layout phase", async () => {
+      const { commitEffect, controller, detach, renderId } = await renderQueuedCommit();
+
+      try {
+        controller.beginNavigationRenderCommit(renderId);
+        expect(commitEffect.writeHistory).toHaveBeenCalledExactlyOnceWith({
+          keepCurrentUrl: false,
+        });
+        expect(commitEffect.publish).not.toHaveBeenCalled();
+
+        controller.commitNavigationRender(renderId);
+        expectCommitEffectRunOnce(commitEffect, { keepCurrentUrl: false, releaseSnapshot: true });
+      } finally {
+        detach();
+      }
+    });
+
+    it("only publishes when a raw history write flushes the committing render", async () => {
+      const { commitEffect, controller, detach, renderId } = await renderQueuedCommit();
+
+      try {
+        controller.beginNavigationRenderCommit(renderId);
+        controller.flushCommittingNavigationUrl();
+        expectCommitEffectRunOnce(commitEffect, { keepCurrentUrl: false, releaseSnapshot: true });
+
+        controller.commitNavigationRender(renderId);
+        expectCommitEffectRunOnce(commitEffect, { keepCurrentUrl: false, releaseSnapshot: true });
+      } finally {
+        detach();
+      }
+    });
+
+    it("leaves a superseded render's commit effect unrun", async () => {
+      const commitClientNavigationState = vi.fn();
+      const { controller, detach, stateRef } = createControllerHarness(createState(), {
+        commitClientNavigationState,
+      });
+      const render = async (targetHref: string) => {
+        const pendingRouterState = controller.beginPendingBrowserRouterState();
+        const commitEffect = createCommitEffectMock();
+        void renderCurrentStateNavigationPayload(controller, {
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          actionType: "navigate",
+          createNavigationCommitEffect: () => commitEffect,
+          historyUpdateMode: "push",
+          navigationSnapshot: stateRef.current.navigationSnapshot,
+          nextElements: Promise.resolve(
+            createResolvedElements("route:/dashboard", "/", null, {
+              "page:/dashboard": React.createElement("main", null, targetHref),
+            }),
+          ),
+          operationLane: "navigation",
+          params: {},
+          pendingRouterState,
+          previousNextUrl: null,
+          targetHref,
+          navId: controller.beginNavigation(),
+        });
+        const { renderId } = await pendingRouterState.promise;
+        return { commitEffect, renderId };
+      };
+
+      try {
+        const superseded = await render("https://example.com/a");
+        const winner = await render("https://example.com/b");
+
+        controller.beginNavigationRenderCommit(winner.renderId);
+        controller.commitNavigationRender(winner.renderId);
+
+        expectCommitEffectNotRun(superseded.commitEffect);
+        expectCommitEffectRunOnce(winner.commitEffect, {
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+        // The superseded render still balances its render snapshot.
+        expect(commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("writes history before publishing when a render is drained without committing", async () => {
+      const { commitEffect, controller, detach, renderId } = await renderQueuedCommit();
+
+      try {
+        // The dev recovery boundary replaced the render before React began
+        // committing it.
+        controller.drainPrePaintEffects(renderId);
+        expectCommitEffectRunOnce(commitEffect, { keepCurrentUrl: false, releaseSnapshot: true });
+        expect(commitEffect.writeHistory.mock.invocationCallOrder[0]).toBeLessThan(
+          commitEffect.publish.mock.invocationCallOrder[0],
+        );
+      } finally {
+        detach();
+      }
+    });
   });
 
   it("writes history metadata from the approved merged visible state", async () => {
@@ -3638,7 +3850,7 @@ describe("app browser navigation controller", () => {
       getRouteManifest: () => routeManifest,
     });
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    const createNavigationCommitEffect = vi.fn(() => vi.fn());
+    const createNavigationCommitEffect = vi.fn(createCommitEffectMock);
 
     try {
       void renderCurrentStateNavigationPayload(controller, {
@@ -3682,7 +3894,7 @@ describe("app browser navigation controller", () => {
   it("recovers an uncommitted navigation after its streamed response completes", async () => {
     const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness();
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     let resolveResponse!: () => void;
     const navigationResponseCompletion = new Promise<void>((resolve) => {
       resolveResponse = resolve;
@@ -3724,7 +3936,7 @@ describe("app browser navigation controller", () => {
 
       controller.commitNavigationRender(1);
       await expect(renderPromise).resolves.toBe("committed");
-      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expectCommitEffectRunOnce(commitEffect);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(2);
     } finally {
       detach();
@@ -3734,7 +3946,7 @@ describe("app browser navigation controller", () => {
   it("suppresses response-completion recovery after the render already committed", async () => {
     const { controller, detach, setBrowserRouterState } = createControllerHarness();
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     let resolveResponse!: () => void;
     const navigationResponseCompletion = new Promise<void>((resolve) => {
       resolveResponse = resolve;
@@ -3770,7 +3982,7 @@ describe("app browser navigation controller", () => {
       resolveResponse();
       await Promise.resolve();
 
-      expect(commitEffect).toHaveBeenCalledTimes(1);
+      expectCommitEffectRunOnce(commitEffect);
       expect(setBrowserRouterState).toHaveBeenCalledTimes(1);
     } finally {
       detach();
@@ -3789,7 +4001,7 @@ describe("app browser navigation controller", () => {
     try {
       void renderCurrentStateNavigationPayload(controller, {
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationResponseCompletion,
         navigationSnapshot: stateRef.current.navigationSnapshot,
@@ -3828,7 +4040,7 @@ describe("app browser navigation controller", () => {
 
     void renderCurrentStateNavigationPayload(controller, {
       actionType: "navigate",
-      createNavigationCommitEffect: () => () => {},
+      createNavigationCommitEffect: noopCommitEffect,
       historyUpdateMode: "push",
       navigationResponseCompletion,
       navigationSnapshot: stateRef.current.navigationSnapshot,
@@ -3856,7 +4068,7 @@ describe("app browser navigation controller", () => {
 
   it("hard-navigates cache-restored payloads missing cache-entry proof metadata", async () => {
     const performHardNavigation = vi.fn(() => true);
-    const createNavigationCommitEffect = vi.fn(() => vi.fn());
+    const createNavigationCommitEffect = vi.fn(createCommitEffectMock);
     const currentState = createState({
       navigationSnapshot: createClientNavigationRenderSnapshot(
         "https://example.com/dashboard/profile",
@@ -3907,7 +4119,10 @@ describe("app browser navigation controller", () => {
       });
 
       expect(result).toBe("hard-navigate");
-      expect(performHardNavigation).toHaveBeenCalledWith("https://example.com/dashboard/settings");
+      expect(performHardNavigation).toHaveBeenCalledWith(
+        "https://example.com/dashboard/settings",
+        "assign",
+      );
       expect(createNavigationCommitEffect).not.toHaveBeenCalled();
       expect(stateRef.current.routeId).toBe("route:/dashboard/profile");
     } finally {
@@ -3919,7 +4134,7 @@ describe("app browser navigation controller", () => {
     const { controller, detach } = createControllerHarness();
     const { assign } = stubWindow("https://example.com/initial");
     vi.stubEnv("__NEXT_APP_NAV_FAIL_HANDLING", "true");
-    const createNavigationCommitEffect = vi.fn(() => vi.fn());
+    const createNavigationCommitEffect = vi.fn(createCommitEffectMock);
     let resolveNextElements: ((value: AppElements) => void) | undefined;
     const nextElements = new Promise<AppElements>((resolve) => {
       resolveNextElements = resolve;
@@ -3964,7 +4179,7 @@ describe("app browser navigation controller", () => {
     }
   });
 
-  it("forces same-path search and hash state into a synchronous React commit", async () => {
+  it("republishes same-path search and hash state before the commit signal", async () => {
     const initialElements = createResolvedElements("route:/hash", "/", null, {
       "page:/hash": React.createElement("main", null, "hash page"),
     });
@@ -3978,7 +4193,7 @@ describe("app browser navigation controller", () => {
     });
     const { controller, detach, setBrowserRouterState, stateRef } =
       createControllerHarness(initialState);
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     const scrollIntent = beginAppRouterScrollIntent("#hash-160");
 
     stubWindow("https://example.com/hash#non-existent");
@@ -4016,9 +4231,9 @@ describe("app browser navigation controller", () => {
       expect(stateRef.current.renderId).toBeGreaterThan(0);
       expect(stateRef.current.navigationSnapshot.searchParams.get("with-query-param")).toBe("");
       expect(setBrowserRouterState).toHaveBeenLastCalledWith(stateRef.current);
-      // URL and scroll effects still wait for NavigationCommitSignal's layout
-      // effect; hash-rsc-requests.browser.spec.ts verifies that real commit.
-      expect(commitEffect).not.toHaveBeenCalled();
+      // URL and scroll effects still wait for the route tree's commit
+      // effects; hash-rsc-requests.browser.spec.ts verifies that real commit.
+      expectCommitEffectNotRun(commitEffect);
     } finally {
       clearAppRouterScrollIntent();
       detach();
@@ -4041,7 +4256,7 @@ describe("app browser navigation controller", () => {
       routeId: "route:/hash",
     });
     const { controller, detach } = createControllerHarness(initialState);
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     const scrollIntent = beginAppRouterScrollIntent("#new-content");
 
     stubWindow("https://example.com/hash?old=1#old-content");
@@ -4073,7 +4288,7 @@ describe("app browser navigation controller", () => {
           new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
         ]),
       ).resolves.toBe("timeout");
-      expect(commitEffect).not.toHaveBeenCalled();
+      expectCommitEffectNotRun(commitEffect);
     } finally {
       clearAppRouterScrollIntent();
       detach();
@@ -4090,7 +4305,7 @@ describe("app browser navigation controller", () => {
       routeId: "route:/hash",
     });
     const { controller, detach } = createControllerHarness(initialState);
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     const scrollIntent = beginAppRouterScrollIntent("#hash-160");
 
     stubWindow("https://example.com/hash");
@@ -4129,7 +4344,7 @@ describe("app browser navigation controller", () => {
           new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 25)),
         ]),
       ).resolves.toBe("timeout");
-      expect(commitEffect).not.toHaveBeenCalled();
+      expectCommitEffectNotRun(commitEffect);
     } finally {
       clearAppRouterScrollIntent();
       detach();
@@ -4149,7 +4364,7 @@ describe("app browser navigation controller", () => {
       const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
         nextElements: new Promise<AppElements>((resolve) => {
@@ -4184,7 +4399,7 @@ describe("app browser navigation controller", () => {
 
   it("renderNavigationPayload stays pending until NavigationCommitSignal settles the commit", async () => {
     const { controller, detach, stateRef } = createControllerHarness();
-    const commitEffect = vi.fn();
+    const commitEffect = createCommitEffectMock();
     const nextElements = Promise.resolve(
       createResolvedElements("route:/dashboard", "/", null, {
         "page:/dashboard": React.createElement("main", null, "dashboard"),
@@ -4214,9 +4429,10 @@ describe("app browser navigation controller", () => {
       await Promise.resolve();
       await Promise.resolve();
 
-      // Pre-paint effect is queued but not yet run (drainPrePaintEffects
-      // only fires inside NavigationCommitSignal's useLayoutEffect).
-      expect(commitEffect).not.toHaveBeenCalled();
+      // The commit effect is queued but neither phase has run: its history
+      // write waits for NavigationHistoryCommit's insertion effect and its
+      // publish for NavigationCommitSignal's layout effect.
+      expectCommitEffectNotRun(commitEffect);
 
       // The promise must not resolve — NavigationCommitSignal has not
       // mounted, so resolveCommittedNavigations has no way to fire.
@@ -4228,6 +4444,258 @@ describe("app browser navigation controller", () => {
     } finally {
       detach();
     }
+  });
+
+  it("discardPendingNavigation drops an uncommitted render and restores the visible tree", async () => {
+    // Next.js: a raw history.pushState/replaceState dispatches ACTION_RESTORE,
+    // which marks the pending navigation discarded so it never commits.
+    const commitClientNavigationState = vi.fn();
+    const visibleState = createState();
+    const { controller, detach, setBrowserRouterState, stateRef } = createControllerHarness(
+      visibleState,
+      { commitClientNavigationState },
+    );
+    const commitEffect = createCommitEffectMock();
+
+    try {
+      expect(controller.discardPendingNavigation(visibleState)).toBe(false);
+
+      const scrollIntent = beginAppRouterScrollIntent("#section");
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: () => commitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: stateRef.current.navigationSnapshot,
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        scrollIntent,
+        targetHref: "https://example.com/dashboard#section",
+        navId,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(stateRef.current).not.toBe(visibleState);
+      expect(getPendingAppRouterScrollIntent()?.id).toBe(scrollIntent.id);
+
+      expect(controller.discardPendingNavigation(visibleState)).toBe(true);
+      await expect(renderPromise).resolves.toBe("no-commit");
+      expect(controller.isCurrentNavigation(navId)).toBe(false);
+      expect(setBrowserRouterState).toHaveBeenLastCalledWith(visibleState);
+      // The discarded render's snapshot is released without running its URL
+      // commit, and nothing is left to drain if a later render commits.
+      expectCommitEffectNotRun(commitEffect);
+      expect(commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+        releaseSnapshot: true,
+      });
+      controller.drainPrePaintEffects(Number.MAX_SAFE_INTEGER);
+      expect(commitClientNavigationState).toHaveBeenCalledOnce();
+      // navigateClientSide's post-navigation scroll fallback must not scroll
+      // to the discarded destination's hash or to the top of the page.
+      expect(getPendingAppRouterScrollIntent()).toBeNull();
+      expect(isLatestAppRouterScrollIntent(scrollIntent)).toBe(false);
+
+      expect(controller.discardPendingNavigation(visibleState)).toBe(false);
+    } finally {
+      clearAppRouterScrollIntent();
+      detach();
+    }
+  });
+
+  describe("history write after an optimistic shell commits", () => {
+    // Next.js treats the shell's commit as the navigation's: a raw
+    // history.pushState lands on top of it and the content still fills in
+    // under the shallow URL.
+    function createShellHarness() {
+      const commitClientNavigationState = vi.fn();
+      const initialState = createState();
+      const harness = createControllerHarness(initialState, { commitClientNavigationState });
+      const targetHref = "https://example.com/dashboard";
+      const render = (
+        navId: number,
+        navigationCommitKind: "authoritative" | "detached",
+        href = targetHref,
+        navigationInitiationState = initialState,
+      ) => {
+        const commitEffect = createCommitEffectMock();
+        const dispatched = harness.waitForNextVisibleCommitDispatch();
+        const outcome = harness.controller.renderNavigationPayload({
+          actionType: "navigate",
+          createNavigationCommitEffect: () => commitEffect,
+          historyUpdateMode: "push",
+          navigationCommitKind,
+          navigationInitiationState,
+          navigationSnapshot: createClientNavigationRenderSnapshot(href, {}),
+          navId,
+          nextElements: Promise.resolve(
+            createResolvedElements("route:/dashboard", "/", null, {
+              "page:/dashboard": React.createElement("main", null, navigationCommitKind),
+            }),
+          ),
+          operationLane: "navigation",
+          params: {},
+          payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+          pendingRouterState: null,
+          previousNextUrl: null,
+          targetHref: href,
+        });
+        return { commitEffect, dispatched, outcome };
+      };
+      const commit = (renderId: number) => {
+        harness.controller.beginNavigationRenderCommit(renderId);
+        harness.controller.commitNavigationRender(renderId);
+      };
+      const commitShell = async (navId: number) => {
+        const shell = render(navId, "detached");
+        await shell.dispatched;
+        commit(harness.stateRef.current.renderId);
+        await expect(shell.outcome).resolves.toBe("committed");
+        expectCommitEffectRunOnce(shell.commitEffect, {
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      };
+      return { ...harness, commit, commitClientNavigationState, commitShell, render };
+    }
+
+    it("keeps the navigation and commits its content under the current URL", async () => {
+      const { controller, detach, commit, commitClientNavigationState, commitShell, render } =
+        createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+        expect(controller.isCurrentNavigation(navId)).toBe(true);
+        expect(commitClientNavigationState).not.toHaveBeenCalled();
+
+        const authoritative = render(navId, "authoritative");
+        await authoritative.dispatched;
+        commit(stateRef().renderId);
+        await expect(authoritative.outcome).resolves.toBe("committed");
+        // The retired URL never became visible, so this render took no
+        // snapshot and keeps the URL the history write set.
+        expectCommitEffectRunOnce(authoritative.commitEffect, {
+          keepCurrentUrl: true,
+          releaseSnapshot: false,
+        });
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+      } finally {
+        detach();
+      }
+    });
+
+    it("releases the snapshot of an authoritative render that is already rendering", async () => {
+      const { controller, detach, commit, commitClientNavigationState, commitShell, render } =
+        createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        const authoritative = render(navId, "authoritative");
+        await authoritative.dispatched;
+
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+        // Hooks read the URL the history write set while the content renders.
+        expect(commitClientNavigationState).toHaveBeenCalledExactlyOnceWith(undefined, {
+          releaseSnapshot: true,
+        });
+
+        commit(stateRef().renderId);
+        await expect(authoritative.outcome).resolves.toBe("committed");
+        expectCommitEffectRunOnce(authoritative.commitEffect, {
+          keepCurrentUrl: true,
+          releaseSnapshot: false,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("still writes the URL of a redirect the navigation follows", async () => {
+      const { controller, detach, commit, commitShell, render } = createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+
+        const redirected = render(navId, "authoritative", "https://example.com/login");
+        await redirected.dispatched;
+        commit(stateRef().renderId);
+        await expect(redirected.outcome).resolves.toBe("committed");
+        expectCommitEffectRunOnce(redirected.commitEffect, {
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("still writes the URL of a redirect that only adds a hash", async () => {
+      const { controller, detach, commit, commitShell, render } = createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+
+        const redirected = render(navId, "authoritative", "https://example.com/dashboard#done");
+        await redirected.dispatched;
+        commit(stateRef().renderId);
+        await expect(redirected.outcome).resolves.toBe("committed");
+        expectCommitEffectRunOnce(redirected.commitEffect, {
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
+
+    it("forgets the retired URL once the navigation finalizes", async () => {
+      const { controller, detach, commit, commitShell, render } = createShellHarness();
+      const stateRef = () => controller.getBrowserRouterState();
+
+      try {
+        const navId = controller.beginNavigation();
+        await commitShell(navId);
+        expect(controller.discardPendingNavigation(stateRef())).toBe(false);
+        const authoritative = render(navId, "authoritative");
+        await authoritative.dispatched;
+        commit(stateRef().renderId);
+        await expect(authoritative.outcome).resolves.toBe("committed");
+        controller.finalizeNavigation(navId, null);
+
+        // A server action redirect reuses the navigation id without
+        // beginNavigation(); landing back on the shell's URL still writes it.
+        const actionRedirect = render(navId, "authoritative", undefined, stateRef());
+        await actionRedirect.dispatched;
+        commit(stateRef().renderId);
+        await expect(actionRedirect.outcome).resolves.toBe("committed");
+        expectCommitEffectRunOnce(actionRedirect.commitEffect, {
+          keepCurrentUrl: false,
+          releaseSnapshot: true,
+        });
+      } finally {
+        detach();
+      }
+    });
   });
 
   it("does not clear a newer navigation failure target when an older render commits", async () => {
@@ -4247,7 +4715,7 @@ describe("app browser navigation controller", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: Promise.resolve(
@@ -4272,7 +4740,7 @@ describe("app browser navigation controller", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: new Promise<AppElements>((resolve) => {
@@ -4304,6 +4772,43 @@ describe("app browser navigation controller", () => {
       detach();
       vi.unstubAllEnvs();
       vi.unstubAllGlobals();
+    }
+  });
+
+  it("commits a failed same-URL server action's tree before its thrown value settles", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState);
+    stubWindow("https://example.com/settings");
+    const nextElements = Promise.resolve(
+      createResolvedElements("route:/settings/account", "/", null, {
+        "page:/settings/account": React.createElement("main", null, "account"),
+      }),
+    );
+    const thrown = new Error("action failed");
+    let settleThrownValue: (value: unknown) => void = () => {};
+    const thrownValue = new Promise<unknown>((resolve) => {
+      settleThrownValue = resolve;
+    });
+
+    try {
+      const result = controller.commitSameUrlNavigatePayload(
+        nextElements,
+        stateRef.current.navigationSnapshot,
+        { data: thrownValue, ok: false },
+      );
+      const rejection = expect(result).rejects.toBe(thrown);
+
+      await vi.waitFor(() => {
+        expect(stateRef.current.routeId).toBe("route:/settings/account");
+      });
+      settleThrownValue(thrown);
+      await rejection;
+    } finally {
+      detach();
     }
   });
 
@@ -4450,6 +4955,89 @@ describe("app browser navigation controller", () => {
         state: "committed",
         visibleCommitVersion: 1,
       });
+    } finally {
+      detach();
+    }
+  });
+
+  it("document-navigates a current payload render when the route manifest fails to load", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      loadRouteManifest: () => Promise.resolve(false),
+    });
+    const { assign, replace } = stubWindow("https://example.com/settings");
+    const navId = controller.beginNavigation();
+    const renderPayload = (targetHref: string) =>
+      renderCurrentStateNavigationPayload(controller, {
+        actionType: "replace",
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "replace",
+        navigationCommitKind: "authoritative",
+        navigationSnapshot: createClientNavigationRenderSnapshot(targetHref, {}),
+        navId,
+        nextElements: Promise.resolve(createResolvedElements("route:/login", "/", null)),
+        operationLane: "server-action",
+        params: {},
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref,
+      });
+
+    try {
+      await expect(renderPayload("https://example.com/login")).resolves.toBe("no-commit");
+      expect(replace).toHaveBeenCalledWith("https://example.com/login");
+      expect(assign).not.toHaveBeenCalled();
+
+      // A superseded render commits nothing and leaves the document alone.
+      controller.beginNavigation();
+      await expect(renderPayload("https://example.com/stale")).resolves.toBe("no-commit");
+      expect(replace).toHaveBeenCalledTimes(1);
+      expect(stateRef.current.routeId).toBe("route:/settings");
+    } finally {
+      detach();
+    }
+  });
+
+  it("only reloads for a same-URL server action that still owns the router when the route manifest fails to load", async () => {
+    const initialState = createState({
+      rootLayoutTreePath: "/",
+      routeId: "route:/settings",
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+    });
+    const { controller, detach, stateRef } = createControllerHarness(initialState, {
+      loadRouteManifest: () => Promise.resolve(false),
+    });
+    const { assign } = stubWindow("https://example.com/settings");
+    const onDiscardedRevalidation = vi.fn();
+    const commitAction = (startedNavigationId: number) =>
+      controller.commitSameUrlNavigatePayload(
+        Promise.resolve(createResolvedElements("route:/settings/account", "/", null)),
+        stateRef.current.navigationSnapshot,
+        { data: "action-result", ok: true },
+        stateRef.current,
+        {
+          onDiscardedRevalidation,
+          revalidation: "staticAndDynamic",
+          startedNavigationId,
+          targetHref: "https://example.com/settings",
+        },
+      );
+
+    try {
+      const staleNavigationId = controller.beginNavigation();
+      controller.beginNavigation();
+      await expect(commitAction(staleNavigationId)).resolves.toBe("action-result");
+      expect(onDiscardedRevalidation).toHaveBeenCalledTimes(1);
+      expect(assign).not.toHaveBeenCalled();
+
+      await expect(commitAction(controller.beginNavigation())).resolves.toBeUndefined();
+      expect(assign).toHaveBeenCalledWith("https://example.com/settings");
+      expect(stateRef.current.routeId).toBe("route:/settings");
     } finally {
       detach();
     }
@@ -5046,7 +5634,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/items?filter=active",
@@ -5076,7 +5664,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/items?filter=active",
@@ -5110,7 +5698,7 @@ describe("app browser navigation lifecycle settlement", () => {
       const lateDetachedOutcome = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/items?filter=active",
@@ -5166,7 +5754,7 @@ describe("app browser navigation lifecycle settlement", () => {
         actionType: "navigate",
         createNavigationCommitEffect: () => {
           effectsRun.push("A");
-          return () => {};
+          return noopCommitEffect();
         },
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
@@ -5185,7 +5773,7 @@ describe("app browser navigation lifecycle settlement", () => {
         actionType: "navigate",
         createNavigationCommitEffect: () => {
           effectsRun.push("B");
-          return () => {};
+          return noopCommitEffect();
         },
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
@@ -5204,7 +5792,7 @@ describe("app browser navigation lifecycle settlement", () => {
         actionType: "navigate",
         createNavigationCommitEffect: () => {
           effectsRun.push("C");
-          return () => {};
+          return noopCommitEffect();
         },
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
@@ -5277,7 +5865,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: crossRootPayload,
@@ -5294,7 +5882,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: Promise.resolve(
@@ -5348,7 +5936,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: undefined,
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: refreshPayload,
@@ -5402,7 +5990,7 @@ describe("app browser navigation lifecycle settlement", () => {
       void renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "traverse",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: undefined,
         navigationSnapshot: stateRef.current.navigationSnapshot,
         nextElements: traversePayload,
@@ -5579,7 +6167,7 @@ describe("app browser navigation lifecycle settlement", () => {
       const renderPromise = renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
         nextElements: Promise.reject(new Error("RSC fetch failed")),
@@ -5599,6 +6187,39 @@ describe("app browser navigation lifecycle settlement", () => {
     } finally {
       clearSpy.mockRestore();
       detach();
+    }
+  });
+});
+
+describe("app browser hard navigation document loads", () => {
+  it("hands an allowed hard navigation to navigateDocument with its history mode", () => {
+    const { assign, replace } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+
+    expect(controller.performHardNavigation("https://example.com/login")).toBe(true);
+    expect(controller.performHardNavigation("https://example.com/login", "replace")).toBe(true);
+
+    expect(navigateDocument.mock.calls).toEqual([
+      ["https://example.com/login", "assign"],
+      ["https://example.com/login", "replace"],
+    ]);
+    expect(assign).not.toHaveBeenCalled();
+    expect(replace).not.toHaveBeenCalled();
+  });
+
+  it("checks the reload-loop guard before navigateDocument", () => {
+    const { storage } = stubWindow("https://example.com/current");
+    const navigateDocument = vi.fn();
+    const controller = createAppBrowserNavigationController({ navigateDocument });
+    storage.set("__vinext_hard_navigation_target__", "https://example.com/current");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(controller.performHardNavigation("https://example.com/current")).toBe(false);
+      expect(navigateDocument).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
     }
   });
 });
@@ -5645,23 +6266,107 @@ describe("app browser root-layout hard navigation", () => {
     }
   });
 
-  it("hard-navigate settles the pending router state before navigating away", async () => {
+  it("renderNavigationPayload replaces the entry when a replace changes root layout", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+      { getRouteManifest: () => createRootChangeRouteManifest() },
+    );
+    const { assign, replace } = stubWindow("https://example.com/marketing");
+
+    try {
+      const navId = controller.beginNavigation();
+      const renderPromise = renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "replace",
+        createNavigationCommitEffect: vi.fn(),
+        historyUpdateMode: "replace",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState: null,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+
+      await expect(renderPromise).resolves.toBe("hard-navigate");
+      expect(replace).toHaveBeenCalledWith("https://example.com/dashboard");
+      expect(assign).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("hard-navigate leaves the pending router state unresolved until unload", async () => {
     const { controller, detach } = createControllerHarness(
       createState({ rootLayoutTreePath: "/(marketing)" }),
       { getRouteManifest: () => createRootChangeRouteManifest() },
     );
     const { assign } = stubWindow("https://example.com/marketing");
     const pendingRouterState = controller.beginPendingBrowserRouterState();
-    assign.mockImplementation(() => {
-      expect(pendingRouterState.settled).toBe(true);
-    });
+    const resolved = vi.fn();
+    void pendingRouterState.promise.then(resolved);
 
     try {
       const navId = controller.beginNavigation();
-      void renderCurrentStateNavigationPayload(controller, {
+      const outcome = await renderCurrentStateNavigationPayload(controller, {
         payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
         actionType: "navigate",
-        createNavigationCommitEffect: () => () => {},
+        createNavigationCommitEffect: noopCommitEffect,
+        historyUpdateMode: "push",
+        navigationSnapshot: createClientNavigationRenderSnapshot(
+          "https://example.com/dashboard",
+          {},
+        ),
+        nextElements: Promise.resolve(
+          createResolvedElements("route:/dashboard", "/(dashboard)", null, {
+            "page:/dashboard": React.createElement("main", null, "dashboard"),
+          }),
+        ),
+        operationLane: "navigation",
+        params: {},
+        pendingRouterState,
+        previousNextUrl: null,
+        targetHref: "https://example.com/dashboard",
+        navId,
+      });
+      controller.finalizeNavigation(navId, pendingRouterState);
+      await Promise.resolve();
+
+      expect(outcome).toBe("hard-navigate");
+      expect(assign).toHaveBeenCalledTimes(1);
+      expect(pendingRouterState.settled).toBe(true);
+      expect(resolved).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
+  });
+
+  it("settles the pending router state when the reload-loop guard blocks a hard navigation", async () => {
+    const { controller, detach } = createControllerHarness(
+      createState({ rootLayoutTreePath: "/(marketing)" }),
+      {
+        getRouteManifest: () => createRootChangeRouteManifest(),
+        performHardNavigation: () => false,
+      },
+    );
+    stubWindow("https://example.com/marketing");
+    const pendingRouterState = controller.beginPendingBrowserRouterState();
+
+    try {
+      const navId = controller.beginNavigation();
+      const outcome = await renderCurrentStateNavigationPayload(controller, {
+        payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+        actionType: "navigate",
+        createNavigationCommitEffect: noopCommitEffect,
         historyUpdateMode: "push",
         navigationSnapshot: createClientNavigationRenderSnapshot(
           "https://example.com/dashboard",
@@ -5680,12 +6385,7 @@ describe("app browser root-layout hard navigation", () => {
         navId,
       });
 
-      // Yield so the async function runs the settle+hard-navigate path.
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(assign).toHaveBeenCalledTimes(1);
+      expect(outcome).toBe("no-commit");
       await expect(pendingRouterState.promise).resolves.toBeDefined();
     } finally {
       detach();
@@ -5705,7 +6405,7 @@ describe("app browser root-layout hard navigation", () => {
         renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
-          createNavigationCommitEffect: () => () => {},
+          createNavigationCommitEffect: noopCommitEffect,
           historyUpdateMode: "push",
           navigationSnapshot: createClientNavigationRenderSnapshot(
             "https://example.com/dashboard",
@@ -5734,7 +6434,7 @@ describe("app browser root-layout hard navigation", () => {
         renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
-          createNavigationCommitEffect: () => () => {},
+          createNavigationCommitEffect: noopCommitEffect,
           historyUpdateMode: "push",
           navigationSnapshot: createClientNavigationRenderSnapshot(
             "https://example.com/dashboard",
@@ -5785,7 +6485,7 @@ describe("app browser root-layout hard navigation", () => {
         renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
-          createNavigationCommitEffect: () => () => {},
+          createNavigationCommitEffect: noopCommitEffect,
           historyUpdateMode: "push",
           navigationSnapshot: createClientNavigationRenderSnapshot(
             "https://example.com/dashboard",
@@ -5813,7 +6513,7 @@ describe("app browser root-layout hard navigation", () => {
         renderCurrentStateNavigationPayload(controller, {
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           actionType: "navigate",
-          createNavigationCommitEffect: () => () => {},
+          createNavigationCommitEffect: noopCommitEffect,
           historyUpdateMode: "push",
           navigationSnapshot: createClientNavigationRenderSnapshot(
             "https://example.com/dashboard",
@@ -9138,6 +9838,31 @@ describe("createOnUncaughtError (hydrateRoot uncaught handler)", () => {
     } finally {
       consoleSpy.mockRestore();
     }
+  });
+
+  it("reports non-Error values as-is by default", () => {
+    withFakeWindow(({ reportErrorSpy }) => {
+      const handler = createOnUncaughtError();
+      handler(undefined, {});
+      expect(reportErrorSpy).toHaveBeenCalledWith(undefined);
+    });
+  });
+
+  it("coerces non-Error values to Errors when coerceToError is set", () => {
+    withFakeWindow(({ reportErrorSpy }) => {
+      const handler = createOnUncaughtError({ coerceToError: true });
+      const err = new Error("boom");
+      handler(err, {});
+      handler(undefined, {});
+      handler("boom", {});
+      expect(reportErrorSpy.mock.calls[0][0]).toBe(err);
+      expect(reportErrorSpy.mock.calls[1][0]).toBeInstanceOf(Error);
+      expect(reportErrorSpy.mock.calls[1][0].message).toBe("undefined");
+      expect(reportErrorSpy.mock.calls[2][0].message).toBe("boom");
+      const signal = { digest: "NEXT_NOT_FOUND" };
+      handler(signal, {});
+      expect(reportErrorSpy.mock.calls[3][0]).toBe(signal);
+    });
   });
 
   it("leaves navigation failure dispatch to the global error listener", () => {

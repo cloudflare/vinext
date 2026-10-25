@@ -106,7 +106,8 @@ export async function withResponseStageCacheability(
   if (
     !options.probeMode &&
     state?.admission?.policy !== "manifest" &&
-    (route?.kind === "app-page" || route?.kind === "pages-page")
+    (route?.kind === "app-page" || route?.kind === "pages-page") &&
+    !(route.kind === "pages-page" && state?.outcome?.cacheable === false)
   ) {
     const deferred = adapter.deferCompletedPageResponseAdmission?.(response, complete);
     if (deferred) return deferred;

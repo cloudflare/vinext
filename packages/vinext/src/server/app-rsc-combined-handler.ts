@@ -8,6 +8,8 @@ import {
 } from "./app-rsc-handler.js";
 import type { AppWorkerResponseStageProps } from "./app-worker-stages.js";
 import type { VinextResponseStageDispatchOptions } from "./multi-stage.js";
+import { createWorkerRevalidationContext } from "./worker-revalidation-context.js";
+import { getRequestExecutionContext, runWithExecutionContext } from "vinext/shims/request-context";
 
 export type AppRscHandler = AppRscRequestHandler & {
   handleResponseStage(
@@ -21,7 +23,27 @@ export type AppRscHandler = AppRscRequestHandler & {
 export function createAppRscHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): AppRscHandler {
-  const appRscHandler = createAppRscRequestHandler(options);
+  const appRscRequestHandler = createAppRscRequestHandler(options);
+  // Nitro's SSR service and @vitejs/plugin-rsc's dev and preview handlers call
+  // this entry without an execution context, and their request.url can come
+  // from the client Host header. Give Pages `res.revalidate()` an in-process
+  // dispatcher there so the revalidation credential never leaves the process.
+  const appRscHandler: AppRscRequestHandler = (request, ctx, ...rest) => {
+    if (ctx != null || getRequestExecutionContext()) {
+      return appRscRequestHandler(request, ctx, ...rest);
+    }
+    const executionContext = createWorkerRevalidationContext(
+      undefined,
+      (internalRequest, internalCtx) =>
+        runWithExecutionContext(internalCtx, () =>
+          appRscRequestHandler(internalRequest, internalCtx),
+        ),
+      "node",
+    );
+    return runWithExecutionContext(executionContext, () =>
+      appRscRequestHandler(request, ctx, ...rest),
+    );
+  };
   return Object.assign(appRscHandler, {
     handleResponseStage(
       request: Request,

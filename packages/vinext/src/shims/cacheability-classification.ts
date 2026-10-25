@@ -12,6 +12,13 @@ export type RouteCacheabilityOutcome = {
   searchParamsUnread?: true;
   /** A transient classification failure that may succeed on another bounded attempt. */
   retryable?: true;
+  /**
+   * App page RSC: the status and headers that replace the streamed 200 of a
+   * render whose special error rejected its document's shell, once the
+   * response is complete.
+   */
+  status?: number;
+  headers?: Readonly<Record<string, string>>;
   tags?: readonly string[];
 };
 
@@ -173,10 +180,10 @@ export function recordConfigCdnCachePolicyHeader(
   (state.configCdnCachePolicy ??= new Map()).set(name.toLowerCase(), applied);
 }
 
-/** Record a public cache policy supplied by the Route Handler itself. */
+/** Record an explicit cache policy supplied by the Route Handler itself. */
 export function markRouteCacheabilityExplicitResponsePolicy(): void {
   const state = readRouteCacheabilityState();
-  if (!state || state.mode !== "admit") return;
+  if (!state) return;
   state.explicitResponseCachePolicy = true;
 }
 

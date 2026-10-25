@@ -74,12 +74,17 @@ export function installDevErrorOverlay(): void {
 
   window.addEventListener("error", (event: ErrorEvent) => {
     const err = event.error;
+    // Like Next.js, ignore events without a thrown value: no script failed.
+    // Chromium's benign "ResizeObserver loop completed with undelivered
+    // notifications." and cross-origin "Script error." both have
+    // `error === null`.
+    if (!err) return;
     if (isNavigationSignalError(err)) return;
     if (err instanceof Error) {
       if (alreadyReported(err)) return;
       reportDevError(err, { source: "window-error" });
-    } else if (event.message) {
-      reportDevError(new Error(event.message), { source: "window-error" });
+    } else {
+      reportDevError(event.message ? new Error(event.message) : err, { source: "window-error" });
     }
   });
 

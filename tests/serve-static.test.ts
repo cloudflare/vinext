@@ -357,6 +357,80 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Vary"]).toBe("Accept-Encoding");
   });
 
+  it("does not vary precompressed assets by Accept-Encoding when compression is disabled", async () => {
+    const jsContent = "code\n".repeat(500);
+    await writeFile(clientDir, "_next/static/off-ccc333.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/off-ccc333.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    const cache = await StaticFileCache.create(clientDir);
+    const pathname = "/_next/static/off-ccc333.js";
+    const serve = async (extraReqHeaders: Record<string, string>, extraHeaders = {}) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(
+        mockReq("br", extraReqHeaders),
+        res,
+        clientDir,
+        pathname,
+        false,
+        cache,
+        extraHeaders,
+      );
+      await captured.ended;
+      return captured;
+    };
+
+    const full = await serve({});
+    expect(full.status).toBe(200);
+    expect(full.headers["Content-Encoding"]).toBeUndefined();
+    expect(full.headers["Vary"]).toBeUndefined();
+
+    const notModified = await serve({ "if-none-match": String(full.headers.ETag) });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["Vary"]).toBeUndefined();
+
+    const partial = await serve({ range: "bytes=0-9" });
+    expect(partial.status).toBe(206);
+    expect(partial.headers["Vary"]).toBeUndefined();
+
+    // Unrelated Vary fields from configured headers are preserved.
+    const configured = await serve({}, { Vary: "Origin" });
+    expect(configured.headers["Vary"]).toBe("Origin");
+  });
+
+  it("does not serve precompressed variants for Cache-Control: no-transform", async () => {
+    const jsContent = "code\n".repeat(500);
+    await writeFile(clientDir, "_next/static/nt-ddd444.js", jsContent);
+    await writeFile(
+      clientDir,
+      "_next/static/nt-ddd444.js.br",
+      zlib.brotliCompressSync(Buffer.from(jsContent)),
+    );
+    const cache = await StaticFileCache.create(clientDir);
+    const pathname = "/_next/static/nt-ddd444.js";
+    const serve = async (extraReqHeaders: Record<string, string>) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(mockReq("br", extraReqHeaders), res, clientDir, pathname, true, cache, {
+        "cache-control": "public, max-age=60, no-transform",
+      });
+      await captured.ended;
+      return captured;
+    };
+
+    const full = await serve({});
+    expect(full.status).toBe(200);
+    expect(full.headers["Content-Encoding"]).toBeUndefined();
+    expect(full.headers["Vary"]).toBeUndefined();
+    expect(full.body.toString()).toBe(jsContent);
+
+    const notModified = await serve({ "if-none-match": String(full.headers.ETag) });
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["Content-Encoding"]).toBeUndefined();
+    expect(notModified.headers["Vary"]).toBeUndefined();
+  });
+
   // ── Directory traversal protection ─────────────────────────────
 
   it("blocks directory traversal attempts", async () => {
@@ -1076,8 +1150,9 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.body.length).toBe(0);
   });
 
-  it("slow path serves HEAD without body for compressed response", async () => {
-    await writeFile(clientDir, "_next/static/head-slow-comp-ccc333.js", "compress me");
+  it("slow path serves HEAD for a compressible file uncompressed, like Next.js", async () => {
+    const content = "compress me\n".repeat(200);
+    await writeFile(clientDir, "_next/static/head-slow-comp-ccc333.js", content);
 
     const req = mockReq("br", undefined, "HEAD");
     const { res, captured } = mockRes();
@@ -1093,8 +1168,43 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     await captured.ended;
     expect(served).toBe(true);
     expect(captured.status).toBe(200);
-    expect(captured.headers["Content-Encoding"]).toBe("br");
+    expect(captured.headers["Content-Encoding"]).toBeUndefined();
+    expect(captured.headers["Content-Length"]).toBe(String(Buffer.byteLength(content)));
+    expect(captured.headers["Vary"]).toBe("Accept-Encoding");
     expect(captured.body.length).toBe(0);
+  });
+
+  it("slow path applies Next.js's size threshold and no-transform rule", async () => {
+    await writeFile(clientDir, "small.ttf", Buffer.alloc(1023, 1));
+    await writeFile(clientDir, "large.ttf", Buffer.alloc(2048, 1));
+    const serve = async (pathname: string, extraHeaders?: Record<string, string>) => {
+      const { res, captured } = mockRes();
+      await tryServeStatic(
+        mockReq("gzip"),
+        res,
+        clientDir,
+        pathname,
+        true,
+        undefined,
+        extraHeaders,
+      );
+      await captured.ended;
+      return captured;
+    };
+
+    // font/ttf is compressible per mime-db.
+    const large = await serve("/large.ttf");
+    expect(large.headers["Content-Encoding"]).toBe("gzip");
+    expect(large.headers["Vary"]).toBe("Accept-Encoding");
+
+    const small = await serve("/small.ttf");
+    expect(small.headers["Content-Encoding"]).toBeUndefined();
+    expect(small.headers["Content-Length"]).toBe("1023");
+    expect(small.headers["Vary"]).toBe("Accept-Encoding");
+
+    const noTransform = await serve("/large.ttf", { "Cache-Control": "public, no-transform" });
+    expect(noTransform.headers["Content-Encoding"]).toBeUndefined();
+    expect(noTransform.headers["Vary"]).toBeUndefined();
   });
 
   it("serves Next-compatible MIME types over a real HTTP response", async () => {

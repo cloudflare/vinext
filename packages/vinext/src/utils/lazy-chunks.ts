@@ -1,8 +1,14 @@
+import { isPagesClientEntryChunk } from "./client-build-manifest.js";
+
 /**
  * Build-manifest chunk metadata used to compute lazy chunks.
  */
 export type BuildManifestChunk = {
   file: string;
+  /** Source module id (or virtual id) of an entry chunk. */
+  src?: string;
+  /** Rolldown chunk name, independent of the configured output file name. */
+  name?: string;
   isEntry?: boolean;
   isDynamicEntry?: boolean;
   imports?: string[];
@@ -21,6 +27,11 @@ export type BuildManifestChunk = {
  * Algorithm: Starting from all entry chunks in the build manifest, walk the
  * static `imports` tree (breadth-first). Any chunk file NOT reached by this
  * walk is only reachable through `dynamicImports` and is therefore "lazy".
+ *
+ * The Pages Router client entry `import()`s every page and `_app`, but the
+ * HTML for a page renders that page and `_app`, so their chunks are roots of
+ * the walk too: Next.js emits their scripts in the initial HTML. Their own
+ * dynamic imports (next/dynamic, React.lazy) stay lazy.
  *
  * @param buildManifest - Vite's build manifest (manifest.json), which is a
  *   Record<string, ManifestChunk> where each chunk has `file`, `imports`,
@@ -63,6 +74,13 @@ export function computeLazyChunks(buildManifest: Record<string, BuildManifestChu
     // Follow only static imports — NOT dynamicImports
     if (chunk.imports) {
       for (const imp of chunk.imports) {
+        if (!visited.has(imp)) {
+          queue.push(imp);
+        }
+      }
+    }
+    if (isPagesClientEntryChunk(key, chunk)) {
+      for (const imp of chunk.dynamicImports ?? []) {
         if (!visited.has(imp)) {
           queue.push(imp);
         }
@@ -170,6 +188,30 @@ export function computeDynamicImportPreloads(
   }
 
   return preloads;
+}
+
+/**
+ * Give a module the preloads of a chunk that loads it. The client build
+ * imports an App Router client reference through the module that registers it
+ * (see build/client-reference-chunks.ts), so the build manifest keys that
+ * module's chunk, not the reference's module a next/dynamic boundary names.
+ *
+ * @param aliases Module manifest key -> the file of the chunk that loads it.
+ */
+export function addDynamicImportPreloadAliases(
+  preloads: Record<string, string[]>,
+  buildManifest: Record<string, BuildManifestChunk>,
+  aliases: Record<string, string>,
+): void {
+  const keysByFile = new Map<string, string>();
+  for (const [key, chunk] of Object.entries(buildManifest)) {
+    keysByFile.set(chunk.file, normalizeManifestKey(key));
+  }
+  for (const [moduleKey, file] of Object.entries(aliases)) {
+    const key = keysByFile.get(file);
+    const files = key === undefined ? undefined : preloads[key];
+    if (files && !Object.hasOwn(preloads, moduleKey)) preloads[moduleKey] = files;
+  }
 }
 
 export function dynamicImportPreloadsWithBase(

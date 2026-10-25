@@ -134,14 +134,16 @@ export function formatFontClassRule(className: string, style: FontStyle): string
 }
 
 /**
- * Determine the MIME type for a font file based on its extension.
+ * Determine the preload `type` for a font file based on its extension.
  * Uses endsWith() only to avoid false positives from substring matches
- * (e.g. ".woff" matching ".woff2").
+ * (e.g. ".woff" matching ".woff2"). Matches Next.js, which emits
+ * `font/${ext}` for every font preload (including `font/eot`).
  */
 export function getFontMimeType(pathOrUrl: string): string {
   if (pathOrUrl.endsWith(".woff2")) return "font/woff2";
   if (pathOrUrl.endsWith(".woff")) return "font/woff";
   if (pathOrUrl.endsWith(".ttf")) return "font/ttf";
-  if (pathOrUrl.endsWith(".otf")) return "font/opentype";
+  if (pathOrUrl.endsWith(".otf")) return "font/otf";
+  if (pathOrUrl.endsWith(".eot")) return "font/eot";
   return "font/woff2";
 }

@@ -52,6 +52,16 @@ test.describe("basePath + trailingSlash", () => {
     expect(outside.status).toBe(404);
   });
 
+  // Next.js renders the shared getStaticProps /404 for "/404", keeping only
+  // the request's trailing slash under trailingSlash:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  test("renders the shared /404 document for its own trailing-slash path", async () => {
+    const missing = await getRawPath("/docs/missing-share-token/");
+    expect(missing.status).toBe(404);
+    expect(missing.body).not.toContain("missing-share-token");
+    expect(missing.body).toContain('<p id="as-path">/404/</p>');
+  });
+
   test("replaces state when same asPath but different url", async ({ page }) => {
     await page.goto(`${BASE}/docs/`);
     await expect(page.locator("#index-page")).toBeVisible({ timeout: 5_000 });

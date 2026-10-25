@@ -3,6 +3,7 @@ import {
   createRscOnErrorHandler,
   errorDigest,
   getDigestForWellKnownError,
+  PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
   sanitizeErrorForClient,
 } from "../packages/vinext/src/server/app-rsc-errors.js";
 
@@ -51,7 +52,7 @@ describe("app RSC error primitives", () => {
     const digestError = expectDigestError(sanitized);
 
     expect(sanitized).not.toBe(error);
-    expect(digestError.message).toContain("omitted in production");
+    expect(digestError.message).toBe(PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE);
     expect(digestError.digest).toBe(errorDigest("secret detailsstack"));
   });
 
@@ -81,13 +82,16 @@ describe("app RSC error primitives", () => {
     expect(reportRequestError.mock.calls[0]?.[0]).toBe(original);
   });
 
-  it("preserves the previous String(error) digest input for non-Error values", () => {
-    const thrownValue = { message: "object detail" };
+  // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+  it("digests a thrown string as is and other values as an Error, like Next.js", () => {
+    expect(expectDigestError(sanitizeErrorForClient("boom", "production")).digest).toBe(
+      errorDigest("boom"),
+    );
 
-    const sanitized = sanitizeErrorForClient(thrownValue, "production");
-
+    const sanitized = sanitizeErrorForClient({ message: "object detail" }, "production");
     expect(sanitized).toBeInstanceOf(Error);
-    expect(expectDigestError(sanitized).digest).toBe(errorDigest("[object Object]"));
+    expect(expectDigestError(sanitized).digest).toMatch(/^\d+$/);
+    expect(expectDigestError(sanitized).digest).not.toBe(errorDigest("[object Object]"));
   });
 
   it("returns existing digest strings from the RSC onError path", () => {
@@ -218,7 +222,13 @@ describe("app RSC error primitives", () => {
     expect(error).not.toHaveProperty("digest");
   });
 
-  it("reports non-Error thrown values without changing the public hook value", () => {
+  // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
+  // It reports getProperError(thrownValue) and only hashes a thrown string.
+  it.each([
+    [{ message: "object detail" }, '{"message":"object detail"}'],
+    [0, "0"],
+    [undefined, "undefined"],
+  ])("reports a thrown %j as an Error, like Next.js", (thrownValue, message) => {
     const reportRequestError = vi.fn();
     const onError = createRscOnErrorHandler({
       errorContext: renderErrorContext("/feed"),
@@ -227,11 +237,58 @@ describe("app RSC error primitives", () => {
       requestInfo: { path: "/feed", method: "GET", headers: {} },
     });
 
-    const thrownValue = { message: "object detail" };
-
-    expect(onError(thrownValue)).toBe(errorDigest("[object Object]"));
+    const digest = onError(thrownValue);
+    expect(digest).toMatch(/^\d+$/);
     expect(reportRequestError).toHaveBeenCalledOnce();
-    expect(reportRequestError.mock.calls[0]?.[0]).toBe(thrownValue);
+    expect(reportRequestError.mock.calls[0]?.[0]).toBeInstanceOf(Error);
+    // As in Next.js, the reported Error carries the digest the client receives.
+    expect(reportRequestError.mock.calls[0]?.[0]).toMatchObject({ message, digest });
+  });
+
+  it.each(["plain", "digested", "frozen"])(
+    "reports a production-sanitized %s error carrying the digest the client receives",
+    (kind) => {
+      const reportRequestError = vi.fn();
+      const onError = createRscOnErrorHandler({
+        errorContext: renderErrorContext("/feed"),
+        nodeEnv: "production",
+        reportRequestError,
+        requestInfo: { path: "/feed", method: "GET", headers: {} },
+      });
+      const original = new Error("connect postgres://admin:s3cret@10.0.0.5:5432/prod failed");
+      if (kind === "digested") Object.assign(original, { digest: "custom-digest" });
+      if (kind === "frozen") Object.freeze(original);
+      const sanitized = expectDigestError(sanitizeErrorForClient(original, "production"));
+
+      expect(onError(sanitized)).toBe(sanitized.digest);
+      expect(reportRequestError).toHaveBeenCalledOnce();
+      expect(reportRequestError.mock.calls[0]?.[0]).toBe(original);
+      if (kind === "frozen") {
+        expect(original).not.toHaveProperty("digest");
+      } else {
+        expect(original).toHaveProperty("digest", sanitized.digest);
+      }
+    },
+  );
+
+  it("only hashes a thrown string, like Next.js", () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const reportRequestError = vi.fn();
+      const onError = createRscOnErrorHandler({
+        errorContext: renderErrorContext("/feed"),
+        nodeEnv: "development",
+        reportRequestError,
+        requestInfo: { path: "/feed", method: "GET", headers: {} },
+      });
+
+      expect(onError("boom")).toBe(errorDigest("boom"));
+      expect(onError(sanitizeErrorForClient("boom", "production"))).toBe(errorDigest("boom"));
+      expect(reportRequestError).not.toHaveBeenCalled();
+      expect(consoleError).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("logs generic render errors to the dev-server terminal even without instrumentation", () => {
@@ -305,8 +362,8 @@ describe("app RSC error primitives", () => {
           original,
         );
         // Terminal diagnostics must not alter production error sanitization.
-        expect(expectDigestError(sanitizeErrorForClient(original, "production")).message).toContain(
-          "omitted in production",
+        expect(expectDigestError(sanitizeErrorForClient(original, "production")).message).toBe(
+          PRODUCTION_SERVER_COMPONENTS_ERROR_MESSAGE,
         );
       } finally {
         consoleError.mockRestore();

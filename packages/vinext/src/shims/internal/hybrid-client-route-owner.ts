@@ -88,7 +88,10 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
 
   let matches = matchDirectHybridClientRoutes(currentHref, basePath);
 
+  // A Pages API route may own an /api URL, so its afterFiles and fallback
+  // rewrites are left to the document request.
   if (
+    !matches.pagesApiRequest &&
     (matches.appMatch === null || matches.appMatch.isDynamic) &&
     (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
   ) {
@@ -99,11 +102,11 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
       currentHref = afterFilesRewrite.href;
       didRewrite = true;
       matches = matchDirectHybridClientRoutes(currentHref, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
-  if (matches.appMatch === null && matches.pagesMatch === null) {
+  if (!matches.pagesApiRequest && matches.appMatch === null && matches.pagesMatch === null) {
     for (const rewrite of rewrites.fallback) {
       const fallbackRewrite = resolveClientRewrite(currentHref, basePath, [rewrite]);
       if (fallbackRewrite?.kind === "document") return didRewrite ? currentHref : null;
@@ -111,7 +114,7 @@ export function resolveHybridClientRewriteHref(href: string, basePath: string): 
       currentHref = fallbackRewrite.href;
       didRewrite = true;
       matches = matchDirectHybridClientRoutes(currentHref, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
@@ -148,6 +151,7 @@ export function resolveHybridClientRouteOwner(
 
   if (
     rewrites &&
+    !matches.pagesApiRequest &&
     (matches.appMatch === null || matches.appMatch.isDynamic) &&
     (matches.pagesMatch === null || matches.pagesMatch.isDynamic)
   ) {
@@ -157,18 +161,23 @@ export function resolveHybridClientRouteOwner(
       if (afterFilesRewrite?.kind !== "rewrite") continue;
       href = afterFilesRewrite.href;
       matches = matchDirectHybridClientRoutes(href, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 
-  if (rewrites && matches.appMatch === null && matches.pagesMatch === null) {
+  if (
+    rewrites &&
+    !matches.pagesApiRequest &&
+    matches.appMatch === null &&
+    matches.pagesMatch === null
+  ) {
     for (const rewrite of rewrites.fallback) {
       const fallbackRewrite = resolveClientRewrite(href, basePath, [rewrite]);
       if (fallbackRewrite?.kind === "document") return "document";
       if (fallbackRewrite?.kind !== "rewrite") continue;
       href = fallbackRewrite.href;
       matches = matchDirectHybridClientRoutes(href, basePath);
-      if (matches.appMatch || matches.pagesMatch) break;
+      if (matches.pagesApiRequest || matches.appMatch || matches.pagesMatch) break;
     }
   }
 

@@ -183,6 +183,33 @@ describe("app route handler runtime helpers", () => {
     expect(() => clonedNextUrl.search).toThrow(expectedMessage("nextUrl.search"));
   });
 
+  it("keeps request.signal following the host signal after GC", async () => {
+    // Undici's Request follows its input's signal through a WeakRef, so a
+    // handler that only listened on request.signal lost the abort once GC
+    // collected its request or a clone between it and the host signal.
+    const v8 = await import("node:v8");
+    const vm = await import("node:vm");
+    v8.setFlagsFromString("--expose-gc");
+    const gc = vm.runInNewContext("gc") as () => void;
+
+    const host = new AbortController();
+    let reason: unknown;
+    (() => {
+      const inbound = new Request("https://example.com/stream", { signal: host.signal });
+      const tracked = createTrackedAppRouteRequest(new Request(inbound), { signal: host.signal });
+      tracked.request.signal.addEventListener("abort", function (this: AbortSignal) {
+        reason = this.reason;
+      });
+    })();
+    for (let round = 0; round < 3; round += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+      gc();
+    }
+
+    host.abort(new Error("client disconnected"));
+    expect(reason).toBe(host.signal.reason);
+  });
+
   it("tracks request.url access for query parsing", () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(
@@ -281,10 +308,27 @@ describe("app route handler runtime helpers", () => {
       },
     );
 
-    expect(tracked.request.ip).toBe("203.0.113.10");
-    expect(tracked.request.geo).toEqual({ country: "AU" });
+    // Without proxy trust or Cloudflare metadata the headers are ignored, but
+    // reading ip/geo is still dynamic request access.
+    expect(tracked.request.ip).toBeUndefined();
+    expect(tracked.request.geo).toBeUndefined();
     expect(tracked.didAccessDynamicRequest()).toBe(true);
     expect(accesses).toEqual(["request.ip", "request.geo"]);
+  });
+
+  it("reads request.ip and request.geo from Cloudflare metadata", () => {
+    const request = new Request("https://example.com/demo", {
+      headers: { "cf-connecting-ip": "203.0.113.10", "cf-ipcountry": "US" },
+    });
+    Object.defineProperty(request, "cf", {
+      value: { country: "AU", city: "Sydney" },
+      enumerable: true,
+    });
+    const tracked = createTrackedAppRouteRequest(request);
+
+    expect(tracked.request.ip).toBe("203.0.113.10");
+    expect(tracked.request.geo).toEqual({ country: "AU", city: "Sydney" });
+    expect(tracked.didAccessDynamicRequest()).toBe(true);
   });
 
   it("treats request.cf as dynamic request state", () => {
@@ -763,6 +807,104 @@ describe("app route handler runtime helpers", () => {
     );
     expect(accesses).toEqual(["nextUrl.searchParams", "nextUrl.href"]);
     expect(tracked.didAccessDynamicRequest()).toBe(true);
+  });
+
+  it("tracks every host-derived nextUrl field", () => {
+    for (const prop of ["protocol", "username", "password", "host", "hostname", "port"] as const) {
+      const accesses: string[] = [];
+      const tracked = createTrackedAppRouteRequest(
+        new Request("https://tenant-a.example.com:8443/demo"),
+        {
+          onDynamicAccess(access) {
+            accesses.push(access);
+          },
+        },
+      );
+
+      void tracked.request.nextUrl[prop];
+      expect(accesses).toEqual([`nextUrl.${prop}`]);
+      expect(tracked.didAccessDynamicRequest()).toBe(true);
+
+      const clonedAccesses: string[] = [];
+      const cloned = createTrackedAppRouteRequest(
+        new Request("https://tenant-a.example.com/demo"),
+        {
+          onDynamicAccess(access) {
+            clonedAccesses.push(access);
+          },
+        },
+      );
+      void cloned.request.nextUrl.clone()[prop];
+      expect(clonedAccesses).toEqual([`nextUrl.${prop}`]);
+    }
+  });
+
+  it("tracks domain-selected locale fields only when i18n domains are configured", () => {
+    const withoutDomains = createTrackedAppRouteRequest(new Request("https://example.fr/demo"), {
+      i18n: { locales: ["en", "fr"], defaultLocale: "en" },
+    });
+    expect(withoutDomains.request.nextUrl.locale).toBe("en");
+    expect(withoutDomains.request.nextUrl.defaultLocale).toBe("en");
+    expect(withoutDomains.didAccessDynamicRequest()).toBe(false);
+
+    for (const prop of ["locale", "defaultLocale", "domainLocale"] as const) {
+      const accesses: string[] = [];
+      const tracked = createTrackedAppRouteRequest(new Request("https://example.fr/demo"), {
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [{ domain: "example.fr", defaultLocale: "fr" }],
+        },
+        onDynamicAccess(access) {
+          accesses.push(access);
+        },
+      });
+
+      void tracked.request.nextUrl[prop];
+      expect(accesses).toEqual([`nextUrl.${prop}`]);
+    }
+  });
+
+  it("answers host-derived nextUrl fields with Next.js build values for dynamic error", () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://tenant-a.example.fr:8443/base/demo?secret=1"),
+      {
+        basePath: "/base",
+        i18n: {
+          locales: ["en", "fr"],
+          defaultLocale: "en",
+          domains: [{ domain: "tenant-a.example.fr", defaultLocale: "fr" }],
+        },
+        requestMode: "error",
+      },
+    );
+
+    for (const nextUrl of [tracked.request.nextUrl, tracked.request.nextUrl.clone()]) {
+      expect(nextUrl.protocol).toBe("http:");
+      expect(nextUrl.host).toBe("localhost:3000");
+      expect(nextUrl.hostname).toBe("localhost");
+      expect(nextUrl.port).toBe("3000");
+      expect(nextUrl.username).toBe("");
+      expect(nextUrl.password).toBe("");
+      expect(nextUrl.locale).toBe("en");
+      expect(nextUrl.defaultLocale).toBe("en");
+      expect(nextUrl.domainLocale).toBeUndefined();
+      expect(nextUrl.pathname).toBe("/demo");
+      expect(nextUrl.basePath).toBe("/base");
+      expect(() => nextUrl.origin).toThrow("used nextUrl.origin");
+    }
+  });
+
+  it("keeps host-derived nextUrl fields at the static host for force-static", () => {
+    const tracked = createTrackedAppRouteRequest(
+      new Request("https://tenant-a.example.com:8443/demo"),
+      { requestMode: "force-static" },
+    );
+
+    expect(tracked.request.nextUrl.hostname).toBe("localhost");
+    expect(tracked.request.nextUrl.host).toBe("localhost:3000");
+    expect(tracked.request.nextUrl.origin).toBe("http://localhost:3000");
+    expect(tracked.didAccessDynamicRequest()).toBe(false);
   });
 
   it("tracks body-reading request methods without breaking Request internals", async () => {

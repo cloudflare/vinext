@@ -1,13 +1,14 @@
-import path, { toSlash } from "pathslash";
+import path from "pathslash";
 import { fileURLToPath } from "node:url";
 import MagicString from "magic-string";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import {
   collectBindingNames,
   DYNAMIC_IMPORT_PRESCAN,
   forEachAstChild,
   isIdentifierNamed,
   mayContainDynamicImport,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   stringLiteralValue,
@@ -24,6 +25,7 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { isForeignNodeModule } from "../utils/package-name.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 const DYNAMIC_REQUEST_ERROR = "Cannot find module as expression is too dynamic";
@@ -784,9 +786,9 @@ function transformVeryDynamicRequests(code: string, id: string) {
   if (!mayContainVeryDynamicRequest(code)) return null;
 
   const lang = scriptParserLanguage(id) ?? "js";
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang });
+    ast = parseProgram(code, { lang });
   } catch {
     return null;
   }
@@ -959,11 +961,7 @@ function shouldTransformVeryDynamicRequests(
   transpiledPackages: readonly string[],
 ): boolean {
   if (environment.config.consumer === "server") return true;
-  const normalizedId = toSlash(id);
-  if (!normalizedId.includes("/node_modules/")) return false;
-  return !transpiledPackages.some((packageName) =>
-    normalizedId.includes(`/node_modules/${packageName}/`),
-  );
+  return isForeignNodeModule(id, transpiledPackages);
 }
 
 export const _transformVeryDynamicRequests = transformVeryDynamicRequests;

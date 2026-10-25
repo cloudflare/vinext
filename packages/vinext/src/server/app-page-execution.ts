@@ -11,7 +11,7 @@ import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
 import {
   copyLinkHeaderProvenance,
-  hasFrameworkLinkHeaders,
+  getFrameworkLinkHeader,
   markFrameworkLinkHeaders,
 } from "./app-response-header-provenance.js";
 import { parseNextHttpErrorDigest, parseNextRedirectDigest } from "./next-error-digest.js";
@@ -19,6 +19,7 @@ import { renderSsrErrorMetaTags } from "./app-ssr-error-meta.js";
 import { isPromiseLike } from "../utils/promise.js";
 import { formatNextRedirectDigest } from "./app-rsc-redirect-flight.js";
 import { runWithConnectionProbe } from "vinext/shims/headers";
+import { isHTTPAccessFallbackError, isThrownNavigationError } from "vinext/shims/navigation-errors";
 
 export type { LayoutFlags };
 
@@ -60,6 +61,87 @@ export function tagAppPageMetadataError<T>(error: T): T {
   return error;
 }
 
+/**
+ * Marker we tag onto an error a parallel slot's page or default component
+ * threw, holding the index of the layout that renders the slot. Next.js
+ * attaches HTTP access fallback boundaries only to each segment's `children`,
+ * so a slot's `notFound()` is caught by the boundary above that layout, not
+ * by the route's deepest boundary as the page's is.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+const APP_PAGE_SLOT_ERROR_LAYOUT_INDEX = Symbol.for("vinext.appPage.slotErrorLayoutIndex");
+
+/**
+ * Marker holding the id of the slot's own not-found boundary that catches the
+ * slot's `notFound()` on the client, when one does. The document then renders
+ * that boundary caught (see `resolveAppPageCaughtNotFoundBoundaries`).
+ */
+const APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY = Symbol.for(
+  "vinext.appPage.slotErrorNotFoundBoundary",
+);
+
+/**
+ * Marker we tag onto an error the route's page component threw, so that the
+ * document's fallback can tell it from one a layout or a template threw,
+ * which no slot tag marks either.
+ */
+const APP_PAGE_PAGE_ERROR = Symbol.for("vinext.appPage.pageError");
+
+function tagAppPageHttpAccessFallbackError<T>(error: T, tags: PropertyDescriptorMap): T {
+  // Only an HTTP access fallback reads the tag. A thrown error can be shared
+  // across slots, renders and requests (a module-scoped rejected promise), so
+  // each throw gets its own tagged copy instead of marking the shared error.
+  if (!isHTTPAccessFallbackError(error)) return error;
+  const source = error as object;
+  const tagged = Object.setPrototypeOf(
+    new Error(String(Reflect.get(source, "message"))),
+    Object.getPrototypeOf(source),
+  );
+  Object.defineProperties(tagged, {
+    ...Object.getOwnPropertyDescriptors(source),
+    stack: { value: Reflect.get(source, "stack"), configurable: true, writable: true },
+    ...tags,
+  });
+  return tagged as T;
+}
+
+export function tagAppPageSlotError<T>(
+  error: T,
+  layoutIndex: number,
+  notFoundBoundary?: string,
+): T {
+  return tagAppPageHttpAccessFallbackError(error, {
+    [APP_PAGE_SLOT_ERROR_LAYOUT_INDEX]: { value: layoutIndex },
+    [APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY]: { value: notFoundBoundary },
+  });
+}
+
+export function tagAppPagePageError<T>(error: T): T {
+  return tagAppPageHttpAccessFallbackError(error, { [APP_PAGE_PAGE_ERROR]: { value: true } });
+}
+
+function isAppPagePageError(error: unknown): boolean {
+  return !!error && typeof error === "object" && Reflect.get(error, APP_PAGE_PAGE_ERROR) === true;
+}
+
+function getAppPageSlotErrorLayoutIndex(error: unknown): number | null {
+  if (!error || typeof error !== "object") return null;
+  const layoutIndex: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_LAYOUT_INDEX);
+  return typeof layoutIndex === "number" ? layoutIndex : null;
+}
+
+/**
+ * The id of the not-found boundary that catches the route page's notFound():
+ * the page-level boundary, or the segment one it passes the signal up to.
+ */
+export const APP_PAGE_NOT_FOUND_BOUNDARY_ID = "page";
+
+function getAppPageSlotErrorNotFoundBoundary(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const boundary: unknown = Reflect.get(error, APP_PAGE_SLOT_ERROR_NOT_FOUND_BOUNDARY);
+  return typeof boundary === "string" ? boundary : null;
+}
+
 export type AppPageSpecialError =
   | {
       kind: "redirect";
@@ -68,7 +150,13 @@ export type AppPageSpecialError =
       type?: "push" | "replace";
       fromMetadata?: boolean;
     }
-  | { kind: "http-access-fallback"; statusCode: number; fromMetadata?: boolean };
+  | {
+      kind: "http-access-fallback";
+      statusCode: number;
+      fromMetadata?: boolean;
+      /** Set when a parallel slot threw it: the layout rendering the outermost such slot. */
+      slotLayoutIndex?: number;
+    };
 
 export type AppPageFontPreload = {
   href: string;
@@ -181,18 +269,6 @@ type ProbeAppPageLayoutsOptions = {
   classification?: LayoutClassificationOptions | null;
 };
 
-type ProbeAppPageComponentOptions = {
-  awaitAsyncResult: boolean;
-  onError: (error: unknown) => Promise<Response | null>;
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
-type ProbeAppPageThrownErrorOptions = {
-  probePage: () => unknown;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
-};
-
 function getAppPageStatusText(statusCode: number): string {
   return statusCode === 403 ? "Forbidden" : statusCode === 401 ? "Unauthorized" : "Not Found";
 }
@@ -201,9 +277,7 @@ function mergeAppPageSpecialErrorHeaders(
   response: Response,
   middlewareContext: { headers: Headers | null } | undefined,
 ): Response {
-  const frameworkLink = hasFrameworkLinkHeaders(response.headers)
-    ? response.headers.get("link")
-    : null;
+  const frameworkLink = getFrameworkLinkHeader(response.headers);
   const headers = new Headers(response.headers);
   if (frameworkLink) headers.delete("link");
   mergeMiddlewareResponseHeaders(headers, middlewareContext?.headers ?? null);
@@ -250,6 +324,94 @@ export function resolveAppPageSpecialError(error: unknown): AppPageSpecialError 
 }
 
 /**
+ * Resolve the special error that rejected an SSR shell. An error from the RSC
+ * render reaches the shell decoded from its Flight digest, so whether
+ * generateMetadata() threw it comes from the errors the RSC render threw with
+ * that digest. When the page threw one too, the page's decides. An error a
+ * client component threw during SSR is the page's, since generateMetadata()
+ * runs only in the RSC render. A notFound() / forbidden() / unauthorized()
+ * a parallel slot's page threw is caught above the layout rendering it,
+ * unless the slot's own not-found catches its notFound() and every other copy
+ * is the page's or another slot's. A copy neither threw, such as a template's,
+ * keeps the fallback above that layout.
+ */
+export function resolveAppPageShellSpecialError(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): AppPageSpecialError | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (!specialError || specialError.fromMetadata === true) return specialError;
+  if (isThrownNavigationError(error)) return specialError;
+  const fromMetadata =
+    renderedSpecialErrors.length > 0 &&
+    renderedSpecialErrors.every(
+      (rendered) => resolveAppPageSpecialError(rendered)?.fromMetadata === true,
+    );
+  if (fromMetadata) return { ...specialError, fromMetadata: true };
+  if (specialError.kind !== "http-access-fallback") return specialError;
+  // The boundary above a slot's layout is never below the page's, so the
+  // outermost slot's replaces the page's when both threw. A slot's own
+  // not-found boundary catches its notFound() inside the slot, leaving that
+  // layout and the page's boundary in place.
+  const skipsSlotCaughtNotFound =
+    specialError.statusCode === 404 &&
+    renderedSpecialErrors.every(
+      (rendered) =>
+        isAppPagePageError(rendered) || getAppPageSlotErrorLayoutIndex(rendered) !== null,
+    );
+  let slotLayoutIndex: number | null = null;
+  for (const rendered of renderedSpecialErrors) {
+    if (skipsSlotCaughtNotFound && getAppPageSlotErrorNotFoundBoundary(rendered) !== null) {
+      continue;
+    }
+    const layoutIndex = getAppPageSlotErrorLayoutIndex(rendered);
+    if (layoutIndex !== null && (slotLayoutIndex === null || layoutIndex < slotLayoutIndex)) {
+      slotLayoutIndex = layoutIndex;
+    }
+  }
+  return slotLayoutIndex === null ? specialError : { ...specialError, slotLayoutIndex };
+}
+
+/**
+ * The parallel slot not-found boundaries that catch the `notFound()` that
+ * rejected an SSR shell, or null when any copy the RSC render threw isn't
+ * caught inside its slot. On the client, each slot's own not-found boundary
+ * catches its signal while the rest of the route renders, as in Next.js,
+ * which sends an empty error shell and renders them in the browser. A copy
+ * no slot threw is caught by the page's boundary beside them when the page
+ * threw it, including from a component the page renders, which nothing tags.
+ * One a layout or a template threw renders outside the caught boundaries, so
+ * the document's render from the same payload throws it again and takes the
+ * fallback, which keeps it above the slot's layout (see
+ * `resolveAppPageShellSpecialError`). Without a slot's, that fallback renders.
+ */
+export function resolveAppPageCaughtNotFoundBoundaries(
+  error: unknown,
+  renderedSpecialErrors: readonly unknown[],
+): readonly string[] | null {
+  const specialError = resolveAppPageSpecialError(error);
+  if (specialError?.kind !== "http-access-fallback" || specialError.statusCode !== 404) {
+    return null;
+  }
+  if (isThrownNavigationError(error) || renderedSpecialErrors.length === 0) return null;
+  const boundaries = new Set<string>();
+  let caughtInSlot = false;
+  for (const rendered of renderedSpecialErrors) {
+    if (resolveAppPageSpecialError(rendered)?.fromMetadata === true) return null;
+    const boundary = getAppPageSlotErrorNotFoundBoundary(rendered);
+    if (boundary !== null) {
+      caughtInSlot = true;
+      boundaries.add(boundary);
+    } else if (getAppPageSlotErrorLayoutIndex(rendered) === null) {
+      boundaries.add(APP_PAGE_NOT_FOUND_BOUNDARY_ID);
+    } else {
+      return null;
+    }
+  }
+  return caughtInSlot ? Array.from(boundaries) : null;
+}
+
+/**
  * Resolves a redirect() target against the request URL and prepends the
  * configured basePath when the target is an app-internal absolute path.
  *
@@ -270,6 +432,19 @@ function applyAppPageRedirectBasePath(location: string, basePath: string | undef
   const pathname = suffixIndex === -1 ? location : location.slice(0, suffixIndex);
   const suffix = suffixIndex === -1 ? "" : location.slice(suffixIndex);
   return `${basePath}${pathname}${suffix}`;
+}
+
+/**
+ * The response headers stored with a page's special-error entries: a
+ * redirect's own `location`, not the response's, which middleware may have
+ * replaced for this request.
+ */
+export function resolveAppPageSpecialErrorStoredHeaders(
+  specialError: AppPageSpecialError,
+  basePath: string | undefined,
+): Record<string, string> | undefined {
+  if (specialError.kind !== "redirect") return undefined;
+  return { location: applyAppPageRedirectBasePath(specialError.location, basePath) };
 }
 
 /**
@@ -584,52 +759,6 @@ async function probeLayoutForErrors(
   });
 
   return outcome.completed ? outcome.result : null;
-}
-
-export async function probeAppPageComponent(
-  options: ProbeAppPageComponentOptions,
-): Promise<Response | null> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          if (options.awaitAsyncResult) {
-            await pageResult;
-          } else {
-            void Promise.resolve(pageResult).catch(() => {});
-          }
-        }
-      } catch (error) {
-        return options.onError(error);
-      }
-
-      return null;
-    });
-
-    return outcome.completed ? outcome.result : null;
-  });
-}
-
-export async function probeAppPageThrownError(
-  options: ProbeAppPageThrownErrorOptions,
-): Promise<unknown> {
-  return options.runWithSuppressedHookWarning(async () => {
-    const outcome = await runWithConnectionProbe(async () => {
-      try {
-        const pageResult = options.probePage();
-        if (isPromiseLike(pageResult)) {
-          await pageResult;
-        }
-      } catch (error) {
-        return { error, thrown: true } as const;
-      }
-
-      return { error: null, thrown: false } as const;
-    });
-
-    return outcome.completed && outcome.result.thrown ? outcome.result.error : null;
-  });
 }
 
 export async function readAppPageBinaryStream(

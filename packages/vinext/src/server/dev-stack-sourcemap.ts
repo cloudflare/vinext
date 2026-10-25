@@ -1,8 +1,7 @@
-import type { ViteDevServer } from "vite";
-import { readFile } from "node:fs/promises";
+import { isFileLoadingAllowed, type ViteDevServer } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { toSlash } from "pathslash";
+import path, { toSlash } from "pathslash";
 import { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
 
 export { VINEXT_ORIGINAL_STACK_TRACE_ENDPOINT } from "../utils/dev-stack-sourcemap-endpoint.js";
@@ -322,7 +321,7 @@ async function mapGeneratedFrame(
     sourceMap,
     generatedFrame.sourceMapBaseUrl,
   );
-  const codeFrame = await createStackCodeFrame({
+  const codeFrame = createStackCodeFrame({
     file: originalFile,
     line: original.line,
     column: original.column,
@@ -410,12 +409,15 @@ function getLocalSourcePath(server: ViteDevServer, file: string): string | null 
 
   localPath = stripQuery(localPath);
   if (!isAbsolutePath(localPath)) return null;
+  // Resolve `..` segments before the containment checks so a frame such as
+  // `<root>/../secret.js` cannot pass the root prefix comparison.
+  localPath = path.resolve(localPath);
   const localPathForCompare = normalizeLocalPathForCompare(localPath);
   if (localPathForCompare.includes("/node_modules/")) return null;
 
   const root = server.config?.root;
   if (!root) return null;
-  const rootForCompare = normalizeLocalPathForCompare(root);
+  const rootForCompare = normalizeLocalPathForCompare(path.resolve(root));
   return localPathForCompare === rootForCompare ||
     localPathForCompare.startsWith(`${rootForCompare}/`)
     ? localPath
@@ -436,18 +438,18 @@ function normalizeLocalPathForCompare(value: string): string {
 }
 
 function normalizeIgnoreListPath(value: string): string {
-  let path = devirtualizeReactServerFrame(value);
-  if (path.startsWith("file://")) {
+  let normalized = devirtualizeReactServerFrame(value);
+  if (normalized.startsWith("file://")) {
     try {
-      path = fileURLToPath(path);
+      normalized = fileURLToPath(normalized);
     } catch {
       // Keep malformed file URLs comparable instead of dropping the frame.
     }
   } else {
     try {
-      const url = new URL(path);
+      const url = new URL(normalized);
       if (url.protocol === "http:" || url.protocol === "https:") {
-        path = `${url.pathname}${url.search}`;
+        normalized = `${url.pathname}${url.search}`;
       }
     } catch {
       // Plain filesystem paths and virtual module ids are expected here.
@@ -455,12 +457,12 @@ function normalizeIgnoreListPath(value: string): string {
   }
 
   try {
-    path = decodeURIComponent(path);
+    normalized = decodeURIComponent(normalized);
   } catch {
     // Keep malformed paths comparable instead of dropping the frame.
   }
 
-  return toSlash(path).toLowerCase();
+  return toSlash(normalized).toLowerCase();
 }
 
 function isExternalHttpFrame(file: string, requestHost: string | undefined): boolean {
@@ -504,7 +506,7 @@ function isSourceMapIgnored(sourceMap: SourceMapPayload, sourceIndex: number): b
   return sourceMap.ignoreList?.includes(sourceIndex) ?? false;
 }
 
-async function createStackCodeFrame({
+function createStackCodeFrame({
   file,
   line,
   column,
@@ -516,11 +518,12 @@ async function createStackCodeFrame({
   column: number;
   methodName: string | undefined;
   sourceContent: string | null;
-}): Promise<StackCodeFramePayload | null> {
-  const source = sourceContent ?? (await readSourceFileForCodeFrame(file));
-  if (!source) return null;
+}): StackCodeFramePayload | null {
+  // Like Next.js, build code frames only from source-map sourcesContent and
+  // never read the client-influenced source path from disk.
+  if (!sourceContent) return null;
 
-  const sourceLines = source.split(/\r\n|\r|\n/);
+  const sourceLines = sourceContent.split(/\r\n|\r|\n/);
   if (line < 1 || line > sourceLines.length) return null;
 
   const start = Math.max(1, line - 2);
@@ -541,15 +544,6 @@ async function createStackCodeFrame({
     ...(methodName ? { methodName } : {}),
     lines,
   };
-}
-
-async function readSourceFileForCodeFrame(file: string): Promise<string | null> {
-  if (!file.startsWith("file://")) return null;
-  try {
-    return await readFile(fileURLToPath(file), "utf8");
-  } catch {
-    return null;
-  }
 }
 
 function getMappableClientGeneratedUrl(file: string, requestHost: string | undefined): URL | null {
@@ -600,6 +594,19 @@ async function loadServerSourceMapForLocalPath(
     const environment = server.environments[environmentName];
     if (!environment) continue;
     try {
+      // Server environments transform with Vite's server.fs checks skipped, so
+      // apply them here to the resolved file (after symlinks and extension
+      // probing), as Vite does before loading a file: never map a file Vite
+      // itself refuses to serve.
+      // A disk path resolving to a virtual module is server-only plugin output
+      // (vinext's own entries embed dev secrets) that Vite never serves over
+      // HTTP; real server frames name virtual modules by id, not by disk path.
+      const resolved = await environment.pluginContainer.resolveId(localPath);
+      if (!resolved || resolved.external || resolved.id.startsWith("\0")) continue;
+      if (!isFileLoadingAllowed(server.config, stripQuery(resolved.id))) continue;
+      // transformRequest resolves its argument itself, so pass the same id that
+      // was just resolved and checked. Passing the resolved id would resolve it
+      // a second time, which an alias chain could point at an unchecked file.
       const result = await environment.transformRequest(localPath);
       const sourceMap = normalizeSourceMapPayload(result?.map);
       if (sourceMap) return sourceMap;

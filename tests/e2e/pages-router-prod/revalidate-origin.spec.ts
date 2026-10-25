@@ -56,6 +56,33 @@ test("on-demand revalidation uses the bound production server origin", async () 
   }
 });
 
+// Next.js only attaches `res.revalidate()` in apiResolver
+// (packages/next/src/server/api-utils/node/api-resolver.ts), so a page's
+// getServerSideProps `res` cannot send the revalidation secret anywhere.
+test("getServerSideProps res has no revalidate() and never contacts the Host origin", async () => {
+  let capturedRevalidateHeader: string | undefined;
+  const outsideServer = createServer((request, response) => {
+    const header = request.headers["x-prerender-revalidate"];
+    capturedRevalidateHeader = Array.isArray(header) ? header[0] : header;
+    response.writeHead(200);
+    response.end();
+  });
+  await new Promise<void>((resolve) => outsideServer.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const outsidePort = (outsideServer.address() as AddressInfo).port;
+    const result = await requestWithHost(`127.0.0.1:${outsidePort}`, "/gssp-res-revalidate");
+
+    expect(capturedRevalidateHeader).toBeUndefined();
+    expect(result.status).toBe(200);
+    expect(result.body).toMatch(/res\.revalidate: (?:<!-- -->)?undefined/);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      outsideServer.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
+});
+
 test("on-demand revalidation keeps path inputs on the production server origin", async () => {
   let capturedRevalidateHeader: string | undefined;
   const outsideServer = createServer((request, response) => {

@@ -2,7 +2,7 @@
 // This isolated non-workspace fixture receives its dependencies from the
 // Playwright web-server setup immediately before the production build.
 import { cloudflare } from "@cloudflare/vite-plugin";
-import { defineConfig } from "vite";
+import { defineConfig } from "vite-plus";
 import vinext from "vinext";
 import { workersCacheCdnAdapter } from "../../../../packages/cloudflare/src/cache/workers-cache-cdn-adapter.js";
 

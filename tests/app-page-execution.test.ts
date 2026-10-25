@@ -1,14 +1,19 @@
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
+  APP_PAGE_NOT_FOUND_BOUNDARY_ID,
   buildAppPageFontLinkHeader,
   buildAppPageSpecialErrorResponse,
   bufferAppPageBinaryStream,
-  probeAppPageComponent,
   probeAppPageLayouts,
+  resolveAppPageCaughtNotFoundBoundaries,
+  resolveAppPageShellSpecialError,
   resolveAppPageSpecialError,
+  tagAppPagePageError,
+  tagAppPageSlotError,
   teeAppPageRscStreamForCapture,
 } from "../packages/vinext/src/server/app-page-execution.js";
 import { parseNextRedirectDigest } from "../packages/vinext/src/server/next-error-digest.js";
+import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import {
   hasFrameworkLinkHeaders,
@@ -44,6 +49,240 @@ function createMiddlewareContext() {
 }
 
 describe("app page execution helpers", () => {
+  it("resolves a shell's special error as generateMetadata()'s only when the render threw it there alone", () => {
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    const fromPage = Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      fromMetadata: true,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromMetadata, fromPage])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
+  it("resolves a special error a client component threw during SSR as the page's", () => {
+    // generateMetadata() threw the same digest in the RSC render, but runs
+    // only there, so an error SSR threw itself is never generateMetadata()'s.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const fromMetadata = Object.assign(new Error(digest), {
+      digest,
+      [Symbol.for("vinext.appPage.metadataError")]: true,
+    });
+    let thrownDuringSsr: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      thrownDuringSsr = error;
+    }
+
+    expect(resolveAppPageShellSpecialError(thrownDuringSsr, [fromMetadata])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+  });
+
+  it("resolves a shell's access fallback a parallel slot threw to the outermost slot's layout", () => {
+    // Next.js attaches HTTP access fallback boundaries only to each segment's
+    // `children`, so a slot's notFound() is caught above its layout, which is
+    // never below the boundary that catches the page's.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const fromInnerSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 2);
+    const fromOuterSlot = tagAppPageSlotError(Object.assign(new Error(digest), { digest }), 1);
+    const fromPage = Object.assign(new Error(digest), { digest });
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromInnerSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      slotLayoutIndex: 2,
+    });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [fromPage, fromInnerSlot, fromOuterSlot]),
+    ).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+      slotLayoutIndex: 1,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // Slots, renders and requests can share one thrown error, such as a
+    // module-scoped rejected promise, so each throw tags its own copy.
+    const shared = Object.freeze(Object.assign(new Error(digest), { digest }));
+    const fromRootSlot = tagAppPageSlotError(shared, 0);
+    expect(fromRootSlot).not.toBe(shared);
+    expect(fromRootSlot).toBeInstanceOf(Error);
+    expect(fromRootSlot).toMatchObject({ digest, message: digest, stack: shared.stack });
+    expect(resolveAppPageShellSpecialError(decoded, [shared])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [tagAppPageSlotError(shared, 2)]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        tagAppPageSlotError(shared, 3),
+        tagAppPageSlotError(shared, 1),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 1 });
+    expect(
+      resolveAppPageShellSpecialError(decoded, [tagAppPageSlotError(fromRootSlot, 2)]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
+
+    const redirectDigest = "NEXT_REDIRECT;replace;%2Ftarget;307";
+    const redirect = Object.assign(new Error(redirectDigest), { digest: redirectDigest });
+    expect(
+      resolveAppPageShellSpecialError(redirect, [tagAppPageSlotError(redirect, 1)]),
+    ).not.toHaveProperty("slotLayoutIndex");
+  });
+
+  it("leaves a slot's notFound() its own not-found catches out of the slot's layout", () => {
+    // Next.js catches that copy inside the slot, so the layout rendering the
+    // slot stays, and the page's own notFound() goes to the page's boundary.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const fromPage = () => tagAppPagePageError(thrown());
+    const caughtInSlot = tagAppPageSlotError(thrown(), 1, "slot:members:/team:0");
+
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage(), caughtInSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [caughtInSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // Another slot without its own not-found is still caught above its layout.
+    expect(
+      resolveAppPageShellSpecialError(decoded, [
+        fromPage(),
+        caughtInSlot,
+        tagAppPageSlotError(thrown(), 2),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 2 });
+    // A layout's or a template's notFound(), which no page or slot tag marks,
+    // is caught above the layout rendering the slot, so the slot's copy keeps
+    // that fallback.
+    expect(resolveAppPageShellSpecialError(decoded, [thrown(), caughtInSlot])).toMatchObject({
+      slotLayoutIndex: 1,
+    });
+    // Slots have only not-found boundaries, so a slot's forbidden() is still
+    // caught above its layout.
+    const forbiddenDigest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const forbidden = Object.assign(new Error(forbiddenDigest), { digest: forbiddenDigest });
+    expect(
+      resolveAppPageShellSpecialError(forbidden, [
+        tagAppPageSlotError(forbidden, 1, "slot:members:/team:0"),
+      ]),
+    ).toMatchObject({ slotLayoutIndex: 1 });
+  });
+
+  it("resolves the slot not-found boundaries that catch a shell's notFound()", () => {
+    // On the client, a slot's own not-found boundary catches its notFound()
+    // while the rest of the route renders, so the document renders those
+    // boundaries caught when every copy the RSC render threw has one.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const teamSlot = tagAppPageSlotError(thrown(), 1, "slot:team:/:0");
+    const modalSlot = tagAppPageSlotError(thrown(), 0, "slot:modal:/:1");
+
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot])).toEqual(["slot:team:/:0"]);
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [
+        teamSlot,
+        modalSlot,
+        tagAppPageSlotError(thrown(), 1, "slot:team:/:0"),
+      ]),
+    ).toEqual(["slot:team:/:0", "slot:modal:/:1"]);
+    // A copy from a slot without its own not-found leaves the fallback above
+    // the layout.
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [teamSlot, tagAppPageSlotError(thrown(), 1)]),
+    ).toBeNull();
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [])).toBeNull();
+    // A tagged copy of a tagged error keeps only its own boundary.
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [tagAppPageSlotError(teamSlot, 1)]),
+    ).toBeNull();
+    // Slots have only not-found boundaries, and a client component's signal
+    // never reached the RSC render.
+    const forbiddenDigest = "NEXT_HTTP_ERROR_FALLBACK;403";
+    const forbidden = Object.assign(new Error(forbiddenDigest), { digest: forbiddenDigest });
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(forbidden, [
+        tagAppPageSlotError(forbidden, 1, "slot:team:/:0"),
+      ]),
+    ).toBeNull();
+    let clientNotFound: unknown;
+    try {
+      notFound();
+    } catch (error) {
+      clientNotFound = error;
+    }
+    expect(resolveAppPageCaughtNotFoundBoundaries(clientNotFound, [teamSlot])).toBeNull();
+  });
+
+  it("renders the page's not-found boundary caught beside the slot boundaries", () => {
+    // Next.js catches the page's notFound() with the page's boundary while a
+    // slot's own not-found catches the slot's, and the client shows both.
+    const digest = "NEXT_HTTP_ERROR_FALLBACK;404";
+    const decoded = Object.assign(new Error(digest), { digest });
+    const thrown = () => Object.assign(new Error(digest), { digest });
+    const fromPage = () => tagAppPagePageError(thrown());
+    const teamSlot = tagAppPageSlotError(thrown(), 1, "slot:team:/:0");
+
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage(), teamSlot])).toEqual([
+      APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+      "slot:team:/:0",
+    ]);
+    // Without a slot's, the page's own fallback renders, as before.
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [fromPage()])).toBeNull();
+    // A slot that no boundary of its own catches still leaves the fallback.
+    expect(
+      resolveAppPageCaughtNotFoundBoundaries(decoded, [
+        fromPage(),
+        teamSlot,
+        tagAppPageSlotError(thrown(), 1),
+      ]),
+    ).toBeNull();
+    // A copy no tag marks may come from a component the page renders, which
+    // the page's boundary catches. A layout's or a template's renders outside
+    // the caught boundaries, so the document's render throws it again and
+    // takes the fallback, which keeps it above the slot's layout.
+    expect(resolveAppPageCaughtNotFoundBoundaries(decoded, [thrown(), teamSlot])).toEqual([
+      APP_PAGE_NOT_FOUND_BOUNDARY_ID,
+      "slot:team:/:0",
+    ]);
+    expect(resolveAppPageShellSpecialError(decoded, [thrown(), teamSlot])).toMatchObject({
+      slotLayoutIndex: 1,
+    });
+    expect(resolveAppPageShellSpecialError(decoded, [fromPage(), teamSlot])).toEqual({
+      kind: "http-access-fallback",
+      statusCode: 404,
+    });
+    // A page tag is a copy, as a slot's is.
+    const shared = Object.freeze(thrown());
+    expect(tagAppPagePageError(shared)).not.toBe(shared);
+    expect(tagAppPagePageError(shared)).toMatchObject({ digest, message: digest });
+  });
+
   it("parses redirect and access-fallback digests", () => {
     expect(
       resolveAppPageSpecialError({
@@ -914,24 +1153,6 @@ describe("app page execution helpers", () => {
     expect(probedLayouts).toEqual([2, 1]);
     expect(result.response?.status).toBe(404);
     await expect(result.response?.text()).resolves.toBe("layout-fallback");
-  });
-
-  it("does not await async page probes when a loading boundary is present", async () => {
-    const onError = vi.fn();
-
-    const response = await probeAppPageComponent({
-      awaitAsyncResult: false,
-      onError,
-      probePage() {
-        return new Promise<void>(() => {});
-      },
-      runWithSuppressedHookWarning(probe) {
-        return probe();
-      },
-    });
-
-    expect(response).toBeNull();
-    expect(onError).not.toHaveBeenCalled();
   });
 
   it("produces fused ssrStream + sideStream when capturing (#981)", async () => {

@@ -1,6 +1,5 @@
-import { parseAst } from "vite";
 import { createMiddlewareMissingExportError } from "../server/middleware-runtime.js";
-import { getAstName, scriptParserLanguage } from "./ast-utils.js";
+import { getAstName, parseProgram, scriptParserLanguage } from "./ast-utils.js";
 
 export function hasValidMiddlewareModuleExport(
   source: string,
@@ -11,7 +10,7 @@ export function hasValidMiddlewareModuleExport(
   // verifies that the expected export name exists, not that its value is
   // callable. The shared runtime validation remains authoritative for values
   // such as `export const proxy = 1` and re-exports from another module.
-  const ast = parseAst(source, { lang: scriptParserLanguage(id) ?? "jsx" });
+  const ast = parseProgram(source, { lang: scriptParserLanguage(id) ?? "jsx" });
   const expectedExport = isProxy ? "proxy" : "middleware";
 
   for (const statement of ast.body) {

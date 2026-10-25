@@ -180,6 +180,18 @@ async function assertPackageClientReferenceCssDeps(fixtureRoot: string): Promise
   expect(hasPackageCssDep).toBe(true);
 }
 
+async function assertClientReferencesGrouped(fixtureRoot: string): Promise<void> {
+  // The probes share one route, so the build loads them through a route group
+  // chunk; this test is the WebKit regression for that grouped shape too.
+  // Client file names are hash-only, so read chunk names from the build manifest.
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(fixtureRoot, "dist", "client", ".vite", "manifest.json"), "utf-8"),
+  ) as Record<string, { name?: string }>;
+  expect(
+    Object.values(manifest).some((chunk) => chunk.name?.includes("client-reference-group")),
+  ).toBe(true);
+}
+
 async function buildAndServeProductionFixture(): Promise<{
   fixtureRoot: string;
   server: Server;
@@ -216,6 +228,7 @@ export default defineConfig({
   });
   await builder.buildApp();
   await assertPackageClientReferenceCssDeps(fixtureRoot);
+  await assertClientReferencesGrouped(fixtureRoot);
 
   const { startProdServer } = await import(
     pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href

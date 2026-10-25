@@ -1,4 +1,4 @@
-import { createHmac, randomBytes } from "node:crypto";
+import { createHmac } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "pathslash";
 import { pathToFileURL } from "node:url";
@@ -7,26 +7,61 @@ import type {
   ModuleExportMeta,
   TransformHoistInlineDirectiveMeta,
 } from "@vitejs/plugin-rsc/transforms";
-import { parseAstAsync, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
+import {
+  getServerActionsKeyCacheFsDeny,
+  loadOrGenerateServerActionsEncryptionKey,
+} from "../build/server-actions-encryption-key.js";
+import { parseProgramAsync } from "./ast-utils.js";
 import { NODE_MODULES_PATH_RE } from "../utils/path.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
 type RscTransforms = typeof import("@vitejs/plugin-rsc/transforms");
-type Program = Awaited<ReturnType<typeof parseAstAsync>>;
+type Program = ESTree.Program;
 
 type Options = {
   projectRoot: string;
   cacheRuntime: string;
   allowMissingRsc?: boolean;
+  /**
+   * The Server Actions encryption key vinext loaded for an auto-registered
+   * @vitejs/plugin-rsc, so reference names derive from the same key.
+   */
+  getEncryptionKey?: () => string | undefined;
 };
 
 type CacheWrapperOptions = {
   acceptsSecondArgument: boolean;
   argumentCount?: number;
+  captureCount?: number;
   serverReferenceId?: string;
 };
 
+type BrowserTransformOptions = {
+  environmentName: string;
+  reference: { referenceKey: string };
+  secureExportName: (name: string) => string;
+  createReference: (referenceId: string, name: string) => string;
+};
+
+type BrowserTransformOutput = NonNullable<
+  ReturnType<RscTransforms["transformDirectiveProxyExport"]>
+>;
+
+export type UseCacheCallableApi = {
+  /**
+   * Compile a browser Web Worker module like the client environment does,
+   * with the same reference ids, without claiming references.
+   */
+  transformWorkerModule(
+    code: string,
+    id: string,
+    createReference: BrowserTransformOptions["createReference"],
+  ): Promise<BrowserTransformOutput["output"] | undefined>;
+};
+
 const PLUGIN_NAME = "vinext:server-function-directives";
+export { PLUGIN_NAME as USE_CACHE_PLUGIN_NAME };
 const SOURCE_MODULE_ID_RE = /\.(?:tsx?|jsx?|mjs)(?:\?.*)?$/;
 const RESOLVED_VIRTUAL_MODULE_ID_RE = new RegExp(`^${String.fromCharCode(0)}`);
 const USE_CACHE_DIRECTIVE = /^use cache(?:: ([^\s].*))?$/;
@@ -175,13 +210,78 @@ function getCacheWrapperOptions(
   meta: Pick<ModuleExportMeta, "valueNode"> | TransformHoistInlineDirectiveMeta,
 ): CacheWrapperOptions {
   const argumentCount = getArgumentCount(meta);
+  // Like Next.js, a function that closes over values must receive exactly its
+  // encrypted captures, bound to its own reference, as the first argument
+  // (use-cache-wrapper.ts `boundArgsLength`, encryption.ts `actionId`).
+  const captureCount = "bindVars" in meta ? meta.bindVars.length : 0;
   return {
     acceptsSecondArgument: acceptsSecondArgument(meta),
     ...(argumentCount === undefined ? {} : { argumentCount }),
+    ...(captureCount === 0 ? {} : { captureCount }),
   };
 }
 
-export async function createUseCacheCallablePlugin(options: Options): Promise<Plugin> {
+/**
+ * Compile a module for a browser graph: module-level cache functions become
+ * server references, and inline ones are rejected as in Next.js Client
+ * Components. Returns undefined when the module is unchanged.
+ */
+function transformBrowserModule(
+  transforms: RscTransforms,
+  code: string,
+  ast: Program,
+  id: string,
+  moduleDirective: string | undefined,
+  options: BrowserTransformOptions,
+): { output: BrowserTransformOutput["output"]; referenceNames: string[] } | undefined {
+  if (!moduleDirective) {
+    transforms.transformHoistInlineDirective(code, ast, {
+      directive: USE_CACHE_DIRECTIVE_CANDIDATE,
+      rejectNonAsyncFunction: true,
+      runtime: (_value, _name, meta) => {
+        matchUseCacheDirective(meta.directiveMatch[0]);
+        throw new Error(
+          `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${options.environmentName}: ${id})`,
+        );
+      },
+    });
+    return;
+  }
+
+  const useServerExportNames = getFunctionDirectiveExportNames(transforms, ast, "use server");
+  const referenceName = (name: string) =>
+    useServerExportNames.has(name) ? name : options.secureExportName(name);
+  const result = transforms.transformDirectiveProxyExport(ast, {
+    code,
+    directive: moduleDirective,
+    filter: (name, meta) => {
+      if (!shouldTransformModuleExport(name, id, meta)) return false;
+      validateModuleExport(transforms, meta);
+      return true;
+    },
+    runtime: (name) =>
+      options.createReference(`${options.reference.referenceKey}#${referenceName(name)}`, name),
+  });
+  if (!result?.output.hasChanged()) return;
+  return { output: result.output, referenceNames: result.exportNames.map(referenceName) };
+}
+
+/**
+ * Ported from Next.js: crates/next-custom-transforms/src/transforms/server_actions.rs
+ * salts server-reference IDs with the encryption key (`serverReferenceHashSalt`
+ * in packages/next/src/build/webpack-config.ts), so rebuilds of identical
+ * source emit identical client chunks. See
+ * loadOrGenerateServerActionsEncryptionKey for where the key comes from. The
+ * secret is derived under a label rather than used directly so the reference
+ * names reveal nothing about the key.
+ */
+function createReferenceSecret(encryptionKey: string): Buffer {
+  return createHmac("sha256", encryptionKey).update("vinext use cache reference").digest();
+}
+
+export async function createUseCacheCallablePlugin(
+  options: Options,
+): Promise<Plugin<UseCacheCallableApi>> {
   const rscModulePath = resolvePluginRscModule(options.projectRoot, "@vitejs/plugin-rsc");
   const transformsPath = resolvePluginRscModule(
     options.projectRoot,
@@ -197,15 +297,78 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
   // original export name must not also be the remotely addressable name. A
   // per-plugin secret keeps aliases stable across every environment/build pass
   // in one Vite build without making sibling exports derivable from each other.
-  const referenceSecret = randomBytes(32);
+  let referenceSecret: Buffer | undefined;
   let manager: RscPluginManager | undefined;
+
+  async function analyzeModule(
+    manager: RscPluginManager,
+    secret: Buffer,
+    code: string,
+    id: string,
+  ) {
+    const ast = await parseProgramAsync(code);
+    const moduleDirective = findModuleUseCacheDirective(ast);
+    const useServerBoundary = transforms.hasDirective(ast.body, "use server");
+    if (moduleDirective && useServerBoundary) {
+      throw new Error(
+        `A module cannot contain both ${JSON.stringify(moduleDirective)} and "use server" directives.`,
+      );
+    }
+
+    const reference = manager.serverReferences.resolve(id, "rsc");
+    const relativeImportId = manager.toRelativeId(reference.importId);
+    const secureExportName = (name: string) =>
+      `$$vinext_cache_${createHmac("sha256", secret)
+        .update(relativeImportId)
+        .update("\0")
+        .update(name)
+        .digest("hex")}`;
+    return { ast, moduleDirective, useServerBoundary, reference, secureExportName };
+  }
 
   return {
     name: PLUGIN_NAME,
+    api: {
+      async transformWorkerModule(code, id, createReference) {
+        if (!code.includes("use cache")) return;
+        const secret = referenceSecret;
+        if (!manager || !secret) {
+          // Like the worker "use server" transform, fail rather than ship the
+          // module body.
+          if (findModuleUseCacheDirective(await parseProgramAsync(code))) {
+            throw new Error(
+              'vinext: cannot compile a "use cache" module in a Web Worker without @vitejs/plugin-rsc.',
+            );
+          }
+          return;
+        }
+        const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
+          await analyzeModule(manager, secret, code, id);
+        if (useServerBoundary) return;
+        return transformBrowserModule(transforms, code, ast, id, moduleDirective, {
+          environmentName: "worker",
+          reference,
+          secureExportName,
+          createReference,
+        })?.output;
+      },
+    },
+    config(config) {
+      // mergeConfig appends this to a configured deny list.
+      return { server: { fs: { deny: getServerActionsKeyCacheFsDeny(config.server?.fs?.deny) } } };
+    },
     configResolved(config) {
       const pluginApi = rscModule.getPluginApi(config);
       const hasRscPlugin = config.plugins.some((plugin) => plugin.name === "rsc");
       if (!pluginApi && options.allowMissingRsc && !hasRscPlugin) return;
+      // Read after vinext's config hook has loaded `.env` files.
+      referenceSecret ??= createReferenceSecret(
+        options.getEncryptionKey?.() ??
+          loadOrGenerateServerActionsEncryptionKey({
+            root: config.root,
+            isBuild: config.command === "build",
+          }),
+      );
       if (!pluginApi?.manager.serverReferences) {
         throw new Error("vinext: callable use cache requires @vitejs/plugin-rsc 0.5.34 or newer.");
       }
@@ -230,29 +393,15 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
         },
       },
       async handler(code, id) {
-        if (!manager) return;
+        const secret = referenceSecret;
+        if (!manager || !secret) return;
         if (!code.includes("use cache")) {
           manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
           return;
         }
 
-        const ast = await parseAstAsync(code);
-        const moduleDirective = findModuleUseCacheDirective(ast);
-        const useServerBoundary = transforms.hasDirective(ast.body, "use server");
-        if (moduleDirective && useServerBoundary) {
-          throw new Error(
-            `A module cannot contain both ${JSON.stringify(moduleDirective)} and "use server" directives.`,
-          );
-        }
-
-        const reference = manager.serverReferences.resolve(id, "rsc");
-        const relativeImportId = manager.toRelativeId(reference.importId);
-        const secureExportName = (name: string) =>
-          `$$vinext_cache_${createHmac("sha256", referenceSecret)
-            .update(relativeImportId)
-            .update("\0")
-            .update(name)
-            .digest("hex")}`;
+        const { ast, moduleDirective, useServerBoundary, reference, secureExportName } =
+          await analyzeModule(manager, secret, code, id);
         const isRsc = this.environment.name === "rsc";
 
         if (!isRsc) {
@@ -260,47 +409,21 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
             manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
             return;
           }
-          if (!moduleDirective) {
-            transforms.transformHoistInlineDirective(code, ast, {
-              directive: USE_CACHE_DIRECTIVE_CANDIDATE,
-              rejectNonAsyncFunction: true,
-              runtime: (_value, _name, meta) => {
-                matchUseCacheDirective(meta.directiveMatch[0]);
-                throw new Error(
-                  `It is not allowed to define inline "use cache" annotated functions in Client Components. Export them from a separate file with a module-level "use cache" or "use server" directive, or pass them down through props from a Server Component. (${this.environment.name}: ${id})`,
-                );
-              },
-            });
-            manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
-            return;
-          }
-
-          const useServerExportNames = getFunctionDirectiveExportNames(
-            transforms,
-            ast,
-            "use server",
-          );
-          const result = transforms.transformDirectiveProxyExport(ast, {
-            code,
-            directive: moduleDirective,
-            filter: (name, meta) => {
-              if (!shouldTransformModuleExport(name, id, meta)) return false;
-              validateModuleExport(transforms, meta);
-              return true;
-            },
-            runtime: (name) =>
-              `$$ReactClient.createServerReference(${JSON.stringify(`${reference.referenceKey}#${useServerExportNames.has(name) ? name : secureExportName(name)}`)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
+          const result = transformBrowserModule(transforms, code, ast, id, moduleDirective, {
+            environmentName: this.environment.name,
+            reference,
+            secureExportName,
+            createReference: (referenceId, name) =>
+              `$$ReactClient.createServerReference(${JSON.stringify(referenceId)},$$ReactClient.callServer,undefined,${this.environment.mode === "dev" ? "$$ReactClient.findSourceMapURL" : "undefined"},${JSON.stringify(name)})`,
           });
-          if (!result?.output.hasChanged()) {
+          if (!result) {
             manager.serverReferences.deleteClaim(PLUGIN_NAME, id);
             return;
           }
 
           manager.serverReferences.replaceClaim(PLUGIN_NAME, id, {
             ...reference,
-            exportNames: result.exportNames.map((name) =>
-              useServerExportNames.has(name) ? name : secureExportName(name),
-            ),
+            exportNames: result.referenceNames,
           });
           const runtimeEnvironment = this.environment.name === "client" ? "browser" : "ssr";
           result.output.prepend(
@@ -363,7 +486,16 @@ export async function createUseCacheCallablePlugin(options: Options): Promise<Pl
               noExport: true,
               runtime: (value, name, meta) =>
                 runtime(value, name, matchUseCacheDirective(meta.directiveMatch[0]), meta),
-              encode: (value) => `$$cacheRuntime.encryptCacheCaptures(${value})`,
+              encode: (value, name?: string) => {
+                // Older plugin-rsc releases pass neither `name` nor `meta.bindVars`.
+                if (name === undefined) {
+                  throw new Error(
+                    'vinext: inline "use cache" functions require @vitejs/plugin-rsc 0.5.37 or newer.',
+                  );
+                }
+                const referenceId = `${reference.referenceKey}#${secureExportName(name)}`;
+                return `$$cacheRuntime.encryptCacheCaptures(${JSON.stringify(referenceId)}, ${value})`;
+              },
               decode: (value) => value,
             });
         if (!result.output.hasChanged()) {

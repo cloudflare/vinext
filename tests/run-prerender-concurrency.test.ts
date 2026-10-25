@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { toSlash } from "pathslash";
 import type { PrerenderResult } from "../packages/vinext/src/build/prerender.js";
 
 const {
@@ -185,6 +186,33 @@ describe("runPrerender concurrency", () => {
     }
   });
 
+  it.each(["entry.js", "index.js"])(
+    "resolves Pages artifacts from the configured SSR output root (%s)",
+    async (entryFile) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-custom-pages-"));
+      const serverDir = path.join(root, "build", "pages");
+      fs.mkdirSync(path.join(root, "pages"));
+      fs.mkdirSync(serverDir, { recursive: true });
+      fs.writeFileSync(path.join(serverDir, entryFile), "export {};\n");
+      fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "pages-build\n");
+
+      try {
+        const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+        await runPrerender({ root, routeRootConfig: { ssrOutDir: "build/pages" } });
+
+        expect(prerenderPagesMock).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pagesBundlePath: toSlash(path.join(serverDir, entryFile)),
+            outDir: toSlash(path.join(root, "dist", "server", "prerendered-routes")),
+            config: expect.objectContaining({ buildId: "pages-build" }),
+          }),
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("keeps custom RSC builds on the canonical export and manifest roots", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-roots-"));
     const serverDir = path.join(root, "build", "application");
@@ -236,6 +264,31 @@ describe("runPrerender concurrency", () => {
         expect.any(Array),
         path.join(root, "dist", "server"),
         expect.objectContaining({ buildId: "custom-build" }),
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("writes static export pages into a custom client output directory", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-run-prerender-client-out-"));
+    const serverDir = path.join(root, "dist", "server");
+    fs.mkdirSync(path.join(root, "app"));
+    fs.mkdirSync(serverDir, { recursive: true });
+    fs.writeFileSync(path.join(serverDir, "BUILD_ID"), "client-out-build\n");
+    fs.writeFileSync(path.join(serverDir, "index.js"), "export {};\n");
+    fs.writeFileSync(path.join(root, "next.config.mjs"), 'export default { output: "export" };\n');
+    prerenderAppMock.mockResolvedValueOnce({ routes: [] });
+
+    try {
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+
+      await runPrerender({ root, routeRootConfig: { clientOutDir: "build/client" } });
+
+      expect(prerenderAppMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          outDir: toSlash(path.join(root, "build", "client")),
+        }),
       );
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

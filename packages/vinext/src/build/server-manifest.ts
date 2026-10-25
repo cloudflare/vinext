@@ -23,6 +23,18 @@ export function readPrerenderSecret(serverDir: string): string | undefined {
 }
 
 /**
+ * Read next.config `compress` from `vinext-server.json` in `serverDir`.
+ *
+ * Like `next start`, compression stays on unless the build recorded an
+ * explicit `compress: false`, so builds without the field keep compressing.
+ */
+export function readServerCompress(serverDir: string): boolean {
+  const manifestPath = path.join(serverDir, "vinext-server.json");
+  const manifest = readJsonFile<{ compress?: unknown }>(manifestPath);
+  return manifest?.compress !== false;
+}
+
+/**
  * Read every server output root that contains a deployable response-stage
  * graph. Paths are stored relative to the project root so build artifacts stay
  * relocatable, then resolved for post-build sidecar updates.

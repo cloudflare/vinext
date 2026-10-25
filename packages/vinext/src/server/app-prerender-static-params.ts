@@ -1,5 +1,6 @@
 import { pickRootParams, runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isUnknownRecord } from "../utils/record.js";
+import { shareIsolatePromise } from "./isolate-shared-promise.js";
 
 type GenerateStaticParamsFunction = (input: { params: RootParams }) => unknown;
 
@@ -86,27 +87,30 @@ export function createAppPrerenderStaticParamsResolver(
   // Resolve lazy page modules once, on first invocation (prerender time), and
   // memoize the combined function list. Dedup concurrent callers. Resolution
   // preserves `sources` order: each source maps to its eager function or its
-  // awaited lazy function, then non-functions are dropped.
+  // awaited lazy function, then non-functions are dropped. The request that
+  // starts the shared resolution stays alive until it settles.
   let resolvedFns: GenerateStaticParamsFunction[] | null = null;
   let resolvePromise: Promise<GenerateStaticParamsFunction[]> | null = null;
   const resolveFns = (): Promise<GenerateStaticParamsFunction[]> => {
     if (resolvedFns) return Promise.resolve(resolvedFns);
     if (!resolvePromise) {
-      resolvePromise = (async () => {
-        const maybeFns = await Promise.all(
-          usableSources.map(async (source) => {
-            if (isGenerateStaticParamsFunction(source)) return source;
-            const mod = await source.load();
-            const fn =
-              mod && typeof mod === "object"
-                ? (mod as { generateStaticParams?: unknown }).generateStaticParams
-                : undefined;
-            return isGenerateStaticParamsFunction(fn) ? fn : null;
-          }),
-        );
-        resolvedFns = maybeFns.filter((fn): fn is GenerateStaticParamsFunction => fn !== null);
-        return resolvedFns;
-      })();
+      resolvePromise = shareIsolatePromise(
+        (async () => {
+          const maybeFns = await Promise.all(
+            usableSources.map(async (source) => {
+              if (isGenerateStaticParamsFunction(source)) return source;
+              const mod = await source.load();
+              const fn =
+                mod && typeof mod === "object"
+                  ? (mod as { generateStaticParams?: unknown }).generateStaticParams
+                  : undefined;
+              return isGenerateStaticParamsFunction(fn) ? fn : null;
+            }),
+          );
+          resolvedFns = maybeFns.filter((fn): fn is GenerateStaticParamsFunction => fn !== null);
+          return resolvedFns;
+        })(),
+      );
     }
     return resolvePromise;
   };

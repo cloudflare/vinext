@@ -1,4 +1,7 @@
 export default {
+  // The cloudflare-pages-router-dev e2e project runs with this flag so the
+  // Worker request stage covers raw `_next/data` URLs reaching middleware.
+  skipProxyUrlNormalize: process.env.VINEXT_E2E_SKIP_PROXY_URL_NORMALIZE === "1",
   async headers() {
     return [
       {

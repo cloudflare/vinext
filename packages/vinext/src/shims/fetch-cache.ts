@@ -23,17 +23,28 @@ import { Buffer } from "node:buffer";
 
 import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
+import { sha256Hex } from "../utils/hash.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
 import type { FrameworkSpan } from "../server/framework-tracer.js";
-import { getOrCreateAls } from "./internal/als-registry.js";
+import {
+  fallbackFetchCacheState as _fallbackState,
+  fetchCacheAls as _als,
+  getFetchCacheState as _getState,
+  resetFallbackFetchCacheState as _resetFallbackState,
+  type FetchCacheMode,
+  type FetchDedupeEntry,
+} from "./fetch-cache-state.js";
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
-import {
-  isInsideUnifiedScope,
-  getRequestContext,
-  runWithUnifiedStateMutation,
-} from "./unified-request-context.js";
+import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
+
+export {
+  addCollectedRequestTags,
+  getCurrentFetchSoftTags,
+  runWithDetachedFetchObservations,
+} from "./fetch-cache-state.js";
+export type { FetchCacheMode, FetchCacheState } from "./fetch-cache-state.js";
 
 // ---------------------------------------------------------------------------
 // Cache key generation
@@ -47,7 +58,7 @@ import {
 const HEADER_BLOCKLIST = ["traceparent", "tracestate"];
 
 // Cache key version — bump when changing the key format to bust stale entries
-const CACHE_KEY_PREFIX = "v5";
+const CACHE_KEY_PREFIX = "v8";
 const MAX_CACHE_KEY_BODY_BYTES = 1024 * 1024; // 1 MiB
 
 // "Cache indefinitely" duration — mirrors upstream's CACHE_ONE_YEAR_SECONDS.
@@ -113,6 +124,25 @@ function hasAuthHeaders(input: string | URL | Request, init?: RequestInit): bool
   return AUTH_HEADERS.some((name) => name in headers);
 }
 
+/**
+ * Workers' `cf.resolveOverride` sends the request to a different origin
+ * without changing the URL or headers, so it must be part of the fetch cache
+ * and dedupe keys. Other `cf` properties only tune Cloudflare's edge cache or
+ * optimize the same resource, so they stay out of the keys. Next.js has no
+ * equivalent because it never runs on Workers.
+ */
+function getResolveOverride(input: string | URL | Request, init: RequestInit | undefined): unknown {
+  // A RequestInit `cf` replaces a Request input's, like the Request constructor.
+  const initCf = (init as { cf?: { resolveOverride?: unknown } } | undefined)?.cf;
+  const cf =
+    initCf !== undefined
+      ? initCf
+      : input instanceof Request
+        ? (input as { cf?: { resolveOverride?: unknown } }).cf
+        : undefined;
+  return cf?.resolveOverride ?? null;
+}
+
 const BYTE_HEX = Array.from({ length: 256 }, (_, value) => value.toString(16).padStart(2, "0"));
 
 function encodeBodyBytes(bytes: Uint8Array): string {
@@ -123,7 +153,7 @@ function encodeBodyBytes(bytes: Uint8Array): string {
   return encoded;
 }
 
-function concatBodyBytes(chunks: Uint8Array[]): Uint8Array {
+function concatBodyBytes(chunks: Uint8Array[]): Uint8Array<ArrayBuffer> {
   const length = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
   const bytes = new Uint8Array(length);
   let offset = 0;
@@ -221,6 +251,60 @@ function normalizeFetchMethod(method: string): string {
   return NORMALIZED_FETCH_METHODS.has(upperMethod) ? upperMethod : method;
 }
 
+// A view's own properties can shadow `buffer`, `byteOffset` and `byteLength`,
+// but runtimes send the bytes its internal slots cover. These intrinsic getters
+// read those slots.
+function getIntrinsic<T>(prototype: object, key: PropertyKey): (target: unknown) => T {
+  // The getter is deliberately invoked with Reflect.apply on the target.
+  // oxlint-disable-next-line typescript/unbound-method
+  const getter = Object.getOwnPropertyDescriptor(prototype, key)?.get;
+  if (!getter) throw new Error(`Missing intrinsic getter: ${String(key)}`);
+  return (target) => Reflect.apply(getter, target, []) as T;
+}
+const typedArrayPrototype: object = Object.getPrototypeOf(Uint8Array.prototype);
+// Undefined for anything that isn't a typed array, rather than throwing.
+const getTypedArrayTag = getIntrinsic<string | undefined>(typedArrayPrototype, Symbol.toStringTag);
+const getTypedArrayBuffer = getIntrinsic<ArrayBufferLike>(typedArrayPrototype, "buffer");
+const getTypedArrayByteOffset = getIntrinsic<number>(typedArrayPrototype, "byteOffset");
+const getTypedArrayByteLength = getIntrinsic<number>(typedArrayPrototype, "byteLength");
+const getDataViewBuffer = getIntrinsic<ArrayBufferLike>(DataView.prototype, "buffer");
+const getDataViewByteOffset = getIntrinsic<number>(DataView.prototype, "byteOffset");
+const getDataViewByteLength = getIntrinsic<number>(DataView.prototype, "byteLength");
+const getArrayBufferByteLength = getIntrinsic<number>(ArrayBuffer.prototype, "byteLength");
+
+function isArrayBuffer(value: unknown): value is ArrayBuffer {
+  if (!(value instanceof ArrayBuffer)) return false;
+  try {
+    getArrayBufferByteLength(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The bytes sent for a binary body chunk: the bytes an ArrayBuffer holds, or
+ * those a typed array or DataView covers. Undefined for any other chunk.
+ */
+function getBinaryChunkBytes(value: unknown): Uint8Array | undefined {
+  if (ArrayBuffer.isView(value)) {
+    if (getTypedArrayTag(value) !== undefined) {
+      return new Uint8Array(
+        getTypedArrayBuffer(value),
+        getTypedArrayByteOffset(value),
+        getTypedArrayByteLength(value),
+      );
+    }
+    return new Uint8Array(
+      getDataViewBuffer(value),
+      getDataViewByteOffset(value),
+      getDataViewByteLength(value),
+    );
+  }
+  if (isArrayBuffer(value)) return new Uint8Array(value);
+  return undefined;
+}
+
 async function readRequestBodyChunksWithinLimit(
   request: Request,
   effectiveHeaders: Headers,
@@ -250,13 +334,18 @@ async function readRequestBodyChunksWithinLimit(
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      // A runtime may pass other chunk types through (Workers does for
+      // iterable bodies). Binary chunks are keyed by their bytes, and others
+      // are not keyed.
+      const bytes = getBinaryChunkBytes(value);
+      if (!bytes) throw new SkipCacheKeyGenerationError();
 
-      totalBodyBytes += value.byteLength;
+      totalBodyBytes += bytes.byteLength;
       if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
         throw new BodyTooLargeForCacheKeyError();
       }
 
-      chunks.push(value);
+      chunks.push(bytes);
     }
   } catch (err) {
     void reader.cancel().catch(() => {});
@@ -264,6 +353,111 @@ async function readRequestBodyChunksWithinLimit(
   }
 
   return { chunks, contentType };
+}
+
+// Requests the patched fetch builds for bodies serializeBody doesn't key. They
+// are never FormData, so their bytes are keyed as sent, without form parsing.
+const builtBodyRequests = new WeakSet<Request>();
+
+/**
+ * Whether serializeBody keys this init body type itself. Only genuine
+ * instances count, so an array (which has keys()) or a Response (which has
+ * arrayBuffer()) is sent however the runtime sends it.
+ */
+function isKeyableInitBody(body: BodyInit): boolean {
+  return (
+    typeof body === "string" ||
+    body instanceof ArrayBuffer ||
+    ArrayBuffer.isView(body) ||
+    body instanceof URLSearchParams ||
+    body instanceof ReadableStream ||
+    body instanceof FormData ||
+    body instanceof Blob
+  );
+}
+
+/**
+ * Copy a cacheable fetch's request when fetch is called, as fetch itself does.
+ * Its cache key is built, and it is sent, only after awaits. A URL, headers,
+ * body or `cf` the caller changes in the meantime must reach neither: the
+ * request would be sent with values its key doesn't hold, and its response
+ * cached for the values the key does hold. A stream body is read after the
+ * call, as fetch reads it, and sent as the bytes its key is built from.
+ */
+function snapshotFetchRequest(
+  input: string | URL | Request,
+  init: RequestInit | undefined,
+): { input: string | URL | Request; init: RequestInit } {
+  const snapshotInit: RequestInit & { cf?: unknown } = { ...init };
+  // A Request's URL and method can't change, but its headers and `cf` can, so
+  // they're copied onto init. Its body is sent as the bytes it's keyed by.
+  // RequestInit headers and `cf` replace a Request input's, like the Request
+  // constructor.
+  const headers =
+    snapshotInit.headers !== undefined
+      ? snapshotInit.headers
+      : input instanceof Request
+        ? input.headers
+        : undefined;
+  if (headers !== undefined) {
+    snapshotInit.headers = new Headers(headers);
+  }
+  const cf =
+    snapshotInit.cf !== undefined
+      ? snapshotInit.cf
+      : input instanceof Request
+        ? (input as { cf?: unknown }).cf
+        : undefined;
+  if (cf !== null && typeof cf === "object") {
+    snapshotInit.cf = snapshotCf(cf);
+  }
+  if (snapshotInit.body !== undefined && snapshotInit.body !== null) {
+    snapshotInit.body = snapshotBody(snapshotInit.body);
+  }
+  return {
+    // fetch reads a URL input as a string when it is called.
+    input: input instanceof Request ? input : String(input),
+    init: snapshotInit,
+  };
+}
+
+// `cf` options are plain data, some of them nested (`image`, `cacheTags`).
+// Workers copies them as JSON when fetch is called, which drops values JSON
+// can't hold, like functions.
+function snapshotCf(cf: object): object {
+  try {
+    return JSON.parse(JSON.stringify(cf)) as object;
+  } catch {
+    // Options JSON can't hold, like a cycle, are left for the runtime to reject.
+    return cf;
+  }
+}
+
+function snapshotBody(body: BodyInit): BodyInit {
+  const bytes = getBinaryChunkBytes(body);
+  if (bytes) return bytes.slice();
+  if (body instanceof URLSearchParams) return new URLSearchParams(body);
+  if (body instanceof FormData) {
+    const formData = new FormData();
+    for (const [name, value] of body) {
+      formData.append(name, typeof value === "string" ? value : snapshotBlob(value));
+    }
+    return formData;
+  }
+  if (body instanceof Blob) return snapshotBlob(body);
+  // Strings can't change. A stream can't be read synchronously, so, as in
+  // fetch, its chunks are read after the call. They're sent as the bytes
+  // they're keyed by, as is any other body, which is built into a Request.
+  return body;
+}
+
+// A Blob's bytes can't change, but the properties and methods it's keyed and
+// sent through can be redefined on it. A new Blob copies its bytes.
+function snapshotBlob(blob: Blob): Blob {
+  if (blob instanceof File) {
+    return new File([blob], blob.name, { type: blob.type, lastModified: blob.lastModified });
+  }
+  return new Blob([blob], { type: blob.type });
 }
 
 /**
@@ -302,11 +496,9 @@ async function serializeBody(
   };
   const getTotalBodyBytes = (): number => totalBodyBytes;
 
-  if (init?.body instanceof ArrayBuffer || (init?.body && ArrayBuffer.isView(init.body))) {
-    const bytes =
-      init.body instanceof ArrayBuffer
-        ? new Uint8Array(init.body)
-        : new Uint8Array(init.body.buffer, init.body.byteOffset, init.body.byteLength);
+  const directBodyBytes = getBinaryChunkBytes(init?.body);
+  if (init?.body && directBodyBytes) {
+    const bytes = directBodyBytes;
     if (bytes.byteLength > MAX_CACHE_KEY_BODY_BYTES) {
       throw new BodyTooLargeForCacheKeyError();
     }
@@ -314,7 +506,7 @@ async function serializeBody(
     (init as ExtendedRequestInit)._ogBody = init.body;
   } else if (init?.body && typeof (init.body as { getReader?: unknown }).getReader === "function") {
     // ReadableStream
-    const readableBody = init.body as ReadableStream<Uint8Array | string>;
+    const readableBody = init.body as ReadableStream<unknown>;
     const [bodyForHashing, bodyForFetch] = readableBody.tee();
     (init as ExtendedRequestInit)._ogBody = bodyForFetch;
     const reader = bodyForHashing.getReader();
@@ -324,14 +516,23 @@ async function serializeBody(
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        const bytes = typeof value === "string" ? encoder.encode(value) : value;
+        // Workers also sends the bytes of ArrayBuffer and other typed array
+        // chunks, so those are keyed by their bytes. Other chunks are not keyed.
+        const bytes =
+          typeof value === "string" ? encoder.encode(value) : getBinaryChunkBytes(value);
+        if (!bytes) throw new SkipCacheKeyGenerationError();
         totalBodyBytes += bytes.byteLength;
         if (totalBodyBytes > MAX_CACHE_KEY_BODY_BYTES) {
           throw new BodyTooLargeForCacheKeyError();
         }
         chunks.push(bytes);
       }
-      bodyChunks.push(encodeBodyBytes(concatBodyBytes(chunks)));
+      const bytes = concatBodyBytes(chunks);
+      bodyChunks.push(encodeBodyBytes(bytes));
+      // Send the bytes the key was built from, as Next.js does, rather than
+      // chunks the caller could still change.
+      (init as ExtendedRequestInit)._ogBody = bytes;
+      void bodyForFetch.cancel().catch(() => {});
     } catch (err) {
       // Do not await cancellation of one tee branch: it may not settle until
       // the fallback fetch starts consuming the other branch.
@@ -399,7 +600,14 @@ async function serializeBody(
       }
       throw new SkipCacheKeyGenerationError();
     }
-    const formContentType = getParsedFormContentType(contentType);
+    // Send the bytes the key is built from rather than the Request's own body,
+    // whose chunks the caller could still change.
+    if (init) {
+      (init as ExtendedRequestInit)._ogBody = concatBodyBytes(chunks);
+    }
+    const formContentType = builtBodyRequests.has(input)
+      ? undefined
+      : getParsedFormContentType(contentType);
 
     if (formContentType) {
       try {
@@ -480,14 +688,10 @@ async function buildFetchCacheKey(
     init?.cache ?? inputRequest?.cache ?? "default",
     bodyChunks,
     bodyMetadata,
+    getResolveOverride(input, init),
   ]);
 
-  const encoder = new TextEncoder();
-  const buffer = encoder.encode(cacheString);
-  const hashBuffer = await crypto.subtle.digest("SHA-256", buffer);
-  return Array.prototype.map
-    .call(new Uint8Array(hashBuffer), (b: number) => b.toString(16).padStart(2, "0"))
-    .join("");
+  return sha256Hex(cacheString);
 }
 
 // ---------------------------------------------------------------------------
@@ -500,12 +704,6 @@ type NextFetchOptions = {
 };
 
 type InternalNextFetchOptions = NextFetchOptions & { internal?: boolean };
-
-type FetchDedupeEntry = {
-  key: string;
-  promise: Promise<Response>;
-  response: Response | null;
-};
 
 // Extend the standard RequestInit to include `next`
 declare global {
@@ -549,37 +747,6 @@ const _gFetch = globalThis as unknown as Record<PropertyKey, unknown>;
 const originalFetch: typeof globalThis.fetch = (_gFetch[_ORIG_FETCH_KEY] ??=
   globalThis.fetch) as typeof globalThis.fetch;
 
-// ---------------------------------------------------------------------------
-// AsyncLocalStorage for request-scoped fetch cache state.
-// Uses Symbol.for() on globalThis so the storage is shared across Vite's
-// multi-environment module instances.
-// ---------------------------------------------------------------------------
-export type FetchCacheState = {
-  cacheableFetchUrls: Set<string>;
-  currentRequestTags: string[];
-  currentFetchSoftTags: string[];
-  currentFetchCacheMode: FetchCacheMode | null;
-  currentFetchRevalidate: number | null;
-  currentForceDynamicFetchDefault: boolean;
-  dynamicFetchUrls: Set<string>;
-  refreshStaleFetchesInForeground: boolean;
-  isFetchDedupeActive: boolean;
-  currentFetchDedupeEntries: Map<string, FetchDedupeEntry[]>;
-  nextFetchId: number;
-};
-
-export type FetchCacheMode =
-  | "auto"
-  | "default-cache"
-  | "default-no-store"
-  | "force-cache"
-  | "force-no-store"
-  | "only-cache"
-  | "only-no-store";
-
-const _FALLBACK_KEY = Symbol.for("vinext.fetchCache.fallback");
-const _g = globalThis as unknown as Record<PropertyKey, unknown>;
-const _als = getOrCreateAls<FetchCacheState>("vinext.fetchCache.als");
 const _noop = (): void => {};
 
 let _responseBodyRegistry: FinalizationRegistry<WeakRef<ReadableStream<Uint8Array>>> | undefined;
@@ -591,45 +758,6 @@ if (globalThis.FinalizationRegistry) {
       void stream.cancel("Response object has been garbage collected").then(_noop, _noop);
     }
   });
-}
-
-const _fallbackState = (_g[_FALLBACK_KEY] ??= {
-  cacheableFetchUrls: new Set<string>(),
-  currentRequestTags: [],
-  currentFetchSoftTags: [],
-  currentFetchCacheMode: null,
-  currentFetchRevalidate: null,
-  currentForceDynamicFetchDefault: false,
-  dynamicFetchUrls: new Set<string>(),
-  refreshStaleFetchesInForeground: false,
-  isFetchDedupeActive: false,
-  currentFetchDedupeEntries: new Map(),
-  nextFetchId: 1,
-} satisfies FetchCacheState) as FetchCacheState;
-
-function _getState(): FetchCacheState {
-  if (isInsideUnifiedScope()) {
-    return getRequestContext();
-  }
-  return _als.getStore() ?? _fallbackState;
-}
-
-/**
- * Reset the fallback state for a new request.  Used by `withFetchCache()`
- * in single-threaded contexts where ALS.run() isn't used.
- */
-function _resetFallbackState(isFetchDedupeActive: boolean): void {
-  _fallbackState.cacheableFetchUrls = new Set<string>();
-  _fallbackState.currentRequestTags = [];
-  _fallbackState.currentFetchSoftTags = [];
-  _fallbackState.currentFetchCacheMode = null;
-  _fallbackState.currentFetchRevalidate = null;
-  _fallbackState.currentForceDynamicFetchDefault = false;
-  _fallbackState.dynamicFetchUrls = new Set<string>();
-  _fallbackState.refreshStaleFetchesInForeground = false;
-  _fallbackState.isFetchDedupeActive = isFetchDedupeActive;
-  _fallbackState.currentFetchDedupeEntries = new Map();
-  _fallbackState.nextFetchId = 1;
 }
 
 function getFetchObservationUrl(input: string | URL | Request): string {
@@ -780,28 +908,6 @@ export function getCollectedFetchTags(): string[] {
 }
 
 /**
- * Append cache tags to the current request's collected tags.
- *
- * Mirrors Next.js's `propagateCacheLifeAndTagsToRevalidateStore`: tags declared
- * inside a `"use cache"` function (via `cacheTag()`, persisted on the data cache
- * entry) must also bubble up to the surrounding page / route-handler ISR entry
- * so `revalidateTag()` / `revalidatePath()` can evict the rendered output, not
- * just the inner data cache entry. Without this, a cached `"use cache"` result
- * keeps being served from a stale page/route entry after its tag is revalidated
- * (issue #1453). Tags are already encoded by the caller; deduped to match the
- * tagged-fetch path. A no-op for empty input.
- */
-export function addCollectedRequestTags(tags: readonly string[]): void {
-  if (tags.length === 0) return;
-  const reqTags = _getState().currentRequestTags;
-  for (const tag of tags) {
-    if (!reqTags.includes(tag)) {
-      reqTags.push(tag);
-    }
-  }
-}
-
-/**
  * Set path-derived implicit tags for fetch cache reads in the current render.
  *
  * These are intentionally not persisted on fetch entries. They mirror Next.js
@@ -810,17 +916,6 @@ export function addCollectedRequestTags(tags: readonly string[]): void {
  */
 export function setCurrentFetchSoftTags(tags: string[]): void {
   _getState().currentFetchSoftTags = [...tags];
-}
-
-/**
- * Read the path-derived soft tags for the current render.
- *
- * Used by the "use cache" runtime to pass soft tags to the cache handler
- * so that `revalidatePath()` invalidates "use cache" entries during the
- * affected route's next request, even when the entry carries no hard tags.
- */
-export function getCurrentFetchSoftTags(): string[] {
-  return _getState().currentFetchSoftTags;
 }
 
 export function setCurrentFetchCacheMode(mode: FetchCacheMode | null): void {
@@ -944,7 +1039,7 @@ function getFetchCacheDirective(
   return input.cache;
 }
 
-function buildFetchDedupeKey(request: Request): string {
+function buildFetchDedupeKey(request: Request, resolveOverride: unknown): string {
   const filteredHeaders = Array.from(request.headers.entries()).filter(
     ([key]) => !HEADER_BLOCKLIST.includes(key.toLowerCase()),
   );
@@ -958,6 +1053,7 @@ function buildFetchDedupeKey(request: Request): string {
     request.referrer,
     request.referrerPolicy,
     request.integrity,
+    resolveOverride,
   ]);
 }
 
@@ -989,7 +1085,7 @@ function createFetchDedupeCandidate(
 
   return {
     url: request.url,
-    key: buildFetchDedupeKey(request),
+    key: buildFetchDedupeKey(request, getResolveOverride(input, init)),
   };
 }
 
@@ -1307,7 +1403,20 @@ function createPatchedFetch(): typeof globalThis.fetch {
     }
 
     const softTags = _getState().currentFetchSoftTags;
-    let fetchInit = stripNextFromInit(init, cacheDirective);
+    let fetchInit: RequestInit | undefined;
+    ({ input, init: fetchInit } = snapshotFetchRequest(
+      input,
+      stripNextFromInit(init, cacheDirective),
+    ));
+    const initBody = fetchInit.body;
+    if (initBody !== undefined && initBody !== null && !isKeyableInitBody(initBody)) {
+      // Any other body (an async iterable, or an object the runtime converts
+      // to a string) is built into a Request as fetch itself would, and that
+      // Request's bytes are keyed and it is sent.
+      input = new Request(input, fetchInit);
+      builtBodyRequests.add(input);
+      fetchInit = {};
+    }
     let cacheKey: string;
     try {
       cacheKey = await buildFetchCacheKey(input, fetchInit);
@@ -1488,11 +1597,13 @@ function stripNextFromInit(
 // ---------------------------------------------------------------------------
 // Fetch patching — install once, not per-request.
 // The patched fetch uses _getState() internally, which reads from ALS
-// (concurrent) or _fallbackState (single-threaded), so per-request
-// isolation is handled at the state level, not by swapping globalThis.fetch.
+// (concurrent), _fallbackState while withFetchCache() is active, or a
+// throwaway state, so per-request isolation is handled at the state level,
+// not by swapping globalThis.fetch.
 // ---------------------------------------------------------------------------
 
 const _PATCH_KEY = Symbol.for("vinext.fetchCache.patchInstalled");
+const _g = globalThis as unknown as Record<PropertyKey, unknown>;
 
 function _ensurePatchInstalled(): void {
   if (_g[_PATCH_KEY]) return;

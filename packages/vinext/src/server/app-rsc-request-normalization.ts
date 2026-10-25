@@ -158,7 +158,9 @@ export type NormalizedRscRequest = {
  *
  *   1. Parse URL
  *   2. Protocol-relative URL guard — on the raw pathname, BEFORE normalizePath collapses
- *      `//` to `/`. If the guard ran after normalization, `//evil.com` → `/evil.com`
+ *      `//` to `/`. Literal repeated slashes / backslashes get Next.js's 308 to the
+ *      collapsed path; encoded leading `%2F` / `%5C` get a 404. If the guard ran after
+ *      normalization, `//evil.com` → `/evil.com`
  *      would bypass the check and reach the trailing-slash redirector, which echoes the
  *      path into a `Location` header that browsers interpret as protocol-relative.
  *   3. Strict percent-decode each segment — throws on malformed sequences (→ 400). Must
@@ -186,10 +188,11 @@ export function normalizeRscRequest(
 ): Response | NormalizedRscRequest {
   const url = new URL(request.url);
 
-  // Step 2: Guard against protocol-relative open redirects on the raw pathname.
+  // Step 2: Redirect repeated slashes / backslashes (308, like Next.js) and
+  // reject encoded protocol-relative shapes on the raw pathname.
   // normalizePath (step 4) would collapse //evil.com to /evil.com, causing the
   // guard to miss it. Raw pathname must be checked first.
-  const protoGuard = guardProtocolRelativeUrl(url.pathname);
+  const protoGuard = guardProtocolRelativeUrl(url.pathname, url.search);
   if (protoGuard) return protoGuard;
 
   // Step 3: Strict segment-wise percent-decode. Preserves encoded path delimiters

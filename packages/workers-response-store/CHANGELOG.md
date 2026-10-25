@@ -1,5 +1,59 @@
 # @cloudflare/workers-response-store
 
+## 1.1.2
+
+Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
+
+### Bug Fixes
+
+- **Cloudflare:** keep the request that starts isolate-shared work alive until it settles (#4024)
+
+### Contributors
+
+- @james-elicx
+
+## 1.1.1
+
+Read the [Vinext 1.2 release post](https://vinext.dev/blog/vinext-1-2) for the highlights.
+
+### Bug Fixes
+
+- **Cloudflare:** keep Workers Cache off Worker-wide in every generated config (#3820)
+
+### Contributors
+
+- @james-elicx
+
+## 1.1.0
+
+### Features
+
+- **Response Store:** mark tag invalidations stale instead of regenerating them (#3712)
+- **Cloudflare:** soft-invalidate Workers Cache for stale-while-revalidate invalidations (#3707)
+
+### Bug Fixes
+
+- **Response Store:** let writers opt hard-expired reads into a miss (#3696)
+
+### Performance
+
+- **Response Store:** match invalidated entries with one query (#3721)
+
+### Contributors
+
+- @james-elicx
+
+## 1.0.1
+
+### Bug Fixes
+
+- **Response Store:** await conditional cache revalidation (#3578)
+- **Workers Response Store:** tolerate rejected edge purges (#3534)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.0.0
 
 ## 0.1.0-beta.2

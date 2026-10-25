@@ -192,6 +192,91 @@ test.describe("Next.js compat: navigation (browser)", () => {
     expect(page.url()).toContain("/notfound-test");
   });
 
+  // Client navigation to a server component that calls redirect(): the RSC
+  // payload carries the redirect digest and the client router follows it.
+  test("Link to page calling redirect() follows it via client navigation", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click("#link-to-redirect-page");
+
+    await expect(page.locator("#result-page")).toHaveText("Result Page", {
+      timeout: 10_000,
+    });
+    expect(page.url()).toContain("/nextjs-compat/nav-redirect-result");
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
+  // Next.js refetches a page that redirects to itself forever. vinext doesn't
+  // follow it and logs an error instead.
+  for (const [pathname, linkId] of [
+    ["/nextjs-compat/self-redirect", "link-to-self-redirect"],
+    ["/nextjs-compat/self-redirect-streamed", "link-to-self-redirect-streamed"],
+  ]) {
+    test(`Link to ${pathname} (redirects to itself) does not refetch it forever`, async ({
+      page,
+    }) => {
+      const errors: string[] = [];
+      page.on("console", (message) => {
+        if (message.type() === "error") errors.push(message.text());
+      });
+      let rscRequests = 0;
+      let documentRequests = 0;
+      page.on("request", (request) => {
+        if (new URL(request.url()).pathname.replace(/\.rsc$/, "") !== pathname) return;
+        if (request.resourceType() === "document") documentRequests++;
+        else rscRequests++;
+      });
+
+      await page.goto(`${BASE}/nextjs-compat/nav-link-test`);
+      await waitForAppRouterHydration(page);
+      await page.click(`#${linkId}`);
+
+      await expect
+        .poll(() =>
+          errors.some((error) => error.includes("redirect() resolved to the current URL")),
+        )
+        .toBe(true);
+      await page.waitForTimeout(1000);
+      expect(new URL(page.url()).pathname).toBe(pathname);
+      expect(documentRequests).toBe(0);
+      expect(rscRequests).toBeLessThanOrEqual(2);
+    });
+  }
+
+  // A parallel slot page's redirect() is caught in the slot, as in Next.js, so
+  // the shared layout keeps its client state.
+  test("slot page calling redirect() keeps the layout's state", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/slot-redirect/start`);
+    await waitForAppRouterHydration(page);
+    await page.click("#layout-counter");
+    await expect(page.locator("#layout-counter")).toHaveText("count 1");
+
+    await page.click("#link-to-slot-redirect");
+
+    await expect(page.locator("#slot-done")).toBeVisible({ timeout: 10_000 });
+    expect(page.url()).toContain("/nextjs-compat/slot-redirect/done");
+    await expect(page.locator("#layout-counter")).toHaveText("count 1");
+  });
+
+  // Next.js renders the root not-found page for a slot page's notFound().
+  test("slot page calling notFound() renders the root not-found page", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/slot-redirect/start`);
+    await waitForAppRouterHydration(page);
+    await page.evaluate(() => {
+      (window as any).__NAV_MARKER__ = true;
+    });
+
+    await page.click("#link-to-slot-not-found");
+
+    await expect(page.locator("h1")).toHaveText("404 - Page Not Found", { timeout: 10_000 });
+    expect(page.url()).toContain("/nextjs-compat/slot-not-found");
+    expect(await page.evaluate(() => (window as any).__NAV_MARKER__)).toBe(true);
+  });
+
   // Back/forward navigation
   test("browser back button works after client navigation", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/nav-link-test`);

@@ -1,4 +1,9 @@
-import type { RouteManifest, RouteManifestInterception } from "../routing/app-route-graph.js";
+import {
+  decodeBrowserRouteManifest,
+  type BrowserRouteManifest,
+  type BrowserRouteManifestInterception,
+  type BrowserRouteManifestWire,
+} from "../routing/browser-route-manifest.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
@@ -11,6 +16,8 @@ type NavigationRuntimeSnapshot = {
 export type NavigationRuntimeRscChunk = string | [3, string];
 
 export type NavigationRuntimeRscBootstrap = {
+  /** The server's App Router RSC compatibility ID for this page. */
+  compatibilityId?: string;
   done?: boolean;
   dynamicStaleTimeSeconds?: number;
   initialCacheKind?: "dynamic" | "static";
@@ -92,10 +99,27 @@ export type NavigationRuntimeFunctions = {
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
   ) => void;
+  /**
+   * Called after a raw (non-app-owned) history.pushState/replaceState with a
+   * URL so an App Router navigation that has not committed yet is discarded,
+   * matching Next.js' ACTION_RESTORE.
+   */
+  discardPendingNavigation?: () => void;
+  /**
+   * Called before any history.pushState/replaceState so a navigation React is
+   * committing writes its URL first, as Next.js does from an insertion effect.
+   */
+  flushCommittingNavigationUrl?: () => void;
+  /**
+   * Starts loading the browser RouteManifest chunk, or joins the load in
+   * progress. Returns null once the manifest is registered. Created by
+   * createNavigationRuntimeRouteManifestLoader.
+   */
+  loadRouteManifest?: () => Promise<boolean> | null;
 };
 
 export type NavigationRuntimeBootstrap = {
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   rsc: NavigationRuntimeRscBootstrap | undefined;
 };
 
@@ -107,18 +131,12 @@ export type NavigationRuntime = {
 export const NAVIGATION_RUNTIME_KEY = Symbol.for(NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION);
 
 const ROUTE_MANIFEST_SEGMENT_GRAPH_MAP_KEYS: readonly string[] = [
-  "boundaries",
-  "defaults",
   "interceptions",
   "interceptionsBySlotId",
   "layouts",
-  "pages",
   "rootBoundaries",
-  "routeHandlers",
   "routes",
   "slotBindings",
-  "slots",
-  "templates",
 ];
 
 function createNavigationRuntime(): NavigationRuntime {
@@ -136,7 +154,7 @@ function readRuntimeWindow(): Window | null {
   return window;
 }
 
-function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
+export function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntimeFunctions {
   if (!isUnknownRecord(value)) return false;
   return (
     isOptionalRuntimeFunction(Reflect.get(value, "clearNavigationCaches")) &&
@@ -148,7 +166,10 @@ function isNavigationRuntimeFunctions(value: unknown): value is NavigationRuntim
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
-    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite"))
+    isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "flushCommittingNavigationUrl")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "loadRouteManifest"))
   );
 }
 
@@ -187,6 +208,7 @@ function isNavigationRuntimeParams(value: unknown): value is Record<string, stri
 
 function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRuntimeRscBootstrap {
   if (!isUnknownRecord(value)) return false;
+  const compatibilityId = Reflect.get(value, "compatibilityId");
   const done = Reflect.get(value, "done");
   const dynamicStaleTimeSeconds = Reflect.get(value, "dynamicStaleTimeSeconds");
   const initialCacheKind = Reflect.get(value, "initialCacheKind");
@@ -200,6 +222,7 @@ function isNavigationRuntimeRscBootstrap(value: unknown): value is NavigationRun
   // Keep full validation here so malformed ambient state is rejected before
   // hydration consumes it instead of caching a stale validation result.
   return (
+    (compatibilityId === undefined || typeof compatibilityId === "string") &&
     (done === undefined || typeof done === "boolean") &&
     isOptionalStaleTimeSeconds(dynamicStaleTimeSeconds) &&
     (initialCacheKind === undefined ||
@@ -227,28 +250,27 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
-function isNavigationRuntimeInterception(value: unknown): value is RouteManifestInterception {
+function isNavigationRuntimeInterception(
+  value: unknown,
+): value is BrowserRouteManifestInterception {
   if (!isUnknownRecord(value)) return false;
   return (
     typeof value.id === "string" &&
-    typeof value.sourcePattern === "string" &&
     isReadonlyStringArray(value.sourcePatternParts) &&
-    typeof value.targetPattern === "string" &&
     isReadonlyStringArray(value.targetPatternParts) &&
     typeof value.slotId === "string" &&
     isNullableString(value.ownerLayoutId) &&
-    isNullableString(value.interceptingRouteId) &&
     isNullableString(value.targetRouteId)
   );
 }
 
 function isNavigationRuntimeInterceptionArray(
   value: unknown,
-): value is readonly RouteManifestInterception[] {
+): value is readonly BrowserRouteManifestInterception[] {
   return Array.isArray(value) && value.every(isNavigationRuntimeInterception);
 }
 
-function isNavigationRuntimeRouteManifest(value: unknown): value is RouteManifest {
+function isNavigationRuntimeRouteManifest(value: unknown): value is BrowserRouteManifest {
   if (!isUnknownRecord(value)) return false;
   const graphVersion = Reflect.get(value, "graphVersion");
   const segmentGraph = Reflect.get(value, "segmentGraph");
@@ -360,6 +382,54 @@ function ensureNavigationRuntimeRscBootstrapForRuntime(
   }
 
   return rscBootstrap;
+}
+
+/**
+ * The browser entry does not inline the RouteManifest: the manifest grows with
+ * every route of the app, so it lives in its own chunk that loads alongside
+ * hydration. The navigation planner needs it to classify commits (root layout
+ * changes, intercepted payloads, preserved slots), so navigations, commits and
+ * prefetches that read it wait for this load first.
+ */
+export function createNavigationRuntimeRouteManifestLoader(
+  importManifest: () => Promise<{ default: BrowserRouteManifestWire | null }>,
+): () => Promise<boolean> | null {
+  let loaded = false;
+  let reportedFailure = false;
+  let pending: Promise<boolean> | null = null;
+  return () => {
+    if (loaded) return null;
+    pending ??= importManifest()
+      .then(({ default: wire }) => {
+        registerNavigationRuntimeBootstrap({
+          routeManifest: wire === null ? null : decodeBrowserRouteManifest(wire),
+        });
+        loaded = true;
+        return true;
+      })
+      .catch((error: unknown) => {
+        // Resolves false: the waiting operation must not classify a commit or
+        // resolve an interception context without the manifest, so navigations
+        // fall back to a document navigation and prefetches are skipped. The
+        // next caller retries the load. Every navigation and prefetch retries,
+        // so report the failure once.
+        pending = null;
+        if (!reportedFailure) {
+          reportedFailure = true;
+          console.error("[vinext] Failed to load the App Router route manifest:", error);
+        }
+        return false;
+      });
+    return pending;
+  };
+}
+
+/**
+ * Starts or joins the RouteManifest load. Resolves whether it loaded, and
+ * returns null once it has (or when no App Router runtime registered a loader).
+ */
+export function loadNavigationRuntimeRouteManifest(): Promise<boolean> | null {
+  return getNavigationRuntime()?.functions.loadRouteManifest?.() ?? null;
 }
 
 export function hasAppNavigationRuntime(): boolean {

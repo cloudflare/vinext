@@ -1,9 +1,12 @@
 import { revalidatePath } from "next/cache";
 
 const RESETTABLE_ISR_PATHS = new Set([
+  "/api/storage-policy/no-store",
+  "/metadata-storage/no-store/opengraph-image",
   "/isr-test",
   "/client-isr-test",
   "/revalidate-test",
+  "/isr-search-params-suspense",
   "/revalidate-tag-test",
   "/revalidate-tag-test/nested",
   "/route-cache-identity",
@@ -14,6 +17,7 @@ const RESETTABLE_ISR_PATHS = new Set([
   "/route-handler-cache-identity/rewrite",
   "/api/route-cache-identity/trailing",
   "/api/route-cache-identity/trailing/",
+  "/api/host-tenant",
 ]);
 
 export async function GET(request: Request) {

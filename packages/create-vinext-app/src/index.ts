@@ -5,7 +5,7 @@ import { createInterface } from "node:readline/promises";
 import type { Readable, Writable } from "node:stream";
 // Runtime imports use source paths so the create package bundles the shared init implementation.
 import { init } from "../../vinext/src/init";
-import { resolveInitOptions } from "../../vinext/src/init-platform";
+import { resolveInitOptions, validateWorkerName } from "../../vinext/src/init-platform";
 
 type PackageManagerName = "npm" | "pnpm" | "yarn" | "bun";
 type InitPlatform = "cloudflare" | "node";
@@ -21,6 +21,8 @@ type CloudflareInitOptions = {
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
   legacyWrangler?: boolean;
+  /** Worker name for generated config, instead of one derived from package.json. */
+  name?: string;
 };
 
 type PlatformPromptOptions = {
@@ -280,6 +282,7 @@ function printHelp(): void {
 
   Options:
     --platform <target>          Deployment target: cloudflare or node
+    --name <name>                Cloudflare Worker name (default: derived from the directory)
     --data-cache <type>          Cloudflare data cache: kv or none
     --cdn-cache <type>           Cloudflare CDN cache: none, response-store, workers-cache,
                                  static-assets, or data-cache
@@ -341,6 +344,7 @@ function parseArgs(args: string[]): ParsedArgs {
     if (arg.startsWith("-")) {
       if (
         arg === "--platform" ||
+        arg === "--name" ||
         arg === "--data-cache" ||
         arg === "--cdn-cache" ||
         arg === "--response-store-mode" ||
@@ -464,6 +468,9 @@ export async function createVinextApp(options: CreateVinextAppOptions): Promise<
   if (!isFolderEmpty(root)) {
     throw new Error(`The directory "${root}" contains files that could conflict.`);
   }
+  // init() validates this too, but only after the template is written.
+  const workerName = options.initOptions.cloudflare?.name;
+  if (workerName !== undefined) validateWorkerName(workerName);
 
   console.log(`Creating a new vinext app in ${root}.\n`);
   writeTemplate(root, appName, options.packageManager, options.initOptions);

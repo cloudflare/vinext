@@ -25,8 +25,9 @@ that existed before.
 - `i18nContext` - locale info (`i18n-state.ts`)
 - `serverContext`, `serverInsertedHTMLCallbacks` - rsc server context (`navigation-state.ts`)
 - `requestScopedCacheLife` - per-request cache life override (`cache.ts`)
+- `cacheLifeSink` - collects a layout probe's cache life across nested scopes that reset `requestScopedCacheLife` (`cache-request-state.ts`)
 - `_privateCache` - per-request private cache map (`cache-runtime.ts`)
-- `currentRequestTags` - revalidation tags (`fetch-cache.ts`)
+- `currentRequestTags` - revalidation tags (`fetch-cache-state.ts`)
 - `executionContext` - cloudflare workers execution context (`request-context.ts`)
 - `ssrContext` - pages router ssr context for `useRouter()` (`router-state.ts`)
 - `ssrHeadChildren` - collected `<Head>` children during ssr (`head-state.ts`)
@@ -59,6 +60,17 @@ individual function calls within a request, not the request itself:
 - lets `headers()`, `cookies()`, and `connection()` detect they're inside a
   cache scope and throw (dynamic apis are not allowed inside cache scopes)
 - just a boolean flag, no state to merge
+
+**`_workStoreScopeAls`** (`internal/work-store-scope.ts`)
+
+- a boolean flag for the work Next.js runs with a work store: App Router
+  renders, server actions, route handlers, metadata routes,
+  `generateStaticParams` and middleware. the Pages Router fallback and
+  `getStaticPaths` run with it set to `false`
+- lets `unstable_cache()` skip the read for a call nested in another's
+  callback only where Next.js does
+- it can't live in the unified context: a hybrid app's App Router request
+  context also runs the Pages fallback, which must leave the scope
 
 **why they stay separate:** these nest inside a request but bind to individual
 cache function calls. a request might run zero, one, or many cached functions

@@ -1,7 +1,13 @@
 "use client";
 
 import { buttonVariants } from "@cloudflare/kumo/components/button";
-import { BookOpenIcon, GaugeIcon, GithubLogoIcon, GraphIcon } from "@phosphor-icons/react/dist/ssr";
+import {
+  BookOpenIcon,
+  GaugeIcon,
+  GithubLogoIcon,
+  GraphIcon,
+  NewspaperIcon,
+} from "@phosphor-icons/react/dist/ssr";
 import Link from "next/link";
 
 const navButton = buttonVariants({ variant: "ghost", size: "sm" });
@@ -18,6 +24,11 @@ export function SiteHeader() {
             <BookOpenIcon />
             <span className="hidden sm:inline">Docs</span>
             <span className="sr-only sm:hidden">Docs</span>
+          </Link>
+          <Link href="/blog" className={navButton}>
+            <NewspaperIcon />
+            <span className="hidden sm:inline">Blog</span>
+            <span className="sr-only sm:hidden">Blog</span>
           </Link>
           <Link href="/compatibility" className={navButton}>
             <GraphIcon />

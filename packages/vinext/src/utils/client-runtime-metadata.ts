@@ -3,27 +3,69 @@ import {
   readClientBuildManifest,
   findClientEntryFile,
   findPagesClientEntryFile,
+  isPagesClientEntryChunk,
 } from "./client-build-manifest.js";
 import {
   readClientEntryManifest,
+  readClientReferenceSources,
   findClientEntryFileFromVinextManifest,
   findPagesClientEntryFileFromVinextManifest,
 } from "./client-entry-manifest.js";
 import {
+  addDynamicImportPreloadAliases,
   computeLazyChunks,
   computeDynamicImportPreloads,
   dynamicImportPreloadsWithBase,
 } from "./lazy-chunks.js";
-import { manifestFileWithBase, manifestFileWithAssetPrefix } from "./manifest-paths.js";
+import {
+  isSharedClientChunkName,
+  manifestFileWithBase,
+  manifestFileWithAssetPrefix,
+} from "./manifest-paths.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
+import type { ClientReferenceChunks } from "./client-reference-chunks.js";
 
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
+  appRouteManifestModule?: string;
+  appClientReferenceChunks?: ClientReferenceChunks;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
   dynamicPreloads?: Record<string, string[]>;
+  sharedChunks?: string[];
 };
+
+/**
+ * Shared Pages Router chunk files, keyed on Rolldown chunk names rather than
+ * emitted file names so user-configured `chunkFileNames` (e.g. hash-only
+ * patterns) keep their modulepreload/script tags.
+ */
+function collectSharedChunkFiles(
+  buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
+  applyBase: (file: string) => string,
+): string[] | undefined {
+  const files = new Set<string>();
+  const visitedKeys = new Set<string>();
+  // Every Pages document runs the client entry, so it needs the entry's whole
+  // static import graph, whatever the chunks in it are named.
+  const addStaticImports = (key: string) => {
+    for (const importedKey of buildManifest[key]?.imports ?? []) {
+      if (visitedKeys.has(importedKey)) continue;
+      visitedKeys.add(importedKey);
+      const importedFile = buildManifest[importedKey]?.file;
+      if (importedFile?.endsWith(".js")) files.add(applyBase(importedFile));
+      addStaticImports(importedKey);
+    }
+  };
+  for (const [key, chunk] of Object.entries(buildManifest)) {
+    if (chunk.file.endsWith(".js") && isSharedClientChunkName(chunk.name)) {
+      files.add(applyBase(chunk.file));
+    }
+    if (isPagesClientEntryChunk(key, chunk)) addStaticImports(key);
+  }
+  return files.size > 0 ? [...files] : undefined;
+}
 
 function collectCssGraph(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
@@ -85,6 +127,10 @@ function collectAppBootstrapPreinitModules(
  * Read the client build manifest and compute runtime metadata used by
  * Cloudflare worker entry injection and Node production server startup.
  *
+ * - `appRouteManifestModule` — the App Router RouteManifest chunk, which the
+ *   browser entry imports as it boots, preloaded during SSR.
+ * - `appClientReferenceChunks` — what each App Router client reference loads
+ *   in the browser, which the RSC render names in its Flight row.
  * - `lazyChunks` — chunks only reachable through dynamic `import()`, excluded
  *   from modulepreload hints.
  * - `dynamicPreloads` — per-module JS/CSS files for rendered `next/dynamic()`
@@ -125,10 +171,31 @@ export function computeClientRuntimeMetadata(opts: {
     if (entry) metadata.clientEntryFile = entry;
   }
 
+  const appAssetUrl = (file: string): string => {
+    const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
+    return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
+  };
+  // Hydration needs them, so they don't depend on Vite's build manifest.
+  const referenceChunks = clientEntryManifest?.appClientReferenceChunks;
+  if (referenceChunks) {
+    metadata.appClientReferenceChunks = {
+      references: referenceChunks.references,
+      modules: referenceChunks.modules.map((module) => ({
+        file: appAssetUrl(module.file),
+        imports: module.imports.map(appAssetUrl),
+        css: module.css.map(appAssetUrl),
+      })),
+    };
+  }
+
   if (!buildManifest) return metadata;
 
   if (opts.includeClientEntry) {
     metadata.cssGraph = collectCssGraph(buildManifest, (file) =>
+      manifestFileWithBase(file, opts.assetBase),
+    );
+    // SSR-manifest key-space (basePath only), like `lazyChunks` below.
+    metadata.sharedChunks = collectSharedChunkFiles(buildManifest, (file) =>
       manifestFileWithBase(file, opts.assetBase),
     );
   }
@@ -136,12 +203,11 @@ export function computeClientRuntimeMetadata(opts: {
   metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
     buildManifest,
     clientEntryManifest?.appBrowserEntry,
-    (file) => {
-      const url = manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix);
-      return isAbsoluteAssetPrefix(opts.assetPrefix) ? url : "/" + url;
-    },
+    appAssetUrl,
   );
-
+  if (clientEntryManifest?.appRouteManifest) {
+    metadata.appRouteManifestModule = appAssetUrl(clientEntryManifest.appRouteManifest);
+  }
   // `lazyChunks` and `dynamicPreloads` live in DIFFERENT key-spaces and must be
   // normalised differently:
   //
@@ -158,9 +224,13 @@ export function computeClientRuntimeMetadata(opts: {
   );
   if (lazyChunks.length > 0) metadata.lazyChunks = lazyChunks;
 
-  const dynamicPreloads = dynamicImportPreloadsWithBase(
-    computeDynamicImportPreloads(buildManifest),
-    (file) => manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix),
+  const dynamicImportPreloads = computeDynamicImportPreloads(buildManifest);
+  const clientReferenceSources = readClientReferenceSources(opts.clientDir);
+  if (clientReferenceSources) {
+    addDynamicImportPreloadAliases(dynamicImportPreloads, buildManifest, clientReferenceSources);
+  }
+  const dynamicPreloads = dynamicImportPreloadsWithBase(dynamicImportPreloads, (file) =>
+    manifestFileWithAssetPrefix(file, opts.assetBase, opts.assetPrefix),
   );
   if (Object.keys(dynamicPreloads).length > 0) {
     metadata.dynamicPreloads = dynamicPreloads;

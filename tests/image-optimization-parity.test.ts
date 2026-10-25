@@ -2,8 +2,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import path from "node:path";
 import fs from "node:fs/promises";
 import os from "node:os";
-import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, PAGES_FIXTURE_DIR, startFixtureServer } from "./helpers.js";
+import type { Server } from "node:http";
+import { build, type ViteDevServer } from "vite-plus";
+import vinext from "../packages/vinext/src/index.js";
+import {
+  APP_FIXTURE_DIR,
+  PAGES_FIXTURE_DIR,
+  requestNodeServerWithHost,
+  startFixtureServer,
+} from "./helpers.js";
 
 const PNG_1X1 = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4//8/AwAI/AL+X8n26QAAAABJRU5ErkJggg==",
@@ -174,5 +181,169 @@ describe("image deployment query parity", () => {
   });
 });
 
+// Ported from Next.js: test/integration/image-optimizer/test/util.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
+// ("recursive url is not allowed"). Hosts fetch a local source through the
+// application, so a source that is itself the image endpoint is rejected.
+describe("recursive image source parity", () => {
+  it("rejects a source that is the image endpoint", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    for (const source of [
+      // Verbatim from the Next.js test.
+      "/_next/image?url=test.pngw=1&q=75",
+      "/assets/_next/image?url=%2Ftest.png&w=128&q=75",
+      "/%5Fnext/image?url=%2Ftest.png&w=128&q=75",
+      "/_vinext/image?url=%2Ftest.png&w=128&q=75",
+    ]) {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      expect(parseImageParams(requestUrl), source).toBeNull();
+    }
+    expect(
+      parseImageParams(
+        new URL("http://vinext.test/_next/image?url=%2F_next%2Fimages.png&w=64&q=75"),
+      ),
+    ).not.toBeNull();
+  });
+});
+
+// Real Next.js 16 answers 400 for a source whose dot segments resolve to a
+// protocol-relative pathname, and serves one that stays on a single-slash path.
+describe("dot-segment image source parity", () => {
+  it("rejects a source that resolves to a protocol-relative pathname", async () => {
+    const { parseImageParams } =
+      await import("../packages/vinext/src/server/image-optimization.js");
+    const parse = (source: string) => {
+      const requestUrl = new URL("http://vinext.test/_next/image");
+      requestUrl.searchParams.set("url", source);
+      requestUrl.searchParams.set("w", "64");
+      requestUrl.searchParams.set("q", "75");
+      return parseImageParams(requestUrl);
+    };
+    for (const source of ["/a/..//evil.com", "/a/%2e%2e//evil.com", "/a/..\\/evil.com"]) {
+      expect(parse(source), source).toBeNull();
+    }
+    expect(parse("/a/../heart.png")).not.toBeNull();
+  });
+});
+
 runLocalImageUrlParitySuite("app");
 runLocalImageUrlParitySuite("pages");
+
+// Ported from Next.js: test/integration/image-optimizer/test/util.ts
+// https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
+// The Pages Router production server answers `/_next/image` itself. vinext
+// keeps no image cache, so it matches Next.js with the image cache disabled
+// (`images.maximumDiskCacheSize: 0`): every 200 is a MISS.
+describe("Pages Router production /_next/image cache-state headers", () => {
+  let server: Server | undefined;
+  let baseUrl: string;
+  let fixtureDir: string;
+
+  beforeAll(async () => {
+    // A minimal Pages Router app: the image endpoint only needs public files,
+    // and the full pages-basic fixture does not build outside its directory.
+    fixtureDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-pages-image-prod-"));
+    await fs.symlink(
+      path.resolve(import.meta.dirname, "../node_modules"),
+      path.join(fixtureDir, "node_modules"),
+      "junction",
+    );
+    await fs.mkdir(path.join(fixtureDir, "pages"), { recursive: true });
+    await fs.writeFile(
+      path.join(fixtureDir, "pages", "index.jsx"),
+      "export default function Page() {\n  return <p>home</p>;\n}\n",
+    );
+    await fs.mkdir(path.join(fixtureDir, "public"), { recursive: true });
+    await fs.writeFile(path.join(fixtureDir, "public", "hello world.png"), PNG_1X1);
+    await fs.writeFile(path.join(fixtureDir, "public", "icon.svg"), "<svg></svg>");
+    const outDir = path.join(fixtureDir, "dist");
+    await build({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "server"),
+        ssr: "virtual:vinext-server-entry",
+        rolldownOptions: { output: { entryFileNames: "entry.js" } },
+      },
+    });
+    await build({
+      root: fixtureDir,
+      configFile: false,
+      plugins: [vinext({ disableAppRouter: true })],
+      logLevel: "silent",
+      build: {
+        outDir: path.join(outDir, "client"),
+        manifest: true,
+        ssrManifest: true,
+        rolldownOptions: { input: "virtual:vinext-client-entry" },
+      },
+    });
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const started = await startProdServer({ port: 0, host: "127.0.0.1", outDir });
+    server = "server" in started ? started.server : started;
+    const address = server.address();
+    if (typeof address !== "object" || address === null) {
+      throw new Error("Expected production server port");
+    }
+    baseUrl = `http://127.0.0.1:${address.port}`;
+  }, 120000);
+
+  afterAll(async () => {
+    await new Promise<void>((resolve) => (server ? server.close(() => resolve()) : resolve()));
+    await fs.rm(fixtureDir, { recursive: true, force: true });
+  });
+
+  it("labels every image response MISS", async () => {
+    const imageUrl = `${baseUrl}/_next/image?url=%2Fhello%20world.png&w=64&q=75`;
+
+    const first = await fetch(imageUrl, { headers: { Accept: "image/webp" } });
+    expect(first.status).toBe(200);
+    expect(first.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(first.headers.get("x-vinext-cache")).toBe("MISS");
+    await first.arrayBuffer();
+
+    const repeat = await fetch(imageUrl, { headers: { Accept: "image/webp" } });
+    expect(repeat.status).toBe(200);
+    expect(repeat.headers.get("x-nextjs-cache")).toBe("MISS");
+    expect(repeat.headers.get("x-vinext-cache")).toBe("MISS");
+    await repeat.arrayBuffer();
+  });
+
+  it("sends no x-nextjs-cache or x-vinext-cache on a 304 or an error", async () => {
+    const imagePath = "/_next/image?url=%2Fhello%20world.png&w=64&q=75";
+    const first = await fetch(`${baseUrl}${imagePath}`);
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+    await first.arrayBuffer();
+
+    // fetch() adds `Cache-Control: no-cache` to conditional requests, which
+    // forces a full response, so revalidate over raw HTTP like a browser does.
+    const notModified = await requestNodeServerWithHost(
+      Number(new URL(baseUrl).port),
+      imagePath,
+      new URL(baseUrl).host,
+      { "If-None-Match": etag! },
+    );
+    expect(notModified.status).toBe(304);
+    expect(notModified.headers["x-nextjs-cache"]).toBeUndefined();
+    expect(notModified.headers["x-vinext-cache"]).toBeUndefined();
+
+    for (const [query, status] of [
+      ["url=%2Fhello%20world.png&w=65&q=75", 400],
+      ["url=%2Ficon.svg&w=64&q=75", 400],
+      ["url=%2Fmissing.png&w=64&q=75", 400],
+    ] as const) {
+      const res = await fetch(`${baseUrl}/_next/image?${query}`);
+      expect(res.status, query).toBe(status);
+      expect(res.headers.get("x-nextjs-cache"), query).toBeNull();
+      expect(res.headers.get("x-vinext-cache"), query).toBeNull();
+      await res.arrayBuffer();
+    }
+  });
+});

@@ -1,14 +1,77 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import {
+  handleRequestSignalProbe,
+  REQUEST_SIGNAL_OVERRIDE_HEADER,
+} from "./lib/request-signal-probe";
 
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
+
+  // Client-disconnect coverage: tests/node-request-cancellation.test.ts
+  if (url.pathname === "/middleware-request-signal") {
+    return handleRequestSignalProbe(request);
+  }
+  if (url.pathname === "/middleware-truncated-body") {
+    // Ends early with the code Node also uses for a client disconnect.
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.error(
+            Object.assign(new Error("Premature close"), { code: "ERR_STREAM_PREMATURE_CLOSE" }),
+          );
+        },
+      }),
+    );
+  }
+  // Middleware cookies must precede the API route's res.appendHeader cookies.
+  // Coverage: tests/pages-router.test.ts
+  if (url.pathname === "/api/append-header") {
+    const res = NextResponse.next();
+    res.cookies.set("mw", "1");
+    return res;
+  }
+  if (url.pathname === "/api/edge-request-signal") {
+    if (!url.searchParams.has("override")) return NextResponse.next();
+    const headers = new Headers(request.headers);
+    headers.set(REQUEST_SIGNAL_OVERRIDE_HEADER, "1");
+    return NextResponse.next({ request: { headers } });
+  }
+
+  // A `members=1` cookie admits direct requests; the image optimizer fetches
+  // its source without the caller's cookies, as Next.js does.
+  // Coverage: tests/e2e/pages-router-prod/image-middleware.spec.ts
+  if (
+    url.pathname.startsWith("/members%20only/") &&
+    request.cookies.get("members")?.value !== "1"
+  ) {
+    return new Response("blocked by middleware", {
+      status: 403,
+      headers: { "content-type": "text/plain" },
+    });
+  }
+  if (url.pathname === "/image-source-redirect.png") {
+    return NextResponse.redirect(new URL("/heart.png", request.url));
+  }
+  if (url.pathname === "/image-source-rewrite.png") {
+    return NextResponse.rewrite(new URL("/heart.png", request.url));
+  }
 
   if (
     url.pathname === "/revalidate-middleware-sentinel" &&
     request.headers.has("x-prerender-revalidate")
   ) {
     return new Response("middleware must not observe on-demand revalidation", { status: 418 });
+  }
+
+  // A middleware Cache-Control replaces the getServerSideProps default on
+  // redirect and notFound exits, as in Next.js.
+  // Coverage: tests/pages-router.test.ts
+  if (
+    (url.pathname === "/gssp-redirect" || url.pathname === "/gssp-not-found") &&
+    url.searchParams.has("mw-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });
   }
 
   // Add a custom header to all matched requests
@@ -19,9 +82,57 @@ export function middleware(request: NextRequest) {
   // middleware runs (matching Next.js' `handleNextDataRequest` pipeline).
   response.headers.set("x-mw-pathname", url.pathname);
 
+  // Same-origin redirect to a double-slash path. vinext must keep the
+  // Location absolute so it never becomes protocol-relative.
+  if (url.pathname === "/mw-redirect-double-slash") {
+    return NextResponse.redirect(`${url.origin}//`);
+  }
+
   // Redirect /old-page to /about
   if (url.pathname === "/old-page") {
     return NextResponse.redirect(new URL("/about", request.url));
+  }
+
+  // next.config.mjs adds config headers to /external-headers/* and proxies its
+  // before-files, after-files and fallback paths to the local upstream.
+  // Middleware proxies /external-headers/middleware/* there itself.
+  if (url.pathname.startsWith("/external-headers/")) {
+    const upstreamPort = request.headers.get("x-test-upstream-port");
+    const middlewarePath = url.pathname.slice("/external-headers/middleware".length);
+    const response =
+      url.pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
+        : NextResponse.next();
+    const search = url.searchParams;
+    if (search.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    if (search.has("middleware-header")) response.headers.set("x-mw-response-header", "1");
+    if (search.has("middleware-cache-control")) {
+      response.headers.set("Cache-Control", "private, max-age=7");
+    }
+    return response;
+  }
+
+  // next.config.mjs adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (
+    url.pathname === "/config-cookie-page" ||
+    url.pathname === "/config-cookie-redirect" ||
+    url.pathname === "/config-cookie-response"
+  ) {
+    const res =
+      url.pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : url.pathname === "/config-cookie-response"
+          ? new NextResponse("from middleware")
+          : NextResponse.next();
+    if (url.searchParams.has("middleware-cookie")) {
+      res.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (url.searchParams.has("empty-middleware-cookie")) res.headers.set("Set-Cookie", "");
+    return res;
   }
 
   // Redirect /redirect-with-cookies to /about and set cookies on the redirect
@@ -305,6 +416,8 @@ export function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     "/api/edge-search-params",
+    "/api/edge-request-signal",
+    "/api/append-header",
     "/edge-api-rewrite/:path*",
     "/((?!api|_next|favicon\\.ico|mw-object-gated).*)",
     {

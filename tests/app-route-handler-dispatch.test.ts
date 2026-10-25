@@ -7,6 +7,11 @@ import {
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import {
@@ -36,6 +41,49 @@ function buildISRCacheEntry(value: CachedRouteValue, isStale = false): ISRCacheE
 }
 
 describe("app route handler dispatch", () => {
+  it.each([400, 500])(
+    "retains established ISR eligibility after hard expiry for status %s",
+    async (status) => {
+      const write = vi.fn();
+      const response = await dispatchAppRouteHandler({
+        cleanPathname: "/api/expired-status",
+        clearRequestContext() {},
+        draftModeSecret: "test-secret",
+        isDevelopment: false,
+        isProduction: true,
+        isrGet: async () => ({
+          ...buildISRCacheEntry(buildCachedRouteValue("old")),
+          isExpired: true,
+        }),
+        isrRouteKey: (path) => path,
+        isrSet: write,
+        middlewareContext: { headers: null, status: null },
+        params: null,
+        request: new Request("https://example.com/api/expired-status"),
+        route: {
+          pattern: "/api/expired-status",
+          routeSegments: ["api", "expired-status"],
+          routeHandler: {
+            revalidate: 2,
+            GET: () =>
+              new Response("regenerated error", {
+                status,
+                headers: { "Cache-Control": "private, max-age=300" },
+              }),
+          },
+        },
+        scheduleBackgroundRegeneration() {
+          throw new Error("expired entries regenerate in the foreground");
+        },
+        searchParams: new URLSearchParams(),
+      });
+      expect(response.status).toBe(status);
+      expect(response.headers.get("Cache-Control")).toBe("private, max-age=300");
+      await expect.poll(() => write.mock.calls.length).toBe(1);
+      expect(write.mock.calls[0][1].status).toBe(status);
+    },
+  );
+
   // Ported from Next.js: test/e2e/on-request-error/isr/isr.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/on-request-error/isr/isr.test.ts
   it.each([
@@ -162,7 +210,7 @@ describe("app route handler dispatch", () => {
         });
 
         expect(response.status).toBe(500);
-        expect(isrGet).not.toHaveBeenCalled();
+        expect(isrGet).toHaveBeenCalledTimes(revalidate === false ? 1 : 0);
         expect(onRequestError.mock.calls[0]?.[2]).toEqual({
           routerKind: "App Router",
           routePath: "/api/uncached",
@@ -885,6 +933,123 @@ describe("app route handler dispatch", () => {
     } finally {
       releaseInvalidation();
       setDataCacheHandler(previousHandler);
+    }
+  });
+
+  it("batches CDN purges queued during stale route background regeneration", async () => {
+    const previousAdapter = getCdnCacheAdapter();
+    const cdnCalls: string[][] = [];
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    try {
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-batch",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-batch"),
+        route: {
+          pattern: "/api/stale-batch",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              revalidateTag("posts");
+              revalidateTag("feed");
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-batch"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+      await scheduledRender();
+      expect(cdnCalls).toEqual([["posts", "feed"]]);
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
+  });
+
+  it("purges CDN tags revalidated by after() callbacks during stale route regeneration", async () => {
+    const previousAdapter = getCdnCacheAdapter();
+    const cdnCalls: string[][] = [];
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    try {
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-after",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-after"),
+        route: {
+          pattern: "/api/stale-after",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              after(() => revalidateTag("late"));
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-after"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+      await scheduledRender();
+      await expect.poll(() => cdnCalls).toEqual([["late"]]);
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
     }
   });
 });

@@ -171,6 +171,17 @@ describe("pages-data-route", () => {
       expect(result.normalizedPathname).toBe("/about");
       expect(result.request.url).toBe("http://localhost/about?x=1");
     });
+
+    it("keeps Workers cf metadata on the normalized request", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/_next/data/${buildId}/about.json`);
+      const cf = { country: "AU" };
+      Object.defineProperty(req, "cf", { value: cf, enumerable: true });
+      const result = normalizePagesDataRequest(req, buildId);
+
+      expect(result.request.url).toBe("http://localhost/about");
+      expect(Reflect.get(result.request, "cf")).toBe(cf);
+    });
   });
 
   describe("buildNextDataNotFoundResponse", () => {

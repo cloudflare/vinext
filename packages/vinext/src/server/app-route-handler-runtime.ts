@@ -100,7 +100,30 @@ type NextUrlDynamicAccess =
   | "nextUrl.href"
   | "nextUrl.toJSON"
   | "nextUrl.toString"
-  | "nextUrl.origin";
+  | "nextUrl.origin"
+  | HostDerivedNextUrlDynamicAccess;
+
+// Deliberate vinext divergence from Next.js, which only tracks the fields
+// above. Next.js builds a route handler's first stored entry from a
+// localhost:3000 prerender, so the build never stores a visitor's URL scheme or
+// authority. vinext learns dynamism from the live request instead, and the ISR
+// key carries only the pathname, so reading any of these parts must mark the
+// route dynamic. Otherwise one Worker serving several hostnames would store one
+// host's response and replay it on the others.
+type HostDerivedNextUrlDynamicAccess =
+  | "nextUrl.protocol"
+  | "nextUrl.username"
+  | "nextUrl.password"
+  | "nextUrl.host"
+  | "nextUrl.hostname"
+  | "nextUrl.port"
+  | DomainLocaleNextUrlDynamicAccess;
+
+// With i18n domains configured, NextURL picks the default locale by hostname.
+type DomainLocaleNextUrlDynamicAccess =
+  | "nextUrl.locale"
+  | "nextUrl.defaultLocale"
+  | "nextUrl.domainLocale";
 
 type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
 type AppRouteRequestMode = "auto" | "force-static" | "error";
@@ -109,9 +132,12 @@ type TrackedAppRouteRequestOptions = {
   basePath?: string;
   i18n?: NextI18nConfig | null;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
   middlewareHeaders?: Headers | null;
   onDynamicAccess?: (access: AppRouteDynamicRequestAccess) => void;
   requestMode?: AppRouteRequestMode;
+  /** Host signal for the client connection (UnifiedRequestContext.requestSignal). */
+  signal?: AbortSignal;
   staticGenerationErrorMessage?: (expression?: string) => string;
 };
 
@@ -169,8 +195,14 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
   basePath?: string;
   i18n?: NextI18nConfig;
   trailingSlash?: boolean;
+  skipTrailingSlashRedirect?: boolean;
 } | null {
-  if (!options.basePath && !options.i18n && !options.trailingSlash) {
+  if (
+    !options.basePath &&
+    !options.i18n &&
+    !options.trailingSlash &&
+    !options.skipTrailingSlashRedirect
+  ) {
     return null;
   }
 
@@ -178,12 +210,29 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
     basePath: options.basePath,
     i18n: options.i18n ?? undefined,
     trailingSlash: options.trailingSlash,
+    skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
   };
+}
+
+/**
+ * Undici's Request follows its input's signal through a WeakRef, and so does
+ * every clone between the host signal and the handler's request. A handler
+ * that only listens on `request.signal` (e.g. to stop a stream) would miss the
+ * abort once GC collects any of them, so the request follows the host signal
+ * directly and stays reachable for as long as that signal is.
+ */
+const requestsByHostSignal = new WeakMap<AbortSignal, Request[]>();
+
+function retainWhileSignalLives(signal: AbortSignal, request: Request): void {
+  const requests = requestsByHostSignal.get(signal);
+  if (requests) requests.push(request);
+  else requestsByHostSignal.set(signal, [request]);
 }
 
 function createForceStaticNextRequest(
   input: Request,
   nextConfig: ReturnType<typeof buildNextConfig>,
+  signal: AbortSignal | undefined,
 ): NextRequest {
   // Rebuild from standard fields instead of a Request object so Workers does
   // not copy the inbound request's internal cf slot onto the branded target.
@@ -206,7 +255,7 @@ function createForceStaticNextRequest(
     redirect: read<RequestRedirect>("redirect"),
     referrer: read<string>("referrer"),
     referrerPolicy: read<ReferrerPolicy>("referrerPolicy"),
-    signal: read<AbortSignal>("signal"),
+    signal: signal ?? read<AbortSignal>("signal"),
     nextConfig: nextConfig ?? undefined,
   });
 }
@@ -261,27 +310,55 @@ export function createTrackedAppRouteRequest(
     options.onDynamicAccess?.(access);
   };
 
+  // The reads Next.js tracks in proxyNextRequest() and rejects for
+  // `dynamic = "error"` in packages/next/src/server/route-modules/app-route/module.ts.
+  const isNextDynamicNextUrlProperty = (prop: PropertyKey): boolean => {
+    switch (prop) {
+      case "search":
+      case "searchParams":
+      case "url":
+      case "href":
+      case "toJSON":
+      case "toString":
+      case "origin":
+        return true;
+      default:
+        return false;
+    }
+  };
+
+  const hasI18nDomains = (options.i18n?.domains?.length ?? 0) > 0;
+  const isHostDerivedNextUrlProperty = (prop: PropertyKey): boolean => {
+    switch (prop) {
+      case "protocol":
+      case "username":
+      case "password":
+      case "host":
+      case "hostname":
+      case "port":
+        return true;
+      case "locale":
+      case "defaultLocale":
+      case "domainLocale":
+        return hasI18nDomains;
+      default:
+        return false;
+    }
+  };
+
   // Mirror the dynamic request reads that Next.js tracks inside
   // packages/next/src/server/route-modules/app-route/module.ts
-  // via proxyNextRequest(), but keep the logic in a normal typed module.
+  // via proxyNextRequest(), plus the host-derived parts described above, but
+  // keep the logic in a normal typed module.
   const wrapNextUrl = (nextUrl: NextURL): NextURL => {
     const nextUrlHandler: ProxyHandler<NextURL> = {
       get(target, prop): unknown {
-        switch (prop) {
-          case "search":
-          case "searchParams":
-          case "url":
-          case "href":
-          case "toJSON":
-          case "toString":
-          case "origin":
-            markDynamicAccess(`nextUrl.${String(prop)}` as NextUrlDynamicAccess);
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
-          case "clone":
-            return () => wrapNextUrl(target.clone());
-          default:
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        if (isNextDynamicNextUrlProperty(prop) || isHostDerivedNextUrlProperty(prop)) {
+          markDynamicAccess(`nextUrl.${String(prop)}` as NextUrlDynamicAccess);
+          return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
         }
+        if (prop === "clone") return () => wrapNextUrl(target.clone());
+        return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
       },
     };
 
@@ -324,22 +401,24 @@ export function createTrackedAppRouteRequest(
   };
 
   const wrapRequireStaticNextUrl = (nextUrl: NextURL): NextURL => {
+    let staticNextUrl: NextURL | null = null;
     const nextUrlHandler: ProxyHandler<NextURL> = {
       get(target, prop): unknown {
-        switch (prop) {
-          case "search":
-          case "searchParams":
-          case "url":
-          case "href":
-          case "toJSON":
-          case "toString":
-          case "origin":
-            return throwStaticGenerationError(`nextUrl.${String(prop)}`);
-          case "clone":
-            return () => wrapRequireStaticNextUrl(target.clone());
-          default:
-            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+        if (isNextDynamicNextUrlProperty(prop)) {
+          return throwStaticGenerationError(`nextUrl.${String(prop)}`);
         }
+        if (isHostDerivedNextUrlProperty(prop)) {
+          // Next.js allows these reads and stores its localhost:3000 build
+          // values, so answer from the same static URL instead of the
+          // visitor's host.
+          if (staticNextUrl === null) {
+            staticNextUrl = target.clone();
+            staticNextUrl.href = cleanStaticUrl(target.href);
+          }
+          return Reflect.get(staticNextUrl, prop, staticNextUrl);
+        }
+        if (prop === "clone") return () => wrapRequireStaticNextUrl(target.clone());
+        return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
       },
     };
 
@@ -378,10 +457,16 @@ export function createTrackedAppRouteRequest(
       : Reflect.get(requestWithOverrides, "cf", requestWithOverrides);
     const nextRequest =
       requestMode === "force-static"
-        ? createForceStaticNextRequest(requestWithOverrides, nextConfig)
-        : requestWithOverrides instanceof NextRequest && sourceCfDescriptor?.configurable !== false
+        ? createForceStaticNextRequest(requestWithOverrides, nextConfig, options.signal)
+        : requestWithOverrides instanceof NextRequest &&
+            sourceCfDescriptor?.configurable !== false &&
+            !options.signal
           ? requestWithOverrides
-          : new NextRequest(requestWithOverrides, { nextConfig: nextConfig ?? undefined });
+          : new NextRequest(requestWithOverrides, {
+              nextConfig: nextConfig ?? undefined,
+              signal: options.signal,
+            });
+    if (options.signal) retainWhileSignalLives(options.signal, nextRequest);
     const rawCfMetadata = sourceCfAccessor
       ? undefined
       : sourceCfMetadata === undefined

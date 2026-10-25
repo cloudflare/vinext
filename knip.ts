@@ -55,6 +55,8 @@ export default {
         "@vercel/og",
         // The CommonJS syntax tests resolve this from vinext's install, not the root workspace.
         "vite-plugin-commonjs",
+        // The Static Assets worker test resolves this from the Cloudflare fixture's wrangler install.
+        "miniflare",
         // scripts/version.mts resolves release APIs from the pinned Changesets CLI,
         // keeping its dependency tree authoritative instead of installing separate copies.
         "@manypkg/get-packages",
@@ -84,6 +86,8 @@ export default {
         "src/server/app-page-ppr-runtime.ts",
         "src/server/app-prerender-static-params.ts",
         "src/server/app-route-module-loader.ts",
+        "src/server/nitro-public-files.ts",
+        "src/server/nitro-public-files-plugin.ts",
         // Client-side instrumentation bundle: loaded as a side-effect module
         // by the generated hydration entries (import "vinext/instrumentation-client"),
         // so its public surface (clientInstrumentationHooks, getClientInstrumentationHooks)
@@ -112,7 +116,7 @@ export default {
         "src/server/app-request-context.ts",
         "src/server/app-rsc-error-handler.ts",
         "src/server/isr-cache.ts",
-        "src/server/rsc-stream-hints.ts",
+        "src/server/rsc-render-stream.ts",
         // #726-CACHE-01/04 defines the disabled proof boundary before runtime
         // observation recording or cache reuse is wired in later slices.
         "src/server/cache-proof.ts",
@@ -195,6 +199,7 @@ export default {
     "ps",
     "taskkill",
     "eslint",
+    "oxlint",
     "gh",
     "jq",
   ],

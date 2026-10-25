@@ -549,6 +549,63 @@ describe("AppBrowserHistoryController snapshot restore", () => {
     expect(approveVisibleRestore.mock.calls[0]?.[0].state).toBe(shallowState);
   });
 
+  it("restores the completed tree for entries that remembered an optimistic shell", () => {
+    // Next.js shares one tree between an optimistic shell and the data that
+    // fills it in, so going back to the shell's entry after a shallow history
+    // write shows the full page.
+    const { controller, store } = createController();
+    const createOperation = (navigationCommitKind: "authoritative" | "detached") => ({
+      id: 1,
+      lane: "navigation" as const,
+      navigationCommitKind,
+      navigationId: 3,
+      startedVisibleCommitVersion: 0,
+      state: "committed" as const,
+      visibleCommitVersion: 1,
+    });
+    const navigationSnapshot = createClientNavigationRenderSnapshot(
+      "https://example.com/slow/2",
+      {},
+    );
+    const shellState = createRouterState({
+      activeOperation: createOperation("detached"),
+      navigationSnapshot,
+      routeId: "route:/slow/[id]",
+    });
+    seedSnapshotAtIndex(controller, 1, shellState);
+    // A raw pushState copies the shell's tree onto a new entry.
+    controller.claimCurrentHistoryTreeSnapshot("push", store.state);
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+
+    const completedState = createRouterState({
+      activeOperation: createOperation("authoritative"),
+      navigationSnapshot,
+      routeId: "route:/slow/[id]",
+    });
+    controller.rememberHistoryStateSnapshot(completedState);
+
+    const approveVisibleRestore = vi.fn((candidate: RestorableSnapshotCandidate) => {
+      candidate.beforeCommit();
+      return true;
+    });
+    for (const historyState of [
+      createHistoryStateWithNavigationMetadata(null, { previousNextUrl: null, traversalIndex: 1 }),
+      store.state,
+    ]) {
+      expect(
+        controller.restoreHistorySnapshot({
+          historyState,
+          stageClientParams: vi.fn(),
+          approveVisibleRestore,
+        }),
+      ).toBe(true);
+    }
+    expect(approveVisibleRestore.mock.calls.map(([candidate]) => candidate.state)).toEqual([
+      completedState,
+      completedState,
+    ]);
+  });
+
   it("retains reachable external tree snapshots across traversal-cache eviction", () => {
     const { controller, store } = createController();
     const externalState = createRouterState({ routeId: "route:/external" });
