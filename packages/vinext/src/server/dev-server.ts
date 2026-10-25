@@ -815,7 +815,9 @@ export function createSSRHandler(
         return;
       }
       // No route matched — try to render custom 404 page
-      const requestContext = createRequestContext();
+      const requestContext = createRequestContext({
+        isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
+      });
       const closeRequest = () => void closeAfterResponse(requestContext);
       res.on("finish", closeRequest);
       res.on("close", closeRequest);
@@ -861,7 +863,11 @@ export function createSSRHandler(
       : null;
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
-    const requestContext = createRequestContext();
+    // An authorized res.revalidate() request skips data cache reads, as in
+    // Next.js.
+    const requestContext = createRequestContext({
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
+    });
     let isStaticPropsRender = false;
     const closeRequest = () => void closeAfterResponse(requestContext);
     res.on("finish", closeRequest);

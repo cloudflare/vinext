@@ -1687,6 +1687,59 @@ export default function Page({ marker }: { marker: string }) {
     }
   });
 
+  it("skips data cache reads while res.revalidate() regenerates a page in dev", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-pages-dev-on-demand-cache-"));
+    const pagesDir = path.join(tmpDir, "pages");
+    fs.mkdirSync(path.join(pagesDir, "api"), { recursive: true });
+    fs.symlinkSync(path.join(process.cwd(), "node_modules"), path.join(tmpDir, "node_modules"));
+    fs.writeFileSync(path.join(tmpDir, "package.json"), JSON.stringify({ type: "module" }));
+    fs.writeFileSync(path.join(pagesDir, "_app.tsx"), PAGES_APP_COMPONENT);
+    fs.writeFileSync(
+      path.join(pagesDir, "cached.tsx"),
+      `import { unstable_cache } from "next/cache";
+
+let calls = 0;
+const getValue = unstable_cache(async () => \`value \${++calls}\`, ["on-demand-dev"], {
+  revalidate: 3600,
+});
+
+export async function getStaticProps() {
+  return { props: { value: await getValue() }, revalidate: 3600 };
+}
+
+export default function Page({ value }: { value: string }) {
+  return <p id="value">{value}</p>;
+}
+`,
+    );
+    fs.writeFileSync(
+      path.join(pagesDir, "api", "revalidate.ts"),
+      `export default async function handler(req, res) {
+  await res.revalidate("/cached");
+  res.json({ revalidated: true });
+}
+`,
+    );
+
+    let tempServer: ViteDevServer | undefined;
+    try {
+      const started = await startFixtureServer(tmpDir);
+      tempServer = started.server;
+
+      expect(await (await fetch(`${started.baseUrl}/cached`)).text()).toContain("value 1");
+      expect(await (await fetch(`${started.baseUrl}/cached`)).text()).toContain("value 1");
+
+      const revalidate = await fetch(`${started.baseUrl}/api/revalidate`);
+      expect(await revalidate.json()).toEqual({ revalidated: true });
+
+      // The on-demand render skipped the stored value and stored a fresh one.
+      expect(await (await fetch(`${started.baseUrl}/cached`)).text()).toContain("value 2");
+    } finally {
+      await tempServer?.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
   it("renders next/head tags in SSR HTML <head>", async () => {
     const res = await fetch(`${baseUrl}/`);
     const html = await res.text();

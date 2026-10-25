@@ -3,7 +3,10 @@ import type { ReactFormState } from "react-dom/client";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import type { ClassificationReason } from "../build/layout-classification-types.js";
-import { _captureRequestScopedCacheLifeAccessors } from "vinext/shims/cache-request-state";
+import {
+  _captureRequestScopedCacheLifeAccessors,
+  _isOnDemandRevalidate,
+} from "vinext/shims/cache-request-state";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -647,6 +650,9 @@ async function runAppPageRevalidationContext<
   },
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
+  // An authorized on-demand revalidation regenerates from fresh data, like
+  // the request that triggered it.
+  const isOnDemandRevalidate = _isOnDemandRevalidate();
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
     draftModeEnabled: false,
@@ -661,6 +667,7 @@ async function runAppPageRevalidationContext<
     currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
+    isOnDemandRevalidate,
     rootParams: options.rootParams ?? null,
     unstableCacheRevalidation: "foreground",
   });
