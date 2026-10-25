@@ -35,6 +35,7 @@ import {
 import {
   cacheLifeProfiles,
   _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   runWithDetachedCacheObservations,
@@ -888,8 +889,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // execution so control-flow signals like notFound()/redirect() thrown by
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
+      //
+      // Like Next.js's `shouldForceRevalidate`, an on-demand revalidation
+      // (`res.revalidate()`) ignores the existing entry but still executes and
+      // stores the fresh result below.
       let existing: CacheHandlerValue | null = null;
-      if (!_hasPendingRevalidatedTag(softTags)) {
+      if (!_hasPendingRevalidatedTag(softTags) && !_isOnDemandRevalidate()) {
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {

@@ -6,6 +6,7 @@ import type { ClassificationReason } from "../build/layout-classification-types.
 import {
   _captureRequestScopedCacheLifeAccessors,
   _getResumeDataCacheSeed,
+  _isOnDemandRevalidate,
   _setResumeDataCacheCollector,
   _setResumeDataCacheSeed,
 } from "vinext/shims/cache-request-state";
@@ -701,6 +702,9 @@ async function runAppPageRevalidationContext<TResult>(
   },
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
+  // An authorized on-demand revalidation regenerates from fresh data, like
+  // the request that triggered it.
+  const isOnDemandRevalidate = _isOnDemandRevalidate();
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
     draftModeEnabled: false,
@@ -715,6 +719,7 @@ async function runAppPageRevalidationContext<TResult>(
     currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
+    isOnDemandRevalidate,
     rootParams: options.rootParams ?? null,
     unstableCacheRevalidation: "foreground",
   });

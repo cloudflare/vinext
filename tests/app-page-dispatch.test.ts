@@ -67,6 +67,7 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "../packages/vinext/src/shims/unified-request-context.js";
+import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
@@ -3966,6 +3967,55 @@ describe("app page dispatch", () => {
     );
     expect(options.isrSet).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { isOnDemandRevalidate: true, name: "an on-demand revalidation" },
+    { isOnDemandRevalidate: false, name: "an ordinary request" },
+  ])(
+    "carries $name's data cache read policy into the regeneration it triggers",
+    async ({ isOnDemandRevalidate }) => {
+      const regenerationReadPolicy: boolean[] = [];
+      let scheduledRender: (() => Promise<unknown>) | null = null;
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          regenerationReadPolicy.push(_isOnDemandRevalidate());
+          return React.createElement("div", null, "fresh");
+        },
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        renderToReadableStream: () => createStream(["fresh-flight"]),
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      await runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), async () => {
+        const response = await dispatchAppPage(options);
+        expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+        await response.text();
+        if (scheduledRender === null) {
+          throw new Error("expected the stale entry to schedule regeneration");
+        }
+        await scheduledRender();
+      });
+
+      expect(regenerationReadPolicy).toEqual([isOnDemandRevalidate]);
+    },
+  );
 
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>

@@ -58,6 +58,7 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   runWithExecutionContext,
@@ -575,6 +576,58 @@ describe("createAppRscHandler", () => {
 
     expect(response.status).toBe(200);
     expect(workUnitType).toBe("request");
+  });
+
+  it.each([
+    {
+      name: "an authorized on-demand revalidation",
+      secret: () => getRevalidateSecret(),
+      expected: true,
+    },
+    { name: "a wrong revalidation secret", secret: () => "wrong-secret", expected: false },
+  ])("marks the split response stage's data caches for $name", async ({ secret, expected }) => {
+    let isOnDemandRevalidate: boolean | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async () => {
+        isOnDemandRevalidate = _isOnDemandRevalidate();
+        return new Response("page");
+      },
+    });
+
+    const response = await handler.handleResponseStage(
+      new Request("https://example.test/docs/about", {
+        headers: { [PRERENDER_REVALIDATE_HEADER]: secret() },
+      }),
+      null,
+      {
+        kind: "app-page",
+        buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+        bypassInterceptionContextCache: false,
+        cachePathname: "/about",
+        canUseCanonicalLoadingShell: false,
+        canonicalPathname: "/about",
+        cleanPathname: "/about",
+        draftModeCookie: null,
+        interceptionContext: null,
+        interceptionId: null,
+        isRscRequest: false,
+        matchKind: "resolved",
+        middlewareCookieOverlay: null,
+        mountedSlotsHeader: null,
+        params: {},
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: "https://example.test",
+        renderMode: "navigation",
+        resolvedUrl: "/about",
+        routePattern: "/about",
+        routePathname: "/about",
+        scriptNonce: null,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(isOnDemandRevalidate).toBe(expected);
   });
 
   it("carries route-identity cache bypass into split route-handler execution", async () => {

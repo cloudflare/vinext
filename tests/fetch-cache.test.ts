@@ -131,6 +131,27 @@ describe("fetch cache shim", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1); // Only one real fetch
   });
 
+  // Next.js's patch-fetch skips `incrementalCache.get` when
+  // `workStore.isOnDemandRevalidate`, but still fetches and stores the fresh
+  // response:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/patch-fetch.ts
+  it("skips the cache read but stores the fresh response during an on-demand revalidation", async () => {
+    const request = (isOnDemandRevalidate: boolean) =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), async () => {
+        const response = await fetch("https://api.example.com/on-demand", {
+          next: { revalidate: 60 },
+        });
+        return (await response.json()).count;
+      });
+
+    await expect(request(false)).resolves.toBe(1);
+    await expect(request(false)).resolves.toBe(1);
+    await expect(request(true)).resolves.toBe(2);
+    // The on-demand revalidation stored its fresh response.
+    await expect(request(false)).resolves.toBe(2);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it("cache: 'force-cache' caches indefinitely", async () => {
     const res1 = await fetch("https://api.example.com/force", {
       cache: "force-cache",

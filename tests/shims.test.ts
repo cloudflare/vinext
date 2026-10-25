@@ -6281,6 +6281,49 @@ describe("next/cache shim", () => {
     ).toEqual({ first: "inner-1", afterRevalidate: "inner-1", innerCalls: 1 });
   });
 
+  // Next.js skips the unstable_cache read during an on-demand revalidation
+  // (`workStore.isOnDemandRevalidate` in an App Router render, the per-request
+  // `incrementalCache.isOnDemandRevalidate` in the Pages Router), including
+  // through a "use cache" function, but still stores the fresh result:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  it.each([
+    { appRouter: true, useCacheBetween: false },
+    { appRouter: false, useCacheBetween: false },
+    { appRouter: true, useCacheBetween: true },
+  ])(
+    "unstable_cache skips its read but stores during an on-demand revalidation (%j)",
+    async ({ appRouter, useCacheBetween }) => {
+      const { unstable_cache, setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      const { runInWorkStoreScope } =
+        await import("../packages/vinext/src/shims/internal/work-store-scope.js");
+
+      setCacheHandler(new MemoryCacheHandler());
+      try {
+        const id = `on-demand-${appRouter ? "app" : "pages"}-${useCacheBetween ? "use-cache" : "direct"}`;
+        let calls = 0;
+        const cached = unstable_cache(async () => `value-${++calls}`, [id]);
+        const between = registerCachedFunction(() => cached(), `test:${id}`);
+        const request = (isOnDemandRevalidate: boolean) =>
+          runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), () => {
+            const fn = () => (useCacheBetween ? between() : cached());
+            return appRouter ? runInWorkStoreScope(fn) : fn();
+          });
+
+        await expect(request(false)).resolves.toBe("value-1");
+        await expect(request(false)).resolves.toBe("value-1");
+        await expect(request(true)).resolves.toBe("value-2");
+        await expect(request(false)).resolves.toBe("value-2");
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
   it("revalidateTag accepts optional cacheLife profile (Next.js 16)", async () => {
     const { revalidateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");
@@ -7211,6 +7254,39 @@ describe('"use cache" runtime', () => {
     const r3 = await cached(7);
     expect(r3).toEqual({ result: 14 });
     expect(callCount).toBe(2);
+  });
+
+  // Next.js's `shouldForceRevalidate` skips the cache handler read during an
+  // on-demand revalidation (`workStore.isOnDemandRevalidate`), for every cache
+  // the request reaches, but still stores the fresh result:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it("skips shared cache reads but stores fresh values during an on-demand revalidation", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let innerCount = 0;
+    let outerCount = 0;
+    const inner = registerCachedFunction(
+      async () => `inner-${++innerCount}`,
+      "test:on-demand-inner",
+    );
+    const outer = registerCachedFunction(
+      async () => `outer-${++outerCount}:${await inner()}`,
+      "test:on-demand-outer",
+    );
+    const request = (isOnDemandRevalidate: boolean) =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), () => outer());
+
+    await expect(request(false)).resolves.toBe("outer-1:inner-1");
+    await expect(request(false)).resolves.toBe("outer-1:inner-1");
+    // The nested cache sees the request's flag too.
+    await expect(request(true)).resolves.toBe("outer-2:inner-2");
+    await expect(request(false)).resolves.toBe("outer-2:inner-2");
   });
 
   // Next.js treats a "use cache" entry past its expire as a miss and regenerates it:
