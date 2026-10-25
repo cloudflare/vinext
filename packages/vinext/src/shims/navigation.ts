@@ -336,6 +336,12 @@ export type CachedRscResponse = {
   paramsHeader: string | null;
   preparedElements?: AppElements;
   /**
+   * When the payload arrived from the server. A navigation that commits a
+   * prefetched payload keeps the prefetch's time, so a later full prefetch
+   * judges the data by its age, not by the navigation that reused it.
+   */
+  receivedAt?: number;
+  /**
    * Streamed `redirect()` side-channel headers. A replayed snapshot must keep
    * them so the navigation follows the redirect instead of decoding the
    * redirect payload as a page.
@@ -1244,6 +1250,7 @@ export function seedPrefetchResponseSnapshot(
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
   reuseAfterHistoryRestore: boolean = false,
+  expiresAt: number = resolveCachedRscResponseExpiresAt(Date.now(), snapshot, fallbackTtlMs),
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1255,7 +1262,7 @@ export function seedPrefetchResponseSnapshot(
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
     cacheKeys: new Set([cacheKey]),
-    expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
+    expiresAt,
     mountedSlotsHeader,
     outcome: "cache-seeded",
     reuseAfterHistoryRestore,
@@ -1268,6 +1275,45 @@ export function seedPrefetchResponseSnapshot(
   getPrefetchedUrls().add(cacheKey);
   schedulePrefetchInvalidation(cacheKey, entry);
   evictPrefetchCacheIfNeeded();
+}
+
+/**
+ * Fulfill a full prefetch from the visited response of an earlier navigation,
+ * as Next.js does from its BFCache, instead of issuing a request. The data is
+ * fresh for the static stale time from the navigation, not the dynamic one
+ * (`attemptToFulfillDynamicSegmentFromBFCache`).
+ */
+export function seedFullPrefetchFromVisitedResponse(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  additionalRscUrls: readonly string[] = [],
+  onInvalidate?: () => void,
+): boolean {
+  const visited = getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
+    [rscUrl, ...additionalRscUrls],
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!visited) return false;
+  const expiresAt = visited.navigatedAt + Math.max(PREFETCH_CACHE_TTL, MIN_PREFETCH_STALE_TIME_MS);
+  if (expiresAt <= Date.now()) return false;
+
+  // Like an explicit prefetch, it stays consumable after a history restore.
+  seedPrefetchResponseSnapshot(
+    rscUrl,
+    visited.response,
+    interceptionContext,
+    mountedSlotsHeader,
+    undefined,
+    true,
+    expiresAt,
+  );
+  // The byte budget can evict the seeded entry at once; fetch it then.
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  if (getPrefetchCache().get(cacheKey)?.snapshot !== visited.response) return false;
+  attachPrefetchInvalidationCallback(cacheKey, onInvalidate);
+  return true;
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -1384,6 +1430,7 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    receivedAt: Date.now(),
     ...(redirectHeader === null ? {} : { redirectHeader }),
     ...(redirectTypeHeader === null ? {} : { redirectTypeHeader }),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(
@@ -3255,6 +3302,18 @@ const _appRouter: AppRouterInstance = {
                     promotePrefetchCacheEntryForNavigation(matchedCacheKey, entry)
                 : undefined,
           })
+        ) {
+          return;
+        }
+        if (
+          policy.dynamicStaleTime === "full-prefetch" &&
+          seedFullPrefetchFromVisitedResponse(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            additionalRscUrls,
+            options?.onInvalidate,
+          )
         ) {
           return;
         }
