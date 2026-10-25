@@ -54,6 +54,7 @@ import {
   setPendingPathname,
   setMountedSlotsHeader,
   setNavigationContext,
+  trackAppRouterNavigationInFlight,
   useRouter,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
@@ -2229,6 +2230,7 @@ function bootstrapHydration(
         historyController.isCurrentBfcacheVersion(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
+    const releaseNavigationInFlight = trackAppRouterNavigationInFlight();
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {
@@ -3081,6 +3083,7 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
+      releaseNavigationInFlight();
       if (startedHardNavigation) {
         await waitForMpaNavigationRestore();
       }

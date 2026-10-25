@@ -2937,6 +2937,38 @@ function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void
   queueMicrotask(release);
 }
 
+// A refresh superseded by a later navigation settles while the winner is still
+// in flight, so its visible-link ping waits until no navigation is running.
+let inFlightAppRouterNavigationCount = 0;
+let visibleLinkPingAwaitsNavigations = false;
+
+/**
+ * Called by the App Router browser entry for each RSC navigation it runs.
+ * Returns a release callback for the navigation's settlement.
+ */
+export function trackAppRouterNavigationInFlight(): () => void {
+  inFlightAppRouterNavigationCount += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    inFlightAppRouterNavigationCount = Math.max(0, inFlightAppRouterNavigationCount - 1);
+    if (inFlightAppRouterNavigationCount === 0 && visibleLinkPingAwaitsNavigations) {
+      visibleLinkPingAwaitsNavigations = false;
+      getNavigationRuntime()?.functions.pingVisibleLinks?.();
+    }
+  };
+}
+
+function pingVisibleLinksOnceNavigationsSettle(): void {
+  if (inFlightAppRouterNavigationCount > 0) {
+    visibleLinkPingAwaitsNavigations = true;
+    return;
+  }
+  getNavigationRuntime()?.functions.pingVisibleLinks?.();
+}
+
 /**
  * App Router public router instance. Mirrors Next.js's
  * `publicAppRouterInstance` from
@@ -3000,18 +3032,18 @@ const _appRouter: AppRouterInstance = {
     //
     // Next.js sends the refresh as one request before its prefetch scheduler
     // runs again. vinext's refresh can fan out to slot refreshes once its
-    // response arrives, so the visible links prefetch again only after it.
+    // response arrives, so the visible links prefetch again only after it,
+    // or after the navigation that superseded it.
     getNavigationRuntime()?.functions.clearNavigationCaches?.({ pingVisibleLinks: false });
-    const pingVisibleLinks = () => getNavigationRuntime()?.functions.pingVisibleLinks?.();
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
     if (hasScheduledAppRouterNavigation() || !rscNavigate) {
-      pingVisibleLinks();
+      getNavigationRuntime()?.functions.pingVisibleLinks?.();
       return;
     }
     // Re-fetch the current page's RSC stream
     const navigate = () => {
       void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true).finally(
-        pingVisibleLinks,
+        pingVisibleLinksOnceNavigationsSettle,
       );
     };
     React.startTransition(navigate);

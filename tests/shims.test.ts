@@ -495,6 +495,89 @@ describe("next/navigation shim", () => {
     }
   });
 
+  it("router.refresh() superseded by a navigation prefetches links only after the winner settles", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    let trackInFlight: (() => () => void) | undefined;
+    let supersedeRefresh: (() => void) | undefined;
+    let settleWinner: (() => void) | undefined;
+    const gates: Record<string, Promise<void>> = {
+      refresh: new Promise<void>((resolve) => {
+        supersedeRefresh = resolve;
+      }),
+      navigate: new Promise<void>((resolve) => {
+        settleWinner = resolve;
+      }),
+    };
+    // Mirrors the browser entry's navigateRsc: each navigation is tracked until
+    // its settlement, and a superseded one returns early once it is aborted.
+    const navigate = async (_href: string, _depth: number, kind: string) => {
+      const release = trackInFlight!();
+      calls.push(`navigate:${kind}`);
+      try {
+        await gates[kind];
+      } finally {
+        calls.push(`navigated:${kind}`);
+        release();
+      }
+    };
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: (options?: { pingVisibleLinks?: boolean }) => {
+            calls.push(`clear:ping=${options?.pingVisibleLinks ?? true}`);
+          },
+          navigate,
+          pingVisibleLinks: () => {
+            calls.push("ping");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      trackInFlight = nav.trackAppRouterNavigationInFlight;
+      nav.appRouterInstance.refresh();
+      await vi.waitFor(() => expect(calls).toContain("navigate:refresh"));
+
+      // A later navigation supersedes the refresh, which settles first.
+      const winner = navigate("http://localhost/other", 0, "navigate");
+      supersedeRefresh!();
+      await vi.waitFor(() => expect(calls).toContain("navigated:refresh"));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(calls).not.toContain("ping");
+
+      settleWinner!();
+      await winner;
+      await vi.waitFor(() => expect(calls).toContain("ping"));
+      expect(calls).toEqual([
+        "clear:ping=false",
+        "navigate:refresh",
+        "navigate:navigate",
+        "navigated:refresh",
+        "navigated:navigate",
+        "ping",
+      ]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
   it("attaches experimental_gesturePush only when the gesture transition define is set", async () => {
     // In real builds `process.env.__NEXT_GESTURE_TRANSITION` is replaced with a
     // boolean literal by the define in packages/vinext/src/index.ts; in vitest
