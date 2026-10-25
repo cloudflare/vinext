@@ -9,6 +9,7 @@ import {
   SupplementalRefreshError,
 } from "../packages/vinext/src/server/app-browser-supplemental-refresh.js";
 import { AppElementsWire, type AppElements } from "../packages/vinext/src/server/app-elements.js";
+import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -307,6 +308,77 @@ describe("parallel route supplemental refreshes", () => {
       expect.objectContaining({ slotId: "slot:drawer:/nested", state: "active" }),
       expect.objectContaining({ slotId: "slot:modal:/nested", state: "active" }),
     ]);
+  });
+
+  // Ported from Next.js:
+  // test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/refresh/segment-cache-refresh.test.ts
+  it("takes a refreshed slot's BFCache identities with its content", () => {
+    const navbarSegmentId = createNestedBfcacheSlotSegmentId("slot:navbar:/dashboard", 1);
+    const mainSegmentId = createNestedBfcacheSlotSegmentId("slot:main:/dashboard", 1);
+    const primary: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [mainSegmentId]: "main analytics",
+          [navbarSegmentId]: "navbar default",
+          "slot:navbar:/dashboard": "navbar shell",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/dashboard/analytics",
+        slotBindings: [
+          {
+            activeRouteId: "route:/dashboard/analytics",
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:main:/dashboard",
+            state: "active",
+          },
+          {
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:navbar:/dashboard",
+            state: "default",
+          },
+        ],
+      }),
+      [mainSegmentId]: null,
+      [navbarSegmentId]: null,
+      "slot:main:/dashboard": "fresh analytics",
+    };
+    const source: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [mainSegmentId]: "main dashboard",
+          [navbarSegmentId]: "navbar active",
+          "slot:navbar:/dashboard": "navbar shell",
+        },
+        interceptionContext: null,
+        layoutIds: ["layout:/", "layout:/dashboard"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/dashboard",
+        slotBindings: [
+          {
+            activeRouteId: "route:/dashboard",
+            ownerLayoutId: "layout:/dashboard",
+            slotId: "slot:navbar:/dashboard",
+            state: "active",
+          },
+        ],
+      }),
+      [navbarSegmentId]: null,
+      "slot:navbar:/dashboard": "fresh navbar",
+    };
+
+    const result = mergeRefreshedParallelSlot(primary, source);
+    expect(result["slot:navbar:/dashboard"]).toBe("fresh navbar");
+    expect(Object.hasOwn(result, navbarSegmentId)).toBe(true);
+    // The kept navbar's identity matches the one mounted before the refresh,
+    // so its BFCache id and client state survive.
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [mainSegmentId]: "main analytics",
+      [navbarSegmentId]: "navbar active",
+      "slot:navbar:/dashboard": "navbar shell",
+    });
   });
 
   it("replaces only the refreshed slot and its binding", () => {
