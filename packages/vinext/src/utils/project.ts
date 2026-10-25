@@ -529,20 +529,23 @@ function stripCommentsAndStrings(content: string): string {
 /**
  * Next.js copies a set legacy `experimental.cacheComponents` over the
  * top-level key (warnOptionHasBeenMovedOutOfExperimental), so a literal
- * inside the `experimental` block wins over one outside it.
+ * direct property of the `experimental` block wins over one outside it.
  */
 function configEnablesCacheComponents(source: string): boolean {
   let content = stripCommentsAndStrings(source);
   const cacheComponents = /\bcacheComponents\s*:\s*(true|false)\b/;
   const experimental = /\bexperimental\s*:\s*\{/.exec(content);
   if (experimental) {
-    const start = experimental.index + experimental[0].length;
-    let end = start;
+    // Only the block's direct properties count, not keys of nested objects.
+    let directProperties = "";
+    let end = experimental.index + experimental[0].length;
     for (let depth = 1; end < content.length; end++) {
-      if (content[end] === "{") depth++;
-      else if (content[end] === "}" && --depth === 0) break;
+      const char = content[end];
+      if (char === "{" || char === "[") depth++;
+      else if ((char === "}" || char === "]") && --depth === 0) break;
+      else if (depth === 1) directProperties += char;
     }
-    const legacy = cacheComponents.exec(content.slice(start, end))?.[1];
+    const legacy = cacheComponents.exec(directProperties)?.[1];
     if (legacy) return legacy === "true";
     content = content.slice(0, experimental.index) + content.slice(end + 1);
   }

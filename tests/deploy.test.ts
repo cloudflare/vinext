@@ -1471,6 +1471,15 @@ describe("detectProject", () => {
     ["export default {\n  // cacheComponents: true,\n};", false],
     ['export default { "cacheComponents": true };', true],
     [
+      "export default { cacheComponents: true, experimental: { turbo: { cacheComponents: false } } };",
+      true,
+    ],
+    [
+      "export default { cacheComponents: true, experimental: { list: [{ cacheComponents: false }] } };",
+      true,
+    ],
+    ["export default { experimental: { turbo: { rules: {} }, cacheComponents: true } };", true],
+    [
       `export default { cacheComponents: true, "experimental": { 'cacheComponents': false } };`,
       false,
     ],
