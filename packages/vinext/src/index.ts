@@ -4216,6 +4216,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           const nitroDevEnvironmentResolve =
             hasNitroPlugin && env?.command === "serve" ? { resolve: { noExternal: ["next"] } } : {};
 
+          // App code imports the shims as `next/*` while vinext's own modules
+          // import the same files by path. If the dep optimizer pre-bundles a
+          // `next/*` import, the app gets a second copy of the shim with its own
+          // module state and symbols (e.g. a server action's cookies() jar that
+          // the framework's copy of next/headers cannot synchronize).
+          const nextShimSpecifiers = [...Object.keys(nextShimMap), ..._reactServerShims.keys()];
+
           viteConfig.environments = {
             rsc: {
               ...nitroDevEnvironmentResolve,
@@ -4255,7 +4262,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(
+                  incomingExclude,
+                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  nextShimSpecifiers,
+                ),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge and static.edge for the
                 // Flight runtime it selects: its vendored copy, or an app-installed
@@ -4334,6 +4345,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   userSsrExternal === true || externalizeSsrReactInDev
                     ? SSR_EXTERNAL_REACT_ENTRIES
                     : [],
+                  nextShimSpecifiers,
                 ),
                 // plugin-rsc pre-includes react-dom/server.edge and static.edge,
                 // but the SSR entry imports the condition-resolved entries so
@@ -4375,6 +4387,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   incomingExclude,
                   VINEXT_OPTIMIZE_DEPS_EXCLUDE,
                   nextServerExternal,
+                  nextShimSpecifiers,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
                 // by user components are discovered during startup instead of
