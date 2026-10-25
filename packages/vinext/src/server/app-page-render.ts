@@ -676,7 +676,13 @@ async function renderAppPageLifecycleImpl(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  const shouldBypassRscCache = options.bypassInterceptionContextCache === true;
+  // A payload that leaves out the layouts its client holds is that client's
+  // alone, so it's never stored or sent with shared cache headers.
+  const isPartialPayload =
+    options.isRscRequest &&
+    isAppElementsRecord(options.element) &&
+    Object.hasOwn(options.element, AppElementsWire.keys.skippedLayoutIds);
+  const shouldBypassRscCache = options.bypassInterceptionContextCache === true || isPartialPayload;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
@@ -861,25 +867,31 @@ async function renderAppPageLifecycleImpl(
     }
 
     const dynamicUsedDuringBuild = consumeRenderDynamicUsage();
-    // An unverified interception context omits cacheState, as the response is
-    // not a shared-cache MISS/HIT artifact. The absence also keeps
-    // finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCache
-      ? { cacheControl: NO_STORE_CACHE_CONTROL }
-      : resolveAppPageRscResponsePolicy({
-          dynamicUsedDuringBuild,
-          isDraftMode: options.isDraftMode,
-          isDynamicError: options.isDynamicError,
-          isForceDynamic: options.isForceDynamic,
-          isForceStatic: options.isForceStatic,
-          isProduction: options.isProduction,
-          isStaticEligible: options.isStaticEligible,
-          expireSeconds,
-          revalidateSeconds,
-        });
+    // An unverified interception context or a partial payload omits
+    // cacheState, as the response is not a shared-cache MISS/HIT artifact. The
+    // absence also keeps finalizeAppPageRscCacheResponse from overwriting
+    // no-store. A partial payload only comes from a render that's never
+    // stored, so it keeps that render's uncacheable header.
+    const rscResponsePolicy = isPartialPayload
+      ? { cacheControl: resolveUncacheableCacheControl(options.isProduction) }
+      : shouldBypassRscCache
+        ? { cacheControl: NO_STORE_CACHE_CONTROL }
+        : resolveAppPageRscResponsePolicy({
+            dynamicUsedDuringBuild,
+            isDraftMode: options.isDraftMode,
+            isDynamicError: options.isDynamicError,
+            isForceDynamic: options.isForceDynamic,
+            isForceStatic: options.isForceStatic,
+            isProduction: options.isProduction,
+            isStaticEligible: options.isStaticEligible,
+            expireSeconds,
+            revalidateSeconds,
+          });
     if (shouldBypassRscCache) {
       options.isrDebug?.(
-        "RSC cache write skipped (unverified interception context)",
+        isPartialPayload
+          ? "RSC cache write skipped (partial payload)"
+          : "RSC cache write skipped (unverified interception context)",
         options.cleanPathname,
       );
     }

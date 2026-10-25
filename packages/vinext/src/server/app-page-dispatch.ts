@@ -90,7 +90,12 @@ import {
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
-import { VINEXT_INTERCEPTION_ID_HEADER, VINEXT_PRERENDER_SPECULATIVE_HEADER } from "./headers.js";
+import {
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_PRERENDER_SPECULATIVE_HEADER,
+} from "./headers.js";
+import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
@@ -323,6 +328,8 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       isForceStatic?: boolean;
       isUncacheableRender?: boolean;
+      /** Layouts the navigating client holds, which the render may leave out. */
+      mountedLayouts?: ReadonlySet<string> | null;
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
       serveStreamingMetadata?: boolean;
@@ -834,6 +841,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     !(isCacheEligibleRender && isStaticEligible) &&
     options.pprFallbackShell === undefined &&
     (options.pprRuntime === undefined || !options.isProduction);
+  // A navigation names the layouts it holds, so a render that's never stored
+  // can leave them out, as Next.js renders only below where a navigation
+  // diverges. A stored payload stays whole for every client that reads it.
+  const mountedLayouts =
+    isUncacheableRender &&
+    options.isRscRequest &&
+    (options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION) === APP_RSC_RENDER_MODE_NAVIGATION &&
+    options.interceptionContext === null &&
+    options.isProgressiveActionRender !== true
+      ? parseMountedLayoutsHeader(options.request.headers.get(VINEXT_MOUNTED_LAYOUTS_HEADER))
+      : null;
   if (shouldReadCache && isStaticEligible) {
     traceOperation = resolveAppPageTraceOperation({
       hasRequestSearchParams,
@@ -1326,6 +1344,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             isUncacheableRender,
+            // An intercepted render keeps every layout its interception wraps.
+            mountedLayouts: interceptResult.interceptOpts ? null : mountedLayouts,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
             placeStreamedMetadataInHead: options.renderWholeDocument === true,
             onHeadPrepared,

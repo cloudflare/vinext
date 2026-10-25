@@ -220,7 +220,9 @@ import {
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
+import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
 import {
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
@@ -2274,6 +2276,15 @@ function bootstrapHydration(
       // anchored to the same pre-navigation identity base.
       const navigationInitiationState = getBrowserRouterState();
       const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
+      // Only a push or replace names the layouts it holds, as only it keeps
+      // them: a refresh re-renders every layout, as in Next.js.
+      let mountedLayoutsHeader =
+        navigationKind === "navigate"
+          ? createMountedLayoutsHeader(
+              navigationInitiationState.elements,
+              navigationInitiationState.layoutIds,
+            )
+          : null;
 
       while (true) {
         const url = new URL(currentHref, window.location.origin);
@@ -2699,9 +2710,16 @@ function bootstrapHydration(
           }
         }
 
+        let sentMountedLayouts = false;
         if (!navResponse) {
+          let liveRequestHeaders = requestHeaders;
+          if (mountedLayoutsHeader !== null && requestInterceptionContext === null) {
+            liveRequestHeaders = new Headers(requestHeaders);
+            liveRequestHeaders.set(VINEXT_MOUNTED_LAYOUTS_HEADER, mountedLayoutsHeader);
+            sentMountedLayouts = true;
+          }
           navResponse = await fetch(rscUrl, {
-            headers: requestHeaders,
+            headers: liveRequestHeaders,
             credentials: "include",
             priority: "auto",
             signal: navigationAbortHandle.signal,
@@ -2879,6 +2897,21 @@ function bootstrapHydration(
             .then(requireCompleteSupplementalRefresh);
         }
 
+        // A payload that left out a layout this navigation no longer holds, as
+        // when another commit replaced it, is fetched again whole.
+        if (sentMountedLayouts) {
+          const elements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          if (
+            !holdsSkippedLayouts(navigationInitiationState, elements) ||
+            !holdsSkippedLayouts(getBrowserRouterState(), elements)
+          ) {
+            mountedLayoutsHeader = null;
+            continue;
+          }
+          rscPayload = Promise.resolve(elements);
+        }
+
         // Static hosts cannot supply the compatibility response header used by
         // server navigation. Match Next.js's export skew protection by checking
         // the build identity carried in the decoded Flight model before React
@@ -3042,7 +3075,8 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              true,
+              // A payload that left out layouts only fits the state it merged into.
+              isCompleteAppPayloadMetadata(metadata),
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
             );

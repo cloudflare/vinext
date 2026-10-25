@@ -17,6 +17,7 @@ import {
   RSC_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -45,6 +46,7 @@ type CreateRscRequestHeadersOptions = {
   interceptionContext?: string | null;
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
+  mountedLayoutsHeader?: string | null;
   includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
   fetchPriority?: "auto" | "high" | "low";
@@ -371,6 +373,11 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
+  // Not part of the cache-busting hash: only a render that's never stored
+  // reads it (see app-mounted-layouts.ts).
+  if (options.mountedLayoutsHeader !== undefined && options.mountedLayoutsHeader !== null) {
+    headers.set(VINEXT_MOUNTED_LAYOUTS_HEADER, options.mountedLayoutsHeader);
+  }
 
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
   if (renderMode !== APP_RSC_RENDER_MODE_NAVIGATION) {
@@ -399,6 +406,7 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
 }
@@ -422,6 +430,7 @@ export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boo
   headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
   return true;
 }

@@ -8,6 +8,7 @@ import {
   type AppElementsInterception,
   type AppElementsSlotBinding,
 } from "./app-elements.js";
+import { holdsSkippedLayouts } from "./app-mounted-layouts.js";
 import { createRscRequestHeaders } from "./app-rsc-cache-busting.js";
 import {
   NEXT_ACTION_HEADER,
@@ -559,6 +560,13 @@ function mergeSkippedLayoutPreservation(options: {
 }): PendingNavigationCommitDispositionDecision {
   if (options.decision.disposition !== "dispatch") return options.decision;
   if (options.pending.skippedLayoutIds.length === 0) return options.decision;
+  // A payload left out layouts this navigation's client named. The navigation
+  // refetches a whole payload when its state no longer holds one, so one that
+  // still can't be restored commits as a document navigation, never as a tree
+  // missing a layout.
+  if (!holdsSkippedLayouts(options.currentState, options.pending.action.elements)) {
+    return { disposition: "hard-navigate", preserveElementIds: [], trace: options.decision.trace };
+  }
 
   const currentLayoutIds = new Set(options.currentState.layoutIds);
   const targetLayoutIds = new Set(options.pending.action.layoutIds);
@@ -571,13 +579,10 @@ function mergeSkippedLayoutPreservation(options: {
     if (AppElementsWire.parseElementKey(id)?.kind !== "layout") continue;
     // Set membership here is intentionally broader than the planner's
     // prefix-based persistence (resolveSameLayoutAncestorPersistenceForTopologies
-    // breaks at the first divergence). A layout present in both the current and
-    // target chains but past that divergence point is admitted here even though
-    // the planner would not preserve it. That is correct rather than a
-    // divergence bug: the server only emits a skip for a layout it proved
-    // byte-identical via the static-layout cache proof, so preserving the
-    // retained-and-identical layout — together with its owned slots derived
-    // below — is sound regardless of ancestor-chain position.
+    // breaks at the first divergence). The server only leaves out layouts the
+    // client named with the same segment identity, checked above, so
+    // preserving each one, together with its owned slots derived below, is
+    // sound regardless of ancestor-chain position.
     if (!currentLayoutIds.has(id) || !targetLayoutIds.has(id)) continue;
     if (!Object.hasOwn(options.currentState.elements, id)) continue;
 

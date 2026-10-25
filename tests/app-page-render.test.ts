@@ -5,6 +5,7 @@ import { renderToReadableStream } from "react-dom/server.edge";
 import {
   APP_ARTIFACT_COMPATIBILITY_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   isAppElementsRecord,
   type AppOutgoingElements,
 } from "../packages/vinext/src/server/app-elements.js";
@@ -3967,6 +3968,56 @@ describe("outgoing RSC payload metadata", () => {
       },
     };
   }
+
+  // A payload that leaves out the layouts its client holds is that client's
+  // alone, whatever the route's own cache policy.
+  it("never stores or shares a payload that left out layouts", async () => {
+    const render = async (element: Record<string, ReactNode>) => {
+      const common = createCommonOptions();
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        element,
+        isCacheCandidate: true,
+        isRscRequest: true,
+        revalidateSeconds: 60,
+      });
+      await response.text();
+      return response.headers.get("cache-control");
+    };
+
+    expect(await render({ "page:/test": "test-page" })).toContain("s-maxage=60");
+    expect(
+      await render({
+        [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+        "page:/test": "test-page",
+      }),
+    ).toBe("no-store, must-revalidate");
+  });
+
+  it("sends a partial payload the header its whole dynamic render sends", async () => {
+    const render = async (element: Record<string, ReactNode>) => {
+      const common = createCommonOptions();
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        element,
+        isForceDynamic: true,
+        isProduction: true,
+        isRscRequest: true,
+        isStaticEligible: false,
+      });
+      await response.text();
+      return response.headers.get("cache-control");
+    };
+
+    const whole = await render({ "page:/test": "test-page" });
+    expect(whole).toBe("private, no-cache, no-store, max-age=0, must-revalidate");
+    expect(
+      await render({
+        [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
+        "page:/test": "test-page",
+      }),
+    ).toBe(whole);
+  });
 
   it("injects concrete artifact compatibility metadata from the render boundary", async () => {
     const originalBuildId = process.env.__VINEXT_BUILD_ID;

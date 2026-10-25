@@ -261,6 +261,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   isForceStatic?: boolean;
   /** The render can never be stored (see buildAppPageElements). */
   isUncacheableRender?: boolean;
+  /** Layouts the navigating client holds (see buildAppPageElements). */
+  mountedLayouts?: ReadonlySet<string> | null;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -379,6 +381,7 @@ export async function buildPageElements<
     observePageSearchParamsAccess = false,
     isForceStatic = false,
     isUncacheableRender = false,
+    mountedLayouts = null,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
@@ -1031,6 +1034,7 @@ export async function buildPageElements<
       isRscRequest,
       isUncacheableRender,
       interceptionId: opts?.interceptionId ?? null,
+      mountedLayouts,
       mountedSlotIds,
       makeThenableParams,
       matchedParams: params,

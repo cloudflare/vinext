@@ -13,6 +13,7 @@ import { notFound, useSelectedLayoutSegments } from "../packages/vinext/src/shim
 import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
@@ -56,6 +57,7 @@ import {
   createOptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
+import { hashMountedLayoutIdentity } from "../packages/vinext/src/server/app-mounted-layouts.js";
 import type {
   GraphVersion,
   RouteManifest,
@@ -2005,6 +2007,120 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["route:/dashboard"]).not.toBeNull();
     expect(elements["page:/dashboard"]).not.toBeNull();
+  });
+
+  describe("layouts the navigating client holds", () => {
+    const buildDashboardSettings = (
+      overrides: Partial<Parameters<typeof buildAppPageElements>[0]> = {},
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["dashboard", "settings"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard/settings",
+        rootNotFoundModule: null,
+        isRscRequest: true,
+        isUncacheableRender: true,
+        ...overrides,
+      });
+    const identities =
+      AppElementsWire.readMetadata(buildDashboardSettings()).bfcacheSegmentIdentities;
+    const held = (...layoutIds: string[]) =>
+      new Set(layoutIds.map((layoutId) => hashMountedLayoutIdentity(identities[layoutId] ?? "")));
+
+    it("leaves out the outermost layouts it holds", async () => {
+      const elements = buildDashboardSettings({
+        mountedLayouts: held("layout:/", "layout:/dashboard"),
+      });
+
+      expect(elements["layout:/"]).toBeUndefined();
+      expect(elements["layout:/dashboard"]).toBeUndefined();
+      expect(elements[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/dashboard"]);
+      // The metadata still describes every layout, so the client can check
+      // that it holds the ones left out.
+      const metadata = AppElementsWire.readMetadata(elements);
+      expect(metadata.layoutIds).toEqual(["layout:/", "layout:/dashboard"]);
+      expect(metadata.bfcacheSegmentIdentities["layout:/dashboard"]).toBe(
+        identities["layout:/dashboard"],
+      );
+      // The page waits on no layout the render left out.
+      expect(await renderRouteEntry(elements, "page:/dashboard/settings")).toContain("Page");
+    });
+
+    it("renders every layout below the first one it doesn't hold", () => {
+      const rootOnly = buildDashboardSettings({ mountedLayouts: held("layout:/") });
+      expect(rootOnly["layout:/"]).toBeUndefined();
+      expect(rootOnly["layout:/dashboard"]).toBeDefined();
+      expect(rootOnly[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/"]);
+
+      const nestedOnly = buildDashboardSettings({ mountedLayouts: held("layout:/dashboard") });
+      expect(nestedOnly["layout:/"]).toBeDefined();
+      expect(nestedOnly["layout:/dashboard"]).toBeDefined();
+      expect(nestedOnly[APP_SKIPPED_LAYOUT_IDS_KEY]).toBeUndefined();
+    });
+
+    it("renders a layout whose params changed", () => {
+      const buildTeamSettings = (team: string, mountedLayouts?: ReadonlySet<string>) =>
+        buildDashboardSettings({
+          matchedParams: { team },
+          mountedLayouts,
+          route: {
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 1],
+            layouts: [{ default: RootLayout }, { default: GroupLayout }],
+            loading: null,
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["[team]", "settings"],
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: `/${team}/settings`,
+        });
+      const teamA = AppElementsWire.readMetadata(buildTeamSettings("a"));
+      const heldOnTeamA = new Set(
+        teamA.layoutIds.map((layoutId) =>
+          hashMountedLayoutIdentity(teamA.bfcacheSegmentIdentities[layoutId] ?? ""),
+        ),
+      );
+
+      const teamB = buildTeamSettings("b", heldOnTeamA);
+
+      // The root layout sits above the param, so it's the one the client holds.
+      expect(teamB[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/"]);
+      expect(teamB["layout:/[team]"]).toBeDefined();
+    });
+
+    it.each<{ name: string; overrides: Partial<Parameters<typeof buildAppPageElements>[0]> }>([
+      { name: "a render that may be stored", overrides: { isUncacheableRender: false } },
+      { name: "a document render", overrides: { isRscRequest: false } },
+      {
+        name: "a prefetch",
+        overrides: { renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+      },
+    ])("renders every layout for $name", ({ overrides }) => {
+      const elements = buildDashboardSettings({
+        mountedLayouts: held("layout:/", "layout:/dashboard"),
+        ...overrides,
+      });
+
+      expect(elements[APP_SKIPPED_LAYOUT_IDS_KEY]).toBeUndefined();
+    });
   });
 
   it("renders a slot-only loading shell for a render that can never be stored", async () => {

@@ -3625,6 +3625,7 @@ describe("next/headers shim", () => {
     const reqHeaders = new Headers({
       rsc: "1",
       "Next-Router-State-Tree": "tree",
+      "X-Vinext-Mounted-Layouts": "0123456789abcdef",
       "x-nextjs-request-id": "dev-request",
       "x-nextjs-html-request-id": "dev-html-request",
       "x-custom": "test-value",
@@ -3638,6 +3639,7 @@ describe("next/headers shim", () => {
     expect(h.get("x-custom")).toBe("test-value");
     expect(h.get("rsc")).toBeNull();
     expect(h.get("Next-Router-State-Tree")).toBeNull();
+    expect(h.get("X-Vinext-Mounted-Layouts")).toBeNull();
     expect(h.get("x-nextjs-request-id")).toBeNull();
     expect(h.get("x-nextjs-html-request-id")).toBeNull();
     expect(reqHeaders.get("x-nextjs-request-id")).toBe("dev-request");
@@ -10765,6 +10767,7 @@ describe("double-encoded path handling in middleware", () => {
           "next-router-segment-prefetch": "/dashboard",
           "next-hmr-refresh": "1",
           "x-vinext-rsc-state-fingerprint": "state-a",
+          "x-vinext-mounted-layouts": "0123456789abcdef",
           "x-user-visible": "keep",
         },
       }),
@@ -10776,6 +10779,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(capturedHeaders?.get("next-router-prefetch")).toBeNull();
     expect(capturedHeaders?.get("next-router-segment-prefetch")).toBeNull();
     expect(capturedHeaders?.get("x-vinext-rsc-state-fingerprint")).toBeNull();
+    expect(capturedHeaders?.get("x-vinext-mounted-layouts")).toBeNull();
     expect(capturedHeaders?.get("next-hmr-refresh")).toBeNull();
     expect(capturedHeaders?.get("x-user-visible")).toBe("keep");
   });

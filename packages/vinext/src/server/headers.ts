@@ -135,6 +135,12 @@ export const VINEXT_PRERENDER_SPECIAL_ERROR_HEADER = "x-vinext-prerender-special
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
 /**
+ * Hashed identities of the layouts a client navigation already holds, so a
+ * render that's never stored can leave them out. Not part of the RSC cache key.
+ */
+export const VINEXT_MOUNTED_LAYOUTS_HEADER = "X-Vinext-Mounted-Layouts";
+
+/**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
  * thrown during render. The header value is the redirect target (path-only
  * for same-origin, absolute for cross-origin). The flight body still carries
@@ -258,6 +264,7 @@ export const FLIGHT_HEADERS: readonly string[] = [
   "next-hmr-refresh",
   "next-router-segment-prefetch",
   "x-vinext-rsc-state-fingerprint",
+  "x-vinext-mounted-layouts",
 ];
 
 // ---------------------------------------------------------------------------

@@ -20,7 +20,10 @@ import {
   buildRenderRequestApiObservations,
   type RenderObservation,
 } from "../packages/vinext/src/server/cache-proof.js";
-import { APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import {
+  APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+} from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
@@ -62,6 +65,7 @@ import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-
 import {
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
@@ -1298,6 +1302,61 @@ describe("app page dispatch", () => {
     await response.text();
 
     expect(buildPageElement.mock.calls[0]?.[4]?.isUncacheableRender).toBe(expected);
+  });
+
+  // Next.js renders only below where a navigation diverges from the client's
+  // router state. vinext does so only for a render that's never stored.
+  const MOUNTED_LAYOUTS = "0123456789abcdef,fedcba9876543210";
+  it.each<{
+    name: string;
+    overrides: CreateDispatchOptionsOverrides;
+    header?: string;
+    expected: boolean;
+  }>([
+    { name: "a dev RSC navigation", overrides: {}, expected: true },
+    {
+      name: "a production static route",
+      overrides: { isProduction: true },
+      expected: false,
+    },
+    {
+      name: "a production force-dynamic route",
+      overrides: { isProduction: true, dynamicConfig: "force-dynamic" as const },
+      expected: true,
+    },
+    { name: "a document request", overrides: { isRscRequest: false }, expected: false },
+    {
+      name: "a prefetch",
+      overrides: { renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+      expected: false,
+    },
+    {
+      name: "a navigation from an intercepted route",
+      overrides: { interceptionContext: "/feed" },
+      expected: false,
+    },
+    { name: "a malformed header", overrides: {}, header: "not-a-hash", expected: false },
+  ])("passes the client's layouts to $name: $expected", async (testCase) => {
+    const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+      React.createElement("main", null, "page"),
+    );
+    const { options } = createDispatchOptions({
+      isRscRequest: true,
+      ...testCase.overrides,
+      buildPageElement,
+      request: new Request("https://example.com/posts/hello", {
+        headers: { [VINEXT_MOUNTED_LAYOUTS_HEADER]: testCase.header ?? MOUNTED_LAYOUTS },
+      }),
+      revalidateSeconds: 60,
+    });
+
+    const response = await dispatchAppPage(options);
+    await response.text();
+
+    const mountedLayouts = buildPageElement.mock.calls[0]?.[4]?.mountedLayouts;
+    expect(mountedLayouts ? [...mountedLayouts] : null).toEqual(
+      testCase.expected ? MOUNTED_LAYOUTS.split(",") : null,
+    );
   });
 
   afterEach(() => {

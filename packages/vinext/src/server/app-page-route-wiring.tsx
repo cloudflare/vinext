@@ -4,6 +4,7 @@ import {
   APP_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_STATIC_SIBLINGS_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
   normalizeAppElementsSlotBindings,
@@ -57,6 +58,7 @@ import {
   tagAppPageSlotError,
 } from "./app-page-execution.js";
 import { createAppPageLayoutGate, registerAppPageLayoutGate } from "./app-page-layout-gate.js";
+import { hashMountedLayoutIdentity } from "./app-mounted-layouts.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { probeReactServerSubtree } from "./app-page-probe.js";
 import {
@@ -389,6 +391,13 @@ type BuildAppPageElementsOptions<
    * still store the route tree, as a CDN would store Next.js's.
    */
   isUncacheableRender?: boolean;
+  /**
+   * Hashed segment identities of the layouts the navigating client holds (see
+   * app-mounted-layouts.ts). A render that can never be stored leaves out the
+   * outermost layouts it names, as Next.js renders only below where a
+   * navigation diverges from the client's router state.
+   */
+  mountedLayouts?: ReadonlySet<string> | null;
   mountedSlotIds?: ReadonlySet<string> | null;
   renderIdentity?: AppPageRenderIdentity;
   renderMode?: AppRscRenderMode;
@@ -1277,6 +1286,23 @@ export function buildAppPageElements<
     templateEntries,
   });
   const routeResetKey = segmentPlan.routeResetKey;
+  const skippedLayoutIds = new Set<string>();
+  if (
+    options.mountedLayouts &&
+    options.isRscRequest === true &&
+    options.isUncacheableRender === true &&
+    renderMode === APP_RSC_RENDER_MODE_NAVIGATION &&
+    interception === null
+  ) {
+    // Only the layouts above the first one the client doesn't hold, as a
+    // layout below a re-rendered one renders inside it.
+    for (const layoutEntry of layoutEntries) {
+      const identity = segmentPlan.bfcacheSegmentIdentities[layoutEntry.id];
+      if (identity === undefined) break;
+      if (!options.mountedLayouts.has(hashMountedLayoutIdentity(identity))) break;
+      skippedLayoutIds.add(layoutEntry.id);
+    }
+  }
   const slotPlansByKey = new Map(segmentPlan.slots.map((slot) => [slot.key, slot]));
   const resolveRouteSegmentResetKey = (treePosition: number): string =>
     resolveAppPageSegmentStateKey(routeSegments, treePosition, options.matchedParams);
@@ -1362,7 +1388,7 @@ export function buildAppPageElements<
     if (layoutIndex !== undefined) {
       const layoutEntry = layoutEntries[layoutIndex];
       layoutDependenciesBefore[layoutIndex] = [...pageDependencies];
-      if (getDefaultExport(layoutEntry.layoutModule)) {
+      if (!skippedLayoutIds.has(layoutEntry.id) && getDefaultExport(layoutEntry.layoutModule)) {
         const layoutDependency = createAppRenderDependency();
         layoutDependenciesByIndex.set(layoutIndex, layoutDependency);
         pageDependencies.push(layoutDependency);
@@ -1485,6 +1511,8 @@ export function buildAppPageElements<
     if (isPrefetchLoadingShell && !includesPrefetchTreePosition(layoutEntry.treePosition)) {
       continue;
     }
+    // The client keeps the one it holds.
+    if (skippedLayoutIds.has(layoutEntry.id)) continue;
     if (!layoutEntry.layoutModule) continue;
     const layoutComponent = traceGetLayoutOrPageModule(
       resolveAppPageModuleTraceSegment(routeSegments, layoutEntry.treePosition),
@@ -2381,6 +2409,7 @@ export function buildAppPageElements<
           [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
         }
       : {},
+    skippedLayoutIds.size > 0 ? { [APP_SKIPPED_LAYOUT_IDS_KEY]: [...skippedLayoutIds] } : {},
   );
   registerAppPageLayoutGate(elements, layoutGate);
   return elements;
