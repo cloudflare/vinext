@@ -572,6 +572,28 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("registerCachedFunction(Layout");
   });
 
+  it("compiles cache modules shipped inside node_modules", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives:node-modules",
+    )!;
+    const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
+    const { filter } = plugin.transform as {
+      filter: { id: { include: RegExp; exclude: RegExp }; code: string };
+    };
+    expect(filter.id.include.test(packageId)).toBe(true);
+    expect(filter.id.include.test(moduleId)).toBe(false);
+    expect(filter.id.exclude.test(packageId)).toBe(false);
+    expect(filter.code).toBe("use cache");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      fileCacheCode,
+      packageId,
+    );
+    expect(result!.code).toContain("registerCachedFunction(getData");
+  });
+
   it("accepts configured cache kinds containing punctuation", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
@@ -1058,6 +1080,30 @@ describe("plugin-rsc inline use-cache references", () => {
       `"use cache";\nexport { generateMetadata } from "./metadata.js";`,
     );
     expect(code).toContain('"acceptsSecondArgument":true');
+  });
+
+  it("records the arity of file-level cached const functions exported by name", async () => {
+    const code = await transformRsc(
+      [
+        `"use cache";`,
+        `const getRandomValue = async () => Math.random();`,
+        `const getValue = async (previousState, formData) => formData;`,
+        `async function reassigned() {}`,
+        `reassigned = async (previousState, formData) => formData;`,
+        `export { getRandomValue, getValue as aliased, reassigned };`,
+      ].join("\n"),
+    );
+    const options = getCacheWrapperOptionsByName(code);
+    expect(options.getRandomValue).toMatchObject({
+      argumentCount: 0,
+      acceptsSecondArgument: false,
+    });
+    expect(options.aliased).toMatchObject({ argumentCount: 2, acceptsSecondArgument: true });
+    // A function declaration is a mutable binding, so its arity stays unknown.
+    expect(options.reassigned).toEqual(
+      expect.not.objectContaining({ argumentCount: expect.anything() }),
+    );
+    expect(options.reassigned).toMatchObject({ acceptsSecondArgument: true });
   });
 
   it("records when a cached function omits the second argument", async () => {
