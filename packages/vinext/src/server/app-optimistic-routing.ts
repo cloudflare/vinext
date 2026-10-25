@@ -538,3 +538,55 @@ export function resolveOptimisticNavigationPayload(options: {
     urlParts: urlParts.normalized,
   };
 }
+
+export type LearnedOptimisticRouteTemplate = {
+  key: string;
+  template: OptimisticRouteTemplate;
+};
+
+/**
+ * Optimistic route templates and the prefetch sources they were learned from.
+ * `clear()` retires every template, so none can outlive the prefetch payload
+ * it was derived from, and drops any result a learning started before the
+ * clear resolves to. Sources that are still cached are learned again on the
+ * next optimistic navigation.
+ */
+export function createOptimisticRouteTemplateStore() {
+  const templates = new Map<string, OptimisticRouteTemplate>();
+  const learnedSources = new Set<string>();
+  const learning = new Map<string, Promise<void>>();
+  let generation = 0;
+
+  return {
+    templates: templates as ReadonlyMap<string, OptimisticRouteTemplate>,
+    clear(): void {
+      generation += 1;
+      templates.clear();
+      learnedSources.clear();
+      learning.clear();
+    },
+    hasSource(sourceKey: string): boolean {
+      return learnedSources.has(sourceKey) || learning.has(sourceKey);
+    },
+    learn(
+      sourceKey: string,
+      learnTemplate: () => Promise<LearnedOptimisticRouteTemplate | null>,
+    ): Promise<void> {
+      const learnedGeneration = generation;
+      const promise: Promise<void> = learnTemplate()
+        .then((learned) => {
+          if (learned === null || learnedGeneration !== generation) return;
+          templates.set(learned.key, learned.template);
+          learnedSources.add(sourceKey);
+        })
+        .finally(() => {
+          if (learning.get(sourceKey) === promise) learning.delete(sourceKey);
+        });
+      learning.set(sourceKey, promise);
+      return promise;
+    },
+    pendingLearning(): Promise<void>[] {
+      return [...learning.values()];
+    },
+  };
+}
