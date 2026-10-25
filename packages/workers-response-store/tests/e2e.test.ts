@@ -553,7 +553,9 @@ test("replacesRevision doesn't coalesce a refresh into a leader older than its r
     tags,
   });
   for (let attempt = 0; attempt < 50; attempt++) {
-    const calls = (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as [];
+    const calls = (await (
+      await worker.fetch("https://user.test/admin/edge-calls")
+    ).json()) as unknown[];
     if (calls.length === 1) break;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }

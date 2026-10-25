@@ -21,7 +21,12 @@
 
 import { Buffer } from "node:buffer";
 
-import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
+import {
+  getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheHandler,
+  type CacheHandlerValue,
+} from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { sha256Hex } from "../utils/hash.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
@@ -842,7 +847,7 @@ async function writeFetchCacheResponse(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
-  options?: { cloneForReturn?: boolean },
+  options?: { cloneForReturn?: boolean; staleEntry?: CacheHandlerValue },
 ): Promise<void> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
   if (!cacheValue) return;
@@ -851,6 +856,8 @@ async function writeFetchCacheResponse(
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+    ...(options?.staleEntry ? { staleEntry: options.staleEntry } : {}),
   });
 }
 
@@ -1478,7 +1485,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
+            staleEntry: cached,
+          });
           return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
 
@@ -1491,6 +1500,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
             .then(async (freshResp) => {
               await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
                 cloneForReturn: false,
+                staleEntry: cached,
               });
             })
             .catch((err) => {

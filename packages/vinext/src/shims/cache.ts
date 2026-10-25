@@ -30,7 +30,11 @@ import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
 import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
-import { getDataCacheHandler, type CachedFetchValue } from "./cache-handler.js";
+import {
+  getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheHandlerValue,
+} from "./cache-handler.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isStagedCacheabilityProbeActive } from "./cacheability-classification.js";
 import { isPathKnownNotEdgeCached } from "./cdn-purge-routes.js";
@@ -627,6 +631,7 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
+  staleEntry?: CacheHandlerValue,
 ): Promise<Result> {
   // As in Next.js, the callback gets the caller's arguments, which are keyed
   // when the cached function is called but read only after the cache is.
@@ -659,6 +664,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+    ...(staleEntry ? { staleEntry } : {}),
   });
 
   return result;
@@ -727,6 +734,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${await sha256Hex(invocationKey)}`;
 
     const isDraftMode = isDraftModeEnabled();
+    let staleEntry: CacheHandlerValue | undefined;
     // Like Next.js, an unstable_cache nested in another's callback skips the
     // read and reruns, so regenerating the outer entry also refreshes what it
     // calls. The fresh result is still stored.
@@ -744,11 +752,20 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
           });
       if (existing?.value && existing.value.kind === "FETCH") {
         const cached = tryDeserializeUnstableCacheResult(existing.value.data.body);
+        if (existing.cacheState === "stale") staleEntry = existing;
         if (cached.ok) {
           if (existing.cacheState === "stale") {
             if (shouldServeStaleUnstableCacheEntry()) {
               scheduleUnstableCacheBackgroundRevalidation(cacheKey, () =>
-                refreshUnstableCacheResult(fn, args, keyedArgs, cacheKey, tags, revalidateSeconds),
+                refreshUnstableCacheResult(
+                  fn,
+                  args,
+                  keyedArgs,
+                  cacheKey,
+                  tags,
+                  revalidateSeconds,
+                  staleEntry,
+                ),
               );
               return cached.value;
             }
@@ -766,7 +783,15 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     if (isDraftMode) {
       return await _unstableCacheAls.run(true, () => fn(...args));
     }
-    return await refreshUnstableCacheResult(fn, args, keyedArgs, cacheKey, tags, revalidateSeconds);
+    return await refreshUnstableCacheResult(
+      fn,
+      args,
+      keyedArgs,
+      cacheKey,
+      tags,
+      revalidateSeconds,
+      staleEntry,
+    );
   };
 
   return cachedFn as T;
