@@ -1426,8 +1426,12 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     }
 
     const write = (async (): Promise<StoreResult> => {
-      reservation ??= await this.reserveWrite(metadata, cacheKey, cacheTags);
-      const refresh = await this.refreshedRevision(keyHash, replacesRevision);
+      // The R2 HEAD doesn't depend on the reservation; its ETag guards the R2 write either way.
+      const [reserved, refresh] = await Promise.all([
+        reservation ?? this.reserveWrite(metadata, cacheKey, cacheTags),
+        this.refreshedRevision(keyHash, replacesRevision),
+      ]);
+      reservation = reserved;
       return this.storeResponse(
         metadata,
         request,
