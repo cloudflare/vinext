@@ -778,6 +778,11 @@ export function createPagesPageHandler(
       : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
+      // Like Next.js's per-request IncrementalCache, an authorized on-demand
+      // revalidation makes unstable_cache skip its read in getStaticProps.
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(
+        request.headers.get(PRERENDER_REVALIDATE_HEADER),
+      ),
     });
 
     // The req/res `_app`, the page data and `_document` share for this render.

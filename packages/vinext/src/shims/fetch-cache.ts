@@ -35,7 +35,11 @@ import {
   type FetchDedupeEntry,
 } from "./fetch-cache-state.js";
 import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
-import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
+import {
+  _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
+  _setRequestScopedCacheLife,
+} from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
 
@@ -1443,16 +1447,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const handler = getDataCacheHandler();
     let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
-    // Try cache first
+    // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
+    // skips the read but still fetches and stores the fresh response.
     try {
-      let cached = mustBypassPendingRevalidation
-        ? null
-        : await handler.get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-            revalidate: revalidateSeconds,
-          });
+      let cached =
+        mustBypassPendingRevalidation || _isOnDemandRevalidate()
+          ? null
+          : await handler.get(cacheKey, {
+              kind: "FETCH",
+              tags,
+              softTags,
+              revalidate: revalidateSeconds,
+            });
       if (
         cached?.value?.kind === "FETCH" &&
         _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
