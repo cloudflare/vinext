@@ -7663,6 +7663,27 @@ describe('"use cache" runtime', () => {
       expect(set).toHaveBeenCalledTimes(2);
       expect(set.mock.calls[0]?.[2]).not.toHaveProperty("staleEntry");
       expect(set.mock.calls[1]?.[2]?.staleEntry).toBe(staleEntry);
+
+      // A cold isolate doesn't know the root params yet, so it reads the coarse redirect,
+      // and only expired it doesn't follow it: the redirect's write refreshes that entry.
+      const knownRootParams = (globalThis as any)[
+        Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId")
+      ] as Map<string, unknown>;
+      knownRootParams.delete("test:stale-entry-root-params");
+      for (const entry of (handler as any).store.values()) {
+        entry.revalidateAt = Date.now() - 1000;
+        entry.expireAt = Date.now() - 1000;
+      }
+      get.mockClear();
+      set.mockClear();
+      await run();
+      expect(get).toHaveBeenCalledOnce();
+      expect(get.mock.calls[0]?.[0]).toBe(coarseKey);
+      const expiredRedirect = await get.mock.results[0]?.value;
+      expect(expiredRedirect).toMatchObject({ cacheState: "expired" });
+      expect(set.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(expiredRedirect);
+      expect(set.mock.calls[1]?.[2]).not.toHaveProperty("staleEntry");
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }

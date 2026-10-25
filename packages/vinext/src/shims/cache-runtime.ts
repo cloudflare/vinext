@@ -971,7 +971,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                   tags: redirectTags,
                   revalidate: revalidateSeconds,
                 },
-                { ...cacheContext, tags: redirectTags },
+                {
+                  ...cacheContext,
+                  tags: redirectTags,
+                  // A cold isolate reads the coarse key first.
+                  ...(staleEntry && coarseCacheKey === cacheKey ? { staleEntry } : {}),
+                },
               );
               // Write the useful entry last. A bounded LRU that can retain only
               // one of the pair must keep the specific value, not the redirect.
