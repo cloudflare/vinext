@@ -304,6 +304,29 @@ function resolveRegenerationFailureCacheControl(
   };
 }
 
+/**
+ * Next.js stamps every prerender with the stale time it collected. A render
+ * that made no `cacheLife` claim keeps the `INFINITE_CACHE` sentinel, which
+ * resolves to `experimental.staleTimes.static` (`createSelectStaleTime` in
+ * `server/app-render/stale-time.ts`, applied by
+ * `applyMetadataFromPrerenderResult` in `app-render.tsx`). Its client only
+ * caches a navigation response for that long under
+ * `experimental.cachedNavigations` (`fetch-server-response.ts`); otherwise the
+ * value only dates prefetches. vinext's client reuses navigation responses for
+ * any advertised stale time, so the unclaimed value is only advertised when
+ * cached navigations are on.
+ */
+function resolveUnclaimedPrerenderStaleTimeSeconds(
+  isRoutePPREnabled: boolean | undefined,
+): number | undefined {
+  if (isRoutePPREnabled !== true) return undefined;
+  if (String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS) !== "true") return undefined;
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  // Next.js' default `staleTimes.static` when the plugin define is absent.
+  const seconds = raw === undefined || raw === "" ? 300 : Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : undefined;
+}
+
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
@@ -337,7 +360,9 @@ export function buildAppPageCachedResponse(
   // Replay the producing render's claim verbatim, not aged — Next.js re-emits
   // the stored header unchanged on every hit, and the cached HTML body embeds
   // the same original value in its done-script.
-  const staleTimeSeconds = resolveClientStaleTimeSeconds(options.cacheControl);
+  const staleTimeSeconds =
+    resolveClientStaleTimeSeconds(options.cacheControl) ??
+    resolveUnclaimedPrerenderStaleTimeSeconds(options.isRoutePPREnabled);
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;

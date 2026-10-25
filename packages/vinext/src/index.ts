@@ -3214,6 +3214,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
         );
+        // Boolean like Next.js' define-env entry; gates whether the static stage
+        // of a navigation response is cached for `staleTimes.static`.
+        defines["process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS"] = JSON.stringify(
+          nextConfig.cachedNavigations,
+        );
 
         // User-defined compile-time constants from `compiler.define` in
         // next.config. Applied to BOTH client and server bundles via Vite's

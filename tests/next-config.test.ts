@@ -2337,6 +2337,33 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations", () => {
+  it("defaults experimental.cachedNavigations to false", async () => {
+    const resolved = await resolveNextConfig({ cacheComponents: true });
+    expect(resolved.cachedNavigations).toBe(false);
+  });
+
+  it("reads experimental.cachedNavigations alongside cacheComponents", async () => {
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+    expect(resolved.cachedNavigations).toBe(true);
+  });
+
+  it("keeps cachedNavigations off without cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const resolved = await resolveNextConfig({
+        experimental: { cachedNavigations: true },
+      });
+      expect(resolved.cachedNavigations).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("resolveNextConfig appNavFailHandling", () => {
   it("defaults experimental.appNavFailHandling to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2714,6 +2741,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
