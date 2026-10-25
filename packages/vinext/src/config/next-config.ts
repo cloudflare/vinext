@@ -2098,6 +2098,23 @@ export async function resolveNextConfig(
     ...webpackProbe.aliases,
   };
 
+  // next-intl's format-only runtime requires catalogs transformed by its
+  // webpack/Turbopack loader. Keeping only the alias silently drops ICU values.
+  const intlExperimentalTurbo = readOptionalRecord(readOptionalRecord(config.experimental)?.turbo);
+  const intlTurbopack = readOptionalRecord(config.turbopack);
+  if (
+    (webpackProbe.nextIntlPrecompile ||
+      hasNextIntlPrecompileLoader(intlExperimentalTurbo?.rules) ||
+      hasNextIntlPrecompileLoader(intlTurbopack?.rules)) &&
+    isNextIntlFormatOnlyAlias(aliases["use-intl/format-message"], root)
+  ) {
+    delete aliases["use-intl/format-message"];
+    console.warn(
+      "[vinext] next-intl message precompilation requires webpack/Turbopack loaders. " +
+        "Ignoring its format-only alias so raw messages can still be formatted at runtime.",
+    );
+  }
+
   const allowedDevOrigins = Array.isArray(config.allowedDevOrigins) ? config.allowedDevOrigins : [];
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
@@ -2478,6 +2495,34 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
   };
 }
 
+/** Recognize only next-intl's catalog precompilation, not arbitrary loaders. */
+function hasNextIntlPrecompileLoader(value: unknown, seen = new Set<unknown>()): boolean {
+  if (seen.has(value)) return false;
+  seen.add(value);
+  if (Array.isArray(value)) return value.some((entry) => hasNextIntlPrecompileLoader(entry, seen));
+  const entry = readOptionalRecord(value);
+  if (!entry) return false;
+  if (
+    entry.loader === "next-intl/extractor/catalogLoader" &&
+    readOptionalRecord(readOptionalRecord(entry.options)?.messages)?.precompile === true
+  ) {
+    return true;
+  }
+  return Object.values(entry).some((child) => hasNextIntlPrecompileLoader(child, seen));
+}
+
+function isNextIntlFormatOnlyAlias(target: string | undefined, root: string): boolean {
+  if (target === "use-intl/format-message/format-only") return true;
+  if (!target) return false;
+  try {
+    const require = createRequire(path.join(root, "package.json"));
+    const nextIntlRequire = createRequire(require.resolve("next-intl/plugin"));
+    return target === toSlash(nextIntlRequire.resolve("use-intl/format-message/format-only"));
+  } catch {
+    return false;
+  }
+}
+
 async function probeWebpackConfig(
   config: NextConfig,
   root: string,
@@ -2485,6 +2530,7 @@ async function probeWebpackConfig(
 ): Promise<{
   aliases: Record<string, string>;
   mdx: MdxOptions | null;
+  nextIntlPrecompile: boolean;
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
@@ -2495,6 +2541,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlPrecompile: false,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
@@ -2521,6 +2568,7 @@ async function probeWebpackConfig(
     return {
       aliases: normalizeAliasEntries(clientProbe.config.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(clientProbe.rules),
+      nextIntlPrecompile: hasNextIntlPrecompileLoader(clientProbe.rules),
       resolveExtensions: clientProbe.resolveExtensions,
       serverResolveExtensions: serverProbe.resolveExtensions,
       resolveExtensionsCustomized:
@@ -2537,6 +2585,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlPrecompile: false,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
