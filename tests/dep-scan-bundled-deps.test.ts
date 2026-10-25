@@ -295,7 +295,25 @@ try {
   libraries["cjs-headers-lib"] = rscDeps["cjs-headers-lib"]
     ? fs.readFileSync(rscDeps["cjs-headers-lib"].file, "utf8")
     : null;
-  console.log("probe:" + JSON.stringify({ deps: Object.keys(deps), libraries, ipaddrImport }));
+  // The browser loads vinext's runtime through the virtual entry, and the
+  // app's next/navigation through import analysis. Both must reach the same
+  // shim URL, or the browser keeps two instances of its module state.
+  const importUrl = async (url, file) => {
+    const { code } = await server.environments.client.transformRequest(url);
+    const urls = [...code.matchAll(/(?:from|import) "([^"]+)"/g)].map((match) => match[1]);
+    return urls.find((specifier) => specifier.split("?")[0].endsWith(file)) ?? null;
+  };
+  const runtimeEntryUrl = await importUrl(
+    "virtual:vinext-app-browser-entry",
+    "/dist/server/app-browser-entry.js",
+  );
+  const navigationUrls = {
+    app: await importUrl("/app/client.tsx", "/dist/shims/navigation.js"),
+    runtime: runtimeEntryUrl && (await importUrl(runtimeEntryUrl, "/dist/shims/navigation.js")),
+  };
+  console.log(
+    "probe:" + JSON.stringify({ deps: Object.keys(deps), libraries, ipaddrImport, navigationUrls }),
+  );
 } finally {
   await server.close();
 }
@@ -330,10 +348,11 @@ describe("client dependency scan", () => {
   // A pre-bundled shim carries its own copy of vinext's module state, so
   // <Link> navigations would not reach the app's instrumentation hooks.
   it("keeps an installed vinext's next/* shims out of the dependency optimizers", async () => {
-    const { deps, libraries, ipaddrImport } = await runProbe<{
+    const { deps, libraries, ipaddrImport, navigationUrls } = await runProbe<{
       deps: string[];
       libraries: Record<string, string | null>;
       ipaddrImport: string | null;
+      navigationUrls: { app: string | null; runtime: string | null };
     }>(createInstalledVinextProject());
     expect(deps).toEqual(expect.arrayContaining(["esm-nav-lib", "cjs-link-lib"]));
     expect(
@@ -353,5 +372,8 @@ describe("client dependency scan", () => {
     }
     // The raw next/image shim's CommonJS dependency must still be pre-bundled.
     expect(ipaddrImport).toContain("/.vite/deps/");
+    // One browser module instance: the same URL, version query included.
+    expect(navigationUrls.app).toMatch(/\/dist\/shims\/navigation\.js\?v=/);
+    expect(navigationUrls.runtime).toBe(navigationUrls.app);
   }, 60_000);
 });

@@ -4968,7 +4968,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `${/(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/.source}|${nextImageAliasTargetRE.source}`,
           ),
         },
-        handler(id, importer) {
+        handler(id, importer, options) {
           // Like Next.js's image-external, next/image in RSC exports the
           // server-safe getImageProps and only Image as a client reference.
           if (nextImageAliasTargetRE.test(id)) {
@@ -5019,12 +5019,16 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             return this.resolve("next/image", importer, { skipSelf: true });
           }
 
+          // Shim paths go through Vite's resolver so dev gives them the same
+          // `?v=<browserHash>` it gives an installed vinext's runtime files and
+          // their relative imports. A bare path would load a second instance.
           const vinextShimPrefix = "vinext/shims/";
           if (cleanId.startsWith(vinextShimPrefix)) {
-            return resolveShimModulePath(
+            const shimPath = resolveShimModulePath(
               _shimsDir,
               stripJsExtension(stripViteModuleQuery(cleanId.slice(vinextShimPrefix.length))),
             );
+            return this.resolve(shimPath, importer, { ...options, skipSelf: true });
           }
 
           // Router-selected Cloudflare Worker entry facade
@@ -5158,7 +5162,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               this.environment?.name === "rsc"
                 ? `${reactServerShim}.react-server`
                 : reactServerShim;
-            return resolveShimModulePath(_shimsDir, shimName);
+            return this.resolve(resolveShimModulePath(_shimsDir, shimName), importer, {
+              ...options,
+              skipSelf: true,
+            });
           }
         },
       },
