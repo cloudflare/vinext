@@ -7,7 +7,7 @@ import { Suspense } from 'react';
 async function getRandomNumber() {
   'use cache';
   cacheTag('e2e-resume-data-cache');
-  return Math.random();
+  return `cached-${Math.random()}`;
 }
 
 async function DynamicComponent() {

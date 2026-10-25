@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { waitForAppRouterHydration } from "../helpers";
 
 // Runs against app-router-playground deployed with --warm-cache and no
 // prerender. Ported from Next.js:
@@ -12,15 +13,21 @@ test.describe("cached values across re-renders on a warmed deploy", () => {
   test("keeps the page's cached value in its dynamic RSC render", async ({ baseURL, request }) => {
     const route = `${baseURL}/e2e/resume-data-cache`;
     const html = await (await request.get(route)).text();
-    const randomNumber = html.match(/<p id="random-number">([^<]+)<\/p>/)?.[1];
-    expect(randomNumber).toBeTruthy();
+    const cachedValue = html.match(/<p id="random-number">(cached-0\.\d+)<\/p>/)?.[1];
+    expect(cachedValue).toBeTruthy();
 
-    // The value the HTML render cached may take a moment to become readable.
+    // Every cached value in the dynamic render is the HTML render's, so it
+    // didn't run the cached function again. The value the HTML render cached
+    // may take a moment to become readable.
     await expect
-      .poll(async () => (await request.get(route, { headers: { RSC: "1" } })).text(), {
-        timeout: 15_000,
-      })
-      .toContain(randomNumber);
+      .poll(
+        async () => {
+          const rsc = await (await request.get(route, { headers: { RSC: "1" } })).text();
+          return [...new Set(rsc.match(/cached-0\.\d+/g) ?? [])];
+        },
+        { timeout: 15_000 },
+      )
+      .toEqual([cachedValue]);
   });
 
   test("keeps cached values when a server action re-renders the page", async ({
@@ -28,13 +35,20 @@ test.describe("cached values across re-renders on a warmed deploy", () => {
     page,
   }) => {
     await page.goto(`${baseURL}/e2e/resume-data-cache/server-action`);
+    // A form action also works as a native POST before hydration; wait so the
+    // click runs the client-side server action re-render.
+    await waitForAppRouterHydration(page);
     const cached = page.locator("#cached-random");
     const uncached = page.locator("#uncached-random");
     await expect(uncached).not.toHaveText("Loading...");
     const initialCached = await cached.textContent();
     const initialUncached = await uncached.textContent();
 
+    const actionRequest = page.waitForRequest(
+      (request) => request.method() === "POST" && request.headers()["next-action"] !== undefined,
+    );
     await page.locator("#refresh-button").click();
+    await actionRequest;
 
     // The re-render ran the uncached function again but reused the cached one.
     await expect(uncached).not.toHaveText(initialUncached ?? "");
