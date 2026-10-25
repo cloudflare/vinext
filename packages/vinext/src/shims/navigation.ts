@@ -12,6 +12,7 @@
 // bindings are just `undefined` on the namespace object and we can guard at runtime.
 import * as React from "react";
 import type { Params } from "@vinext/types/next/upstream/dist/server/request/params";
+import type { AppRoutePrefetchPolicy } from "./internal/app-route-prefetch-policy.js";
 import {
   getNavigationRuntime,
   hasAppNavigationRuntime,
@@ -355,7 +356,13 @@ export type PrefetchCacheKind = "loading-shell" | "navigation" | "route-tree";
 
 export type PrefetchCacheEntry = {
   cacheForNavigation?: boolean;
+  /**
+   * Set while a full prefetch would be kept as learning-only if its page
+   * renders dynamically. A hover upgrade turns it into a full prefetch.
+   */
+  dynamicStaleTime?: "learning-only" | "full-prefetch";
   expiresAt?: number;
+  fallbackTtlMs?: number;
   invalidationTimer?: ReturnType<typeof setTimeout>;
   mountedSlotsHeader?: string | null;
   onInvalidateCallbacks?: Set<() => void>;
@@ -693,8 +700,8 @@ export function hasPrefetchCacheEntryForNavigation(
     additionalRscUrls?: readonly string[];
     notifyInvalidation?: boolean;
     onInvalidate?: () => void;
-    /** Called with the matched entry when it is reused. */
-    onReuse?: (entry: PrefetchCacheEntry) => void;
+    /** Called with the matched entry, and the key it was found under, when it is reused. */
+    onReuse?: (entry: PrefetchCacheEntry, cacheKey: string) => void;
     /** Whether an in-flight entry counts as reusable. Defaults to true. */
     reusePending?: boolean;
   } = {},
@@ -718,7 +725,7 @@ export function hasPrefetchCacheEntryForNavigation(
     // cache key — the match may be a normalized `_rsc` variant or an alias, so
     // an exact-key lookup after this call could silently miss it.
     attachPrefetchInvalidationToEntry(match.cacheKey, match.entry, options.onInvalidate);
-    options.onReuse?.(match.entry);
+    options.onReuse?.(match.entry, match.cacheKey);
     return true;
   }
 
@@ -1039,6 +1046,7 @@ function deletePrefetchCacheEntry(
 export function discardLearningOnlyPrefetchCacheEntry(
   rscUrl: string,
   interceptionContext: string | null = null,
+  mountedSlotsHeader: string | null = null,
 ): boolean {
   const cache = getPrefetchCache();
   const prefetched = getPrefetchedUrls();
@@ -1054,6 +1062,8 @@ export function discardLearningOnlyPrefetchCacheEntry(
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupUrl(source.rscUrl) !== normalizedTarget) continue;
+    // Another slot context's entry is not the one being replaced.
+    if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     superseded.push([cacheKey, entry]);
   }
@@ -1067,6 +1077,34 @@ export function discardLearningOnlyPrefetchCacheEntry(
     deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, true);
   }
   return superseded.length > 0;
+}
+
+/**
+ * Make a prefetch reusable by a navigation, as an `unstable_dynamicOnHover`
+ * hover does. A pending one that would be kept as learning-only becomes a full
+ * prefetch and takes the full-prefetch lifetime. One already kept as
+ * learning-only because its page rendered dynamically is left for the full
+ * prefetch to replace: Next.js refetches it with `FetchStrategy.Full`, so the
+ * page reflects the cookies and headers at hover time.
+ */
+export function promotePrefetchCacheEntryForNavigation(
+  cacheKey: string,
+  entry: PrefetchCacheEntry,
+): void {
+  if (entry.dynamicStaleTime !== "learning-only") {
+    entry.cacheForNavigation = true;
+    return;
+  }
+  if (entry.cacheForNavigation === false) return;
+  entry.dynamicStaleTime = "full-prefetch";
+  if (entry.snapshot === undefined) return;
+  entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+    entry.timestamp,
+    entry.snapshot,
+    entry.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
+    "full-prefetch",
+  );
+  schedulePrefetchInvalidation(cacheKey, entry);
 }
 
 function invalidatePrefetchCacheEntry(cacheKey: string): void {
@@ -1143,7 +1181,7 @@ export function invalidatePrefetchCache(): void {
     fireRetainedPrefetchInvalidation(retained);
   }
   if (!isServer) {
-    getNavigationRuntime()?.functions.pingVisibleLinks?.("cache-invalidation");
+    getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
 }
 
@@ -1535,7 +1573,7 @@ export function prefetchRscResponse(
   options?: PrefetchOptions,
   behavior: {
     cacheForNavigation?: boolean;
-    dynamicStaleTime?: "verbatim" | "full-prefetch" | "ignore";
+    dynamicStaleTime?: AppRoutePrefetchPolicy["dynamicStaleTime"];
     fallbackTtlMs?: number;
     optimisticRouteShell?: boolean;
     prefetchKind?: PrefetchCacheKind;
@@ -1565,6 +1603,10 @@ export function prefetchRscResponse(
     searchAgnosticShell: behavior.searchAgnosticShell === true,
     timestamp: now,
   };
+  if (behavior.dynamicStaleTime === "learning-only" && behavior.searchAgnosticShell !== true) {
+    entry.dynamicStaleTime = "learning-only";
+    entry.fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
+  }
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.fetchPromise = fetchPromise;
 
@@ -1577,22 +1619,41 @@ export function prefetchRscResponse(
         entry.snapshot = snapshot;
         entry.size = snapshot.buffer.byteLength;
         adjustPrefetchCacheByteSize(cache, entry.size - previousSize);
-        entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
-          entry.timestamp,
-          entry.snapshot,
-          behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL,
-          // A search-agnostic PPR shell contains no query-dependent dynamic
-          // data and is never navigation-consumable. Keep it on the prefetch
-          // freshness lattice so another search string can reuse the shell;
-          // the later navigation response still honors dynamicStaleTime.
+        const fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
+        // A search-agnostic PPR shell contains no query-dependent dynamic
+        // data and is never navigation-consumable. Keep it on the prefetch
+        // freshness lattice so another search string can reuse the shell;
+        // the later navigation response still honors dynamicStaleTime.
+        const dynamicStaleTime =
           behavior.searchAgnosticShell === true
             ? "ignore"
-            : (behavior.dynamicStaleTime ??
-                (behavior.optimisticRouteShell === true ? "ignore" : "verbatim")),
-        );
+            : (entry.dynamicStaleTime ??
+              behavior.dynamicStaleTime ??
+              (behavior.optimisticRouteShell === true ? "ignore" : "verbatim"));
+        if (
+          dynamicStaleTime === "learning-only" &&
+          isStaleTimeSeconds(snapshot.dynamicStaleTimeSeconds)
+        ) {
+          // The page rendered dynamically. Next.js would have prefetched only
+          // its route tree, kept for the static period, and fetched the page on
+          // navigation, so this payload only teaches the route.
+          entry.cacheForNavigation = false;
+          entry.expiresAt = entry.timestamp + Math.max(fallbackTtlMs, MIN_PREFETCH_STALE_TIME_MS);
+        } else {
+          entry.expiresAt = resolvePrefetchedRscResponseExpiresAt(
+            entry.timestamp,
+            entry.snapshot,
+            fallbackTtlMs,
+            dynamicStaleTime === "learning-only" ? "verbatim" : dynamicStaleTime,
+          );
+        }
         // A redirect payload never decodes into elements; navigation follows
         // its redirect headers instead.
-        if (behavior.prepareSnapshot && snapshot.redirectHeader === undefined) {
+        if (
+          behavior.prepareSnapshot &&
+          entry.cacheForNavigation &&
+          snapshot.redirectHeader === undefined
+        ) {
           try {
             const preparedElements = await behavior.prepareSnapshot(snapshot);
             if (cache.get(cacheKey) !== entry) return;
@@ -3050,7 +3111,7 @@ const _appRouter: AppRouterInstance = {
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()
-          : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref);
+          : resolveAutoAppRoutePrefetch(rewrittenPrefetchHref ?? fullHref, interceptionContext);
       const reusable = policy.shouldPrefetch && policy.cacheForNavigation;
       const requiresRouteTreePrefetch = policy.requiresRouteTreePrefetch === true;
       // The call-time header snapshot defaults to AUTO/learning semantics.
@@ -3071,7 +3132,7 @@ const _appRouter: AppRouterInstance = {
         headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
         headers.set(
           VINEXT_RSC_RENDER_MODE_HEADER,
-          hasSearchParams
+          hasSearchParams && policy.rendersDynamically !== true
             ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
             : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
         );
@@ -3090,24 +3151,38 @@ const _appRouter: AppRouterInstance = {
       if (setup.cancelled) return;
       const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
       const prefetched = getPrefetchedUrls();
+      // The exact request is still fresh as a learning-only prefetch, including
+      // a full prefetch kept that way because its page rendered dynamically. A
+      // full prefetch replaces that one below.
+      if (
+        policy.dynamicStaleTime !== "full-prefetch" &&
+        hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)
+      ) {
+        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
+        return;
+      }
       if (reusable) {
         // A previous learning-only prefetch for the same URL must not satisfy
         // the freshness gate below; only a navigation-reusable entry counts.
         // The gate attaches onInvalidate to whichever entry it matches — the
         // match may live under a normalized `_rsc` variant or rendered-path
         // alias, not this call's exact cache key.
-        discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext);
+        discardLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext, mountedSlotsHeader);
         if (
           hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
             additionalRscUrls,
             onInvalidate: options?.onInvalidate,
+            // A full prefetch that joins a pending automatic one must not be
+            // left with a learning-only result if that page renders dynamically.
+            onReuse:
+              policy.dynamicStaleTime === "full-prefetch"
+                ? (entry, matchedCacheKey) =>
+                    promotePrefetchCacheEntryForNavigation(matchedCacheKey, entry)
+                : undefined,
           })
         ) {
           return;
         }
-      } else if (hasFreshLearningOnlyPrefetchCacheEntry(rscUrl, interceptionContext)) {
-        attachPrefetchInvalidationCallback(cacheKey, options?.onInvalidate);
-        return;
       }
       prefetched.add(cacheKey);
       const fetchFullRscPayload = () =>

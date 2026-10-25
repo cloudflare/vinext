@@ -7440,6 +7440,68 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("staged-page");
   });
 
+  // Next.js also serves JSON at data URLs with trailingSlash enabled:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-trailing-slash/test/index.test.ts
+  describe.each(["", "/docs"])("Pages data canonicalization (basePath=%s)", (basePath) => {
+    it.each([
+      { trailingSlash: false, page: "index" },
+      { trailingSlash: false, page: "legacy-static" },
+      { trailingSlash: false, page: "legacy-data/one" },
+      { trailingSlash: true, page: "index" },
+      { trailingSlash: true, page: "legacy-static" },
+      { trailingSlash: true, page: "legacy-data/one" },
+    ])(
+      "serves $page data without a document redirect (trailingSlash=$trailingSlash)",
+      async ({ trailingSlash, page }) => {
+        const renderPagesFallback = vi.fn(
+          async ({ pagesDataRequest }: { pagesDataRequest?: Request | null }) =>
+            Response.json({ url: pagesDataRequest?.url }),
+        );
+        const handler = createHandler({
+          basePath,
+          trailingSlash,
+          configHeaders: [],
+          matchRequestRoute: () => null,
+          matchRoute: () => null,
+          renderPagesFallback,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${basePath}/_next/data/build-id/${page}.json?q=kept`),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.has("location")).toBe(false);
+        const data = await response.json();
+        expect(new URL(data.url).search).toBe("?q=kept");
+        expect(renderPagesFallback).toHaveBeenCalledTimes(1);
+        expect(renderPagesFallback).toHaveBeenCalledWith(
+          expect.objectContaining({ isDataRequest: true }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      "still canonicalizes documents with a forged data header (trailingSlash=%s)",
+      async (trailingSlash) => {
+        const handler = createHandler({ basePath, trailingSlash, configHeaders: [] });
+        const pathname = `/about${trailingSlash ? "" : "/"}`;
+        const response = await handler(
+          new Request(`https://example.test${basePath}${pathname}?q=kept`, {
+            headers: { "x-nextjs-data": "1" },
+          }),
+          null,
+        );
+
+        expect(response.status).toBe(308);
+        expect(response.headers.get("location")).toBe(
+          `${basePath}/about${trailingSlash ? "/" : ""}?q=kept`,
+        );
+      },
+    );
+  });
+
   it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
     const headers = createRscRequestHeaders();
     const requestPath = await createRscRequestUrl("/about/", headers);

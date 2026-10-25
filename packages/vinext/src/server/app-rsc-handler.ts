@@ -1115,7 +1115,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   // `skipTrailingSlashRedirect` drops these redirects entirely, like Next.js
   // omitting them from the routes manifest.
-  if (!options.skipTrailingSlashRedirect) {
+  if (!isDataRequest && !options.skipTrailingSlashRedirect) {
     const metadataBypassesTrailingSlash =
       options.trailingSlash &&
       options.isMetadataRoutePath &&

@@ -159,8 +159,7 @@ describe("next/image not aliased by the user (dev)", () => {
     await server?.close();
   }, 30_000);
 
-  // The browser and SSR share next/image's module, including its dep optimizer
-  // pre-bundle when there is one.
+  // The browser and SSR share next/image's module.
   it("resolves vinext/shims/image through next/image outside RSC", async () => {
     for (const environment of ENVIRONMENTS) {
       expect(await resolveShimFromWrapper(server, environment), environment).toBe(SHIM_PATH);

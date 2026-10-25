@@ -216,6 +216,7 @@ import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  keepOptimisticStreamingMetadata,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type OptimisticRouteTemplate,
@@ -2184,6 +2185,19 @@ function bootstrapHydration(
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
     let detachedNavigationCommits = false;
+    // The optimistic shell this navigation committed, if any.
+    let optimisticShellElements: AppElements | null = null;
+    const keepOptimisticShellMetadata = (
+      payload: Promise<AppElements> | AppElements,
+    ): Promise<AppElements> | AppElements => {
+      const shellElements = optimisticShellElements;
+      if (shellElements === null) return payload;
+      return payload instanceof Promise
+        ? payload.then((elements) =>
+            keepOptimisticStreamingMetadata(elements, shellElements, String(navId)),
+          )
+        : keepOptimisticStreamingMetadata(payload, shellElements, String(navId));
+    };
     const activeTraversalIntent =
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
@@ -2533,7 +2547,7 @@ function bootstrapHydration(
             navId,
             operationLane: toOperationLane(navigationKind),
             params: cachedParams,
-            payload: cachedPayload,
+            payload: keepOptimisticShellMetadata(cachedPayload),
             payloadOrigin: cachedRoute.elements
               ? COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN
               : VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -2654,6 +2668,7 @@ function bootstrapHydration(
               })
             ) {
               detachedNavigationCommits = true;
+              optimisticShellElements = optimisticPayload.elements;
               const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
                 currentHref,
                 optimisticPayload.params,
@@ -2926,7 +2941,7 @@ function bootstrapHydration(
           },
           operationLane: toOperationLane(navigationKind),
           params: navParams,
-          payload: rscPayload,
+          payload: keepOptimisticShellMetadata(rscPayload),
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           pendingRouterState: detachedNavigationCommits ? null : pendingRouterState,
           previousNextUrl: requestPreviousNextUrl,

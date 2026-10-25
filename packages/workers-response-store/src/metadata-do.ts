@@ -1044,7 +1044,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
       // Like Next.js, a tag's pending `expire` deadline also expires entries
       // published before it.
-      const deadline = this.getTagExpiryDeadline(metadata.cacheTags, Date.now());
+      const now = Date.now();
+      const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
       const freshUntil = Math.min(metadata.freshUntil, deadline);
       const swrUntil = Math.min(metadata.swrUntil, deadline);
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
@@ -1101,8 +1102,23 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         cacheTags: metadata.cacheTags,
       };
 
+      // Like a first write, replacing a stale entry without a revalidator needs no purge:
+      // its edge copy ended when it went stale. One an invalidate() made stale early still
+      // needs it while invalidate()'s own purge of the earlier copies is queued.
+      const replacedEdgeCopyExpired =
+        current.revalidator_id === null &&
+        !current.tombstoned &&
+        current.fresh_until !== null &&
+        now >= current.fresh_until &&
+        this.ctx.storage.sql
+          .exec(
+            "SELECT 1 FROM pending_r2_tombstones WHERE key_hash = ? AND edge_purge_complete = 0",
+            keyHash,
+          )
+          .toArray().length === 0;
       return {
-        edgePurgeRequired: published && current.active_revision !== null,
+        edgePurgeRequired:
+          published && current.active_revision !== null && !replacedEdgeCopyExpired,
         entry: published ? entry : null,
         published,
       };

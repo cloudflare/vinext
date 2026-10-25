@@ -50,12 +50,45 @@ export async function resolveModuleViewport(
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
           });
-    return await mod.generateViewport(props, parent);
+    return (await callSegmentResolver(
+      mod.generateViewport as SegmentResolver<ResolvedViewport>,
+      props,
+      parent,
+    )) as Viewport | null;
   }
   if (mod.viewport && typeof mod.viewport === "object") {
     return mod.viewport as Viewport;
   }
   return null;
+}
+
+type SegmentResolver<TParent> = (props: object, parent?: Promise<TParent>) => unknown;
+
+/**
+ * Call a segment's generateMetadata() or generateViewport() with `parent`, as
+ * Next.js's getResult does for both.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (getResult)
+ */
+function callSegmentResolver<TParent>(
+  resolver: SegmentResolver<TParent>,
+  props: object,
+  parent: Promise<TParent>,
+): unknown {
+  // Next.js always passes `parent` to regular resolvers. Cached resolvers are
+  // different: an unused parent must stay out of the cache key because it can
+  // contain non-serializable values such as a URL metadataBase. The use-cache
+  // transform records whether the declaration accepts a second argument,
+  // including default and rest parameters that Function.length omits.
+  const isUseCacheFunction = Reflect.get(resolver, USE_CACHE_FUNCTION_SYMBOL) === true;
+  if (!isUseCacheFunction) return resolver(props, parent);
+  const acceptsSecondArgument = Reflect.get(resolver, USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL);
+  const passesParent =
+    typeof acceptsSecondArgument === "boolean" ? acceptsSecondArgument : resolver.length >= 2;
+  if (!passesParent) return resolver(props);
+  // A cached resolver encodes its arguments before it runs, so one that
+  // reads `parent` waits for it. Like Next.js, it isn't called before that
+  // parent settles, which another cached resolver may still be computing.
+  return parent.then(() => resolver(props, parent));
 }
 
 /**
@@ -183,7 +216,7 @@ function resolveThemeColor(themeColor: Viewport["themeColor"]): ResolvedViewport
 // ---------------------------------------------------------------------------
 
 export type Metadata = {
-  title?: string | { default?: string; template?: string; absolute?: string };
+  title?: string | { default?: string; template?: string | null; absolute?: string };
   description?: string;
   generator?: string;
   applicationName?: string;
@@ -371,7 +404,6 @@ type IconsMap = {
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
 
 export type MetadataMergeEntry = {
-  contributesTitle?: boolean;
   isPage?: boolean;
   metadata: Metadata;
 };
@@ -554,6 +586,22 @@ export function postProcessMetadata(merged: Metadata): Metadata {
  * tags are the exception: Next.js merges those across segments.
  */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
+  return mergeEntries(entries, false);
+}
+
+/**
+ * Merge metadata into the `parent` a later segment's resolver receives. Like
+ * {@link mergeMetadataEntries}, except the title stays resolved as Next.js's
+ * `{ absolute, template }`, so `(await parent).title?.absolute` reads the
+ * title so far. `template` is the one the next title gets, so merging this
+ * parent with later entries resolves their titles as the full merge does.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
+ */
+export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
+  return mergeEntries(entries, true);
+}
+
+function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boolean): Metadata {
   if (entries.length === 0) return {};
 
   const merged: Metadata = {};
@@ -564,7 +612,6 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
   for (const entry of entries) {
     const meta = entry.metadata;
     const isPage = Boolean(entry.isPage);
-    const contributesTitle = entry.contributesTitle !== false;
 
     // Merge non-title keys
     for (const key of Object.keys(meta)) {
@@ -582,21 +629,22 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
     }
 
     // Title resolution
-    if (contributesTitle && meta.title !== undefined) {
+    if (meta.title !== undefined) {
       merged.title = resolveTitle(meta.title, parentTemplate);
     }
 
     // Collect the current layout template after resolving its own title so
     // title.default is wrapped by the ancestor template, not by its own template.
-    if (
-      contributesTitle &&
-      !isPage &&
-      meta.title &&
-      typeof meta.title === "object" &&
-      meta.title.template
-    ) {
+    if (!isPage && meta.title && typeof meta.title === "object" && meta.title.template) {
       parentTemplate = meta.title.template;
     }
+  }
+
+  if (resolvedTitle && Object.hasOwn(merged, "title")) {
+    merged.title = {
+      absolute: resolveStringTitle(merged.title) ?? "",
+      template: parentTemplate ?? null,
+    };
   }
 
   return merged;
@@ -634,22 +682,11 @@ export async function resolveModuleMetadata(
             params: asyncParams,
             searchParams: makeThenableParams(searchParams, searchParamsObserver),
           });
-    // Next.js always passes `parent` to regular resolvers. Cached resolvers are
-    // different: an unused parent must stay out of the cache key because it can
-    // contain non-serializable values such as a URL metadataBase. The use-cache
-    // transform records whether the declaration accepts a second argument,
-    // including default and rest parameters that Function.length omits.
-    const isUseCacheFunction = Reflect.get(generateMetadata, USE_CACHE_FUNCTION_SYMBOL) === true;
-    const acceptsSecondArgument = Reflect.get(
-      generateMetadata,
-      USE_CACHE_ACCEPTS_SECOND_ARGUMENT_SYMBOL,
-    );
-    const passesParent =
-      !isUseCacheFunction ||
-      (typeof acceptsSecondArgument === "boolean"
-        ? acceptsSecondArgument
-        : generateMetadata.length >= 2);
-    return await (passesParent ? generateMetadata(props, parent) : generateMetadata(props));
+    return (await callSegmentResolver(
+      generateMetadata as SegmentResolver<Metadata>,
+      props,
+      parent,
+    )) as Metadata | null;
   }
   if (mod.metadata && typeof mod.metadata === "object") {
     return mod.metadata as Metadata;

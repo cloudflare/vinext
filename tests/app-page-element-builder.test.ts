@@ -16,10 +16,15 @@ import type {
   AppPageRouteHead,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
+import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import { readStreamAsText } from "../packages/vinext/src/utils/text-stream.js";
 import { useSelectedLayoutSegments } from "../packages/vinext/src/shims/navigation.js";
-import { forbidden, notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import {
+  forbidden,
+  notFound,
+  unauthorized,
+} from "../packages/vinext/src/shims/navigation-errors.js";
 import { resolveAppPageRouteStateKey } from "../packages/vinext/src/server/app-page-segment-state.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type { ResolvedFrameworkSpanDescriptor } from "../packages/vinext/src/server/framework-tracer.js";
@@ -36,6 +41,7 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
+  ErrorBoundary,
   ForbiddenBoundary,
   NotFoundBoundary,
   UnauthorizedBoundary,
@@ -95,6 +101,7 @@ vi.mock("../packages/vinext/src/shims/headers.js", () => ({
 // from the headers-state module directly.
 vi.mock("../packages/vinext/src/shims/internal/headers-state.js", () => ({
   getHeadersAccessPhase: () => "render",
+  isStaticGenerationAccessError: () => false,
   markDynamicUsage: markDynamicUsageMock,
   markRenderRequestApiUsage: markRenderRequestApiUsageMock,
   throwIfInsideCacheScope: vi.fn(),
@@ -366,6 +373,41 @@ describe("buildPageElements", () => {
     markRenderRequestApiUsageMock.mockClear();
     clientPageRootProps.length = 0;
     recordedTraceDescriptors.length = 0;
+  });
+
+  it("hands its special-error fallback the head with each branch's signal settled", async () => {
+    // Next.js 16.2.7 keeps the route's title when its generateViewport() calls
+    // notFound(), and resolves only the viewport through the not-found
+    // convention.
+    const prepared: AppPagePreparedRouteHead[] = [];
+    const route = createSyntheticRoute({
+      notFound: { default: () => null, viewport: { themeColor: "#404404" } } as AppPageModule,
+      notFoundTreePosition: 0,
+      page: {
+        default: () => null,
+        generateMetadata: () => ({ title: "Route title" }),
+        generateViewport: () => notFound(),
+      } as AppPageModule,
+    });
+    const base = createBaseOptions({ route });
+
+    const result = await buildPageElements({
+      ...base,
+      pageRequest: {
+        ...base.pageRequest,
+        onHeadPrepared: (head: AppPagePreparedRouteHead) => prepared.push(head),
+      },
+    });
+    resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+
+    expect(prepared).toHaveLength(1);
+    expect(prepared[0].metadataPlacement).toBe("body");
+    await expect(prepared[0].metadata).resolves.toEqual(
+      expect.objectContaining({ title: "Route title" }),
+    );
+    await expect(prepared[0].viewport).resolves.toEqual(
+      expect.objectContaining({ themeColor: [{ color: "#404404" }] }),
+    );
   });
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts
@@ -1091,8 +1133,8 @@ describe("buildPageElements", () => {
         routePath: "/feed/photo/1",
         opts: {
           interceptBranchSegments: ["(.)photo", "[id]"],
-          interceptForbidden: createSyntheticPageModule(InterceptForbidden),
-          interceptForbiddenTreePosition: 2,
+          interceptForbiddens: [createSyntheticPageModule(InterceptForbidden)],
+          interceptForbiddenTreePositions: [2],
           interceptLayouts: [createSyntheticPageModule(InterceptLayout)],
           interceptLayoutSegments: [["(.)photo"]],
           interceptNotFounds: [createSyntheticPageModule(InterceptNotFound)],
@@ -1101,8 +1143,8 @@ describe("buildPageElements", () => {
           interceptParams: { id: "1" },
           interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           interceptSourcePageSegments: ["feed", "(.)photo", "[id]"],
-          interceptUnauthorized: createSyntheticPageModule(InterceptUnauthorized),
-          interceptUnauthorizedTreePosition: 2,
+          interceptUnauthorizeds: [createSyntheticPageModule(InterceptUnauthorized)],
+          interceptUnauthorizedTreePositions: [2],
         },
       }),
     );
@@ -1118,6 +1160,59 @@ describe("buildPageElements", () => {
     const notFound = findElementOfType(forbidden.props.children, NotFoundBoundary);
     if (!notFound) throw new Error("Expected the not-found boundary inside forbidden");
     expect((notFound.props.fallback as React.ReactElement).type).toBe(InterceptNotFound);
+  });
+
+  it("wraps a sibling intercepting page and its head's outlet in each of its own error boundaries", async () => {
+    // Next.js renders app/feed/(.)photo/error.tsx inside the (.)photo layout,
+    // and app/feed/(.)photo/[id]/error.tsx inside that, which also catches the
+    // intercepting page's generateMetadata() errors.
+    function InterceptLayout({ children }: { children?: React.ReactNode }): React.ReactNode {
+      return React.createElement("section", null, children);
+    }
+    function OuterError(): React.ReactNode {
+      return React.createElement("p", null, "(.)photo error");
+    }
+    function InnerError(): React.ReactNode {
+      return React.createElement("p", null, "[id] error");
+    }
+    const result = await buildPageElements(
+      createBaseOptions({
+        route: createSyntheticRoute({
+          page: createSyntheticPageModule(() => null),
+          routeSegments: ["feed"],
+          pattern: "/feed",
+        }),
+        routePath: "/feed/photo/1",
+        opts: {
+          interceptBranchSegments: ["(.)photo", "[id]"],
+          interceptErrors: [
+            createSyntheticPageModule(OuterError),
+            createSyntheticPageModule(InnerError),
+          ],
+          interceptErrorTreePositions: [1, 2],
+          interceptLayouts: [createSyntheticPageModule(InterceptLayout)],
+          interceptLayoutSegments: [["(.)photo"]],
+          interceptPage: createSyntheticPageModule(() => null),
+          interceptParams: { id: "1" },
+          interceptSlotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          interceptSourcePageSegments: ["feed", "(.)photo", "[id]"],
+        },
+      }),
+    );
+    const pageEntry = (result as Record<string, unknown>)["page:/feed/photo/1"];
+    const layout = findElementOfType(pageEntry, InterceptLayout);
+    if (!layout) throw new Error("Expected the intercept layout");
+    expect(findElementOfType(pageEntry, ErrorBoundary)).toBe(
+      findElementOfType(layout.props.children, ErrorBoundary),
+    );
+    const outer = findElementOfType(layout.props.children, ErrorBoundary);
+    if (!outer) throw new Error("Expected the (.)photo error boundary inside the layout");
+    expect(outer.props.fallback).toBe(OuterError);
+    const inner = findElementOfType(outer.props.children, ErrorBoundary);
+    if (!inner) throw new Error("Expected the [id] error boundary inside the (.)photo one");
+    expect(inner.props.fallback).toBe(InnerError);
+    const outletPrefix = "__vinext_streaming_metadata_outlet:";
+    expect(countElementsWithIdPrefix(inner.props.children, outletPrefix)).toBe(1);
   });
 
   describe("a sibling intercepting layout that doesn't render the page", () => {
@@ -2992,7 +3087,8 @@ describe("buildPageElements", () => {
     await expect(fallbackFailureHead.outlet).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;403",
     });
-    await expect(fallbackFailureHead.viewport).resolves.toEqual({});
+    // Like Next.js's getNotFoundViewport().catch(() => null): no viewport tags.
+    await expect(fallbackFailureHead.viewport).resolves.toBeNull();
     expect(fallbackViewport).toHaveBeenCalledTimes(1);
   });
 
@@ -3166,9 +3262,12 @@ describe("buildPageElements", () => {
     ]);
   });
 
-  it("does not inherit not-found metadata from an intercepted slot's ordinary sibling branch", async () => {
-    // Next walks conventions on the active intercept loader-tree branch; a
-    // not-found below the ordinary slot page is not an intercept ancestor.
+  it("keeps the source route's head when a slot intercept's generateMetadata() calls notFound()", async () => {
+    // Next.js's client shows the head of the first leaf on a children-first
+    // walk of its router tree, the source page under a slot intercept, so
+    // neither the intercept's metadata nor a not-found convention's heads the
+    // route. The server still runs the intercept's generateMetadata(), and its
+    // MetadataOutlet throws the signal.
     const primaryNotFound = {
       default: () => React.createElement("div", null, "primary not found"),
       metadata: { title: "Primary not found" },
@@ -3177,8 +3276,18 @@ describe("buildPageElements", () => {
       default: () => React.createElement("div", null, "ordinary slot not found"),
       metadata: { title: "Ordinary slot not found" },
     } as AppPageModule;
+    // The intercept renders inside the slot's layout, which resolves once.
+    const slotLayoutGenerateMetadata = vi.fn(() => ({ creator: "Modal layout" }));
+    const slotLayout = {
+      default: ({ children }: { children?: React.ReactNode }) =>
+        React.createElement("section", null, children),
+      generateMetadata: slotLayoutGenerateMetadata,
+    } as AppPageModule;
     const route = createSyntheticRoute({
-      page: createSyntheticPageModule(() => React.createElement("div", null, "source")),
+      page: {
+        default: () => React.createElement("div", null, "source"),
+        metadata: { title: "Feed page" },
+      } as AppPageModule,
       layouts: [],
       notFound: primaryNotFound,
       notFoundTreePosition: 0,
@@ -3187,6 +3296,7 @@ describe("buildPageElements", () => {
       slots: {
         modal: {
           name: "modal",
+          layout: slotLayout,
           page: createSyntheticPageModule(() => React.createElement("aside", null, "feed slot")),
           layoutIndex: -1,
           notFound: ordinarySlotNotFound,
@@ -3195,54 +3305,363 @@ describe("buildPageElements", () => {
         },
       },
     });
+    const interceptGenerateMetadata = vi.fn(() => notFound());
     const interceptPage = {
       default: () => React.createElement("div", null, "photo intercept"),
-      generateMetadata: () => notFound(),
+      generateMetadata: interceptGenerateMetadata,
     } as AppPageModule;
-
-    const result = await buildPageElements(
-      createBaseOptions({
-        route,
-        routePath: "/photo/42",
-        opts: {
-          interceptBranchSegments: ["(.)photo", "[id]"],
-          interceptPage,
-          interceptParams: { id: "42" },
-          interceptSlotKey: "modal",
-          interceptSourcePageSegments: ["@modal", "(.)photo", "[id]"],
-        },
-      }),
-    );
-    const metadata = await resolveEntryHead(result, "__vinext_streaming_metadata_body:").metadata;
-
-    expect(metadata).toMatchObject({ title: "Primary not found" });
-    expect(metadata).not.toMatchObject({ title: "Ordinary slot not found" });
-
     const slotRootNotFound = {
       default: () => React.createElement("div", null, "slot root not found"),
       metadata: { title: "Slot root not found" },
     } as AppPageModule;
-    const rootFallbackResult = await buildPageElements(
+
+    for (const interceptNotFound of [{}, { interceptNotFound: slotRootNotFound }]) {
+      interceptGenerateMetadata.mockClear();
+      slotLayoutGenerateMetadata.mockClear();
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          routePath: "/photo/42",
+          opts: {
+            interceptBranchSegments: ["(.)photo", "[id]"],
+            ...interceptNotFound,
+            interceptNotFoundTreePosition: 0,
+            interceptPage,
+            interceptParams: { id: "42" },
+            interceptSlotKey: "modal",
+            interceptSourcePageSegments: ["@modal", "(.)photo", "[id]"],
+          },
+        }),
+      );
+      const head = resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+
+      await expect(head.metadata).resolves.toMatchObject({ title: "Feed page" });
+      // Next.js 16.2.7 renders the MetadataOutlet in the intercepting page's
+      // segment: the signal reaches the slot's boundaries, not the route's.
+      await expect(head.outlet).resolves.toBeNull();
+      expect(interceptGenerateMetadata).toHaveBeenCalledTimes(1);
+      expect(slotLayoutGenerateMetadata).toHaveBeenCalledTimes(1);
+
+      // The slot's own subtree throws the signal, beside the intercepting page.
+      // (Outside a Flight request, cache() no longer shares the head.)
+      const { renderToReadableStream } = await import("react-dom/server.edge");
+      const record = result as Record<string, React.ReactNode>;
+      const slotErrors: unknown[] = [];
+      await readStreamAsText(
+        await renderToReadableStream(
+          React.createElement(
+            React.Fragment,
+            null,
+            Object.entries(record).find(([key]) => key.startsWith("page:"))?.[1],
+            record["slot:modal:/"],
+          ),
+          { onError: (error: unknown) => void slotErrors.push(error) },
+        ),
+      );
+      expect(slotErrors).toContainEqual(
+        expect.objectContaining({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" }),
+      );
+    }
+  });
+
+  it("recovers the source route's head from the source tree when its page's generateMetadata() calls notFound() under a slot intercept", async () => {
+    // The visible head stays on the source tree, so does the not-found head
+    // it falls back to: never the intercept's layouts or its own not-found.
+    const prepared: AppPagePreparedRouteHead[] = [];
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "source"),
+        generateMetadata: () => notFound(),
+      } as AppPageModule,
+      layouts: [],
+      notFound: {
+        default: () => null,
+        metadata: { title: "Primary not found" },
+      } as AppPageModule,
+      notFoundTreePosition: 0,
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        modal: {
+          name: "modal",
+          page: {
+            default: () => React.createElement("aside", null, "feed slot"),
+            metadata: { description: "Feed slot" },
+          } as AppPageModule,
+          layoutIndex: -1,
+          notFound: {
+            default: () => null,
+            metadata: { title: "Ordinary slot not found" },
+          } as AppPageModule,
+          notFoundTreePosition: 1,
+          routeSegments: ["feed"],
+        },
+      },
+    });
+    const base = createBaseOptions({
+      route,
+      routePath: "/photo/42",
+      opts: {
+        interceptBranchSegments: ["(.)photo", "[id]"],
+        interceptLayouts: [
+          {
+            default: ({ children }: { children?: React.ReactNode }) =>
+              React.createElement("section", null, children),
+            metadata: { creator: "Intercept layout" },
+          } as AppPageModule,
+        ],
+        interceptLayoutSegments: [["(.)photo"]],
+        interceptNotFound: {
+          default: () => null,
+          metadata: { title: "Intercept not found" },
+        } as AppPageModule,
+        interceptNotFoundTreePosition: 0,
+        interceptPage: {
+          default: () => React.createElement("div", null, "photo intercept"),
+          metadata: { title: "Intercept page" },
+        } as AppPageModule,
+        interceptParams: { id: "42" },
+        interceptSlotKey: "modal",
+        interceptSourcePageSegments: ["@modal", "(.)photo", "[id]"],
+      },
+    });
+
+    const result = await buildPageElements({
+      ...base,
+      pageRequest: {
+        ...base.pageRequest,
+        onHeadPrepared: (head: AppPagePreparedRouteHead) => prepared.push(head),
+      },
+    });
+    resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+
+    expect(prepared).toHaveLength(1);
+    // As the source route's own fallback resolves it: its slot's page branch,
+    // whose not-found title merges after the primary one's.
+    await expect(prepared[0].metadata).resolves.toEqual({ title: "Ordinary slot not found" });
+  });
+
+  it("resolves every layout a slot intercept shares with the slot's page once", async () => {
+    // @modal/layout.tsx and @modal/feed/layout.tsx sit above both
+    // @modal/feed/page.tsx and @modal/feed/(.)photo/page.tsx, so each is one
+    // segment of the loader tree, and its generate functions run once.
+    const createLayout = (name: string) => {
+      const generateMetadata = vi.fn(() => ({ creator: name }));
+      const generateViewport = vi.fn(() => ({ colorScheme: "dark" as const }));
+      return {
+        generateMetadata,
+        generateViewport,
+        module: {
+          default: ({ children }: { children?: React.ReactNode }) =>
+            React.createElement("section", null, children),
+          generateMetadata,
+          generateViewport,
+        } as AppPageModule,
+      };
+    };
+    const slotLayout = createLayout("Modal layout");
+    const feedLayout = createLayout("Feed layout");
+    const photoLayout = createLayout("Photo layout");
+    const route = createSyntheticRoute({
+      page: {
+        default: () => React.createElement("div", null, "source"),
+        metadata: { title: "Feed page" },
+      } as AppPageModule,
+      layouts: [],
+      routeSegments: ["feed"],
+      pattern: "/feed",
+      slots: {
+        modal: {
+          name: "modal",
+          layout: slotLayout.module,
+          configLayouts: [feedLayout.module],
+          configLayoutTreePositions: [1],
+          page: createSyntheticPageModule(() => React.createElement("aside", null, "feed slot")),
+          layoutIndex: -1,
+          routeSegments: ["feed"],
+        },
+      },
+    });
+    const interceptGenerateMetadata = vi.fn(() => ({ title: "Photo" }));
+
+    const result = await buildPageElements(
       createBaseOptions({
         route,
-        routePath: "/photo/42",
+        routePath: "/feed/photo",
         opts: {
-          interceptBranchSegments: ["(.)photo", "[id]"],
-          interceptNotFound: slotRootNotFound,
-          interceptNotFoundTreePosition: 0,
-          interceptPage,
-          interceptParams: { id: "42" },
+          interceptBranchSegments: ["feed", "(.)photo"],
+          interceptLayouts: [feedLayout.module, photoLayout.module],
+          interceptLayoutSegments: [["feed"], ["feed", "(.)photo"]],
+          interceptPage: {
+            default: () => React.createElement("div", null, "photo intercept"),
+            generateMetadata: interceptGenerateMetadata,
+          } as AppPageModule,
+          interceptParams: {},
           interceptSlotKey: "modal",
-          interceptSourcePageSegments: ["@modal", "(.)photo", "[id]"],
+          interceptSourcePageSegments: ["@modal", "feed", "(.)photo"],
         },
       }),
     );
-    const rootFallbackMetadata = await resolveEntryHead(
-      rootFallbackResult,
-      "__vinext_streaming_metadata_body:",
-    ).metadata;
-    expect(rootFallbackMetadata).toMatchObject({ title: "Slot root not found" });
-    expect(rootFallbackMetadata).not.toMatchObject({ title: "Ordinary slot not found" });
+    const head = resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+
+    await expect(head.metadata).resolves.toMatchObject({ title: "Feed page" });
+    await expect(head.outlet).resolves.toBeNull();
+    for (const layout of [slotLayout, feedLayout, photoLayout]) {
+      expect(layout.generateMetadata).toHaveBeenCalledTimes(1);
+      expect(layout.generateViewport).toHaveBeenCalledTimes(1);
+    }
+    expect(interceptGenerateMetadata).toHaveBeenCalledTimes(1);
+  });
+
+  it("heads a slot intercept by the intercepting render when no page comes before its slot", async () => {
+    // Next.js 16.2.7 (Turbopack): a layout rendering only @bar, with
+    // @bar/first/page.tsx and @bar/(.)photo/page.tsx, titles the soft
+    // navigation /nc/first -> /nc/photo "PHOTO INTERCEPT @bar". findHeadInCache
+    // skips the `children` default and reaches the intercept's leaf. A page in
+    // an earlier slot is reached first, and keeps the source route's head.
+    const barSlot = {
+      name: "bar",
+      layoutIndex: 0,
+      page: {
+        default: () => React.createElement("p", null, "first @bar"),
+        generateMetadata: () => ({ title: "FIRST @bar" }),
+      } as AppPageModule,
+      routeSegments: ["first"],
+    };
+    const titles: unknown[] = [];
+    for (const alphaPage of [null, { metadata: { applicationName: "Alpha" } }]) {
+      const route = createSyntheticRoute({
+        childrenSlot: { id: "children:/nc", ownerTreePath: "/nc", state: "unmatched" },
+        layouts: [
+          {
+            default: ({ bar }: { bar?: React.ReactNode }) => React.createElement("div", null, bar),
+            metadata: { title: "NC LAYOUT" },
+          } as AppPageModule,
+        ],
+        layoutTreePositions: [1],
+        page: null,
+        pattern: "/nc/first",
+        routeSegments: ["nc", "first"],
+        slots: {
+          ...(alphaPage
+            ? { alpha: { name: "alpha", layoutIndex: 0, page: alphaPage as AppPageModule } }
+            : {}),
+          bar: barSlot,
+        },
+      });
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          routePath: "/nc/photo",
+          opts: {
+            interceptBranchSegments: ["nc", "(.)photo"],
+            interceptPage: {
+              default: () => React.createElement("p", null, "photo intercept @bar"),
+              generateMetadata: () => ({ title: "PHOTO INTERCEPT @bar" }),
+            } as AppPageModule,
+            interceptParams: {},
+            interceptSlotKey: "bar",
+            interceptSourcePageSegments: ["nc", "@bar", "(.)photo"],
+          },
+        }),
+      );
+      titles.push(
+        (await resolveEntryHead(result, "__vinext_streaming_metadata_body:").metadata)?.title,
+      );
+    }
+
+    expect(titles).toEqual(["PHOTO INTERCEPT @bar", "FIRST @bar"]);
+  });
+
+  it("throws a heading slot intercept's generateMetadata() signals inside its own boundaries", async () => {
+    // Next.js 16.2.7 (Turbopack): a layout rendering only @bar, whose
+    // @bar/(.)photo/[kind]/page.tsx calls notFound(), forbidden() or
+    // unauthorized() from generateMetadata(), renders that segment's
+    // not-found.tsx, forbidden.tsx or unauthorized.tsx inside the slot on the
+    // soft navigation, keeps the layout, and titles it from the layouts.
+    function InterceptNotFound(): React.ReactNode {
+      return React.createElement("p", null, "Intercept not found");
+    }
+    function InterceptForbidden(): React.ReactNode {
+      return React.createElement("p", null, "Intercept forbidden");
+    }
+    function InterceptUnauthorized(): React.ReactNode {
+      return React.createElement("p", null, "Intercept unauthorized");
+    }
+    const route = createSyntheticRoute({
+      childrenSlot: { id: "children:/nc", ownerTreePath: "/nc", state: "unmatched" },
+      layouts: [
+        {
+          default: ({ bar }: { bar?: React.ReactNode }) => React.createElement("div", null, bar),
+          metadata: { title: "NC LAYOUT" },
+        } as AppPageModule,
+      ],
+      layoutTreePositions: [1],
+      page: null,
+      pattern: "/nc/first",
+      routeSegments: ["nc", "first"],
+      slots: {
+        bar: {
+          name: "bar",
+          layoutIndex: 0,
+          page: createSyntheticPageModule(() => React.createElement("p", null, "first @bar")),
+          routeSegments: ["first"],
+        },
+      },
+    });
+    const signals = [
+      [notFound, "NEXT_HTTP_ERROR_FALLBACK;404"],
+      [forbidden, "NEXT_HTTP_ERROR_FALLBACK;403"],
+      [unauthorized, "NEXT_HTTP_ERROR_FALLBACK;401"],
+    ] as const;
+    for (const [signal, digest] of signals) {
+      const result = await buildPageElements(
+        createBaseOptions({
+          route,
+          routePath: "/nc/photo/x",
+          opts: {
+            interceptBranchSegments: ["(.)photo", "[kind]"],
+            interceptForbiddens: [createSyntheticPageModule(InterceptForbidden)],
+            interceptForbiddenTreePositions: [2],
+            interceptNotFound: createSyntheticPageModule(InterceptNotFound),
+            interceptNotFoundTreePosition: 2,
+            interceptNotFounds: [createSyntheticPageModule(InterceptNotFound)],
+            interceptNotFoundTreePositions: [2],
+            interceptPage: {
+              default: () => React.createElement("p", null, "photo intercept @bar"),
+              generateMetadata: () => signal(),
+            } as AppPageModule,
+            interceptParams: { kind: "x" },
+            interceptSlotKey: "bar",
+            interceptSourcePageSegments: ["nc", "@bar", "(.)photo", "[kind]"],
+            interceptUnauthorizeds: [createSyntheticPageModule(InterceptUnauthorized)],
+            interceptUnauthorizedTreePositions: [2],
+          },
+        }),
+      );
+      const head = resolveEntryHead(result, "__vinext_streaming_metadata_body:");
+      await expect(head.metadata).resolves.toMatchObject({ title: "NC LAYOUT" });
+      await expect(head.outlet).resolves.toBeNull();
+
+      // The slot's own subtree throws the signal, beside the intercepting page,
+      // where the route wiring wraps it in that segment's boundaries.
+      const { renderToReadableStream } = await import("react-dom/server.edge");
+      const record = result as Record<string, React.ReactNode>;
+      const slotErrors: unknown[] = [];
+      await readStreamAsText(
+        await renderToReadableStream(
+          React.createElement(
+            React.Fragment,
+            null,
+            ...Object.entries(record)
+              .filter(([key, entry]) => !key.startsWith("__") && React.isValidElement(entry))
+              .map(([key, entry]) => React.createElement(React.Fragment, { key }, entry)),
+          ),
+          { onError: (error: unknown) => void slotErrors.push(error) },
+        ),
+      );
+      expect(slotErrors).toContainEqual(expect.objectContaining({ digest }));
+    }
   });
 
   it("makeThenableParams wraps params as a proxy supporting both Promise and property access", () => {

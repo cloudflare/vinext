@@ -16,6 +16,7 @@ import {
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
+  APP_STATIC_SIBLINGS_KEY,
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
@@ -1397,6 +1398,8 @@ describe("app page route wiring helpers", () => {
       routePath: "/dashboard",
       rootNotFoundModule: null,
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      // A render that can never be stored still renders its loading shell.
+      isUncacheableRender: true,
     });
 
     expect(elements["page:/dashboard"]).toBeNull();
@@ -1908,7 +1911,7 @@ describe("app page route wiring helpers", () => {
     expect(html).not.toContain("Slot page");
   });
 
-  it("does not render page content for loading-shell prefetches without a route loading boundary", async () => {
+  it("keeps the layouts of a loading-shell prefetch without a loading boundary that may be stored", async () => {
     const elements = buildAppPageElements({
       element: createElement(PageProbe),
       makeThenableParams(params) {
@@ -1932,11 +1935,148 @@ describe("app page route wiring helpers", () => {
       renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
     });
 
+    // A layout reading request data must still keep the shell out of the cache.
     expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["route:/dashboard"]).not.toBeNull();
     expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
     const html = await renderRouteEntry(elements, "route:/dashboard");
 
     expect(html).not.toContain("Page");
+    expect(html).toContain('data-layout="root"');
+  });
+
+  // Next.js: a pre-PPR prefetch with no loading boundary returns only the
+  // router state and a [null, null] head (walkTreeWithFlightRouterState()):
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+  it("renders only the route tree for loading-shell prefetches without a loading boundary", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      metadataPlacement: "body",
+      resolveHead: createResolvedHead,
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["dashboard"],
+        staticSiblings: ["settings"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: null,
+            name: "sidebar",
+            ownerTreePosition: 0,
+            page: { default: SlotPage },
+            routeSegments: ["dashboard"],
+          },
+        },
+        templateTreePositions: [0],
+        templates: [{ default: RootLayout }],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      isUncacheableRender: true,
+    });
+
+    expect(elements[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBeUndefined();
+    expect(elements["page:/dashboard"]).toBeNull();
+    expect(elements["route:/dashboard"]).toBeNull();
+    expect(
+      Object.keys(elements).filter(
+        (key) =>
+          key.startsWith("layout:") ||
+          key.startsWith("template:") ||
+          key.startsWith("slot:") ||
+          key.startsWith("__vinext_streaming_metadata"),
+      ),
+    ).toEqual([]);
+    // The route's metadata still describes the whole route.
+    expect(elements[APP_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/dashboard"]);
+    expect(elements[APP_ROOT_LAYOUT_KEY]).toBe("/");
+    expect(elements[APP_STATIC_SIBLINGS_KEY]).toEqual(["settings"]);
+  });
+
+  it("renders layouts for a navigation render that can never be stored", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      isUncacheableRender: true,
+    });
+
+    expect(elements["route:/dashboard"]).not.toBeNull();
+    expect(elements["page:/dashboard"]).not.toBeNull();
+  });
+
+  it("renders a slot-only loading shell for a render that can never be stored", async () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [0],
+        layouts: [{ default: RootLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: ["dashboard"],
+        slots: {
+          sidebar: {
+            default: null,
+            error: null,
+            layout: null,
+            layoutIndex: 0,
+            loading: { default: SlotLoadingProbe },
+            name: "sidebar",
+            ownerTreePosition: 0,
+            page: { default: SlotPage },
+            routeSegments: ["dashboard"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/dashboard",
+      rootNotFoundModule: null,
+      renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      isUncacheableRender: true,
+    });
+
+    expect(elements["route:/dashboard"]).not.toBeNull();
+    const html = await renderRouteEntry(elements, "route:/dashboard");
+    expect(html).toContain("Slot loading");
+    expect(html).not.toContain("Slot page");
   });
 
   // Ported from Next.js: test/e2e/app-dir/segment-cache/metadata/segment-cache-metadata.test.ts
@@ -2286,6 +2426,114 @@ describe("app page route wiring helpers", () => {
     expect(fallbackType(findElementByTypeName(intercepted, "NotFoundBoundary"))).toBe(
       InterceptNotFound,
     );
+
+    // And its forbidden and unauthorized files, in Next.js's per-segment
+    // order: Unauthorized > Forbidden > NotFound > page.
+    function InterceptForbidden() {
+      return createElement("p", null, "intercept forbidden");
+    }
+    function InterceptUnauthorized() {
+      return createElement("p", null, "intercept unauthorized");
+    }
+    const interceptedWithAccess = buildSlotElements({
+      modal: {
+        branchSegments: ["(.)photo", "[id]"],
+        forbiddenModules: [{ default: InterceptForbidden }],
+        forbiddenTreePositions: [2],
+        layoutModules: [],
+        layoutSegments: [],
+        notFoundModules: [{ default: InterceptNotFound }],
+        notFoundTreePositions: [2],
+        pageModule: { default: SlotPage },
+        params: { id: "1" },
+        unauthorizedModules: [{ default: InterceptUnauthorized }],
+        unauthorizedTreePositions: [2],
+      },
+    })[modalSlotId];
+    const unauthorizedBoundary = findElementByTypeName(
+      interceptedWithAccess,
+      "UnauthorizedBoundary",
+    );
+    expect(fallbackType(unauthorizedBoundary)).toBe(InterceptUnauthorized);
+    const forbiddenBoundary = findElementByTypeName(
+      unauthorizedBoundary?.props.children,
+      "ForbiddenBoundary",
+    );
+    expect(fallbackType(forbiddenBoundary)).toBe(InterceptForbidden);
+    expect(
+      fallbackType(findElementByTypeName(forbiddenBoundary?.props.children, "NotFoundBoundary")),
+    ).toBe(InterceptNotFound);
+
+    // Each forbidden file sits inside its own segment's layout, so the slot
+    // root's forbidden also catches `@modal/feed/layout`'s own forbidden().
+    function SlotForbidden() {
+      return createElement("p", null, "slot forbidden");
+    }
+    function FeedLayout({ children }: { children?: ReactNode }) {
+      return createElement("section", null, children);
+    }
+    const interceptedUnderFeed = buildSlotElements({
+      modal: {
+        branchSegments: ["feed", "(.)photo"],
+        forbiddenModules: [{ default: SlotForbidden }, { default: InterceptForbidden }],
+        forbiddenTreePositions: [0, 1],
+        layoutModules: [{ default: FeedLayout }],
+        layoutSegments: [["feed"]],
+        pageModule: { default: SlotPage },
+        params: {},
+      },
+    })[modalSlotId];
+    const slotForbidden = findElementByTypeName(interceptedUnderFeed, "ForbiddenBoundary");
+    expect(fallbackType(slotForbidden)).toBe(SlotForbidden);
+    const feedLayout = findElementByTypeName(slotForbidden?.props.children, "FeedLayout");
+    expect(feedLayout).not.toBeNull();
+    expect(
+      fallbackType(findElementByTypeName(feedLayout?.props.children, "ForbiddenBoundary")),
+    ).toBe(InterceptForbidden);
+
+    // Its error.tsx files do the same, outside the segment's access
+    // boundaries, so `@modal/feed/(.)photo/error.tsx` catches its page's
+    // errors, and its generateMetadata()'s through the outlet beside it.
+    function SlotError() {
+      return createElement("p", null, "slot error");
+    }
+    function InterceptError() {
+      return createElement("p", null, "intercept error");
+    }
+    function MetadataOutletProbe() {
+      return null;
+    }
+    const interceptedWithErrors = buildSlotElements({
+      modal: {
+        branchSegments: ["feed", "(.)photo"],
+        errorModules: [{ default: SlotError }, { default: InterceptError }],
+        errorTreePositions: [0, 1],
+        forbiddenModules: [{ default: InterceptForbidden }],
+        forbiddenTreePositions: [1],
+        layoutModules: [{ default: FeedLayout }],
+        layoutSegments: [["feed"]],
+        metadataOutlet: createElement(MetadataOutletProbe),
+        pageModule: { default: SlotPage },
+        params: {},
+      },
+    })[modalSlotId];
+    const slotError = findElementByTypeName(interceptedWithErrors, "ErrorBoundary");
+    expect(slotError?.props.fallback).toBe(SlotError);
+    const feedLayoutWithErrors = findElementByTypeName(slotError?.props.children, "FeedLayout");
+    expect(feedLayoutWithErrors).not.toBeNull();
+    const interceptError = findElementByTypeName(
+      feedLayoutWithErrors?.props.children,
+      "ErrorBoundary",
+    );
+    expect(interceptError?.props.fallback).toBe(InterceptError);
+    const interceptErrorForbidden = findElementByTypeName(
+      interceptError?.props.children,
+      "ForbiddenBoundary",
+    );
+    expect(fallbackType(interceptErrorForbidden)).toBe(InterceptForbidden);
+    expect(
+      findElementByTypeName(interceptErrorForbidden?.props.children, "MetadataOutletProbe"),
+    ).not.toBeNull();
   });
 
   it("tags a slot's notFound() with the id of its own not-found boundary that catches it", async () => {

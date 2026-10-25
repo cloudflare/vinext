@@ -270,6 +270,10 @@ async function typegen() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("typegen");
 
+  // Like `next typegen`, default to production so next.config and its
+  // callbacks take their production paths.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
   loadDotenv({
     root,
