@@ -37,6 +37,7 @@ import {
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
+  invalidateDynamicPrefetchCache,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
@@ -589,6 +590,13 @@ function clearClientNavigationCaches(options?: InvalidatePrefetchCacheOptions): 
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
   clearPrefetchState(options);
+  historyController.invalidateRestorableClientState();
+}
+
+function clearDynamicClientNavigationCaches(): void {
+  clientNavigationCacheGeneration += 1;
+  clearVisitedResponseCache();
+  invalidateDynamicPrefetchCache();
   historyController.invalidateRestorableClientState();
 }
 
@@ -1925,6 +1933,7 @@ function registerServerActionCallback(): void {
         invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
           clearClientNavigationCaches,
+          clearDynamicClientNavigationCaches,
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,

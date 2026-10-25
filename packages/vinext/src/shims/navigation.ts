@@ -1191,6 +1191,34 @@ export function invalidatePrefetchCache(options: InvalidatePrefetchCacheOptions 
 }
 
 /**
+ * Evict the prefetch entries that may hold dynamic data, for a Server Action
+ * that called `refresh()`. Like Next.js's dynamic-only revalidation, which
+ * evicts its BFCache but keeps its prefetch cache, this keeps static
+ * prefetches, prefetches only kept to learn a route, and full prefetches. It
+ * drops navigation responses, and automatic prefetches whose page rendered
+ * dynamically or hasn't finished rendering: Next.js's automatic prefetches
+ * never hold dynamic data.
+ */
+export function invalidateDynamicPrefetchCache(): void {
+  const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
+  // Collect before deleting: notifying runs subscriber callbacks synchronously.
+  const evicted: [string, PrefetchCacheEntry][] = [];
+  for (const [cacheKey, entry] of cache) {
+    const keep =
+      entry.prefetchKind !== undefined &&
+      (entry.cacheForNavigation === false ||
+        entry.dynamicStaleTime === "full-prefetch" ||
+        (entry.snapshot !== undefined &&
+          !isStaleTimeSeconds(entry.snapshot.dynamicStaleTimeSeconds)));
+    if (!keep) evicted.push([cacheKey, entry]);
+  }
+  for (const [cacheKey, entry] of evicted) {
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, true);
+  }
+}
+
+/**
  * Prevent completed navigation responses from becoming authoritative again
  * after restoring a history snapshot. Explicit Link/router prefetches remain
  * consumable. Responses with a positive cache lifetime and interception
@@ -1611,6 +1639,8 @@ export function prefetchRscResponse(
   if (behavior.dynamicStaleTime === "learning-only" && behavior.searchAgnosticShell !== true) {
     entry.dynamicStaleTime = "learning-only";
     entry.fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
+  } else if (behavior.dynamicStaleTime === "full-prefetch") {
+    entry.dynamicStaleTime = "full-prefetch";
   }
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.fetchPromise = fetchPromise;
