@@ -9,6 +9,11 @@ export type VisitedResponseCacheEntry = {
   elements?: AppElements;
   expiresAt: number;
   mountedSlotsHeader: string | null;
+  /**
+   * A history restore revoked navigation reuse. The entry stays only as the
+   * BFCache that a full prefetch reads (see `findVisitedResponseForFullPrefetch`).
+   */
+  navigationReuseRevoked?: true;
   params: Record<string, string | string[]>;
   response: CachedRscResponse;
   reuseAfterHistoryRestore: boolean;
@@ -137,11 +142,32 @@ export function deleteAllVisitedResponseCacheEntries(
   return deleted;
 }
 
-export function deleteInvalidatedHistoryRestoreEntries(
+export function revokeHistoryRestoreNavigationReuse(
   cache: Map<string, VisitedResponseCacheEntry>,
 ): void {
-  for (const [cacheKey, entry] of cache) {
+  for (const entry of cache.values()) {
     if (entry.reuseAfterHistoryRestore) continue;
-    cache.delete(cacheKey);
+    entry.navigationReuseRevoked = true;
   }
+}
+
+/**
+ * Next.js fulfills a full prefetch from the BFCache, which holds the data of
+ * every navigation, while it is within the static stale time of that
+ * navigation (`attemptToFulfillDynamicSegmentFromBFCache`). Navigation reuse
+ * that a history restore revoked does not matter here.
+ */
+export function findVisitedResponseForFullPrefetch(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrls: readonly string[],
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): VisitedResponseCacheEntry | null {
+  for (const rscUrl of rscUrls) {
+    const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
+    if (match !== null && match.entry.mountedSlotsHeader === mountedSlotsHeader) {
+      return match.entry;
+    }
+  }
+  return null;
 }

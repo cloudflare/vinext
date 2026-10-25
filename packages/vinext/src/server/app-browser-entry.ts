@@ -150,10 +150,11 @@ import { AppBrowserHistoryController } from "./app-browser-history-controller.js
 import {
   createVisitedResponseCacheEntry,
   deleteAllVisitedResponseCacheEntries,
-  deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  findVisitedResponseForFullPrefetch,
   hasNavigationResponseHistoryLifetime,
+  revokeHistoryRestoreNavigationReuse,
   isVisitedResponseCacheEntryFresh,
   type VisitedResponseCacheEntry,
 } from "./app-visited-response-cache.js";
@@ -534,9 +535,10 @@ function restoreHistoryStateSnapshot(
   // route we just left while retaining explicit prefetches and responses whose
   // segment-cache lifetime licenses reuse. Advance the generation first so an
   // async publication already waiting on a response body cannot repopulate a
-  // departed unbounded response after the caches are pruned.
+  // departed unbounded response after the caches are pruned. Demoted visited
+  // responses stay readable by a full prefetch, as Next.js' BFCache does.
   clientNavigationCacheGeneration += 1;
-  deleteInvalidatedHistoryRestoreEntries(visitedResponseCache);
+  revokeHistoryRestoreNavigationReuse(visitedResponseCache);
   disableNavigationResponsePrefetchCacheReuse();
   commitClientNavigationState(navId, { releaseSnapshot: false });
   return true;
@@ -1094,7 +1096,7 @@ function readVisitedResponseCacheCandidate(
 ): VisitedResponseCacheCandidate {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const match = findVisitedResponseCacheEntry(visitedResponseCache, rscUrl, interceptionContext);
-  if (!match) {
+  if (!match || match.entry.navigationReuseRevoked) {
     return {
       cacheKey,
       entry: null,
@@ -3103,6 +3105,15 @@ function bootstrapHydration(
       };
     },
     navigate: navigateRsc,
+    readVisitedResponseForFullPrefetch: (rscUrls, interceptionContext, mountedSlotsHeader) => {
+      const entry = findVisitedResponseForFullPrefetch(
+        visitedResponseCache,
+        rscUrls,
+        interceptionContext,
+        mountedSlotsHeader,
+      );
+      return entry === null ? null : { navigatedAt: entry.createdAt, response: entry.response };
+    },
     preparePrefetchResponse: (response) => {
       if (!isRscResponseCompatible(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER))) {
         return Promise.reject(new Error("[vinext] Prefetched another deployment's payload"));

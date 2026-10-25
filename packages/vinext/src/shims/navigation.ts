@@ -1211,6 +1211,7 @@ export function seedPrefetchResponseSnapshot(
   mountedSlotsHeader: string | null = null,
   fallbackTtlMs: number = DYNAMIC_NAVIGATION_CACHE_TTL,
   reuseAfterHistoryRestore: boolean = false,
+  expiresAt: number = resolveCachedRscResponseExpiresAt(Date.now(), snapshot, fallbackTtlMs),
 ): void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   const cache = getPrefetchCache();
@@ -1222,7 +1223,7 @@ export function seedPrefetchResponseSnapshot(
   const entry: PrefetchCacheEntry = {
     cacheForNavigation: true,
     cacheKeys: new Set([cacheKey]),
-    expiresAt: resolveCachedRscResponseExpiresAt(timestamp, snapshot, fallbackTtlMs),
+    expiresAt,
     mountedSlotsHeader,
     outcome: "cache-seeded",
     reuseAfterHistoryRestore,
@@ -1235,6 +1236,45 @@ export function seedPrefetchResponseSnapshot(
   getPrefetchedUrls().add(cacheKey);
   schedulePrefetchInvalidation(cacheKey, entry);
   evictPrefetchCacheIfNeeded();
+}
+
+/**
+ * Fulfill a full prefetch from the visited response of an earlier navigation,
+ * as Next.js does from its BFCache, instead of issuing a request. The data is
+ * fresh for the static stale time from the navigation, not the dynamic one
+ * (`attemptToFulfillDynamicSegmentFromBFCache`).
+ */
+export function seedFullPrefetchFromVisitedResponse(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  additionalRscUrls: readonly string[] = [],
+  onInvalidate?: () => void,
+): boolean {
+  const visited = getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
+    [rscUrl, ...additionalRscUrls],
+    interceptionContext,
+    mountedSlotsHeader,
+  );
+  if (!visited) return false;
+  const expiresAt = visited.navigatedAt + Math.max(PREFETCH_CACHE_TTL, MIN_PREFETCH_STALE_TIME_MS);
+  if (expiresAt <= Date.now()) return false;
+
+  // Like an explicit prefetch, it stays consumable after a history restore.
+  seedPrefetchResponseSnapshot(
+    rscUrl,
+    visited.response,
+    interceptionContext,
+    mountedSlotsHeader,
+    undefined,
+    true,
+    expiresAt,
+  );
+  attachPrefetchInvalidationCallback(
+    AppElementsWire.encodeCacheKey(rscUrl, interceptionContext),
+    onInvalidate,
+  );
+  return true;
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -3180,6 +3220,18 @@ const _appRouter: AppRouterInstance = {
                     promotePrefetchCacheEntryForNavigation(matchedCacheKey, entry)
                 : undefined,
           })
+        ) {
+          return;
+        }
+        if (
+          policy.dynamicStaleTime === "full-prefetch" &&
+          seedFullPrefetchFromVisitedResponse(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            additionalRscUrls,
+            options?.onInvalidate,
+          )
         ) {
           return;
         }
