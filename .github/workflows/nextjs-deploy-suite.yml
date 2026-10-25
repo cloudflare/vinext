@@ -50,7 +50,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}
+  # An opt-in skipped-deployment run executes a different test set, so it gets its own group.
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}${{ inputs.run-skipped-deployment-tests && '-skipped-deployment' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -165,6 +166,17 @@ jobs:
           # what actually provisions the browsers we use at test time, so
           # skipping the transitive postinstall is safe.
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+
+      # The workspace is the vinext-ref checkout, so a ref from before the
+      # skipped-deployment patch prepares a pristine harness. Fail instead of
+      # silently running the placeholder tests.
+      - name: Check the skipped-deployment harness patch
+        if: inputs.run-skipped-deployment-tests
+        run: |
+          if ! grep -q VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS "$GITHUB_WORKSPACE/next.js/test/lib/e2e-utils/index.ts"; then
+            echo "::error::run-skipped-deployment-tests needs a vinext-ref that includes scripts/patch-nextjs-skip-deployment.mjs"
+            exit 1
+          fi
 
       - name: Generate deploy manifest
         env:
