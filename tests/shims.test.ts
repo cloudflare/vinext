@@ -6795,11 +6795,13 @@ describe("next/cache shim", () => {
 
     const waitUntilPromises: Promise<unknown>[] = [];
     const setBodies: string[] = [];
+    const setStaleEntries: unknown[] = [];
+    let staleEntry: CacheHandlerValue | undefined;
     let callCount = 0;
 
     const handler: CacheHandler = {
       async get(): Promise<CacheHandlerValue> {
-        return {
+        return (staleEntry = {
           lastModified: Date.now() - 2_000,
           cacheState: "stale",
           value: {
@@ -6812,11 +6814,12 @@ describe("next/cache shim", () => {
             tags: ["stale-swr"],
             revalidate: 1,
           },
-        };
+        });
       },
-      async set(_key: string, data: IncrementalCacheValue | null) {
+      async set(_key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) {
         if (data?.kind === "FETCH") {
           setBodies.push(data.data.body);
+          setStaleEntries.push(ctx?.staleEntry);
         }
       },
       async revalidateTag(_tags: string | string[]) {},
@@ -6860,6 +6863,9 @@ describe("next/cache shim", () => {
       await Promise.all(waitUntilPromises);
 
       expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+      // The refresh tells the handler which stale entry it replaces.
+      expect(setStaleEntries).toEqual([staleEntry]);
+      expect(setStaleEntries[0]).toBe(staleEntry);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6938,9 +6944,11 @@ describe("next/cache shim", () => {
       await import("../packages/vinext/src/shims/unified-request-context.js");
 
     let callCount = 0;
+    let staleEntry: CacheHandlerValue | undefined;
+    const setStaleEntries: unknown[] = [];
     const handler: CacheHandler = {
       async get(): Promise<CacheHandlerValue> {
-        return {
+        return (staleEntry = {
           lastModified: Date.now() - 2_000,
           cacheState: "stale",
           value: {
@@ -6953,9 +6961,11 @@ describe("next/cache shim", () => {
             tags: ["foreground"],
             revalidate: 1,
           },
-        };
+        });
       },
-      async set() {},
+      async set(_key: string, _data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) {
+        setStaleEntries.push(ctx?.staleEntry);
+      },
       async revalidateTag(_tags: string | string[]) {},
     };
 
@@ -6982,6 +6992,8 @@ describe("next/cache shim", () => {
         "fresh-value",
       );
       expect(callCount).toBe(1);
+      expect(setStaleEntries).toHaveLength(1);
+      expect(setStaleEntries[0]).toBe(staleEntry);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
