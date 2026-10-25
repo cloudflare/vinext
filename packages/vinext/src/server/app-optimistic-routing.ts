@@ -416,6 +416,13 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
   return elements;
 }
 
+function findStreamingMetadataBody(elements: AppElements): string | null {
+  for (const id of Object.keys(elements)) {
+    if (id.startsWith(APP_STREAMING_METADATA_BODY_ID_PREFIX)) return id;
+  }
+  return null;
+}
+
 /**
  * The optimistic shell reveals the prefetch's streamed metadata, such as its
  * title. React won't hide revealed content again in a transition, so while the
@@ -424,24 +431,31 @@ export function createOptimisticRouteElements(template: OptimisticRouteTemplate)
  * fallback is the shell's instead, so the page commits as it streams and the
  * prefetched title stays until the payload's arrives. Next.js likewise renders
  * the prefetched head until the dynamic one resolves (`Head` in app-router.tsx).
+ *
+ * A payload streams at most one route's metadata. The shell's may carry
+ * another concrete route id, since a template learned for one set of params
+ * is reused for others. `navigationKey` remounts the boundary on every
+ * navigation, so one that already revealed an earlier navigation's metadata
+ * can't hold back the next, as Next.js keys `Head` by its vary path.
  */
 export function keepOptimisticStreamingMetadata(
   elements: AppElements,
   optimisticElements: AppElements,
+  navigationKey: string,
 ): AppElements {
-  let kept: Record<string, AppElementValue> | null = null;
-  for (const id of Object.keys(elements)) {
-    if (!id.startsWith(APP_STREAMING_METADATA_BODY_ID_PREFIX)) continue;
-    const optimisticMetadata = optimisticElements[id];
-    if (optimisticMetadata == null) continue;
-    kept ??= { ...elements };
-    kept[id] = createElement(
+  const id = findStreamingMetadataBody(elements);
+  const optimisticId = findStreamingMetadataBody(optimisticElements);
+  if (id === null || optimisticId === null) return elements;
+  const optimisticMetadata = optimisticElements[optimisticId];
+  if (optimisticMetadata == null) return elements;
+  return {
+    ...elements,
+    [id]: createElement(
       Suspense,
-      { fallback: optimisticMetadata as ReactNode },
+      { fallback: optimisticMetadata as ReactNode, key: navigationKey },
       elements[id] as ReactNode,
-    );
-  }
-  return kept ?? elements;
+    ),
+  };
 }
 
 /**

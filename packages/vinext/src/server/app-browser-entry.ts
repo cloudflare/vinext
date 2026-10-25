@@ -2193,8 +2193,10 @@ function bootstrapHydration(
       const shellElements = optimisticShellElements;
       if (shellElements === null) return payload;
       return payload instanceof Promise
-        ? payload.then((elements) => keepOptimisticStreamingMetadata(elements, shellElements))
-        : keepOptimisticStreamingMetadata(payload, shellElements);
+        ? payload.then((elements) =>
+            keepOptimisticStreamingMetadata(elements, shellElements, String(navId)),
+          )
+        : keepOptimisticStreamingMetadata(payload, shellElements, String(navId));
     };
     const activeTraversalIntent =
       navigationKind === "traverse"
