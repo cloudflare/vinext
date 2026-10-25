@@ -3774,10 +3774,9 @@ describe("next/headers shim", () => {
     });
 
     const syncCookies = cookies();
-    expect(() => Reflect.get(syncCookies, "set")).toThrow(
-      /Cookies can only be modified in a Server Action or Route Handler/,
-    );
-    expect(() => Reflect.get(syncCookies, "delete")).toThrow(
+    // The mutating methods throw when called, not when read.
+    expect(typeof Reflect.get(syncCookies, "set")).toBe("function");
+    expect(() => (syncCookies as unknown as { clear(): void }).clear()).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => syncCookies.set("session", "mutated")).toThrow(
@@ -3787,11 +3786,9 @@ describe("next/headers shim", () => {
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(syncCookies.get({ name: "session" })).toEqual({ name: "session", value: "abc123" });
 
     const awaitedCookies = await cookies();
-    expect(() => Reflect.get(awaitedCookies, "set")).toThrow(
-      /Cookies can only be modified in a Server Action or Route Handler/,
-    );
     expect(() => awaitedCookies.set("session", "mutated")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
