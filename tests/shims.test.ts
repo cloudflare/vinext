@@ -7684,6 +7684,24 @@ describe('"use cache" runtime', () => {
       expect(set.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
       expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(expiredRedirect);
       expect(set.mock.calls[1]?.[2]).not.toHaveProperty("staleEntry");
+
+      // A stale redirect it does follow, to a specific entry that's gone: the redirect's
+      // write still refreshes the redirect it read.
+      knownRootParams.delete("test:stale-entry-root-params");
+      (handler as any).store.delete(specificKey);
+      for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+      get.mockClear();
+      set.mockClear();
+      await runWithRequestContext(
+        createRequestContext({ unstableCacheRevalidation: "background" }),
+        run,
+      );
+      expect(get.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      const staleRedirect = await get.mock.results[0]?.value;
+      expect(staleRedirect).toMatchObject({ cacheState: "stale" });
+      expect(set.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleRedirect);
+      expect(set.mock.calls[1]?.[2]).not.toHaveProperty("staleEntry");
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }

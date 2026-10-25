@@ -860,6 +860,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
       const redirectValue = existing?.value;
+      // A redirect read stale and followed, which the redirect's own write refreshes.
+      let staleRedirect: CacheHandlerValue | undefined;
       if (
         isRootParamRedirect(existing) &&
         isServableCacheState(existing?.cacheState) &&
@@ -870,6 +872,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         const redirectNames = rootParamNamesFromTags(redirectValue.tags);
         const combinedNames = addKnownRootParamNames(id, redirectNames);
         cacheKey = coarseCacheKey + computeRootParamsCacheKeySuffix(rootParams, combinedNames);
+        if (existing?.cacheState) staleRedirect = existing;
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -975,7 +978,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                   ...cacheContext,
                   tags: redirectTags,
                   // A cold isolate reads the coarse key first.
-                  ...(staleEntry && coarseCacheKey === cacheKey ? { staleEntry } : {}),
+                  ...(coarseCacheKey === cacheKey
+                    ? staleEntry && { staleEntry }
+                    : staleRedirect && { staleEntry: staleRedirect }),
                 },
               );
               // Write the useful entry last. A bounded LRU that can retain only
