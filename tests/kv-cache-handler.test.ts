@@ -1184,6 +1184,31 @@ describe("KVCacheHandler", () => {
       expect(kv.delete).not.toHaveBeenCalledWith("cache:fetch-entry");
     });
 
+    // Like Next.js's IncrementalCache: another fetch of the same request may
+    // have stored the entry under different tags.
+    it("checks a FETCH read's own tags, not only the ones its entry carries", async () => {
+      store.set(
+        "cache:fetch-entry",
+        JSON.stringify({
+          value: {
+            kind: "FETCH",
+            data: { headers: {}, body: "cached", url: "https://example.test/data" },
+            tags: ["other"],
+            revalidate: 3600,
+          },
+          tags: ["other"],
+          lastModified: 1000,
+          revalidateAt: null,
+        }),
+      );
+      store.set("__tag:mine", "2000");
+
+      expect(await handler.get("fetch-entry", { kind: "FETCH", tags: ["other"] })).not.toBeNull();
+      expect(await handler.get("fetch-entry", { kind: "APP_PAGE", tags: ["mine"] })).not.toBeNull();
+      expect(await handler.get("fetch-entry", { kind: "FETCH", tags: ["mine"] })).toBeNull();
+      expect(kv.delete).not.toHaveBeenCalledWith("cache:fetch-entry");
+    });
+
     it("validates and dedupes softTags before reading KV tag markers", async () => {
       store.set(
         "cache:fetch-entry",

@@ -263,7 +263,11 @@ export class MemoryCacheHandler implements CacheHandler {
       hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
     }
 
-    for (const tag of readStringArrayField(ctx, "softTags")) {
+    // Like Next.js's IncrementalCache, a fetch's own tags count whatever the
+    // entry carries: another fetch of the same request may have stored it
+    // under different tags.
+    const fetchTags = ctx?.kind === "FETCH" ? readStringArrayField(ctx, "tags") : [];
+    for (const tag of [...readStringArrayField(ctx, "softTags"), ...fetchTags]) {
       if (this.isTagExpired(tag, entry.lastModified, now)) return null;
       hasStaleTag ||= this.isTagStale(tag, entry.lastModified);
     }
