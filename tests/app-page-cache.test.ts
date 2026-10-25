@@ -222,6 +222,60 @@ describe("app page cache helpers", () => {
     expect(response?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
   });
 
+  it("advertises staleTimes.static for an unclaimed entry under cached navigations", () => {
+    // Next.js resolves an unclaimed prerender's INFINITE_CACHE stale time to
+    // experimental.staleTimes.static, so with cached navigations a fully static
+    // page stays in the client cache instead of expiring at staleTimes.dynamic.
+    vi.stubEnv("__NEXT_CLIENT_ROUTER_STATIC_STALETIME", "180");
+    vi.stubEnv("__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS", "true");
+    try {
+      const rscData = new TextEncoder().encode("flight").buffer;
+      const cachedValue = buildCachedAppPageValue("<h1>cached</h1>", rscData);
+      const unclaimed = { revalidate: 900, expire: 4294967294 };
+      const rscResponse = buildAppPageCachedResponse(cachedValue, {
+        cacheControl: unclaimed,
+        cacheState: "HIT",
+        isRoutePPREnabled: true,
+        isRscRequest: true,
+        revalidateSeconds: 900,
+      });
+      expect(rscResponse?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("180");
+
+      // A stored claim still wins.
+      const claimed = buildAppPageCachedResponse(cachedValue, {
+        cacheControl: { ...unclaimed, stale: 120 },
+        cacheState: "HIT",
+        isRoutePPREnabled: true,
+        isRscRequest: true,
+        revalidateSeconds: 900,
+      });
+      expect(claimed?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("120");
+
+      // Without Cache Components the client would reuse navigations for it.
+      const legacy = buildAppPageCachedResponse(cachedValue, {
+        cacheControl: unclaimed,
+        cacheState: "HIT",
+        isRscRequest: true,
+        revalidateSeconds: 900,
+      });
+      expect(legacy?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
+
+      // Next.js' client only caches navigation responses under
+      // experimental.cachedNavigations.
+      vi.stubEnv("__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS", "false");
+      const uncachedNavigations = buildAppPageCachedResponse(cachedValue, {
+        cacheControl: unclaimed,
+        cacheState: "HIT",
+        isRoutePPREnabled: true,
+        isRscRequest: true,
+        revalidateSeconds: 900,
+      });
+      expect(uncachedNavigations?.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBeNull();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("merges middleware response headers into cached HTML responses", async () => {
     const middlewareHeaders = new Headers({
       "Cache-Control": "private, no-store",

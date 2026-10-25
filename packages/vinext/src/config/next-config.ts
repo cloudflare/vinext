@@ -544,6 +544,11 @@ export type ResolvedNextConfig = {
   /** Server globals injected into instrumentation.ts by wrapped webpack configs. */
   instrumentationServerValueInjections: Record<string, unknown>;
   cacheComponents: boolean;
+  /**
+   * `experimental.cachedNavigations`: lets the client cache the static stage of
+   * navigation responses. Requires `cacheComponents`.
+   */
+  cachedNavigations: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -1904,6 +1909,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -2331,6 +2337,7 @@ export async function resolveNextConfig(
     instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
     instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
     cacheComponents: config.cacheComponents ?? false,
+    cachedNavigations: config.cacheComponents === true && experimental?.cachedNavigations === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
