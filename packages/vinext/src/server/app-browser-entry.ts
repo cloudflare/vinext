@@ -3105,15 +3105,13 @@ function bootstrapHydration(
       };
     },
     navigate: navigateRsc,
-    readVisitedResponseForFullPrefetch: (rscUrls, interceptionContext, mountedSlotsHeader) => {
-      const entry = findVisitedResponseForFullPrefetch(
+    readVisitedResponseForFullPrefetch: (rscUrls, interceptionContext, mountedSlotsHeader) =>
+      findVisitedResponseForFullPrefetch(
         visitedResponseCache,
         rscUrls,
         interceptionContext,
         mountedSlotsHeader,
-      );
-      return entry === null ? null : { navigatedAt: entry.createdAt, response: entry.response };
-    },
+      ),
     preparePrefetchResponse: (response) => {
       if (!isRscResponseCompatible(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER))) {
         return Promise.reject(new Error("[vinext] Prefetched another deployment's payload"));

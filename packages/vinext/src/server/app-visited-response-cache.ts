@@ -155,19 +155,38 @@ export function revokeHistoryRestoreNavigationReuse(
  * Next.js fulfills a full prefetch from the BFCache, which holds the data of
  * every navigation, while it is within the static stale time of that
  * navigation (`attemptToFulfillDynamicSegmentFromBFCache`). Navigation reuse
- * that a history restore revoked does not matter here.
+ * that a history restore revoked does not matter here. A navigation that
+ * committed a prefetched payload dates from when that payload arrived.
+ *
+ * The match follows direct visited reuse: an entry with committed elements
+ * replays them, because its raw response may be skip-pruned against the tree
+ * it was requested from; otherwise the request-time or response-declared slot
+ * context must match.
  */
 export function findVisitedResponseForFullPrefetch(
   cache: Map<string, VisitedResponseCacheEntry>,
   rscUrls: readonly string[],
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
-): VisitedResponseCacheEntry | null {
+): { navigatedAt: number; response: CachedRscResponse } | null {
   for (const rscUrl of rscUrls) {
     const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
-    if (match !== null && match.entry.mountedSlotsHeader === mountedSlotsHeader) {
-      return match.entry;
+    if (match === null) continue;
+    const { entry } = match;
+    if (
+      entry.elements === undefined &&
+      entry.mountedSlotsHeader !== mountedSlotsHeader &&
+      (entry.response.mountedSlotsHeader ?? null) !== mountedSlotsHeader
+    ) {
+      continue;
     }
+    return {
+      navigatedAt: entry.response.receivedAt ?? entry.createdAt,
+      response:
+        entry.elements === undefined
+          ? entry.response
+          : { ...entry.response, preparedElements: entry.elements },
+    };
   }
   return null;
 }

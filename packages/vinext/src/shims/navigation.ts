@@ -336,6 +336,12 @@ export type CachedRscResponse = {
   paramsHeader: string | null;
   preparedElements?: AppElements;
   /**
+   * When the payload arrived from the server. A navigation that commits a
+   * prefetched payload keeps the prefetch's time, so a later full prefetch
+   * judges the data by its age, not by the navigation that reused it.
+   */
+  receivedAt?: number;
+  /**
    * Streamed `redirect()` side-channel headers. A replayed snapshot must keep
    * them so the navigation follows the redirect instead of decoding the
    * redirect payload as a page.
@@ -1270,10 +1276,10 @@ export function seedFullPrefetchFromVisitedResponse(
     true,
     expiresAt,
   );
-  attachPrefetchInvalidationCallback(
-    AppElementsWire.encodeCacheKey(rscUrl, interceptionContext),
-    onInvalidate,
-  );
+  // The byte budget can evict the seeded entry at once; fetch it then.
+  const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+  if (getPrefetchCache().get(cacheKey)?.snapshot !== visited.response) return false;
+  attachPrefetchInvalidationCallback(cacheKey, onInvalidate);
   return true;
 }
 
@@ -1391,6 +1397,7 @@ export function createCachedRscResponseSnapshot(
     ...(dynamicStaleTimeSeconds !== undefined ? { dynamicStaleTimeSeconds } : {}),
     mountedSlotsHeader: response.headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
     paramsHeader: response.headers.get(VINEXT_PARAMS_HEADER),
+    receivedAt: Date.now(),
     ...(redirectHeader === null ? {} : { redirectHeader }),
     ...(redirectTypeHeader === null ? {} : { redirectTypeHeader }),
     renderedPathAndSearch: parseRenderedPathAndSearchHeader(

@@ -461,6 +461,37 @@ describe("prefetch cache eviction", () => {
     await expect(navigation.restoreRscResponse(consumed!).text()).resolves.toBe("visited");
   });
 
+  it("router.prefetch kind full fetches when the byte budget evicts the visited response it seeded", async () => {
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("fresh", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const readVisitedResponseForFullPrefetch = vi.fn(() => ({
+      navigatedAt: now,
+      response: {
+        buffer: new ArrayBuffer(navigation.MAX_PREFETCH_CACHE_SIZE + 1024 * 1024),
+        contentType: "text/x-component",
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/dynamic.rsc",
+      },
+    }));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn(), readVisitedResponseForFullPrefetch },
+    };
+
+    navigation.appRouterInstance.prefetch("/dynamic", { kind: "full" });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("router.prefetch waits for the route manifest and resolves interception from the call-time URL", async () => {
     const fetch = vi.fn(
       async (_input: RequestInfo | URL, _init?: RequestInit) =>
