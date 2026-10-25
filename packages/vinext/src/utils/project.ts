@@ -549,7 +549,8 @@ function configEnablesCacheComponents(source: string): boolean {
     if (legacy) return legacy === "true";
     content = content.slice(0, experimental.index) + content.slice(end + 1);
   }
-  return cacheComponents.exec(content)?.[1] === "true";
+  // Outside a legacy override, any literal `true` counts (errs towards caching).
+  return /\bcacheComponents\s*:\s*true\b/.test(content);
 }
 
 function detectCacheComponents(root: string): boolean {

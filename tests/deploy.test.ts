@@ -1470,6 +1470,7 @@ describe("detectProject", () => {
     ],
     ["export default {\n  // cacheComponents: true,\n};", false],
     ['export default { "cacheComponents": true };', true],
+    ["export default { other: { cacheComponents: false }, cacheComponents: true };", true],
     [
       "export default { cacheComponents: true, experimental: { turbo: { cacheComponents: false } } };",
       true,
