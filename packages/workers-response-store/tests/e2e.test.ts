@@ -70,6 +70,7 @@ beforeEach(async () => {
               let exposeInvalidate = false;
               let edgeCalls = [];
               let failR2Write = false;
+              let delayFirstPurgeMs = 0;
               export class ResponseStoreBinding extends BaseBinding {
                 constructor(ctx, env) {
                   super(ctx, {
@@ -88,6 +89,11 @@ beforeEach(async () => {
                   if (purgeMode) {
                     const edgeOperation = (operation) => (options) => {
                       edgeCalls.push({ operation, options });
+                      if (delayFirstPurgeMs && edgeCalls.length === 1) {
+                        return new Promise((resolve) =>
+                          setTimeout(() => resolve({ success: true }), delayFirstPurgeMs),
+                        );
+                      }
                       if (purgeMode === "throw") throw new Error("Purge unavailable");
                       if (purgeMode === "reject") return Promise.reject(new Error("Purge unavailable"));
                       return Promise.resolve({
@@ -108,6 +114,9 @@ beforeEach(async () => {
                     purgeMode = new URL(request.url).searchParams.get("mode");
                     exposeInvalidate = new URL(request.url).searchParams.has("invalidate");
                     failR2Write = new URL(request.url).searchParams.has("fail-r2");
+                    delayFirstPurgeMs = Number(
+                      new URL(request.url).searchParams.get("delay-first-ms") ?? 0,
+                    );
                     edgeCalls = [];
                     return new Response("ok");
                   }
@@ -529,6 +538,42 @@ test("replacesRevision drops a refresh of a fresh revision still on its way to R
   const healed = await put("/refresh-race-unwritten", "second", refresh);
   assert.equal(healed.json.backingStoreUpdated, true);
   assert.equal(await (await read("/refresh-race-unwritten")).text(), "second");
+});
+
+test("replacesRevision doesn't coalesce a refresh into a leader older than its revision", async () => {
+  const path = "/refresh-race-old-leader";
+  const tags = [path.slice(1)];
+  await put(path, "first", { noRevalidator: true, tags });
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
+  // The leader replaces the fresh copy, and stays coalescible while its purge is pending.
+  const leader = put(path, "second", {
+    coalesce: true,
+    noRevalidator: true,
+    purgeExisting: true,
+    tags,
+  });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const calls = (await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as [];
+    if (calls.length === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await invalidate({ tags });
+  const stale = await read(path);
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await stale.arrayBuffer();
+  const replacesRevision = stale.headers.get("X-Workers-Response-Store-Revision");
+  assert.ok(replacesRevision);
+
+  const refresh = await put(path, "third", {
+    coalesce: true,
+    noRevalidator: true,
+    purgeExisting: true,
+    tags,
+    replacesRevision,
+  });
+  assert.equal(refresh.json.backingStoreUpdated, true);
+  await leader;
+  assert.equal(await (await read(path)).text(), "third");
 });
 
 test("replacesRevision drops an overlapping refresh coalesced into one that replaced it", async () => {

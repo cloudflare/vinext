@@ -1396,6 +1396,11 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           continue;
         }
         if (result?.published && result.entry) {
+          // A leader no newer than the revision this refresh read, e.g. one published before
+          // an invalidate(), can't stand in for it.
+          if (replacesRevision !== undefined && result.entry.activeRevision <= replacesRevision) {
+            break;
+          }
           const objectKey = reservation.objectKey;
           await metadata
             .finishPendingObjects([objectKey])
