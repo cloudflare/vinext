@@ -1026,7 +1026,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         }
       }
 
-      return generate(true, existing?.cacheState === "stale" ? existing : undefined);
+      return generate(true, existing?.cacheState ? existing : undefined);
     }, cacheVariant);
   };
 

@@ -7565,9 +7565,13 @@ describe('"use cache" runtime', () => {
     expect(callCount).toBe(1);
   });
 
-  it.each(["background", "foreground"] as const)(
-    "a use cache %s regeneration passes the stale entry it replaces",
-    async (unstableCacheRevalidation) => {
+  it.each([
+    ["background", "stale"],
+    ["foreground", "stale"],
+    ["foreground", "expired"],
+  ] as const)(
+    "a use cache %s regeneration passes the %s entry it replaces",
+    async (unstableCacheRevalidation, cacheState) => {
       const { registerCachedFunction } =
         await import("../packages/vinext/src/shims/cache-runtime.js");
       const { setCacheHandler, MemoryCacheHandler } =
@@ -7581,9 +7585,12 @@ describe('"use cache" runtime', () => {
         const cached = registerCachedFunction(async () => {
           callCount++;
           return { data: callCount };
-        }, `test:stale-entry-${unstableCacheRevalidation}`);
+        }, `test:stale-entry-${unstableCacheRevalidation}-${cacheState}`);
         await cached();
-        for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+        for (const entry of (handler as any).store.values()) {
+          entry.revalidateAt = Date.now() - 1000;
+          if (cacheState === "expired") entry.expireAt = Date.now() - 1000;
+        }
 
         const get = vi.spyOn(handler, "get");
         const set = vi.spyOn(handler, "set");
@@ -7599,7 +7606,7 @@ describe('"use cache" runtime', () => {
         await Promise.all(regenerations);
 
         const staleEntry = await get.mock.results[0]?.value;
-        expect(staleEntry).toMatchObject({ cacheState: "stale" });
+        expect(staleEntry).toMatchObject({ cacheState });
         expect(callCount).toBe(2);
         expect(set).toHaveBeenCalledOnce();
         expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
@@ -7608,6 +7615,58 @@ describe('"use cache" runtime', () => {
       }
     },
   );
+
+  it("a use cache root-param regeneration passes the stale entry only to its specific key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        callCount++;
+        return { lang: await getRootParam("lang"), data: callCount };
+      }, "test:stale-entry-root-params");
+      const run = () => runWithRootParamsScope({ lang: "en" }, () => cached() as Promise<unknown>);
+      await run();
+      expect([...(handler as any).store.keys()]).toHaveLength(2);
+      for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      const regenerations: Promise<unknown>[] = [];
+      await expect(
+        runWithRequestContext(
+          createRequestContext({
+            executionContext: { waitUntil: (promise) => regenerations.push(promise) },
+            unstableCacheRevalidation: "background",
+          }),
+          run,
+        ),
+      ).resolves.toEqual({ lang: "en", data: 1 });
+      await Promise.all(regenerations);
+
+      // The read went straight to the specific key; the coarse one holds a redirect to it.
+      expect(get).toHaveBeenCalledOnce();
+      const specificKey = get.mock.calls[0]?.[0];
+      const staleEntry = await get.mock.results[0]?.value;
+      expect(staleEntry).toMatchObject({ cacheState: "stale" });
+      const [coarseKey, writtenKey] = set.mock.calls.map(([key]) => key);
+      expect(writtenKey).toBe(specificKey);
+      expect(coarseKey).not.toBe(specificKey);
+      expect(set).toHaveBeenCalledTimes(2);
+      expect(set.mock.calls[0]?.[2]).not.toHaveProperty("staleEntry");
+      expect(set.mock.calls[1]?.[2]?.staleEntry).toBe(staleEntry);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
 
   it("a use cache hit re-registers its client stale time on the request scope", async () => {
     // The enclosing render's minimum is what gets persisted onto the page cache
