@@ -1,6 +1,7 @@
 import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getHeadersAccessPhase } from "./internal/headers-state.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
+import type { ResumeDataCache } from "./resume-data-cache.js";
 import {
   getRequestContext,
   isInsideUnifiedScope,
@@ -62,6 +63,10 @@ export type CacheState = {
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
+  /** Records the cache entries a fallback shell render reads or writes. */
+  resumeDataCacheCollector: ResumeDataCache | null;
+  /** The resumed shell's entries, read before the cache handler. */
+  resumeDataCacheSeed: ResumeDataCache | null;
   unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
@@ -81,6 +86,8 @@ const fallbackState = (globalState[FALLBACK_KEY] ??= {
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
+  resumeDataCacheCollector: null,
+  resumeDataCacheSeed: null,
   unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
@@ -111,6 +118,8 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
+    resumeDataCacheCollector: null,
+    resumeDataCacheSeed: null,
     unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
@@ -145,6 +154,35 @@ function hasRequestScopedCacheState(): boolean {
   if (isInsideUnifiedScope() || cacheAls.getStore() !== undefined) return true;
   const phase = getHeadersAccessPhase();
   return phase === "action" || phase === "route-handler";
+}
+
+/**
+ * Install the resume data cache this request's cache reads use. Outside a
+ * request scope there is nothing to resume, so the process state stays clean.
+ *
+ * @internal
+ */
+export function _setResumeDataCacheSeed(seed: ResumeDataCache | null): void {
+  if (!hasRequestScopedCacheState()) return;
+  getCacheState().resumeDataCacheSeed = seed;
+}
+
+/** @internal */
+export function _getResumeDataCacheSeed(): ResumeDataCache | null {
+  if (!hasRequestScopedCacheState()) return null;
+  return getCacheState().resumeDataCacheSeed;
+}
+
+/** @internal */
+export function _setResumeDataCacheCollector(collector: ResumeDataCache | null): void {
+  if (!hasRequestScopedCacheState()) return;
+  getCacheState().resumeDataCacheCollector = collector;
+}
+
+/** @internal */
+export function _getResumeDataCacheCollector(): ResumeDataCache | null {
+  if (!hasRequestScopedCacheState()) return null;
+  return getCacheState().resumeDataCacheCollector;
 }
 
 /** @internal */

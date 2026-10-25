@@ -37,12 +37,14 @@ import {
   appIsrFallbackShellKey,
   isrSet,
   isrSetPrerenderedAppPage,
+  isrSetPrerenderedFallbackShell,
   type IsrWritePolicy,
 } from "./isr-cache.js";
 import { buildAppPageCacheTags, buildAppRouteCacheTags } from "./app-page-cache.js";
 import {
   getAppRouteOutputPath,
   getOutputPath,
+  getPostponedOutputPath,
   getRscOutputPath,
 } from "../utils/prerender-output-paths.js";
 import {
@@ -76,6 +78,12 @@ type PrerenderCacheSeedOptions = {
   buildAppPageRscKey?: (pathname: string) => string;
   buildAppRouteKey?: (pathname: string) => string;
   writeAppPageEntry?: (
+    key: string,
+    data: CachedAppPageValue,
+    metadata: PrerenderCacheSeedMetadata,
+  ) => Promise<void>;
+  /** Fallback shells live in the data cache on every backend. */
+  writeAppPageFallbackShellEntry?: (
     key: string,
     data: CachedAppPageValue,
     metadata: PrerenderCacheSeedMetadata,
@@ -117,7 +125,9 @@ export async function seedMemoryCacheFromPrerender(
 
   const trailingSlash = manifest.trailingSlash ?? false;
   const prerenderDir = path.join(serverDir, "prerendered-routes");
-  const writeAppPageEntry = options?.writeAppPageEntry ?? createDefaultAppPageEntryWriter();
+  const writeConcreteAppPageEntry = options?.writeAppPageEntry ?? isrSetPrerenderedAppPage;
+  const writeAppPageFallbackShellEntry =
+    options?.writeAppPageFallbackShellEntry ?? isrSetPrerenderedFallbackShell;
   const writeAppRouteEntry = options?.writeAppRouteEntry ?? isrSet;
   let seeded = 0;
 
@@ -135,6 +145,9 @@ export async function seedMemoryCacheFromPrerender(
     if (!isFallbackShell) {
       addPregeneratedConcretePath(route.route, concretePathname);
     }
+    const writeAppPageEntry = isFallbackShell
+      ? writeAppPageFallbackShellEntry
+      : writeConcreteAppPageEntry;
 
     const artifactPathname = route.path ?? route.route;
     const cachePathname = normalizePregeneratedPathname(artifactPathname);
@@ -179,6 +192,7 @@ export async function seedMemoryCacheFromPrerender(
         expireSeconds,
         staleSeconds,
         tags,
+        isFallbackShell,
       )
     ) {
       await seedRsc(
@@ -231,12 +245,6 @@ export async function seedMemoryCacheFromPrerender(
 
 // ─── Internals ────────────────────────────────────────────────────────────────
 
-function createDefaultAppPageEntryWriter(): NonNullable<
-  PrerenderCacheSeedOptions["writeAppPageEntry"]
-> {
-  return (key, data, metadata) => isrSetPrerenderedAppPage(key, data, metadata);
-}
-
 /**
  * Seed the HTML cache entry for a single route.
  * Returns true if the file existed and was seeded.
@@ -253,17 +261,25 @@ async function seedHtml(
   expireSeconds: number | undefined,
   staleSeconds: number | undefined,
   tags: string[] | undefined,
+  isFallbackShell: boolean,
 ): Promise<boolean> {
   const relPath = getOutputPath(pathname, trailingSlash);
   const fullPath = path.join(prerenderDir, relPath);
   if (!fs.existsSync(fullPath)) return false;
 
+  // A fallback shell's resume data cache, which a request resuming it reads.
+  const postponedPath = isFallbackShell
+    ? path.join(prerenderDir, getPostponedOutputPath(pathname))
+    : null;
   const htmlValue: CachedAppPageValue = {
     kind: "APP_PAGE",
     html: fs.readFileSync(fullPath, "utf-8"),
     rscData: undefined,
     headers,
-    postponed: undefined,
+    postponed:
+      postponedPath && fs.existsSync(postponedPath)
+        ? fs.readFileSync(postponedPath, "utf-8")
+        : undefined,
     status,
   };
 

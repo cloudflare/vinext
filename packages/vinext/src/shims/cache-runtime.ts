@@ -62,7 +62,9 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
+  getPprFallbackShellState,
   trackPprFallbackShellCacheTask,
+  waitForPprFallbackShellCacheInput,
 } from "./ppr-fallback-shell.js";
 import {
   hasUseCachePageMarker,
@@ -71,6 +73,10 @@ import {
   withoutUseCacheSegmentMarker,
 } from "./internal/app-page-props-cache-key.js";
 import { getCurrentRootParams, type RootParams } from "./root-params.js";
+import {
+  collectUseCacheResumeDataCacheEntry,
+  readUseCacheResumeDataCacheEntry,
+} from "./resume-data-cache.js";
 import {
   isRouteCacheabilityProbe,
   recordRouteCacheabilityProbeBailout,
@@ -220,7 +226,11 @@ export function getCacheContext(): CacheContext | null {
 type RscModule = {
   renderToReadableStream: (
     data: unknown,
-    options?: { onError?: (error: unknown) => string | undefined; temporaryReferences?: unknown },
+    options?: {
+      onError?: (error: unknown) => string | undefined;
+      signal?: AbortSignal;
+      temporaryReferences?: unknown;
+    },
   ) => ReadableStream<Uint8Array>;
   createFromReadableStream: <T>(
     stream: ReadableStream<Uint8Array>,
@@ -349,6 +359,10 @@ async function serializeCacheResult<TResult>(
       serializationError ??= { value: error };
       return undefined;
     },
+    // A fallback shell aborts its renders once caches are ready. A lazy
+    // component here can still be suspended on fallback params, and Flight
+    // re-pings a rejected suspension forever unless this render aborts too.
+    signal: getPprFallbackShellState()?.reactAbortController.signal,
   });
   const [returnStream, savedStream] = stream.tee();
 
@@ -759,7 +773,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const flightArguments =
         replay ??
         (await snapshotFlightReply(
-          await rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
+          await waitForPprFallbackShellCacheInput(
+            rsc.encodeReply(keyArgs, { temporaryReferences: clientReferences }),
+          ),
           isPageInvocation ? pagePropsArgIndex : undefined,
         ));
       if (!replay && layoutPropsArgIndex !== -1) {
@@ -846,6 +862,27 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // The soft tags are path-derived implicit tags set by the enclosing route
       // handler or page dispatch — see setCurrentFetchSoftTags in fetch-cache.ts.
       const softTags = getCurrentFetchSoftTags();
+      // A resumed fallback shell renders its cached parts from the values it
+      // was built with, whatever their age, like Next.js's resume data cache.
+      // Only a tag this request revalidated bypasses it. The coarse key is
+      // enough: a shell keeps its root params concrete. A nested cache never
+      // reads it, so a hit has no enclosing cache to key by root params.
+      const resumeEntry = readUseCacheResumeDataCacheEntry(coarseCacheKey);
+      if (resumeEntry && !_hasPendingRevalidatedTag([...resumeEntry.tags, ...softTags])) {
+        try {
+          const result = await rsc.createFromReadableStream<TResult>(
+            uint8ToStream(base64ToUint8(resumeEntry.body)),
+            {},
+            { preserveServerReferences: true },
+          );
+          propagateCacheTagsToRequest(resumeEntry.tags);
+          recordRequestScopedCacheControl(resumeEntry.cacheControl);
+          collectUseCacheResumeDataCacheEntry(coarseCacheKey, resumeEntry);
+          return result;
+        } catch {
+          // A corrupted entry falls through to the cache handler.
+        }
+      }
       // A handler failure (e.g. a transient KV error, or a key the store
       // rejects) must not surface as a render error: fall through to fresh
       // execution so control-flow signals like notFound()/redirect() thrown by
@@ -926,6 +963,17 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               }
             }
             const serialized = collectedResult.cacheEntry;
+            if (propagate) {
+              collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
+                body: serialized.body,
+                cacheControl: {
+                  revalidate: revalidateSeconds,
+                  expire: effectiveLife.expire,
+                  stale: effectiveLife.stale,
+                },
+                tags: ctx.tags,
+              });
+            }
             const cacheValue = {
               kind: "FETCH",
               data: {
@@ -1005,6 +1053,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             { preserveServerReferences: true },
           );
           recordRequestScopedCacheControl(existing.cacheControl);
+          // vinext always stores a lifetime. Without one, a custom handler's
+          // entry may be short-lived, so a resumed request runs it again.
+          if (existing.cacheControl) {
+            collectUseCacheResumeDataCacheEntry(coarseCacheKey, {
+              body: existing.value.data.body,
+              cacheControl: existing.cacheControl,
+              tags: existing.value.tags ?? [],
+            });
+          }
           if (existing.cacheState === "stale") regenerateInBackground(id, () => generate(false));
           return result;
         } catch {
