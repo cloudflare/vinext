@@ -627,7 +627,7 @@ class ReadonlyHeadersError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyHeadersError();
   }
 }
@@ -642,7 +642,7 @@ class ReadonlyRequestCookiesError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyRequestCookiesError();
   }
 }
