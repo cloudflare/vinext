@@ -2143,7 +2143,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
-  let manualUseCachePluginPromise: Promise<Plugin> | null = null;
+  let manualUseCachePluginPromise: Promise<Plugin[]> | null = null;
   // Set by the config hook once `.env` files are loaded. @vitejs/plugin-rsc
   // reads `defineEncryptionKey` in its configEnvironment hook, which runs
   // after every config hook.
@@ -2170,7 +2170,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       .then(async (mod) => {
         const rsc = mod.default;
         const plugins: Plugin[] = rsc(rscPluginOptions);
-        const useCachePlugin = await createUseCacheCallablePlugin({
+        const useCachePlugins = await createUseCacheCallablePlugin({
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
@@ -2180,7 +2180,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
-        plugins.splice(useServerIndex, 0, useCachePlugin);
+        plugins.splice(useServerIndex, 0, ...useCachePlugins);
         return plugins.map(scopeRscPlugin);
       })
       .catch((cause) => {

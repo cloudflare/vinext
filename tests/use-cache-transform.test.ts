@@ -554,6 +554,28 @@ describe("plugin-rsc inline use-cache references", () => {
     expect(result!.code).toContain("registerCachedFunction($$import_getData");
   });
 
+  it("compiles cache modules shipped inside node_modules", async () => {
+    const plugins = await getPlugins();
+    await configurePluginRsc(plugins);
+    const plugin = plugins.find(
+      (candidate) => candidate.name === "vinext:server-function-directives:node-modules",
+    )!;
+    const packageId = path.join(APP_FIXTURE_DIR, "node_modules", "my-pkg", "index.js");
+    const { filter } = plugin.transform as {
+      filter: { id: { include: RegExp; exclude: RegExp }; code: string };
+    };
+    expect(filter.id.include.test(packageId)).toBe(true);
+    expect(filter.id.include.test(moduleId)).toBe(false);
+    expect(filter.id.exclude.test(packageId)).toBe(false);
+    expect(filter.code).toBe("use cache");
+    const result = await unwrapHook(plugin.transform)!.call(
+      { environment: { name: "rsc", mode: "build" } },
+      fileCacheCode,
+      packageId,
+    );
+    expect(result!.code).toContain("registerCachedFunction(getData");
+  });
+
   it("accepts configured cache kinds containing punctuation", async () => {
     const plugins = await getPlugins();
     await configurePluginRsc(plugins);
