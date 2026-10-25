@@ -235,13 +235,17 @@ export function updateTag(tag: string): undefined {
 /**
  * Opt out of static rendering and indicate a particular component should not be cached.
  *
- * In Next.js, calling noStore() inside a Server Component ensures the component
- * is dynamically rendered. In our implementation, this is a no-op since we don't
- * have the same static/dynamic rendering split — all server rendering is on-demand.
- * It's provided for API compatibility so apps importing it don't break.
+ * Without Cache Components this marks the render dynamic, so the page is not
+ * stored. With Cache Components it does nothing, as in Next.js: its prerenders
+ * ignore it, and on a request it doesn't make the page dynamic, so the page
+ * stays static and cacheable.
+ * Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/server/web/spec-extension/unstable-no-store.ts
  */
 export function unstable_noStore(): void {
   if (isInsideUnstableCacheScope()) {
+    return;
+  }
+  if (String(process.env.__NEXT_CACHE_COMPONENTS) === "true") {
     return;
   }
   // Signal dynamic usage so ISR-configured routes bypass the cache

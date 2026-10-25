@@ -6707,6 +6707,40 @@ describe("next/cache shim", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.test.ts
+  // ("should fully prerender pages that use `unstable_noStore()`")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.test.ts
+  it("unstable_noStore marks the render dynamic only without Cache Components", async () => {
+    const { unstable_noStore } = await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext, getRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    try {
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+      await runWithRequestContext(createRequestContext(), async () => {
+        unstable_noStore();
+        expect(getRequestContext().dynamicUsageDetected).toBe(true);
+      });
+
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+      for (const type of ["request", "prerender"] as const) {
+        await runWithRequestContext(createRequestContext(), () =>
+          workUnitAsyncStorage.run(
+            type === "request" ? { type } : { type, renderSignal: new AbortController().signal },
+            async () => {
+              unstable_noStore();
+              expect(getRequestContext().dynamicUsageDetected).toBe(false);
+            },
+          ),
+        );
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("exports cacheLife with built-in profiles", async () => {
     const { cacheLife, cacheLifeProfiles } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheLife).toBe("function");
