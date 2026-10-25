@@ -645,7 +645,7 @@ describe("prefetch cache eviction", () => {
     expect(pingVisibleLinks).not.toHaveBeenCalled();
   });
 
-  it("keeps static, learning-only and full prefetches across a dynamic-only invalidation", () => {
+  it("keeps route-tree, static and full prefetches across a dynamic-only invalidation", () => {
     const cache = getPrefetchCache();
     const prefetched = getPrefetchedUrls();
     const snapshot = {
@@ -686,6 +686,21 @@ describe("prefetch cache eviction", () => {
         snapshot: dynamicSnapshot,
         timestamp: 0,
       },
+      "/learning-static.rsc": {
+        cacheForNavigation: false,
+        dynamicStaleTime: "learning-only",
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot,
+        timestamp: 0,
+      },
+      "/route-tree.rsc": {
+        cacheForNavigation: false,
+        outcome: "cache-seeded",
+        prefetchKind: "route-tree",
+        snapshot: dynamicSnapshot,
+        timestamp: 0,
+      },
       "/full.rsc": {
         cacheForNavigation: true,
         dynamicStaleTime: "full-prefetch",
@@ -704,9 +719,10 @@ describe("prefetch cache eviction", () => {
 
     invalidateDynamicPrefetchCache();
 
-    expect([...cache.keys()]).toEqual(["/static.rsc", "/learning.rsc", "/full.rsc"]);
-    expect(prefetched).toEqual(new Set(["/static.rsc", "/learning.rsc", "/full.rsc"]));
-    expect(invalidated).toEqual(["/visited.rsc", "/dynamic.rsc", "/pending.rsc"]);
+    const kept = ["/static.rsc", "/learning-static.rsc", "/route-tree.rsc", "/full.rsc"];
+    expect([...cache.keys()]).toEqual(kept);
+    expect(prefetched).toEqual(new Set(kept));
+    expect(invalidated).toEqual(["/visited.rsc", "/dynamic.rsc", "/pending.rsc", "/learning.rsc"]);
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {

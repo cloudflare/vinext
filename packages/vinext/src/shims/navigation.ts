@@ -1193,11 +1193,11 @@ export function invalidatePrefetchCache(options: InvalidatePrefetchCacheOptions 
 /**
  * Evict the prefetch entries that may hold dynamic data, for a Server Action
  * that called `refresh()`. Like Next.js's dynamic-only revalidation, which
- * evicts its BFCache but keeps its prefetch cache, this keeps static
- * prefetches, prefetches only kept to learn a route, and full prefetches. It
- * drops navigation responses, and automatic prefetches whose page rendered
- * dynamically or hasn't finished rendering: Next.js's automatic prefetches
- * never hold dynamic data.
+ * evicts its BFCache but keeps its prefetch cache, this keeps route trees,
+ * static prefetches and full prefetches. It drops navigation responses, and
+ * automatic prefetches whose page rendered dynamically or hasn't finished
+ * rendering, including those only kept to learn a route: Next.js's automatic
+ * prefetches never hold dynamic data.
  */
 export function invalidateDynamicPrefetchCache(): void {
   const cache = getPrefetchCache();
@@ -1206,11 +1206,11 @@ export function invalidateDynamicPrefetchCache(): void {
   const evicted: [string, PrefetchCacheEntry][] = [];
   for (const [cacheKey, entry] of cache) {
     const keep =
-      entry.prefetchKind !== undefined &&
-      (entry.cacheForNavigation === false ||
-        entry.dynamicStaleTime === "full-prefetch" ||
-        (entry.snapshot !== undefined &&
-          !isStaleTimeSeconds(entry.snapshot.dynamicStaleTimeSeconds)));
+      entry.prefetchKind === "route-tree" ||
+      (entry.prefetchKind !== undefined &&
+        (entry.dynamicStaleTime === "full-prefetch" ||
+          (entry.snapshot !== undefined &&
+            !isStaleTimeSeconds(entry.snapshot.dynamicStaleTimeSeconds))));
     if (!keep) evicted.push([cacheKey, entry]);
   }
   for (const [cacheKey, entry] of evicted) {
