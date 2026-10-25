@@ -46,6 +46,7 @@ let restoreRscResponse: Navigation["restoreRscResponse"];
 let resolveCachedRscResponseTtlMs: Navigation["resolveCachedRscResponseTtlMs"];
 let prefetchRscResponse: Navigation["prefetchRscResponse"];
 let invalidatePrefetchCache: Navigation["invalidatePrefetchCache"];
+let invalidateDynamicPrefetchCache: Navigation["invalidateDynamicPrefetchCache"];
 let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationResponsePrefetchCacheReuse"];
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
@@ -87,6 +88,7 @@ beforeEach(async () => {
   resolveCachedRscResponseTtlMs = nav.resolveCachedRscResponseTtlMs;
   prefetchRscResponse = nav.prefetchRscResponse;
   invalidatePrefetchCache = nav.invalidatePrefetchCache;
+  invalidateDynamicPrefetchCache = nav.invalidateDynamicPrefetchCache;
   disableNavigationResponsePrefetchCacheReuse = nav.disableNavigationResponsePrefetchCacheReuse;
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
@@ -641,6 +643,86 @@ describe("prefetch cache eviction", () => {
     pingVisibleLinks.mockClear();
     disableNavigationResponsePrefetchCacheReuse();
     expect(pingVisibleLinks).not.toHaveBeenCalled();
+  });
+
+  it("keeps route-tree, static and full prefetches across a dynamic-only invalidation", () => {
+    const cache = getPrefetchCache();
+    const prefetched = getPrefetchedUrls();
+    const snapshot = {
+      buffer: new TextEncoder().encode("flight").buffer,
+      contentType: "text/x-component",
+      paramsHeader: null,
+      renderedPathAndSearch: null,
+      url: "/static.rsc",
+    };
+    const dynamicSnapshot = { ...snapshot, dynamicStaleTimeSeconds: 30 };
+    const entries: Record<string, PrefetchCacheEntry> = {
+      "/visited.rsc": { cacheForNavigation: true, outcome: "cache-seeded", snapshot, timestamp: 0 },
+      "/static.rsc": {
+        cacheForNavigation: true,
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot,
+        timestamp: 0,
+      },
+      "/dynamic.rsc": {
+        cacheForNavigation: true,
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot: dynamicSnapshot,
+        timestamp: 0,
+      },
+      "/pending.rsc": {
+        cacheForNavigation: true,
+        outcome: "pending",
+        prefetchKind: "navigation",
+        timestamp: 0,
+      },
+      "/learning.rsc": {
+        cacheForNavigation: false,
+        dynamicStaleTime: "learning-only",
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot: dynamicSnapshot,
+        timestamp: 0,
+      },
+      "/learning-static.rsc": {
+        cacheForNavigation: false,
+        dynamicStaleTime: "learning-only",
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot,
+        timestamp: 0,
+      },
+      "/route-tree.rsc": {
+        cacheForNavigation: false,
+        outcome: "cache-seeded",
+        prefetchKind: "route-tree",
+        snapshot: dynamicSnapshot,
+        timestamp: 0,
+      },
+      "/full.rsc": {
+        cacheForNavigation: true,
+        dynamicStaleTime: "full-prefetch",
+        outcome: "cache-seeded",
+        prefetchKind: "navigation",
+        snapshot: dynamicSnapshot,
+        timestamp: 0,
+      },
+    };
+    const invalidated: string[] = [];
+    for (const [key, entry] of Object.entries(entries)) {
+      entry.onInvalidateCallbacks = new Set([() => invalidated.push(key)]);
+      cache.set(key, entry);
+      prefetched.add(key);
+    }
+
+    invalidateDynamicPrefetchCache();
+
+    const kept = ["/static.rsc", "/learning-static.rsc", "/route-tree.rsc", "/full.rsc"];
+    expect([...cache.keys()]).toEqual(kept);
+    expect(prefetched).toEqual(new Set(kept));
+    expect(invalidated).toEqual(["/visited.rsc", "/dynamic.rsc", "/pending.rsc", "/learning.rsc"]);
   });
 
   it("reuses a prefetched response only when mounted-slot context matches", () => {

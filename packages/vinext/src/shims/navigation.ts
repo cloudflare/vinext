@@ -1162,7 +1162,12 @@ function attachPrefetchInvalidationCallback(
   attachPrefetchInvalidationToEntry(cacheKey, entry, onInvalidate);
 }
 
-export function invalidatePrefetchCache(): void {
+export type InvalidatePrefetchCacheOptions = {
+  /** Prefetch the visible links again right away. Defaults to true. */
+  pingVisibleLinks?: boolean;
+};
+
+export function invalidatePrefetchCache(options: InvalidatePrefetchCacheOptions = {}): void {
   // Void prefetch setup that is still in flight, whatever its destination.
   // Without this, a closure that started before `router.refresh()` resumes
   // afterwards and repopulates a navigation-reusable entry built from the
@@ -1180,8 +1185,36 @@ export function invalidatePrefetchCache(): void {
   for (const retained of retainedPrefetchInvalidations) {
     fireRetainedPrefetchInvalidation(retained);
   }
-  if (!isServer) {
+  if (!isServer && options.pingVisibleLinks !== false) {
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
+  }
+}
+
+/**
+ * Evict the prefetch entries that may hold dynamic data, for a Server Action
+ * that called `refresh()`. Like Next.js's dynamic-only revalidation, which
+ * evicts its BFCache but keeps its prefetch cache, this keeps route trees,
+ * static prefetches and full prefetches. It drops navigation responses, and
+ * automatic prefetches whose page rendered dynamically or hasn't finished
+ * rendering, including those only kept to learn a route: Next.js's automatic
+ * prefetches never hold dynamic data.
+ */
+export function invalidateDynamicPrefetchCache(): void {
+  const cache = getPrefetchCache();
+  const prefetched = getPrefetchedUrls();
+  // Collect before deleting: notifying runs subscriber callbacks synchronously.
+  const evicted: [string, PrefetchCacheEntry][] = [];
+  for (const [cacheKey, entry] of cache) {
+    const keep =
+      entry.prefetchKind === "route-tree" ||
+      (entry.prefetchKind !== undefined &&
+        (entry.dynamicStaleTime === "full-prefetch" ||
+          (entry.snapshot !== undefined &&
+            !isStaleTimeSeconds(entry.snapshot.dynamicStaleTimeSeconds))));
+    if (!keep) evicted.push([cacheKey, entry]);
+  }
+  for (const [cacheKey, entry] of evicted) {
+    deletePrefetchCacheEntry(cache, prefetched, cacheKey, entry, true);
   }
 }
 
@@ -1606,6 +1639,8 @@ export function prefetchRscResponse(
   if (behavior.dynamicStaleTime === "learning-only" && behavior.searchAgnosticShell !== true) {
     entry.dynamicStaleTime = "learning-only";
     entry.fallbackTtlMs = behavior.fallbackTtlMs ?? PREFETCH_CACHE_TTL;
+  } else if (behavior.dynamicStaleTime === "full-prefetch") {
+    entry.dynamicStaleTime = "full-prefetch";
   }
   addPrefetchInvalidationCallback(entry, options?.onInvalidate);
   entry.fetchPromise = fetchPromise;
@@ -2932,6 +2967,38 @@ function releaseScheduledAppRouterNavigationAfterCurrentTask(release: () => void
   queueMicrotask(release);
 }
 
+// A refresh superseded by a later navigation settles while the winner is still
+// in flight, so its visible-link ping waits until no navigation is running.
+let inFlightAppRouterNavigationCount = 0;
+let visibleLinkPingAwaitsNavigations = false;
+
+/**
+ * Called by the App Router browser entry for each RSC navigation it runs.
+ * Returns a release callback for the navigation's settlement.
+ */
+export function trackAppRouterNavigationInFlight(): () => void {
+  inFlightAppRouterNavigationCount += 1;
+  let released = false;
+
+  return () => {
+    if (released) return;
+    released = true;
+    inFlightAppRouterNavigationCount = Math.max(0, inFlightAppRouterNavigationCount - 1);
+    if (inFlightAppRouterNavigationCount === 0 && visibleLinkPingAwaitsNavigations) {
+      visibleLinkPingAwaitsNavigations = false;
+      getNavigationRuntime()?.functions.pingVisibleLinks?.();
+    }
+  };
+}
+
+function pingVisibleLinksOnceNavigationsSettle(): void {
+  if (inFlightAppRouterNavigationCount > 0) {
+    visibleLinkPingAwaitsNavigations = true;
+    return;
+  }
+  getNavigationRuntime()?.functions.pingVisibleLinks?.();
+}
+
 /**
  * App Router public router instance. Mirrors Next.js's
  * `publicAppRouterInstance` from
@@ -2992,16 +3059,24 @@ const _appRouter: AppRouterInstance = {
     // without this, a stale cached payload for a sibling route (e.g. a page
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
-    getNavigationRuntime()?.functions.clearNavigationCaches?.();
-    if (hasScheduledAppRouterNavigation()) return;
-    // Re-fetch the current page's RSC stream
+    //
+    // Next.js sends the refresh as one request before its prefetch scheduler
+    // runs again. vinext's refresh can fan out to slot refreshes once its
+    // response arrives, so the visible links prefetch again only after it,
+    // or after the navigation that superseded it.
+    getNavigationRuntime()?.functions.clearNavigationCaches?.({ pingVisibleLinks: false });
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
-    if (rscNavigate) {
-      const navigate = () => {
-        void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
-      };
-      React.startTransition(navigate);
+    if (hasScheduledAppRouterNavigation() || !rscNavigate) {
+      getNavigationRuntime()?.functions.pingVisibleLinks?.();
+      return;
     }
+    // Re-fetch the current page's RSC stream
+    const navigate = () => {
+      void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true).finally(
+        pingVisibleLinksOnceNavigationsSettle,
+      );
+    };
+    React.startTransition(navigate);
   },
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);

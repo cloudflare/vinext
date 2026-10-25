@@ -444,7 +444,7 @@ describe("next/navigation shim", () => {
   // happen before the rscNavigate dispatch so it cannot race with prefetches
   // kicked off during the transition's renders.
   // Ported from: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/refresh-reducer.ts
-  it("router.refresh() clears nav caches before dispatching the RSC re-fetch", async () => {
+  it("router.refresh() clears nav caches before the RSC re-fetch and prefetches links after it", async () => {
     const previousWindow = (globalThis as any).window;
     const calls: string[] = [];
     const win = {
@@ -461,11 +461,16 @@ describe("next/navigation shim", () => {
           rsc: undefined,
         },
         functions: {
-          clearNavigationCaches: () => {
-            calls.push("clear");
+          clearNavigationCaches: (options?: { pingVisibleLinks?: boolean }) => {
+            calls.push(`clear:ping=${options?.pingVisibleLinks ?? true}`);
           },
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
+            await Promise.resolve();
+            calls.push(`navigated:${kind}`);
+          },
+          pingVisibleLinks: () => {
+            calls.push("ping");
           },
         },
       },
@@ -479,12 +484,94 @@ describe("next/navigation shim", () => {
       // refresh() schedules the rscNavigate inside React.startTransition, so
       // the navigate call lands after the synchronous clear but is dispatched
       // in the same tick — yield once to let it flush.
-      await Promise.resolve();
-      await Promise.resolve();
+      await vi.waitFor(() => expect(calls).toContain("ping"));
 
-      expect(calls[0]).toBe("clear");
-      expect(calls).toContain("navigate:refresh");
-      expect(calls.indexOf("clear")).toBeLessThan(calls.indexOf("navigate:refresh"));
+      // The visible links prefetch again only once the refresh has finished,
+      // so its requests go out first.
+      expect(calls).toEqual(["clear:ping=false", "navigate:refresh", "navigated:refresh", "ping"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() superseded by a navigation prefetches links only after the winner settles", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    let trackInFlight: (() => () => void) | undefined;
+    let supersedeRefresh: (() => void) | undefined;
+    let settleWinner: (() => void) | undefined;
+    const gates: Record<string, Promise<void>> = {
+      refresh: new Promise<void>((resolve) => {
+        supersedeRefresh = resolve;
+      }),
+      navigate: new Promise<void>((resolve) => {
+        settleWinner = resolve;
+      }),
+    };
+    // Mirrors the browser entry's navigateRsc: each navigation is tracked until
+    // its settlement, and a superseded one returns early once it is aborted.
+    const navigate = async (_href: string, _depth: number, kind: string) => {
+      const release = trackInFlight!();
+      calls.push(`navigate:${kind}`);
+      try {
+        await gates[kind];
+      } finally {
+        calls.push(`navigated:${kind}`);
+        release();
+      }
+    };
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: (options?: { pingVisibleLinks?: boolean }) => {
+            calls.push(`clear:ping=${options?.pingVisibleLinks ?? true}`);
+          },
+          navigate,
+          pingVisibleLinks: () => {
+            calls.push("ping");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      trackInFlight = nav.trackAppRouterNavigationInFlight;
+      nav.appRouterInstance.refresh();
+      await vi.waitFor(() => expect(calls).toContain("navigate:refresh"));
+
+      // A later navigation supersedes the refresh, which settles first.
+      const winner = navigate("http://localhost/other", 0, "navigate");
+      supersedeRefresh!();
+      await vi.waitFor(() => expect(calls).toContain("navigated:refresh"));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(calls).not.toContain("ping");
+
+      settleWinner!();
+      await winner;
+      await vi.waitFor(() => expect(calls).toContain("ping"));
+      expect(calls).toEqual([
+        "clear:ping=false",
+        "navigate:refresh",
+        "navigate:navigate",
+        "navigated:refresh",
+        "navigated:navigate",
+        "ping",
+      ]);
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();

@@ -37,6 +37,7 @@ import {
   getMountedSlotsHeader,
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
+  invalidateDynamicPrefetchCache,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
@@ -54,9 +55,11 @@ import {
   setPendingPathname,
   setMountedSlotsHeader,
   setNavigationContext,
+  trackAppRouterNavigationInFlight,
   useRouter,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
+  type InvalidatePrefetchCacheOptions,
   type PrefetchCacheEntry,
 } from "vinext/shims/navigation";
 import {
@@ -214,11 +217,12 @@ import {
 import {
   canCommitOptimisticRouteTemplate,
   createOptimisticRouteTemplate,
+  createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
-  type OptimisticRouteTemplate,
+  type LearnedOptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
 import {
   VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
@@ -310,9 +314,7 @@ function setClientRscCompatibilityId(compatibilityId: string | null | undefined)
   if (IS_STATIC_EXPORT || !compatibilityId) return;
   clientRscCompatibilityId = compatibilityId;
 }
-const optimisticRouteTemplates = new Map<string, OptimisticRouteTemplate>();
-const optimisticRouteTemplateSources = new Set<string>();
-const optimisticRouteTemplateLearning = new Map<string, Promise<void>>();
+const optimisticRouteTemplates = createOptimisticRouteTemplateStore();
 
 function claimInitialAppRouterBootstrap(): boolean {
   if (window.__VINEXT_RSC_ROOT__ || window.__VINEXT_RSC_BOOTSTRAP_STATE__) {
@@ -576,17 +578,26 @@ function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
 }
 
-function clearPrefetchState(): void {
-  invalidatePrefetchCache();
+function clearPrefetchState(options?: InvalidatePrefetchCacheOptions): void {
+  invalidatePrefetchCache(options);
   optimisticRouteTemplates.clear();
-  optimisticRouteTemplateSources.clear();
-  optimisticRouteTemplateLearning.clear();
 }
 
-function clearClientNavigationCaches(): void {
+function clearClientNavigationCaches(options?: InvalidatePrefetchCacheOptions): void {
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
-  clearPrefetchState();
+  clearPrefetchState(options);
+  historyController.invalidateRestorableClientState();
+}
+
+function clearDynamicClientNavigationCaches(): void {
+  clientNavigationCacheGeneration += 1;
+  clearVisitedResponseCache();
+  invalidateDynamicPrefetchCache();
+  // Templates keep the layouts of the payload they were learned from, so none
+  // may outlive an evicted dynamic prefetch. The static entries that remain
+  // are learned again on the next optimistic navigation.
+  optimisticRouteTemplates.clear();
   historyController.invalidateRestorableClientState();
 }
 
@@ -740,14 +751,14 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
   interceptionContext: string | null;
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest;
-}): Promise<boolean> {
+}): Promise<LearnedOptimisticRouteTemplate | null> {
   const source = parsePrefetchCacheKey(options.cacheKey);
-  if (source.interceptionContext !== options.interceptionContext) return false;
+  if (source.interceptionContext !== options.interceptionContext) return null;
   if (resolvePrefetchCacheEntryMountedSlotsHeader(options.entry) !== options.mountedSlotsHeader) {
-    return false;
+    return null;
   }
-  if (options.interceptionContext !== null) return false;
-  if (!isRscResponseCompatible(options.entry.snapshot.compatibilityIdHeader)) return false;
+  if (options.interceptionContext !== null) return null;
+  if (!isRscResponseCompatible(options.entry.snapshot.compatibilityIdHeader)) return null;
 
   const elements = await decodeAppElementsPromise(
     createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(options.entry.snapshot))),
@@ -761,17 +772,16 @@ async function learnOptimisticRouteTemplateFromPrefetch(options: {
     mountedSlotsHeader: options.mountedSlotsHeader,
     routeManifest: options.routeManifest,
   });
-  if (template === null) return false;
+  if (template === null) return null;
 
-  optimisticRouteTemplates.set(
-    getOptimisticRouteTemplateKey({
+  return {
+    key: getOptimisticRouteTemplateKey({
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
       routeId: template.routeId,
     }),
     template,
-  );
-  return true;
+  };
 }
 
 async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
@@ -779,35 +789,31 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
   mountedSlotsHeader: string | null;
   routeManifest: BrowserRouteManifest | null;
 }): Promise<void> {
-  if (options.routeManifest === null) return;
+  const { routeManifest } = options;
+  if (routeManifest === null) return;
 
-  const learning: Promise<void>[] = [...optimisticRouteTemplateLearning.values()];
+  const learning: Promise<void>[] = optimisticRouteTemplates.pendingLearning();
   for (const [cacheKey, entry] of getPrefetchCache()) {
     const sourceKey = getOptimisticPrefetchSourceKey({
       cacheKey,
       interceptionContext: options.interceptionContext,
       mountedSlotsHeader: options.mountedSlotsHeader,
     });
-    if (optimisticRouteTemplateSources.has(sourceKey)) continue;
-    if (optimisticRouteTemplateLearning.has(sourceKey)) continue;
+    if (optimisticRouteTemplates.hasSource(sourceKey)) continue;
     if (!isSettledPrefetchCacheEntry(entry)) continue;
     if (entry.prefetchKind === "route-tree") continue;
 
-    const promise = learnOptimisticRouteTemplateFromPrefetch({
-      cacheKey,
-      entry,
-      interceptionContext: options.interceptionContext,
-      mountedSlotsHeader: options.mountedSlotsHeader,
-      routeManifest: options.routeManifest,
-    })
-      .then((learned) => {
-        if (learned) optimisticRouteTemplateSources.add(sourceKey);
-      })
-      .finally(() => {
-        optimisticRouteTemplateLearning.delete(sourceKey);
-      });
-    optimisticRouteTemplateLearning.set(sourceKey, promise);
-    learning.push(promise);
+    learning.push(
+      optimisticRouteTemplates.learn(sourceKey, () =>
+        learnOptimisticRouteTemplateFromPrefetch({
+          cacheKey,
+          entry,
+          interceptionContext: options.interceptionContext,
+          mountedSlotsHeader: options.mountedSlotsHeader,
+          routeManifest,
+        }),
+      ),
+    );
   }
 
   if (learning.length === 0) return;
@@ -1923,6 +1929,7 @@ function registerServerActionCallback(): void {
         invokeClientServerAction(id, args, actionInitiation, {
           basePath: __basePath,
           clearClientNavigationCaches,
+          clearDynamicClientNavigationCaches,
           clientRscCompatibilityId,
           commitSameUrlNavigatePayload,
           navigationPlanner,
@@ -2228,6 +2235,7 @@ function bootstrapHydration(
         historyController.isCurrentBfcacheVersion(
           activeTraversalIntent?.historyState ?? window.history.state,
         ));
+    const releaseNavigationInFlight = trackAppRouterNavigationInFlight();
     try {
       const shouldUsePendingRouterState = programmaticTransition;
       if (hasBrowserRouterState()) {
@@ -2638,7 +2646,7 @@ function bootstrapHydration(
               interceptionContext: requestInterceptionContext,
               mountedSlotsHeader,
               routeManifest,
-              templates: optimisticRouteTemplates,
+              templates: optimisticRouteTemplates.templates,
             });
 
             if (
@@ -3080,6 +3088,7 @@ function bootstrapHydration(
       // settlePendingBrowserRouterState is idempotent via the settled flag.
       browserNavigationController.finalizeNavigation(navId, pendingRouterState);
       discardedServerActionRefreshScheduler.markNavigationSettled();
+      releaseNavigationInFlight();
       if (startedHardNavigation) {
         await waitForMpaNavigationRestore();
       }
