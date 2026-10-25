@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, isValidElement, Suspense } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -11,6 +12,7 @@ import {
   createOptimisticRouteTemplate,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  keepOptimisticStreamingMetadata,
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
@@ -1057,5 +1059,31 @@ describe("App Router optimistic routing", () => {
         templates: new Map(),
       }),
     ).toBeNull();
+  });
+});
+
+describe("keepOptimisticStreamingMetadata", () => {
+  const metadataId = `${APP_STREAMING_METADATA_BODY_ID_PREFIX}route:/nested`;
+
+  it("renders the payload's streamed metadata with the shell's as its fallback", () => {
+    const shellMetadata = createElement("title", null, "Prefetched");
+    const payloadMetadata = createElement("title", null, "Streamed");
+    const payload: AppElements = { [metadataId]: payloadMetadata, "page:/nested": "page" };
+
+    const kept = keepOptimisticStreamingMetadata(payload, { [metadataId]: shellMetadata });
+
+    expect(kept).not.toBe(payload);
+    expect(kept["page:/nested"]).toBe("page");
+    const boundary = kept[metadataId];
+    if (!isValidElement(boundary)) throw new Error("expected a Suspense element");
+    expect(boundary.type).toBe(Suspense);
+    expect(boundary.props).toEqual({ fallback: shellMetadata, children: payloadMetadata });
+  });
+
+  it("keeps the payload when the shell streamed no metadata", () => {
+    const payload: AppElements = { [metadataId]: createElement("title", null, "Streamed") };
+
+    expect(keepOptimisticStreamingMetadata(payload, {})).toBe(payload);
+    expect(keepOptimisticStreamingMetadata(payload, { [metadataId]: null })).toBe(payload);
   });
 });

@@ -5,6 +5,7 @@ import {
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_STATIC_SIBLINGS_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   normalizeAppElementsSlotBindings,
   type AppElementValue,
   type AppElements,
@@ -1251,7 +1252,7 @@ export function buildAppPageElements<
     options.resolveHead &&
     metadataPlacement === "body" &&
     (!isPrefetchLoadingShell || shouldRenderPrefetchLoadingShell)
-      ? `__vinext_streaming_metadata_body:${routeId}`
+      ? `${APP_STREAMING_METADATA_BODY_ID_PREFIX}${routeId}`
       : null;
   // The children spine must reach every slot owner whose branch has a loading
   // boundary. A loading on the spine itself stops traversal first, matching
