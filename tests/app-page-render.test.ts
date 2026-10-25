@@ -4147,6 +4147,18 @@ describe("layoutFlags injection into RSC payload", () => {
   // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
   it("probes no layout for a route-tree-only loading-shell prefetch", async () => {
     const probeLayoutAt = vi.fn(() => null);
+    // Only a layout classified static is probed.
+    const staticLayouts: LayoutClassificationOptions = {
+      buildTimeClassifications: new Map([
+        [0, "static"],
+        [1, "static"],
+      ]),
+      getLayoutId: (index: number) => (index === 0 ? "layout:/" : "layout:/test"),
+      async runWithIsolatedDynamicScope(fn) {
+        const result = await fn();
+        return { result, dynamicDetected: false };
+      },
+    };
     const routeTreeOnly = createRscOptions({
       element: {
         [AppElementsWire.keys.route]: "route:/test",
@@ -4155,6 +4167,7 @@ describe("layoutFlags injection into RSC payload", () => {
       } as Record<string, ReactNode>,
       layoutCount: 2,
       probeLayoutAt,
+      classification: staticLayouts,
     });
     await renderAppPageLifecycle({
       ...routeTreeOnly.options,
@@ -4171,6 +4184,7 @@ describe("layoutFlags injection into RSC payload", () => {
       } as Record<string, ReactNode>,
       layoutCount: 2,
       probeLayoutAt,
+      classification: staticLayouts,
     });
     await renderAppPageLifecycle({
       ...loadingShell.options,
@@ -4187,6 +4201,7 @@ describe("layoutFlags injection into RSC payload", () => {
       } as Record<string, ReactNode>,
       layoutCount: 2,
       probeLayoutAt,
+      classification: staticLayouts,
     });
     await renderAppPageLifecycle({
       ...storable.options,
