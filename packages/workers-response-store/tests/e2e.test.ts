@@ -508,7 +508,8 @@ test("replacesRevision drops a refresh of a fresh revision still on its way to R
   });
   await storage.exec(
     `UPDATE entries SET latest_revision = latest_revision + 1,
-      active_revision = latest_revision + 1, fresh_until = ?`,
+      active_revision = latest_revision + 1, fresh_until = ?
+      WHERE cache_key LIKE '%/refresh-race-unwritten%'`,
     Date.now() + 60_000,
   );
   const refresh = {
@@ -521,7 +522,10 @@ test("replacesRevision drops a refresh of a fresh revision still on its way to R
   assert.deepEqual(await (await worker.fetch("https://user.test/admin/edge-calls")).json(), []);
 
   // Once that revision is stale without reaching R2, readers still see the one they refresh.
-  await storage.exec(`UPDATE entries SET fresh_until = ?`, Date.now() - 1);
+  await storage.exec(
+    `UPDATE entries SET fresh_until = ? WHERE cache_key LIKE '%/refresh-race-unwritten%'`,
+    Date.now() - 1,
+  );
   const healed = await put("/refresh-race-unwritten", "second", refresh);
   assert.equal(healed.json.backingStoreUpdated, true);
   assert.equal(await (await read("/refresh-race-unwritten")).text(), "second");

@@ -444,7 +444,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         cacheState = "stale";
       }
       // Only a read the Store itself reports stale makes this request's next write a
-      // refresh, unless the request has invalidated tags: its writes are fills. A copy
+      // refresh, unless the request has invalidated tags: its writes are ordinary. A copy
       // stale only to its caller may be an edge copy, whose replacement must still purge it.
       const staleRevisions = this.staleRevisions();
       const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
@@ -587,7 +587,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
   }
 
   async revalidateTag(tags: string | string[], durations?: { expire?: number }): Promise<void> {
-    // Writes after this request's own invalidation are fills, not refreshes of earlier reads.
+    // Writes after this request's own invalidation are ordinary, not refreshes of earlier reads.
     const staleRevisions = this.staleRevisions();
     staleRevisions.invalidated = true;
     staleRevisions.revisions.clear();
