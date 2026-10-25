@@ -6,13 +6,25 @@ import { waitForAppRouterHydration } from "../helpers";
 // test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
 // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resume-data-cache/resume-data-cache.test.ts
 const backend = process.env.VINEXT_E2E_FALLBACK_SHELL_BACKEND;
+const route = "/e2e/resume-data-cache";
+
+test.beforeAll(async ({ baseURL, request }) => {
+  if (!backend || !baseURL) return;
+  test.setTimeout(120_000);
+  // A newly deployed Worker can take a moment to serve its workers.dev URL.
+  await expect
+    .poll(async () => (await request.get(`${baseURL}${route}`)).status(), {
+      intervals: [1_000],
+      timeout: 90_000,
+    })
+    .toBe(200);
+});
 
 test.describe("cached values across re-renders on a warmed deploy", () => {
   test.skip(!backend, "requires app-router-playground deployed with a cache backend");
 
   test("keeps the page's cached value in its dynamic RSC render", async ({ baseURL, request }) => {
-    const route = `${baseURL}/e2e/resume-data-cache`;
-    const html = await (await request.get(route)).text();
+    const html = await (await request.get(`${baseURL}${route}`)).text();
     const cachedValue = html.match(/<p id="random-number">(cached-0\.\d+)<\/p>/)?.[1];
     expect(cachedValue).toBeTruthy();
 
@@ -22,7 +34,9 @@ test.describe("cached values across re-renders on a warmed deploy", () => {
     await expect
       .poll(
         async () => {
-          const rsc = await (await request.get(route, { headers: { RSC: "1" } })).text();
+          const rsc = await (
+            await request.get(`${baseURL}${route}`, { headers: { RSC: "1" } })
+          ).text();
           return [...new Set(rsc.match(/cached-0\.\d+/g) ?? [])];
         },
         { timeout: 15_000 },
@@ -34,7 +48,7 @@ test.describe("cached values across re-renders on a warmed deploy", () => {
     baseURL,
     page,
   }) => {
-    await page.goto(`${baseURL}/e2e/resume-data-cache/server-action`);
+    await page.goto(`${baseURL}${route}/server-action`);
     // A form action also works as a native POST before hydration; wait so the
     // click runs the client-side server action re-render.
     await waitForAppRouterHydration(page);
@@ -51,8 +65,12 @@ test.describe("cached values across re-renders on a warmed deploy", () => {
     await actionRequest;
 
     // The re-render ran the uncached function again but reused the cached one.
-    await expect(uncached).not.toHaveText(initialUncached ?? "");
-    await expect(uncached).not.toHaveText("Loading...");
+    await expect
+      .poll(async () => {
+        const text = await uncached.textContent();
+        return text === "Loading..." ? null : text !== initialUncached;
+      })
+      .toBe(true);
     await expect(cached).toHaveText(initialCached ?? "");
   });
 });
