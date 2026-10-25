@@ -57,6 +57,7 @@ import {
   useRouter,
   type CachedRscResponse,
   type ClientNavigationRenderSnapshot,
+  type InvalidatePrefetchCacheOptions,
   type PrefetchCacheEntry,
 } from "vinext/shims/navigation";
 import {
@@ -576,17 +577,17 @@ function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
 }
 
-function clearPrefetchState(): void {
-  invalidatePrefetchCache();
+function clearPrefetchState(options?: InvalidatePrefetchCacheOptions): void {
+  invalidatePrefetchCache(options);
   optimisticRouteTemplates.clear();
   optimisticRouteTemplateSources.clear();
   optimisticRouteTemplateLearning.clear();
 }
 
-function clearClientNavigationCaches(): void {
+function clearClientNavigationCaches(options?: InvalidatePrefetchCacheOptions): void {
   clientNavigationCacheGeneration += 1;
   clearVisitedResponseCache();
-  clearPrefetchState();
+  clearPrefetchState(options);
   historyController.invalidateRestorableClientState();
 }
 

@@ -1162,7 +1162,12 @@ function attachPrefetchInvalidationCallback(
   attachPrefetchInvalidationToEntry(cacheKey, entry, onInvalidate);
 }
 
-export function invalidatePrefetchCache(): void {
+export type InvalidatePrefetchCacheOptions = {
+  /** Prefetch the visible links again right away. Defaults to true. */
+  pingVisibleLinks?: boolean;
+};
+
+export function invalidatePrefetchCache(options: InvalidatePrefetchCacheOptions = {}): void {
   // Void prefetch setup that is still in flight, whatever its destination.
   // Without this, a closure that started before `router.refresh()` resumes
   // afterwards and repopulates a navigation-reusable entry built from the
@@ -1180,7 +1185,7 @@ export function invalidatePrefetchCache(): void {
   for (const retained of retainedPrefetchInvalidations) {
     fireRetainedPrefetchInvalidation(retained);
   }
-  if (!isServer) {
+  if (!isServer && options.pingVisibleLinks !== false) {
     getNavigationRuntime()?.functions.pingVisibleLinks?.();
   }
 }
@@ -2992,16 +2997,24 @@ const _appRouter: AppRouterInstance = {
     // without this, a stale cached payload for a sibling route (e.g. a page
     // gated by a session that has since been cleared) would still satisfy a
     // subsequent client navigation and bypass the server's redirect logic.
-    getNavigationRuntime()?.functions.clearNavigationCaches?.();
-    if (hasScheduledAppRouterNavigation()) return;
-    // Re-fetch the current page's RSC stream
+    //
+    // Next.js sends the refresh as one request before its prefetch scheduler
+    // runs again. vinext's refresh can fan out to slot refreshes once its
+    // response arrives, so the visible links prefetch again only after it.
+    getNavigationRuntime()?.functions.clearNavigationCaches?.({ pingVisibleLinks: false });
+    const pingVisibleLinks = () => getNavigationRuntime()?.functions.pingVisibleLinks?.();
     const rscNavigate = getNavigationRuntime()?.functions.navigate;
-    if (rscNavigate) {
-      const navigate = () => {
-        void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true);
-      };
-      React.startTransition(navigate);
+    if (hasScheduledAppRouterNavigation() || !rscNavigate) {
+      pingVisibleLinks();
+      return;
     }
+    // Re-fetch the current page's RSC stream
+    const navigate = () => {
+      void rscNavigate(window.location.href, 0, "refresh", undefined, undefined, true).finally(
+        pingVisibleLinks,
+      );
+    };
+    React.startTransition(navigate);
   },
   prefetch(href: string, options?: PrefetchOptions): void {
     assertSafeNavigationUrl(href);
