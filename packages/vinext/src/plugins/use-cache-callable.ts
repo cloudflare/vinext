@@ -123,21 +123,20 @@ function getArgumentCount(
 }
 
 /**
- * `export { fn }` carries no value node, so find the exported binding's local
- * function or `const` declaration, which records the function's parameters.
+ * `export { fn }` carries no value node, so find the exported binding's
+ * `const` initializer, which records the function's parameters. Other
+ * bindings, function declarations included, can be reassigned before the
+ * module finishes evaluating, so their arity stays unknown.
  */
 function getSpecifierExportValueNodes(ast: Program): Map<string, ModuleExportMeta["valueNode"]> {
   const locals = new Map<string, ModuleExportMeta["valueNode"]>();
   for (const statement of ast.body) {
     const declaration =
       statement.type === "ExportNamedDeclaration" ? statement.declaration : statement;
-    if (declaration?.type === "FunctionDeclaration" && declaration.id) {
-      locals.set(declaration.id.name, declaration as ModuleExportMeta["valueNode"]);
-    } else if (declaration?.type === "VariableDeclaration" && declaration.kind === "const") {
-      for (const declarator of declaration.declarations) {
-        if (declarator.id.type === "Identifier" && declarator.init) {
-          locals.set(declarator.id.name, declarator.init as ModuleExportMeta["valueNode"]);
-        }
+    if (declaration?.type !== "VariableDeclaration" || declaration.kind !== "const") continue;
+    for (const declarator of declaration.declarations) {
+      if (declarator.id.type === "Identifier" && declarator.init) {
+        locals.set(declarator.id.name, declarator.init as ModuleExportMeta["valueNode"]);
       }
     }
   }
