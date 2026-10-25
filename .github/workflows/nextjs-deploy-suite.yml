@@ -40,6 +40,11 @@ on:
         required: false
         default: ""
         type: string
+      run-skipped-deployment-tests:
+        description: Also run the real tests of suites that skip deploy mode (`skipDeployment`). Never published to /compatibility.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -211,6 +216,7 @@ jobs:
           (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
           && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
+          && !inputs.run-skipped-deployment-tests
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
@@ -352,6 +358,8 @@ jobs:
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-logs.sh
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
+          # Read by the harness patch from scripts/patch-nextjs-skip-deployment.mjs.
+          VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS: ${{ inputs.run-skipped-deployment-tests && '1' || '' }}
           GROUP: ${{ matrix.group }}
           CONCURRENCY: ${{ inputs.test-concurrency || '2' }}
         run: node run-tests.js --timings --retries 0 -g "$GROUP" -c "$CONCURRENCY" --type e2e
@@ -624,6 +632,8 @@ jobs:
       #   - Only when testing the Next.js version used by the scheduled run.
       #     Manual runs against other refs are useful for investigation but
       #     should not replace the scheduled compatibility snapshot.
+      #   - Not when the run includes suites that skip deploy mode upstream;
+      #     the scheduled snapshot never runs them.
       #   - Historical backfills are an explicit manual exception. They must
       #     supply a full SHA and valid past date; the build job validates both,
       #     while this main-ref gate lets PR branches exercise a dry run safely.
@@ -633,6 +643,7 @@ jobs:
           && (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
           && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
+          && !inputs.run-skipped-deployment-tests
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
