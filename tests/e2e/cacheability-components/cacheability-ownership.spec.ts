@@ -123,8 +123,10 @@ test("keeps a Cache Components page that calls unstable_noStore() static", async
     version: 1,
   });
 
-  // The runtime render stays static too, so Workers Cache can store it.
+  // The runtime render stays static too, so it gets the same browser policy as
+  // the stored /use-cache-public-no-store page instead of a dynamic page's
+  // `no-store`. wrangler dev has no Workers Cache, so every request renders.
   const runtime = await request.get("/unstable-no-store");
   expect(runtime.status()).toBe(200);
-  expect(runtime.headers()["cache-control"]).not.toContain("no-store");
+  expect(runtime.headers()["cache-control"]).toBe("private, max-age=0, must-revalidate");
 });
