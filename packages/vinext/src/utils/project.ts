@@ -502,7 +502,7 @@ function detectMDXFromConfig(root: string): boolean {
   return false;
 }
 
-/** Drops comments and string contents so text matching only sees code. */
+/** Drops comments and string values so text matching only sees code. */
 function stripCommentsAndStrings(content: string): string {
   let code = "";
   for (let i = 0; i < content.length; i++) {
@@ -516,7 +516,8 @@ function stripCommentsAndStrings(content: string): string {
     } else if (char === '"' || char === "'" || char === "`") {
       let end = i + 1;
       while (end < content.length && content[end] !== char) end += content[end] === "\\" ? 2 : 1;
-      code += char + char;
+      // Keep quoted property names (`"cacheComponents": true`) as bare keys.
+      code += /^\s*:/.test(content.slice(end + 1)) ? content.slice(i + 1, end) : char + char;
       i = end;
     } else {
       code += char;

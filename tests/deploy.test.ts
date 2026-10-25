@@ -1469,6 +1469,12 @@ describe("detectProject", () => {
       true,
     ],
     ["export default {\n  // cacheComponents: true,\n};", false],
+    ['export default { "cacheComponents": true };', true],
+    [
+      `export default { cacheComponents: true, "experimental": { 'cacheComponents': false } };`,
+      false,
+    ],
+    ['export default { cacheComponents: true, experimental: { label: "x" } };', true],
   ])(
     "lets a legacy experimental.cacheComponents override the top-level key: %s",
     (config, expected) => {
