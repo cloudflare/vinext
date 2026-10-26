@@ -2907,6 +2907,61 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("fulfills an explicit full Link prefetch from a recent navigation's visited response instead of fetching", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/force-stale/force-stale.test.ts
+    // ("during a "full" prefetch, read from bfcache before issuing new prefetch request")
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/blog/hello",
+      nodeEnv: "production",
+      props: { prefetch: true },
+    });
+
+    try {
+      const navigation = await import("../packages/vinext/src/shims/navigation.js");
+      const visitedResponse = {
+        buffer: new TextEncoder().encode("visited").buffer,
+        contentType: "text/x-component",
+        dynamicStaleTimeSeconds: 0,
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/blog/hello.rsc",
+      };
+      const navigatedAt = now - navigation.PREFETCH_CACHE_TTL + 1;
+      const readVisitedResponseForFullPrefetch = vi.fn(() => ({
+        navigatedAt,
+        response: visitedResponse,
+      }));
+      const runtime = Reflect.get(
+        window,
+        Symbol.for("vinext.navigationRuntime"),
+      ) as NavigationRuntime;
+      runtime.functions.readVisitedResponseForFullPrefetch = readVisitedResponseForFullPrefetch;
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks(
+        () =>
+          readVisitedResponseForFullPrefetch.mock.calls.length > 0 ||
+          result.fetch.mock.calls.length > 0,
+      );
+
+      // The visited response fulfills the prefetch, even though its dynamic
+      // stale time of zero rules out a navigation reuse.
+      expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(1);
+      expect(result.fetch).not.toHaveBeenCalled();
+      const seeded = Array.from(navigation.getPrefetchCache().values()).find(
+        (entry) => entry.snapshot === visitedResponse,
+      );
+      expect(seeded?.cacheForNavigation).toBe(true);
+      expect(seeded?.expiresAt).toBe(navigatedAt + navigation.PREFETCH_CACHE_TTL);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("uses a loading shell before full-prefetching explicit links with search params", async () => {
     const observer = stubIntersectionObserver();
 
