@@ -812,6 +812,81 @@ describe("handleApiRoute", () => {
   });
 
   describe("res.send()", () => {
+    it("answers realHTTP weak conditional JSON requests without a body", async () => {
+      const runner = mockServer({
+        default: (_req: any, res: any) => {
+          res.setHeader("Cache-Control", "private, max-age=60");
+          res.json({ message: "hello" });
+        },
+      });
+      const server = http.createServer((req, res) => {
+        void handleApiRoute(runner, req, res, "/api/test", [route("/api/test")]).catch(
+          (error: unknown) =>
+            res.destroy(error instanceof Error ? error : new Error(String(error))),
+        );
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/test`;
+      const read = (headers: http.OutgoingHttpHeaders) =>
+        new Promise<{ status?: number; headers: http.IncomingHttpHeaders; body: string }>(
+          (resolve, reject) => {
+            const request = http.get(url, { headers }, (response) => {
+              const chunks: Buffer[] = [];
+              response.on("data", (chunk: Buffer) => chunks.push(chunk));
+              response.on("end", () =>
+                resolve({
+                  status: response.statusCode,
+                  headers: response.headers,
+                  body: Buffer.concat(chunks).toString(),
+                }),
+              );
+            });
+            request.on("error", reject);
+          },
+        );
+      try {
+        const first = await read({});
+        expect(first.headers.etag).toBe('"4ikvm414xlj"');
+        const second = await read({ "If-None-Match": `W/${first.headers.etag}` });
+        expect(second.status).toBe(304);
+        expect(second.body).toBe("");
+        expect(second.headers.etag).toBe(first.headers.etag);
+        expect(second.headers["cache-control"]).toBe("private, max-age=60");
+        const noCache = await read({
+          "If-None-Match": first.headers.etag,
+          "Cache-Control": "no-cache",
+        });
+        expect(noCache.status).toBe(200);
+        expect(noCache.body).toBe('{"message":"hello"}');
+      } finally {
+        await new Promise<void>((resolve, reject) =>
+          server.close((error) => (error ? reject(error) : resolve())),
+        );
+      }
+    });
+
+    it("validates buffered sends with an ETag and a bodyless conditional response", async () => {
+      const server = mockServer({
+        default: (_req: any, res: any) => res.json({ message: "hello" }),
+      });
+      const first = mockRes();
+      await handleApiRoute(server, mockReq("GET", "/api/test"), first, "/api/test", [
+        route("/api/test"),
+      ]);
+      const etag = first._headers.etag;
+      expect(etag).toBeTruthy();
+      const second = mockRes();
+      await handleApiRoute(
+        server,
+        mockReq("GET", "/api/test", undefined, { "if-none-match": etag }),
+        second,
+        "/api/test",
+        [route("/api/test")],
+      );
+      expect(second.statusCode).toBe(304);
+      expect(second._body).toBe("");
+    });
+
     it("sends object data as JSON", async () => {
       const handler = vi.fn((_req: any, res: any) => {
         res.send({ key: "value" });
