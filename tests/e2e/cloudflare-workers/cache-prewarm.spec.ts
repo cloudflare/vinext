@@ -754,6 +754,9 @@ test("Workers Cache refreshes a page's RSC payload when its document regenerates
     data: { tag: `post:${slug}` },
   });
   expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  // The revalidation reaches each part's entry on its own, so a document read
+  // straight away can find its payload still fresh.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
   // Each read of the stale document refreshes it and fetches its payload.
   await expect
     .poll(async () => cachedPageRenderId(await (await readDocument()).text()), {
