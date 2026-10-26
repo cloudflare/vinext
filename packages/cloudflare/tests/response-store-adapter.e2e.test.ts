@@ -967,29 +967,29 @@ describe("Cloudflare Workers Response Store adapter", () => {
   });
 
   test("stores the page's document when an RSC request misses its entry", async () => {
-    const rsc = await request("/cached/rsc-first?_rsc", {
+    const rsc = await request("/cached/preload-rsc-first?_rsc", {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(rsc.headers.get("x-vinext-cache"), "MISS");
     const payload = await rsc.text();
-    await waitForResponseEntries("/cached/rsc-first", 2);
+    await waitForResponseEntries("/cached/preload-rsc-first", 2);
 
-    const document = await request("/cached/rsc-first");
+    const document = await request("/cached/preload-rsc-first");
     assert.equal(document.status, 200);
     assert.equal(document.headers.get("x-vinext-cache"), "HIT");
     assert.match(document.headers.get("content-type") ?? "", /^text\/html/);
     const documentHtml = await document.text();
-    assert.match(documentHtml, /<title>Cached page: rsc-first<\/title>/);
+    assert.match(documentHtml, /<title>Cached page: preload-rsc-first<\/title>/);
     // The RSC render rendered the document: both parts carry its render id.
     const renderId = documentHtml.match(/data-render-id="([^"]+)"/)?.[1];
     assert.ok(renderId);
     assert.ok(payload.includes(`"data-render-id":"${renderId}"`));
 
     // An HTML request stores the same headers for its document.
-    const html = await request("/cached/html-first");
+    const html = await request("/cached/preload-html-first");
     assert.equal(html.headers.get("x-vinext-cache"), "MISS");
     await html.arrayBuffer();
-    await waitForResponseEntries("/cached/html-first", 1);
+    await waitForResponseEntries("/cached/preload-html-first", 1);
     const storedHeaders = async (pathname: string) => {
       const headers = (await responseEntries(pathname))
         .map((entry) => new Headers(entry.responseHeaders as [string, string][]))
@@ -997,10 +997,10 @@ describe("Cloudflare Workers Response Store adapter", () => {
       assert.ok(headers, `missing the stored document of ${pathname}`);
       return Object.fromEntries(headers);
     };
-    assert.deepEqual(
-      await storedHeaders("/cached/rsc-first"),
-      await storedHeaders("/cached/html-first"),
-    );
+    // Including the renderer's Link.
+    const htmlHeaders = await storedHeaders("/cached/preload-html-first");
+    assert.match(htmlHeaders.link ?? "", /preload-probe\.woff2/);
+    assert.deepEqual(await storedHeaders("/cached/preload-rsc-first"), htmlHeaders);
   });
 
   test("stores the document when a rewritten or HEAD RSC request misses its entry", async () => {

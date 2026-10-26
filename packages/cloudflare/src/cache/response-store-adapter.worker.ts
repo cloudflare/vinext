@@ -666,6 +666,9 @@ const handler = {
           documentResponse(stored, capture.document),
           {
             coalesce: true,
+            // The RSC entry can miss beside a stored document, which this
+            // replaces.
+            purgeExisting: true,
             revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(documentInvocation)] },
           },
         );
