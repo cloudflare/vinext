@@ -2290,6 +2290,7 @@ describe("Workers Cache page parts", () => {
     props: unknown,
     cacheStatuses: string[],
     otherPartBody: () => BodyInit = () => "other part",
+    hostFree = false,
   ) {
     const calls: EntrypointCall[] = [];
     const binding = vi.fn(({ props: invocation }: { props: Record<string, unknown> }) => ({
@@ -2303,7 +2304,19 @@ describe("Workers Cache page parts", () => {
     }));
     const pending: Promise<unknown>[] = [];
     stages.request.mockImplementation((stageRequest, _env, _ctx, dispatch) =>
-      dispatch(stageRequest, props, { cache: "shared" }),
+      dispatch(
+        stageRequest,
+        props,
+        hostFree
+          ? {
+              cache: "shared",
+              cacheIdentity: createSharedAppCacheIdentity(
+                stageRequest,
+                props as SharedAppCacheIdentityProps,
+              ),
+            }
+          : { cache: "shared" },
+      ),
     );
     const response = await worker.fetch(request, {}, {
       exports: { VinextCachedResponse: binding },
@@ -2420,6 +2433,47 @@ describe("Workers Cache page parts", () => {
     expect(new URL(calls[1]!.request.url).searchParams.get("__vinext_cache_key")).toMatch(
       /^[0-9a-f]{64}$/,
     );
+  });
+
+  it("fetches the other part under the host-free entry a request for it from any host reads", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://tenant-a.example/page?x=1", { headers: { "User-Agent": "browser" } }),
+      { ...pageProps, requestOrigin: "https://tenant-a.example" },
+      ["MISS", "HIT"],
+      undefined,
+      true,
+    );
+    const { calls: rscCalls } = await dispatchPagePart(
+      new Request("http://tenant-b.example:8080/page?x=1&_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1", "User-Agent": "browser" },
+      }),
+      { ...rscPageProps, requestOrigin: "http://tenant-b.example:8080" },
+      ["HIT"],
+      undefined,
+      true,
+    );
+
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: { isRscRequest: true, requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+      requestUrl: `${VINEXT_CACHE_IDENTITY_ORIGIN}/page?x=1&_rsc`,
+      restoresDispatch: true,
+    });
+    expect(other.invocation).toEqual(rscCalls[0]!.invocation);
+    // Workers Cache leaves the host out of its key.
+    const pathAndSearch = (request: Request) => {
+      const url = new URL(request.url);
+      return `${url.pathname}${url.search}`;
+    };
+    expect(pathAndSearch(other.request)).toBe(pathAndSearch(rscCalls[0]!.request));
+    // The other part still renders with the host whose request filled it.
+    expect(
+      JSON.parse(decodeURIComponent(other.request.headers.get("x-vinext-internal-dispatch")!)),
+    ).toEqual({
+      props: { requestOrigin: "https://tenant-a.example" },
+      requestUrl: "https://tenant-a.example/page?x=1&_rsc",
+    });
   });
 
   it("reads the other part's body to the end, so Workers Cache stores it", async () => {
