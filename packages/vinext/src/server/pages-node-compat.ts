@@ -1,5 +1,5 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { Readable, Writable } from "node:stream";
+import { Readable, Writable, Stream } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
@@ -366,6 +366,14 @@ class PagesResponseStream extends Writable {
   }
 
   send(data: unknown): void {
+    if (data instanceof Stream) {
+      if (!this.resHeaders["content-type"]) {
+        this.resHeaders["content-type"] = "application/octet-stream";
+      }
+      data.pipe(this);
+      return;
+    }
+
     if (Buffer.isBuffer(data)) {
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
