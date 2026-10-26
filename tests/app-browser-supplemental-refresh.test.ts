@@ -428,6 +428,83 @@ describe("parallel route supplemental refreshes", () => {
     ]);
   });
 
+  it("takes an intercepted slot's BFCache identities with its content", () => {
+    const modalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/", 1);
+    const staleModalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/", 2);
+    const childrenSegmentId = createNestedBfcacheSlotSegmentId("slot:children:/", 1);
+    const current: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [childrenSegmentId]: "children photo",
+          [modalSegmentId]: "modal default",
+          [staleModalSegmentId]: "modal default nested",
+          "slot:modal:/": "modal shell",
+        },
+        interception: null,
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/photo",
+        slotBindings: [
+          {
+            ownerLayoutId: "layout:/",
+            slotId: "slot:modal:/",
+            state: "default",
+          },
+        ],
+      }),
+      [childrenSegmentId]: null,
+      [modalSegmentId]: null,
+      [staleModalSegmentId]: null,
+      "slot:children:/": "fresh photo",
+    };
+    const refreshed: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [childrenSegmentId]: "children feed",
+          [modalSegmentId]: "modal photo",
+          "slot:modal:/": "modal shell",
+        },
+        interception: {
+          sourceMatchedUrl: "/",
+          sourceRouteId: "route:/",
+          slotId: "slot:modal:/",
+          targetMatchedUrl: "/photo",
+          targetRouteId: "route:/photo",
+        },
+        interceptionContext: "/",
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId: "route:/",
+        slotBindings: [
+          {
+            activeRouteId: "route:/photo",
+            interceptionId: "interception:modal",
+            interceptionSourceMatchedUrl: "/",
+            ownerLayoutId: "layout:/",
+            slotId: "slot:modal:/",
+            state: "active",
+          },
+        ],
+      }),
+      [modalSegmentId]: null,
+      "slot:modal:/": "fresh modal",
+    };
+
+    const result = mergeRefreshedParallelSlot(current, refreshed);
+    expect(result["slot:modal:/"]).toBe("fresh modal");
+    expect(Object.hasOwn(result, modalSegmentId)).toBe(true);
+    // The default slot's deeper marker belongs to the content the refresh
+    // replaced, so it leaves with it.
+    expect(Object.hasOwn(result, staleModalSegmentId)).toBe(false);
+    expect(Object.hasOwn(result, childrenSegmentId)).toBe(true);
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [childrenSegmentId]: "children photo",
+      [modalSegmentId]: "modal photo",
+      "slot:modal:/": "modal shell",
+    });
+  });
+
   it("merges all successful active branches", async () => {
     await expect(
       resolveSupplementalRefreshes({
