@@ -55,16 +55,24 @@ async function freePort(): Promise<number> {
 async function vitePreview(root: string, port: number): Promise<ChildProcess> {
   const child = runVite(root, ["preview", "--host", "127.0.0.1", "--port", String(port)]);
   let output = "";
-  await new Promise<void>((resolve, reject) => {
-    const onData = (chunk: Buffer) => {
-      output += chunk;
-      if (output.includes(`127.0.0.1:${port}`)) resolve();
-    };
-    child.stdout?.on("data", onData);
-    child.stderr?.on("data", onData);
-    child.on("exit", (code) => reject(new Error(`vite preview exited with ${code}:\n${output}`)));
-  });
-  return child;
+  let exitCode: number | null | undefined;
+  child.stdout?.on("data", (chunk) => (output += chunk));
+  child.stderr?.on("data", (chunk) => (output += chunk));
+  child.on("exit", (code) => (exitCode = code));
+  // Poll the port: CI colors the printed URL, so its text is not a reliable signal.
+  const deadline = Date.now() + 60_000;
+  for (;;) {
+    if (exitCode !== undefined) throw new Error(`vite preview exited with ${exitCode}:\n${output}`);
+    try {
+      await fetch(`http://127.0.0.1:${port}/`);
+      return child;
+    } catch {}
+    if (Date.now() > deadline) {
+      child.kill();
+      throw new Error(`vite preview did not start:\n${output}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
 }
 
 test("init sets up cf alongside an unrelated Wrangler config", async ({ page }) => {
