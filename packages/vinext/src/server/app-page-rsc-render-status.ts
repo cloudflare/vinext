@@ -194,6 +194,7 @@ async function renderAppPageRscRenderStatus(
               mirrorNextFlight: documentOptions.mirrorNextFlight,
               onSsrError: documentOptions.onSsrError,
               reactMaxHeadersLength: documentOptions.reactMaxHeadersLength,
+              signal,
             }
           : {
               isStaticGeneration: true,

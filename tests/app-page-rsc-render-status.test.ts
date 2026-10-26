@@ -51,15 +51,20 @@ describe("createAppPageRscRenderStatusResolver document deadline", () => {
 
   it("gives up a shell that hasn't rendered at its deadline", async () => {
     let resolveShell!: (stream: ReadableStream<Uint8Array>) => void;
+    let signal: AbortSignal | undefined;
     let cancelled = false;
     const status = await resolveWithDocument(
-      () =>
-        new Promise((resolve) => {
+      (_rscStream, _navigationContext, _fontData, options) => {
+        signal = options?.signal;
+        return new Promise((resolve) => {
           resolveShell = resolve;
-        }),
+        });
+      },
       Date.now() + 20,
     );
     expect(status).toEqual({ kind: "page" });
+    // The deadline aborts the render itself.
+    expect(signal?.aborted).toBe(true);
 
     // A shell that renders after the deadline is discarded.
     resolveShell(
