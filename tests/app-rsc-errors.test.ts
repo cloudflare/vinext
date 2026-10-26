@@ -416,27 +416,36 @@ describe("app RSC error primitives", () => {
     }
   });
 
-  it("does not re-log a digest-bearing error as it bubbles through nested onError passes", () => {
-    // The same error object reaches this handler on both the RSC and SSR/HTML
-    // render passes; the first pass stamps a digest, so a digest-bearing error
-    // must not be logged again (matching Next.js's silenceLog dedup).
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const onError = createRscOnErrorHandler({
-        errorContext: null,
-        nodeEnv: "development",
-        reportRequestError() {},
-        requestInfo: null,
-      });
-      const error = Object.assign(new Error("boom"), { digest: "customdigest123" });
+  it.each(["development", "production"])(
+    "logs a %s error with its own digest once as it passes through nested onError passes",
+    (nodeEnv) => {
+      // The same error object can reach separate handlers for the RSC and
+      // SSR/HTML passes. A digest user code set is not a sign the error was
+      // logged (Next.js only silences errors it already logged).
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const options = {
+          errorContext: null,
+          nodeEnv,
+          reportRequestError() {},
+          requestInfo: null,
+        };
+        const rscOnError = createRscOnErrorHandler(options);
+        const ssrOnError = createRscOnErrorHandler({ ...options, attachDigest: false });
+        const error = Object.assign(new Error("boom"), { digest: "customdigest123" });
 
-      onError(error);
+        expect(rscOnError(error)).toBe("customdigest123");
+        expect(ssrOnError(error)).toBe("customdigest123");
 
-      expect(consoleError).not.toHaveBeenCalled();
-    } finally {
-      consoleError.mockRestore();
-    }
-  });
+        expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+          "[vinext] Server render error:",
+          error,
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
 
   it("does not double-log well-known navigation signals in development", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

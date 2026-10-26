@@ -116,6 +116,18 @@ export function sanitizeErrorForClient(error: unknown, nodeEnv = process.env.NOD
   return sanitized;
 }
 
+// Errors already logged, so an error reaching onError again, such as in the
+// RSC and then the SSR pass, is logged once. Like Next.js, a digest alone does
+// not mean an error was logged: user code can set its own.
+const loggedServerErrors = new WeakSet<object>();
+
+function wasServerErrorLogged(error: unknown): boolean {
+  if ((typeof error !== "object" && typeof error !== "function") || error === null) return false;
+  if (loggedServerErrors.has(error)) return true;
+  loggedServerErrors.add(error);
+  return false;
+}
+
 export function createRscOnErrorHandler(
   options: CreateRscOnErrorHandlerOptions,
 ): (error: unknown) => string | undefined {
@@ -212,10 +224,13 @@ export function createRscOnErrorHandler(
           reportableError,
         );
       }
-    } else if (!thrownHasDigest) {
+    } else if (
+      // A sanitized error was reported where it was sanitized.
+      !(reportableError !== error && thrownHasDigest) &&
+      !wasServerErrorLogged(reportableError)
+    ) {
       // Like Next.js, log in production too: without an onRequestError hook,
-      // reportRequestError is a no-op and the failure would leave no trace. A
-      // digest suppresses repeat RSC/SSR callbacks for the same error.
+      // reportRequestError is a no-op and the failure would leave no trace.
       console.error("[vinext] Server render error:", properError);
     }
 
