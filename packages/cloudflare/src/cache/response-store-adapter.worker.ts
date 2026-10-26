@@ -361,7 +361,10 @@ function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean):
     typeof responseStageProps === "object" &&
     Reflect.get(responseStageProps, "kind") === "app-page" &&
     Reflect.get(responseStageProps, "isRscRequest") === isRscRequest &&
-    Reflect.get(responseStageProps, "matchKind") === "request" &&
+    // A rewrite's target is in the props that key the entry, so a rewritten
+    // request reads its page's parts as a direct one does.
+    (Reflect.get(responseStageProps, "matchKind") === "request" ||
+      Reflect.get(responseStageProps, "matchKind") === "resolved") &&
     // A document always renders the whole page.
     (!isRscRequest || Reflect.get(responseStageProps, "renderMode") === "navigation") &&
     Reflect.get(responseStageProps, "interceptionContext") === null &&
@@ -637,11 +640,11 @@ const handler = {
       // the page reads, the reverse of the warm-up's RSC seed. A `.rsc` path
       // reaches its page's HTML path only through the app's trailingSlash
       // policy, and vinext's client never sends one, so it stores its payload
-      // alone.
+      // alone. A shared HEAD dispatches as GET and stores the GET entry, so it
+      // stores the document too.
       const documentInvocation =
         !isWarmup &&
         options.cacheIdentity &&
-        stageRequest.method === "GET" &&
         !new URL(identityRequest.url).pathname.endsWith(".rsc") &&
         isCanonicalAppPage(props, true)
           ? prepareInvocation(documentRequest(identityRequest), {
@@ -655,6 +658,18 @@ const handler = {
           ? {}
           : { streamResponse: true, ...(documentInvocation ? { captureDocument: true } : {}) };
       const serializedInvocation = JSON.stringify(invocation);
+      // Admission sets the document before it completes the response.
+      const putDocument = async (stored: Response) => {
+        if (!documentInvocation || !capture.document) return;
+        await responseStore.put(
+          await cacheRequest(documentInvocation),
+          documentResponse(stored, capture.document),
+          {
+            coalesce: true,
+            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(documentInvocation)] },
+          },
+        );
+      };
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
       // No client waits on a warm-up either, so it renders the document whole.
@@ -690,19 +705,7 @@ const handler = {
                 coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
-              // Admission sets the document before it completes the response.
-              if (!documentInvocation || !capture.document) return;
-              await responseStore.put(
-                await cacheRequest(documentInvocation),
-                documentResponse(stored, capture.document),
-                {
-                  coalesce: true,
-                  revalidator: {
-                    id: ROUTE_REVALIDATOR_ID,
-                    args: [JSON.stringify(documentInvocation)],
-                  },
-                },
-              );
+              await putDocument(stored);
             })
             .catch((error) => {
               console.error(
@@ -744,6 +747,8 @@ const handler = {
           coalesce: true,
           revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
         });
+        // A manifest-backed admission completes the response before it returns.
+        await putDocument(cacheResponse);
       } catch (error) {
         // Warming must confirm persistence; ordinary requests can serve the render.
         if (isWarmup) throw error;

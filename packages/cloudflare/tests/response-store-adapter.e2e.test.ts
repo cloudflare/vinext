@@ -1003,6 +1003,26 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
   });
 
+  test("stores the document when a rewritten or HEAD RSC request misses its entry", async () => {
+    const rscHeaders = { Accept: "text/x-component", RSC: "1" };
+    const rewritten = await request("/rewritten/rewritten-rsc?_rsc", { headers: rscHeaders });
+    assert.equal(rewritten.headers.get("x-vinext-cache"), "MISS");
+    await rewritten.arrayBuffer();
+    await waitForResponseEntries("/rewritten/rewritten-rsc", 2);
+    const rewrittenDocument = await request("/rewritten/rewritten-rsc");
+    assert.equal(rewrittenDocument.headers.get("x-vinext-cache"), "HIT");
+    assert.match(await rewrittenDocument.text(), /<title>Cached page: rewritten-rsc<\/title>/);
+
+    // A shared HEAD stores the GET entry, so it stores the document too.
+    const head = await request("/cached/head-rsc?_rsc", { headers: rscHeaders, method: "HEAD" });
+    assert.equal(head.headers.get("x-vinext-cache"), "MISS");
+    await head.arrayBuffer();
+    await waitForResponseEntries("/cached/head-rsc", 2);
+    const headDocument = await request("/cached/head-rsc");
+    assert.equal(headDocument.headers.get("x-vinext-cache"), "HIT");
+    assert.match(await headDocument.text(), /<title>Cached page: head-rsc<\/title>/);
+  });
+
   test("seeds canonical RSC from one HTML warmup request", async () => {
     const pathname = "/cached/intro";
     const html = await request(pathname, {
