@@ -1,3 +1,4 @@
+import { sendPagesApiEtag } from "./http-conditional.js";
 import { decode as decodeQueryString } from "node:querystring";
 import { Readable, Writable } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
@@ -110,6 +111,7 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
+  apiEtag?: boolean;
   body: unknown;
   initialResponseHeaders?: Headers;
   query: PagesRequestQuery;
@@ -297,6 +299,8 @@ class PagesResponseStream extends Writable {
   constructor(
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
+    private readonly requestHeaders: Record<string, string>,
+    private readonly apiEtag: boolean,
   ) {
     super();
     this.once("error", (err) => {
@@ -362,11 +366,19 @@ class PagesResponseStream extends Writable {
 
   json(data: unknown): void {
     this.resHeaders["content-type"] = "application/json";
-    this.end(JSON.stringify(data));
+    const payload = JSON.stringify(data);
+    if (
+      payload !== undefined &&
+      this.apiEtag &&
+      sendPagesApiEtag(this.requestHeaders, this, payload)
+    )
+      return;
+    this.end(payload);
   }
 
   send(data: unknown): void {
     if (Buffer.isBuffer(data)) {
+      if (this.apiEtag && sendPagesApiEtag(this.requestHeaders, this, JSON.stringify(data))) return;
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
       }
@@ -377,14 +389,29 @@ class PagesResponseStream extends Writable {
 
     if (typeof data === "object" && data !== null) {
       this.resHeaders["content-type"] = "application/json";
-      this.end(JSON.stringify(data));
+      const payload = JSON.stringify(data);
+      if (
+        payload !== undefined &&
+        this.apiEtag &&
+        sendPagesApiEtag(this.requestHeaders, this, payload)
+      )
+        return;
+      this.end(payload);
       return;
     }
 
     if (!this.resHeaders["content-type"]) {
       this.resHeaders["content-type"] = "text/plain";
     }
-    this.end(String(data));
+    const payload = String(data);
+    if (
+      data !== null &&
+      data !== undefined &&
+      this.apiEtag &&
+      sendPagesApiEtag(this.requestHeaders, this, payload)
+    )
+      return;
+    this.end(payload);
   }
 
   redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
@@ -639,6 +666,8 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   const res: PagesReqResResponse = new PagesResponseStream(
     resolveResponse,
     rejectResponse,
+    headersObj,
+    options.apiEtag === true,
   ) as PagesReqResResponse;
   for (const [name, value] of options.initialResponseHeaders ?? []) {
     if (name.toLowerCase() === "set-cookie") continue;
@@ -660,7 +689,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
 export function createPagesApiReqRes(
   options: CreatePagesApiReqResOptions,
 ): CreatePagesReqResResult<PagesApiReqResResponse> {
-  const { req, res, responsePromise } = createPagesReqRes(options);
+  const { req, res, responsePromise } = createPagesReqRes({ ...options, apiEtag: true });
   const apiRes = Object.assign(res, {
     async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
       // Fetch runtimes do not expose a listening socket origin. An in-process
