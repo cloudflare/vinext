@@ -658,7 +658,9 @@ const handler = {
           ? {}
           : { streamResponse: true, ...(documentInvocation ? { captureDocument: true } : {}) };
       const serializedInvocation = JSON.stringify(invocation);
-      // Admission sets the document before it completes the response.
+      // Admission sets the document before it completes the response. It is
+      // stored first, so a failed write leaves the RSC entry missing too and
+      // the next RSC miss retries both.
       const putDocument = async (stored: Response) => {
         if (!documentInvocation || !capture.document) return;
         await responseStore.put(
@@ -704,11 +706,16 @@ const handler = {
                 return;
               }
               const stored = withoutRequestScopedHeaders(admitted, props);
+              try {
+                await putDocument(stored);
+              } catch (error) {
+                await stored.body?.cancel().catch(() => {});
+                throw error;
+              }
               await responseStore.put(key, stored, {
                 coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
-              await putDocument(stored);
             })
             .catch((error) => {
               console.error(
@@ -746,12 +753,12 @@ const handler = {
       const [foregroundBody, cacheBody] = rendered.body ? rendered.body.tee() : [null, null];
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
+        // A manifest-backed admission completes the response before it returns.
+        await putDocument(cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
           revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
         });
-        // A manifest-backed admission completes the response before it returns.
-        await putDocument(cacheResponse);
       } catch (error) {
         // Warming must confirm persistence; ordinary requests can serve the render.
         if (isWarmup) throw error;
