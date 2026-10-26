@@ -293,7 +293,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
   const ID = "/app/node_modules/dependency/esm/index.js";
   const devServer = {
     mode: "dev",
-    config: { cacheDir: CACHE_DIR, dev: { moduleRunnerTransform: true } },
+    config: { cacheDir: CACHE_DIR, dev: { moduleRunnerTransform: true }, plugins: [] },
   };
 
   function createDependencyTransform(environment: object = devServer) {
@@ -307,7 +307,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     return { transform, resolve };
   }
 
-  it("awaits module-level calls in place and hoists nested ones after the directives", async () => {
+  it("awaits module-level calls in place and hoists nested ones around the module", async () => {
     const { transform, resolve } = createDependencyTransform();
 
     const result = await transform(
@@ -329,8 +329,8 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     expect(result?.code.split("\n")).toEqual([
       `#!/usr/bin/env node`,
       `"use client"`,
-      `const __vinext_require_0__ = await __vinext_require_load__(import("./data.json"));` +
-        `const __vinext_require_1__ = await __vinext_require_load__(import("server-only"));` +
+      // Packages, and files a class body requires as the module evaluates.
+      `const __vinext_require_1__ = await __vinext_require_load__(import("server-only"));` +
         `const __vinext_require_2__ = await __vinext_require_load__(import("./static.js"));` +
         `import helper from "./helper.js";`,
       `const path = __vinext_require__(await import("node:path"));`,
@@ -340,6 +340,8 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       `}`,
       `export const shadowed = ((require) => require("./local.js"))(String);`,
       `export class Reader { static value = __vinext_require_2__(); }`,
+      // Files of the same package that only functions require load last.
+      `const __vinext_require_0__ = await __vinext_require_load__(import("./data.json"));`,
       expect.stringMatching(/^function __vinext_require__\(m\)/),
       expect.stringMatching(/^function __vinext_require_load__\(load\)/),
     ]);
@@ -450,6 +452,12 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     [
       "environments without a module runner",
       { ...devServer, config: { ...devServer.config, dev: { moduleRunnerTransform: false } } },
+      ID,
+      `export const x = require("x");`,
+    ],
+    [
+      "Vitest environments, whose module runner defines require",
+      { ...devServer, config: { ...devServer.config, plugins: [{ name: "vitest:config" }] } },
       ID,
       `export const x = require("x");`,
     ],

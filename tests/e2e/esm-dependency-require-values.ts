@@ -11,4 +11,5 @@ export const ESM_DEPENDENCY_REQUIRE_VALUES: Record<string, string> = {
   configured: "configured",
   browserOnly: "not evaluated",
   shadowed: "local ./exports.js",
+  cycle: "ESM-REQUIRE-DEPENDENCY",
 };

@@ -30,13 +30,20 @@ const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
 const LOWERED_REQUIRE_PREFIX = "__vinext_require_";
 const MODULE_KEYWORD_RE = /\b(?:import|export)\b/;
+const SAME_PACKAGE_SPECIFIER_RE = /^[./#]/;
 type LiteralRequire = {
   call: ESTree.CallExpression;
   argument: ESTree.Node;
   specifier: string;
-  /** Inside a function or class body, where `await` is unavailable. */
-  nested: boolean;
+  /**
+   * Where the call runs: at module level, where it can await; in a class or
+   * TypeScript namespace body, which cannot await but runs as the module
+   * evaluates; or in a function.
+   */
+  context: RequireContext;
 };
+
+type RequireContext = "module" | "evaluation" | "function";
 
 type SyntheticModuleType = "js" | "jsx" | "json" | "ts" | "tsx";
 
@@ -75,14 +82,14 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
 
-  function visit(node: ESTree.Node, parentScope: AstScope, nested: boolean): void {
+  function visit(node: ESTree.Node, parentScope: AstScope, context: RequireContext): void {
     let scope = parentScope;
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
       for (const parameter of node.params) {
         collectBindingNames(parameter, parameterScope.bindings);
-        visit(parameter, parameterScope, true);
+        visit(parameter, parameterScope, "function");
       }
 
       const body = node.body;
@@ -91,19 +98,19 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
         collectDirectScopeBindings(body, bodyScope);
         collectVarScopeBindings(body, bodyScope);
         if (body.type === "BlockStatement") {
-          for (const statement of body.body) visit(statement, bodyScope, true);
+          for (const statement of body.body) visit(statement, bodyScope, "function");
         } else {
-          visit(body, bodyScope, true);
+          visit(body, bodyScope, "function");
         }
       }
       return;
     }
 
     if (node.type === "SwitchStatement") {
-      visit(node.discriminant, parentScope, nested);
+      visit(node.discriminant, parentScope, context);
       const switchScope = createAstScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
-      for (const switchCase of node.cases) visit(switchCase, switchScope, nested);
+      for (const switchCase of node.cases) visit(switchCase, switchScope, context);
       return;
     }
 
@@ -144,22 +151,24 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
         argument &&
         specifier !== null
       ) {
-        requires.push({ call: node, argument, specifier, nested });
+        requires.push({ call: node, argument, specifier, context });
         return;
       }
     }
 
     // Class fields and static blocks cannot await; TypeScript compiles
     // namespace and enum bodies to functions.
-    const childNested =
-      nested ||
-      node.type === "ClassBody" ||
-      node.type === "TSModuleBlock" ||
-      node.type === "TSEnumDeclaration";
-    forEachAstChild(node, (child) => visit(child, scope, childNested));
+    const childContext =
+      context === "module" &&
+      (node.type === "ClassBody" ||
+        node.type === "TSModuleBlock" ||
+        node.type === "TSEnumDeclaration")
+        ? "evaluation"
+        : context;
+    forEachAstChild(node, (child) => visit(child, scope, childContext));
   }
 
-  for (const statement of root.body) visit(statement, rootScope, false);
+  for (const statement of root.body) visit(statement, rootScope, "module");
   return requires;
 }
 
@@ -174,7 +183,9 @@ function isUnbundledServerDependency(environment: Environment, id: string): bool
   return (
     environment.mode === "dev" &&
     environment.config.dev.moduleRunnerTransform === true &&
-    !id.startsWith(environment.config.cacheDir)
+    !id.startsWith(environment.config.cacheDir) &&
+    // Vitest's module runner defines `require` in the modules it evaluates.
+    !environment.config.plugins.some((plugin) => plugin.name.startsWith("vitest:"))
   );
 }
 
@@ -183,10 +194,17 @@ function isUnbundledServerDependency(environment: Environment, id: string): bool
  * @vitejs/plugin-rsc lowers them in the CommonJS dependencies it converts for
  * the module runner, with its interop for the result. A module-level call
  * awaits `import()` in place, so statements keep their order and a call that
- * never runs never loads. A call inside a function cannot await, so its
- * target loads when the module starts to evaluate, and a load error is thrown
- * by the call rather than by the module, as `try`/`catch` around the call
- * expects. Code is inserted without newlines, keeping line numbers.
+ * never runs never loads. A call inside a function cannot await, so its target
+ * loads ahead of the call, and a load error is thrown by the call rather than
+ * by the module, as `try`/`catch` around the call expects. A package or
+ * builtin loads when the module starts to evaluate, so a function the module
+ * calls while evaluating, such as a bundled `__commonJS` wrapper, can require
+ * it, and so does anything a class or namespace body requires. A file of the
+ * same package that only functions require loads after the module has
+ * evaluated: such a lazy `require()` usually breaks an import cycle, and
+ * loading it first would evaluate the cycle before this module's bindings
+ * exist. Code is inserted
+ * without newlines before the end, keeping line numbers.
  */
 function lowerRequires(
   code: string,
@@ -198,10 +216,20 @@ function lowerRequires(
   const interop = `${prefix}_`;
   const load = `${prefix}load__`;
   const output = new MagicString(code);
+  // Same-package files that only functions require load after the module.
+  const loadsLast = new Set(
+    requires.flatMap(({ specifier }) =>
+      SAME_PACKAGE_SPECIFIER_RE.test(specifier) ? [specifier] : [],
+    ),
+  );
+  for (const { specifier, context } of requires) {
+    if (context === "evaluation") loadsLast.delete(specifier);
+  }
   const hoisted = new Map<string, string>();
-  for (const { call, argument, specifier, nested } of requires) {
+  let deferred = "";
+  for (const { call, argument, specifier, context } of requires) {
     const target = code.slice(argument.start, argument.end);
-    if (!nested) {
+    if (context === "module") {
       output.update(call.start, argument.start, `${interop}(await import(`);
       output.update(argument.end, call.end, "))");
       continue;
@@ -210,10 +238,9 @@ function lowerRequires(
     if (!name) {
       name = `${prefix}${hoisted.size}__`;
       hoisted.set(specifier, name);
-      output.appendLeft(
-        hoistPosition(code, program),
-        `const ${name} = await ${load}(import(${target}));`,
-      );
+      const declaration = `const ${name} = await ${load}(import(${target}));`;
+      if (loadsLast.has(specifier)) deferred += `\n${declaration}`;
+      else output.appendLeft(hoistPosition(code, program), declaration);
     }
     output.update(call.start, call.end, `${name}()`);
   }
@@ -221,7 +248,8 @@ function lowerRequires(
   // wrapper when plugin-rsc converted it or its default export holds every
   // other export, as Node's CommonJS and builtin namespaces do.
   output.append(
-    `\nfunction ${interop}(m) { return m.__cjs_module_runner_transform || ("default" in m && Object.keys(m).every((k) => k === "default" || m[k] === m.default?.[k])) ? m.default : m; }` +
+    deferred +
+      `\nfunction ${interop}(m) { return m.__cjs_module_runner_transform || ("default" in m && Object.keys(m).every((k) => k === "default" || m[k] === m.default?.[k])) ? m.default : m; }` +
       (hoisted.size > 0
         ? `\nfunction ${load}(load) { return load.then((m) => () => ${interop}(m), (error) => () => { throw error; }); }`
         : ""),
