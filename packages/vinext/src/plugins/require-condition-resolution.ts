@@ -309,16 +309,17 @@ export function createRequireConditionResolutionPlugin(
         if (commonjsDisposition === false) return null;
         if (commonjsDisposition !== true && cleanId.includes("node_modules")) {
           if (!isUnbundledServerDependency(this.environment, id)) return null;
-          // Lower only the ES modules @vitejs/plugin-rsc leaves as they are: files
-          // with module syntax, `.mjs`/`.mts`, and `.js` in a `"type": "module"`
-          // package. It converts the remaining CommonJS. Most CommonJS never
-          // mentions `import` or `export`, so it skips the parse, and the module
-          // record rules out the rest before their AST is read.
+          // Lower only the ES modules @vitejs/plugin-rsc leaves as they are. It
+          // converts a `.js` file without module syntax outside a
+          // `"type": "module"` package as CommonJS; the module runner evaluates
+          // every other file as ESM. Most CommonJS never mentions `import` or
+          // `export`, so it skips the parse, and the module record rules out the
+          // rest before their AST is read.
           if (/\.c[jt]s$/i.test(cleanId)) return null;
           const lang = scriptParserLanguage(id) ?? "jsx";
           let parsed = MODULE_KEYWORD_RE.test(code) ? parseProgramResult(code, { lang }) : null;
           if (!parsed?.module.hasModuleSyntax) {
-            if (!/\.mts$/i.test(cleanId) && !canNodeImport(cleanId)) return null;
+            if (/\.js$/i.test(cleanId) && !canNodeImport(cleanId)) return null;
             parsed ??= parseProgramResult(code, { lang });
           }
           if (!parsed) return null;

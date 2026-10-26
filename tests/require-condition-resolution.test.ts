@@ -479,15 +479,18 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it.each(["mjs", "mts"])("lowers .%s dependencies without module syntax", async (extension) => {
-    const { transform } = createDependencyTransform();
-    const result = await transform(
-      `const x = require("x");`,
-      `/app/node_modules/dependency/index.${extension}`,
-    );
+  it.each(["mjs", "mts", "ts", "jsx"])(
+    "lowers .%s dependencies without module syntax",
+    async (extension) => {
+      const { transform } = createDependencyTransform();
+      const result = await transform(
+        `const x = require("x");`,
+        `/app/node_modules/dependency/index.${extension}`,
+      );
 
-    expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
-  });
+      expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
+    },
+  );
 
   it('lowers .js dependencies without module syntax in a "type": "module" package', async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-type-module-"));
