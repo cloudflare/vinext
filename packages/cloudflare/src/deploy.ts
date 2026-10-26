@@ -2284,7 +2284,13 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // This is the most common cause of "could not resolve virtual:vinext-rsc-entry"
   // errors — `vinext init --platform=cloudflare` adds it via an AST update.
   if (hasViteConfig && !viteConfigHasCloudflarePlugin(root, viteConfigFile)) {
-    throw new Error(formatMissingCloudflarePluginError({ isAppRouter: info.isAppRouter }));
+    throw new Error(
+      formatMissingCloudflarePluginError({
+        isAppRouter: info.isAppRouter,
+        configFile: viteConfigFile,
+        initUpdatesConfig: !viteConfigFile,
+      }),
+    );
   }
 
   // Fail if the app uses ISR/caching but no cache adapter is configured. vinext
@@ -2300,12 +2306,17 @@ export async function deploy(options: DeployOptions): Promise<void> {
     !viteConfigHasCacheAdapter(root, viteConfigFile) &&
     !workerEntryHasCacheHandler(root)
   ) {
-    throw new Error(formatMissingCacheAdapterError({ typedConfig: deploymentTool === "cf" }));
+    throw new Error(
+      formatMissingCacheAdapterError({
+        configFile: viteConfigFile,
+        typedConfig: deploymentTool === "cf",
+      }),
+    );
   }
 
   if (!viteConfigHasImageAdapter(root, viteConfigFile)) {
     console.log();
-    console.log(formatImageOptimizationHint(deploymentTool === "cf"));
+    console.log(formatImageOptimizationHint(deploymentTool === "cf", viteConfigFile));
   }
 
   if (options.dryRun) {

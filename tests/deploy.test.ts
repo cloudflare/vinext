@@ -1751,6 +1751,12 @@ describe("formatImageOptimizationHint", () => {
     expect(message).toContain("cloudflare.config.ts");
     expect(message).not.toContain("Wrangler");
   });
+
+  it("does not suggest init for a --vite-config file", () => {
+    const message = formatImageOptimizationHint(false, "/project/vite.web.config.ts");
+    expect(message).toContain("imagesOptimizer() in\n  /project/vite.web.config.ts");
+    expect(message).not.toContain("vinext init");
+  });
 });
 
 describe("scanPublicFileRoutes", () => {
@@ -3161,6 +3167,16 @@ describe("formatMissingCloudflarePluginError", () => {
       configFile: "/project/vite.config.mts",
     });
     expect(msg).toContain("/project/vite.config.mts");
+  });
+
+  it("does not suggest init when it would not update the config file", () => {
+    const msg = formatMissingCloudflarePluginError({
+      isAppRouter: false,
+      configFile: "/project/vite.web.config.ts",
+      initUpdatesConfig: false,
+    });
+    expect(msg).toContain("Add it to /project/vite.web.config.ts.");
+    expect(msg).not.toContain("vinext init");
   });
 
   it("uses generic 'your Vite config' when configFile is undefined", () => {

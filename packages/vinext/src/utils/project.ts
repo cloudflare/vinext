@@ -272,15 +272,21 @@ export function findViteConfigPath(root: string): string | undefined {
 export function formatMissingCloudflarePluginError(options: {
   isAppRouter: boolean;
   configFile?: string;
+  /** False when configFile is not the root vite.config.* that `vinext init` updates. */
+  initUpdatesConfig?: boolean;
 }): string {
   const cfArg = options.isAppRouter
     ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
     : "";
   const configRef = options.configFile ? options.configFile : "your Vite config";
+  const remedy =
+    options.initUpdatesConfig === false
+      ? `Add it to ${configRef}.`
+      : `Run \`vinext init --platform=cloudflare\` to update ${configRef}.`;
   return (
     `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
     `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
-    `  Run \`vinext init --platform=cloudflare\` to update ${configRef}.\n\n` +
+    `  ${remedy}\n\n` +
     `  Expected plugin shape:\n\n` +
     `    cloudflare(${cfArg})`
   );

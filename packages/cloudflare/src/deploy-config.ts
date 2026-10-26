@@ -237,7 +237,15 @@ export function formatMissingCacheAdapterError(options: {
   );
 }
 
-export function formatImageOptimizationHint(typedConfig = false): string {
+export function formatImageOptimizationHint(typedConfig = false, configFile?: string): string {
+  // `vinext init` only updates the root vite.config.*.
+  if (configFile) {
+    return (
+      `  [vinext] next/image is served unoptimized. To enable edge image\n` +
+      `  optimization via Cloudflare Images, configure imagesOptimizer() in\n` +
+      `  ${configFile} and the IMAGES binding in ${typedConfig ? "cloudflare.config.ts" : "your Wrangler config"}.`
+    );
+  }
   if (typedConfig) {
     return (
       `  [vinext] next/image is served unoptimized. To enable edge image\n` +
