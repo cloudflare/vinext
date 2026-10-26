@@ -22,6 +22,9 @@ test.beforeAll(async ({ baseURL, request }) => {
 });
 
 test.describe("fallback shells on a warmed deploy", () => {
+  // A failed attempt can leave the shell stored, so a retry would skip the cold
+  // runtime production this suite checks.
+  test.describe.configure({ retries: 0 });
   test.skip(!backend, "requires app-router-playground deployed with a cache backend");
 
   test("serves a generated param as a concrete page", async ({ baseURL, request }) => {
@@ -65,7 +68,8 @@ test.describe("fallback shells on a warmed deploy", () => {
     });
     page.on("pageerror", (error) => errors.push(error.message));
     const id = randomUUID();
-    await page.goto(`${baseURL}${route}/${id}`);
+    const response = await page.goto(`${baseURL}${route}/${id}`);
+    expect(response?.headers()["x-nextjs-postponed"]).toBe("1");
     await expect(page.locator("#param")).toHaveText(id);
     expect(errors).toEqual([]);
   });
