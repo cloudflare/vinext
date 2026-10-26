@@ -1099,6 +1099,32 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  test("regenerates a public config policy's page entry alone", async () => {
+    // A config policy keys the entry by its full URL, so the live request
+    // stores only its own part, and so does its regeneration.
+    const pathname = "/cached/public-policy";
+    const readId = async () => {
+      const id = (await (await request(pathname)).text()).match(/data-render-id="([^"]+)"/)?.[1];
+      assert.ok(id);
+      return id;
+    };
+    const storedId = await readId();
+    await waitForResponseEntries(pathname, 1);
+    const revalidate = await request("/api/revalidate-tag", {
+      body: JSON.stringify({ tag: "post:public-policy" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    assert.equal(revalidate.status, 200, await revalidate.text());
+    let regeneratedId = storedId;
+    for (let attempt = 0; attempt < 40 && regeneratedId === storedId; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      regeneratedId = await readId();
+    }
+    assert.notEqual(regeneratedId, storedId);
+    assert.equal((await responseEntries(pathname)).length, 1);
+  });
+
   test("seeds canonical RSC from one HTML warmup request", async () => {
     const pathname = "/cached/intro";
     const html = await request(pathname, {

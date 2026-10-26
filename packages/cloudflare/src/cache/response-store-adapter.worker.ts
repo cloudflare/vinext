@@ -81,6 +81,8 @@ type SerializedInvocation = {
 export type VinextResponseStoreEnv = WorkersResponseStoreClientEnv | WorkersResponseStoreEnv;
 
 const ROUTE_REVALIDATOR_ID = "vinext:response";
+/** Leads the revalidator args of a page part whose render stores both parts. */
+const PAGE_PARTS_REVALIDATOR_ARG = "vinext:page-parts";
 const RESPONSE_STORE_KEY_PARAM = "__workers_response_store";
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
@@ -239,10 +241,9 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
         const invocation = parseInvocation(input.args.at(-1));
         const request = restoreRequest(invocation);
         // Regenerating one part of a page rewrites the other too, as the
-        // render that stored it did. Only a page's query-free identity has
-        // the other part.
+        // render that stored it did.
         const otherPart =
-          request.method === "GET" && isQueryFreeRequest(request)
+          input.args.length > 1 && input.args[0] === PAGE_PARTS_REVALIDATOR_ARG
             ? otherPagePart(request, invocation.props)
             : undefined;
         const capture = otherPagePartCapture(otherPart);
@@ -396,11 +397,17 @@ function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean):
   );
 }
 
-/** Whether a request's only query is an RSC request's cache-busting `_rsc`. */
-function isQueryFreeRequest(request: Request): boolean {
-  const url = new URL(request.url);
-  stripRscCacheBustingSearchParam(url);
-  return url.search === "";
+/**
+ * The revalidator of a page part. One whose render stores the page's other
+ * part says so, as a public config policy's full-URL entry stores its own.
+ */
+function routeRevalidator(serializedInvocation: string, storesOtherPart: boolean) {
+  return {
+    id: ROUTE_REVALIDATOR_ID,
+    args: storesOtherPart
+      ? [PAGE_PARTS_REVALIDATOR_ARG, serializedInvocation]
+      : [serializedInvocation],
+  };
 }
 
 /** The invocation an RSC navigation to an HTML invocation's page stores under. */
@@ -529,7 +536,7 @@ async function putOtherPagePart(
     // One part can miss, or regenerate, beside the other part stored, which
     // this replaces.
     purgeExisting: true,
-    revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(part.invocation)] },
+    revalidator: routeRevalidator(JSON.stringify(part.invocation), true),
   });
   // An unpublished write leaves the pair to the next miss. A purge, as for the
   // data cache's replacements, is best-effort: the edge keeps an earlier
@@ -814,7 +821,7 @@ const handler = {
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
-                revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
+                revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
               });
             })
             .catch((error) => {
@@ -857,7 +864,7 @@ const handler = {
         await putOtherPagePart(otherPart, capture, cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
-          revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
+          revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
         });
       } catch (error) {
         // Warming must confirm persistence; ordinary requests can serve the render.
