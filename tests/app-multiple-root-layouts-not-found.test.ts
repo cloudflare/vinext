@@ -106,11 +106,6 @@ export default function Page() { return <p>broken page</p>; }
 `,
 };
 
-/** The HTML without its scripts, which carry the Flight payload. */
-function visibleHtml(html: string): string {
-  return html.replace(/<script\b[\s\S]*?<\/script>/g, "");
-}
-
 describe("multiple root layouts: not-found boundaries stay in their root layout's tree", () => {
   let root: string;
   let server: ViteDevServer;
@@ -173,7 +168,7 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
       expect(html).toContain("This page could not be found.");
       // The built-in not-found has no metadata, so the recovered head adds no
       // title, as in Next.js. Only the built-in page's own title may render.
-      expect(visibleHtml(html)).not.toMatch(/<title>(?!404: This page could not be found\.)/);
+      expect(html).not.toMatch(/<title>(?!404: This page could not be found\.)/);
     },
   );
 
