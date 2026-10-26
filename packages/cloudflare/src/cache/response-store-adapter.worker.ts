@@ -660,7 +660,9 @@ const handler = {
       const serializedInvocation = JSON.stringify(invocation);
       // Admission sets the document before it completes the response. It is
       // stored first, so a failed write leaves the RSC entry missing too and
-      // the next RSC miss retries both.
+      // the next RSC miss retries both. Concurrent misses coalesce each key on
+      // its own, so their parts can come from different renders of the page,
+      // as an HTML miss's and a concurrent RSC miss's can.
       const putDocument = async (stored: Response) => {
         if (!documentInvocation || !capture.document) return;
         const result = await responseStore.put(
