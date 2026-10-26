@@ -244,6 +244,18 @@ function applyRscRenderStatus(
   };
 }
 
+/** Hand an adapter the document; its failure never holds back admission. */
+function settleAdmittedDocument(
+  capture: ((document: CdnAppPageDocument | null) => void) | undefined,
+  document: CdnAppPageDocument | null,
+): void {
+  try {
+    capture?.(document);
+  } catch (error) {
+    console.error("[vinext] CDN adapter document capture error:", error);
+  }
+}
+
 function finalizeEvaluatedAppPageResponse(
   response: Response,
   options: FinalizeAppPageCacheabilityEvaluationOptions,
@@ -251,7 +263,7 @@ function finalizeEvaluatedAppPageResponse(
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
   if (!complete) {
-    options.captureAdmittedDocument?.(null);
+    settleAdmittedDocument(options.captureAdmittedDocument, null);
     return response;
   }
   captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
@@ -275,7 +287,8 @@ function finalizeEvaluatedAppPageResponse(
       : { cacheable: false, reason: "render did not produce a cache policy" };
     const admitted = renderStatus ? applyRscRenderStatus(outcome, renderStatus) : outcome;
     // Every query shares the document's entry too.
-    options.captureAdmittedDocument?.(
+    settleAdmittedDocument(
+      options.captureAdmittedDocument,
       admitted.cacheable && admitted.searchParamsUnread === true && renderStatus?.kind === "page"
         ? (renderStatus.document ?? null)
         : null,
@@ -308,7 +321,7 @@ function finalizeEvaluatedAppPageResponse(
     }
     if (ineligible) {
       options.consumeRenderObservationState?.();
-      options.captureAdmittedDocument?.(null);
+      settleAdmittedDocument(options.captureAdmittedDocument, null);
       complete(ineligible);
       return;
     }
@@ -321,7 +334,7 @@ function finalizeEvaluatedAppPageResponse(
     // does.
     void options.resolveRscRenderStatus().then(admit, () => {
       options.consumeRenderObservationState?.();
-      options.captureAdmittedDocument?.(null);
+      settleAdmittedDocument(options.captureAdmittedDocument, null);
       complete({ cacheable: false, reason: "render status could not be resolved" });
     });
   };
@@ -500,7 +513,7 @@ export function finalizeAppPageRscCacheResponse(
     void options.capturedRscDataPromise?.catch(() => {});
     return probeResponse;
   }
-  options.captureAdmittedDocument?.(null);
+  settleAdmittedDocument(options.captureAdmittedDocument, null);
   // Persisting to the ISR store and finalizing the client-facing headers are
   // independent decisions. Mounted-slot and unverified-interception variants
   // are deliberately never stored, but a fresh MISS stream can still reach a

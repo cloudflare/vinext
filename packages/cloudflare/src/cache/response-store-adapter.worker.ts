@@ -40,7 +40,6 @@ import {
   createCanonicalRscRequestHeaders,
   createCanonicalRscRequestUrl,
   stripRscCacheBustingSearchParam,
-  stripRscSuffix,
   VINEXT_RSC_BUILD_ID_HEADER,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
@@ -374,7 +373,6 @@ function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean):
 /** The request an HTML request for an RSC request's page dispatches. */
 function documentRequest(rscRequest: Request): Request {
   const url = new URL(rscRequest.url);
-  url.pathname = stripRscSuffix(url.pathname);
   stripRscCacheBustingSearchParam(url);
   return new Request(url);
 }
@@ -636,11 +634,15 @@ const handler = {
 
       // Next.js keeps a page's document and RSC payload in one entry, so an
       // RSC miss stores the page's document under the key an HTML request for
-      // the page reads, the reverse of the warm-up's RSC seed.
+      // the page reads, the reverse of the warm-up's RSC seed. A `.rsc` path
+      // reaches its page's HTML path only through the app's trailingSlash
+      // policy, and vinext's client never sends one, so it stores its payload
+      // alone.
       const documentInvocation =
         !isWarmup &&
         options.cacheIdentity &&
         stageRequest.method === "GET" &&
+        !new URL(identityRequest.url).pathname.endsWith(".rsc") &&
         isCanonicalAppPage(props, true)
           ? prepareInvocation(documentRequest(identityRequest), {
               ...(identityProps as Record<string, unknown>),

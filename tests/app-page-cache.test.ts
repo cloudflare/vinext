@@ -2409,6 +2409,7 @@ describe("an RSC miss's document under completed-response admission", () => {
   // An adapter that stores completed responses takes the page's document from
   // admission, as an origin store takes it from the RSC cache write.
   async function admitRscMiss(options: {
+    captureThrows?: boolean;
     dynamicUsage?: boolean;
     readsSearchParams?: boolean;
     renderStatus: AppPageRscRenderStatus;
@@ -2431,6 +2432,7 @@ describe("an RSC miss's document under completed-response admission", () => {
         ...queryInvariantObservationBuilders,
         captureAdmittedDocument(document) {
           documents.push(document);
+          if (options.captureThrows) throw new Error("capture failed");
         },
         capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
         cleanPathname: "/rsc-miss",
@@ -2495,6 +2497,22 @@ describe("an RSC miss's document under completed-response admission", () => {
     const { documents } = await admitRscMiss(options);
 
     expect(documents).toEqual([null]);
+  });
+
+  it("completes admission when the adapter fails to keep the document", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const { documents, outcome } = await admitRscMiss({
+        captureThrows: true,
+        renderStatus: { kind: "page", document },
+      });
+
+      expect(documents).toEqual([document]);
+      expect(outcome).toMatchObject({ cacheable: true });
+      expect(consoleError).toHaveBeenCalledOnce();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });
 

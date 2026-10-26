@@ -402,8 +402,6 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
     const firstRsc = await request("/static-default.rsc?_rsc=", rscInit);
     await firstRsc.arrayBuffer();
-    // An RSC miss is stored once the page's document has rendered from it.
-    await waitForResponseEntries("/static-default", 2);
     const secondRsc = await request("/static-default.rsc?_rsc=", rscInit);
     await secondRsc.arrayBuffer();
     assert.equal(secondRsc.status, 200);
@@ -956,11 +954,16 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const init = { headers: { Accept: "text/x-component", RSC: "1" } };
     const firstRsc = await request("/cached/rsc.rsc?_rsc=", init);
     const firstBody = await firstRsc.text();
-    await waitForResponseEntries("/cached/rsc", 2);
+    await waitForResponseEntries("/cached/rsc", 1);
     const secondRsc = await request("/cached/rsc.rsc?_rsc=", init);
     assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await secondRsc.text(), firstBody);
+    // A `.rsc` path reaches its page's HTML path only through the app's
+    // trailingSlash policy, so it stores its payload alone.
+    const document = await request("/cached/rsc");
+    assert.equal(document.headers.get("x-vinext-cache"), "MISS");
+    await document.arrayBuffer();
   });
 
   test("stores the page's document when an RSC request misses its entry", async () => {
@@ -987,10 +990,13 @@ describe("Cloudflare Workers Response Store adapter", () => {
     assert.equal(html.headers.get("x-vinext-cache"), "MISS");
     await html.arrayBuffer();
     await waitForResponseEntries("/cached/html-first", 1);
-    const storedHeaders = async (pathname: string) =>
-      (await responseEntries(pathname))
-        .map((entry) => entry.responseHeaders as Record<string, string>)
-        .find((headers) => headers["content-type"]?.startsWith("text/html"));
+    const storedHeaders = async (pathname: string) => {
+      const headers = (await responseEntries(pathname))
+        .map((entry) => new Headers(entry.responseHeaders as [string, string][]))
+        .find((headers) => headers.get("content-type")?.startsWith("text/html"));
+      assert.ok(headers, `missing the stored document of ${pathname}`);
+      return Object.fromEntries(headers);
+    };
     assert.deepEqual(
       await storedHeaders("/cached/rsc-first"),
       await storedHeaders("/cached/html-first"),
