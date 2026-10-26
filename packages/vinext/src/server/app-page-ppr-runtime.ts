@@ -139,7 +139,15 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
       cached ? "RENDER (expired fallback shell)" : "RENDER (fallback shell)",
       fallbackPathname,
     );
-    cached = await coalesceFallbackShellProduction(key, produce);
+    try {
+      cached = await coalesceFallbackShellProduction(key, produce);
+    } catch (renderError) {
+      // Like a failed read, a shell that can't be produced leaves the request
+      // to the normal render.
+      options.isrDebug?.("MISS (fallback shell render error)", fallbackPathname);
+      console.error("[vinext] ISR fallback shell render error:", renderError);
+      return null;
+    }
     if (cached === null) return null;
   }
 
@@ -204,7 +212,15 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceDynamic,
     );
     if (decision.kind !== "probe-fallback-shells") return null;
-    const fallbackShell = await resolveEligibleFallbackShell(options, decision.fallbackShells);
+    let fallbackShell: AppPagePprFallbackCacheShell | null;
+    try {
+      fallbackShell = await resolveEligibleFallbackShell(options, decision.fallbackShells);
+    } catch (paramsError) {
+      // The normal render reports a throwing generateStaticParams itself.
+      options.isrDebug?.("MISS (fallback shell params error)", options.cleanPathname);
+      console.error("[vinext] ISR fallback shell params error:", paramsError);
+      return null;
+    }
     return fallbackShell
       ? serveFallbackShell(options, fallbackShell, currentRevalidateSeconds, isForceStatic)
       : null;
