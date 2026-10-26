@@ -479,11 +479,11 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     expect(resolve).not.toHaveBeenCalled();
   });
 
-  it("lowers .mjs dependencies without module syntax", async () => {
+  it.each(["mjs", "mts"])("lowers .%s dependencies without module syntax", async (extension) => {
     const { transform } = createDependencyTransform();
     const result = await transform(
       `const x = require("x");`,
-      "/app/node_modules/dependency/index.mjs",
+      `/app/node_modules/dependency/index.${extension}`,
     );
 
     expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
