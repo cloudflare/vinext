@@ -334,23 +334,37 @@ function enhanceApiObjects(
     },
 
     send(this: NextApiResponse, data: unknown) {
-      if (Buffer.isBuffer(data)) {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "application/octet-stream");
-        }
-        this.setHeader("Content-Length", String(data.length));
-        this.end(data);
-        return;
-      }
-
-      if (typeof data === "object" && data !== null) {
-        this.setHeader("Content-Type", "application/json");
-        this.end(JSON.stringify(data));
-      } else {
-        if (!this.getHeader("Content-Type")) {
-          this.setHeader("Content-Type", "text/plain");
-        }
-        this.end(String(data));
+      switch (typeof data) {
+        case "undefined":
+          this.end();
+          return;
+        case "object":
+          if (data === null) {
+            this.end();
+            return;
+          }
+          if (Buffer.isBuffer(data)) {
+            if (!this.getHeader("Content-Type")) {
+              this.setHeader("Content-Type", "application/octet-stream");
+            }
+            this.setHeader("Content-Length", String(data.length));
+            this.end(data);
+            return;
+          }
+          this.json(data);
+          return;
+        case "number":
+        case "boolean":
+          this.json(data);
+          return;
+        case "bigint":
+        case "function":
+        case "string":
+        case "symbol":
+          if (!this.getHeader("Content-Type")) {
+            this.setHeader("Content-Type", "text/plain");
+          }
+          this.end(String(data));
       }
     },
 
