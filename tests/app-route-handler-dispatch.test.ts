@@ -861,59 +861,66 @@ describe("app route handler dispatch", () => {
     forceDynamicSpy.mockRestore();
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the handler runs in the foreground and is stored.
   it.each([
-    { isOnDemandRevalidate: true, name: "an on-demand revalidation" },
-    { isOnDemandRevalidate: false, name: "an ordinary request" },
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
   ])(
-    "carries $name's data cache read policy into the regeneration it triggers",
-    async ({ isOnDemandRevalidate }) => {
-      const regenerationReadPolicy: boolean[] = [];
-      let scheduledRender: (() => Promise<void>) | undefined;
+    "regenerates a $name entry in the foreground for an on-demand revalidation",
+    async ({ isStale }) => {
+      const readPolicy: boolean[] = [];
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedRouteValue("stored"), isStale),
+      );
+      const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+      const scheduleBackgroundRegeneration = vi.fn();
 
-      await runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), async () => {
-        const response = await dispatchAppRouteHandler({
-          cleanPathname: "/api/stale-on-demand",
-          clearRequestContext() {},
-          draftModeSecret: "test-draft-secret",
-          i18n: null,
-          isDevelopment: false,
-          isProduction: true,
-          async isrGet() {
-            return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
-          },
-          isrRouteKey(pathname) {
-            return "route:" + pathname;
-          },
-          async isrSet() {},
-          middlewareContext: { headers: null, status: null },
-          middlewareRequestHeaders: null,
-          params: {},
-          request: new Request("https://example.com/api/stale-on-demand"),
-          route: {
-            pattern: "/api/stale-on-demand",
-            routeHandler: {
-              revalidate: 60,
-              GET() {
-                regenerationReadPolicy.push(_isOnDemandRevalidate());
-                return new Response("regenerated");
-              },
+      await runWithRequestContext(
+        createRequestContext({ isOnDemandRevalidate: true }),
+        async () => {
+          const response = await dispatchAppRouteHandler({
+            cleanPathname: "/api/on-demand",
+            clearRequestContext() {},
+            draftModeSecret: "test-draft-secret",
+            i18n: null,
+            isDevelopment: false,
+            isProduction: true,
+            isrGet,
+            isrRouteKey(pathname) {
+              return "route:" + pathname;
             },
-            routeSegments: ["api", "stale-on-demand"],
-          },
-          scheduleBackgroundRegeneration(_key, renderFn) {
-            scheduledRender = renderFn;
-          },
-          searchParams: new URLSearchParams(),
-        });
+            isrSet,
+            middlewareContext: { headers: null, status: null },
+            middlewareRequestHeaders: null,
+            params: {},
+            request: new Request("https://example.com/api/on-demand", {
+              headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+            }),
+            route: {
+              pattern: "/api/on-demand",
+              routeHandler: {
+                revalidate: 60,
+                GET() {
+                  readPolicy.push(_isOnDemandRevalidate());
+                  return new Response("regenerated");
+                },
+              },
+              routeSegments: ["api", "on-demand"],
+            },
+            scheduleBackgroundRegeneration,
+            searchParams: new URLSearchParams(),
+          });
 
-        expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-        if (typeof scheduledRender !== "function") {
-          throw new Error("expected stale route handler cache to schedule regeneration");
-        }
-        await scheduledRender();
-      });
+          expect(await response.text()).toBe("regenerated");
+        },
+      );
 
-      expect(regenerationReadPolicy).toEqual([isOnDemandRevalidate]);
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+      expect(readPolicy).toEqual([true]);
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet.mock.calls[0]?.[0]).toBe("route:/api/on-demand");
     },
   );
 

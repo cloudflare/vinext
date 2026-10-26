@@ -553,9 +553,6 @@ async function runAppPageRevalidationContext<
   },
   renderFn: () => Promise<TResult>,
 ): Promise<TResult> {
-  // An authorized on-demand revalidation regenerates from fresh data, like
-  // the request that triggered it.
-  const isOnDemandRevalidate = _isOnDemandRevalidate();
   const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
   const headersContext = createStaticGenerationHeadersContext({
     draftModeEnabled: false,
@@ -570,7 +567,6 @@ async function runAppPageRevalidationContext<
     currentFetchRevalidate: options.currentFetchRevalidate ?? null,
     currentForceDynamicFetchDefault: options.dynamicConfig === "force-dynamic",
     executionContext: getRequestExecutionContext(),
-    isOnDemandRevalidate,
     rootParams: options.rootParams ?? null,
     unstableCacheRevalidation: "foreground",
   });
@@ -827,8 +823,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // fallback shells follow cacheComponents' model instead.
   const isNeverStoredPath =
     options.pprRuntime === undefined && hasNoManifestAdmissionState(route.pattern);
+  // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+  // serves the stored entry: it renders in the foreground and stores that.
   const shouldReadCache =
-    !isRouteCacheabilityProbe() && isCacheEligibleRender && !isNeverStoredPath;
+    !isRouteCacheabilityProbe() &&
+    isCacheEligibleRender &&
+    !isNeverStoredPath &&
+    !_isOnDemandRevalidate();
   // A render that may be stored, and so must not let the request's query reach
   // its output unless it turns out dynamic. The Workers Cache deploy probe
   // renders this way too, so its manifest matches the runtime. A

@@ -1533,7 +1533,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
     if (cacheValue) {
-      handler
+      const write = handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,
           tags,
@@ -1542,6 +1542,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);
         });
+      // Next.js keeps the request alive for its pending fetch cache writes, so
+      // an on-demand revalidation's fresh response is stored.
+      getRequestExecutionContext()?.waitUntil(write);
     }
 
     return recordFetchOutcome(response, "miss", cacheReason);

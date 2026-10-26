@@ -9,10 +9,7 @@ import {
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import {
-  _drainPendingRevalidations,
-  _isOnDemandRevalidate,
-} from "vinext/shims/cache-request-state";
+import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
   getActiveDraftModeState,
@@ -142,9 +139,6 @@ async function runInRouteHandlerRevalidationContext(
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
-  // An authorized on-demand revalidation regenerates from fresh data, like
-  // the request that triggered it.
-  const isOnDemandRevalidate = _isOnDemandRevalidate();
   const headersContext = createStaticGenerationHeadersContext({
     draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
@@ -155,7 +149,6 @@ async function runInRouteHandlerRevalidationContext(
   const requestContext = createRequestContext({
     headersContext,
     executionContext: getRequestExecutionContext(),
-    isOnDemandRevalidate,
     // Regeneration runs the handler directly, so it needs the phase that
     // executeAppRouteHandler() would have set for a live request.
     phase: "route-handler",
@@ -269,7 +262,14 @@ async function dispatchAppRouteHandlerImpl(
   }
 
   const resolvedHandlerFn = isAppRouteHandlerFunction(handlerFn) ? handlerFn : undefined;
+  const isOnDemandRevalidate = isOnDemandRevalidateRequest(
+    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
+  );
+  // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+  // serves the stored entry: it runs the handler in the foreground and stores
+  // that.
   const shouldReadRouteCache =
+    !isOnDemandRevalidate &&
     options.bypassSharedCache !== true &&
     revalidateSeconds !== null &&
     !getRouteCacheabilityDynamicReason() &&
@@ -283,9 +283,7 @@ async function dispatchAppRouteHandlerImpl(
       method,
       revalidateSeconds,
     });
-  const revalidateReason = isOnDemandRevalidateRequest(
-    options.request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  )
+  const revalidateReason = isOnDemandRevalidate
     ? "on-demand"
     : shouldReadRouteCache && revalidateSeconds !== Infinity
       ? "stale"

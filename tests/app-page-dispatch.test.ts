@@ -3764,52 +3764,43 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the render runs in the foreground and is stored.
   it.each([
-    { isOnDemandRevalidate: true, name: "an on-demand revalidation" },
-    { isOnDemandRevalidate: false, name: "an ordinary request" },
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
   ])(
-    "carries $name's data cache read policy into the regeneration it triggers",
-    async ({ isOnDemandRevalidate }) => {
-      const regenerationReadPolicy: boolean[] = [];
-      let scheduledRender: (() => Promise<unknown>) | null = null;
+    "regenerates a $name entry in the foreground for an on-demand revalidation",
+    async ({ isStale }) => {
+      const readPolicy: boolean[] = [];
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stored</html>"), isStale),
+      );
+      const scheduleBackgroundRegeneration = vi.fn();
       const { options } = createDispatchOptions({
         async buildPageElement() {
-          regenerationReadPolicy.push(_isOnDemandRevalidate());
+          readPolicy.push(_isOnDemandRevalidate());
           return React.createElement("div", null, "fresh");
         },
         isProduction: true,
-        isrGet: vi.fn(async () =>
-          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
-        ),
-        loadSsrHandler: async () => ({
-          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
-            if (captureOptions?.capturedRscDataRef) {
-              captureOptions.capturedRscDataRef.value = Promise.resolve(
-                new TextEncoder().encode("fresh-flight").buffer,
-              );
-            }
-            void captureOptions?.sideStream?.cancel().catch(() => {});
-            return createStream(["<html>fresh</html>"]);
-          },
-        }),
-        renderToReadableStream: () => createStream(["fresh-flight"]),
+        isrGet,
         revalidateSeconds: 60,
-        scheduleBackgroundRegeneration(_key, renderFn) {
-          scheduledRender = renderFn;
+        scheduleBackgroundRegeneration,
+      });
+
+      await runWithRequestContext(
+        createRequestContext({ isOnDemandRevalidate: true }),
+        async () => {
+          const response = await dispatchAppPage(options);
+          expect(response.headers.get("x-vinext-cache")).not.toBe(isStale ? "STALE" : "HIT");
+          expect(await response.text()).not.toContain("stored");
         },
-      });
+      );
 
-      await runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), async () => {
-        const response = await dispatchAppPage(options);
-        expect(response.headers.get("x-vinext-cache")).toBe("STALE");
-        await response.text();
-        if (scheduledRender === null) {
-          throw new Error("expected the stale entry to schedule regeneration");
-        }
-        await scheduledRender();
-      });
-
-      expect(regenerationReadPolicy).toEqual([isOnDemandRevalidate]);
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+      expect(readPolicy).toEqual([true]);
+      await vi.waitFor(() => expect(options.isrSet).toHaveBeenCalled());
     },
   );
 
