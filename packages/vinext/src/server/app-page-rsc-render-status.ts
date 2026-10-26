@@ -37,6 +37,11 @@ export type AppPageRscRenderStatus =
 /** What the page's document renders with, as an HTML request renders it. */
 type AppPageRscRenderDocumentOptions = {
   clientTraceMetadata?: readonly string[];
+  /**
+   * When the document's render is given up, as completed-response admission
+   * gives up a body it hasn't captured by its deadline.
+   */
+  deadlineAt?: number;
   getFontData: () => AppPageFontData;
   getInitialNavigationCacheMetadata: () => InitialNavigationCacheMetadata;
   mirrorNextFlight: () => boolean;
@@ -83,6 +88,84 @@ export function createAppPageRscRenderStatusResolver(
 async function resolveAppPageRscRenderStatus(
   options: CreateAppPageRscRenderStatusResolverOptions,
 ): Promise<AppPageRscRenderStatus> {
+  const deadlineAt = options.document?.deadlineAt;
+  if (deadlineAt === undefined) return renderAppPageRscRenderStatus(options);
+  const expired = new AbortController();
+  const timer = setTimeout(() => expired.abort(), Math.max(0, deadlineAt - Date.now()));
+  try {
+    return await renderAppPageRscRenderStatus(options, expired.signal);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Settle with `promise`, or with `null` once `signal` aborts. */
+function unlessExpired<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  discard: (value: T) => void,
+): Promise<T | null> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    void promise.then(discard, () => {});
+    return Promise.resolve(null);
+  }
+  return new Promise<T | null>((resolve, reject) => {
+    const onAbort = () => {
+      void promise.then(discard, () => {});
+      resolve(null);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) discard(value);
+        else resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+/** Read the document, or cancel it and settle with `null` once `signal` aborts. */
+async function readDocumentHtml(
+  stream: ReadableStream<Uint8Array>,
+  signal: AbortSignal | undefined,
+): Promise<string | null> {
+  if (!signal) return readStreamAsText(stream);
+  const reader = stream.getReader();
+  const decoder = new TextDecoder();
+  const chunks: string[] = [];
+  for (;;) {
+    const result = await unlessExpired(reader.read(), signal, () => {});
+    if (result === null) {
+      void reader.cancel().catch(() => {});
+      return null;
+    }
+    if (result.done) break;
+    chunks.push(decoder.decode(result.value, { stream: true }));
+  }
+  chunks.push(decoder.decode());
+  return chunks.join("");
+}
+
+/**
+ * A document given up at its deadline isn't stored. A render without a
+ * special error is still a 200, but one with a special error needs its shell.
+ */
+function expiredDocumentStatus(
+  options: CreateAppPageRscRenderStatusResolverOptions,
+): AppPageRscRenderStatus {
+  return options.getCapturedSpecialError() === null ? PAGE_STATUS : { kind: "unstorable" };
+}
+
+async function renderAppPageRscRenderStatus(
+  options: CreateAppPageRscRenderStatusResolverOptions,
+  signal?: AbortSignal,
+): Promise<AppPageRscRenderStatus> {
   const rscData = await options.capturedRscData;
   const documentOptions = options.document;
   if (!documentOptions && options.getCapturedSpecialError() === null) return PAGE_STATUS;
@@ -93,13 +176,10 @@ async function resolveAppPageRscRenderStatus(
     documentOptions?.clientTraceMetadata && documentOptions.clientTraceMetadata.length > 0
       ? crypto.randomUUID()
       : undefined;
-  let rendered: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>>;
+  let rendered: Awaited<ReturnType<AppPageSsrHandler["handleSsr"]>> | null;
   try {
-    rendered = await ssrHandler.handleSsr(
-      new Response(rscData).body!,
-      options.navigationContext,
-      fontData,
-      {
+    rendered = await unlessExpired(
+      ssrHandler.handleSsr(new Response(rscData).body!, options.navigationContext, fontData, {
         basePath: options.basePath,
         isForceStatic: options.isForceStatic,
         preloadRoutePattern: options.routePattern,
@@ -121,6 +201,10 @@ async function resolveAppPageRscRenderStatus(
               // is discarded.
               onSsrError: () => undefined,
             }),
+      }),
+      signal,
+      (late) => {
+        void (isAppSsrRenderResult(late) ? late.htmlStream : late).cancel().catch(() => {});
       },
     );
   } catch (error) {
@@ -143,19 +227,21 @@ async function resolveAppPageRscRenderStatus(
       ...(headers ? { headers } : {}),
     };
   }
+  if (rendered === null) return expiredDocumentStatus(options);
   const htmlStream = isAppSsrRenderResult(rendered) ? rendered.htmlStream : rendered;
   if (!documentOptions) {
     void htmlStream.cancel().catch(() => {});
     return PAGE_STATUS;
   }
-  let html: string;
+  let html: string | null;
   try {
-    html = await readStreamAsText(htmlStream);
+    html = await readDocumentHtml(htmlStream, signal);
   } catch {
     // A document that fails after its shell isn't stored, as an HTML
     // request's isn't.
     return PAGE_STATUS;
   }
+  if (html === null) return expiredDocumentStatus(options);
   // A client page that read its searchParams while the document rendered
   // makes the document dynamic, as it does an HTML request's.
   if (isRenderDynamicLatched()) return PAGE_STATUS;

@@ -96,6 +96,7 @@ import {
   getFrameworkLinkHeader,
 } from "./app-response-header-provenance.js";
 import {
+  getRouteCacheabilityCaptureOptions,
   isRouteCacheabilityEvaluation,
   recordRouteCacheabilityClientTraceMetadataMarker,
 } from "vinext/shims/cacheability-classification";
@@ -910,6 +911,11 @@ async function renderAppPageLifecycleImpl(
             ? {
                 document: {
                   clientTraceMetadata: options.clientTraceMetadata,
+                  // Admission waits for the document, so it gives it up at its
+                  // own deadline.
+                  ...(captureAdmittedDocument
+                    ? { deadlineAt: getRouteCacheabilityCaptureOptions()?.captureDeadlineAt }
+                    : {}),
                   getFontData: () =>
                     createAppPageFontData({
                       getLinks: options.getFontLinks,
