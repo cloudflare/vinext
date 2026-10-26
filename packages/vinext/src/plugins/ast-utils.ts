@@ -86,8 +86,8 @@ export function parseProgram(code: string, options?: ParserOptions): ESTree.Prog
 
 /**
  * Like {@link parseProgram}, but return the whole result, or `null` when the
- * code has syntax errors. The result builds `program` only when it is read, so
- * a caller can check `module` first.
+ * code has syntax errors. The result deserializes `program` only when it is
+ * read, so a caller can check `module` first.
  */
 export function parseProgramResult(code: string, options?: ParserOptions): ParseResult | null {
   const result = parseSync(PARSE_FILENAME, code, { ...PROGRAM_PARSER_DEFAULTS, ...options });

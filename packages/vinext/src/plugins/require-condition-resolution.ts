@@ -1,7 +1,7 @@
 import MagicString from "magic-string";
 import { readFile } from "node:fs/promises";
 import path from "pathslash";
-import { createIdResolver, type DevEnvironment, type ESTree, type Plugin } from "vite";
+import { createIdResolver, type Environment, type ESTree, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
@@ -22,12 +22,14 @@ import {
   isFunctionNode,
   type AstScope,
 } from "./ast-scope.js";
+import { canNodeImport } from "./pages-node-externals.js";
 import { magicStringTransformResult } from "./transform-result.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
 const LOWERED_REQUIRE_PREFIX = "__vinext_require_";
+const MODULE_KEYWORD_RE = /\b(?:import|export)\b/;
 type LiteralRequire = {
   call: ESTree.CallExpression;
   argument: ESTree.Node;
@@ -162,17 +164,17 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
 }
 
 /**
- * Whether a module is an ESM file that a dev server environment's module
- * runner evaluates as it is, where `require` is undefined: a dependency that
- * the dependency optimizer does not bundle, such as one of the packages with a
- * `react` peer dependency that @vitejs/plugin-rsc excludes from it.
+ * Whether a module is a dependency that a dev server environment's module
+ * runner evaluates as it is, where an ES module has no `require`: one the
+ * dependency optimizer does not bundle into its cache directory, such as one of
+ * the packages with a `react` peer dependency that @vitejs/plugin-rsc excludes
+ * from it.
  */
-function isUnbundledServerDependency(environment: DevEnvironment, id: string): boolean {
+function isUnbundledServerDependency(environment: Environment, id: string): boolean {
   return (
     environment.mode === "dev" &&
     environment.config.dev.moduleRunnerTransform === true &&
-    !id.startsWith(environment.config.cacheDir) &&
-    !environment.depsOptimizer?.isOptimizedDepFile(id)
+    !id.startsWith(environment.config.cacheDir)
   );
 }
 
@@ -233,8 +235,12 @@ function hoistPosition(code: string, program: ESTree.Program): number {
     (node) => node.type !== "ExpressionStatement" || typeof node.directive !== "string",
   );
   if (!statement) return code.length;
-  const decorators = "decorators" in statement ? statement.decorators : undefined;
-  return Math.min(statement.start, ...(decorators ?? []).map((decorator) => decorator.start));
+  // `@dec export class A {}` keeps its decorators on the exported class, which
+  // starts after them; a class statement already starts at its first decorator.
+  const declaration = "declaration" in statement ? statement.declaration : null;
+  const decorators =
+    declaration && "decorators" in declaration ? (declaration.decorators ?? []) : [];
+  return Math.min(statement.start, ...decorators.map((decorator) => decorator.start));
 }
 
 /**
@@ -302,12 +308,20 @@ export function createRequireConditionResolutionPlugin(
         // filter so their nested conditional requires still recurse.
         if (commonjsDisposition === false) return null;
         if (commonjsDisposition !== true && cleanId.includes("node_modules")) {
-          if (!isUnbundledServerDependency(this.environment as DevEnvironment, id)) return null;
+          if (!isUnbundledServerDependency(this.environment, id)) return null;
+          // Lower only the ES modules @vitejs/plugin-rsc leaves as they are: files
+          // with module syntax, `.mjs`, and `.js` in a `"type": "module"`
+          // package. It converts the remaining CommonJS. Most CommonJS never
+          // mentions `import` or `export`, so it skips the parse, and the module
+          // record rules out the rest before their AST is read.
           if (/\.c[jt]s$/i.test(cleanId)) return null;
-          const parsed = parseProgramResult(code, { lang: scriptParserLanguage(id) ?? "jsx" });
-          // Files without module syntax are CommonJS, which @vitejs/plugin-rsc
-          // converts. Checking the module record first skips their AST.
-          if (!parsed?.module.hasModuleSyntax) return null;
+          const lang = scriptParserLanguage(id) ?? "jsx";
+          let parsed = MODULE_KEYWORD_RE.test(code) ? parseProgramResult(code, { lang }) : null;
+          if (!parsed?.module.hasModuleSyntax) {
+            if (!canNodeImport(cleanId)) return null;
+            parsed ??= parseProgramResult(code, { lang });
+          }
+          if (!parsed) return null;
           const requires = collectLiteralRequires(parsed.program);
           if (requires.length === 0) return null;
           return magicStringTransformResult(lowerRequires(code, parsed.program, requires), {

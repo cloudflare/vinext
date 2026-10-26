@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -294,7 +294,6 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
   const devServer = {
     mode: "dev",
     config: { cacheDir: CACHE_DIR, dev: { moduleRunnerTransform: true } },
-    depsOptimizer: { isOptimizedDepFile: (id: string) => id.startsWith(CACHE_DIR) },
   };
 
   function createDependencyTransform(environment: object = devServer) {
@@ -420,6 +419,19 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     ]);
   });
 
+  it.each([
+    ["export class", `@dec\nexport class C { static x = require("x"); }`],
+    ["export default class", `@dec\nexport default class { static x = require("x"); }`],
+  ])("hoists nested calls above the decorators of an %s", async (_label, code) => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(code, ID);
+
+    expect(result?.code.split("\n").slice(0, 2)).toEqual([
+      `const __vinext_require_0__ = await __vinext_require_load__(import("x"));@dec`,
+      code.split("\n")[1]!.replace(`require("x")`, `__vinext_require_0__()`),
+    ]);
+  });
+
   it("picks helper names the module does not use", async () => {
     const { transform } = createDependencyTransform();
     const result = await transform(
@@ -465,6 +477,31 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
 
     expect(await transform(code, id)).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it("lowers .mjs dependencies without module syntax", async () => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(
+      `const x = require("x");`,
+      "/app/node_modules/dependency/index.mjs",
+    );
+
+    expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
+  });
+
+  it('lowers .js dependencies without module syntax in a "type": "module" package', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-type-module-"));
+    try {
+      const dependency = path.join(root, "node_modules", "dependency");
+      await mkdir(dependency, { recursive: true });
+      await writeFile(path.join(dependency, "package.json"), `{ "type": "module" }`);
+      const { transform } = createDependencyTransform();
+      const result = await transform(`const x = require("x");`, path.join(dependency, "index.js"));
+
+      expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("lowers ESM dependencies whose only module syntax is import.meta", async () => {

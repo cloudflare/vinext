@@ -38,7 +38,7 @@ describe("require() in ESM dependencies on the Node development runtime", () => 
 
   afterAll(async () => {
     await server?.close();
-  });
+  }, 30_000);
 
   it("renders a server component whose dependency calls require()", async () => {
     const response = await fetch(`${baseUrl}/esm-dependency-require`);
