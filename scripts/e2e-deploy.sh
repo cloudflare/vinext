@@ -761,7 +761,7 @@ if [ "${VINEXT_E2E_NO_PRERENDER:-}" = "1" ]; then
 fi
 if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1
-  NODE_ENV="" "${VINEXT_BIN}" build ${PRERENDER_BUILD_FLAG} >> "${BUILD_LOG}" 2>&1
+  env -u NODE_ENV "${VINEXT_BIN}" build ${PRERENDER_BUILD_FLAG} >> "${BUILD_LOG}" 2>&1
 else
   VITE_BIN="./node_modules/.bin/vite"
   if [ ! -x "${VITE_BIN}" ]; then
@@ -769,7 +769,7 @@ else
     exit 1
   fi
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force ${PRERENDER_INIT_FLAG} >> "${BUILD_LOG}" 2>&1
-  NODE_ENV="" "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
+  env -u NODE_ENV "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 fi
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests
