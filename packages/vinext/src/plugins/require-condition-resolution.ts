@@ -215,8 +215,8 @@ function isUnbundledServerDependency(environment: Environment, id: string): bool
  * require loads after the module has
  * evaluated: such a lazy `require()` usually breaks an import cycle, and
  * loading it first would evaluate the cycle before this module's bindings
- * exist. Code is inserted
- * without newlines before the end, keeping line numbers.
+ * exist. Code is inserted without newlines before the end, keeping line
+ * numbers.
  */
 function lowerRequires(
   code: string,
@@ -357,7 +357,11 @@ export function createRequireConditionResolutionPlugin(
           // rest before their AST is read.
           if (/\.c[jt]s$/i.test(cleanId)) return null;
           const lang = scriptParserLanguage(id) ?? "jsx";
-          let parsed = MODULE_KEYWORD_RE.test(code) ? parseProgramResult(code, { lang }) : null;
+          let parsed = MODULE_KEYWORD_RE.test(code)
+            ? parseProgramResult(code, { lang })
+            : undefined;
+          // `null` is a syntax error: leave the file to Vite.
+          if (parsed === null) return null;
           if (!parsed?.module.hasModuleSyntax) {
             if (/\.js$/i.test(cleanId) && !canNodeImport(cleanId)) return null;
             parsed ??= parseProgramResult(code, { lang });
