@@ -136,6 +136,12 @@ export function mergeRefreshedParallelSlot(
       for (const binding of retainedBindings) {
         merged[binding.slotId] = currentElements[binding.slotId];
       }
+      copySlotIdentities(
+        merged,
+        refreshedElements,
+        currentElements,
+        retainedBindings.map((binding) => binding.slotId),
+      );
       if (promotedBindings.length === 1) {
         merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
@@ -157,7 +163,7 @@ export function mergeRefreshedParallelSlot(
     for (const binding of refreshedBindings) {
       merged[binding.slotId] = refreshedElements[binding.slotId];
     }
-    copyRefreshedSlotIdentities(
+    copySlotIdentities(
       merged,
       currentElements,
       refreshedElements,
@@ -186,39 +192,41 @@ export function mergeRefreshedParallelSlot(
       layoutIds: currentMetadata.layoutIds,
     }),
   };
-  copyRefreshedSlotIdentities(merged, currentElements, refreshedElements, [interception.slotId]);
+  copySlotIdentities(merged, currentElements, refreshedElements, [interception.slotId]);
   copyRefreshedBranchElements(merged, refreshedElements);
   return merged;
 }
 
 // A slot's content and its BFCache segment entries are one unit. Keeping the
-// primary response's entries (a default slot's, say) beside the refreshed slot
-// would re-mint its ids and remount the client state a refresh keeps.
-function copyRefreshedSlotIdentities(
+// base payload's entries (a default slot's, say) beside the slot's content
+// would re-mint its ids and remount the client state a refresh keeps. The
+// listed slots take their entries from slotElements, every other segment keeps
+// baseElements' entries.
+function copySlotIdentities(
   target: Record<string, AppElements[keyof AppElements]>,
-  currentElements: AppElements,
-  refreshedElements: AppElements,
+  baseElements: AppElements,
+  slotElements: AppElements,
   slotIds: readonly string[],
 ): void {
-  const isRefreshedSegment = (id: string) =>
+  const isSlotSegment = (id: string) =>
     slotIds.some((slotId) => id === slotId || isNestedBfcacheSlotSegmentIdFor(id, slotId));
-  const isNestedSegment = (id: string) => !slotIds.includes(id) && isRefreshedSegment(id);
-  for (const id of Object.keys(currentElements)) {
+  const isNestedSegment = (id: string) => !slotIds.includes(id) && isSlotSegment(id);
+  for (const id of Object.keys(baseElements)) {
     if (isNestedSegment(id)) delete target[id];
   }
-  for (const [id, element] of Object.entries(refreshedElements)) {
+  for (const [id, element] of Object.entries(slotElements)) {
     if (isNestedSegment(id)) target[id] = element;
   }
   const identities: Record<string, string> = {};
   for (const [id, identity] of Object.entries(
-    AppElementsWire.readMetadata(currentElements).bfcacheSegmentIdentities,
+    AppElementsWire.readMetadata(baseElements).bfcacheSegmentIdentities,
   )) {
-    if (!isRefreshedSegment(id)) identities[id] = identity;
+    if (!isSlotSegment(id)) identities[id] = identity;
   }
   for (const [id, identity] of Object.entries(
-    AppElementsWire.readMetadata(refreshedElements).bfcacheSegmentIdentities,
+    AppElementsWire.readMetadata(slotElements).bfcacheSegmentIdentities,
   )) {
-    if (isRefreshedSegment(id)) identities[id] = identity;
+    if (isSlotSegment(id)) identities[id] = identity;
   }
   if (Object.keys(identities).length > 0) target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = identities;
   else delete target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY];
