@@ -62,6 +62,80 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("decodes UTF-16LE code units split across body chunks", async () => {
+    const bytes = Buffer.from('{"name":"café 😀"}', "utf16le");
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+        controller.close();
+      },
+    });
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        method: "POST",
+        headers: { "content-type": "application/json; charset=utf-16le" },
+        body,
+        duplex: "half",
+      } as RequestInit),
+      url: "/api/test",
+      match: createMatch((req, res) => res.json(req.body)),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ name: "café 😀" });
+  });
+
+  it("enforces the raw byte limit before decoding UTF-16LE", async () => {
+    const handler = vi.fn();
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        method: "POST",
+        headers: { "content-type": "text/plain; charset=utf-16le" },
+        body: Buffer.from("abc", "utf16le"),
+      }),
+      url: "/api/test",
+      match: createMatch(handler, {}, { api: { bodyParser: { sizeLimit: 4 } } }),
+    });
+    expect(response.status).toBe(413);
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("rejects unknown request body charsets with 400", async () => {
+    const handler = vi.fn();
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        method: "POST",
+        headers: { "content-type": "text/plain; charset=unknown-charset" },
+        body: "test",
+      }),
+      url: "/api/test",
+      match: createMatch(handler),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("Invalid body");
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["application/json; charset=utf-16le", Buffer.from('{"name":"café"}', "utf16le")],
+    ['application/json; charset="UTF-16LE"', Buffer.from('{"name":"café"}', "utf16le")],
+    ["application/json; charset=iso-8859-1", Buffer.from('{"name":"café"}', "latin1")],
+    ["application/json", Buffer.from('\ufeff{"name":"café"}')],
+  ])("decodes API JSON with %s", async (contentType, body) => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        method: "POST",
+        headers: { "content-type": contentType },
+        body,
+      }),
+      url: "/api/test",
+      match: createMatch((req, res) => {
+        res.json(req.body);
+      }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ name: "café" });
+  });
+
   it("lets a handler override response headers installed before user code", async () => {
     const response = await handlePagesApiRoute({
       initialResponseHeaders: new Headers({
