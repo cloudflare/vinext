@@ -110,6 +110,27 @@ describe("Next.js compat: metadata", () => {
     expect(html).toContain("<title>Leaf Page</title>");
   });
 
+  it("should give openGraph and twitter titles their own templates", async () => {
+    // Each pair is og:title and twitter:title as Next.js 16.2.7 renders them
+    // (Turbopack and webpack, `next dev`).
+    const socialTitles = async (path: string) => {
+      const { html } = await fetchHtml(
+        baseUrl,
+        `/nextjs-compat/metadata-title-template/social${path}`,
+      );
+      return [
+        html.match(/<meta property="og:title" content="([^"]*)"/)?.[1],
+        html.match(/<meta name="twitter:title" content="([^"]*)"/)?.[1],
+      ];
+    };
+    expect(await socialTitles("")).toEqual(["Beside", "Beside"]);
+    expect(await socialTitles("/child")).toEqual(["Child | OG", "Child | TW"]);
+    expect(await socialTitles("/inherit")).toEqual(["OG Default", "TW Default"]);
+    expect(await socialTitles("/extra")).toEqual(["Extra | OG", "TW Default"]);
+    expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
+    expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+  });
+
   // ── Basic metadata tags ──────────────────────────────────────
   // Next.js: 'should support other basic tags'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L52-L89

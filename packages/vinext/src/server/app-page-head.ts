@@ -711,23 +711,49 @@ function createLayoutInputs<TModule extends AppPageHeadModule>(
   return layoutInputs;
 }
 
+type MetadataTitle = Metadata["title"];
+
 /**
- * `resolved`, with the title template of `stashed`, everything resolved up to
- * the last item that may set it, for the next title to resolve with.
+ * `resolved`, with the title templates of `stashed`, everything resolved up to
+ * the last item that may set them, for the next titles to resolve with:
+ * `title`'s, `openGraph.title`'s and `twitter.title`'s.
  */
 function withTitleTemplateOf(resolved: Metadata, stashed: Metadata): Metadata {
-  if (resolved === stashed || typeof resolved.title !== "object" || !resolved.title) {
-    return resolved;
+  if (resolved === stashed) return resolved;
+  const withTemplate = (title: MetadataTitle, stashedTitle: MetadataTitle): MetadataTitle => {
+    if (typeof title !== "object" || !title) return title;
+    const template = typeof stashedTitle === "object" ? (stashedTitle?.template ?? null) : null;
+    return { absolute: title.absolute ?? "", template };
+  };
+  const result = { ...resolved, title: withTemplate(resolved.title, stashed.title) };
+  if (resolved.openGraph) {
+    result.openGraph = {
+      ...resolved.openGraph,
+      title: withTemplate(resolved.openGraph.title, stashed.openGraph?.title),
+    };
   }
-  const template = typeof stashed.title === "object" ? (stashed.title?.template ?? null) : null;
-  return { ...resolved, title: { absolute: resolved.title.absolute ?? "", template } };
+  if (resolved.twitter) {
+    result.twitter = {
+      ...resolved.twitter,
+      title: withTemplate(resolved.twitter.title, stashed.twitter?.title),
+    };
+  }
+  return result;
 }
 
-/** The walk's accumulated metadata, with its resolved title as the shown string. */
+/** The walk's accumulated metadata, with its resolved titles as the shown strings. */
 function toShownMetadata(accumulated: Metadata): Metadata {
-  const title = accumulated.title;
-  if (title === undefined || typeof title === "string") return accumulated;
-  return { ...accumulated, title: title.absolute || undefined };
+  const shown = (title: MetadataTitle) =>
+    typeof title === "object" && title ? title.absolute || undefined : title;
+  const result = { ...accumulated };
+  if (typeof accumulated.title === "object") result.title = shown(accumulated.title);
+  if (accumulated.openGraph) {
+    result.openGraph = { ...accumulated.openGraph, title: shown(accumulated.openGraph.title) };
+  }
+  if (accumulated.twitter) {
+    result.twitter = { ...accumulated.twitter, title: shown(accumulated.twitter.title) };
+  }
+  return result;
 }
 
 function getParallelRouteModules<TModule extends AppPageHeadModule>(

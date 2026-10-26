@@ -2479,6 +2479,50 @@ describe("metadata title templates", () => {
     ).toEqual({ absolute: "Mid | Site", template: null });
   });
 
+  it("gives openGraph and twitter titles their own templates, as Next.js does", async () => {
+    // Next.js keeps a template per title (`titleTemplates.openGraph` and
+    // `.twitter`), each from the last resolved value's own title. Those values
+    // replace the whole object, so one without a title clears its template.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-opengraph.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const social = {
+      openGraph: { title: { template: "%s | OG", default: "OG" } },
+      twitter: { title: { template: "%s | TW", default: "TW" } },
+    };
+    const page = { openGraph: { title: "Page" }, twitter: { title: "Page" } };
+
+    let result = mergeMetadata([social, page]);
+    expect(result.openGraph?.title).toBe("Page | OG");
+    expect(result.twitter?.title).toBe("Page | TW");
+    // A layout's own default isn't wrapped, and a page without them inherits it.
+    result = mergeMetadata([social, {}]);
+    expect(result.openGraph?.title).toBe("OG");
+    expect(result.twitter?.title).toBe("TW");
+    // A plain-string title, or a value without a title, clears the template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Mid" }, twitter: { description: "Mid" } },
+      page,
+    ]);
+    expect(result.openGraph?.title).toBe("Page");
+    expect(result.twitter?.title).toBe("Page");
+    // A missing twitter title comes from the resolved openGraph title, not
+    // twitter's template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Page" }, twitter: { card: "summary" } },
+    ]);
+    expect(result.twitter?.title).toBe("Page | OG");
+    // `parent` sees each resolved title as `{ absolute, template }`.
+    const parent = mergeParentMetadataEntries([{ metadata: social }]);
+    expect(parent.openGraph?.title).toEqual({ absolute: "OG", template: "%s | OG" });
+    expect(parent.twitter?.title).toEqual({ absolute: "TW", template: "%s | TW" });
+    expect(
+      mergeParentMetadataEntries([{ metadata: parent }, { metadata: page }]).openGraph?.title,
+    ).toEqual({ absolute: "Page | OG", template: null });
+  });
+
   it("uses explicit page markers instead of assuming the last entry is the page", () => {
     const result = mergeMetadataEntries([
       {

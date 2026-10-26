@@ -153,6 +153,38 @@ test.describe("Next.js compat: metadata (browser)", () => {
     await expect(page).toHaveTitle("Framed");
   });
 
+  test("openGraph and twitter titles take their own templates", async ({ page }) => {
+    // Each pair is og:title and twitter:title as Next.js 16.2.7 renders them.
+    const socialTitles = async (path: string) => {
+      await page.goto(`${BASE}/nextjs-compat/metadata-title-template/social${path}`);
+      return [
+        await page.locator('meta[property="og:title"]').getAttribute("content"),
+        await page.locator('meta[name="twitter:title"]').getAttribute("content"),
+      ];
+    };
+    // The layout's templates skip the page beside it.
+    expect(await socialTitles("")).toEqual(["Beside", "Beside"]);
+    expect(await socialTitles("/child")).toEqual(["Child | OG", "Child | TW"]);
+    // `parent` holds each title as `{ absolute, template }`.
+    const parentTitle = async (name: string) =>
+      JSON.parse((await page.locator(`meta[name="${name}"]`).getAttribute("content")) ?? "null");
+    expect(await parentTitle("parent-og-title")).toEqual({
+      absolute: "OG Default",
+      template: "%s | OG",
+    });
+    expect(await parentTitle("parent-twitter-title")).toEqual({
+      absolute: "TW Default",
+      template: "%s | TW",
+    });
+    expect(await socialTitles("/inherit")).toEqual(["OG Default", "TW Default"]);
+    // A template beside the page gives way to the one above it.
+    expect(await socialTitles("/extra")).toEqual(["Extra | OG", "TW Default"]);
+    // A plain-string title, or a value without a title, clears the template.
+    expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
+    // A missing twitter title comes from the resolved openGraph title.
+    expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+  });
+
   // Next.js: 'should support opengraph tags'
   // Source: metadata.test.ts#L175-L211
   test("OpenGraph meta tags present in DOM", async ({ page }) => {

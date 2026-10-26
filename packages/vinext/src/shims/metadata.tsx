@@ -215,8 +215,10 @@ function resolveThemeColor(themeColor: Viewport["themeColor"]): ResolvedViewport
 // Metadata types and resolution
 // ---------------------------------------------------------------------------
 
+type MetadataTitle = string | { default?: string; template?: string | null; absolute?: string };
+
 export type Metadata = {
-  title?: string | { default?: string; template?: string | null; absolute?: string };
+  title?: MetadataTitle;
   description?: string;
   generator?: string;
   applicationName?: string;
@@ -234,7 +236,7 @@ export type Metadata = {
         [key: string]: unknown;
       };
   openGraph?: {
-    title?: string;
+    title?: MetadataTitle;
     description?: string;
     url?: string | URL;
     siteName?: string;
@@ -255,7 +257,7 @@ export type Metadata = {
     card?: string;
     site?: string;
     siteId?: string;
-    title?: string;
+    title?: MetadataTitle;
     description?: string;
     images?: string | URL | SocialImageDescriptor | Array<string | URL | SocialImageDescriptor>;
     creator?: string;
@@ -452,6 +454,11 @@ function resolveStringTitle(title: Metadata["title"]): string | undefined {
   return undefined;
 }
 
+/** The text a social title renders, a raw `{ default }` title's default if it is not resolved. */
+function renderedTitle(title: MetadataTitle | undefined): string | undefined {
+  return title && typeof title === "object" ? title.absolute || title.default : title;
+}
+
 function applyTitleTemplate(template: string | undefined, title: string): string {
   return template ? template.replace(/%s/g, title) : title;
 }
@@ -509,7 +516,7 @@ export function postProcessMetadata(merged: Metadata): Metadata {
 
   if (result.openGraph) {
     const autoFill: {
-      title?: string;
+      title?: MetadataTitle;
       description?: string;
       images?: NonNullable<Metadata["twitter"]>["images"];
     } = {};
@@ -602,15 +609,25 @@ export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[
   return mergeEntries(entries, true);
 }
 
+// The other keys whose `title` takes its own template, like `title`'s.
+const SOCIAL_TITLE_KEYS = ["openGraph", "twitter"] as const;
+type TitleTemplates = Record<"title" | (typeof SOCIAL_TITLE_KEYS)[number], string | null>;
+
+function titleTemplateOf(title: MetadataTitle | undefined): string | null {
+  return (typeof title === "object" && title?.template) || null;
+}
+
 function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boolean): Metadata {
   if (entries.length === 0) return {};
 
   const merged: Metadata = {};
 
-  // The resolved title's own template, as Next.js's resolveTitle returns it,
-  // and the one the next title gets (Next.js's `titleTemplates.title`).
-  let titleTemplate: string | null = null;
-  let stashedTemplate: string | null = null;
+  // The resolved titles' own templates, as Next.js's resolveTitle returns
+  // them, and the ones the next titles get (Next.js's `titleTemplates`). An
+  // `openGraph` or `twitter` value replaces the whole object, so one without a
+  // title clears its template.
+  const titleTemplates: TitleTemplates = { title: null, openGraph: null, twitter: null };
+  let stashedTemplates: TitleTemplates = { ...titleTemplates };
 
   for (const entry of entries) {
     const meta = entry.metadata;
@@ -632,17 +649,42 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
     // Title resolution
     if (meta.title !== undefined) {
-      merged.title = resolveTitle(meta.title, stashedTemplate ?? undefined);
-      titleTemplate = (typeof meta.title === "object" && meta.title?.template) || null;
+      merged.title = resolveTitle(meta.title, stashedTemplates.title ?? undefined);
+      titleTemplates.title = titleTemplateOf(meta.title);
     }
-    if (!entry.isPage) stashedTemplate = titleTemplate;
+    for (const key of SOCIAL_TITLE_KEYS) {
+      if (!Object.hasOwn(meta, key)) continue;
+      const social = meta[key];
+      titleTemplates[key] = titleTemplateOf(social?.title);
+      if (social) {
+        merged[key] = {
+          ...social,
+          title: resolveTitle(social.title, stashedTemplates[key] ?? undefined),
+        };
+      }
+    }
+    if (!entry.isPage) stashedTemplates = { ...titleTemplates };
   }
 
-  if (resolvedTitle && Object.hasOwn(merged, "title")) {
-    merged.title = {
-      absolute: resolveStringTitle(merged.title) ?? "",
-      template: titleTemplate,
-    };
+  if (resolvedTitle) {
+    if (Object.hasOwn(merged, "title")) {
+      merged.title = {
+        absolute: resolveStringTitle(merged.title) ?? "",
+        template: titleTemplates.title,
+      };
+    }
+    for (const key of SOCIAL_TITLE_KEYS) {
+      const social = merged[key];
+      if (social) {
+        merged[key] = {
+          ...social,
+          title: {
+            absolute: resolveStringTitle(social.title) ?? "",
+            template: titleTemplates[key],
+          },
+        };
+      }
+    }
   }
 
   return merged;
@@ -1123,7 +1165,8 @@ export function MetadataHead({
   // Open Graph
   if (metadata.openGraph) {
     const og = metadata.openGraph;
-    if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
+    const ogTitle = renderedTitle(og.title);
+    if (ogTitle) elements.push(<meta key={key++} property="og:title" content={ogTitle} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
     if (og.url) {
@@ -1246,7 +1289,8 @@ export function MetadataHead({
     if (tw.card) elements.push(<meta key={key++} name="twitter:card" content={tw.card} />);
     if (tw.site) elements.push(<meta key={key++} name="twitter:site" content={tw.site} />);
     if (tw.siteId) elements.push(<meta key={key++} name="twitter:site:id" content={tw.siteId} />);
-    if (tw.title) elements.push(<meta key={key++} name="twitter:title" content={tw.title} />);
+    const twTitle = renderedTitle(tw.title);
+    if (twTitle) elements.push(<meta key={key++} name="twitter:title" content={twTitle} />);
     if (tw.description)
       elements.push(<meta key={key++} name="twitter:description" content={tw.description} />);
     if (tw.creator) elements.push(<meta key={key++} name="twitter:creator" content={tw.creator} />);

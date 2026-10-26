@@ -1472,6 +1472,100 @@ describe("app page head resolution", () => {
     ]);
   });
 
+  it("resolves openGraph and twitter titles with their own templates, as Next.js does", async () => {
+    // Next.js's accumulateMetadata stashes `titleTemplates.openGraph` and
+    // `.twitter` under the same `i < metadataItems.length - 2` rule as
+    // `title`'s. Each case is titled as Next.js 16.2.7 titles it (Turbopack
+    // and webpack, `next dev`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    const seenTitles: unknown[] = [];
+    const social = {
+      metadata: {
+        openGraph: { title: { template: "%s | OG", default: "OG Default" } },
+        twitter: { title: { template: "%s | TW", default: "TW Default" } },
+      },
+    };
+    const titled = (title: string) => ({
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const resolved = await parent;
+        seenTitles.push([resolved.openGraph, resolved.twitter]);
+        return { openGraph: { title }, twitter: { title } };
+      },
+    });
+    const resolveSocialTitles = async (
+      routeSegments: string[],
+      layouts: [number, Record<string, unknown>][],
+      pageModule: Record<string, unknown>,
+    ) => {
+      const { metadata } = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: layouts.map(([, module]) => module),
+        layoutTreePositions: layouts.map(([position]) => position),
+        metadataRoutes: [],
+        pageModule,
+        params: {},
+        routePath: `/${routeSegments.join("/")}`,
+        routeSegments,
+      });
+      return [metadata?.openGraph?.title, metadata?.twitter?.title];
+    };
+
+    // `/social`: the layout's templates skip the page beside it.
+    expect(await resolveSocialTitles(["social"], [[1, social]], titled("Beside"))).toEqual([
+      "Beside",
+      "Beside",
+    ]);
+    // `/social/child`: they wrap a deeper page's titles, and `parent` holds
+    // each title as `{ absolute, template }`.
+    expect(await resolveSocialTitles(["social", "child"], [[1, social]], titled("Child"))).toEqual([
+      "Child | OG",
+      "Child | TW",
+    ]);
+    expect(seenTitles.at(-1)).toEqual([
+      { title: { absolute: "OG Default", template: "%s | OG" } },
+      { title: { absolute: "TW Default", template: "%s | TW" } },
+    ]);
+    // `/social/inherit`: a page without them shows the layout's defaults.
+    expect(await resolveSocialTitles(["social", "inherit"], [[1, social]], {})).toEqual([
+      "OG Default",
+      "TW Default",
+    ]);
+    // `/social/extra`: a template beside the page gives way to the one above it.
+    const extra = {
+      metadata: { openGraph: { title: { template: "%s | Extra OG", default: "Extra" } } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "extra"],
+        [
+          [1, social],
+          [2, extra],
+        ],
+        { metadata: { openGraph: { title: "Extra" } } },
+      ),
+    ).toEqual(["Extra | OG", "TW Default"]);
+    // `/social/plain/leaf`: a plain-string title, or a value without a title,
+    // clears the template.
+    const plain = {
+      metadata: { openGraph: { title: "Plain OG" }, twitter: { description: "Plain TW" } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "plain", "leaf"],
+        [
+          [1, social],
+          [2, plain],
+        ],
+        titled("Leaf"),
+      ),
+    ).toEqual(["Leaf", "Leaf"]);
+    // `/social/og-only`: a missing twitter title comes from openGraph's.
+    expect(
+      await resolveSocialTitles(["social", "og-only"], [[1, social]], {
+        metadata: { openGraph: { title: "OG Only" }, twitter: { card: "summary" } },
+      }),
+    ).toEqual(["OG Only | OG", "OG Only | OG"]);
+  });
+
   it("hands each resolver the title resolved before it as { absolute, template }", async () => {
     // Next.js passes each resolver its ResolvedMetadata, whose title keeps the
     // template the next title gets beside the resolved string.
