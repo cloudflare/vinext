@@ -629,6 +629,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
       // Each entry's policy is the page's s-maxage=60, scoped to the edge.
       const headers = new Headers(entry.responseHeaders as [string, string][]);
       assert.match(headers.get("cloudflare-cdn-cache-control") ?? "", /^public, max-age=60(,|$)/);
+      // Each carries the render's cacheLife stale time, as an ISR replay does.
+      assert.equal(headers.get("x-nextjs-stale-time"), "120");
+      assert.equal(headers.has("x-vinext-stale-time-pending"), false);
       const freshUntil = Number(entry.freshUntil);
       assert.ok(
         freshUntil >= requestedAt + 59_000 && freshUntil <= checkedAt + 61_000,
@@ -988,6 +991,11 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const renderId = documentHtml.match(/data-render-id="([^"]+)"/)?.[1];
     assert.ok(renderId);
     assert.ok(payload.includes(`"data-render-id":"${renderId}"`));
+    // Neither part stores the live stream's pending stale time.
+    for (const entry of await responseEntries("/cached/preload-rsc-first")) {
+      const headers = new Headers(entry.responseHeaders as [string, string][]);
+      assert.equal(headers.has("x-vinext-stale-time-pending"), false);
+    }
 
     // An HTML request stores the same headers for its document.
     const html = await request("/cached/preload-html-first");

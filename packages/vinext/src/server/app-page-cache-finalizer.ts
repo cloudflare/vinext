@@ -282,6 +282,7 @@ function finalizeEvaluatedAppPageResponse(
           ...(observationState && !observationState.requestApis.includes("searchParams")
             ? { searchParamsUnread: true }
             : {}),
+          ...(cacheControl.stale !== undefined ? { staleTimeSeconds: cacheControl.stale } : {}),
           tags: options.getPageTags(),
         }
       : { cacheable: false, reason: "render did not produce a cache policy" };
