@@ -761,7 +761,6 @@ describe("app page request helpers", () => {
         interceptSlotKey: "modal@app/feed/@modal",
       },
       new URLSearchParams("from=feed"),
-      undefined,
     );
     expect(renderInterceptResponse).toHaveBeenCalledTimes(1);
   });

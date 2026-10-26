@@ -198,7 +198,6 @@ import {
   clearAppNavigationFailureTarget,
   installAppNavigationFailureListeners,
 } from "../client/app-nav-failure-handler.js";
-import { createClientReuseManifestHeaderFromVisibleAppState } from "./app-browser-client-reuse-manifest.js";
 import {
   createRscRequestHeaders,
   createRscRequestUrl,
@@ -220,12 +219,14 @@ import {
   createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  keepOptimisticStreamingMetadata,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
   type LearnedOptimisticRouteTemplate,
 } from "./app-optimistic-routing.js";
+import { createMountedLayoutsHeader, holdsSkippedLayouts } from "./app-mounted-layouts.js";
 import {
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
@@ -1430,7 +1431,6 @@ function BrowserRoot({
     interception: initialMetadata.interception,
     interceptionContext: initialMetadata.interceptionContext,
     layoutIds: initialMetadata.layoutIds,
-    layoutFlags: initialMetadata.layoutFlags,
     navigationSnapshot: initialNavigationSnapshot,
     previousNextUrl: null,
     renderId: 0,
@@ -2191,6 +2191,19 @@ function bootstrapHydration(
     let currentPrevNextUrl = previousNextUrlOverride;
     let redirectCount = redirectDepth;
     let detachedNavigationCommits = false;
+    // The optimistic shell this navigation committed, if any.
+    let optimisticShellElements: AppElements | null = null;
+    const keepOptimisticShellMetadata = (
+      payload: Promise<AppElements> | AppElements,
+    ): Promise<AppElements> | AppElements => {
+      const shellElements = optimisticShellElements;
+      if (shellElements === null) return payload;
+      return payload instanceof Promise
+        ? payload.then((elements) =>
+            keepOptimisticStreamingMetadata(elements, shellElements, String(navId)),
+          )
+        : keepOptimisticStreamingMetadata(payload, shellElements, String(navId));
+    };
     const activeTraversalIntent =
       navigationKind === "traverse"
         ? (traversalIntent ?? historyController.resolveTraversalIntent(window.history.state))
@@ -2271,6 +2284,15 @@ function bootstrapHydration(
       // anchored to the same pre-navigation identity base.
       const navigationInitiationState = getBrowserRouterState();
       const mountedSlotsHeader = getMountedSlotIdsHeader(navigationInitiationState.elements);
+      // Only a push or replace names the layouts it holds, as only it keeps
+      // them: a refresh re-renders every layout, as in Next.js.
+      let mountedLayoutsHeader =
+        navigationKind === "navigate"
+          ? createMountedLayoutsHeader(
+              navigationInitiationState.elements,
+              navigationInitiationState.layoutIds,
+            )
+          : null;
 
       while (true) {
         const url = new URL(currentHref, window.location.origin);
@@ -2364,11 +2386,6 @@ function bootstrapHydration(
           ? initialBypassNavigationCache
           : earlyIntentDecision?.kind === "flightNavigation" &&
             earlyIntentDecision.bypassNavigationCache;
-        // The client reuse manifest is excluded from VINEXT_RSC_VARY_HEADER, so
-        // it never affects the cache-busting URL. Defer producing it until the
-        // visited-response cache miss is confirmed below — its producer iterates
-        // the visible layout ids and binary-searches a byte budget, which is
-        // pure waste on the cache-hit soft-nav path.
         const requestHeaders = createRscRequestHeaders({
           fetchPriority: "auto",
           interceptionContext: requestInterceptionContext,
@@ -2541,7 +2558,7 @@ function bootstrapHydration(
             navId,
             operationLane: toOperationLane(navigationKind),
             params: cachedParams,
-            payload: cachedPayload,
+            payload: keepOptimisticShellMetadata(cachedPayload),
             payloadOrigin: cachedRoute.elements
               ? COMMITTED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN
               : VISITED_CACHE_APP_NAVIGATION_PAYLOAD_ORIGIN,
@@ -2662,6 +2679,7 @@ function bootstrapHydration(
               })
             ) {
               detachedNavigationCommits = true;
+              optimisticShellElements = optimisticPayload.elements;
               const optimisticNavigationSnapshot = createClientNavigationRenderSnapshot(
                 currentHref,
                 optimisticPayload.params,
@@ -2700,20 +2718,16 @@ function bootstrapHydration(
           }
         }
 
+        let sentMountedLayouts = false;
         if (!navResponse) {
-          // Produce the client reuse manifest only now that prefetch/optimistic
-          // paths did not satisfy the navigation and a real request is required.
-          // Computed from the nav-start router state so it matches the snapshot
-          // the request would have carried if produced earlier.
-          if (navigationKind === "navigate") {
-            const clientReuseManifestHeader =
-              createClientReuseManifestHeaderFromVisibleAppState(navigationInitiationState);
-            if (clientReuseManifestHeader !== null) {
-              requestHeaders.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, clientReuseManifestHeader);
-            }
+          let liveRequestHeaders = requestHeaders;
+          if (mountedLayoutsHeader !== null && requestInterceptionContext === null) {
+            liveRequestHeaders = new Headers(requestHeaders);
+            liveRequestHeaders.set(VINEXT_MOUNTED_LAYOUTS_HEADER, mountedLayoutsHeader);
+            sentMountedLayouts = true;
           }
           navResponse = await fetch(rscUrl, {
-            headers: requestHeaders,
+            headers: liveRequestHeaders,
             credentials: "include",
             priority: "auto",
             signal: navigationAbortHandle.signal,
@@ -2891,6 +2905,21 @@ function bootstrapHydration(
             .then(requireCompleteSupplementalRefresh);
         }
 
+        // A payload that left out a layout this navigation no longer holds, as
+        // when another commit replaced it, is fetched again whole.
+        if (sentMountedLayouts) {
+          const elements = await rscPayload;
+          if (!browserNavigationController.isCurrentNavigation(navId)) return;
+          if (
+            !holdsSkippedLayouts(navigationInitiationState, elements) ||
+            !holdsSkippedLayouts(getBrowserRouterState(), elements)
+          ) {
+            mountedLayoutsHeader = null;
+            continue;
+          }
+          rscPayload = Promise.resolve(elements);
+        }
+
         // Static hosts cannot supply the compatibility response header used by
         // server navigation. Match Next.js's export skew protection by checking
         // the build identity carried in the decoded Flight model before React
@@ -2934,7 +2963,7 @@ function bootstrapHydration(
           },
           operationLane: toOperationLane(navigationKind),
           params: navParams,
-          payload: rscPayload,
+          payload: keepOptimisticShellMetadata(rscPayload),
           payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
           pendingRouterState: detachedNavigationCommits ? null : pendingRouterState,
           previousNextUrl: requestPreviousNextUrl,
@@ -3038,7 +3067,6 @@ function bootstrapHydration(
             const state = committedState;
             const committedElements = {
               ...state.elements,
-              [AppElementsWire.keys.layoutFlags]: state.layoutFlags,
               [AppElementsWire.keys.layoutIds]: state.layoutIds,
               [AppElementsWire.keys.skippedLayoutIds]: [],
               [AppElementsWire.keys.slotBindings]: state.slotBindings,
@@ -3055,7 +3083,8 @@ function bootstrapHydration(
               DYNAMIC_NAVIGATION_CACHE_TTL,
               mountedSlotsHeader,
               committedElements,
-              true,
+              // A payload that left out layouts only fits the state it merged into.
+              isCompleteAppPayloadMetadata(metadata),
               prefetchSnapshot,
               interceptionContext !== null || hasNavigationResponseHistoryLifetime(snapshot),
             );

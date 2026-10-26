@@ -20,16 +20,10 @@ import {
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
-import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
-import {
-  createClientReuseManifest,
-  createClientReusePayloadHash,
-} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -7440,6 +7434,68 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("staged-page");
   });
 
+  // Next.js also serves JSON at data URLs with trailingSlash enabled:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-trailing-slash/test/index.test.ts
+  describe.each(["", "/docs"])("Pages data canonicalization (basePath=%s)", (basePath) => {
+    it.each([
+      { trailingSlash: false, page: "index" },
+      { trailingSlash: false, page: "legacy-static" },
+      { trailingSlash: false, page: "legacy-data/one" },
+      { trailingSlash: true, page: "index" },
+      { trailingSlash: true, page: "legacy-static" },
+      { trailingSlash: true, page: "legacy-data/one" },
+    ])(
+      "serves $page data without a document redirect (trailingSlash=$trailingSlash)",
+      async ({ trailingSlash, page }) => {
+        const renderPagesFallback = vi.fn(
+          async ({ pagesDataRequest }: { pagesDataRequest?: Request | null }) =>
+            Response.json({ url: pagesDataRequest?.url }),
+        );
+        const handler = createHandler({
+          basePath,
+          trailingSlash,
+          configHeaders: [],
+          matchRequestRoute: () => null,
+          matchRoute: () => null,
+          renderPagesFallback,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${basePath}/_next/data/build-id/${page}.json?q=kept`),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.has("location")).toBe(false);
+        const data = await response.json();
+        expect(new URL(data.url).search).toBe("?q=kept");
+        expect(renderPagesFallback).toHaveBeenCalledTimes(1);
+        expect(renderPagesFallback).toHaveBeenCalledWith(
+          expect.objectContaining({ isDataRequest: true }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      "still canonicalizes documents with a forged data header (trailingSlash=%s)",
+      async (trailingSlash) => {
+        const handler = createHandler({ basePath, trailingSlash, configHeaders: [] });
+        const pathname = `/about${trailingSlash ? "" : "/"}`;
+        const response = await handler(
+          new Request(`https://example.test${basePath}${pathname}?q=kept`, {
+            headers: { "x-nextjs-data": "1" },
+          }),
+          null,
+        );
+
+        expect(response.status).toBe(308);
+        expect(response.headers.get("location")).toBe(
+          `${basePath}/about${trailingSlash ? "/" : ""}?q=kept`,
+        );
+      },
+    );
+  });
+
   it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
     const headers = createRscRequestHeaders();
     const requestPath = await createRscRequestUrl("/about/", headers);
@@ -10209,45 +10265,6 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: true,
-      }),
-    );
-  });
-
-  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
-    const manifest = createClientReuseManifest({
-      entries: [
-        {
-          artifactCompatibility: createArtifactCompatibilityEnvelope(),
-          id: "layout:/",
-          payloadHash: createClientReusePayloadHash("root-layout"),
-          privacy: "public",
-          variantCacheKey: "cp1:root",
-        },
-      ],
-      visibleCommitVersion: 1,
-    });
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-    });
-
-    const response = await handler(
-      new Request("https://example.test/docs/about.rsc", {
-        headers: {
-          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
-        },
-      }),
-      null,
-    );
-
-    expect(response.status).toBe(200);
-    expect(dispatchMatchedPage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        clientReuseManifest: expect.objectContaining({
-          kind: "parsed",
-        }),
         isRscRequest: true,
       }),
     );
