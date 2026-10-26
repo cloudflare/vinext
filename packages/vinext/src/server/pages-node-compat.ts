@@ -191,39 +191,14 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-async function* requestBodyChunks(request: Request): AsyncGenerator<Buffer> {
-  if (!request.body || request.bodyUsed) {
-    return;
-  }
-
-  const reader = request.body.getReader();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) {
-        return;
-      }
-      // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
-      // handler code routinely calls `chunk.toString("utf8")`, which on a
-      // raw Uint8Array comma-joins the byte values instead of decoding.
-      // Buffer.from(buffer, offset, length) is a zero-copy view.
-      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Ignore cancellation errors from the upstream source.
-    }
-    reader.releaseLock();
-  }
-}
-
 function createRequestReadable(request: Request): Readable {
-  // `Readable.from` defaults to objectMode — opt out so the request is a
-  // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
-  // semantics, byte-based highWaterMark).
-  return Readable.from(requestBodyChunks(request), { objectMode: false });
+  if (!request.body || request.bodyUsed) {
+    return Readable.from([], { objectMode: false });
+  }
+  // The Web-to-Node adapter cancels a pending read when the Node stream is
+  // destroyed. An async generator cannot enter its finally block while its
+  // current reader.read() remains pending.
+  return Readable.fromWeb(request.body as import("node:stream/web").ReadableStream<Uint8Array>);
 }
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
