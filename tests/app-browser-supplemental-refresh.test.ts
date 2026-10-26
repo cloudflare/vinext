@@ -168,8 +168,14 @@ describe("parallel route supplemental refreshes", () => {
   });
 
   it("merges every active slot from a supplemental route response", () => {
+    const modalSegmentId = createNestedBfcacheSlotSegmentId("slot:modal:/nested", 1);
     const current: AppElements = {
       ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: {
+          [modalSegmentId]: "modal segment mounted",
+          "slot:children:/nested": "page stale",
+          "slot:modal:/nested": "modal mounted",
+        },
         interceptionContext: null,
         layoutIds: ["layout:/", "layout:/nested"],
         rootLayoutTreePath: "/",
@@ -183,6 +189,7 @@ describe("parallel route supplemental refreshes", () => {
           },
         ],
       }),
+      [modalSegmentId]: "mounted modal segment",
       "slot:children:/nested": "stale page",
       "slot:drawer:/nested": "stale drawer",
       "slot:modal:/nested": "fresh modal",
@@ -191,6 +198,13 @@ describe("parallel route supplemental refreshes", () => {
     };
     const refreshed: AppElements = {
       ...AppElementsWire.createMetadataEntries({
+        // The refreshed tree describes the modal slot by its default.
+        bfcacheSegmentIdentities: {
+          [modalSegmentId]: "modal segment default",
+          "slot:children:/nested": "page fresh",
+          "slot:drawer:/nested": "drawer fresh",
+          "slot:modal:/nested": "modal default",
+        },
         interceptionContext: null,
         layoutIds: ["layout:/", "layout:/nested"],
         rootLayoutTreePath: "/",
@@ -210,6 +224,7 @@ describe("parallel route supplemental refreshes", () => {
           },
         ],
       }),
+      [modalSegmentId]: "default modal segment",
       "slot:children:/nested": "fresh page",
       "slot:drawer:/nested": "fresh drawer",
       "route:/nested": "fresh page route",
@@ -220,6 +235,14 @@ describe("parallel route supplemental refreshes", () => {
     expect(result["slot:children:/nested"]).toBe("fresh page");
     expect(result["slot:drawer:/nested"]).toBe("fresh drawer");
     expect(result["slot:modal:/nested"]).toBe("fresh modal");
+    expect(result[modalSegmentId]).toBe("mounted modal segment");
+    // The retained modal keeps the identities it was mounted with.
+    expect(AppElementsWire.readMetadata(result).bfcacheSegmentIdentities).toEqual({
+      [modalSegmentId]: "modal segment mounted",
+      "slot:children:/nested": "page fresh",
+      "slot:drawer:/nested": "drawer fresh",
+      "slot:modal:/nested": "modal mounted",
+    });
     expect(result["route:/nested"]).toBe("fresh page route");
     expect(result["route:/nested/drawer"]).toBe("fresh drawer route");
     expect(AppElementsWire.readMetadata(result).routeId).toBe("route:/nested/drawer");
