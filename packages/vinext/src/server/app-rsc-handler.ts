@@ -132,7 +132,6 @@ import { runWithPrerenderWorkUnit } from "./prerender-work-unit-setup.js";
 import { buildPostMwRequestContext } from "./app-post-middleware-context.js";
 import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
-import type { ClientReuseManifestParseResult } from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
   captureCdnResponsePolicyOverrides,
@@ -466,7 +465,6 @@ function withStoredSpecialErrorStatus(response: Response, isSegmentPrefetch: boo
 type DispatchMatchedPageOptions<TRoute> = {
   bypassInterceptionContextCache: boolean;
   cachePathname: string;
-  clientReuseManifest: ClientReuseManifestParseResult;
   cleanPathname: string;
   displayPathname: string;
   formState: ReactFormState | null;
@@ -985,7 +983,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     interceptionIdHeader,
     mountedSlotsHeader,
     renderMode,
-    clientReuseManifest,
     hadBasePath,
   } = normalized;
   setFrameworkRequestRoute(undefined, isRscRequest);
@@ -1115,7 +1112,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   // `skipTrailingSlashRedirect` drops these redirects entirely, like Next.js
   // omitting them from the routes manifest.
-  if (!options.skipTrailingSlashRedirect) {
+  if (!isDataRequest && !options.skipTrailingSlashRedirect) {
     const metadataBypassesTrailingSlash =
       options.trailingSlash &&
       options.isMetadataRoutePath &&
@@ -2909,7 +2906,6 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     : await options.dispatchMatchedPage({
         bypassInterceptionContextCache,
         cachePathname,
-        clientReuseManifest,
         cleanPathname,
         displayPathname: canonicalPathname,
         formState: progressiveActionFormState?.formState ?? null,

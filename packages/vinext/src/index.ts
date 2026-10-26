@@ -13,7 +13,13 @@ import type {
   UserConfig,
   ViteDevServer,
 } from "vite";
-import { createIdResolver, createLogger, isRunnableDevEnvironment, transformWithOxc } from "vite";
+import {
+  createIdResolver,
+  createLogger,
+  esmExternalRequirePlugin,
+  isRunnableDevEnvironment,
+  transformWithOxc,
+} from "vite";
 import {
   hasImportAttributes,
   isTypeOnlyImport,
@@ -101,15 +107,10 @@ import {
   toLinkPrefetchRoutes,
 } from "./entries/app-browser-entry.js";
 import {
-  collectRouteClassificationManifest,
-  type RouteClassificationManifest,
-} from "./build/route-classification-manifest.js";
-import {
   extractMiddlewareMatcherConfig,
   extractMiddlewareMatcherConfigValue,
   hasExportedName,
 } from "./build/report.js";
-import { planRouteClassificationInjection } from "./build/route-classification-injector.js";
 import { createActionOwnerManifestPlugin } from "./plugins/action-owner-manifest.js";
 import {
   createRscScanGlobImportsPlugin,
@@ -476,6 +477,19 @@ const APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/shim/with-selector.js",
   "use-sync-external-store/with-selector",
   "use-sync-external-store/with-selector.js",
+]);
+
+// The third-party imports of vinext's client shims. App Router apps keep the
+// shims out of the optimizer (see shimOptimizeDepsExclude), so the dependency
+// scan never crawls them. An installed vinext serves them raw from node_modules, and Vite does not
+// pre-bundle the bare imports of files inside node_modules: ipaddr.js is
+// CommonJS-only and would reach the browser without its default export. A
+// linked vinext lives outside node_modules, so Vite would discover these on
+// the first request that renders next/image or next/web-vitals and reload.
+const CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
+  "vinext > @unpic/react",
+  "vinext > ipaddr.js",
+  "vinext > web-vitals",
 ]);
 
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
@@ -1318,6 +1332,19 @@ const tsconfigAliasCustomResolver = async function (
   return resolved ?? { id: updatedId };
 } as unknown as ResolverFunction;
 
+// Vite's alias plugin matching: a RegExp is tested, a string matches the id
+// itself or a path below it.
+function aliasFindMatches(find: string | RegExp, id: string): boolean {
+  if (typeof find === "string") return id === find || id.startsWith(`${find}/`);
+  // A g or y flag makes test() start at lastIndex and advance it. Test from the
+  // start, as rolldown's alias plugin does, and leave the caller's state.
+  const { lastIndex } = find;
+  find.lastIndex = 0;
+  const matches = find.test(id);
+  find.lastIndex = lastIndex;
+  return matches;
+}
+
 /**
  * Convert the merged alias map into Vite alias entries, attaching the
  * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
@@ -1920,13 +1947,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // one process never preprocess `composes` deps with another build's config.
   const sassComposesLoader = createSassAwareFileSystemLoader();
 
-  // Build-time layout classification manifests, captured for each generated
-  // RSC virtual module and consumed in renderChunk to patch that module's
-  // `__VINEXT_CLASS` stub with a real dispatch table. Multi-stage outputs emit
-  // both the ordinary RSC graph and a response-only graph in the same build,
-  // so one mutable manifest would be consumed by whichever chunk rendered
-  // first and leave the other graph's classifier as the null stub.
-  const rscClassificationManifests = new Map<string, RouteClassificationManifest>();
   let rscActionOwnerRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
   let rscActionOwnerSharedRoots: string[] = [];
   let clientReferenceRoutes: Awaited<ReturnType<typeof appRouter>> | null = null;
@@ -1955,14 +1975,15 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   const nextImageAliasTargetRE = new RegExp(
     `^${nextImageAliasTarget.split("/").map(escapeRegExp).join("[\\\\/]")}$`,
   );
+  // Whether a resolve.alias entry ahead of vinext's takes next/image. Set in
+  // configResolved.
+  let nextImageAliasedByUser = false;
 
-  // Shared with the Layer 2 renderChunk hook below. Rolldown stores module
-  // IDs as canonicalized filesystem paths (fs.realpathSync.native) with forward
-  // slashes, so we must canonicalize anything we hand to the classifier and
+  // Rolldown stores module IDs as canonicalized filesystem paths
+  // (fs.realpathSync.native) with forward slashes, so we must canonicalize
   // anything we ask the module graph for — including the separator
   // normalization (toSlash), since tryRealpathSync wraps realpathSync.native,
-  // which keeps backslashes on Windows. The shim files exist in the vinext
-  // package before plugin init, so realpath is safe to evaluate eagerly.
+  // which keeps backslashes on Windows.
   const canonicalize = (p: string): string => toSlash(tryRealpathSync(p) ?? p);
   // Owned by this vinext() instance and cleared on each config resolution
   // (an inline plugin survives server.restart()). Also used by the middleware
@@ -1984,16 +2005,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
     const relativePath = fileMatcher.stripExtension(canonicalId.slice(canonicalPagesDir.length));
     return relativePath === "/api" || relativePath.startsWith("/api/");
   };
-  const dynamicShimPaths: ReadonlySet<string> = new Set(
-    [
-      resolveShimModulePath(shimsDir, "headers"),
-      resolveShimModulePath(shimsDir, "server"),
-      resolveShimModulePath(shimsDir, "cache"),
-    ].map(canonicalize),
-  );
-
   // Shim alias map — populated in config(), used by resolveId() for .js variants
   let nextShimMap: Record<string, string> = {};
+  // VINEXT_OPTIMIZE_DEPS_EXCLUDE plus every bare specifier vinext resolves to
+  // its own modules — populated in config() alongside nextShimMap.
+  let shimOptimizeDepsExclude: readonly string[] = VINEXT_OPTIMIZE_DEPS_EXCLUDE;
+  // Server optimizers pre-bundle for platform "node" (or "neutral" on
+  // Cloudflare), where Vite keeps require() calls to excluded ids instead of
+  // turning them into imports as it does for the browser. A CommonJS library's
+  // require("next/headers") would then load real Next or fail in the Worker.
+  const createShimRequirePlugin = () =>
+    esmExternalRequirePlugin({ external: [...shimOptimizeDepsExclude] });
 
   /**
    * Generate the virtual SSR server entry module.
@@ -3254,8 +3276,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Build the shim alias map. Exact `.js` variants are included for the
         // public Next entrypoints that are file-backed in `next/package.json`.
         // Some libraries (for example `nuqs`) import `next/navigation.js`
-        // directly; aliasing the `.js` form ensures optimizeDeps pre-bundles
-        // vinext's shim instead of real Next.
+        // directly; aliasing the `.js` form ensures it reaches vinext's shim
+        // instead of real Next.
         nextShimMap = Object.fromEntries(
           Object.entries({
             ...Object.fromEntries(
@@ -3355,6 +3377,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ]
               : [[k, v]],
           ),
+        );
+
+        // An installed vinext lives in node_modules, so the dep optimizer would
+        // pre-bundle these specifiers (an app's `next/link`, or a library's
+        // `next/navigation.js`) into a copy of the shim and its module state:
+        // router state, prefetch caches and instrumentation hooks. Excluding
+        // them keeps one instance, the one vinext's runtime imports. Excluded
+        // imports inside pre-bundled libraries stay bare and reach the shim.
+        shimOptimizeDepsExclude = mergeOptimizeDepsExclude(
+          VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+          Object.keys(nextShimMap),
+          [..._reactServerShims.keys()],
         );
 
         // Detect if Cloudflare's vite plugin is present — if so, skip
@@ -4063,15 +4097,24 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // environments, where Vite's keepProcessEnv default prevents replacement.
         viteConfig.optimizeDeps = {
           // @tailwindcss/oxide contains native .node bindings that Rolldown cannot process
-          exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE, [
-            "@tailwindcss/oxide",
-          ]),
+          exclude: mergeOptimizeDepsExclude(
+            incomingExclude,
+            // The Pages Router client entry imports next/router, so the
+            // optimizer pre-bundles its runtime and the app's next/* shims
+            // together, sharing one copy of their module state in fewer
+            // requests. The App Router runtime loads raw, so its shims must too.
+            hasAppDir ? shimOptimizeDepsExclude : VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+            ["@tailwindcss/oxide"],
+          ),
           ...(incomingInclude.length > 0 ? { include: incomingInclude } : {}),
           ...depOptimizeNodeEnvOptions,
           rolldownOptions: {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
             // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
-            plugins: [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
+            // The alias plugin would inline excluded shims into App Router deps.
+            plugins: hasAppDir
+              ? [commonJsEsmFacadeOptimizeDepsPlugin]
+              : [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
           },
         };
         pagesOptimizeEntries = !hasAppDir
@@ -4195,11 +4238,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                   additionalClientOptimizeIncludes.push(include);
                 } catch {}
               }
-              // The private Link reference also imports next/link on hydration.
-              // Discover it before the browser starts to avoid reloading React.
-              if (!excluded.includes("next") && !excluded.includes("next/link")) {
-                additionalClientOptimizeIncludes.push("next/link");
-              }
             } catch {}
           }
           const appClientInput: Record<string, string> = { index: VIRTUAL_APP_BROWSER_ENTRY };
@@ -4255,7 +4293,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     },
                   }),
               optimizeDeps: {
-                exclude: mergeOptimizeDepsExclude(incomingExclude, VINEXT_OPTIMIZE_DEPS_EXCLUDE),
+                exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude),
                 entries: optimizeEntries,
                 // plugin-rsc pre-includes server.edge and static.edge for the
                 // Flight runtime it selects: its vendored copy, or an app-installed
@@ -4329,7 +4367,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // while the renderer and client modules use the native one.
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  shimOptimizeDepsExclude,
                   ["ipaddr.js"],
                   userSsrExternal === true || externalizeSsrReactInDev
                     ? SSR_EXTERNAL_REACT_ENTRIES
@@ -4373,7 +4411,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // causing MISSING_EXPORT build failures).
                 exclude: mergeOptimizeDepsExclude(
                   incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
+                  shimOptimizeDepsExclude,
                   nextServerExternal,
                 ),
                 // Crawl app/ source files up front so client-only deps imported
@@ -4491,12 +4529,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 // Excluding it from the SSR dep optimizer avoids the "new
                 // dependencies optimized" full reload the first time a Pages
                 // Router page renders an <Image>.
-                exclude: mergeOptimizeDepsExclude(
-                  incomingExclude,
-                  VINEXT_OPTIMIZE_DEPS_EXCLUDE,
-                  ["ipaddr.js"],
-                  Object.keys(nextShimMap),
-                ),
+                exclude: mergeOptimizeDepsExclude(incomingExclude, shimOptimizeDepsExclude, [
+                  "ipaddr.js",
+                ]),
                 ...depOptimizeNodeEnvOptions,
               },
               build: {
@@ -4542,7 +4577,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           config.build.copyPublicDir = false;
         }
 
-        if (name !== "client" && config.consumer !== "client") {
+        const isClientConsumer = name === "client" || config.consumer === "client";
+        if (isClientConsumer && hasAppDir) {
+          // Covers client environments vinext does not create.
+          config.optimizeDeps ??= {};
+          config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
+            config.optimizeDeps.exclude ?? [],
+            shimOptimizeDepsExclude,
+          );
+        }
+
+        if (!isClientConsumer) {
           // optimizeDeps runs its own Rolldown pipeline, outside Vite's plugin
           // container. Register only the thin adapter for the same module-
           // identity capability; parsing, dependency classification, marker
@@ -4557,7 +4602,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 ? [configuredPlugins]
                 : []),
             importMetaUrlCapability.optimizeDepsPlugin,
+            createShimRequirePlugin(),
           ];
+          // Covers server environments vinext does not create, such as other
+          // plugins' Worker environments.
+          config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
+            config.optimizeDeps.exclude ?? [],
+            shimOptimizeDepsExclude,
+          );
         }
 
         if (
@@ -4583,7 +4635,6 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           );
           config.optimizeDeps.exclude = mergeOptimizeDepsExclude(
             config.optimizeDeps.exclude ?? [],
-            VINEXT_OPTIMIZE_DEPS_EXCLUDE,
             PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_EXCLUDE,
           );
         }
@@ -4621,18 +4672,50 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             if (!config.server.middlewareMode) applyDevServerDefaults(config.server, {});
           }
         }
-        if (isServeCommand && (hasAppDir || (hasCloudflarePlugin && hasPagesDir))) {
+        if (isServeCommand) {
           // Wait for all config/configEnvironment hooks before adding optional
           // defaults, so other plugins' explicit includes and opt-outs win.
           // Optimizers are created afterward, so these are still startup includes.
           const optionalWarnings = new Set<string>();
+          const isExcludedShim = (depId: string) =>
+            shimOptimizeDepsExclude.some((excluded) => {
+              if (depId === excluded || depId.startsWith(`${excluded}/`)) return true;
+              // Vite expands a glob include such as next/* after this hook, from
+              // the installed package's files. path.matchesGlob needs Node
+              // 22.5, so older versions drop any glob over a shim package.
+              if (!/[*?[\]{}()!]/.test(depId)) return false;
+              const pkgName = depId
+                .split("/")
+                .slice(0, depId.startsWith("@") ? 2 : 1)
+                .join("/");
+              if (excluded !== pkgName && !excluded.startsWith(`${pkgName}/`)) return false;
+              return typeof path.matchesGlob !== "function" || path.matchesGlob(excluded, depId);
+            });
           for (const [name, environment] of Object.entries(config.environments)) {
             const optimizer = environment.optimizeDeps;
-            const optionalIncludes = hasAppDir
-              ? name === "client" && !optimizer.noDiscovery
-                ? APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
+            const isClient = (environment.consumer ?? name) === "client";
+            // Vite disables a noDiscovery optimizer without includes.
+            const optimizerActive = !optimizer.noDiscovery || !!optimizer.include?.length;
+            // Vite pre-bundles an included specifier even when it is also
+            // excluded, so an app's or plugin's include of a shim specifier
+            // would bring back the duplicate shim module state.
+            if (optimizer.include && (!isClient || hasAppDir)) {
+              optimizer.include = optimizer.include.filter(
+                (id) => !isExcludedShim(id.slice(id.lastIndexOf(">") + 1).trim()),
+              );
+            }
+            // The excluded shims' own dependencies are required whenever the
+            // client optimizer runs, since a filtered next/image include no
+            // longer brings ipaddr.js with it. noDiscovery only opts out of the
+            // App Router defaults.
+            const optionalIncludes = isClient
+              ? hasAppDir && optimizerActive
+                ? [
+                    ...(optimizer.noDiscovery ? [] : APP_CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE),
+                    ...CLIENT_OPTIONAL_OPTIMIZE_DEPS_INCLUDE,
+                  ]
                 : []
-              : name !== "client"
+              : !hasAppDir && hasCloudflarePlugin && hasPagesDir
                 ? PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE
                 : [];
             for (const id of optionalIncludes) {
@@ -4685,6 +4768,18 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // work begins, but after the config is fully resolved so that Sass
         // preprocessor options and `css.modules` settings are in place.
         sassComposesLoader.setResolvedConfig(config);
+
+        // Vite's alias plugin applies the first entry that matches next/image.
+        // User aliases come ahead of vinext's shim, so a project can point
+        // next/image at a wrapper that renders vinext/shims/image (#4262).
+        // vinext's own entry has no customResolver.
+        const nextImageAlias = config.resolve?.alias?.find(({ find }) =>
+          aliasFindMatches(find, "next/image"),
+        );
+        nextImageAliasedByUser =
+          nextImageAlias !== undefined &&
+          (nextImageAlias.customResolver !== undefined ||
+            toSlash(nextImageAlias.replacement) !== nextImageAliasTarget);
 
         if (config.command === "build" && hasAppDir && hasPagesDir) {
           const [appRoutes, pageRoutes, apiRoutes] = await Promise.all([
@@ -4879,7 +4974,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             `${/(?:next\/|vinext\/(?:shims\/|server\/(?:app-rsc-(?:combined-)?handler|app-router-entry|pages-router-entry))|virtual:vinext-|@vercel\/og(?:\.js)?$)/.source}|${nextImageAliasTargetRE.source}`,
           ),
         },
-        handler(id, importer) {
+        handler(id, importer, options) {
           // Like Next.js's image-external, next/image in RSC exports the
           // server-safe getImageProps and only Image as a client reference.
           if (nextImageAliasTargetRE.test(id)) {
@@ -4925,17 +5020,26 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
           // The RSC next/image entry references Image as vinext/shims/image.
           // Elsewhere that is next/image, so the browser and SSR load one image
-          // module, the dep optimizer's when it has pre-bundled next/image.
-          if (cleanId === "vinext/shims/image" && this.environment?.name !== "rsc") {
+          // module. When the user's alias takes next/image, the explicit shim
+          // import stays the shim: the alias target may be the importer itself.
+          if (
+            cleanId === "vinext/shims/image" &&
+            this.environment?.name !== "rsc" &&
+            !nextImageAliasedByUser
+          ) {
             return this.resolve("next/image", importer, { skipSelf: true });
           }
 
+          // Shim paths go through Vite's resolver so dev gives them the same
+          // `?v=<browserHash>` it gives an installed vinext's runtime files and
+          // their relative imports. A bare path would load a second instance.
           const vinextShimPrefix = "vinext/shims/";
           if (cleanId.startsWith(vinextShimPrefix)) {
-            return resolveShimModulePath(
+            const shimPath = resolveShimModulePath(
               _shimsDir,
               stripJsExtension(stripViteModuleQuery(cleanId.slice(vinextShimPrefix.length))),
             );
+            return this.resolve(shimPath, importer, { ...options, skipSelf: true });
           }
 
           // Router-selected Cloudflare Worker entry facade
@@ -5069,7 +5173,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               this.environment?.name === "rsc"
                 ? `${reactServerShim}.react-server`
                 : reactServerShim;
-            return resolveShimModulePath(_shimsDir, shimName);
+            return this.resolve(resolveShimModulePath(_shimsDir, shimName), importer, {
+              ...options,
+              skipSelf: true,
+            });
           }
         },
       },
@@ -5204,15 +5311,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             const globalNotFoundPath = nextConfig?.globalNotFound
               ? findFileWithExts(appDir, "global-not-found", fileMatcher)
               : null;
-            // Collect Layer 1 (segment config) classifications for all layouts.
-            // Layer 2 (module graph) runs later in renderChunk once Rollup's
-            // module info is available.
-            // Invariant: each manifest must be built from the same `routes`
-            // value passed to its generator below so that layout indices in the
-            // manifest correspond 1:1 to the route.layouts arrays used during
-            // codegen. renderChunk consumes the manifest for that virtual module.
             if (id !== RESOLVED_APP_REQUEST_ENTRY) {
-              rscClassificationManifests.set(id, collectRouteClassificationManifest(routes));
               rscActionOwnerRoutes =
                 this.environment.config.command === "build" && hasServerActions ? routes : null;
               rscActionOwnerSharedRoots = [globalErrorPath, globalNotFoundPath].filter(
@@ -5392,114 +5491,6 @@ export const loadServerActionClient = ${
           if (id.startsWith(RESOLVED_VIRTUAL_GOOGLE_FONTS + "?")) {
             return generateGoogleFontsVirtualModule(id, _fontGoogleShimPath);
           }
-        },
-      },
-
-      // Layer 2 build-time layout classification. The generated RSC entry
-      // emits a `function __VINEXT_CLASS(routeIdx) { return null; }` stub;
-      // this hook patches it with a switch-statement dispatch table so the
-      // runtime probe loop in app-page-execution.ts can skip the Layer 3
-      // per-layout dynamic-isolation probe for layouts we proved static or
-      // dynamic at build time.
-      //
-      // @vitejs/plugin-rsc runs the RSC environment build in two phases:
-      // a scan phase that discovers client references, and a final build
-      // phase that emits the real RSC entry. We only patch when we actually
-      // see the stub in a chunk — the scan phase produces a tiny stub chunk
-      // that does not contain our code.
-      //
-      // This MUST run in `renderChunk` with `order: "pre"`, NOT in
-      // `generateBundle`: when server environments are minified (the default —
-      // see `vinext:server-minify-defaults`), rolldown's minifier renames the
-      // top-level `__VINEXT_CLASS` function and mangles its `routeIdx`
-      // parameter by the time `generateBundle` runs, so the stub regex would
-      // never match and build-time classification would silently no-op (every
-      // route would fall back to the Layer 3 runtime probe). `renderChunk`
-      // with `order: "pre"` runs before minification, so the stub is still in
-      // its readable form; the patched body is then minified along with the
-      // rest of the chunk, which is fine because the runtime calls the function
-      // by reference rather than by name.
-      renderChunk: {
-        order: "pre",
-        handler(code, chunk) {
-          // Only run in the RSC environment. SSR/client builds never contain
-          // the __VINEXT_CLASS stub so there is nothing to patch there, and
-          // pulling ModuleInfo from the wrong graph would give nonsense
-          // results.
-          if (this.environment?.name !== "rsc") return null;
-          // Cheap pre-filter: skip chunks that don't mention the stub at all
-          // (e.g. the scan-phase chunk and every non-entry chunk).
-          const hasClassificationStub = code.includes("__VINEXT_CLASS");
-          if (!hasClassificationStub) return null;
-
-          // Both generated App RSC graphs can be present in one multi-entry
-          // build. Associate the chunk with the virtual module that generated
-          // its route table so each graph receives (and consumes) its own
-          // manifest regardless of render order.
-          const rscEntryId = [RESOLVED_RSC_ENTRY, RESOLVED_APP_RESPONSE_ENTRY].find((id) =>
-            chunk.moduleIds.includes(id),
-          );
-          if (!rscEntryId) return null;
-          const rscClassificationManifest = rscClassificationManifests.get(rscEntryId);
-          if (!rscClassificationManifest) return null;
-
-          // Patching per-chunk (rather than scanning the whole bundle in
-          // generateBundle) assumes the stub body and its per-route call sites
-          // are emitted into the same chunk. That holds with current codegen:
-          // both live in the single RSC entry module, so they never split
-          // across chunks. If a future codegen change hoisted the call sites
-          // into a separate chunk, this hook would patch the stub but leave the
-          // callers referencing the original — revisit the hook scope then.
-
-          const enableClassificationDebug = Boolean(process.env.VINEXT_DEBUG_CLASSIFICATION);
-
-          // `canonicalize` and `dynamicShimPaths` are hoisted to plugin init
-          // (above) so they are constructed once per plugin instance instead of
-          // on every renderChunk invocation. The macOS realpath quirk
-          // (/var/folders/... → /private/var/folders/...) still applies to
-          // every path we hand to the classifier.
-
-          // Adapter: the classifier in `build/layout-classification.ts` uses
-          // `dynamicImportedIds` (matches the old-Rollup field name we used when
-          // we wrote it). Rolldown's current ModuleInfo exposes it as
-          // `dynamicallyImportedIds` (the new Rollup field name). Keep the
-          // translation in one place so future call sites don't have to remember.
-          const moduleInfo = {
-            getModuleInfo: (moduleId: string) => {
-              const info = this.getModuleInfo(moduleId);
-              if (!info) return null;
-              return {
-                importedIds: info.importedIds ?? [],
-                dynamicImportedIds: info.dynamicallyImportedIds ?? [],
-              };
-            },
-          };
-
-          const patchPlan =
-            hasClassificationStub && rscClassificationManifest
-              ? planRouteClassificationInjection({
-                  canonicalizeLayoutPath: canonicalize,
-                  chunks: [{ code, fileName: chunk.fileName }],
-                  dynamicShimPaths,
-                  enableDebugReasons: enableClassificationDebug,
-                  manifest: rscClassificationManifest,
-                  moduleInfo,
-                })
-              : { kind: "skip" as const };
-          const nextCode = patchPlan.kind === "skip" ? code : patchPlan.code;
-          if (patchPlan.kind === "skip") return null;
-
-          // Consume the manifest exactly once for this generated RSC module.
-          // Keeping the sibling entry's manifest intact lets a multi-entry
-          // build patch both graphs while still preventing stale state from
-          // leaking into a later non-standard rebuild path.
-          rscClassificationManifests.delete(rscEntryId);
-
-          // The patched body is longer than the stub, so any existing source
-          // map would be stale. RSC entry source maps are not served or
-          // consumed, so nulling the map is safe and prevents stale-map
-          // confusion in tooling.
-          return { code: nextCode, map: null };
         },
       },
     },

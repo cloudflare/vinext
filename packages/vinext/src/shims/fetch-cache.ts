@@ -790,10 +790,6 @@ function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   markDynamicUsage();
 }
 
-function recordCacheableFetchObservation(input: string | URL | Request): void {
-  _getState().cacheableFetchUrls.add(getFetchObservationUrl(input));
-}
-
 function recordFiniteFetchRevalidate(revalidateSeconds: number): void {
   if (Number.isFinite(revalidateSeconds) && revalidateSeconds > 0) {
     _setRequestScopedCacheLife({ revalidate: revalidateSeconds });
@@ -885,10 +881,6 @@ async function lowerFetchCacheRevalidateIfNeeded(
     tags: mergedTags,
     revalidate: revalidateSeconds,
   });
-}
-
-export function peekCacheableFetchObservations(): string[] {
-  return [..._getState().cacheableFetchUrls].sort();
 }
 
 export function peekDynamicFetchObservations(): string[] {
@@ -1376,14 +1368,6 @@ function createPatchedFetch(): typeof globalThis.fetch {
         ? `fetchCache = ${fetchCacheMode}`
         : `revalidate: ${nextOpts?.revalidate === false || cacheDirective === "force-cache" ? 0xfffffffe : revalidateSeconds}`;
 
-    // Record cacheable-fetch observation synchronously, before the first await,
-    // so that probe-based skip-eligibility checks (e.g. runLayoutProbe) can
-    // snapshot the dependency even when callers start a fetch but do not await
-    // its result before yielding to the probe harness.
-    // If key generation later fails and the fetch falls back to dynamic,
-    // recording both cacheable and dynamic is conservative — a false "unsafe"
-    // result costs performance, not correctness.
-    recordCacheableFetchObservation(input);
     if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
       // Upstream mutates the active prerender store when an explicit fetch
       // lifetime is shorter. Later metadata-only fetches inherit that live
@@ -1646,7 +1630,6 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   _ensurePatchInstalled();
   if (isInsideUnifiedScope()) {
     return await runWithUnifiedStateMutation((uCtx) => {
-      uCtx.cacheableFetchUrls = new Set<string>();
       uCtx.currentRequestTags = [];
       uCtx.currentFetchSoftTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
@@ -1658,7 +1641,6 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
   }
   return _als.run(
     {
-      cacheableFetchUrls: new Set<string>(),
       currentRequestTags: [],
       currentFetchSoftTags: [],
       currentFetchCacheMode: null,

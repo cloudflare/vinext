@@ -24,7 +24,7 @@ import {
   markDynamicUsage as _markDynamic,
 } from "./headers.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
-import { fnv1a64, sha256Hex } from "../utils/hash.js";
+import { sha256Hex } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
@@ -52,7 +52,6 @@ import {
   cacheLifeProfiles,
   getRegisteredCacheContext,
   markActionRevalidation,
-  recordUnstableCacheObservation,
   runWithDetachedCacheObservations,
   shouldServeStaleUnstableCacheEntry,
   type CacheLifeConfig,
@@ -711,18 +710,6 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     const keyedArgs = JSON.stringify(args);
     const invocationKey = `${fixedKey}${keyedArgs}`;
     addCollectedRequestTags(tags);
-    recordUnstableCacheObservation({
-      kind: "unstable_cache",
-      keyHash: fnv1a64(invocationKey),
-      revalidate:
-        typeof revalidateSeconds === "number"
-          ? revalidateSeconds
-          : revalidateSeconds === false
-            ? false
-            : null,
-      tagCount: tags.length,
-      tagHash: tags.length > 0 ? fnv1a64(JSON.stringify(tags)) : null,
-    });
     // Web Crypto, as Next.js uses on its edge runtime, so the shim pulls no
     // Node.js builtin into the client graphs that import next/cache.
     const cacheKey = `${UNSTABLE_CACHE_KEY_PREFIX}:${await sha256Hex(invocationKey)}`;
