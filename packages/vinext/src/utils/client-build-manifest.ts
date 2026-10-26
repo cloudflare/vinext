@@ -74,10 +74,7 @@ function findEntryFileFromManifest(
   // configure file names that no longer carry (or happen to contain another)
   // entry's name, and add entries whose names merely contain a marker.
   const matchers = [
-    (marker: string, key: string, entry: BuildManifestChunk) =>
-      entry.name === marker ||
-      isVirtualEntryId(key, marker) ||
-      (entry.src !== undefined && isVirtualEntryId(entry.src, marker)),
+    matchesEntryIdentity,
     (marker: string, _key: string, entry: BuildManifestChunk) => entry.file.includes(marker),
   ];
   for (const matches of matchers) {
@@ -90,6 +87,22 @@ function findEntryFileFromManifest(
   const chosen = fallbackToFirstEntry ? entries[0]?.[1] : undefined;
 
   return chosen ? manifestFileWithBase(chosen.file, assetBase) : undefined;
+}
+
+function matchesEntryIdentity(marker: string, key: string, entry: BuildManifestChunk): boolean {
+  return (
+    entry.name === marker ||
+    isVirtualEntryId(key, marker) ||
+    (entry.src !== undefined && isVirtualEntryId(entry.src, marker))
+  );
+}
+
+/** Whether a build-manifest entry is the Pages Router client entry. */
+export function isPagesClientEntryChunk(key: string, entry: BuildManifestChunk): boolean {
+  return (
+    entry.isEntry === true &&
+    PAGES_CLIENT_ENTRY_MARKERS.some((marker) => matchesEntryIdentity(marker, key, entry))
+  );
 }
 
 function isVirtualEntryId(id: string, marker: string): boolean {

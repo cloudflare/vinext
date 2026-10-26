@@ -1089,11 +1089,14 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   for (const [propertyPath, warning] of warnings) {
     if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
   }
-  // Next.js drops nullish nested values before warning about the moved key.
-  if (readOptionalRecord(config.experimental)?.skipTrailingSlashRedirect != null) {
-    warnConfigOnce(
-      `\`experimental.skipTrailingSlashRedirect\` has been moved to \`skipTrailingSlashRedirect\`. Please update your ${configFileName} file accordingly.`,
-    );
+  // Next.js drops nullish nested values before warning about a moved key.
+  const experimental = readOptionalRecord(config.experimental);
+  for (const key of ["skipTrailingSlashRedirect", "cacheComponents"] as const) {
+    if (experimental?.[key] != null) {
+      warnConfigOnce(
+        `\`experimental.${key}\` has been moved to \`${key}\`. Please update your ${configFileName} file accordingly.`,
+      );
+    }
   }
 }
 
@@ -2099,6 +2102,9 @@ export async function resolveNextConfig(
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = readOptionalRecord(config.experimental);
+  // Next.js copies a set legacy `experimental.cacheComponents` over the
+  // top-level key (warnOptionHasBeenMovedOutOfExperimental).
+  const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -2138,7 +2144,7 @@ export async function resolveNextConfig(
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
-    if (!config.cacheComponents) {
+    if (!cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
     if (!prefetchInlining) {
@@ -2212,7 +2218,7 @@ export async function resolveNextConfig(
 
   // Warn when experimental.cachedNavigations is set without cacheComponents.
   // Next.js throws in this case; vinext warns because the feature is a no-op without it.
-  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+  if (experimental?.cachedNavigations === true && !cacheComponents) {
     console.warn(
       "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
         "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
@@ -2330,7 +2336,7 @@ export async function resolveNextConfig(
       : [],
     instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
     instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
-    cacheComponents: config.cacheComponents ?? false,
+    cacheComponents,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,

@@ -24,7 +24,6 @@ export type FetchDedupeEntry = {
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
 export type FetchCacheState = {
-  cacheableFetchUrls: Set<string>;
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
@@ -51,7 +50,6 @@ export const fetchCacheAls = getOrCreateAls<FetchCacheState>("vinext.fetchCache.
 
 function createFetchCacheState(): FetchCacheState {
   return {
-    cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
@@ -135,7 +133,6 @@ export function getCurrentFetchSoftTags(): string[] {
 export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      uCtx.cacheableFetchUrls = new Set<string>();
       uCtx.currentRequestTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
     }, fn);
@@ -143,7 +140,6 @@ export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promi
   return fetchCacheAls.run(
     {
       ...getFetchCacheState(),
-      cacheableFetchUrls: new Set<string>(),
       currentRequestTags: [],
       dynamicFetchUrls: new Set<string>(),
     },

@@ -467,6 +467,23 @@ function buildPagesNotFoundResult(
   };
 }
 
+/**
+ * Write a Pages res header the way Node sends it: an array sends one header
+ * line per item, so `[]` sends none.
+ */
+export function setPagesResponseHeader(
+  headers: Headers,
+  name: string,
+  value: string | number | boolean | string[],
+): void {
+  headers.delete(name);
+  if (!Array.isArray(value)) {
+    headers.set(name, String(value));
+    return;
+  }
+  for (const item of value) headers.append(name, String(item));
+}
+
 export function mergePagesNotFoundSourceHeaders(
   response: Response,
   sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
@@ -476,14 +493,7 @@ export function mergePagesNotFoundSourceHeaders(
   const headers = new Headers(response.headers);
 
   for (const [name, value] of Object.entries(sourceHeaders)) {
-    const lowerName = name.toLowerCase();
-    if (lowerName === "set-cookie") {
-      headers.delete("set-cookie");
-      const cookies = Array.isArray(value) ? value : [value];
-      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
-    } else {
-      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
-    }
+    setPagesResponseHeader(headers, name, value);
   }
 
   return new Response(response.body, {

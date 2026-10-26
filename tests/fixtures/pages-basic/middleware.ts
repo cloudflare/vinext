@@ -64,6 +64,16 @@ export function middleware(request: NextRequest) {
     return new Response("middleware must not observe on-demand revalidation", { status: 418 });
   }
 
+  // A middleware Cache-Control replaces the getServerSideProps default on
+  // redirect and notFound exits, as in Next.js.
+  // Coverage: tests/pages-router.test.ts
+  if (
+    (url.pathname === "/gssp-redirect" || url.pathname === "/gssp-not-found") &&
+    url.searchParams.has("mw-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });
+  }
+
   // Add a custom header to all matched requests
   const response = NextResponse.next();
   response.headers.set("x-custom-middleware", "active");

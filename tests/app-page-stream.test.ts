@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageLinkHeader,
@@ -8,7 +9,10 @@ import {
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
 } from "../packages/vinext/src/server/app-page-stream.js";
-import { deferUntilStreamConsumed } from "../packages/vinext/src/server/defer-until-stream-consumed.js";
+import {
+  deferUntilStreamConsumed,
+  observeStreamConsumption,
+} from "../packages/vinext/src/server/defer-until-stream-consumed.js";
 import { hasFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import { finalizeAppRscResponse } from "../packages/vinext/src/server/app-rsc-response-finalizer.js";
 
@@ -262,9 +266,640 @@ describe("app page stream helpers", () => {
     // Reading the errored stream triggers the error handler.
     await expect(reader.read()).rejects.toThrow("stream error");
 
-    // The idempotent once() guard prevents double invocation — even if
-    // some code path triggered cleanup again, onFlush fires exactly once.
+    // The wrapper settles once, so onFlush fires exactly once even if some
+    // code path tried to clean up again.
     expect(onFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs flush callbacks only after the consumer reads the end of the stream", async () => {
+    const onFlush = vi.fn();
+    const reader = deferUntilStreamConsumed(createStream(["a", "b"]), onFlush).getReader();
+
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("a");
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("b");
+    expect(onFlush).not.toHaveBeenCalled();
+
+    await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+    expect(onFlush).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses an unread wrapper and runs its callbacks in layered order", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const outer = deferUntilStreamConsumed(new Response(inner).body ?? inner, () =>
+      calls.push("outer"),
+    );
+
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("runs coalesced error callbacks innermost first", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      () => calls.push("inner error"),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      () => calls.push("outer error"),
+    );
+
+    expect(outer).toBe(inner);
+    await expect(outer.getReader().read()).rejects.toThrow("boom");
+    expect(calls).toEqual(["inner error", "inner flush", "outer error", "outer flush"]);
+  });
+
+  it("runs coalesced cancel callbacks outermost first before cancelling the source", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel(reason) {
+        calls.push(`source ${String(reason)}`);
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      undefined,
+      (reason) => calls.push(`inner cancel ${String(reason)}`),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      undefined,
+      (reason) => calls.push(`outer cancel ${String(reason)}`),
+    );
+
+    await outer.cancel("gone");
+    expect(calls).toEqual([
+      "outer cancel gone",
+      "outer flush",
+      "inner cancel gone",
+      "inner flush",
+      "source gone",
+    ]);
+  });
+
+  it("adds a separate layer when the wrapper is already being read", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const innerReader = inner.getReader();
+    const passthrough = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const { done, value } = await innerReader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      },
+    });
+    const outer = deferUntilStreamConsumed(passthrough, () => calls.push("outer"));
+
+    expect(outer).not.toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("runs each layer's callbacks in the async context that added it", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const inner = als.run("render", () =>
+      deferUntilStreamConsumed(createStream(["page"]), () => seen.push(`inner ${als.getStore()}`)),
+    );
+    const outer = als.run("tracing", () =>
+      deferUntilStreamConsumed(inner, () => seen.push(`outer ${als.getStore()}`)),
+    );
+
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(seen).toEqual(["inner render", "outer tracing"]);
+  });
+
+  it("cancels the source in the async context that created the wrapper", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        seen.push(`source ${als.getStore()}`);
+      },
+    });
+    const inner = als.run("render", () =>
+      deferUntilStreamConsumed(
+        source,
+        () => {},
+        undefined,
+        () => seen.push(`inner ${als.getStore()}`),
+      ),
+    );
+    const outer = als.run("tracing", () =>
+      deferUntilStreamConsumed(
+        inner,
+        () => {},
+        undefined,
+        () => seen.push(`outer ${als.getStore()}`),
+      ),
+    );
+
+    await outer.cancel("gone");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(seen).toEqual(["outer tracing", "inner render", "source render"]);
+  });
+
+  it("reads the source in the async context that created the wrapper", async () => {
+    const als = new AsyncLocalStorage<string>();
+    const seen: string[] = [];
+    const createSource = () => {
+      const body = new Response("page").body!.getReader();
+      return new ReadableStream<Uint8Array>(
+        {
+          async pull(controller) {
+            const { done, value } = await body.read();
+            seen.push(`source ${als.getStore()}`);
+            if (done) controller.close();
+            else controller.enqueue(value);
+          },
+        },
+        { highWaterMark: 0 },
+      );
+    };
+    // As in a request handler, the source is created before an await and wrapped after it.
+    const wrapped = await als.run("render", async () => {
+      const source = createSource();
+      await Promise.resolve();
+      return deferUntilStreamConsumed(source, () => {});
+    });
+
+    // The runtime reads the response body from outside the request's context.
+    await expect(new Response(wrapped).text()).resolves.toBe("page");
+    expect(seen).toEqual(["source render", "source render"]);
+  });
+
+  it("runs start callbacks when the consumer reads the first chunk, without reading ahead", async () => {
+    const calls: string[] = [];
+    let pulls = 0;
+    const source = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          if (pulls === 1) controller.enqueue(new TextEncoder().encode("page"));
+          else controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const inner = deferUntilStreamConsumed(source, () => calls.push("inner flush"));
+    const outer = observeStreamConsumption(inner, {
+      onStart: () => calls.push("outer start"),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    expect(outer).toBe(inner);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(pulls).toBe(0);
+
+    const reader = outer.getReader();
+    await reader.read();
+    expect(calls).toEqual(["outer start"]);
+    await reader.read();
+    expect(calls).toEqual(["outer start", "inner flush", "outer flush"]);
+  });
+
+  it("does not run start callbacks once the consumer has cancelled", async () => {
+    const calls: string[] = [];
+    const stream = observeStreamConsumption(createStream(["page"]), {
+      onStart: () => calls.push("start"),
+      onCancel: () => calls.push("cancel"),
+      onFlush: () => calls.push("flush"),
+    });
+    const reader = stream.getReader();
+    // Once the stream has started, a read pulls at once. The source read
+    // settles straight away, but its callback runs after the cancel.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const read = reader.read();
+    await reader.cancel("gone");
+    await read;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(["cancel", "flush"]);
+  });
+
+  it("stops when a start callback cancels the stream", async () => {
+    for (const throwsAfterCancel of [false, true]) {
+      const calls: string[] = [];
+      let reader!: ReadableStreamDefaultReader<Uint8Array>;
+      const inner = observeStreamConsumption(createStream(["page"]), {
+        onStart() {
+          calls.push("inner start");
+          void reader.cancel("gone");
+          if (throwsAfterCancel) throw new Error("start failed");
+        },
+        onCancel: () => calls.push("inner cancel"),
+        onFlush: () => calls.push("inner flush"),
+      });
+      const outer = observeStreamConsumption(inner, {
+        onStart: () => calls.push("outer start"),
+        onCancel: () => calls.push("outer cancel"),
+        onFlush: () => calls.push("outer flush"),
+      });
+      reader = outer.getReader();
+
+      await expect(reader.read()).resolves.toEqual({ done: true, value: undefined });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(calls).toEqual([
+        "inner start",
+        "outer cancel",
+        "outer flush",
+        "inner cancel",
+        "inner flush",
+      ]);
+    }
+  });
+
+  it("does not run outer start callbacks after an inner one throws", async () => {
+    const calls: string[] = [];
+    const inner = observeStreamConsumption(createStream(["page"]), {
+      onStart() {
+        calls.push("inner start");
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`inner error ${(error as Error).message}`),
+      onFlush: () => calls.push("inner flush"),
+    });
+    const outer = observeStreamConsumption(inner, {
+      onStart: () => calls.push("outer start"),
+      onError: (error) => calls.push(`outer error ${(error as Error).message}`),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    expect(outer).toBe(inner);
+    await expect(outer.getReader().read()).rejects.toThrow("start failed");
+    expect(calls).toEqual([
+      "inner start",
+      "inner error start failed",
+      "inner flush",
+      "outer error start failed",
+      "outer flush",
+    ]);
+  });
+
+  it("cancels the inner layers and the source before an outer layer sees a start failure", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("page"));
+      },
+      cancel(reason) {
+        calls.push(`source cancel ${(reason as Error).message}`);
+      },
+    });
+    const inner = observeStreamConsumption(source, {
+      onStart: () => calls.push("inner start"),
+      onError: () => calls.push("inner error"),
+      onCancel: (reason) => calls.push(`inner cancel ${(reason as Error).message}`),
+      onFlush: () => calls.push("inner flush"),
+    });
+    const middle = observeStreamConsumption(inner, {
+      onStart() {
+        calls.push("middle start");
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`middle error ${(error as Error).message}`),
+      onFlush: () => calls.push("middle flush"),
+    });
+    const outer = observeStreamConsumption(middle, {
+      onStart: () => calls.push("outer start"),
+      onError: (error) => calls.push(`outer error ${(error as Error).message}`),
+      onFlush: () => calls.push("outer flush"),
+    });
+
+    await expect(outer.getReader().read()).rejects.toThrow("start failed");
+    expect(calls).toEqual([
+      "inner start",
+      "middle start",
+      "middle error start failed",
+      "middle flush",
+      "inner cancel start failed",
+      "inner flush",
+      "source cancel start failed",
+      "outer error start failed",
+      "outer flush",
+    ]);
+  });
+
+  it("errors the stream and still runs the flush callbacks when a start callback throws", async () => {
+    const calls: string[] = [];
+    const stream = observeStreamConsumption(createStream(["page"]), {
+      onStart() {
+        throw new Error("start failed");
+      },
+      onError: (error) => calls.push(`error ${(error as Error).message}`),
+      onFlush: () => calls.push("flush"),
+    });
+
+    await expect(stream.getReader().read()).rejects.toThrow("start failed");
+    expect(calls).toEqual(["error start failed", "flush"]);
+  });
+
+  it("unlocks the source once a start failure has cancelled it", async () => {
+    let cancelled = false;
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("page"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const stream = observeStreamConsumption(source, {
+      onStart() {
+        throw new Error("start failed");
+      },
+    });
+
+    await expect(stream.getReader().read()).rejects.toThrow("start failed");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(cancelled).toBe(true);
+    expect(source.locked).toBe(false);
+  });
+
+  it("passes a cleanup failure to the outer layers like separate wrappers would", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream([]), () => {
+      throw new Error("cleanup failed");
+    });
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(calls).toEqual(["outer error cleanup failed", "outer flush"]);
+  });
+
+  it("passes a layer's own cleanup failure to its error callback", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(
+      createStream([]),
+      () => {
+        calls.push("inner flush");
+        throw new Error("cleanup failed");
+      },
+      (error) => calls.push(`inner error ${(error as Error).message}`),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(calls).toEqual([
+      "inner flush",
+      "inner error cleanup failed",
+      "outer error cleanup failed",
+      "outer flush",
+    ]);
+  });
+
+  it("passes an error thrown while reporting a cleanup failure to the outer layers", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(
+      createStream([]),
+      () => {
+        throw new Error("cleanup failed");
+      },
+      () => {
+        throw new Error("report failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("report failed");
+    expect(calls).toEqual(["outer error report failed", "outer flush"]);
+  });
+
+  it("does not report a cleanup failure to a layer that already saw the stream's error", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(
+      source,
+      () => {
+        calls.push("flush");
+        throw new Error("cleanup failed");
+      },
+      (error) => calls.push(`error ${(error as Error).message}`),
+    );
+
+    await expect(wrapped.getReader().read()).rejects.toThrow("cleanup failed");
+    expect(calls).toEqual(["error boom", "flush"]);
+  });
+
+  it("passes an error replaced by an inner error callback to the outer layers", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("source failed"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      () => {
+        throw new Error("error handler failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("error handler failed");
+    expect(calls).toEqual(["outer error error handler failed", "outer flush"]);
+  });
+
+  it("passes on the error callback's failure when the flush callback would also throw", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("source failed"));
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => {
+        calls.push("inner flush");
+        throw new Error("cleanup failed");
+      },
+      () => {
+        throw new Error("error handler failed");
+      },
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      (error) => calls.push(`outer error ${(error as Error).message}`),
+    );
+
+    await expect(outer.getReader().read()).rejects.toThrow("error handler failed");
+    expect(calls).toEqual(["outer error error handler failed", "outer flush"]);
+  });
+
+  it("skips a layer's flush callback when its cancel callback throws", async () => {
+    const calls: string[] = [];
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        calls.push("source cancel");
+      },
+    });
+    const inner = deferUntilStreamConsumed(
+      source,
+      () => calls.push("inner flush"),
+      undefined,
+      () => calls.push("inner cancel"),
+    );
+    const outer = deferUntilStreamConsumed(
+      inner,
+      () => calls.push("outer flush"),
+      undefined,
+      () => {
+        calls.push("outer cancel");
+        throw new Error("cancel handler failed");
+      },
+    );
+
+    await expect(outer.cancel("gone")).rejects.toThrow("cancel handler failed");
+    expect(calls).toEqual(["outer cancel", "inner cancel", "inner flush", "source cancel"]);
+  });
+
+  it("keeps a callback's failure when cancelling the source also fails", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      cancel() {
+        throw new Error("source cancel failed");
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(
+      source,
+      () => {},
+      undefined,
+      () => {
+        throw new Error("cancel handler failed");
+      },
+    );
+
+    await expect(wrapped.cancel("gone")).rejects.toThrow("cancel handler failed");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it is done", async () => {
+    const source = createStream(["page"]);
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    await expect(new Response(wrapped).text()).resolves.toBe("page");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it errors", async () => {
+    const source = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error("boom"));
+      },
+    });
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    await expect(wrapped.getReader().read()).rejects.toThrow("boom");
+    expect(source.locked).toBe(false);
+  });
+
+  it("unlocks the source once it is cancelled", async () => {
+    let resolveCancel!: () => void;
+    const source = new ReadableStream<Uint8Array>({
+      cancel: () =>
+        new Promise<void>((resolve) => {
+          resolveCancel = resolve;
+        }),
+    });
+    const wrapped = deferUntilStreamConsumed(source, () => {});
+
+    const cancelled = wrapped.cancel("gone");
+    expect(source.locked).toBe(true);
+    resolveCancel();
+    await cancelled;
+    expect(source.locked).toBe(false);
+  });
+
+  it("reuses an unread wrapper from another copy of the module", async () => {
+    // The RSC and SSR environments load separate copies of the module.
+    vi.resetModules();
+    const copy = await import("../packages/vinext/src/server/defer-until-stream-consumed.js");
+    expect(copy.deferUntilStreamConsumed).not.toBe(deferUntilStreamConsumed);
+
+    const calls: string[] = [];
+    const inner = copy.deferUntilStreamConsumed(createStream(["page"]), () => calls.push("ssr"));
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("rsc"));
+
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["ssr", "rsc"]);
+  });
+
+  it("adds a separate layer to a wrapper that was read and released", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["a", "b"]), () => calls.push("inner"));
+    const reader = inner.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).not.toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("b");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("throws on a locked wrapper that has not been read yet", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    const reader = inner.getReader();
+
+    expect(() => deferUntilStreamConsumed(inner, () => calls.push("outer"))).toThrow(TypeError);
+    await expect(reader.read()).resolves.toMatchObject({ done: false });
+    await expect(reader.read()).resolves.toMatchObject({ done: true });
+    expect(calls).toEqual(["inner"]);
+  });
+
+  it("reuses a wrapper that was locked and released without being read", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream(["page"]), () => calls.push("inner"));
+    inner.getReader().releaseLock();
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("page");
+    expect(calls).toEqual(["inner", "outer"]);
+  });
+
+  it("does not read an empty source before the consumer does", async () => {
+    const calls: string[] = [];
+    const inner = deferUntilStreamConsumed(createStream([]), () => calls.push("inner"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual([]);
+
+    const outer = deferUntilStreamConsumed(inner, () => calls.push("outer"));
+    expect(outer).toBe(inner);
+    await expect(new Response(outer).text()).resolves.toBe("");
+    expect(calls).toEqual(["inner", "outer"]);
   });
 
   it("builds an HTML response, including link headers, and defers clearing request context until after body is consumed", async () => {

@@ -350,11 +350,20 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
               const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
               // Dedup: skip if already in-flight or a fresh cache entry exists,
               // matching the gate link.tsx applies to avoid double-fetching a
-              // payload that a nearby <Link> already prefetched.
+              // payload that a nearby <Link> already prefetched. A pending Link
+              // prefetch is not reused: this Form prefetches only once, and the
+              // Link cancels its request if it leaves before the request starts.
               const prefetched = getPrefetchedUrls();
               if (prefetched.has(cacheKey)) return;
               if (
-                hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader)
+                hasPrefetchCacheEntryForNavigation(
+                  rscUrl,
+                  interceptionContext,
+                  mountedSlotsHeader,
+                  {
+                    reusePending: false,
+                  },
+                )
               )
                 return;
               prefetched.add(cacheKey);
