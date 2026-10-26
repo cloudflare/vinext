@@ -1428,6 +1428,41 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe(staleTime);
   });
 
+  it("keeps middleware's stale time on an admitted App page, as an ISR replay does", async () => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-page", pattern: "/page" };
+    const rendered = runWithExecutionContext(context, () =>
+      finalizeAppPageCacheabilityEvaluationResponse(
+        new Response("flight", {
+          headers: {
+            [NEXT_ROUTER_STALE_TIME_HEADER]: "45",
+            [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+          },
+        }),
+        {
+          consumeDynamicUsage: () => false,
+          consumeRenderObservationState: () => ({ dynamicFetches: [], requestApis: [] }),
+          getPageTags: () => ["/page"],
+          getRequestCacheLife: () => ({ stale: 120 }),
+          isStaticEligible: true,
+          revalidateSeconds: 60,
+        },
+      ),
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(response.headers.has(VINEXT_STALE_TIME_PENDING_HEADER)).toBe(false);
+    expect(response.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("45");
+  });
+
   it("keeps the pending stale time on a rendered App page it doesn't admit", async () => {
     const { raw } = staticManifestRoute();
     const context = createWorkerCacheabilityAdmissionContext(

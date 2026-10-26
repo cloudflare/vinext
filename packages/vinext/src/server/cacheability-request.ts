@@ -625,8 +625,12 @@ function responseWithCachePolicy(
   if (cacheControl && completedRender) {
     // The stored response carries its completed render's client stale time,
     // as an ISR replay does, in place of the live stream's pending marker.
+    // Middleware's value wins, as on a replay.
     headers.delete(VINEXT_STALE_TIME_PENDING_HEADER);
-    if (completedRender.staleTimeSeconds !== undefined) {
+    if (
+      completedRender.staleTimeSeconds !== undefined &&
+      !headers.has(NEXT_ROUTER_STALE_TIME_HEADER)
+    ) {
       headers.set(
         NEXT_ROUTER_STALE_TIME_HEADER,
         String(Math.floor(completedRender.staleTimeSeconds)),
