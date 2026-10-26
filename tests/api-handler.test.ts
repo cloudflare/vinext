@@ -384,9 +384,10 @@ describe("handleApiRoute", () => {
       default: (_req: any, res: any) =>
         res.send(Readable.from([Buffer.from("hello "), Buffer.from("world")])),
     });
-    let actualStatus = 0;
     const actualServer = http.createServer((req, res) => {
-      void handleApiRoute(server, req, res, "/api/test", [route("/api/test")]);
+      void handleApiRoute(server, req, res, "/api/test", [route("/api/test")]).catch(
+        (error: unknown) => res.destroy(error instanceof Error ? error : new Error(String(error))),
+      );
     });
     actualServer.listen(0, "127.0.0.1");
     await new Promise<void>((resolve) => actualServer.once("listening", resolve));
@@ -394,12 +395,13 @@ describe("handleApiRoute", () => {
       const response = await fetch(
         `http://127.0.0.1:${(actualServer.address() as AddressInfo).port}/api/test`,
       );
-      actualStatus = response.status;
+      expect(response.status).toBe(200);
       expect(await response.text()).toBe("hello world");
       expect(response.headers.get("content-type")).toBe("application/octet-stream");
-      expect(actualStatus).toBe(200);
     } finally {
-      actualServer.close();
+      await new Promise<void>((resolve, reject) => {
+        actualServer.close((error) => (error ? reject(error) : resolve()));
+      });
     }
   });
 
