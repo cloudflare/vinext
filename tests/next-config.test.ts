@@ -2981,6 +2981,52 @@ describe("resolveNextConfig next-intl catalog loader", () => {
     });
   });
 
+  // With `TURBOPACK` set, next-intl adds no webpack hook, only a Turbopack rule.
+  it("keeps the catalog loader rule when next-intl only configures Turbopack", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const previous = process.env.TURBOPACK;
+    process.env.TURBOPACK = "1";
+    let nextConfig;
+    try {
+      nextConfig = createNextIntlPlugin({ experimental: { messages } })({});
+    } finally {
+      if (previous === undefined) delete process.env.TURBOPACK;
+      else process.env.TURBOPACK = previous;
+    }
+    expect(nextConfig.webpack).toBeUndefined();
+    const config = await resolveNextConfig(nextConfig, root);
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ lists several catalog paths in the Turbopack condition.
+  it("keeps every catalog directory of a Turbopack rule", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const config = await resolveNextConfig(
+      {
+        turbopack: {
+          rules: {
+            "*.po": {
+              loaders: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+              condition: { path: "{./messages,./shared/messages}/**/*" },
+              as: "*.js",
+            },
+          },
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages"), canonical(root, "shared/messages")],
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
   it("warns when the precompile alias has no catalog loader", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {

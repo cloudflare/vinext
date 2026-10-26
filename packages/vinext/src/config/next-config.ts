@@ -17,6 +17,7 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { escapeRegExp } from "../utils/regex.js";
 import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
@@ -2364,7 +2365,8 @@ export async function resolveNextConfig(
     images,
     i18n,
     mdx,
-    nextIntlCatalogLoader: webpackProbe.nextIntlCatalogLoader,
+    nextIntlCatalogLoader:
+      webpackProbe.nextIntlCatalogLoader ?? extractTurbopackNextIntlCatalogLoader(config, root),
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
@@ -2506,6 +2508,49 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
     ...normalizeAliasEntries(readOptionalRecord(experimentalTurbo?.resolveAlias), root),
     ...normalizeAliasEntries(readOptionalRecord(topLevelTurbopack?.resolveAlias), root),
   };
+}
+
+// With `TURBOPACK` set, `createNextIntlPlugin` adds no webpack hook and only
+// registers its catalog loader as a Turbopack rule:
+// `"*.json": { loaders: [catalogLoader], condition: { path: "{a,b}/**/*" } }`.
+function extractTurbopackNextIntlCatalogLoader(
+  config: NextConfig,
+  root: string,
+): NextIntlCatalogLoader | null {
+  const experimental = readOptionalRecord(config.experimental);
+  for (const turbo of [
+    readOptionalRecord(config.turbopack),
+    readOptionalRecord(experimental?.turbo),
+  ]) {
+    const rules = readOptionalRecord(turbo?.rules);
+    for (const [glob, entry] of Object.entries(rules ?? {})) {
+      const extension = /^\*(\.[^*/{}]+)$/.exec(glob)?.[1];
+      if (!extension) continue;
+      for (const rule of Array.isArray(entry) ? entry : [entry]) {
+        if (!isUnknownRecord(rule) || !Array.isArray(rule.loaders)) continue;
+        const loader = rule.loaders.find(
+          (use) => isUnknownRecord(use) && use.loader === NEXT_INTL_CATALOG_LOADER,
+        );
+        if (!isUnknownRecord(loader) || !isUnknownRecord(loader.options)) continue;
+        const condition = readOptionalRecord(rule.condition);
+        // next-intl 4.12+ lists several catalog paths as `{a,b}/**/*`.
+        const dirs =
+          typeof condition?.path === "string"
+            ? /^(?:\{([^{}]+)\}|([^{}]+))\/\*\*\/\*$/.exec(condition.path)
+            : null;
+        const include = (dirs?.[1]?.split(",") ?? (dirs?.[2] ? [dirs[2]] : [])).map((dir) =>
+          path.resolve(root, dir),
+        );
+        if (include.length === 0) continue;
+        return {
+          include,
+          test: new RegExp(`${escapeRegExp(extension)}$`),
+          options: loader.options,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 async function probeWebpackConfig(
