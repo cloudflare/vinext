@@ -74,6 +74,7 @@ const AUTHORIZATION_TRANSPORT_HEADER = "x-vinext-internal-authorization";
 const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-control";
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
+const RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER = "x-vinext-internal-render-whole-document";
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
@@ -157,7 +158,8 @@ function stripUntrustedTransportHeaders(request: Request): Request {
     !request.headers.has(AUTHORIZATION_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CF_TRANSPORT_HEADER) &&
-    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER)
+    !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER) &&
+    !request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER)
   ) {
     return request;
   }
@@ -166,6 +168,7 @@ function stripUntrustedTransportHeaders(request: Request): Request {
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
   const sanitized = new Request(request, { headers });
   const requestCf = Reflect.get(request, "cf");
   if (requestCf !== undefined) {
@@ -338,6 +341,7 @@ function restoreResponseStageRequest(
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
   if (serializedAuthorization !== null) {
     try {
       headers.set("Authorization", decodeURIComponent(serializedAuthorization));
@@ -421,11 +425,15 @@ function revalidatesStoredEntry(request: Request): boolean {
 }
 
 /**
- * No client waits on a deployment warm-up or on a revalidation, as with the
- * Response Store's.
+ * No client waits on a deployment warm-up, on a revalidation, as with the
+ * Response Store's, or on the gateway's fill of a page's document.
  */
 function rendersWholeDocument(request: Request): boolean {
-  return request.headers.get("user-agent") === WARMUP_USER_AGENT || revalidatesStoredEntry(request);
+  return (
+    request.headers.get("user-agent") === WARMUP_USER_AGENT ||
+    request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER) ||
+    revalidatesStoredEntry(request)
+  );
 }
 
 /**
@@ -633,7 +641,9 @@ type ResponseStageDispatch = { props: unknown; request: Request };
  * to. Next.js keeps a page's document and RSC payload in one entry, so the two
  * dispatches differ only in the RSC request selectors, the URL's `_rsc` and the
  * request type in the props. The request keeps the client's other headers,
- * minus those that would make the fetch conditional or partial.
+ * minus those that would make the fetch conditional or partial. No client
+ * waits on a document fetched this way, so it is rendered whole, marked by a
+ * header that, unlike the props, does not key its entry.
  */
 function otherPagePartDispatch(request: Request, props: unknown): ResponseStageDispatch | null {
   const isRscRequest = isCanonicalAppPage(props, true);
@@ -642,13 +652,21 @@ function otherPagePartDispatch(request: Request, props: unknown): ResponseStageD
 
   const headers = new Headers(request.headers);
   for (const name of FRAMEWORK_RESPONSE_VARY_FIELDS) headers.delete(name);
-  for (const name of ["If-Match", "If-Modified-Since", "If-None-Match", "If-Range", "Range"]) {
+  for (const name of [
+    "If-Match",
+    "If-Modified-Since",
+    "If-None-Match",
+    "If-Range",
+    "If-Unmodified-Since",
+    "Range",
+  ]) {
     headers.delete(name);
   }
   if (isRscRequest) {
     const url = new URL(request.url);
     stripRscCacheBustingSearchParam(url);
     headers.set("Accept", "text/html");
+    headers.set(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER, "1");
     return {
       props: { ...(props as Record<string, unknown>), isRscRequest: false },
       request: new Request(url, { headers }),

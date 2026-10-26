@@ -483,6 +483,10 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
   it.each<{ name: string; headers: Record<string, string> }>([
     { name: "a deployment warm-up", headers: { "User-Agent": "vinext-cloudflare-cdn-warm" } },
+    {
+      name: "the gateway's fill of a page's document",
+      headers: { "x-vinext-internal-render-whole-document": "1" },
+    },
     { name: "an ETag revalidation", headers: { "If-None-Match": 'W/"stored"' } },
     {
       name: "a Last-Modified revalidation",
@@ -499,6 +503,28 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       cache: "shared",
       renderWholeDocument: true,
     });
+    const stageRequest = stages.response.mock.calls[0]?.[0] as Request;
+    expect(stageRequest.headers.has("x-vinext-internal-render-whole-document")).toBe(false);
+  });
+
+  it("streams a document whose client forges the whole-document marker", async () => {
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch: (request: Request) => createEntrypoint(props).fetch(request),
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page", isRscRequest: false }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await worker.fetch(
+      new Request("https://example.com/page", {
+        headers: { "x-vinext-internal-render-whole-document": "1" },
+      }),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({ cache: "shared" });
   });
 
   it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
@@ -2070,7 +2096,16 @@ describe("Workers Cache page parts", () => {
   it("stores a page's RSC payload when its document renders for the cache", async () => {
     const { calls, response } = await dispatchPagePart(
       new Request("https://example.com/page", {
-        headers: { Accept: "text/html", "If-None-Match": '"etag"', "User-Agent": "browser" },
+        headers: {
+          Accept: "text/html",
+          "If-Match": '"etag"',
+          "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT",
+          "If-None-Match": '"etag"',
+          "If-Range": '"etag"',
+          "If-Unmodified-Since": "Tue, 06 Oct 2026 00:00:00 GMT",
+          Range: "bytes=0-1",
+          "User-Agent": "browser",
+        },
       }),
       pageProps,
       ["MISS", "MISS"],
@@ -2086,7 +2121,17 @@ describe("Workers Cache page parts", () => {
     });
     expect(other.request.headers.get("RSC")).toBe("1");
     expect(other.request.headers.get("User-Agent")).toBe("browser");
-    expect(other.request.headers.get("If-None-Match")).toBeNull();
+    for (const name of [
+      "If-Match",
+      "If-Modified-Since",
+      "If-None-Match",
+      "If-Range",
+      "If-Unmodified-Since",
+      "Range",
+    ]) {
+      expect(other.request.headers.get(name)).toBeNull();
+    }
+    expect(other.request.headers.has("x-vinext-internal-render-whole-document")).toBe(false);
   });
 
   it("stores a page's document when its RSC payload renders for the cache", async () => {
@@ -2108,6 +2153,8 @@ describe("Workers Cache page parts", () => {
       expect(other.request.headers.get(name.trim())).toBeNull();
     }
     expect(other.request.headers.get("User-Agent")).toBe("browser");
+    // No client waits on this document, so the entrypoint renders it whole.
+    expect(other.request.headers.get("x-vinext-internal-render-whole-document")).toBe("1");
   });
 
   it("fetches the other part under the entry its own request reads", async () => {
