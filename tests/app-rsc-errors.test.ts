@@ -426,6 +426,7 @@ describe("app RSC error primitives", () => {
       try {
         const options = {
           errorContext: null,
+          loggedErrors: new WeakSet<object>(),
           nodeEnv,
           reportRequestError() {},
           requestInfo: null,
