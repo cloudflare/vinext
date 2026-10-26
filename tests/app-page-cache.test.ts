@@ -19,6 +19,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import type { RenderObservation } from "../packages/vinext/src/server/cache-proof.js";
 import {
   MemoryCacheHandler,
@@ -1018,6 +1019,7 @@ describe("app page cache helpers", () => {
   it.each([
     { isRscRequest: false, unproven: "html" },
     { isRscRequest: false, unproven: "rsc" },
+    { isRscRequest: true, unproven: "html" },
     { isRscRequest: true, unproven: "rsc" },
   ] as const)(
     "skips regeneration writes when the $unproven render may have read searchParams (RSC request: $isRscRequest)",
@@ -1061,6 +1063,105 @@ describe("app page cache helpers", () => {
       expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
       await scheduledRegenerations[0]();
       expect(isrSet).not.toHaveBeenCalled();
+    },
+  );
+
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // request regenerates the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it.each([
+    {
+      label: "a navigation",
+      options: {},
+      html: "<h1>fresh</h1>",
+      renderDocument: true,
+      scheduledKey: "html:/stale",
+      stored: ["rsc:/stale", "html:/stale"],
+    },
+    {
+      label: "a navigation whose shell's special error has no document",
+      options: {},
+      html: "",
+      renderDocument: true,
+      scheduledKey: "html:/stale",
+      stored: ["rsc:/stale"],
+    },
+    {
+      label: "a prefetch shell",
+      options: { renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+      html: "<h1>fresh</h1>",
+      renderDocument: false,
+      scheduledKey: "rsc:/stale:prefetch-loading-shell",
+      stored: ["rsc:/stale:prefetch-loading-shell"],
+    },
+    {
+      label: "an interception",
+      options: { interceptionContext: "/feed", interceptionId: "photo" },
+      html: "<h1>fresh</h1>",
+      renderDocument: false,
+      scheduledKey: "rsc:/stale:photo",
+      stored: ["rsc:/stale:photo"],
+    },
+    {
+      label: "a dynamic RSC request under PPR",
+      options: { isDynamicRscRequest: true, isRoutePPREnabled: true },
+      html: "<h1>fresh</h1>",
+      renderDocument: false,
+      scheduledKey: "rsc:/stale",
+      stored: ["rsc:/stale"],
+    },
+  ] as const)(
+    "regenerates the document beside the RSC entry only for $label",
+    async ({ options, html, renderDocument, scheduledKey, stored }) => {
+      const scheduled: Array<{ key: string; renderFn: () => Promise<void> }> = [];
+      const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+      const renderFreshPageForCache = vi.fn(async () => ({
+        ...queryInvariantRegenObservations(),
+        usedDynamicApi: false,
+        html,
+        rscData: new TextEncoder().encode("fresh-flight").buffer,
+        tags: [],
+      }));
+
+      const response = await readAppPageCacheResponse({
+        cleanPathname: "/stale",
+        clearRequestContext() {},
+        isRscRequest: true,
+        async isrGet() {
+          return buildISRCacheEntry(
+            buildCachedAppPageValue("", new TextEncoder().encode("stale-flight").buffer),
+            true,
+          );
+        },
+        isrHtmlKey(pathname) {
+          return "html:" + pathname;
+        },
+        isrRscKey(pathname, _mountedSlotsHeader, renderMode, _interceptionContext, interceptionId) {
+          return [
+            "rsc:" + pathname,
+            ...(renderMode && renderMode !== "navigation" ? [renderMode] : []),
+            ...(interceptionId ? [interceptionId] : []),
+          ].join(":");
+        },
+        isrSet,
+        revalidateSeconds: 60,
+        renderFreshPageForCache,
+        scheduleBackgroundRegeneration(key, renderFn) {
+          scheduled.push({ key, renderFn });
+        },
+        ...options,
+      });
+
+      expect(response?.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(scheduled.map(({ key }) => key)).toEqual([scheduledKey]);
+      await scheduled[0].renderFn();
+      expect(renderFreshPageForCache).toHaveBeenCalledWith({ renderDocument });
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(stored);
+      const storedHtml = isrSet.mock.calls.find(([key]) => key === "html:/stale")?.[1];
+      if (storedHtml) {
+        expect(storedHtml.html).toBe("<h1>fresh</h1>");
+        expect(storedHtml.rscData).toBeUndefined();
+      }
     },
   );
 
@@ -2758,8 +2859,8 @@ describe("app page regeneration failures", () => {
       expect(store.get("rsc:/stale")).toBe(previousRsc);
     });
 
-    // The fresh RSC beside the stale HTML is the state an RSC-triggered
-    // regeneration leaves anyway; the stale HTML regenerates on its next request.
+    // The fresh RSC beside the stale HTML leaves the stale HTML to regenerate
+    // on its next request.
     it("warns and keeps the fresh RSC when the HTML write fails", async () => {
       const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
       const { isrSet, previousHtml, store } = failingStore("html:/stale");

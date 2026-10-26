@@ -2909,6 +2909,40 @@ describe("App Router Production server (startProdServer)", () => {
     expect(freshBody.timestamp).not.toBe(coldBody.timestamp);
   });
 
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // request that finds it stale regenerates the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: a stale RSC request regenerates the page's document too", async () => {
+    const readTimestamp = (html: string) =>
+      html.match(/data-testid="timestamp"[^>]*>(?:<!--.*?-->)*(\d+)/)?.[1];
+    const fetchRsc = () =>
+      fetch(`${baseUrl}/isr-test.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+
+    // An HTML render stores both entries; let them go stale (revalidate = 1).
+    const filled = await fetch(`${baseUrl}/isr-test`);
+    const filledTimestamp = readTimestamp(await filled.text());
+    expect(filledTimestamp).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Only RSC requests reach the page until its RSC entry regenerates.
+    const stale = await fetchRsc();
+    await stale.arrayBuffer();
+    expect(stale.headers.get("x-vinext-cache")).toBe("STALE");
+    await waitForCondition(
+      async () => {
+        const res = await fetchRsc();
+        await res.arrayBuffer();
+        return res.headers.get("x-vinext-cache") === "HIT";
+      },
+      { timeoutMs: 5000 },
+    );
+
+    const document = await fetch(`${baseUrl}/isr-test`);
+    const documentTimestamp = readTimestamp(await document.text());
+    expect(documentTimestamp).toBeTruthy();
+    expect(documentTimestamp).not.toBe(filledTimestamp);
+  });
+
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {
     // Ensure cache is warm
     const getRes = await fetch(`${baseUrl}/api/static-data`);
