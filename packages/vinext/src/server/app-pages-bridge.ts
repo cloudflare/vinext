@@ -6,6 +6,8 @@ import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
+import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
+import { applyRouteHandlerMiddlewareContext as applyMiddlewareHeadersToResponse } from "./app-route-handler-middleware-context.js";
 
 export type PagesEntry = {
   handleApiRoute?: (
@@ -15,6 +17,7 @@ export type PagesEntry = {
     trustedRevalidateOrigin: string | undefined,
     edgeRuntime: EdgeApiExecutionRuntime,
     initialResponseHeaders?: Headers,
+    middlewareResponseHeaders?: Headers,
   ) => Promise<Response> | Response;
   matchApiRoute?: (url: string, request: Request) => PagesRouteMatch | null;
   matchPageRoute?: (url: string, request: Request) => PagesRouteMatch | null;
@@ -112,6 +115,30 @@ function applyPagesMiddlewareContext(
 }
 
 /**
+ * Compose request-stage middleware headers onto a Pages API response returned
+ * by a response stage. The stage's API route already applied them per runtime
+ * (before a Node handler ran, over an edge handler's) and removed the
+ * inherited cookies, so only headers the response lacks (for example on a
+ * stage protocol error) and middleware's cookies, ahead of the response's
+ * own, are re-added here.
+ */
+export function applyMiddlewareHeadersToStagedPagesApiResponse(
+  response: Response,
+  middlewareHeaders: Headers | null | undefined,
+): Response {
+  if (!middlewareHeaders) return response;
+  const missingHeaders = new Headers();
+  for (const [name, value] of middlewareHeaders) {
+    if (name.toLowerCase() !== "set-cookie" && !response.headers.has(name)) {
+      missingHeaders.set(name, value);
+    }
+  }
+  for (const cookie of middlewareHeaders.getSetCookie())
+    missingHeaders.append("Set-Cookie", cookie);
+  return applyMiddlewareHeadersToResponse(response, { headers: missingHeaders, status: null });
+}
+
+/**
  * Fallback handler to route App Router requests to the Pages Router when no App Router route matches.
  */
 export async function renderPagesFallback(
@@ -192,17 +219,21 @@ export async function renderPagesFallback(
       executionContext?.trustedRevalidateOrigin,
       executionContext?.hostRuntime ?? "node",
     ] as const;
-    const pagesApiResponse = await (initialResponseHeaders
-      ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders)
+    // Next.js writes middleware response headers onto the Node response before
+    // a Pages API handler runs, so the handler's own setHeader() replaces them.
+    // The API route installs them itself (and keeps the middleware-wins merge
+    // for edge handlers); only middleware's status is applied here.
+    let middlewareResponseHeaders: Headers | undefined;
+    if (middlewareContext.headers) {
+      middlewareResponseHeaders = new Headers();
+      mergeMiddlewareResponseHeaders(middlewareResponseHeaders, middlewareContext.headers);
+    }
+    const pagesApiResponse = await (initialResponseHeaders || middlewareResponseHeaders
+      ? pagesEntry.handleApiRoute(...apiArgs, initialResponseHeaders, middlewareResponseHeaders)
       : pagesEntry.handleApiRoute(...apiArgs));
     const draftCookie = getDraftModeCookieHeader();
     return applyDraftModeCookie(
-      // A Node-runtime Pages API handler in Next.js writes to the response that
-      // already holds middleware's headers, so its challenges replace
-      // middleware's rather than joining them.
-      applyRouteHandlerMiddlewareContext(pagesApiResponse, middlewareContext, {
-        appendResponseChallenges: false,
-      }),
+      applyRouteHandlerMiddlewareContext(pagesApiResponse, { ...middlewareContext, headers: null }),
       draftCookie,
     );
   }
