@@ -264,6 +264,7 @@ import {
   createInstrumentationClientTransformPlugin,
   createInstrumentationServerTransformPlugin,
 } from "./plugins/instrumentation-client.js";
+import { createNextIntlCatalogPlugin } from "./plugins/next-intl-catalog.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
@@ -5969,6 +5970,10 @@ export const loadServerActionClient = ${
     createInstrumentationServerTransformPlugin(
       () => instrumentationPath,
       () => nextConfig.instrumentationServerValueInjections,
+    ),
+    createNextIntlCatalogPlugin(
+      () => root,
+      () => nextConfig.nextIntlCatalogLoader,
     ),
     {
       name: "vinext:instrumentation-client-inject",

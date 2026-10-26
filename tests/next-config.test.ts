@@ -2723,6 +2723,7 @@ describe("detectNextIntlConfig", () => {
       images: undefined,
       i18n: null,
       mdx: null,
+      nextIntlCatalogLoader: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
@@ -2928,6 +2929,84 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
     expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "custom/intl.ts"));
+  });
+});
+
+// https://github.com/cloudflare/vinext/issues/4303
+describe("resolveNextConfig next-intl catalog loader", () => {
+  const root = path.resolve(import.meta.dirname, "fixtures", "cf-next-intl-example");
+
+  async function importCreateNextIntlPlugin() {
+    const pluginPath = createRequire(path.join(root, "package.json")).resolve("next-intl/plugin");
+    return (await import(pathToFileURL(pluginPath).href)).default;
+  }
+
+  it("keeps the catalog loader rule createNextIntlPlugin adds for experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const config = await resolveNextConfig(
+      createNextIntlPlugin({ experimental: { messages } })({}),
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [path.join(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ accepts several `messages.path` entries and passes them to
+  // webpack as an `include` array (getNextConfig.js in next-intl 4.14.9).
+  it("keeps every catalog directory of an array include", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const include = [path.join(root, "messages"), path.join(root, "shared/messages")];
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any) => {
+          webpackConfig.module.rules.push({
+            test: /\.po$/,
+            include,
+            use: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+            type: "javascript/auto",
+          });
+          return webpackConfig;
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include,
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
+  it("warns when the precompile alias has no catalog loader", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = await resolveNextConfig(
+        {
+          turbopack: {
+            resolveAlias: {
+              "use-intl/format-message": "./node_modules/use-intl/dist/format-only.js",
+            },
+          },
+        },
+        root,
+      );
+      expect(config.nextIntlCatalogLoader).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("`experimental.messages.precompile` is enabled"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("has no catalog loader without experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const config = await resolveNextConfig(createNextIntlPlugin()({}), root);
+    expect(config.nextIntlCatalogLoader).toBeNull();
   });
 });
 

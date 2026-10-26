@@ -268,6 +268,19 @@ export type MdxOptions = {
   recmaPlugins?: unknown[];
 };
 
+/**
+ * The webpack rule `createNextIntlPlugin` adds for its `experimental.messages`
+ * catalogs. vinext runs the same loader on the files it matches.
+ */
+export type NextIntlCatalogLoader = {
+  /** Absolute catalog directories (the rule's `include`). */
+  include: string[];
+  /** Catalog file extension test (the rule's `test`). */
+  test: RegExp;
+  /** The loader's `options`. */
+  options: Record<string, unknown>;
+};
+
 export type PrefetchInliningConfig =
   | false
   | {
@@ -566,6 +579,8 @@ export type ResolvedNextConfig = {
   i18n: NextI18nConfig | null;
   /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
   mdx: MdxOptions | null;
+  /** next-intl's message catalog loader rule from `createNextIntlPlugin`. */
+  nextIntlCatalogLoader: NextIntlCatalogLoader | null;
   /** Explicit module aliases preserved from wrapped next.config plugins. */
   aliases: Record<string, string>;
   /** Extra allowed origins for dev server access (from allowedDevOrigins). */
@@ -1916,6 +1931,7 @@ export async function resolveNextConfig(
       images: undefined,
       i18n: null,
       mdx: null,
+      nextIntlCatalogLoader: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
@@ -2226,17 +2242,19 @@ export async function resolveNextConfig(
   }
 
   // Warn about unsupported webpack usage. We preserve alias injection,
-  // resolve.extensions, and MDX settings, but other customization is ignored.
+  // resolve.extensions, MDX settings, and next-intl's catalog loader, but other
+  // customization is ignored.
   if (config.webpack !== undefined) {
     if (
       mdx ||
       Object.keys(webpackProbe.aliases).length > 0 ||
       webpackProbe.resolveExtensionsCustomized ||
-      webpackProbe.instrumentationClientRouteManifest !== undefined
+      webpackProbe.instrumentationClientRouteManifest !== undefined ||
+      webpackProbe.nextIntlCatalogLoader !== null
     ) {
       console.warn(
         '[vinext] next.config option "webpack" is only partially supported. ' +
-          "vinext preserves resolve.alias, resolve.extensions, MDX loader settings, and instrumentation-client route manifests, but other webpack customization is ignored",
+          "vinext preserves resolve.alias, resolve.extensions, MDX loader settings, next-intl message catalog loaders, and instrumentation-client route manifests, but other webpack customization is ignored",
       );
     } else {
       console.warn(
@@ -2346,6 +2364,7 @@ export async function resolveNextConfig(
     images,
     i18n,
     mdx,
+    nextIntlCatalogLoader: webpackProbe.nextIntlCatalogLoader,
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
@@ -2408,6 +2427,17 @@ export async function resolveNextConfig(
   // Auto-detect next-intl (lowest priority — explicit aliases from
   // webpack/turbopack already in `aliases` take precedence)
   detectNextIntlConfig(root, resolved);
+
+  // `precompile: true` aliases use-intl's formatter to one that only formats
+  // precompiled messages; without the catalog loader, placeholders render as-is.
+  if (
+    resolved.aliases["use-intl/format-message"]?.includes("format-only") &&
+    resolved.nextIntlCatalogLoader === null
+  ) {
+    console.warn(
+      "[vinext] next-intl's `experimental.messages.precompile` is enabled, but vinext could not find next-intl's catalog loader in the webpack config. Messages with arguments or rich text will render their raw ICU source; remove `precompile` to format them at runtime",
+    );
+  }
 
   // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
   // not, fall back to using `basePath` as the asset prefix. This ensures the
@@ -2485,6 +2515,7 @@ async function probeWebpackConfig(
 ): Promise<{
   aliases: Record<string, string>;
   mdx: MdxOptions | null;
+  nextIntlCatalogLoader: NextIntlCatalogLoader | null;
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
@@ -2495,6 +2526,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlCatalogLoader: null,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
@@ -2521,6 +2553,7 @@ async function probeWebpackConfig(
     return {
       aliases: normalizeAliasEntries(clientProbe.config.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(clientProbe.rules),
+      nextIntlCatalogLoader: extractNextIntlCatalogLoader(clientProbe.rules),
       resolveExtensions: clientProbe.resolveExtensions,
       serverResolveExtensions: serverProbe.resolveExtensions,
       resolveExtensionsCustomized:
@@ -2537,6 +2570,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlCatalogLoader: null,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
@@ -2578,6 +2612,41 @@ function extractInstrumentationClientRouteManifest(rules: any[]): string | undef
 
   for (const rule of rules) visit(rule);
   return manifest;
+}
+
+const NEXT_INTL_CATALOG_LOADER = "next-intl/extractor/catalogLoader";
+
+// `createNextIntlPlugin` compiles its `experimental.messages` catalogs (and
+// precompiles them for `precompile: true`, which also aliases use-intl's
+// formatter to one that only reads precompiled messages) with a webpack loader.
+// Keep that rule so vinext can run the loader on the same files.
+function extractNextIntlCatalogLoader(rules: unknown[]): NextIntlCatalogLoader | null {
+  let catalogLoader: NextIntlCatalogLoader | null = null;
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+    if (!(rule.test instanceof RegExp)) return;
+    // next-intl 4.12+ accepts several catalog paths and passes them as an array.
+    const include = typeof rule.include === "string" ? [rule.include] : rule.include;
+    if (!Array.isArray(include) || include.length === 0) return;
+    if (!include.every((dir) => typeof dir === "string")) return;
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) {
+      if (!isUnknownRecord(use) || use.loader !== NEXT_INTL_CATALOG_LOADER) continue;
+      if (!isUnknownRecord(use.options)) continue;
+      catalogLoader = { include, test: rule.test, options: use.options };
+    }
+  };
+
+  for (const rule of rules) visit(rule);
+  return catalogLoader;
 }
 
 // Preserve generic value-injection rules that wrapped Next.js configs target at
