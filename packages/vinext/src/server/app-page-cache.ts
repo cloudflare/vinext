@@ -612,9 +612,9 @@ export async function readAppPageCacheResponse(
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
       //
-      // The regeneration key is derived from exactly the same inputs as `isrKey`
-      // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
-      // reuse it instead of recomputing the hash.
+      // A regeneration that writes the document is keyed by the page's HTML
+      // key below. Any other reuses `isrKey`, the stale entry's own key,
+      // instead of recomputing the hash.
       //
       // Next.js keeps a page's document and RSC payload in one entry, so an RSC
       // request regenerates the document too. Here a regeneration of the
