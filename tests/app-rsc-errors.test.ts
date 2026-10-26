@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createRscOnErrorHandler,
   errorDigest,
@@ -26,6 +26,14 @@ function renderErrorContext(routePath: string) {
 }
 
 describe("app RSC error primitives", () => {
+  // Generic render errors are logged in every environment; keep test output quiet.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("uses the same stable digest hash shape as Next.js stringHash", () => {
     expect(errorDigest("message-stack")).toBe("701844781");
   });
@@ -314,9 +322,10 @@ describe("app RSC error primitives", () => {
     }
   });
 
-  it("does not log generic render errors to the terminal in production", () => {
-    // Production reports through `reportRequestError`; the transport error is
-    // returned to the client and must not be double-surfaced on the terminal.
+  it("logs generic render errors once in production", () => {
+    // Regression for #4305: without an onRequestError hook, a production render
+    // failure (such as a client module failing to evaluate on Workers) left no
+    // trace. Next.js logs render errors in production too.
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const onError = createRscOnErrorHandler({
@@ -329,8 +338,9 @@ describe("app RSC error primitives", () => {
       error.stack = "stack";
 
       onError(error);
+      onError(error);
 
-      expect(consoleError).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledExactlyOnceWith("[vinext] Server render error:", error);
     } finally {
       consoleError.mockRestore();
     }

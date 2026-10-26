@@ -212,8 +212,10 @@ export function createRscOnErrorHandler(
           reportableError,
         );
       }
-    } else if (nodeEnv !== "production" && !thrownHasDigest) {
-      // Preserve dev logging, where a digest suppresses repeat RSC/SSR callbacks.
+    } else if (!thrownHasDigest) {
+      // Like Next.js, log in production too: without an onRequestError hook,
+      // reportRequestError is a no-op and the failure would leave no trace. A
+      // digest suppresses repeat RSC/SSR callbacks for the same error.
       console.error("[vinext] Server render error:", properError);
     }
 
