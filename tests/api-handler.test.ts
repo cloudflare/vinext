@@ -380,6 +380,37 @@ describe("handleApiRoute", () => {
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("rejects unknown request body charsets with 400", async () => {
+      const handler = vi.fn();
+      const req = mockReq("POST", "/api/test", "test", {
+        "content-type": "text/plain; charset=unknown-charset",
+      });
+      const res = mockRes();
+      await handleApiRoute(mockServer({ default: handler }), req, res, "/api/test", [
+        route("/api/test"),
+      ]);
+      expect(res.statusCode).toBe(400);
+      expect(res._body).toBe("Invalid body");
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["application/json; charset=utf-16le", Buffer.from('{"name":"café"}', "utf16le")],
+      ['application/json; charset="UTF-16LE"', Buffer.from('{"name":"café"}', "utf16le")],
+      ["application/json; charset=iso-8859-1", Buffer.from('{"name":"café"}', "latin1")],
+      ["application/json", Buffer.from('\ufeff{"name":"café"}')],
+    ])("decodes API JSON with %s", async (contentType, body) => {
+      let capturedBody: unknown;
+      const handler = vi.fn((req: any) => {
+        capturedBody = req.body;
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("POST", "/api/test", body, { "content-type": contentType });
+      const res = mockRes();
+      await handleApiRoute(server, req, res, "/api/test", [route("/api/test")]);
+      expect(capturedBody).toEqual({ name: "café" });
+    });
+
     it("does not expose process environment variables on the request", async () => {
       const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
       process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
