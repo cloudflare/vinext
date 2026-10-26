@@ -703,8 +703,13 @@ test("Workers Cache shares one entry across the hosts of a deployed Worker", asy
   expect(aliasHost.startsWith(`${previewAlias}-`)).toBe(true);
   const previewURL = `https://${id!.slice(0, 8)}${aliasHost.slice(previewAlias!.length)}`;
 
-  // Only an entry shared across hosts gives the preview host a HIT carrying
-  // the render the base host was just served.
+  // Only an entry shared across hosts gives the Version URL a HIT carrying
+  // the render the alias was served. Each data center has its own lower-tier
+  // cache and consults one upper tier on a miss, so the alias is a HIT, its
+  // render stored, before the Version URL first asks for it:
+  // https://developers.cloudflare.com/workers/cache/
+  // A retry asks for new entries, never ones an earlier attempt filled.
+  const attempt = `?attempt=${test.info().retry}`;
   for (const [pathname, renderOf] of [
     ["/static-default", (body: string) => /static-default-render-id[^>]*>([^<]+)</.exec(body)?.[1]],
     [
@@ -713,35 +718,45 @@ test("Workers Cache shares one entry across the hosts of a deployed Worker", asy
     ],
     ["/api/host-shared", (body: string) => (JSON.parse(body) as { renderId?: string }).renderId],
   ] as const) {
+    let filledRender: string | undefined;
     await expect
       .poll(
         async () => {
-          const filled = await request.get(`${baseURL}${pathname}`);
+          const filled = await request.get(`${baseURL}${pathname}${attempt}`);
           expect(filled.ok(), pathname).toBe(true);
-          const filledRender = renderOf(await filled.text());
-          expect(filledRender, pathname).toBeTruthy();
-          const other = await request.get(`${previewURL}${pathname}`);
-          const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
-          return {
-            pathname,
-            otherStatus: other.status(),
-            otherCacheStatus: other.headers()["cf-cache-status"],
-            sameRender: otherRender === filledRender,
-          };
+          filledRender = renderOf(await filled.text());
+          return filled.headers()["cf-cache-status"];
         },
         { intervals: [1_000], timeout: 45_000 },
       )
-      .toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
+      .toBe("HIT");
+    expect(filledRender, pathname).toBeTruthy();
+    // The first request answers: a later one could hit an entry the Version
+    // URL filled itself.
+    const other = await request.get(`${previewURL}${pathname}${attempt}`);
+    const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
+    expect({
+      pathname,
+      otherStatus: other.status(),
+      otherCacheStatus: other.headers()["cf-cache-status"],
+      sameRender: otherRender === filledRender,
+    }).toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
   }
 
   // A page whose getInitialProps runs renders per request, as in Next.js, so
-  // a CDN policy stores it per host and no host gets another's.
-  for (let attempt = 0; attempt < 3; attempt++) {
-    for (const origin of [baseURL, previewURL]) {
-      const response = await request.get(`${origin}/host-echo-initial`);
-      expect(response.ok()).toBe(true);
-      expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
-    }
+  // a CDN policy stores it per host and each host hits its own entry.
+  for (const origin of [baseURL, previewURL]) {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${origin}/host-echo-initial`);
+          expect(response.ok()).toBe(true);
+          expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
+          return response.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
   }
 });
 
