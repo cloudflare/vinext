@@ -1,12 +1,12 @@
 import MagicString from "magic-string";
 import { readFile } from "node:fs/promises";
 import path from "pathslash";
-import { createIdResolver, type ESTree, type Plugin } from "vite";
+import { createIdResolver, type DevEnvironment, type ESTree, type Plugin } from "vite";
 import {
   collectBindingNames,
   forEachAstChild,
   isIdentifierNamed,
-  parseProgram,
+  parseProgramResult,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   staticStringValue,
@@ -27,9 +27,13 @@ import { stripViteModuleQuery } from "../utils/path.js";
 
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
+const LOWERED_REQUIRE_PREFIX = "__vinext_require_";
 type LiteralRequire = {
+  call: ESTree.CallExpression;
   argument: ESTree.Node;
   specifier: string;
+  /** Inside a function or class body, where `await` is unavailable. */
+  nested: boolean;
 };
 
 type SyntheticModuleType = "js" | "jsx" | "json" | "ts" | "tsx";
@@ -62,28 +66,21 @@ function isPackageSpecifier(specifier: string): boolean {
   );
 }
 
-function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
-  let ast: ESTree.Program;
-  try {
-    ast = parseProgram(code, { lang: scriptParserLanguage(id) ?? "jsx" });
-  } catch {
-    return [];
-  }
-
-  const root = ast;
+/** `require()` calls with one literal specifier whose `require` is not a local binding. */
+function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
   const requires: LiteralRequire[] = [];
   const rootScope = createAstScope(null);
   collectDirectScopeBindings(root, rootScope);
   collectVarScopeBindings(root, rootScope);
 
-  function visit(node: ESTree.Node, parentScope: AstScope): void {
+  function visit(node: ESTree.Node, parentScope: AstScope, nested: boolean): void {
     let scope = parentScope;
     if (isFunctionNode(node)) {
       const parameterScope = createAstScope(parentScope);
       collectBindingNames(node.id, parameterScope.bindings);
       for (const parameter of node.params) {
         collectBindingNames(parameter, parameterScope.bindings);
-        visit(parameter, parameterScope);
+        visit(parameter, parameterScope, true);
       }
 
       const body = node.body;
@@ -92,19 +89,19 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
         collectDirectScopeBindings(body, bodyScope);
         collectVarScopeBindings(body, bodyScope);
         if (body.type === "BlockStatement") {
-          for (const statement of body.body) visit(statement, bodyScope);
+          for (const statement of body.body) visit(statement, bodyScope, true);
         } else {
-          visit(body, bodyScope);
+          visit(body, bodyScope, true);
         }
       }
       return;
     }
 
     if (node.type === "SwitchStatement") {
-      visit(node.discriminant, parentScope);
+      visit(node.discriminant, parentScope, nested);
       const switchScope = createAstScope(parentScope);
       collectSwitchScopeBindings(node, switchScope);
-      for (const switchCase of node.cases) visit(switchCase, switchScope);
+      for (const switchCase of node.cases) visit(switchCase, switchScope, nested);
       return;
     }
 
@@ -143,19 +140,101 @@ function collectLiteralRequires(code: string, id: string): LiteralRequire[] {
         !hasAstBinding(scope, "require") &&
         args.length === 1 &&
         argument &&
-        specifier !== null &&
-        isPackageSpecifier(specifier)
+        specifier !== null
       ) {
-        requires.push({ argument, specifier });
+        requires.push({ call: node, argument, specifier, nested });
         return;
       }
     }
 
-    forEachAstChild(node, (child) => visit(child, scope));
+    // Class fields and static blocks cannot await; TypeScript compiles
+    // namespace and enum bodies to functions.
+    const childNested =
+      nested ||
+      node.type === "ClassBody" ||
+      node.type === "TSModuleBlock" ||
+      node.type === "TSEnumDeclaration";
+    forEachAstChild(node, (child) => visit(child, scope, childNested));
   }
 
-  for (const statement of root.body) visit(statement, rootScope);
+  for (const statement of root.body) visit(statement, rootScope, false);
   return requires;
+}
+
+/**
+ * Whether a module is an ESM file that a dev server environment's module
+ * runner evaluates as it is, where `require` is undefined: a dependency that
+ * the dependency optimizer does not bundle, such as one of the packages with a
+ * `react` peer dependency that @vitejs/plugin-rsc excludes from it.
+ */
+function isUnbundledServerDependency(environment: DevEnvironment, id: string): boolean {
+  return (
+    environment.mode === "dev" &&
+    environment.config.dev.moduleRunnerTransform === true &&
+    !id.startsWith(environment.config.cacheDir) &&
+    !environment.depsOptimizer?.isOptimizedDepFile(id)
+  );
+}
+
+/**
+ * Lower `require()` calls in an unbundled ESM dependency the way
+ * @vitejs/plugin-rsc lowers them in the CommonJS dependencies it converts for
+ * the module runner, with its interop for the result. A module-level call
+ * awaits `import()` in place, so statements keep their order and a call that
+ * never runs never loads. A call inside a function cannot await, so its
+ * target loads when the module starts to evaluate, and a load error is thrown
+ * by the call rather than by the module, as `try`/`catch` around the call
+ * expects. Code is inserted without newlines, keeping line numbers.
+ */
+function lowerRequires(
+  code: string,
+  program: ESTree.Program,
+  requires: LiteralRequire[],
+): MagicString {
+  let prefix = LOWERED_REQUIRE_PREFIX;
+  while (code.includes(prefix)) prefix += "$";
+  const interop = `${prefix}_`;
+  const load = `${prefix}load__`;
+  const output = new MagicString(code);
+  const hoisted = new Map<string, string>();
+  for (const { call, argument, specifier, nested } of requires) {
+    const target = code.slice(argument.start, argument.end);
+    if (!nested) {
+      output.update(call.start, argument.start, `${interop}(await import(`);
+      output.update(argument.end, call.end, "))");
+      continue;
+    }
+    let name = hoisted.get(specifier);
+    if (!name) {
+      name = `${prefix}${hoisted.size}__`;
+      hoisted.set(specifier, name);
+      output.appendLeft(
+        hoistPosition(code, program),
+        `const ${name} = await ${load}(import(${target}));`,
+      );
+    }
+    output.update(call.start, call.end, `${name}()`);
+  }
+  // @vitejs/plugin-rsc's `__cjs_interop__`: a namespace is `module.exports`'s
+  // wrapper when plugin-rsc converted it or its default export holds every
+  // other export, as Node's CommonJS and builtin namespaces do.
+  output.append(
+    `\nfunction ${interop}(m) { return m.__cjs_module_runner_transform || ("default" in m && Object.keys(m).every((k) => k === "default" || m[k] === m.default?.[k])) ? m.default : m; }` +
+      (hoisted.size > 0
+        ? `\nfunction ${load}(load) { return load.then((m) => () => ${interop}(m), (error) => () => { throw error; }); }`
+        : ""),
+  );
+  return output;
+}
+
+/** Where hoisted loads go: after the hashbang and directive prologue, before decorators. */
+function hoistPosition(code: string, program: ESTree.Program): number {
+  const statement = program.body.find(
+    (node) => node.type !== "ExpressionStatement" || typeof node.directive !== "string",
+  );
+  if (!statement) return code.length;
+  const decorators = "decorators" in statement ? statement.decorators : undefined;
+  return Math.min(statement.start, ...(decorators ?? []).map((decorator) => decorator.start));
 }
 
 /**
@@ -221,13 +300,27 @@ export function createRequireConditionResolutionPlugin(
         // .cjs/.cts files are left to Vite/Rolldown, which already preserves
         // require conditions. Synthetic targets return true from the shared
         // filter so their nested conditional requires still recurse.
-        if (
-          commonjsDisposition === false ||
-          (commonjsDisposition !== true && cleanId.includes("node_modules"))
-        ) {
-          return null;
+        if (commonjsDisposition === false) return null;
+        if (commonjsDisposition !== true && cleanId.includes("node_modules")) {
+          if (!isUnbundledServerDependency(this.environment as DevEnvironment, id)) return null;
+          if (/\.c[jt]s$/i.test(cleanId)) return null;
+          const parsed = parseProgramResult(code, { lang: scriptParserLanguage(id) ?? "jsx" });
+          // Files without module syntax are CommonJS, which @vitejs/plugin-rsc
+          // converts. Checking the module record first skips their AST.
+          if (!parsed?.module.hasModuleSyntax) return null;
+          const requires = collectLiteralRequires(parsed.program);
+          if (requires.length === 0) return null;
+          return magicStringTransformResult(lowerRequires(code, parsed.program, requires), {
+            hires: "boundary",
+            source: id,
+          });
         }
-        const requires = collectLiteralRequires(code, id);
+        const parsed = parseProgramResult(code, { lang: scriptParserLanguage(id) ?? "jsx" });
+        const requires = parsed
+          ? collectLiteralRequires(parsed.program).filter(({ specifier }) =>
+              isPackageSpecifier(specifier),
+            )
+          : [];
         if (requires.length === 0 || !resolveImport || !resolveRequire) return null;
 
         const output = new MagicString(code);
