@@ -9,7 +9,10 @@ import {
   type FetchCacheMode,
 } from "vinext/shims/fetch-cache";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import { _drainPendingRevalidations } from "vinext/shims/cache-request-state";
+import {
+  _drainPendingRevalidations,
+  _isOnDemandRevalidate,
+} from "vinext/shims/cache-request-state";
 import {
   consumeDynamicUsage,
   getActiveDraftModeState,
@@ -139,6 +142,9 @@ async function runInRouteHandlerRevalidationContext(
   },
   renderFn: () => Promise<void>,
 ): Promise<void> {
+  // An authorized on-demand revalidation regenerates from fresh data, like
+  // the request that triggered it.
+  const isOnDemandRevalidate = _isOnDemandRevalidate();
   const headersContext = createStaticGenerationHeadersContext({
     draftModeEnabled: false,
     draftModeSecret: options.draftModeSecret,
@@ -149,6 +155,7 @@ async function runInRouteHandlerRevalidationContext(
   const requestContext = createRequestContext({
     headersContext,
     executionContext: getRequestExecutionContext(),
+    isOnDemandRevalidate,
     // Regeneration runs the handler directly, so it needs the phase that
     // executeAppRouteHandler() would have set for a live request.
     phase: "route-handler",

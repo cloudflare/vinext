@@ -14,6 +14,11 @@ import {
 } from "../packages/vinext/src/shims/cdn-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -855,6 +860,62 @@ describe("app route handler dispatch", () => {
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
+
+  it.each([
+    { isOnDemandRevalidate: true, name: "an on-demand revalidation" },
+    { isOnDemandRevalidate: false, name: "an ordinary request" },
+  ])(
+    "carries $name's data cache read policy into the regeneration it triggers",
+    async ({ isOnDemandRevalidate }) => {
+      const regenerationReadPolicy: boolean[] = [];
+      let scheduledRender: (() => Promise<void>) | undefined;
+
+      await runWithRequestContext(createRequestContext({ isOnDemandRevalidate }), async () => {
+        const response = await dispatchAppRouteHandler({
+          cleanPathname: "/api/stale-on-demand",
+          clearRequestContext() {},
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          async isrGet() {
+            return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+          },
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          async isrSet() {},
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: {},
+          request: new Request("https://example.com/api/stale-on-demand"),
+          route: {
+            pattern: "/api/stale-on-demand",
+            routeHandler: {
+              revalidate: 60,
+              GET() {
+                regenerationReadPolicy.push(_isOnDemandRevalidate());
+                return new Response("regenerated");
+              },
+            },
+            routeSegments: ["api", "stale-on-demand"],
+          },
+          scheduleBackgroundRegeneration(_key, renderFn) {
+            scheduledRender = renderFn;
+          },
+          searchParams: new URLSearchParams(),
+        });
+
+        expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+        if (typeof scheduledRender !== "function") {
+          throw new Error("expected stale route handler cache to schedule regeneration");
+        }
+        await scheduledRender();
+      });
+
+      expect(regenerationReadPolicy).toEqual([isOnDemandRevalidate]);
+    },
+  );
 
   it("drains tag invalidation during stale route background regeneration", async () => {
     const previousHandler = getDataCacheHandler();
