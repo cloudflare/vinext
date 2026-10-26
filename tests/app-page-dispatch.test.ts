@@ -6399,14 +6399,16 @@ describe("query-free App page ISR entries", () => {
     expect(miss.response.headers.get("x-vinext-cache")).toBeNull();
     expect(miss.body).toContain("ClientPageRoot");
     expect(miss.body).not.toContain(canary);
-    expect([...cache.keys()]).toEqual(["rsc:/client"]);
-    expectEntryFreeOf(cache.get("rsc:/client"), canary);
+    // The stand-in SSR doesn't render the client page, so the miss stores a
+    // document beside the payload too.
+    expect([...cache.keys()]).toEqual(["rsc:/client", "html:/client"]);
+    for (const entry of cache.values()) expectEntryFreeOf(entry, canary);
     for (const search of ["", "?other=1"]) {
       const hit = await dispatchQuery(search, overrides);
       expect(hit.response.headers.get("x-vinext-cache"), search).toBe("HIT");
       expect(hit.body, search).toBe(miss.body);
     }
-    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(isrSet).toHaveBeenCalledTimes(2);
   });
 
   // An RSC-only miss resolves its status by rendering the document's shell
@@ -6494,7 +6496,11 @@ describe("query-free App page ISR entries", () => {
     expect(shellRenders).toEqual(
       shellRenders.map(() => ({ cleared: true, pathname: "/posts/hello" })),
     );
-    expect([...cache.keys()]).toEqual(["rsc:/posts/hello"]);
+    // A special error that rejects the shell leaves its document to an HTML
+    // request; the Suspense case's 200 document is stored beside its payload.
+    expect([...cache.keys()]).toEqual(
+      suspense ? ["rsc:/posts/hello", "html:/posts/hello"] : ["rsc:/posts/hello"],
+    );
     const stored = cache.get("rsc:/posts/hello")!.value.value as CachedAppPageValue;
     expect(stored.status).toBe(status);
     expect(new TextDecoder().decode(stored.rscData)).toBe(body);
@@ -6527,24 +6533,30 @@ describe("query-free App page ISR entries", () => {
     expect(isrSet).not.toHaveBeenCalled();
   });
 
-  // Row 7a residual: an RSC-only render never runs SSR, so a client page's
-  // use(searchParams) never runs and the render stays static. Core stores the
-  // RSC entry, which carries no query. Next.js prerenders the HTML first and
-  // marks such a page dynamic.
-  it("stores a query-free RSC entry for an RSC-only request to a client page that reads searchParams (row 7a residual)", async () => {
-    const { cache, isrGet, isrSet } = createCache();
+  // Row 7a residual: with an edge adapter an RSC-only render never runs SSR,
+  // so a client page's use(searchParams) never runs and the render stays
+  // static. The RSC entry carries no query. Next.js prerenders the HTML beside
+  // it and marks such a page dynamic, as an RSC miss that renders its document
+  // for an origin store does (see the production server test).
+  it("stores a query-free RSC entry for an RSC-only request to a client page that reads searchParams with an edge adapter (row 7a residual)", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const { cache, isrGet, isrSet } = createCache();
 
-    const { body } = await dispatchQuery("?q=secret", {
-      ...clientSearchPageOverrides,
-      isRscRequest: true,
-      isrGet,
-      isrSet,
-    });
+      const { body } = await dispatchQuery("?q=secret", {
+        ...clientSearchPageOverrides,
+        isRscRequest: true,
+        isrGet,
+        isrSet,
+      });
 
-    expect(body).toContain("ClientPageRoot");
-    expect(body).not.toContain("secret");
-    expect([...cache.keys()]).toEqual(["rsc:/client"]);
-    expectEntryFreeOf(cache.get("rsc:/client"), "secret");
+      expect(body).toContain("ClientPageRoot");
+      expect(body).not.toContain("secret");
+      expect([...cache.keys()]).toEqual(["rsc:/client"]);
+      expectEntryFreeOf(cache.get("rsc:/client"), "secret");
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   // A Workers Cache runtime-check path keeps candidate mode, and its dispatch

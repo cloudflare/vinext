@@ -33,7 +33,7 @@ export type AppPageRscRenderStatus =
    */
   | { kind: "unstorable" };
 
-export type AppPageRscRenderDocument = {
+type AppPageRscRenderDocument = {
   html: string;
   /** The renderer's own `Link` header. */
   linkHeader?: string;

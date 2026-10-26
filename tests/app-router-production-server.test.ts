@@ -2964,6 +2964,28 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await document.text()).toContain("CACHE_IDENTITY_CATCH_ALL:<!-- -->rsc-miss-document");
   });
 
+  // Next.js prerenders a page's document beside its payload, so a client page
+  // that reads its searchParams makes the route dynamic. An RSC miss renders
+  // the document too, so it stores neither part.
+  it("App Router ISR: an RSC miss for a client page that reads searchParams stores nothing", async () => {
+    const pathname = "/client-page-search-params";
+    const fetchRsc = (q: string) =>
+      fetch(`${baseUrl}${pathname}.rsc?q=${q}`, {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+    const miss = await fetchRsc("first");
+    await miss.arrayBuffer();
+    // Give the background cache write time to settle.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const rsc = await fetchRsc("second");
+    await rsc.arrayBuffer();
+    expect(rsc.headers.get("x-vinext-cache")).not.toBe("HIT");
+    const document = await fetch(`${baseUrl}${pathname}?q=document`);
+    expect(document.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(await document.text()).toContain('data-testid="client-page-search-params-q">document<');
+  });
+
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {
     // Ensure cache is warm
     const getRes = await fetch(`${baseUrl}/api/static-data`);
