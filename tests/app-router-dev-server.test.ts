@@ -2022,6 +2022,8 @@ describe("App Router integration", () => {
   it("dynamicParams = false returns 404 for unknown params", async () => {
     const res = await fetch(`${baseUrl}/products/999`);
     expect(res.status).toBe(404);
+    // The route's own tree's not-found: app/not-found.tsx.
+    expect(await res.text()).toContain("404 - Page Not Found");
   });
 
   it("dynamicParams defaults to true (allows any params)", async () => {

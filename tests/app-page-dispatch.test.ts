@@ -3271,9 +3271,10 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toContain('class="next-error-h1"');
+    // The route has no not-found of its own, so the built-in one renders.
     expect(renderHttpAccessFallbackPage).toHaveBeenCalledWith(
       404,
-      { matchedParams: { slug: "hello" } },
+      { boundaryModule: DEFAULT_NOT_FOUND_MODULE, matchedParams: { slug: "hello" } },
       options.middlewareContext,
     );
   });

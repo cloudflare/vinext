@@ -1151,10 +1151,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // route's not-found boundary just like a page-level notFound() signal.
       // The plain response remains a defensive fallback if boundary rendering
       // is unavailable, but the normal path must include Next.js's canonical
-      // not-found markup (and custom not-found.tsx when present).
+      // not-found markup (and custom not-found.tsx when present). The route's
+      // own not-found is the nearest one in its tree; the manifest's root
+      // not-found can belong to another root layout's (issue #4304).
+      const boundaryModule = route.notFound ?? getDefaultHttpAccessFallbackModule(404);
       const renderedNotFound = await options.renderHttpAccessFallbackPage(
         404,
-        { matchedParams: options.params },
+        { boundaryModule, matchedParams: options.params },
         options.middlewareContext,
       );
       const cachePolicy = {
