@@ -24,6 +24,7 @@ import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
+import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -376,28 +377,6 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
 }
 
 /**
- * Whether the response-stage props select an App page's own document or RSC
- * payload, the two parts Next.js keeps in one entry, rather than a variant.
- */
-function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean): boolean {
-  return (
-    responseStageProps !== null &&
-    typeof responseStageProps === "object" &&
-    Reflect.get(responseStageProps, "kind") === "app-page" &&
-    Reflect.get(responseStageProps, "isRscRequest") === isRscRequest &&
-    // A rewrite's target is in the props that key the entry, so a rewritten
-    // request reads its page's parts as a direct one does.
-    (Reflect.get(responseStageProps, "matchKind") === "request" ||
-      Reflect.get(responseStageProps, "matchKind") === "resolved") &&
-    // A document always renders the whole page.
-    (!isRscRequest || Reflect.get(responseStageProps, "renderMode") === "navigation") &&
-    Reflect.get(responseStageProps, "interceptionContext") === null &&
-    Reflect.get(responseStageProps, "interceptionId") === null &&
-    Reflect.get(responseStageProps, "mountedSlotsHeader") === null
-  );
-}
-
-/**
  * The revalidator of a page part. One whose render stores the page's other
  * part says so, as a public config policy's full-URL entry stores its own.
  */
@@ -490,13 +469,7 @@ function otherPagePart(identityRequest: Request, identityProps: unknown): PagePa
   if (isCanonicalAppPage(identityProps, false)) {
     return { invocation: rscPartInvocation(identityRequest, identityProps), kind: "rsc" };
   }
-  // A `.rsc` path reaches its page's HTML path only through the app's
-  // trailingSlash policy, and vinext's client never sends one, so it stores
-  // its payload alone.
-  if (
-    isCanonicalAppPage(identityProps, true) &&
-    !new URL(identityRequest.url).pathname.endsWith(".rsc")
-  ) {
+  if (isCanonicalAppPage(identityProps, true) && hasDocumentPart(identityRequest.url)) {
     return { invocation: documentPartInvocation(identityRequest, identityProps), kind: "document" };
   }
   return undefined;

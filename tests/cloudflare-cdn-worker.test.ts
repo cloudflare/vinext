@@ -2010,3 +2010,203 @@ describe("Workers Cache deployment configuration", () => {
     ).toThrow(/requires ctx\.exports/);
   });
 });
+
+describe("Workers Cache page parts", () => {
+  const pageProps = {
+    interceptionContext: null,
+    interceptionId: null,
+    isRscRequest: false,
+    kind: "app-page",
+    matchKind: "request",
+    mountedSlotsHeader: null,
+    renderMode: "navigation",
+  };
+  const rscPageProps = { ...pageProps, isRscRequest: true };
+
+  beforeEach(() => {
+    stages.request.mockReset();
+    stages.response.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  type EntrypointCall = { invocation: Record<string, unknown>; request: Request };
+
+  /**
+   * Dispatch one shared response stage through the gateway, with each
+   * entrypoint call answered by its cache status and recorded.
+   */
+  async function dispatchPagePart(
+    request: Request,
+    props: unknown,
+    cacheStatuses: string[],
+    otherPartBody: () => BodyInit = () => "other part",
+  ) {
+    const calls: EntrypointCall[] = [];
+    const binding = vi.fn(({ props: invocation }: { props: Record<string, unknown> }) => ({
+      fetch: vi.fn(async (entrypointRequest: Request) => {
+        calls.push({ invocation, request: entrypointRequest });
+        const body = calls.length === 1 ? "part" : otherPartBody();
+        return new Response(body, {
+          headers: { "CF-Cache-Status": cacheStatuses[calls.length - 1] ?? "MISS" },
+        });
+      }),
+    }));
+    const pending: Promise<unknown>[] = [];
+    stages.request.mockImplementation((stageRequest, _env, _ctx, dispatch) =>
+      dispatch(stageRequest, props, { cache: "shared" }),
+    );
+    const response = await worker.fetch(request, {}, {
+      exports: { VinextCachedResponse: binding },
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    } as never);
+    await response.text();
+    await Promise.all(pending);
+    return { calls, response };
+  }
+
+  it("stores a page's RSC payload when its document renders for the cache", async () => {
+    const { calls, response } = await dispatchPagePart(
+      new Request("https://example.com/page", {
+        headers: { Accept: "text/html", "If-None-Match": '"etag"', "User-Agent": "browser" },
+      }),
+      pageProps,
+      ["MISS", "MISS"],
+    );
+
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: { ...pageProps, isRscRequest: true, renderMode: "navigation" },
+      requestMethod: "GET",
+      requestUrl: "https://example.com/page?_rsc",
+    });
+    expect(other.request.headers.get("RSC")).toBe("1");
+    expect(other.request.headers.get("User-Agent")).toBe("browser");
+    expect(other.request.headers.get("If-None-Match")).toBeNull();
+  });
+
+  it("stores a page's document when its RSC payload renders for the cache", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?_rsc", {
+        headers: { RSC: "1", "Next-Router-State-Tree": "tree", "User-Agent": "browser" },
+      }),
+      rscPageProps,
+      ["UPDATING", "UPDATING"],
+    );
+
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: pageProps,
+      requestUrl: "https://example.com/page",
+    });
+    for (const name of VINEXT_RSC_VARY_HEADER.split(",")) {
+      expect(other.request.headers.get(name.trim())).toBeNull();
+    }
+    expect(other.request.headers.get("User-Agent")).toBe("browser");
+  });
+
+  it("fetches the other part under the entry its own request reads", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?x=1", { headers: { "User-Agent": "browser" } }),
+      pageProps,
+      ["MISS", "HIT"],
+    );
+    const { calls: rscCalls } = await dispatchPagePart(
+      new Request("https://example.com/page?x=1&_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1", "User-Agent": "browser" },
+      }),
+      rscPageProps,
+      ["HIT"],
+    );
+
+    expect(calls[1]!.request.url).toBe(rscCalls[0]!.request.url);
+    expect(new URL(calls[1]!.request.url).searchParams.get("__vinext_cache_key")).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("reads the other part's body to the end, so Workers Cache stores it", async () => {
+    let finished = false;
+    await dispatchPagePart(
+      new Request("https://example.com/page"),
+      pageProps,
+      ["MISS", "MISS"],
+      () =>
+        new ReadableStream({
+          pull(controller) {
+            finished = true;
+            controller.enqueue(new TextEncoder().encode("payload"));
+            controller.close();
+          },
+        }),
+    );
+    expect(finished).toBe(true);
+  });
+
+  it.each(["HIT", "REVALIDATED", "BYPASS", "DYNAMIC", "STALE"])(
+    "fetches no other part for a %s",
+    async (cacheStatus) => {
+      const { calls } = await dispatchPagePart(new Request("https://example.com/page"), pageProps, [
+        cacheStatus,
+      ]);
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["a prefetch shell", { ...rscPageProps, renderMode: "prefetch-loading-shell" }],
+    ["an interception", { ...rscPageProps, interceptionContext: "/feed" }],
+    ["mounted slots", { ...rscPageProps, mountedSlotsHeader: "@modal" }],
+    ["an unmatched page", { ...pageProps, matchKind: "raw-request" }],
+    ["a route handler", { kind: "app-route" }],
+  ])("fetches no other part for %s", async (_name, props) => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?_rsc", { headers: { RSC: "1" } }),
+      props,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("fetches no document for a .rsc path", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page.rsc", { headers: { RSC: "1" } }),
+      rscPageProps,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("leaves a deployment warm-up to request both parts itself", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page", {
+        headers: { "User-Agent": "vinext-cloudflare-cdn-warm" },
+      }),
+      pageProps,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("logs a failed other part without failing the response", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { response } = await dispatchPagePart(
+      new Request("https://example.com/page"),
+      pageProps,
+      ["MISS", "MISS"],
+      () => {
+        throw new Error("render failed");
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(error).toHaveBeenCalledWith(
+      "[vinext] Workers Cache could not store a page's other part:",
+      expect.any(Error),
+    );
+  });
+});

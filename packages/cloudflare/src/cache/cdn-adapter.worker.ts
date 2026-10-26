@@ -15,6 +15,12 @@ import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
 import { isNonCacheableCacheControl, splitCacheControlDirectives } from "vinext/shims/cdn-cache";
 import {
+  createCanonicalRscRequestHeaders,
+  createCanonicalRscRequestUrl,
+  stripRscCacheBustingSearchParam,
+} from "vinext/internal/server/app-rsc-cache-busting";
+import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
+import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
   type SharedResponseStage,
@@ -76,6 +82,12 @@ const RESPONSE_STAGE_WIRE_CACHE = {
 
 type ResponseStageWireCache =
   (typeof RESPONSE_STAGE_WIRE_CACHE)[keyof typeof RESPONSE_STAGE_WIRE_CACHE];
+/**
+ * The statuses of a part Workers Cache just rendered for its entry, inline or
+ * as a background refresh of a stale one.
+ * https://developers.cloudflare.com/workers/cache/debugging/
+ */
+const RENDERED_ENTRY_CACHE_STATUSES = new Set(["EXPIRED", "MISS", "UPDATING"]);
 const FRAMEWORK_RESPONSE_VARY_FIELDS = new Set(
   VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim().toLowerCase()),
 );
@@ -614,6 +626,43 @@ function getResponseStageInvocation(
   };
 }
 
+type ResponseStageDispatch = { props: unknown; request: Request };
+
+/**
+ * The dispatch of the other part of the page a canonical App page part belongs
+ * to. Next.js keeps a page's document and RSC payload in one entry, so the two
+ * dispatches differ only in the RSC request selectors, the URL's `_rsc` and the
+ * request type in the props. The request keeps the client's other headers,
+ * minus those that would make the fetch conditional or partial.
+ */
+function otherPagePartDispatch(request: Request, props: unknown): ResponseStageDispatch | null {
+  const isRscRequest = isCanonicalAppPage(props, true);
+  if (!isRscRequest && !isCanonicalAppPage(props, false)) return null;
+  if (isRscRequest && !hasDocumentPart(request.url)) return null;
+
+  const headers = new Headers(request.headers);
+  for (const name of FRAMEWORK_RESPONSE_VARY_FIELDS) headers.delete(name);
+  for (const name of ["If-Match", "If-Modified-Since", "If-None-Match", "If-Range", "Range"]) {
+    headers.delete(name);
+  }
+  if (isRscRequest) {
+    const url = new URL(request.url);
+    stripRscCacheBustingSearchParam(url);
+    headers.set("Accept", "text/html");
+    return {
+      props: { ...(props as Record<string, unknown>), isRscRequest: false },
+      request: new Request(url, { headers }),
+    };
+  }
+  for (const [name, value] of createCanonicalRscRequestHeaders()) headers.set(name, value);
+  return {
+    props: { ...(props as Record<string, unknown>), isRscRequest: true, renderMode: "navigation" },
+    request: new Request(new URL(createCanonicalRscRequestUrl(request.url), request.url), {
+      headers,
+    }),
+  };
+}
+
 async function invokeResponseStage(
   request: Request,
   env: unknown,
@@ -747,13 +796,13 @@ export default {
     request = stripUntrustedTransportHeaders(request);
     const sharedResponses = new Map<string, SharedResponseStage>();
     const stageContext = withResponseStageCache(withWorkerHostRuntime(context, env));
-    const dispatchResponseStage: VinextResponseStageTransport = async (
-      stageRequest,
-      props,
-      options,
-    ) => {
+    const createInvocation = (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+    ): CloudflareResponseStageInvocation => {
       const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
-      const invocation = {
+      return {
         ...(expectedResponseStageBuildIdentity === null
           ? {}
           : { expectedResponseStageBuildIdentity }),
@@ -762,37 +811,96 @@ export default {
         requestMethod: stageRequest.method,
         requestUrl: stageRequest.url,
       };
+    };
+    /** Fetch a response stage through its named entrypoint, the cached one for a shared dispatch. */
+    const fetchResponseStageEntrypoint = async (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+    ): Promise<Response> => {
+      const invocation = createInvocation(stageRequest, props, options);
+      const usesSharedCache = options.cache === "shared";
+      const serializedInvocation = JSON.stringify({
+        ...invocation,
+        options:
+          invocation.expectedResponseStageBuildIdentity === undefined
+            ? options
+            : {
+                ...options,
+                cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
+              },
+      });
+      const binding = getResponseStageBinding(
+        stageContext,
+        usesSharedCache ? CACHED_RESPONSE_STAGE_EXPORT : UNCACHED_RESPONSE_STAGE_EXPORT,
+        serializedInvocation,
+      );
+      if (!binding) {
+        return responseStageUnavailable();
+      }
+      const entrypointRequest = usesSharedCache
+        ? await createCacheFacingRequest(stageRequest, serializedInvocation)
+        : stageRequest;
+      return validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
+    };
+    /**
+     * Fetch the other part of a canonical App page part Workers Cache just
+     * rendered, so its entry is filled or refreshed too. Workers Cache stores
+     * only what its entrypoint returns, so the other part renders on its own.
+     * A deployment warm-up already requests both parts, and this fetch reaches
+     * the entrypoint directly, so it never fetches another part itself.
+     */
+    const storeOtherPagePart = (
+      stageRequest: Request,
+      props: unknown,
+      options: VinextResponseStageDispatchOptions,
+      cacheStatus: string | null,
+    ): void => {
+      if (
+        cacheStatus === null ||
+        !RENDERED_ENTRY_CACHE_STATUSES.has(cacheStatus) ||
+        stageRequest.headers.get("user-agent") === WARMUP_USER_AGENT ||
+        typeof stageContext.waitUntil !== "function"
+      ) {
+        return;
+      }
+      stageContext.waitUntil(
+        (async () => {
+          const otherPart = otherPagePartDispatch(stageRequest, props);
+          if (!otherPart) return;
+          const response = await fetchResponseStageEntrypoint(
+            otherPart.request,
+            otherPart.props,
+            options,
+          );
+          // Workers Cache stores a response once its body has been read.
+          await response.body?.pipeTo(new WritableStream());
+        })().catch((error: unknown) => {
+          console.error("[vinext] Workers Cache could not store a page's other part:", error);
+        }),
+      );
+    };
+    const dispatchResponseStage: VinextResponseStageTransport = async (
+      stageRequest,
+      props,
+      options,
+    ) => {
       const usesSharedCache = options.cache === "shared";
       try {
         // Readiness must still verify that the named response entrypoint is available.
         if (!usesSharedCache && !isResponseStageReadinessRequest(stageRequest)) {
           return stampResponseStageBuildIdentity(
-            await invokeResponseStage(stageRequest, env, stageContext, invocation),
+            await invokeResponseStage(
+              stageRequest,
+              env,
+              stageContext,
+              createInvocation(stageRequest, props, options),
+            ),
           );
         }
-        const serializedInvocation = JSON.stringify({
-          ...invocation,
-          options:
-            expectedResponseStageBuildIdentity === null
-              ? options
-              : {
-                  ...options,
-                  cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
-                },
-        });
-        const binding = getResponseStageBinding(
-          stageContext,
-          usesSharedCache ? CACHED_RESPONSE_STAGE_EXPORT : UNCACHED_RESPONSE_STAGE_EXPORT,
-          serializedInvocation,
-        );
-        if (!binding) {
-          return responseStageUnavailable();
-        }
-        const entrypointRequest = usesSharedCache
-          ? await createCacheFacingRequest(stageRequest, serializedInvocation)
-          : stageRequest;
-        const response = validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
+        const response = await fetchResponseStageEntrypoint(stageRequest, props, options);
         if (!usesSharedCache) return response;
+        storeOtherPagePart(stageRequest, props, options, response.headers.get("CF-Cache-Status"));
         const shared = markSharedResponseStage(response, crypto.randomUUID(), props, true);
         sharedResponses.set(shared.headers.get(SHARED_RESPONSE_STAGE_HEADER)!, {
           headers: new Headers(shared.headers),
