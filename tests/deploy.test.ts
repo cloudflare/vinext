@@ -3490,8 +3490,8 @@ describe("generateAppRouterViteConfig — with project info", () => {
     expect(config).not.toContain('"#"');
   });
 
-  // The vinext plugin stubs native modules for Cloudflare itself, so nothing
-  // has to exist on disk (#4196).
+  // vinext does not stub native modules, so init writes no alias pointing at
+  // a file that does not exist (#4196).
   it("does not alias native modules", () => {
     mkdir(tmpDir, "app");
     writeFile(

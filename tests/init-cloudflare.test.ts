@@ -41,6 +41,35 @@ describe("CSS Modules configuration", () => {
     expectValidConfig(config);
     expect(config).toContain('patchCssModules({ exportMode: "default" })');
     expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(config.match(/import path from "node:path"/g)).toHaveLength(1);
+  });
+
+  it.each(['import "node:path";', 'import { resolve } from "node:path";'])(
+    "adds a separate default path import for %s",
+    (existingImport) => {
+      const output = updateViteConfigForCssModules(
+        "vite.config.ts",
+        `${existingImport}\nexport default { plugins: [vinext()] };\n`,
+      ).code;
+
+      expectValidConfig(output);
+      expect(output).toContain(existingImport);
+      expect(output).toContain('import path from "node:path";');
+      expect(output).toContain("path.relative(");
+    },
+  );
+
+  it("allocates collision-free bindings for inserted imports", () => {
+    const output = updateViteConfigForCssModules(
+      "vite.config.ts",
+      "const path = 1; const createHash = 2; export default { plugins: [vinext()] };\n",
+    ).code;
+
+    expectValidConfig(output);
+    expect(output).toContain('import path2 from "node:path"');
+    expect(output).toContain('import { createHash as createHash2 } from "node:crypto"');
+    expect(output).toContain("path2.relative(");
+    expect(output).toContain('createHash2("sha256")');
   });
 
   it("patches a literal Vite config idempotently without dropping options", () => {
@@ -1150,7 +1179,7 @@ export default { plugins: [vinext({ prerender: true })] };
     expect(output).not.toContain("imagesOptimizer");
   });
 
-  // The vinext plugin stubs native modules for Cloudflare itself (#4196).
+  // vinext does not stub native modules, so init has no alias to add (#4196).
   it("leaves resolve.alias alone", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
