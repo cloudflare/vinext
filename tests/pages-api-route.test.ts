@@ -62,6 +62,39 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("cancels an open upload when a raw-body API handler destroys req", async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        method: "POST",
+        body,
+        duplex: "half",
+      } as RequestInit),
+      url: "/api/test",
+      match: createMatch(
+        async (req, res) => {
+          const closed = new Promise<void>((resolve) => req.once("close", resolve));
+          req.destroy();
+          await closed;
+          res.status(400).end("rejected upload");
+        },
+        {},
+        { api: { bodyParser: false } },
+      ),
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toBe("rejected upload");
+    expect(cancelled).toBe(true);
+  });
+
   it("lets a handler override response headers installed before user code", async () => {
     const response = await handlePagesApiRoute({
       initialResponseHeaders: new Headers({
