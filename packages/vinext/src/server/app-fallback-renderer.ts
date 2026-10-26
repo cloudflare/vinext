@@ -15,7 +15,7 @@ import type { AppPageMiddlewareContext } from "./app-page-response.js";
 import type { AppPageSsrHandler } from "./app-page-stream.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import type { AppElements } from "./app-elements.js";
-import type { ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
+import type { AppPageFallbackRouteHead, ApplyAppPageFileBasedMetadata } from "./app-page-head.js";
 import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { runOutsideRequestScopes } from "vinext/shims/internal/als-registry";
@@ -147,6 +147,8 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
       isCacheCandidate?: boolean;
       layouts?: readonly (TModule | null | undefined)[] | null;
       matchedParams?: AppPageParams;
+      /** The route's render threw the signal, so the document keeps the route's head. */
+      routeHead?: AppPageFallbackRouteHead | null;
     },
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
@@ -351,6 +353,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         rootNotFoundModule: routeMissRootNotFoundModule,
         rootUnauthorizedModule,
         route: useGlobalNotFound ? null : route,
+        routeHead: opts?.routeHead ?? null,
         routePathname: callContext?.routePathname,
         renderToReadableStream: rscRenderer,
         scriptNonce,

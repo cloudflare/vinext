@@ -11,7 +11,6 @@ import {
   APP_INTERCEPTION_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_LAYOUT_IDS_KEY,
-  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
@@ -24,7 +23,6 @@ import {
   normalizeAppElements,
   readAppElementsMetadata,
   resolveVisitedResponseInterceptionContext,
-  withLayoutFlags,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
   APP_ELEMENTS_SCHEMA_VERSION,
@@ -48,7 +46,6 @@ describe("AppElementsWire", () => {
 
     const encoded = AppElementsWire.encodeOutgoingPayload({
       element,
-      layoutFlags: { "layout:/": "s" },
     });
 
     expect(encoded).not.toBe(element);
@@ -58,7 +55,6 @@ describe("AppElementsWire", () => {
         "layout:/": "root-layout",
         "page:/blog": "blog-page",
         [APP_ARTIFACT_COMPATIBILITY_KEY]: createArtifactCompatibilityEnvelope(),
-        [APP_LAYOUT_FLAGS_KEY]: { "layout:/": "s" },
       });
     }
     expect(element).toEqual({
@@ -81,7 +77,6 @@ describe("AppElementsWire", () => {
       interception: null,
       interceptionContext: "/feed",
       layoutIds: [],
-      layoutFlags: {},
       rootLayoutTreePath: "/",
       routeId: "route:/photos/42\0/feed",
       bfcacheSegmentIdentities: {},
@@ -332,9 +327,6 @@ describe("AppElementsWire", () => {
         [AppElementsWire.encodeLayoutId("/")]: "layout",
         [AppElementsWire.encodePageId("/dashboard", null)]: "page",
       },
-      layoutFlags: {
-        [AppElementsWire.encodeLayoutId("/")]: "s",
-      },
     });
 
     expect(isAppElementsRecord(payload)).toBe(true);
@@ -345,7 +337,6 @@ describe("AppElementsWire", () => {
       interception: null,
       interceptionContext: null,
       layoutIds: [],
-      layoutFlags: { [AppElementsWire.encodeLayoutId("/")]: "s" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard",
       bfcacheSegmentIdentities: {},
@@ -366,7 +357,6 @@ describe("AppElementsWire", () => {
         }),
         [AppElementsWire.encodePageId("/dashboard", null)]: "page",
       },
-      layoutFlags: {},
     });
 
     expect(isAppElementsRecord(payload)).toBe(true);
@@ -563,36 +553,6 @@ describe("app elements payload helpers", () => {
         }),
       ),
     ).toThrow("[vinext] Invalid __interceptionContext in App Router payload");
-  });
-
-  it("reads layoutFlags from payload metadata", () => {
-    // Layout flags are set directly on the elements object (not via
-    // normalizeAppElements which expects AppWireElementValue types).
-    const elements = {
-      ...normalizeAppElements({
-        [APP_ROOT_LAYOUT_KEY]: "/",
-        [APP_ROUTE_KEY]: "route:/blog",
-        "page:/blog": React.createElement("div", null, "blog"),
-      }),
-      [APP_LAYOUT_FLAGS_KEY]: { "layout:/": "s", "layout:/blog": "d" },
-    };
-    const metadata = readAppElementsMetadata(elements);
-
-    expect(metadata.layoutIds).toEqual([]);
-    expect(metadata.layoutFlags).toEqual({ "layout:/": "s", "layout:/blog": "d" });
-  });
-
-  it("defaults missing layoutFlags to empty object (backward compat)", () => {
-    const metadata = readAppElementsMetadata(
-      normalizeAppElements({
-        [APP_ROOT_LAYOUT_KEY]: "/",
-        [APP_ROUTE_KEY]: "route:/dashboard",
-        "route:/dashboard": React.createElement("div", null, "route"),
-      }),
-    );
-
-    expect(metadata.layoutIds).toEqual([]);
-    expect(metadata.layoutFlags).toEqual({});
   });
 
   it("reads layoutIds from payload metadata", () => {
@@ -905,43 +865,11 @@ describe("isAppElementsRecord", () => {
   });
 });
 
-describe("withLayoutFlags", () => {
-  it("attaches the __layoutFlags key with the supplied value", () => {
-    const input = { "page:/": "page" };
-    const result = withLayoutFlags(input, { "layout:/": "s" });
-    expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
-  });
-
-  it("does not mutate the input", () => {
-    const input: Record<string, unknown> = { "page:/": "page", "layout:/": "layout" };
-    const snapshot = structuredClone(input);
-    const result = withLayoutFlags(input, { "layout:/": "d" });
-    expect(result).not.toBe(input);
-    expect(input).toEqual(snapshot);
-    expect(Object.keys(input)).toEqual(Object.keys(snapshot));
-    expect(APP_LAYOUT_FLAGS_KEY in input).toBe(false);
-  });
-
-  it("preserves other keys on the returned object", () => {
-    const input = { "page:/blog": "page", "layout:/": "layout" };
-    const result = withLayoutFlags(input, { "layout:/": "s" });
-    expect(result["page:/blog"]).toBe("page");
-    expect(result["layout:/"]).toBe("layout");
-  });
-
-  it("returns a new object with a different identity", () => {
-    const input = { "page:/": "page" };
-    const result = withLayoutFlags(input, {});
-    expect(result).not.toBe(input);
-  });
-});
-
 describe("buildOutgoingAppPayload", () => {
   it("returns a non-record element unchanged (same identity)", () => {
     const element = React.createElement("div", null, "page");
     const result = buildOutgoingAppPayload({
       element,
-      layoutFlags: { "layout:/": "s" },
     });
     expect(result).toBe(element);
   });
@@ -950,7 +878,6 @@ describe("buildOutgoingAppPayload", () => {
     const element = { "page:/": "page" };
     const result = buildOutgoingAppPayload({
       element,
-      layoutFlags: {},
     });
     expect(result).not.toBe(element);
   });
@@ -964,30 +891,16 @@ describe("buildOutgoingAppPayload", () => {
     const snapshot = structuredClone(element);
     const result = buildOutgoingAppPayload({
       element,
-      layoutFlags: { "layout:/": "s", "layout:/blog": "d" },
     });
     expect(result).not.toBe(element);
     expect(element).toEqual(snapshot);
     expect(Object.keys(element)).toEqual(Object.keys(snapshot));
-    expect(APP_LAYOUT_FLAGS_KEY in element).toBe(false);
     expect(APP_ARTIFACT_COMPATIBILITY_KEY in element).toBe(false);
-  });
-
-  it("attaches __layoutFlags on the returned record", () => {
-    const result = buildOutgoingAppPayload({
-      element: { "page:/": "page" },
-      layoutFlags: { "layout:/": "s" },
-    });
-    expect(isAppElementsRecord(result)).toBe(true);
-    if (isAppElementsRecord(result)) {
-      expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({ "layout:/": "s" });
-    }
   });
 
   it("attaches __artifactCompatibility on the returned record", () => {
     const result = buildOutgoingAppPayload({
       element: { "page:/": "page" },
-      layoutFlags: { "layout:/": "s" },
       artifactCompatibility: createArtifactCompatibilityEnvelope({
         graphVersion: "graph-a",
         deploymentVersion: "deploy-a",
@@ -1017,7 +930,6 @@ describe("buildOutgoingAppPayload", () => {
         "page:/dashboard": "dashboard-page",
       },
       cacheEntryReuseProof,
-      layoutFlags: { "layout:/": "s" },
     });
 
     expect(isAppElementsRecord(result)).toBe(true);
@@ -1040,7 +952,6 @@ describe("buildOutgoingAppPayload", () => {
         }),
         "page:/pricing": "pricing-page",
       },
-      layoutFlags: { "layout:/": "s" },
     });
 
     expect(isAppElementsRecord(result)).toBe(true);
@@ -1052,49 +963,14 @@ describe("buildOutgoingAppPayload", () => {
     }
   });
 
-  it("returns canonical record keys when no skip disposition is supplied", () => {
+  it("returns canonical record keys", () => {
     const result = buildOutgoingAppPayload({
       element: { "layout:/": "root-layout", "page:/": "page" },
-      layoutFlags: { "layout:/": "s" },
     });
     expect(isAppElementsRecord(result)).toBe(true);
     if (isAppElementsRecord(result)) {
       expect(result["layout:/"]).toBe("root-layout");
       expect(result["page:/"]).toBe("page");
-    }
-  });
-
-  it("omits only proven layout entries when static-layout skip transport is enabled", () => {
-    const result = buildOutgoingAppPayload({
-      element: {
-        [APP_ROUTE_KEY]: "route:/dashboard",
-        [APP_ROOT_LAYOUT_KEY]: "/",
-        "layout:/": "root-layout",
-        "layout:/dashboard": "dashboard-layout",
-        "page:/dashboard": "dashboard-page",
-      },
-      layoutFlags: { "layout:/": "s", "layout:/dashboard": "s" },
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/dashboard", "page:/dashboard"],
-      },
-    });
-
-    expect(isAppElementsRecord(result)).toBe(true);
-    if (isAppElementsRecord(result)) {
-      expect(result["layout:/"]).toBe("root-layout");
-      expect(Object.hasOwn(result, "layout:/dashboard")).toBe(false);
-      expect(result["page:/dashboard"]).toBe("dashboard-page");
-      expect(result[APP_LAYOUT_FLAGS_KEY]).toEqual({
-        "layout:/": "s",
-        "layout:/dashboard": "s",
-      });
-      expect(result[APP_ROUTE_KEY]).toBe("route:/dashboard");
-      expect(result[APP_ROOT_LAYOUT_KEY]).toBe("/");
-      expect(result[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/dashboard"]);
-      expect(AppElementsWire.readMetadata(result).skippedLayoutIds).toEqual(["layout:/dashboard"]);
     }
   });
 
@@ -1107,7 +983,6 @@ describe("buildOutgoingAppPayload", () => {
         "layout:/": "root-layout",
         "page:/blog": "blog-page",
       },
-      layoutFlags: { "layout:/": "s" },
     });
     expect(isAppElementsRecord(result)).toBe(true);
     if (isAppElementsRecord(result)) {

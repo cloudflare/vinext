@@ -11,6 +11,8 @@ const repositoryRoot = process.env.VINEXT_PERF_TARGET_ROOT ?? process.cwd();
 const benchmarkDir = join(repositoryRoot, "benchmarks");
 const framework = process.argv[2];
 const target = process.argv[3] ?? "client";
+// The Vite build manifest key of vinext's App Router browser entry.
+const APP_BROWSER_ENTRY_KEY = "virtual:vinext-app-browser-entry";
 
 if (framework !== "vinext" && framework !== "nextjs") {
   console.error(
@@ -70,7 +72,14 @@ async function gzipClientEntryClosure(clientOutputPath) {
   }
   const manifest = JSON.parse(await readFile(resolvedManifestPath, "utf8"));
   const entryKeys = Object.keys(manifest).filter((key) => manifest[key]?.isEntry === true);
-  if (entryKeys.length !== 1) {
+  // The client build also emits entries the browser entry doesn't load, such
+  // as the App Router client reference loaders, so measure the browser entry.
+  const entryKey = entryKeys.includes(APP_BROWSER_ENTRY_KEY)
+    ? APP_BROWSER_ENTRY_KEY
+    : entryKeys.length === 1
+      ? entryKeys[0]
+      : undefined;
+  if (entryKey === undefined) {
     throw new Error(`Expected one client entry in ${manifestPath}, found ${entryKeys.length}`);
   }
 
@@ -107,7 +116,7 @@ async function gzipClientEntryClosure(clientOutputPath) {
     }
   }
 
-  await visit(entryKeys[0]);
+  await visit(entryKey);
   return { gzipBytes, fileCount: visited.size };
 }
 

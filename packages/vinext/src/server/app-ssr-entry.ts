@@ -88,6 +88,7 @@ import {
   wrapClientReferenceRequire,
 } from "./app-streamed-client-references.js";
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
+import { ssrServerConsumerManifest } from "./app-client-reference-manifest.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
@@ -116,6 +117,14 @@ type SsrRenderOptions = RenderToReadableStreamOptions & {
  * the response-layer combine cap.
  */
 const DEFAULT_REACT_MAX_HEADERS_LENGTH = 6000;
+
+/**
+ * plugin-rsc's SSR `createFromReadableStream` spreads these over its own
+ * options, whose type leaves out the consumer manifest.
+ */
+const SSR_FLIGHT_OPTIONS: NonNullable<Parameters<typeof createFromReadableStream>[1]> & {
+  serverConsumerManifest: typeof ssrServerConsumerManifest;
+} = { serverConsumerManifest: ssrServerConsumerManifest };
 
 export type FontPreload = {
   href: string;
@@ -564,7 +573,7 @@ export async function handleSsr(
             } as PreloadModuleOptions);
           }
           if (!flightRoot) {
-            flightRoot = createFromReadableStream<AppWireElements>(ssrStream);
+            flightRoot = createFromReadableStream<AppWireElements>(ssrStream, SSR_FLIGHT_OPTIONS);
           }
           const wireElements = use(flightRoot);
           const elements = AppElementsWire.decode(wireElements);

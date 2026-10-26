@@ -347,6 +347,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "partial",
     detail: "experimental support; behavior is incomplete",
   },
+  "experimental.cacheComponents": {
+    status: "partial",
+    detail: "legacy alias of cacheComponents; experimental support, behavior is incomplete",
+  },
   "experimental.ppr": {
     status: "unsupported",
     detail: "removed in Next.js 16 and ignored; use cacheComponents",

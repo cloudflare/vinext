@@ -132,7 +132,6 @@ function createRouterState(overrides: Partial<AppRouterState> = {}): AppRouterSt
     interception: null,
     interceptionContext: null,
     layoutIds: [AppElementsWire.encodeLayoutId("/")],
-    layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     previousNextUrl: null,
     renderId: 0,

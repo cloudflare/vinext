@@ -292,8 +292,8 @@ describe("Next.js compat: not-found", () => {
     );
     expect(res.status).toBe(404);
     expect(html).toContain("Not Found (segment without layout)");
-    // The head comes from the route's deepest not-found (shop/[id]), which has
-    // no metadata, so the layouts' title applies.
+    // The document keeps the route's own head, like Next.js once its error
+    // shell hydrates, so the layouts' title applies.
     expect(html).toContain("<title>App Basic</title>");
     expect(html).toContain('<meta name="description" content="Shop layout description"/>');
     // Match rendered markup: like Next.js, the flight may name skipped layouts.
@@ -303,16 +303,19 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain("not-found-layout-segment-wrapper");
   });
 
-  // The 404's metadata comes from the route's deepest not-found, here the
-  // catching boundary, with that segment's params.
-  it("notFound() from layout uses the segment boundary's metadata", async () => {
+  // Next.js sends a layout's notFound() as an error shell whose head uses the
+  // route's deepest not-found, here the catching boundary, then renders the
+  // route's own head in the browser. vinext's document carries the title
+  // users see, the route's.
+  it("notFound() from layout keeps the route's own title", async () => {
     const { res, html } = await fetchHtml(
       baseUrl,
       "/nextjs-compat/not-found-layout-segment/en/blog/invalid",
     );
     expect(res.status).toBe(404);
     expect(html).toContain("Not Found (segment without layout)");
-    expect(html).toContain("<title>Not found (en)</title>");
+    expect(html).toContain("<title>App Basic</title>");
+    expect(html).not.toContain("<title>Not found (en)</title>");
     expect(html).not.toContain('id="not-found-layout-segment-blog"');
   });
 
@@ -365,6 +368,151 @@ describe("Next.js compat: not-found", () => {
     expect(html).not.toContain("Not Found (roles slot)");
     expect(html).not.toContain('id="not-found-layout-segment-crew"');
   });
+
+  // An unmatched slot renders its default.tsx as Next.js's `__DEFAULT__`
+  // segment, which carries none of the slot directory's files, so the slot's
+  // own not-found.tsx doesn't catch the default's notFound(). Observed in
+  // Next.js 16.2.7, webpack and Turbopack.
+  it("notFound() from a parallel slot's default is caught above the slot's layout, not by the slot's not-found", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/not-found-slot-own/panel");
+    expect(res.status).toBe(404);
+    expect(html).toContain('id="slot-own-layout"');
+    expect(html).toContain('id="slot-own-root-nf"');
+    expect(html).not.toContain('id="slot-own-panel-layout"');
+    expect(html).not.toContain('id="slot-own-panel-nf"');
+    expect(html).not.toContain('id="slot-own-panel-segment-nf"');
+    // Next.js sends this as an error shell whose head uses the route's deepest
+    // not-found, then renders the route's own head in the browser, so the
+    // title users see is the route's. vinext's document carries that title.
+    expect(html).toContain("<title>Slot own layout</title>");
+    expect(html).not.toContain("Not Found (panel segment)</title>");
+    expect(html).not.toContain("Not Found (panel slot)</title>");
+  });
+
+  // Turbopack orders a layout's children before its slots, so an active slot
+  // page's title wins over the page's, also when both threw notFound().
+  // Observed in Next.js 16.2.7 with Turbopack (webpack keeps the page's).
+  it.each(["ok", "missing", "both"])(
+    "an active slot page's title wins over the page's (%s)",
+    async (id) => {
+      const { html } = await fetchHtml(baseUrl, `/nextjs-compat/not-found-slot-own/team/${id}`);
+      expect(html).toContain("<title>Team slot page</title>");
+      expect(html).not.toContain("<title>Team page</title>");
+      expect(html).not.toContain("<title>Not Found");
+    },
+  );
+
+  // Next.js 16.2.7 flushes its error shell at once (35ms to first byte against
+  // a 3s generateMetadata()), and the route's title follows later.
+  it("streams a slow generateMetadata() after the 404 its page throws", async () => {
+    // The fixture's generateMetadata() takes 4 s. The deadline runs from the
+    // request, so it also fails when the response's headers wait for it.
+    const requestStart = performance.now();
+    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-slow-metadata`);
+    expect(res.status).toBe(404);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let html = "";
+    const read = async () => {
+      const { done, value } = await reader.read();
+      if (!done) html += decoder.decode(value, { stream: true });
+      return done;
+    };
+    const readUntilBoundary = async () => {
+      while (!html.includes("404 - Page Not Found")) {
+        if (await read()) return Infinity;
+      }
+      return performance.now() - requestStart;
+    };
+    let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<number>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve(Infinity), 2000);
+    });
+    const boundaryAt = await Promise.race([readUntilBoundary(), deadline]);
+    clearTimeout(deadlineTimer);
+    expect(boundaryAt).toBeLessThan(2000);
+    expect(html).not.toContain("Slow metadata page");
+    while (!(await read()));
+
+    // The title streams into the body once. The inline Flight payload names it
+    // too, but no rendered title comes before it.
+    const renderedTitle = '<div hidden=""><title>Slow metadata page</title>';
+    expect(html.indexOf(renderedTitle)).toBeGreaterThan(html.indexOf("404 - Page Not Found"));
+    expect(html.indexOf(renderedTitle)).toBe(html.lastIndexOf(renderedTitle));
+    expect(html.indexOf("<title>")).toBe(html.indexOf(renderedTitle) + '<div hidden="">'.length);
+  });
+
+  // Next.js 16.2.7 streams its error shell's convention metadata too: headers
+  // in ~10ms against a 3s not-found generateMetadata(). The title users see is
+  // still the route's own.
+  it("never holds back a 404 for the not-found convention's slow generateMetadata()", async () => {
+    // The fixture's not-found generateMetadata() takes 4 s.
+    const requestStart = performance.now();
+    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-slow-convention-metadata`);
+    const headersAt = performance.now() - requestStart;
+    expect(res.status).toBe(404);
+    expect(headersAt).toBeLessThan(2000);
+    const html = await res.text();
+    expect(html).toContain("Slow convention not found boundary");
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Slow convention page</title>");
+    expect(html).not.toContain("Slow convention not found</title>");
+  });
+
+  // Next.js 16.2.7 answers 404 without redirecting: its error shell's
+  // convention metadata has no outlet, so a redirect() from it is dropped.
+  it("drops a redirect() from the not-found convention's generateMetadata()", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-convention-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(404);
+    const html = await res.text();
+    expect(html).toContain("Convention redirect not found boundary");
+    expect(html).toContain("<title>Convention redirect page</title>");
+  });
+
+  // When the page throws too, its notFound() is caught by its segment's
+  // not-found inside the layout rendering the slot, while the slot's own
+  // not-found catches the slot's. The document shows both, also when the
+  // page's signal is below a Suspense boundary.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each(["both", "late"])(
+    "notFound() from a page and a slot with its own not-found keeps the slot's layout (%s)",
+    async (id) => {
+      const { res, html } = await fetchHtml(
+        baseUrl,
+        `/nextjs-compat/not-found-slot-own/team/${id}`,
+      );
+      expect(res.status).toBe(404);
+      expect(html).toContain('id="slot-own-layout"');
+      expect(html).toContain('id="slot-own-team-layout"');
+      expect(html).toContain('id="slot-own-segment-nf"');
+      // The slot keeps its own not-found beside it.
+      expect(html).toContain('id="slot-own-team-nf"');
+      expect(html).not.toContain('id="slot-own-root-nf"');
+    },
+  );
+
+  // A layout's or a template's notFound() beside the slot's is caught above
+  // the layout rendering the slot, so the not-found above it renders alone.
+  // Observed in Next.js 16.2.7, webpack and Turbopack.
+  it.each([
+    ["layout", "team/gone", "team"],
+    ["template", "tmpl", "tmpl"],
+  ])(
+    "notFound() from a %s and a slot with its own not-found is caught above the slot's layout",
+    async (_thrower, path, segment) => {
+      const { res, html } = await fetchHtml(baseUrl, `/nextjs-compat/not-found-slot-own/${path}`);
+      expect(res.status).toBe(404);
+      expect(html).toContain('id="slot-own-layout"');
+      expect(html).toContain('id="slot-own-root-nf"');
+      expect(html).not.toContain(`id="slot-own-${segment}-layout"`);
+      expect(html).not.toContain('id="slot-own-segment-nf"');
+      expect(html).not.toContain('id="slot-own-tmpl-segment-nf"');
+      expect(html).not.toContain('id="slot-own-team-nf"');
+      expect(html).not.toContain('id="slot-own-tmpl-members-nf"');
+    },
+  );
 
   // ── notFound() from both layout AND page ─────────────────────
   // When both the layout and the page call notFound() for invalid params,

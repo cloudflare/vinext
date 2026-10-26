@@ -43,25 +43,23 @@ type LazyLoadableIntercept = {
   __pageLoader?: LazyModuleThunk | null;
   notFound?: unknown;
   __loadNotFound?: LazyModuleThunk | null;
-  forbidden?: unknown;
-  __loadForbidden?: LazyModuleThunk | null;
-  unauthorized?: unknown;
-  __loadUnauthorized?: LazyModuleThunk | null;
   interceptLayouts?: readonly unknown[] | null;
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
   __loadInterceptLoadings?: LazyModuleLoaderArray | null;
   interceptNotFounds?: readonly unknown[] | null;
   __loadInterceptNotFounds?: LazyModuleLoaderArray | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  __loadInterceptForbiddens?: LazyModuleLoaderArray | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  __loadInterceptUnauthorizeds?: LazyModuleLoaderArray | null;
+  interceptErrors?: readonly unknown[] | null;
+  __loadInterceptErrors?: LazyModuleLoaderArray | null;
   __loadState?: {
     page?: unknown;
     pageLoading?: Promise<unknown> | null;
     notFound?: unknown;
     notFoundLoading?: Promise<unknown> | null;
-    forbidden?: unknown;
-    forbiddenLoading?: Promise<unknown> | null;
-    unauthorized?: unknown;
-    unauthorizedLoading?: Promise<unknown> | null;
     interceptLayoutsLoading: Promise<readonly unknown[]> | null;
   };
 };
@@ -185,8 +183,8 @@ function pushArrayLoads(
 async function hydrateInterceptModule(
   intercept: LazyLoadableIntercept,
   loader: LazyModuleThunk | null | undefined,
-  field: "page" | "notFound" | "forbidden" | "unauthorized",
-  loadingField: "pageLoading" | "notFoundLoading" | "forbiddenLoading" | "unauthorizedLoading",
+  field: "page" | "notFound",
+  loadingField: "pageLoading" | "notFoundLoading",
 ): Promise<void> {
   const loadState = intercept.__loadState;
   const cached = loadState?.[field];
@@ -228,24 +226,6 @@ export function loadAppInterceptNotFound(intercept: LazyLoadableIntercept): Prom
   return hydrateInterceptModule(intercept, intercept.__loadNotFound, "notFound", "notFoundLoading");
 }
 
-/**
- * Hydrate a sibling intercepting route's forbidden and unauthorized boundaries
- * onto `intercept.forbidden` and `intercept.unauthorized`.
- */
-export async function loadAppInterceptAccessFallbacks(
-  intercept: LazyLoadableIntercept,
-): Promise<void> {
-  await Promise.all([
-    hydrateInterceptModule(intercept, intercept.__loadForbidden, "forbidden", "forbiddenLoading"),
-    hydrateInterceptModule(
-      intercept,
-      intercept.__loadUnauthorized,
-      "unauthorized",
-      "unauthorizedLoading",
-    ),
-  ]);
-}
-
 export function loadAppInterceptLayouts(
   intercept: LazyLoadableIntercept,
 ): Promise<readonly unknown[]> {
@@ -256,6 +236,9 @@ export function loadAppInterceptLayouts(
   pushArrayLoads(loads, intercept.interceptLayouts, intercept.__loadInterceptLayouts);
   pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
   pushArrayLoads(loads, intercept.interceptNotFounds, intercept.__loadInterceptNotFounds);
+  pushArrayLoads(loads, intercept.interceptForbiddens, intercept.__loadInterceptForbiddens);
+  pushArrayLoads(loads, intercept.interceptUnauthorizeds, intercept.__loadInterceptUnauthorizeds);
+  pushArrayLoads(loads, intercept.interceptErrors, intercept.__loadInterceptErrors);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
   const loading = shareIsolatePromise(

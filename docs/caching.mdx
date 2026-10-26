@@ -478,7 +478,7 @@ A static page defaults to `revalidate = false`, as in Next.js, unless a `revalid
 
 Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `cache: "no-store"` outside a cache scope, and reading `searchParams`. Under `dynamic = "force-static"` they return empty values or don't count, so the page is still stored.
 
-`useSearchParams()` in a client component doesn't make a page dynamic, and returns empty search params under `dynamic = "force-static"`. Otherwise, in production, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
+`useSearchParams()` in a client component doesn't make a page dynamic. Under `dynamic = "force-static"` it returns empty search params in the HTML and the browser URL's after hydration, as in Next.js. Otherwise, in production, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
 
 ## Query strings
 

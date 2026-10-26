@@ -33,7 +33,11 @@ export function resolveClientRuntimeModule(name: string): string {
   return resolveRuntimeModulePath("client", name);
 }
 
-function resolveRuntimeModulePath(directory: "client" | "server", name: string): string {
+export function resolveShimRuntimeModule(name: string): string {
+  return resolveRuntimeModulePath("shims", name);
+}
+
+function resolveRuntimeModulePath(directory: "client" | "server" | "shims", name: string): string {
   for (const ext of [".ts", ".js", ".mts", ".mjs"]) {
     const filePath = resolveEntryPath(`../${directory}/${name}${ext}`, import.meta.url);
     if (fs.existsSync(filePath)) {

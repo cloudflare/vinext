@@ -2054,9 +2054,9 @@ export async function prerenderApp({
           : htmlRender.html;
 
         // Reconstruct the RSC payload from the inline bootstrap chunks already
-        // streamed into the HTML body. The generated RSC entry performs
-        // framing-aware hint normalization at the stream source, so the
-        // resulting Flight artifact contains the same bytes.
+        // streamed into the HTML body. The embedded chunks rebuild React's
+        // stream byte for byte, so the resulting Flight artifact contains the
+        // same bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
         // no chunk scripts at all — covers cases where middleware

@@ -47,10 +47,11 @@ export type ResponseStoreInvocationCapture = {
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
 const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
-const CACHE_MAX_AGE = `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
 const DATA_ENTRY_PATH = "__vinext_data";
 const REPLAYABLE_HEADER = "X-Vinext-Response-Store-Replayable";
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
+/** How long past its revalidate a current Store's hit can still be marked fresh: write latency. */
+const STALE_FRESH_HIT_GRACE_MS = 5_000;
 const DATA_REVALIDATOR_ID = "vinext:data";
 const CACHE_FUNCTION_REVALIDATOR_ID = "vinext:cache-function";
 const invocationStorage = new AsyncLocalStorage<ResponseStoreInvocation>();
@@ -309,13 +310,17 @@ function deserialize(value: string): StoredCacheEntry | null {
 
 function cachePolicy(revalidate: number | false | undefined, expire: number | undefined): string {
   if (revalidate === false || revalidate === undefined) {
-    return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
+    // Never stale, but still hard-expired at a finite `expire` (e.g. from cacheLife).
+    return `public, max-age=${expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(1, Math.ceil(expire))}`;
   }
   // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
   // hard-expires: past `revalidate` it is served stale and refreshed in the background.
+  // The Store reads whole seconds only, so round fractional ones (Next.js accepts them),
+  // keeping at least a second of freshness and hard expiry no earlier than `expire`.
+  const maxAge = revalidate > 0 ? Math.max(1, Math.floor(revalidate)) : 0;
   const staleSeconds =
-    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
-  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
+    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, Math.ceil(expire) - maxAge);
+  return `public, max-age=${maxAge}, stale-while-revalidate=${staleSeconds}`;
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
@@ -387,6 +392,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
 
       const age = Date.now() - entry.lastModified;
       const requestedRevalidate = readCacheControlField(context, "revalidate");
+      const storedRevalidate = entry.cacheControl?.revalidate;
       const requestedStale =
         typeof requestedRevalidate === "number" &&
         requestedRevalidate > 0 &&
@@ -402,13 +408,20 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       ) {
         cacheState = "expired";
       } else if (
-        requestedStale ||
-        // Only an invalidate() marks a non-replayable entry stale; the Store cannot
-        // regenerate it, so the caller revalidates it.
+        // The Store can't regenerate a non-replayable entry, so the caller revalidates it
+        // once the Store reports it stale: past its stored revalidate, or after invalidate().
+        // Its own edge copy has expired by then, so the first refresh normally replaces it
+        // without an edge purge.
         storeStatus === "BLOB-STALE" ||
-        (typeof entry.cacheControl?.revalidate === "number" &&
-          entry.cacheControl.revalidate > 0 &&
-          age > entry.cacheControl.revalidate * 1000)
+        // A shorter requested revalidate makes it stale before the Store does.
+        (requestedStale &&
+          typeof requestedRevalidate === "number" &&
+          (typeof storedRevalidate !== "number" || requestedRevalidate < storedRevalidate)) ||
+        // An edge copy still marked fresh well past revalidate came from a Store that gave
+        // it longer, e.g. an older cache Worker during a rollout: refresh it anyway.
+        (typeof storedRevalidate === "number" &&
+          storedRevalidate > 0 &&
+          age > storedRevalidate * 1000 + STALE_FRESH_HIT_GRACE_MS)
       ) {
         cacheState = "stale";
       }
@@ -448,10 +461,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     let revalidate = readCacheControlField(context, "revalidate");
     if (value && "revalidate" in value) revalidate = value.revalidate;
     if (revalidate === 0) return;
+    // JSON and the Store's Cache-Control can't hold Infinity, so store it as `false`
+    // (never revalidates) and drop an infinite `expire`, like the KV adapter does.
+    if (typeof revalidate === "number" && !Number.isFinite(revalidate)) revalidate = false;
 
     const rawExpire = readCacheControlField(context, "expire");
-    const expire = typeof rawExpire === "number" ? rawExpire : undefined;
-    const stale = readCacheControlField(context, "stale");
+    const expire =
+      typeof rawExpire === "number" && Number.isFinite(rawExpire) ? rawExpire : undefined;
+    const rawStale = readCacheControlField(context, "stale");
+    const stale = typeof rawStale === "number" && Number.isFinite(rawStale) ? rawStale : undefined;
     const cacheControl =
       typeof revalidate === "number" || revalidate === false
         ? {
@@ -494,7 +512,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       }),
       {
         headers: {
-          "Cache-Control": revalidator ? cachePolicy(revalidate, expire) : CACHE_MAX_AGE,
+          "Cache-Control": cachePolicy(revalidate, expire),
           ...(tagHeader ? { "Cache-Tag": tagHeader } : {}),
           "Content-Type": "application/json",
           ...(revalidator ? { [REPLAYABLE_HEADER]: "1" } : {}),
@@ -518,8 +536,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       // A read that finds a page-replay entry expired must not wait for the replay: a page
       // reading two such entries would replay itself for each in turn (A -> B -> A). The
       // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
-      // An entry without a revalidator only expires through invalidate()'s `expire`, and the
-      // Store can't regenerate it either.
+      // The Store can't regenerate an entry without a revalidator either.
       ...(revalidator?.id !== CACHE_FUNCTION_REVALIDATOR_ID
         ? { expiryBehavior: "miss" as const }
         : {}),

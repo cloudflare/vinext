@@ -256,56 +256,198 @@ test.describe("Next.js compat: client cache", () => {
     );
   });
 
+  test("auto prefetch of a dynamic page without loading never renders the page (#4083)", async ({
+    page,
+  }) => {
+    // Next.js's automatic prefetch of a route it renders dynamically stops at
+    // the route tree when no loading.js is below the shared layout, and keeps
+    // it for staleTimes.static. Hovers don't fetch again; the click fetches the
+    // page because staleTimes.dynamic is 0.
+    const target = "/nextjs-compat/client-cache-full-render/1";
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBe(1);
+    expect(requestsFor(requests, target)[0]?.partial).toBe(true);
+
+    for (let hover = 0; hover < 3; hover++) {
+      await page.hover("#client-cache-full-render-auto");
+      await page.mouse.move(0, 0);
+      await advanceTime(page, 2_000);
+    }
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(1);
+
+    await page.click("#client-cache-full-render-auto");
+    await expect(page.locator("#client-cache-full-render-id")).toHaveText("1");
+    expect(requestsFor(requests, target).map((request) => request.partial)).toEqual([true, false]);
+  });
+
+  test("auto prefetch of a page that renders dynamically at runtime is never reused (#4083)", async ({
+    page,
+  }) => {
+    // Next.js would have prefetched only the route tree, kept it for
+    // staleTimes.static, and fetched the page on click.
+    const target = "/nextjs-compat/client-cache-runtime-dynamic";
+    const requests = trackRscRequests(page);
+    await openHome(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+
+    for (let hover = 0; hover < 3; hover++) {
+      await page.hover("#client-cache-runtime-dynamic-auto");
+      await page.mouse.move(0, 0);
+      await advanceTime(page, 2_000);
+    }
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(prefetched);
+
+    await page.click("#client-cache-runtime-dynamic-auto");
+    await expect(page.locator("#client-cache-runtime-dynamic-random")).toBeVisible();
+    expect(requestsFor(requests, target)).toHaveLength(prefetched + 1);
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+  });
+
+  test("an intercepted auto prefetch of a dynamic intercepting page is never reused", async ({
+    page,
+  }) => {
+    // Next.js builds `ƒ /nextjs-compat/client-cache-intercept/(..)client-cache-intercept-static/[id]`
+    // as its own route: without generateStaticParams the modal renders on every
+    // request, so the prefetch from its source only learns the route and the
+    // click fetches it, though the target page is static.
+    const target = "/nextjs-compat/client-cache-intercept-static/1";
+    const requests = trackRscRequests(page);
+    await page.goto("/nextjs-compat/client-cache-intercept");
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+    expect(requestsFor(requests, target).every((request) => request.partial)).toBe(true);
+
+    await page.click("#client-cache-intercept-static-link");
+    await expect(page.locator("#client-cache-intercept-dynamic-modal")).toBeVisible();
+    expect(requestsFor(requests, target)).toHaveLength(prefetched + 1);
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+  });
+
+  test("an intercepted auto prefetch of a static intercepting page is reused", async ({ page }) => {
+    // `● .../(..)client-cache-intercept-dynamic/[id]`: generateStaticParams
+    // makes the modal static, so its full prefetch serves the click, though the
+    // target page is dynamic.
+    const target = "/nextjs-compat/client-cache-intercept-dynamic/1";
+    const requests = trackRscRequests(page);
+    await page.goto("/nextjs-compat/client-cache-intercept");
+    await waitForAppRouterHydration(page);
+    await expect.poll(() => requestsFor(requests, target).length).toBeGreaterThan(0);
+    await page.waitForTimeout(500);
+    const prefetched = requestsFor(requests, target).length;
+    expect(requestsFor(requests, target).at(-1)?.partial).toBe(false);
+
+    await page.click("#client-cache-intercept-dynamic-link");
+    await expect(page.locator("#client-cache-intercept-static-modal")).toHaveText("1");
+    await page.waitForTimeout(500);
+    expect(requestsFor(requests, target)).toHaveLength(prefetched);
+  });
+
   for (const { name, selector } of [
     { name: "a revalidatePath Server Action", selector: "#client-cache-revalidate-action" },
     { name: "router.refresh()", selector: "#client-cache-invalidate" },
   ]) {
-    test(`${name} defers dynamic full-render link prefetches to intent (#4083)`, async ({
+    test(`${name} re-prefetches visible links without rendering a dynamic page (#4083)`, async ({
       page,
     }) => {
-      const fullRenderTarget = "/nextjs-compat/client-cache-full-render/1";
-      const otherLinkTargets = [
+      const dynamicTarget = "/nextjs-compat/client-cache-full-render/1";
+      const linkTargets = [
         `${ROOT}/0`,
         `${ROOT}/1`,
         `${ROOT}/default-stale/1`,
         `${ROOT}/no-loading/1`,
+        dynamicTarget,
         "/nextjs-compat/client-cache-late-dynamic",
         "/nextjs-compat/client-cache-static-param/1",
       ];
       const requests = trackRscRequests(page);
       await openHome(page);
-      // The automatic prefetch of a dynamic route without a loading boundary
-      // or parallel slots renders the whole page.
-      await expect
-        .poll(() => requestsFor(requests, fullRenderTarget).filter((r) => !r.partial).length)
-        .toBe(1);
       // Let every initial prefetch go out so later requests are re-prefetches.
-      for (const pathname of otherLinkTargets) {
+      for (const pathname of linkTargets) {
         await expect.poll(() => requestsFor(requests, pathname).length).toBeGreaterThan(0);
       }
 
       requests.length = 0;
       await page.click(selector);
 
-      // The other visible links are re-prefetched after the invalidation, as in
-      // Next.js, including the statically generated dynamic page. Re-running
-      // the force-dynamic page's full-render prefetch would cost a server render
-      // per visible link on every invalidation, so it waits for intent. Wait
-      // for every other re-prefetch, then allow time for any request still in
-      // the prefetch fetch queue before asserting the full render never went
-      // out.
-      for (const pathname of otherLinkTargets) {
+      // Every visible link is re-prefetched after the invalidation, as in
+      // Next.js. The force-dynamic page's re-prefetch is its route shell, never
+      // a render of the page.
+      for (const pathname of linkTargets) {
         await expect.poll(() => requestsFor(requests, pathname).length).toBeGreaterThan(0);
       }
       await page.waitForTimeout(500);
-      expect(requestsFor(requests, fullRenderTarget)).toEqual([]);
+      expect(requestsFor(requests, dynamicTarget).every((request) => request.partial)).toBe(true);
 
-      await page.hover("#client-cache-full-render-auto");
-      await expect.poll(() => requestsFor(requests, fullRenderTarget).length).toBe(1);
       await page.click("#client-cache-full-render-auto");
       await expect(page.locator("#client-cache-full-render-id")).toHaveText("1");
     });
   }
+
+  test("a loading-shell prefetch without a loading boundary carries only the route tree", async ({
+    page,
+  }) => {
+    // Next.js answers a pre-PPR prefetch with no loading boundary with only the
+    // router state and a [null, null] head, rendering no layout
+    // (walkTreeWithFlightRouterState()):
+    // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/walk-tree-with-flight-router-state.tsx
+    const response = await page.request.get(`${ROOT}/no-loading/1?_rsc=no-loading-shell`, {
+      headers: {
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    });
+    const body = await response.text();
+    expect(response.status()).toBe(200);
+    expect(body).toContain(`route:${ROOT}/no-loading/1`);
+    expect(body).not.toContain('"lang":"en"');
+    expect(body).not.toContain("App Basic");
+
+    // The browser's own prefetch gets the same route tree, and navigation
+    // fetches the page.
+    const requests = trackRscRequests(page);
+    const browserPrefetch = page.waitForResponse(
+      (candidate) =>
+        new URL(candidate.url()).pathname === `${ROOT}/no-loading/1` &&
+        candidate.request().headers()["x-vinext-rsc-render-mode"] === "prefetch-loading-shell",
+    );
+    await openHome(page);
+    const browserPrefetchBody = await (await browserPrefetch).text();
+    expect(browserPrefetchBody).toContain(`route:${ROOT}/no-loading/1`);
+    expect(browserPrefetchBody).not.toContain('"lang":"en"');
+    await navigateToNoLoading(page);
+    expect(requestsFor(requests, `${ROOT}/no-loading/1`).some((request) => !request.partial)).toBe(
+      true,
+    );
+  });
+
+  test("a loading-shell prefetch without a loading boundary that may be stored keeps its layouts", async ({
+    page,
+  }) => {
+    // A static route's shell may be stored, so its layouts still render and a
+    // layout reading request data keeps it out of the cache, as before.
+    const response = await page.request.get("/about?_rsc=no-loading-static-shell", {
+      headers: {
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        "X-Vinext-Rsc-Render-Mode": "prefetch-loading-shell",
+      },
+    });
+    const body = await response.text();
+    expect(response.status()).toBe(200);
+    expect(body).toContain("route:/about");
+    expect(body).toContain('"lang":"en"');
+    expect(body).toContain("App Basic");
+  });
 
   test("a pending prefetch that becomes dynamic uses the completed dynamic bound", async ({
     page,

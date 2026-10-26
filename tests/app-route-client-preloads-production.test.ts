@@ -405,6 +405,65 @@ describe("App Router production SSR route client reference preloads", () => {
     }
   });
 
+  it("names each client reference's chunks in its Flight row, not in the browser entry", async () => {
+    // The browser entry once held a loader per client component in the app
+    // (#4179): every page downloaded them all, and an added component changed
+    // the entry's hash. As in Next.js, each reference's Flight row names the
+    // chunks it loads instead.
+    const clientDir = path.join(fixtureDir, "dist", "client");
+    const { appBrowserEntry, appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(path.join(clientDir, "vinext-client-entry-manifest.json"), "utf8"),
+    ) as {
+      appBrowserEntry: string;
+      appClientReferenceChunks?: {
+        references: Record<string, number>;
+        modules: { file: string }[];
+      };
+    };
+    expect(appClientReferenceChunks).toBeDefined();
+    const moduleFiles = appClientReferenceChunks!.modules.map((module) => module.file);
+    expect(moduleFiles.length).toBeGreaterThan(1);
+    const buildManifest = JSON.parse(
+      fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf8"),
+    ) as Record<string, { file: string; imports?: string[] }>;
+    const queue = Object.keys(buildManifest).filter(
+      (key) => buildManifest[key]!.file === appBrowserEntry,
+    );
+    expect(queue).toHaveLength(1);
+    const eager = new Set<string>();
+    for (let key = queue.shift(); key !== undefined; key = queue.shift()) {
+      const chunk = buildManifest[key]!;
+      if (eager.has(chunk.file)) continue;
+      eager.add(chunk.file);
+      queue.push(...(chunk.imports ?? []));
+    }
+    // plugin-rsc's reference loaders: `"6a092ae781cf":async()=>{...}`.
+    // The minifier drops the quotes of keys that start with a letter.
+    const loader = /[{,]"?[0-9a-f]{12}"?:async\(\)=>/;
+    for (const file of eager) {
+      expect(moduleFiles, file).not.toContain(file);
+      const code = fs.readFileSync(path.join(clientDir, file), "utf8");
+      expect(code, file).not.toMatch(loader);
+      for (const moduleFile of moduleFiles) {
+        expect(code, file).not.toContain(path.posix.basename(moduleFile));
+      }
+    }
+
+    // The document's Flight data names the module chunk of each reference the
+    // page renders, which SSR modulepreloads.
+    for (const route of ["/", "/streamed/also"]) {
+      const html = await (await fetch(`${baseUrl}${route}`)).text();
+      expect(html, route).not.toContain("__VINEXT_CLIENT_REFERENCE_REGISTRY__");
+      const named = [...html.matchAll(/\\?"m\/([^"\\]+\.js)/g)].map((match) => match[1]!);
+      expect(named.length, route).toBeGreaterThan(0);
+      const preloads = modulepreloadHrefs(html);
+      for (const file of named) {
+        expect(moduleFiles, route).toContain(file);
+        expect(preloads, route).toContain(`/${file}`);
+      }
+    }
+  });
+
   it("loads every module script at low priority, like Next.js's async scripts", async () => {
     // Browsers fetch module scripts at high priority unless told otherwise.
     // The shell-error document is built by hand, without React's hints.

@@ -811,6 +811,48 @@ describe("ISR cache internals", () => {
     expect(result).toBeNull();
   });
 
+  it("MemoryCacheHandler serves entries of a tag revalidated with a profile stale until it expires, like Next.js", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+      const handler = new MemoryCacheHandler();
+      const value = {
+        kind: "FETCH" as const,
+        data: { headers: {}, body: "test", url: "" },
+        tags: ["mytag"],
+        revalidate: 3600,
+      };
+      await handler.set("tagged", value, { revalidate: 3600, tags: ["mytag"] });
+      await handler.set("soft-tagged", { ...value, tags: [] }, { revalidate: 3600 });
+
+      vi.advanceTimersByTime(1000);
+      await handler.revalidateTag("mytag", { expire: 60 });
+
+      await expect(handler.get("tagged")).resolves.toMatchObject({ cacheState: "stale" });
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+
+      // An entry written after the revalidation is fresh.
+      vi.advanceTimersByTime(1000);
+      await handler.set("fresh", value, { revalidate: 3600, tags: ["mytag"] });
+      const fresh = await handler.get("fresh");
+      expect(fresh?.cacheState).toBeUndefined();
+
+      // Once the profile's expire time passes, every entry written before it
+      // is gone, as in Next.js's areTagsExpired. One written later is kept.
+      vi.advanceTimersByTime(60_000);
+      await handler.set("after-expiry", value, { revalidate: 3600, tags: ["mytag"] });
+      vi.advanceTimersByTime(1);
+      await expect(handler.get("tagged")).resolves.toBeNull();
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toBeNull();
+      await expect(handler.get("fresh")).resolves.toBeNull();
+      await expect(handler.get("after-expiry")).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("MemoryCacheHandler skips storage when data.revalidate is 0", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
     const handler = new MemoryCacheHandler();
@@ -2432,7 +2474,6 @@ describe("metadata title templates", () => {
         metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
       },
       {
-        contributesTitle: false,
         metadata: {
           openGraph: { title: "Slot OG title" },
           title: { default: "Slot", template: "%s | Slot" },
@@ -2442,11 +2483,12 @@ describe("metadata title templates", () => {
 
     // mergeMetadataEntries does raw segment merging only; post-processing is
     // applied separately by postProcessMetadata (called by mergeMetadata and by
-    // resolveAppPageHead after file-based metadata is applied).
+    // resolveAppPageHead after file-based metadata is applied). The page's
+    // template does not wrap the later slot title.
     expect(result).toEqual({
       description: "Page",
       openGraph: { title: "Slot OG title" },
-      title: "Page | Root",
+      title: "Slot | Root",
     });
   });
 });

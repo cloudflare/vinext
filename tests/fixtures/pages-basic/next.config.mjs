@@ -246,6 +246,14 @@ const nextConfig = {
           headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
         }),
       ),
+      // Used by Vitest: pages-router.test.ts. A config Cache-Control replaces
+      // the getServerSideProps default on redirect and notFound exits, as in
+      // Next.js.
+      ...["/gssp-redirect", "/gssp-not-found"].map((source) => ({
+        source,
+        has: [{ type: "query", key: "config-cache-control" }],
+        headers: [{ key: "Cache-Control", value: "public, max-age=60" }],
+      })),
       {
         source: "/storage-policy/short-browser",
         headers: [{ key: "Cache-Control", value: "public, max-age=1" }],
