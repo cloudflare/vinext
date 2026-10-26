@@ -9,6 +9,7 @@
  */
 import "./server-globals.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Stream } from "node:stream";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { decode as decodeQueryString } from "node:querystring";
 import { Buffer } from "node:buffer";
@@ -334,6 +335,14 @@ function enhanceApiObjects(
     },
 
     send(this: NextApiResponse, data: unknown) {
+      if (data instanceof Stream) {
+        if (!this.getHeader("Content-Type")) {
+          this.setHeader("Content-Type", "application/octet-stream");
+        }
+        data.pipe(this);
+        return;
+      }
+
       if (Buffer.isBuffer(data)) {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "application/octet-stream");
