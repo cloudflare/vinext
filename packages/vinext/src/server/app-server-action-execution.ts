@@ -30,6 +30,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   RSC_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
@@ -690,6 +691,7 @@ async function createActionRedirectTargetRequest(options: {
   // not another action request or a patch against the action route's tree.
   headers.set(RSC_HEADER, "1");
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   stripRscCacheBustingSearchParam(options.url);
   const requestPath = await createRscRequestUrl(
     `${options.url.pathname}${options.url.search}`,

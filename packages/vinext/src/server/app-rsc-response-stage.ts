@@ -416,7 +416,6 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
         return options.dispatchMatchedPage({
           bypassInterceptionContextCache: props.bypassInterceptionContextCache,
           cachePathname: props.cachePathname,
-          clientReuseManifest: normalized.clientReuseManifest,
           cleanPathname: props.cleanPathname,
           displayPathname: props.canonicalPathname,
           formState: null,

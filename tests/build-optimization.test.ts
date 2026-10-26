@@ -347,7 +347,7 @@ describe("next-intl dependency optimization", () => {
     "@formatjs/fast-memoize",
     "intl-messageformat",
   ];
-  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react", "next/link"];
+  const clientDependencies = ["next-intl > use-intl", "next-intl > use-intl/react"];
   const legacyClientDependencies = [
     "next-intl > use-intl/_IntlProvider",
     "next-intl > use-intl/_useLocale",
@@ -419,7 +419,7 @@ describe("next-intl dependency optimization", () => {
       scenario: "explicit exclusions",
       excluded: true,
       expected: ["@formatjs/intl-localematcher", "intl-messageformat"],
-      clientExpected: ["next/link"],
+      clientExpected: [],
     },
     {
       scenario: "dependencies unavailable from root",
@@ -491,7 +491,7 @@ describe("next-intl dependency optimization", () => {
             client: {
               optimizeDeps: {
                 noDiscovery: options.clientNoDiscovery,
-                exclude: options.clientExcluded ? ["use-intl/react", "next/link"] : [],
+                exclude: options.clientExcluded ? ["use-intl/react"] : [],
               },
             },
             rsc: {
@@ -513,6 +513,8 @@ describe("next-intl dependency optimization", () => {
           clientIncludes.includes(id),
         ),
       ).toEqual(options.clientExpected);
+      // An optimized next/link would carry its own copy of vinext's navigation state.
+      expect(clientIncludes).not.toContain("next/link");
       for (const name of ["client", "ssr"]) {
         const otherIncludes = result.environments[name].optimizeDeps.include ?? [];
         expect(dependencies.filter((id) => otherIncludes.includes(id))).toEqual([]);
@@ -532,6 +534,21 @@ describe("optimizeDeps.exclude for vinext", () => {
     "vinext/shims/script",
     "vinext/shims/slot",
     "vinext/shims/offline",
+  ];
+  // Bare specifiers vinext resolves to its shims. An installed vinext lives in
+  // node_modules, so the optimizer would otherwise pre-bundle a second copy.
+  const nextShimExcludes = [
+    "next/link",
+    "next/link.js",
+    "next/navigation",
+    "next/navigation.js",
+    "next/error",
+    "next/form",
+    "next/script",
+    "next/router",
+    "next/headers",
+    "next/dist/client/components/navigation",
+    "next/dist/shared/lib/app-router-context.shared-runtime",
   ];
 
   it("excludes vinext at top level for Pages Router builds", async () => {
@@ -570,6 +587,11 @@ describe("optimizeDeps.exclude for vinext", () => {
       });
       expect(result.optimizeDeps?.exclude).toContain("vinext");
       expect(result.optimizeDeps?.exclude).toContain("@vercel/og");
+      for (const shimExclude of nextShimExcludes) {
+        // The Pages Router client pre-bundles its runtime with the shims.
+        expect(result.optimizeDeps?.exclude).not.toContain(shimExclude);
+        expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
+      }
       // Incoming excludes from other plugins must survive the merge
       expect(result.optimizeDeps?.exclude).toContain("@lingui/macro");
       // No duplicates
@@ -701,7 +723,7 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(result.environments.ssr.optimizeDeps?.exclude).toContain("vinext");
       expect(result.environments.client.optimizeDeps?.exclude).toContain("vinext");
       expect(result.define?.["process.env.__VINEXT_HAS_PAGES_ROUTER"]).toBe('"false"');
-      for (const shimExclude of rscClientShimExcludes) {
+      for (const shimExclude of [...rscClientShimExcludes, ...nextShimExcludes]) {
         expect(result.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.rsc.optimizeDeps?.exclude).toContain(shimExclude);
         expect(result.environments.ssr.optimizeDeps?.exclude).toContain(shimExclude);
@@ -1096,6 +1118,202 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/pages-router-entry");
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("drops shim specifiers from explicit dev optimizer includes", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-shim-include-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      // Vite pre-bundles included specifiers even when they are excluded.
+      const client = {
+        consumer: "client",
+        optimizeDeps: {
+          include: [
+            "next/link",
+            "next/navigation.js",
+            "some-lib > next/link",
+            "vinext/shims/link",
+            "some-lib",
+            "some-lib > nested-dep",
+            // Vite expands globs later, from the installed package's files.
+            "next/*",
+            "vinext/shims/**",
+            "some-lib > next/{link,image}",
+            "some-lib/*",
+            "@scope/lib/*",
+            "next/dist/compiled/semver/*.js",
+          ],
+        },
+      };
+      const ssr = { consumer: "server", optimizeDeps: { include: ["next/headers", "some-lib"] } };
+      // Client environments that other plugins create get the same treatment.
+      const browser = { consumer: "client", optimizeDeps: { include: ["next/link"] } };
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { client, ssr, browser },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
+
+      expect(client.optimizeDeps.include).toEqual([
+        "some-lib",
+        "some-lib > nested-dep",
+        "some-lib/*",
+        "@scope/lib/*",
+        "next/dist/compiled/semver/*.js",
+        "use-sync-external-store/shim",
+        "use-sync-external-store/shim/index.js",
+        "use-sync-external-store/shim/with-selector",
+        "use-sync-external-store/shim/with-selector.js",
+        "use-sync-external-store/with-selector",
+        "use-sync-external-store/with-selector.js",
+        "vinext > @unpic/react",
+        "vinext > ipaddr.js",
+        "vinext > web-vitals",
+      ]);
+      expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
+      expect(browser.optimizeDeps.include).not.toContain("next/link");
+      expect(browser.optimizeDeps.include).toContain("vinext > ipaddr.js");
+
+      // A filtered next/image include no longer pre-bundles the shim's
+      // dependencies, so noDiscovery keeps them while the optimizer runs.
+      const noDiscoveryClient = { optimizeDeps: { noDiscovery: true, include: ["next/image"] } };
+      const disabledClient = { optimizeDeps: { noDiscovery: true } };
+      for (const environment of [noDiscoveryClient, disabledClient]) {
+        await (mainPlugin as any).configResolved({
+          cacheDir: path.join(tmpDir, ".vite"),
+          command: "serve",
+          configFile: false,
+          environments: { client: environment },
+          logger: createLogger("silent"),
+          plugins: [],
+        });
+      }
+      expect(noDiscoveryClient.optimizeDeps.include).toEqual([
+        "vinext > @unpic/react",
+        "vinext > ipaddr.js",
+        "vinext > web-vitals",
+      ]);
+      expect(disabledClient.optimizeDeps).toEqual({ noDiscovery: true });
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("leaves the Pages Router client optimizer's shim includes alone", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.configResolved === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-shim-include-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "pages"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "pages", "index.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      // The client pre-bundles the shims with the Pages Router runtime, so
+      // they share one copy of their module state.
+      const client = { consumer: "client", optimizeDeps: { include: ["next/link", "some-lib"] } };
+      const ssr = { consumer: "server", optimizeDeps: { include: ["next/link", "some-lib"] } };
+      await (mainPlugin as any).configResolved({
+        cacheDir: path.join(tmpDir, ".vite"),
+        command: "serve",
+        configFile: false,
+        environments: { client, ssr },
+        logger: createLogger("silent"),
+        plugins: [],
+      });
+
+      expect(client.optimizeDeps.include).toEqual(["next/link", "some-lib"]);
+      expect(ssr.optimizeDeps.include).toEqual(["some-lib"]);
+    } finally {
+      await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 15000);
+
+  it("keeps shims out of optimizers that other plugins create", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) =>
+        p.name === "vinext:config" &&
+        typeof p.config === "function" &&
+        typeof p.configEnvironment === "function",
+    );
+    expect(mainPlugin).toBeDefined();
+
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-custom-server-env-"));
+    const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+    await fsp.symlink(rootNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fsp.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fsp.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Home() { return <h1>Home</h1>; }`,
+    );
+    await fsp.writeFile(path.join(tmpDir, "next.config.mjs"), `export default {};`);
+
+    try {
+      await (mainPlugin as any).config({ root: tmpDir, build: {} }, { command: "serve" });
+
+      const userPlugin = { name: "user-optimizer-plugin" };
+      const custom: any = {
+        consumer: "server",
+        optimizeDeps: {
+          exclude: ["already-excluded"],
+          rolldownOptions: { plugins: [userPlugin] },
+        },
+      };
+      const client: any = { consumer: "client", optimizeDeps: {} };
+      const browser: any = { consumer: "client" };
+      (mainPlugin as any).configEnvironment("custom-worker", custom);
+      (mainPlugin as any).configEnvironment("client", client);
+      (mainPlugin as any).configEnvironment("browser", browser);
+
+      expect(custom.optimizeDeps.exclude).toEqual(
+        expect.arrayContaining(["already-excluded", "vinext", "next/link", "next/headers"]),
+      );
+      const pluginNames = custom.optimizeDeps.rolldownOptions.plugins.map((p: any) => p.name);
+      expect(pluginNames).toContain("user-optimizer-plugin");
+      expect(pluginNames).toContain("builtin:esm-external-require");
+      // The browser optimizer already turns require() of excluded ids into imports.
+      expect(client.optimizeDeps.rolldownOptions).toBeUndefined();
+      // App Router client environments load the shims raw, like the runtime.
+      expect(browser.optimizeDeps.exclude).toEqual(
+        expect.arrayContaining(["vinext", "next/link", "next/navigation"]),
+      );
+      expect(browser.optimizeDeps.rolldownOptions).toBeUndefined();
     } finally {
       await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }

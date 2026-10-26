@@ -242,6 +242,38 @@ test.describe("Not Found", () => {
     ).toBe(true);
   });
 
+  test("notFound() from a component a layout renders is caught above that layout", async ({
+    page,
+  }) => {
+    // The document fails before streaming, so it answers with the boundary
+    // above the guarded layout, not the one beside its page.
+    const response = await page.goto(
+      `${BASE}/nextjs-compat/not-found-layout-segment/en/guard/gone`,
+    );
+    expect(response?.status()).toBe(404);
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-layout")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-guard")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-guard-nf")).toHaveCount(0);
+
+    await waitForAppRouterHydration(page);
+    await page.getByRole("link", { name: "Guard pass" }).click();
+    await expect(page.locator("#not-found-layout-segment-guard-page")).toHaveText(
+      "Guarded item: hello",
+    );
+    await expect(page.locator("#not-found-layout-segment-guard-ok")).toBeVisible();
+    const counter = page.locator("#not-found-layout-segment-counter");
+    await counter.click();
+    await expect(counter).toHaveText("count:1");
+
+    // A client navigation lands on the same boundary, keeping the layout above.
+    await page.getByRole("link", { name: "Guard fail" }).click();
+    await expect(page.locator("#not-found-layout-segment-nf")).toBeVisible();
+    await expect(page.locator("#not-found-layout-segment-guard")).toHaveCount(0);
+    await expect(page.locator("#not-found-layout-segment-guard-nf")).toHaveCount(0);
+    await expect(counter).toHaveText("count:1");
+  });
+
   // https://github.com/cloudflare/vinext/issues/4045
   test("a layout's notFound() below a loading.tsx renders the segment boundary above it", async ({
     page,

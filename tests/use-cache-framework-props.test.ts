@@ -18,7 +18,7 @@ import {
   restoreFlightReply,
   type CacheFlightArguments,
 } from "../packages/vinext/src/shims/cache-flight-arguments.js";
-import { probeAppPageLayoutWithTracking } from "../packages/vinext/src/server/app-page-route-wiring.js";
+import { probeAppPageLayout } from "../packages/vinext/src/server/app-page-route-wiring.js";
 import {
   createPprFallbackShellState,
   runWithPprFallbackShellState,
@@ -434,9 +434,8 @@ describe("use cache framework props", () => {
       { argumentCount: 1 },
     );
     const probe = (slug: string) =>
-      probeAppPageLayoutWithTracking({
+      probeAppPageLayout({
         layoutIndex: 0,
-        layoutParamAccess: undefined,
         makeThenableParams,
         matchedParams: { slug },
         route: {
