@@ -120,6 +120,7 @@ overrides:
   "@apps/web>vite": "catalog:cloudflare-vite-v2"
   "static-assets-cache>vite": "catalog:cloudflare-vite-v2"
   "vite@8.3.0>rolldown": 1.2.9
+  "fflate@<0.7.5": "^0.7.5"
   picomatch: ">=2.3.2"
   srvx: ">=0.11.13"
   vite@*: "catalog:"

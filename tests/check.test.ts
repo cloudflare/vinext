@@ -906,6 +906,14 @@ describe("analyzeConfig", () => {
     );
   });
 
+  it("reports the legacy experimental.cacheComponents as partially supported", () => {
+    writeFile("next.config.mjs", `export default { experimental: { cacheComponents: true } };`);
+    const items = analyzeConfig(tmpDir);
+    const item = items.find((i) => i.name === "experimental.cacheComponents");
+    expect(item?.status).toBe("partial");
+    expect(item?.detail).toContain("legacy alias of cacheComponents");
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 

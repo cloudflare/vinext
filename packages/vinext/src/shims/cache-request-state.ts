@@ -32,20 +32,6 @@ export {
 
 export type UnstableCacheRevalidationMode = "foreground" | "background";
 export type ActionRevalidationKind = 0 | 1 | 2;
-export type UnstableCacheObservation = Readonly<{
-  kind: "unstable_cache";
-  keyHash: string;
-  revalidate: number | false | null;
-  tagCount: number;
-  tagHash: string | null;
-}>;
-
-/**
- * Collects the cacheLife claims made anywhere below the scope that installed
- * it, including nested scopes that reset `requestScopedCacheLife`. Shallow
- * scope clones share it by reference.
- */
-export type CacheLifeSink = { cacheLife: CacheLifeConfig | null };
 
 type TagInvalidationDurations = { expire?: number } | undefined;
 
@@ -58,7 +44,6 @@ export type PendingCdnTagInvalidation = Readonly<{
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
-  cacheLifeSink: CacheLifeSink | null;
   pendingCdnTagInvalidations: PendingCdnTagInvalidation[];
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
@@ -67,7 +52,6 @@ export type CacheState = {
   resumeDataCacheCollector: ResumeDataCache | null;
   /** The resumed shell's entries, read before the cache handler. */
   resumeDataCacheSeed: ResumeDataCache | null;
-  unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
 
@@ -81,14 +65,12 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-  cacheLifeSink: null,
   pendingCdnTagInvalidations: [],
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
   resumeDataCacheCollector: null,
   resumeDataCacheSeed: null,
-  unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
 
@@ -105,22 +87,18 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
       context.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
-      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
-      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
       context.unstableCacheRevalidation = "foreground";
     }, fn);
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-    cacheLifeSink: null,
     pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
     resumeDataCacheCollector: null,
     resumeDataCacheSeed: null,
-    unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
   return cacheAls.run(state, fn);
@@ -130,7 +108,6 @@ export function _initRequestScopedCacheState(): void {
   const state = getCacheState();
   state.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
   state.requestScopedCacheLife = null;
-  state.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
 }
 
 export function markActionRevalidation(kind: ActionRevalidationKind): void {
@@ -347,9 +324,6 @@ function mergeCacheLife(current: CacheLifeConfig | null, config: CacheLifeConfig
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
   const state = getCacheState();
   state.requestScopedCacheLife = mergeCacheLife(state.requestScopedCacheLife, config);
-  if (state.cacheLifeSink) {
-    state.cacheLifeSink.cacheLife = mergeCacheLife(state.cacheLifeSink.cacheLife, config);
-  }
 }
 
 export function _peekRequestScopedCacheLife(): CacheLifeConfig | null {
@@ -389,35 +363,21 @@ export function _captureRequestScopedCacheLifeAccessors(): {
   };
 }
 
-export function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {
-  getCacheState().unstableCacheObservations.set(observation.keyHash, observation);
-}
-
-export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
-  return [...getCacheState().unstableCacheObservations.values()].sort((a, b) =>
-    a.keyHash.localeCompare(b.keyHash),
-  );
-}
-
 /**
  * Run `fn` with the request's cache settings, including its revalidation mode,
- * but its own record of cache lives and unstable_cache observations, so work
+ * but its own record of cache lives, so work
  * done on the request's behalf after the fact leaves the request untouched.
  */
 export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
-      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
-      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
     }, fn);
   }
   return cacheAls.run(
     {
       ...getCacheState(),
-      cacheLifeSink: null,
       requestScopedCacheLife: null,
-      unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     },
     fn,
   );
