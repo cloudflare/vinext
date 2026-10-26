@@ -753,7 +753,7 @@ fi
 # inherit it: a deployment builds with NODE_ENV unset.
 if [ "${VINEXT_HARNESS_DIR}" != "${VINEXT_DIR}" ]; then
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force >> "${BUILD_LOG}" 2>&1
-  NODE_ENV="" "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
+  env -u NODE_ENV "${VINEXT_BIN}" build --prerender-all >> "${BUILD_LOG}" 2>&1
 else
   VITE_BIN="./node_modules/.bin/vite"
   if [ ! -x "${VITE_BIN}" ]; then
@@ -761,7 +761,7 @@ else
     exit 1
   fi
   "${VINEXT_BIN}" init --platform=node --skip-check --skip-css-modules --force --prerender >> "${BUILD_LOG}" 2>&1
-  NODE_ENV="" "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
+  env -u NODE_ENV "${VITE_BIN}" build >> "${BUILD_LOG}" 2>&1
 fi
 
 # Next.js emits large-page-data warnings during build. Specific deploy tests

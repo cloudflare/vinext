@@ -2035,6 +2035,14 @@ export async function prerenderApp({
         const htmlCacheControl = htmlRender.cacheControl;
         if (!htmlRender.ok) {
           if ((isSpeculative && !htmlRender.fatal) || isFallback) {
+            // A fallback shell that fails to render is skipped so requests
+            // render without it, but a thrown render error is still surfaced.
+            if (isFallback && htmlRender.fatal) {
+              console.warn(
+                `[vinext] Warning: fallback shell for ${routePattern} failed to render (${htmlRender.status}). ` +
+                  `Requests for it will render without a fallback shell.`,
+              );
+            }
             return { route: routePattern, status: "skipped", reason: "dynamic" };
           }
           return {
