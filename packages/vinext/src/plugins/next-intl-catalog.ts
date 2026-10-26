@@ -51,7 +51,7 @@ function createCatalogLoadPlugin(root: string, catalogLoader: NextIntlCatalogLoa
         catalogLoader.test.lastIndex = 0;
         if (!catalogLoader.test.test(file)) return null;
 
-        loaderPromise ??= importCatalogLoader(root);
+        loaderPromise ??= importCatalogLoader(root, catalogLoader.options);
         const code = await runLoader(await loaderPromise, await fs.readFile(file, "utf8"), {
           resourcePath: file,
           rootContext: root,
@@ -63,10 +63,18 @@ function createCatalogLoadPlugin(root: string, catalogLoader: NextIntlCatalogLoa
   };
 }
 
-async function importCatalogLoader(root: string): Promise<WebpackLoader> {
+async function importCatalogLoader(
+  root: string,
+  options: Record<string, unknown>,
+): Promise<WebpackLoader> {
   const require = createRequire(path.join(root, "package.json"));
   const loaderPath = require.resolve("next-intl/extractor/catalogLoader");
-  const loaderModule: { default?: unknown } = await import(pathToFileURL(loaderPath).href);
+  // The loader caches its codec at module scope (Next.js loads it once per
+  // process). vinext can run several configs in one process, e.g. after a dev
+  // server restart, so each config gets its own module instance.
+  const url = pathToFileURL(loaderPath);
+  url.searchParams.set("vinext-config", JSON.stringify([root, options]));
+  const loaderModule: { default?: unknown } = await import(url.href);
   if (typeof loaderModule.default !== "function") {
     throw new Error(`[vinext] ${loaderPath} does not export a webpack loader`);
   }

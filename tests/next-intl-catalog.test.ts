@@ -44,7 +44,10 @@ describe("next-intl catalog plugin", () => {
       path.join(catalogDir, "en.json"),
       JSON.stringify({ About: { heading: "About {house}" } }),
     );
-    fs.writeFileSync(path.join(catalogDir, "en.po"), 'msgid "heading"\nmsgstr "About"\n');
+    fs.writeFileSync(
+      path.join(catalogDir, "en.po"),
+      'msgctxt "About"\nmsgid "heading"\nmsgstr "About {house}"\n',
+    );
   });
 
   afterEach(() => {
@@ -71,8 +74,6 @@ describe("next-intl catalog plugin", () => {
     expect((await load(hook, `${id}?import&t=1`))?.code).toBe(result?.code);
   });
 
-  // next-intl's loader caches its codec per process (an app has one format),
-  // so every case here uses JSON.
   it("compiles catalogs without precompiling their messages", async () => {
     const hook = createLoadHook({
       include: [catalogDir],
@@ -83,6 +84,21 @@ describe("next-intl catalog plugin", () => {
     expect(result?.code).toBe(
       `export default JSON.parse(${JSON.stringify(JSON.stringify({ About: { heading: "About {house}" } }))});`,
     );
+  });
+
+  // next-intl's loader caches its codec at module scope, so a config with
+  // another format must not reuse the codec of one loaded before it.
+  it("uses each config's own catalog format", async () => {
+    const options = (format: string) => ({ messages: { path: "./messages", format } });
+    const json = createLoadHook({
+      include: [catalogDir],
+      test: /\.json$/,
+      options: options("json"),
+    })!;
+    const po = createLoadHook({ include: [catalogDir], test: /\.po$/, options: options("po") })!;
+    const expected = `export default JSON.parse(${JSON.stringify(JSON.stringify({ About: { heading: "About {house}" } }))});`;
+    expect((await load(json, toSlash(path.join(catalogDir, "en.json"))))?.code).toBe(expected);
+    expect((await load(po, toSlash(path.join(catalogDir, "en.po"))))?.code).toBe(expected);
   });
 
   // With resolve.preserveSymlinks, Vite keeps the symlinked (logical) path in ids.
