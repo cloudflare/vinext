@@ -632,7 +632,7 @@ export default function Page() {
     }
   }, 30000);
 
-  it("keeps client references out of groups when their browser module lacks a rendered export", async () => {
+  it("groups a client reference whose browser module lacks a rendered export", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-group-missing-export-"));
 
     try {
@@ -693,12 +693,154 @@ export default function Page() {
         plugins: [vinext({ appDir: tmpDir })],
         logLevel: "silent",
       });
-      // A group would re-export the missing \`Extra\` statically and fail the
-      // build, so the package's reference keeps its own chunk.
       await builder.buildApp();
 
-      const chunkNames = clientChunkNames(path.join(tmpDir, "dist", "client"));
-      expect(chunkNames.some((name) => name.startsWith("browser"))).toBe(true);
+      // The group reads the missing `Extra` as undefined, as the browser
+      // module would.
+      const chunksDir = path.join(tmpDir, "dist", "client", "_next", "static", "chunks");
+      const group = fs
+        .readdirSync(chunksDir)
+        .map((file) => fs.readFileSync(path.join(chunksDir, file), "utf8"))
+        .filter((code) => code.includes("get Foo()"));
+      expect(group).toHaveLength(1);
+      expect(group[0]).toContain("get B()");
+      expect(group[0]).toMatch(/get Extra\(\)\{\}/);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it("names only emitted chunks in Flight rows, with stylesheets in import order", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-flight-chunks-css-"));
+
+    try {
+      const rootModules = path.resolve(import.meta.dirname, "../node_modules");
+      fs.mkdirSync(path.join(tmpDir, "node_modules"));
+      for (const entry of fs.readdirSync(rootModules)) {
+        fs.symlinkSync(
+          path.join(rootModules, entry),
+          path.join(tmpDir, "node_modules", entry),
+          "junction",
+        );
+      }
+      const write = (file: string, code: string) => {
+        fs.mkdirSync(path.dirname(path.join(tmpDir, file)), { recursive: true });
+        fs.writeFileSync(path.join(tmpDir, file), code);
+      };
+      write(
+        "app/layout.tsx",
+        `export default function Root({ children }: { children: React.ReactNode }) {
+  return <html><body>{children}</body></html>;
+}
+`,
+      );
+      // Client components on two routes share a module with a stylesheet of
+      // its own. They share another stylesheet with a third route's, which the
+      // build puts in a chunk that holds only CSS and Vite then removes.
+      write("app/pure.css", ".pure { padding: 0; }\n");
+      write("app/shared.css", ".shared { --winner: shared; }\n");
+      write(
+        "app/shared.ts",
+        `import "./shared.css";\nexport function label(name: string) { return name.toUpperCase(); }\n`,
+      );
+      for (const name of ["a", "b"]) {
+        write(`app/${name}/own.css`, `.shared { --winner: ${name}; }\n`);
+        write(
+          `app/${name}/widget.tsx`,
+          `"use client";\nimport "../pure.css";\nimport { label } from "../shared";\nimport "./own.css";\nexport function Widget() { return <p className="shared">{label("${name}")}</p>; }\n`,
+        );
+        write(
+          `app/${name}/page.tsx`,
+          `import { Widget } from "./widget";\nexport default function Page() { return <Widget />; }\n`,
+        );
+      }
+      write(
+        "app/c/widget.tsx",
+        `"use client";\nimport "../pure.css";\nexport function Widget() { return <p>c</p>; }\n`,
+      );
+      write(
+        "app/c/page.tsx",
+        `import { Widget } from "./widget";\nexport default function Page() { return <Widget />; }\n`,
+      );
+
+      const hosts: [file: string, hostId: string][] = [];
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir })],
+        environments: {
+          client: {
+            build: {
+              modulePreload: {
+                resolveDependencies: (file, deps, { hostId }) => {
+                  hosts.push([file, hostId]);
+                  return deps;
+                },
+              },
+            },
+          },
+        },
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+
+      const clientDir = path.join(tmpDir, "dist", "client");
+      const publicManifest = fs.readFileSync(
+        path.join(clientDir, "vinext-client-entry-manifest.json"),
+        "utf8",
+      );
+      // Source file paths stay with Vite's build manifest, out of the public
+      // assets.
+      expect(publicManifest).not.toContain("widget.tsx");
+      const sources = JSON.parse(
+        fs.readFileSync(
+          path.join(clientDir, ".vite", "vinext-client-reference-sources.json"),
+          "utf8",
+        ),
+      ) as Record<string, string>;
+      expect(sources).toHaveProperty(["app/c/widget.tsx"]);
+      // vinext's own client components load with the browser entry, so their
+      // rows name no chunks. layout-segment-context stays out of the vinext
+      // chunk (see ROUTE_OWNED_CLIENT_SHIMS), so it keeps a chunk of its own.
+      expect(
+        Object.keys(sources)
+          .map((file) => path.basename(file))
+          .sort(),
+      ).toEqual(["layout-segment-context.tsx", "widget.tsx", "widget.tsx", "widget.tsx"]);
+      const { appClientReferenceChunks } = JSON.parse(publicManifest) as {
+        appClientReferenceChunks: {
+          modules: { file: string; imports: string[]; css: string[] }[];
+        };
+      };
+      // resolveDependencies sees the chunk that dynamically imports the
+      // registering modules as the host, as for Vite's own dynamic imports.
+      const viteManifest = JSON.parse(
+        fs.readFileSync(path.join(clientDir, ".vite", "manifest.json"), "utf8"),
+      ) as Record<string, { file: string }>;
+      const host = Object.entries(viteManifest).find(([key]) =>
+        key.endsWith("virtual:vinext-client-reference-chunks"),
+      )?.[1].file;
+      const moduleFiles = new Set(appClientReferenceChunks.modules.map((module) => module.file));
+      const moduleHosts = hosts.filter(([file]) => moduleFiles.has(file));
+      expect(moduleHosts.length).toBeGreaterThan(0);
+      for (const [, hostId] of moduleHosts) expect(hostId).toBe(host);
+      const cssOf = (file: string) => fs.readFileSync(path.join(clientDir, file), "utf8");
+      const widgets = appClientReferenceChunks.modules.filter((module) =>
+        module.css.some((file) => /--winner:\s*[ab]\b/.test(cssOf(file))),
+      );
+      expect(widgets).toHaveLength(2);
+      for (const module of appClientReferenceChunks.modules) {
+        for (const file of [module.file, ...module.imports, ...module.css]) {
+          expect(fs.existsSync(path.join(clientDir, file)), file).toBe(true);
+        }
+      }
+      for (const module of widgets) {
+        // As in Vite's preload helper, the stylesheet of the shared module
+        // loads first, so each route's own rule wins.
+        const order = (rule: RegExp) => module.css.findIndex((file) => rule.test(cssOf(file)));
+        expect(order(/--winner:\s*shared/)).toBeGreaterThanOrEqual(0);
+        expect(order(/--winner:\s*shared/)).toBeLessThan(order(/--winner:\s*[ab]\b/));
+      }
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }

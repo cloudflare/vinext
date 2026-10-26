@@ -51,6 +51,91 @@ test.describe("Pages Router Production Build", () => {
     await expect(page.locator("h1")).toHaveText("About");
   });
 
+  test("initial HTML preloads every script the page loads to hydrate", async ({ page }) => {
+    // Next.js emits the scripts of `_app` and the page in the document, so the
+    // browser fetches them in parallel with the client entry instead of after it.
+    const response = await page.goto(`${BASE}/about`);
+    const html = await response!.text();
+    await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+    const preloaded = new Set(
+      (html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? []).map(
+        (tag) => new URL(tag.match(/\bhref="([^"]+)"/)![1], BASE).pathname,
+      ),
+    );
+    const { appModuleUrl, pageModuleUrl } = await page.evaluate(
+      () => (window as any).__NEXT_DATA__.__vinext,
+    );
+    expect(preloaded).toContain(appModuleUrl);
+    expect(preloaded).toContain(pageModuleUrl);
+
+    const loadedBeforeHydration = await page.evaluate(() => {
+      const hydratedAt = (window as any).__NEXT_HYDRATED_AT as number;
+      return performance
+        .getEntriesByType("resource")
+        .filter((entry) => entry.startTime <= hydratedAt)
+        .map((entry) => new URL(entry.name).pathname)
+        .filter((pathname) => pathname.endsWith(".js"));
+    });
+    expect(loadedBeforeHydration.length).toBeGreaterThan(0);
+    expect(loadedBeforeHydration.filter((pathname) => !preloaded.has(pathname))).toEqual([]);
+  });
+
+  test("pages load next/dynamic and next/form only where they use them", async ({
+    page,
+    request,
+  }) => {
+    // String literals that ship only with the next/dynamic and next/form shims.
+    const dynamicMarker = "DynamicClientSSRFalse";
+    const formMarker = "application/x-www-form-urlencoded";
+    const loadedScripts = async (path: string): Promise<string[]> => {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+      const urls = await page.evaluate(() =>
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => new URL(name).pathname.endsWith(".js")),
+      );
+      return Promise.all(urls.map(async (url) => (await request.get(url)).text()));
+    };
+
+    const aboutScripts = await loadedScripts("/about");
+    expect(aboutScripts.length).toBeGreaterThan(0);
+    expect(aboutScripts.some((code) => code.includes(dynamicMarker))).toBe(false);
+    expect(aboutScripts.some((code) => code.includes(formMarker))).toBe(false);
+
+    expect(
+      (await loadedScripts("/dynamic-page")).some((code) => code.includes(dynamicMarker)),
+    ).toBe(true);
+    expect((await loadedScripts("/form-test")).some((code) => code.includes(formMarker))).toBe(
+      true,
+    );
+  });
+
+  test("only pages that use next/navigation load the App Router runtime", async ({
+    page,
+    request,
+  }) => {
+    // A string literal that ships only with the App Router navigation runtime.
+    const appRouterMarker = "Unknown requested navigation work";
+    const loadsAppRouterRuntime = async (path: string): Promise<boolean> => {
+      await page.goto(`${BASE}${path}`);
+      await page.waitForFunction(() => (window as any).__NEXT_HYDRATED === true);
+      const urls = await page.evaluate(() =>
+        performance
+          .getEntriesByType("resource")
+          .map((entry) => entry.name)
+          .filter((name) => new URL(name).pathname.endsWith(".js")),
+      );
+      const scripts = await Promise.all(urls.map(async (url) => (await request.get(url)).text()));
+      return scripts.some((code) => code.includes(appRouterMarker));
+    };
+
+    expect(await loadsAppRouterRuntime("/about")).toBe(false);
+    expect(await loadsAppRouterRuntime("/nav-compat/hello?q=1")).toBe(true);
+    await expect(page.locator("#use-params")).toHaveText('{"slug":"hello"}');
+  });
+
   test("SSR page renders with getServerSideProps data", async ({ page }) => {
     const response = await page.goto(`${BASE}/ssr`);
     expect(response?.status()).toBe(200);

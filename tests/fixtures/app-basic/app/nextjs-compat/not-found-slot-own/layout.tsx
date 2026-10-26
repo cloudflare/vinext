@@ -2,6 +2,8 @@ import Link from "next/link";
 
 const BASE = "/nextjs-compat/not-found-slot-own";
 
+export const metadata = { title: "Slot own layout" };
+
 /**
  * Test fixture: parallel slots with their own not-found.tsx. Next.js attaches
  * a segment's not-found boundary to its `children`, so a slot's own file
@@ -27,6 +29,15 @@ export default function Layout({
         <Link href={`${BASE}/team/ok/roster/player/missing`}>Player missing</Link>
         <Link href={`${BASE}/item/ok`}>Item ok</Link>
         <Link href={`${BASE}/item/missing`}>Item missing</Link>
+        <Link href={`${BASE}/item/meta-missing`}>Item metadata missing</Link>
+        <Link href={`${BASE}/item/meta-forbidden`}>Item metadata forbidden</Link>
+        <Link href={`${BASE}/item/meta-unauthorized`}>Item metadata unauthorized</Link>
+        <Link href={`${BASE}/item/meta-error`}>Item metadata error</Link>
+        <Link href={`${BASE}/team/both`}>Team both</Link>
+        <Link href={`${BASE}/team/late`}>Team late</Link>
+        <Link href={`${BASE}/panel`}>Panel default</Link>
+        <Link href={`${BASE}/team/gone`}>Team gone</Link>
+        <Link href={`${BASE}/tmpl`}>Template</Link>
       </nav>
       {children}
       <aside id="slot-own-modal">{modal}</aside>

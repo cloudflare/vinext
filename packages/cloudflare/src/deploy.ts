@@ -2216,6 +2216,11 @@ export async function deploy(options: DeployOptions): Promise<void> {
   // Undefined keeps Vite's default vite.config.* lookup in the root.
   const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;
   const wranglerFallbackEnv = deploymentTool === "cf" ? undefined : deployEnv;
+  // Like `next build`, default NODE_ENV to production for the whole command.
+  // Vite's config loading otherwise sets an unset NODE_ENV to development, so
+  // next.config, its callbacks and config plugins would take their dev paths
+  // (fumadocs-mdx starts a file watcher and the deploy never exits).
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
   loadDotenv({ root, mode: viteMode });
 
   // The Preview flag must be present before Vite loads the configuration,

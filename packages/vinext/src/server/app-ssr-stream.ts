@@ -1,5 +1,6 @@
+import { Buffer, isUtf8 } from "node:buffer";
 import {
-  createInlineScriptTag,
+  createNonceAttribute,
   escapeHtmlAttr,
   htmlTokenListContains,
   safeJsonStringify,
@@ -14,9 +15,13 @@ import {
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "../client/browser-globals.js";
 import { getVinextRscCompatibilityId } from "./app-rsc-cache-busting.js";
 
+// An embedded chunk before it's written: valid UTF-8 stays as bytes.
+type PendingChunk = Uint8Array | Exclude<RscEmbeddedChunk, string>;
+
 type RscEmbedTransform = {
-  flush(): string;
-  finalize(): Promise<string>;
+  /** UTF-8 bytes of the scripts for the chunks read since the last flush. */
+  flush(): Uint8Array | null;
+  finalize(): Promise<Uint8Array>;
   /** Resolves when all raw bytes from the embed stream have been read. */
   getRawBuffer(): Promise<ArrayBuffer>;
 };
@@ -58,7 +63,7 @@ type InlineCssRewriteResult = {
   consumedPrependCss: boolean;
 };
 
-const RSC_EMBED_TEXT_BATCH_MAX_LENGTH = 64 * 1024;
+const RSC_EMBED_TEXT_BATCH_MAX_BYTES = 64 * 1024;
 
 // React's edge renderer schedules render continuations on timer tasks. Dynamic
 // SSR must let one such task run before the first stream pull, or fast Suspense
@@ -141,6 +146,51 @@ function createNavigationRuntimeRscChunkScript(chunk: RscEmbeddedChunk): string 
   );
 }
 
+// Flight text is embedded without decoding it to UTF-16. Its UTF-8 bytes are
+// read as a latin1 "byte string" (one char per byte), escaped there and
+// written back byte for byte. JSON.stringify only escapes ASCII characters, so
+// every multi-byte sequence passes through intact and the result is the UTF-8
+// encoding of scriptSafeJsonStringify(decodedText). U+2028 and U+2029 are
+// matched as their UTF-8 sequences, E2 80 A8 and E2 80 A9.
+const SCRIPT_UNSAFE_BYTE_STRING_RE =
+  /<(?=!--|\/?[Ss][Cc][Rr][Ii][Pp][Tt])|\u00e2\u0080[\u00a8\u00a9]/g;
+
+function escapeScriptUnsafeByteString(match: string): string {
+  if (match === "<") return "\\u003c";
+  return match.charCodeAt(2) === 0xa8 ? "\\u2028" : "\\u2029";
+}
+
+function bytesToByteString(bytes: Uint8Array): string {
+  return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
+}
+
+const NON_ASCII_RE = /[\u0080-\uffff]/;
+
+function textToByteString(text: string): string {
+  return NON_ASCII_RE.test(text) ? Buffer.from(text, "utf8").toString("latin1") : text;
+}
+
+function byteStringToBytes(byteString: string): Uint8Array {
+  // Unpooled, so a consumer that transfers the chunk's buffer can't detach
+  // memory other Buffers share.
+  const bytes = Buffer.allocUnsafeSlow(byteString.length);
+  bytes.write(byteString, "latin1");
+  return bytes;
+}
+
+const NAVIGATION_RUNTIME_RSC_PUSH_PREFIX = textToByteString(
+  navigationRuntimeRscBootstrapExpression() + ".rsc.push(",
+);
+
+/** createNavigationRuntimeRscChunkScript for valid UTF-8 text, as a byte string. */
+function createNavigationRuntimeRscTextChunkByteScript(text: Uint8Array): string {
+  const json = JSON.stringify(bytesToByteString(text)).replace(
+    SCRIPT_UNSAFE_BYTE_STRING_RE,
+    escapeScriptUnsafeByteString,
+  );
+  return NAVIGATION_RUNTIME_RSC_PUSH_PREFIX + json + ")";
+}
+
 function createNavigationRuntimeRscDoneScript(metadata?: InitialNavigationCacheMetadata): string {
   const bootstrap = navigationRuntimeRscBootstrapExpression();
   return (
@@ -177,6 +227,25 @@ function createNextFlightCleanupScript(): string {
   return 'self.addEventListener("DOMContentLoaded",()=>{if(self.__next_f?.push===Array.prototype.push)self.__next_f.length=0},{once:true})';
 }
 
+// The length of the UTF-8 character a byte starts. Continuation and invalid
+// bytes count as one.
+function utf8CharacterLength(byte: number): number {
+  return byte >= 0xf8 ? 1 : byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+}
+
+// Where a trailing, still incomplete UTF-8 character starts, or the byte length
+// if there is none.
+function utf8CompleteEnd(bytes: Uint8Array): number {
+  const length = bytes.byteLength;
+  // A UTF-8 character is at most 4 bytes, so only its last 3 can be missing.
+  for (let index = length - 1; index >= 0 && index >= length - 3; index--) {
+    const byte = bytes[index];
+    if ((byte & 0xc0) === 0x80) continue;
+    return index + utf8CharacterLength(byte) > length ? index : length;
+  }
+  return length;
+}
+
 /**
  * Create a helper that progressively embeds RSC chunks as inline <script> tags.
  * The browser entry turns the embedded chunks back into Uint8Array data.
@@ -188,7 +257,10 @@ export function createRscEmbedTransform(
   const options =
     typeof optionsOrNonce === "string" ? { scriptNonce: optionsOrNonce } : optionsOrNonce;
   const reader = embedStream.getReader();
-  let pendingChunks: RscEmbeddedChunk[] = [];
+  // Valid UTF-8 stays as bytes; the rest is already base64 chunks.
+  let pendingChunks: PendingChunk[] = [];
+  // How many raw chunks pendingChunks were decoded from.
+  let pendingRawChunkCount = 0;
   const rawChunks: Uint8Array[] = [];
   // How many of rawChunks have been embedded, to replay them into a mirror
   // that starts mid-stream.
@@ -202,14 +274,90 @@ export function createRscEmbedTransform(
   const replays: { controller: ReadableStreamDefaultController<Uint8Array>; keepOpen: boolean }[] =
     [];
   let mirroredNextFlightBootstrap = false;
-  const textDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+  const textDecoder = new TextDecoder("utf-8", { ignoreBOM: true });
+  const nonceAttribute = textToByteString(createNonceAttribute(options.scriptNonce));
 
-  function decodeChunk(bytes: Uint8Array): RscEmbeddedChunk {
-    try {
-      return textDecoder.decode(bytes);
-    } catch {
-      return [RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)];
+  function toBinaryChunk(bytes: Uint8Array): Exclude<RscEmbeddedChunk, string> {
+    return [RSC_EMBEDDED_BINARY_CHUNK, bytesToBase64(bytes)];
+  }
+
+  function splitChunk(bytes: Uint8Array, chunks: PendingChunk[]): void {
+    if (isUtf8(bytes)) {
+      chunks.push(bytes);
+      return;
     }
+    // The chunk holds the body of a binary row, usually among text rows. A
+    // newline is never part of a multi-byte character, so check line by line
+    // and base64 only the lines that aren't text.
+    const pushRange = (start: number, end: number, text: boolean): void => {
+      const range = bytes.subarray(start, end);
+      chunks.push(text ? range : toBinaryChunk(range));
+    };
+    let rangeStart = 0;
+    let rangeIsText = false;
+    let start = 0;
+    while (start < bytes.byteLength) {
+      const newline = bytes.indexOf(0x0a, start);
+      const end = newline === -1 ? bytes.byteLength : newline + 1;
+      const isText = isUtf8(bytes.subarray(start, end));
+      if (start > rangeStart && isText !== rangeIsText) {
+        pushRange(rangeStart, start, rangeIsText);
+        rangeStart = start;
+      }
+      rangeIsText = isText;
+      start = end;
+    }
+    pushRange(rangeStart, bytes.byteLength, rangeIsText);
+  }
+
+  /**
+   * React cuts its output into fixed-size chunks wherever they fall, even
+   * inside a character, so a chunk's last incomplete character is decoded with
+   * the next chunk, which React writes in the same flush. Bytes are never held
+   * past an embed flush, though: they may be the end of a binary row, which the
+   * browser needs before React writes anything else. They're embedded as
+   * binary then, and so are the bytes that complete them.
+   */
+  function createChunkDecoder() {
+    let carry: Uint8Array | null = null;
+    let missing = 0;
+    return {
+      decode(raw: Uint8Array, chunks: PendingChunk[]): void {
+        let bytes = raw;
+        if (missing > 0) {
+          let count = 0;
+          while (count < missing && count < bytes.byteLength && (bytes[count] & 0xc0) === 0x80) {
+            count++;
+          }
+          missing = 0;
+          if (count > 0) {
+            chunks.push(toBinaryChunk(bytes.subarray(0, count)));
+            bytes = bytes.subarray(count);
+          }
+        }
+        if (carry) {
+          bytes = concatUint8Arrays([carry, bytes]);
+          carry = null;
+        }
+        const end = utf8CompleteEnd(bytes);
+        if (end < bytes.byteLength) {
+          carry = bytes.slice(end);
+          bytes = bytes.subarray(0, end);
+        }
+        if (bytes.byteLength > 0) splitChunk(bytes, chunks);
+      },
+      flush(chunks: PendingChunk[]): void {
+        if (!carry) return;
+        chunks.push(toBinaryChunk(carry));
+        missing = utf8CharacterLength(carry[0]) - carry.byteLength;
+        carry = null;
+      },
+    };
+  }
+  const chunkDecoder = createChunkDecoder();
+
+  function inlineScript(byteScript: string): string {
+    return "<script" + nonceAttribute + ">" + byteScript + "</script>";
   }
 
   // getRawBuffer() keeps its own copy, but a mirror that may still start
@@ -223,19 +371,24 @@ export function createRscEmbedTransform(
     }
   }
 
+  /** The mirror's opening scripts, as a byte string. */
   function startNextFlightMirror(): string {
     if (mirroredNextFlightBootstrap) return "";
     const mirror = options.mirrorNextFlight;
     if (mirror !== true && (typeof mirror !== "function" || !mirror())) return "";
     mirroredNextFlightBootstrap = true;
     let scripts =
-      createInlineScriptTag(createNextFlightBootstrapScript(), options.scriptNonce) +
-      createInlineScriptTag(createNextFlightCleanupScript(), options.scriptNonce);
+      inlineScript(createNextFlightBootstrapScript()) +
+      inlineScript(createNextFlightCleanupScript());
+    const embeddedChunks: PendingChunk[] = [];
+    const replayDecoder = createChunkDecoder();
     for (let index = 0; index < embeddedRawChunkCount; index++) {
-      scripts += createInlineScriptTag(
-        createNextFlightChunkScript(decodeChunk(rawChunks[index])),
-        options.scriptNonce,
-      );
+      replayDecoder.decode(rawChunks[index], embeddedChunks);
+    }
+    replayDecoder.flush(embeddedChunks);
+    for (const chunk of embeddedChunks) {
+      const nextChunk = chunk instanceof Uint8Array ? textDecoder.decode(chunk) : chunk;
+      scripts += inlineScript(textToByteString(createNextFlightChunkScript(nextChunk)));
     }
     releaseRawChunks();
     return scripts;
@@ -250,7 +403,8 @@ export function createRscEmbedTransform(
         if (result.done) break;
         rawChunks.push(result.value);
         for (const replay of replays) replay.controller.enqueue(result.value);
-        pendingChunks.push(decodeChunk(result.value));
+        chunkDecoder.decode(result.value, pendingChunks);
+        pendingRawChunkCount++;
       }
       readDone = true;
       for (const replay of replays.splice(0)) {
@@ -270,69 +424,76 @@ export function createRscEmbedTransform(
 
   const pumpPromise = pumpReader();
 
-  return {
-    flush(): string {
-      if (pendingChunks.length === 0) return "";
+  /** Scripts for the chunks read since the last flush, as a byte string. */
+  function flushByteScripts(): string {
+    chunkDecoder.flush(pendingChunks);
+    if (pendingChunks.length === 0) return "";
 
-      const mirrorScripts = startNextFlightMirror();
-      const chunks = pendingChunks;
-      pendingChunks = [];
-      embeddedRawChunkCount += chunks.length;
+    const mirrorScripts = startNextFlightMirror();
+    const chunks = pendingChunks;
+    pendingChunks = [];
+    embeddedRawChunkCount += pendingRawChunkCount;
+    pendingRawChunkCount = 0;
 
-      // React commonly emits one small Flight row per byte chunk. Embedding
-      // each row in its own script makes large trees pay for thousands of
-      // script wrappers, JSON serializations, and browser script executions.
-      // Coalesce adjacent text here while preserving binary chunk boundaries.
-      const embeddedChunks: RscEmbeddedChunk[] = [];
-      let textChunks: string[] = [];
-      let textLength = 0;
-      const flushTextChunks = (): void => {
-        if (textChunks.length === 0) return;
-        embeddedChunks.push(textChunks.join(""));
-        textChunks = [];
-        textLength = 0;
-      };
-      for (const chunk of chunks) {
-        if (typeof chunk === "string") {
-          // Flush only between React chunks so a single unusually large chunk
-          // is never split at an unsafe UTF-16 boundary. Such a chunk is no
-          // larger than the script vinext emitted before batching.
-          if (textLength > 0 && textLength + chunk.length > RSC_EMBED_TEXT_BATCH_MAX_LENGTH) {
-            flushTextChunks();
-          }
-          textChunks.push(chunk);
-          textLength += chunk.length;
-        } else {
-          flushTextChunks();
-          embeddedChunks.push(chunk);
-        }
-      }
-      flushTextChunks();
-
-      let scripts = mirrorScripts;
-      for (const chunk of embeddedChunks) {
-        scripts += createInlineScriptTag(
-          createNavigationRuntimeRscChunkScript(chunk),
-          options.scriptNonce,
+    // React commonly emits one small Flight row per byte chunk. Embedding
+    // each row in its own script makes large trees pay for thousands of
+    // script wrappers, JSON serializations, and browser script executions.
+    // Coalesce adjacent text here while preserving binary chunk boundaries.
+    let scripts = mirrorScripts;
+    let textChunks: Uint8Array[] = [];
+    let textBytes = 0;
+    const flushTextChunks = (): void => {
+      if (textChunks.length === 0) return;
+      const text = textChunks.length === 1 ? textChunks[0] : concatUint8Arrays(textChunks);
+      textChunks = [];
+      textBytes = 0;
+      scripts += inlineScript(createNavigationRuntimeRscTextChunkByteScript(text));
+      if (mirroredNextFlightBootstrap) {
+        scripts += inlineScript(
+          textToByteString(createNextFlightChunkScript(textDecoder.decode(text))),
         );
+      }
+    };
+    for (const chunk of chunks) {
+      if (chunk instanceof Uint8Array) {
+        // Flush only between text chunks, which each end on a whole
+        // character, so a batch never splits one. A single unusually large
+        // chunk is no larger than the script vinext emitted before batching.
+        if (textBytes > 0 && textBytes + chunk.byteLength > RSC_EMBED_TEXT_BATCH_MAX_BYTES) {
+          flushTextChunks();
+        }
+        textChunks.push(chunk);
+        textBytes += chunk.byteLength;
+      } else {
+        flushTextChunks();
+        scripts += inlineScript(textToByteString(createNavigationRuntimeRscChunkScript(chunk)));
         if (mirroredNextFlightBootstrap) {
-          scripts += createInlineScriptTag(createNextFlightChunkScript(chunk), options.scriptNonce);
+          scripts += inlineScript(textToByteString(createNextFlightChunkScript(chunk)));
         }
       }
-      return scripts;
+    }
+    flushTextChunks();
+    return scripts;
+  }
+
+  return {
+    flush(): Uint8Array | null {
+      const scripts = flushByteScripts();
+      return scripts ? byteStringToBytes(scripts) : null;
     },
 
-    async finalize(): Promise<string> {
+    async finalize(): Promise<Uint8Array> {
       await pumpPromise;
-      let scripts = this.flush();
+      let scripts = flushByteScripts();
       scripts += startNextFlightMirror();
       finalized = true;
       releaseRawChunks();
-      scripts += createInlineScriptTag(
-        createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
-        options.scriptNonce,
+      scripts += inlineScript(
+        textToByteString(
+          createNavigationRuntimeRscDoneScript(options.getInitialNavigationCacheMetadata?.()),
+        ),
       );
-      return scripts;
+      return byteStringToBytes(scripts);
     },
 
     async getRawBuffer(): Promise<ArrayBuffer> {
@@ -365,21 +526,6 @@ export function createRscEmbedTransform(
       });
     },
   };
-}
-
-/**
- * Fix invalid preload "as" values in server-rendered HTML.
- * React Fizz emits <link rel="preload" as="stylesheet"> for CSS, but the
- * HTML spec requires as="style" for <link rel="preload">.
- */
-export function fixPreloadAs(html: string): string {
-  // React's own stylesheet preloads already use as="style" (Flight hints are
-  // normalized in rsc-stream-hints.ts), so this rarely matches. Skip the tag
-  // scan and return the same string when there is nothing to replace.
-  if (!html.includes(' as="stylesheet"')) return html;
-  return html.replace(/<link(?=[^>]*\srel="preload")[^>]*>/g, (tag) =>
-    tag.replace(' as="stylesheet"', ' as="style"'),
-  );
 }
 
 // These `g`-flag regexes carry mutable `lastIndex` state. Every consumer below
@@ -847,15 +993,14 @@ export function createTickBufferedTransform(
       emitInsertion(controller);
     }
 
-    const preparedHtml = fixPreloadAs(split.complete);
     const inlineCssResult = hasInlineCssManifest
       ? rewriteInlineCssStylesheetLinks(
-          preparedHtml,
+          split.complete,
           inlineCssManifest,
           inlineCssPrependCss,
           inlineCssScriptNonce,
         )
-      : { html: preparedHtml, consumedPrependCss: false };
+      : { html: split.complete, consumedPrependCss: false };
     if (inlineCssResult.consumedPrependCss) {
       inlineCssPrependCss = "";
     }
@@ -923,7 +1068,7 @@ export function createTickBufferedTransform(
 
           const rscScripts = rscEmbed.flush();
           if (rscScripts) {
-            controller.enqueue(encoder.encode(rscScripts));
+            controller.enqueue(rscScripts);
           }
         } catch {
           // Stream was cancelled between when the timeout was registered and
@@ -954,10 +1099,7 @@ export function createTickBufferedTransform(
         emitInsertion(controller);
       }
 
-      const finalScripts = await rscEmbed.finalize();
-      if (finalScripts) {
-        controller.enqueue(encoder.encode(finalScripts));
-      }
+      controller.enqueue(await rscEmbed.finalize());
 
       // Emit `</body></html>` last so the document always terminates with a
       // well-formed close, after any trailing flight chunks / preinit scripts.

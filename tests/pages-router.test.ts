@@ -1230,6 +1230,53 @@ describe("Pages Router integration", () => {
     },
   );
 
+  // Next.js applies middleware and next.config headers to the response before
+  // the page runs, so its `revalidate: 0` default only fills a missing
+  // Cache-Control. Next.js dev still answers the rendered 404 with its
+  // development page Cache-Control.
+  it.each(["mw-cache-control", "config-cache-control"])(
+    "keeps a %s Cache-Control on getServerSideProps redirect and notFound exits",
+    async (param) => {
+      const dataHeaders = { Accept: "application/json", "x-nextjs-data": "1" };
+      const document = await fetch(`${baseUrl}/gssp-redirect?${param}=1`, { redirect: "manual" });
+      expect(document.status).toBe(307);
+      expect(document.headers.get("cache-control")).toBe("public, max-age=60");
+
+      const data = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-redirect.json?${param}=1`,
+        {
+          headers: dataHeaders,
+        },
+      );
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe("public, max-age=60");
+
+      const notFoundData = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true&${param}=1`,
+        { headers: dataHeaders },
+      );
+      expect(notFoundData.status).toBe(404);
+      expect(notFoundData.headers.get("cache-control")).toBe("public, max-age=60");
+
+      // The handler's own Cache-Control still wins over the seeded one.
+      const ownNotFoundData = await fetch(
+        `${baseUrl}/_next/data/test-build-id/gssp-not-found.json?hiding=true&own-cache-control=1&${param}=1`,
+        { headers: dataHeaders },
+      );
+      expect(ownNotFoundData.status).toBe(404);
+      expect(ownNotFoundData.headers.get("cache-control")).toBe("s-maxage=5");
+
+      for (const search of [
+        `hiding=true&${param}=1`,
+        `hiding=true&own-cache-control=1&${param}=1`,
+      ]) {
+        const notFoundDocument = await fetch(`${baseUrl}/gssp-not-found?${search}`);
+        expect(notFoundDocument.status).toBe(404);
+        expect(notFoundDocument.headers.get("cache-control")).toBe("no-cache, must-revalidate");
+      }
+    },
+  );
+
   // Ported from Next.js: test/e2e/getserversideprops/test/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/getserversideprops/test/index.test.ts
   it("skips the custom 500 page for getServerSideProps errors in dev", async () => {
@@ -5563,6 +5610,7 @@ describe("Plugin config", () => {
         command: "serve",
         cacheDir: path.join(FIXTURE_DIR, "node_modules/.vite"),
         configFile: false,
+        environments: {},
         plugins: [
           { name: "vite:react-babel" },
           { name: "vite:react-refresh" },
@@ -6908,6 +6956,143 @@ export async function getStaticPaths() {
       fs.rmSync(tmpRoot, { recursive: true, force: true });
     }
   });
+
+  // Next.js renders the 404 on the getServerSideProps res, so the 404 keeps the
+  // middleware Cache-Control, the handler's own one over it, or a later write
+  // from the 404 render's `_app`. A raw `[]` skips the default and emits no
+  // header, as Node does.
+  it.each([
+    {
+      kind: "ISR",
+      page: `export async function getStaticProps() {
+  return { props: {}, revalidate: 60 };
+}`,
+    },
+    { kind: "dynamic", page: "" },
+  ])(
+    "keeps the getServerSideProps res Cache-Control on a notFound rendered by a $kind 404",
+    async ({ kind, page }) => {
+      const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gssp-notfound-404-"));
+      const rootNodeModules = path.resolve(import.meta.dirname, "../node_modules");
+      const fixtureOutDir = path.join(tmpRoot, "dist");
+
+      try {
+        await fsp.symlink(rootNodeModules, path.join(tmpRoot, "node_modules"), "junction");
+        await fsp.mkdir(path.join(tmpRoot, "pages"), { recursive: true });
+        await fsp.writeFile(path.join(tmpRoot, "package.json"), JSON.stringify({ type: "module" }));
+        await fsp.writeFile(
+          path.join(tmpRoot, "next.config.mjs"),
+          `export default { generateBuildId: () => "cc-build" };\n`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "middleware.ts"),
+          `import { NextResponse } from "next/server";
+
+export function middleware(request) {
+  if (!request.nextUrl.searchParams.has("mw")) return NextResponse.next();
+  return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });
+}
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "_app.tsx"),
+          `import App from "next/app";
+
+export default function MyApp({ Component, pageProps }) {
+  return <Component {...pageProps} />;
+}
+
+MyApp.getInitialProps = async (appContext) => {
+  const { req, res } = appContext.ctx;
+  if (res && String(req?.url ?? "").includes("app-cache-control")) {
+    res.setHeader("Cache-Control", "public, max-age=7");
+  }
+  return App.getInitialProps(appContext);
+};
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "404.tsx"),
+          `${page}
+
+export default function Custom404() {
+  return <p id="not-found">custom 404</p>;
+}
+`,
+        );
+        await fsp.writeFile(
+          path.join(tmpRoot, "pages", "missing.tsx"),
+          `export default function Page() {
+  return <p>unexpected page</p>;
+}
+
+export async function getServerSideProps({ query, res }) {
+  if (query.own !== undefined) res.setHeader("Cache-Control", "s-maxage=5");
+  if (query.arr !== undefined) res.setHeader("Cache-Control", query.arr === "empty-string" ? [""] : []);
+  return { notFound: true };
+}
+`,
+        );
+
+        await buildPagesFixtureToOutDir(tmpRoot, fixtureOutDir);
+
+        const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+        const prodServer = unwrapStartedProdServer(
+          await startProdServer({
+            port: 0,
+            host: "127.0.0.1",
+            outDir: fixtureOutDir,
+          }),
+        );
+
+        try {
+          const addr = prodServer.address() as { port: number };
+          const baseUrl = `http://127.0.0.1:${addr.port}`;
+
+          const isr = kind === "ISR";
+          const requests = [
+            // The first request renders /404, so its `_app` write lands last.
+            {
+              search: "?mw=1&own=1&app-cache-control=1",
+              cacheControl: "public, max-age=7",
+              cacheState: isr ? "MISS" : null,
+            },
+            // The rest read the cached ISR /404 entry, which does not rerun `_app`.
+            {
+              search: "?mw=1&own=1&app-cache-control=1",
+              cacheControl: isr ? "s-maxage=5" : "public, max-age=7",
+            },
+            { search: "?mw=1", cacheControl: "public, max-age=60" },
+            { search: "?mw=1&own=1", cacheControl: "s-maxage=5" },
+            { search: "?own=1", cacheControl: "s-maxage=5" },
+            { search: "", cacheControl: "private, no-cache, no-store, max-age=0, must-revalidate" },
+            { search: "?arr=empty", cacheControl: null },
+            { search: "?mw=1&arr=empty-string", cacheControl: "" },
+          ];
+          for (const { search, cacheControl, cacheState = isr ? "HIT" : null } of requests) {
+            const res = await fetch(`${baseUrl}/missing${search}`);
+            expect(res.status).toBe(404);
+            expect(res.headers.get("cache-control")).toBe(cacheControl);
+            expect(res.headers.get("x-nextjs-cache")).toBe(cacheState);
+            expect(await res.text()).toContain('<p id="not-found">custom 404</p>');
+          }
+
+          for (const [search, cacheControl] of [
+            ["?arr=empty", null],
+            ["?mw=1&arr=empty-string", ""],
+          ]) {
+            const data = await fetch(`${baseUrl}/_next/data/cc-build/missing.json${search}`);
+            expect(data.status).toBe(404);
+            expect(data.headers.get("cache-control")).toBe(cacheControl);
+          }
+        } finally {
+          await new Promise<void>((resolve) => prodServer.close(() => resolve()));
+        }
+      } finally {
+        fs.rmSync(tmpRoot, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("passes the original error to _error.getInitialProps when getServerSideProps throws", async () => {
     const tmpRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "vinext-pages-gssp-throw-error-"));
@@ -8871,6 +9056,43 @@ describe("Production server middleware (Pages Router)", () => {
         expect(data.headers.get("cache-control")).toBe(
           "private, no-cache, no-store, max-age=0, must-revalidate",
         );
+      },
+    );
+
+    // Next.js applies middleware and next.config headers to the response
+    // before the page runs, so its `revalidate: 0` default only fills a
+    // missing Cache-Control.
+    it.each(["mw-cache-control", "config-cache-control"])(
+      "keeps a %s Cache-Control on getServerSideProps redirect and notFound exits",
+      async (param) => {
+        const document = await fetch(`${prodUrl}/gssp-redirect?${param}=1`, {
+          redirect: "manual",
+        });
+        expect(document.status).toBe(307);
+        expect(document.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const data = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/gssp-redirect.json?${param}=1`);
+        expect(data.status).toBe(200);
+        expect(data.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const notFoundData = await fetch(
+          `${prodUrl}/_next/data/${BUILD_ID}/gssp-not-found.json?hiding=true&${param}=1`,
+        );
+        expect(notFoundData.status).toBe(404);
+        expect(notFoundData.headers.get("cache-control")).toBe("public, max-age=60");
+
+        const notFoundDocument = await fetch(`${prodUrl}/gssp-not-found?hiding=true&${param}=1`);
+        expect(notFoundDocument.status).toBe(404);
+        expect(notFoundDocument.headers.get("cache-control")).toBe("public, max-age=60");
+
+        // The handler's own Cache-Control still wins over the seeded one.
+        for (const pathname of [`/_next/data/${BUILD_ID}/gssp-not-found.json`, "/gssp-not-found"]) {
+          const ownNotFound = await fetch(
+            `${prodUrl}${pathname}?hiding=true&own-cache-control=1&${param}=1`,
+          );
+          expect(ownNotFound.status).toBe(404);
+          expect(ownNotFound.headers.get("cache-control")).toBe("s-maxage=5");
+        }
       },
     );
   });

@@ -1,5 +1,17 @@
 # @vinext/cloudflare
 
+## 1.2.1
+
+### Bug Fixes
+
+- **Cloudflare:** stop non-replayable Response Store data refreshes from spending edge purges (#4259)
+- default NODE_ENV to production for vinext-cloudflare deploy and vinext typegen (#4267)
+- **Cloudflare:** serve KV entries of a tag revalidated with a cacheLife profile stale until it expires (#4258)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.2.0
 
 Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.

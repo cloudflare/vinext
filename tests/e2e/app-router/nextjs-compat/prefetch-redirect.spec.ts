@@ -43,6 +43,8 @@ const VARIANTS = [
   { name: "layout-redirect", refetchesOnClick: false },
   { name: "layout-guard-full", refetchesOnClick: false },
   { name: "layout-guard", refetchesOnClick: true },
+  // A component the layout renders reads cookies() and redirects.
+  { name: "layout-nested-guard", refetchesOnClick: true },
   // A layout that redirects after a `"use cache"` read with `stale: 45`
   // carries that bound. Once the layout also reads cookies(), only
   // `staleTimes.dynamic` bounds it. With `experimental.useCache`, Next.js
