@@ -458,7 +458,7 @@ describe("Cloudflare Response Store Worker", () => {
 });
 
 describe("Cloudflare Response Store Worker query-free cache identity", () => {
-  type PutOptions = { revalidator?: { id: string; args: unknown[] } };
+  type PutOptions = { purgeExisting?: boolean; revalidator?: { id: string; args: unknown[] } };
   type StoredEntry = { body: string; headers: Headers; options?: PutOptions; status: number };
 
   beforeEach(() => {
@@ -802,6 +802,12 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect([...entries.values()].map((entry) => entry.options?.revalidator?.args[0])).toEqual([
       "vinext:page-parts",
       "vinext:page-parts",
+    ]);
+    // Neither write purges an edge copy. Regenerations write the other part
+    // the same way.
+    expect([...entries.values()].map((entry) => entry.options?.purgeExisting)).toEqual([
+      undefined,
+      undefined,
     ]);
 
     // A later canonical RSC navigation with any query reaches the seeded entry.

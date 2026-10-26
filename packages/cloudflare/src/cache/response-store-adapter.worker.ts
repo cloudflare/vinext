@@ -506,14 +506,12 @@ async function putOtherPagePart(
   }
   const result = await responseStore.put(await cacheRequest(part.invocation), response, {
     coalesce: true,
-    // One part can miss, or regenerate, beside the other part stored, which
-    // this replaces.
-    purgeExisting: true,
+    // Replacing a stored part doesn't purge its edge copy: one more purge for
+    // every regeneration would spend the account's shared purge budget. The
+    // edge keeps an earlier render's part until its own policy ends.
     revalidator: routeRevalidator(JSON.stringify(part.invocation), true),
   });
-  // An unpublished write leaves the pair to the next miss. A purge, as for the
-  // data cache's replacements, is best-effort: the edge keeps an earlier
-  // render's part until its own policy ends.
+  // An unpublished write leaves the pair to the next miss.
   if (!result.backingStoreUpdated) {
     throw new Error(`Vinext response-store did not publish the App page ${part.kind} part`);
   }
