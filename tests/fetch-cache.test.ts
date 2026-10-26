@@ -47,6 +47,7 @@ const {
   setCurrentFetchCacheMode,
   setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
+  setCurrentFetchDraftMode,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
   runWithFetchDedupe,
@@ -1834,6 +1835,69 @@ describe("fetch cache shim", () => {
     const call = fetchMock.mock.calls[0];
     const init = call[1] as RequestInit;
     expect((init as any).next).toBeUndefined();
+  });
+
+  // ── Draft mode bypass ───────────────────────────────────────────────
+  // Next.js: patch-fetch.ts calls the original fetch with `init` unchanged
+  // when workStore.isDraftMode is set.
+
+  describe("draft mode", () => {
+    // Seed a published entry, then fetch the same URL in a draft scope.
+    async function expectDraftBypass(
+      url: string,
+      runDraft: (fetchDraft: () => Promise<Response>) => Promise<void>,
+    ): Promise<void> {
+      const published = await fetch(url, { next: { revalidate: false } });
+      expect((await published.json()).count).toBe(1);
+      startNewFetchCacheScope();
+
+      await runDraft(async () => {
+        const draft = await fetch(url, { next: { revalidate: false, tags: ["draft"] } });
+        expect((await draft.json()).count).toBe(2);
+        expect(getCollectedFetchTags()).toEqual([]);
+        expect(consumeDynamicUsage()).toBe(false);
+        return draft;
+      });
+
+      startNewFetchCacheScope();
+      const after = await fetch(url, { next: { revalidate: false } });
+      expect((await after.json()).count).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+
+    it("skips the cache in App Router draft mode", async () => {
+      await expectDraftBypass("https://api.example.com/draft", async (fetchDraft) => {
+        setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+        try {
+          await fetchDraft();
+        } finally {
+          setHeadersContext(null);
+        }
+      });
+    });
+
+    it("skips the cache in a Pages Router preview render", async () => {
+      await expectDraftBypass("https://api.example.com/pages-preview", async (fetchDraft) => {
+        setCurrentFetchDraftMode(true);
+        await fetchDraft();
+      });
+    });
+
+    it("passes init to the real fetch unchanged", async () => {
+      setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+      try {
+        // Inherited RequestInit members must reach the real fetch.
+        const init = Object.assign(
+          Object.create({ method: "POST", headers: { "x-draft": "1" }, body: "payload" }),
+          { next: { revalidate: false } },
+        ) as RequestInit;
+        await fetch("https://api.example.com/draft-init", init);
+
+        expect(fetchMock.mock.calls[0][1]).toBe(init);
+      } finally {
+        setHeadersContext(null);
+      }
+    });
   });
 
   // ── Tag collection during rendering ─────────────────────────────────

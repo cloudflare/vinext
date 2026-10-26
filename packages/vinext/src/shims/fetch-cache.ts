@@ -34,7 +34,12 @@ import {
   type FetchCacheMode,
   type FetchDedupeEntry,
 } from "./fetch-cache-state.js";
-import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
+import {
+  getHeadersContext,
+  isDraftModeEnabled,
+  isInsideAnyCacheScope,
+  markDynamicUsage,
+} from "./headers.js";
 import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
@@ -922,6 +927,11 @@ export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
   _getState().currentForceDynamicFetchDefault = enabled;
 }
 
+/** Mark the current Pages Router render as a preview/draft render. */
+export function setCurrentFetchDraftMode(enabled: boolean): void {
+  _getState().isDraftMode = enabled;
+}
+
 export function setRefreshStaleFetchesInForeground(enabled: boolean): void {
   _getState().refreshStaleFetchesInForeground = enabled;
 }
@@ -1223,10 +1233,21 @@ function createPatchedFetch(): typeof globalThis.fetch {
     init?: RequestInit,
     span?: FrameworkSpan,
   ): Promise<Response> {
+    // Draft mode skips the fetch cache entirely, before segment fetchCache
+    // config or tag handling: the cache key doesn't cover draft state, so a
+    // preview request would read the published entry or seed draft content
+    // into it. Mirrors Next.js's `workStore.isDraftMode` fallback to the
+    // (deduped) original fetch in server/lib/patch-fetch.ts, which passes
+    // `init` through unchanged.
+    const state = _getState();
+    if (state.isDraftMode || isDraftModeEnabled()) {
+      recordDynamicFetchObservation(input);
+      return dedupeFetch(input, init);
+    }
+
     const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
       | NextFetchOptions
       | undefined;
-    const state = _getState();
     const hasWorkContext =
       isInsideUnifiedScope() || _als.getStore() !== undefined || _fallbackState.isFetchDedupeActive;
     const fetchIdx = hasWorkContext ? (state.nextFetchId ?? 1) + 1 : undefined;
@@ -1640,6 +1661,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentFetchCacheMode: null,
       currentFetchRevalidate: null,
       currentForceDynamicFetchDefault: false,
+      isDraftMode: false,
       dynamicFetchUrls: new Set<string>(),
       refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
