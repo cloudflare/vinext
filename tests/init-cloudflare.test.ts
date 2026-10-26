@@ -36,14 +36,7 @@ describe("CSS Modules configuration", () => {
       "dist/client",
       true,
     ),
-    generatePagesRouterViteConfig(
-      undefined,
-      undefined,
-      "IMAGES",
-      "CF_VERSION_METADATA",
-      false,
-      true,
-    ),
+    generatePagesRouterViteConfig(undefined, "IMAGES", "CF_VERSION_METADATA", false, true),
   ])("generates a default-only plugin and stable scoped names", (config) => {
     expectValidConfig(config);
     expect(config).toContain('patchCssModules({ exportMode: "default" })');
@@ -154,29 +147,6 @@ export default defineConfig({ plugins: [vinext(), cloudflare()], server: { port:
     expect(result.preservedExistingGenerateScopedName).toBe(true);
     expect(result.code).not.toContain('from "node:crypto"');
   });
-
-  it("keeps native-module aliases alongside CSS Modules without duplicate path imports", () => {
-    const config = generateAppRouterViteConfig(
-      {
-        root: "/tmp/app",
-        projectName: "app",
-        isAppRouter: true,
-        hasISR: false,
-        hasMDX: false,
-        nativeModulesToStub: ["sharp"],
-      },
-      undefined,
-      "IMAGES",
-      "CF_VERSION_METADATA",
-      false,
-      "ASSETS",
-      "dist/client",
-      true,
-    );
-    expectValidConfig(config);
-    expect(config.match(/import path from "node:path"/g)).toHaveLength(1);
-    expect(config).toContain('"sharp": path.resolve(');
-  });
 });
 
 describe("generateWranglerConfig", () => {
@@ -190,7 +160,6 @@ describe("generateWranglerConfig", () => {
           isAppRouter: true,
           hasISR: false,
           hasMDX: false,
-          nativeModulesToStub: [],
         },
         { cdnCache, dataCache: "none", imageOptimization: "none" },
       );
@@ -213,7 +182,6 @@ describe("generateWranglerConfig", () => {
           hasISR: false,
           hasMDX: false,
           isStaticExport: true,
-          nativeModulesToStub: [],
         },
         { cdnCache, dataCache: "none", imageOptimization: "none" },
       );
@@ -233,7 +201,6 @@ describe("generateWranglerConfig", () => {
           isAppRouter: true,
           hasISR: true,
           hasMDX: false,
-          nativeModulesToStub: [],
         },
         {
           dataCache: "none",
@@ -251,17 +218,18 @@ describe("generateWranglerConfig", () => {
 
 describe("updateViteConfigForCloudflare", () => {
   it("keeps a compact config's comma attached to its last property and matches import quotes", () => {
-    const input = `import vinext from 'vinext';
-import { cloudflare } from '@cloudflare/vite-plugin';
-export default { plugins: [vinext(), cloudflare()], server: { port: 3902 } };
+    const input = `import { defineConfig } from 'vite';
+export default { server: { port: 3902 } };
 `;
-    const options = { isAppRouter: false, nativeModulesToStub: ["sharp"] };
+    const options = {
+      isAppRouter: false,
+      cache: { dataCache: "none", cdnCache: "none", imageOptimization: "none" } as const,
+    };
     const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
 
     expectValidConfig(output);
-    expect(output).toContain("export default {\n  plugins:");
-    expect(output).toContain("],\n  server: { port: 3902 },\n  resolve:");
-    expect(output).toContain("import path from 'node:path';");
+    expect(output).toContain("export default {\n  server: { port: 3902 },\n  plugins:");
+    expect(output).toContain("import vinext from 'vinext';");
     expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
   });
 
@@ -271,7 +239,6 @@ export default { plugins: [vinext({ custom: true })] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv" as const,
         cdnCache: "workers-cache" as const,
@@ -293,7 +260,6 @@ export default { plugins: [vinext({ custom: true })] };
   it("adds multiple properties to a compact object with no spaces", () => {
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv" as const,
         cdnCache: "workers-cache" as const,
@@ -317,7 +283,6 @@ export default { plugins: [vinext({ custom: true })] };
     const input = "export default {plugins: [vinext()]};";
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -326,22 +291,18 @@ export default { plugins: [vinext({ custom: true })] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: false,
-        nativeModulesToStub: [],
       }),
     ).toBe(output);
   });
 
   it("keeps trailing comments after the last property without adding a second comma", () => {
     const input = `import vinext from "vinext";
-import { cloudflare } from "@cloudflare/vite-plugin";
 export default {
-  plugins: [vinext(), cloudflare()],
   server: { port: 3902 }, /* keep server comment */
 };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: ["sharp"],
     });
 
     expectValidConfig(output);
@@ -364,7 +325,6 @@ export default { plugins: [vinext()] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "response-store" as const,
@@ -408,7 +368,6 @@ export default { plugins: [vinext()] };
 `;
     const updated = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: options,
     });
     expectValidConfig(updated);
@@ -417,7 +376,6 @@ export default { plugins: [vinext()] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", updated, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: options,
       }),
     ).toBe(updated);
@@ -429,7 +387,6 @@ export default { plugins: [vinext({ prerender: false })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv",
         cdnCache: "static-assets",
@@ -450,7 +407,6 @@ export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter() } })] };
 `;
     const options = {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "static-assets" as const,
@@ -473,7 +429,6 @@ export default { plugins: [vinext({ clientOutDir: "build/client" })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "static-assets",
@@ -492,7 +447,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "static-assets",
@@ -669,7 +623,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "response-store" as const,
@@ -696,7 +649,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ mode }) }), cl
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "response-store",
@@ -716,7 +668,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ shards: 16 }) 
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "response-store",
@@ -740,7 +691,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "none",
@@ -758,7 +708,6 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "none",
@@ -777,7 +726,6 @@ export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })]
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "response-store",
@@ -802,7 +750,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expect(output).toContain('import custom from "./custom.js"');
@@ -823,7 +770,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -832,7 +778,6 @@ export default defineConfig({
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: true,
-        nativeModulesToStub: [],
       }),
     ).toBe(output);
   });
@@ -849,7 +794,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -867,7 +811,6 @@ export default { plugins: [vinext(), cloudflare(cloudflareOptions)] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -886,7 +829,6 @@ export default { plugins: [vinext(), cloudflare({ viteEnvironment: {} })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
       }),
     ).toThrow('viteEnvironment option must statically set name: "rsc"');
   });
@@ -902,7 +844,6 @@ export default { plugins: [vinext(), cloudflare({
     expect(
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -924,7 +865,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expect(output).not.toContain("viteEnvironment");
@@ -939,7 +879,6 @@ module.exports = defineConfig({ plugins: [vinext()] });
 
     const output = updateViteConfigForCloudflare("vite.config.cjs", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expect(output).toContain('const { cloudflare } = require("@cloudflare/vite-plugin");');
@@ -949,7 +888,6 @@ module.exports = defineConfig({ plugins: [vinext()] });
   it("adds both plugins to an empty config with one plugins property", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -962,7 +900,7 @@ module.exports = defineConfig({ plugins: [vinext()] });
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       'import custom from "./custom.js";\nexport default { plugins: [custom()] };\n',
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -979,7 +917,6 @@ export default { plugins: [first(), /* keep second */ second()] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "data-cache",
@@ -993,7 +930,6 @@ export default { plugins: [first(), /* keep second */ second()] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -1014,7 +950,6 @@ export default {
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -1029,7 +964,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `import custom from "./custom.js";\nexport default { plugins: [custom(), /*${suffix}*/] };\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
     expectValidConfig(output);
     expect(output).toContain("vinext()");
@@ -1042,7 +977,7 @@ export default {
       const output = updateViteConfigForCloudflare(
         "vite.config.ts",
         `import custom from "./custom.js";\nexport default { plugins: [${expression},] };\n`,
-        { isAppRouter: false, nativeModulesToStub: [] },
+        { isAppRouter: false },
       );
       expectValidConfig(output);
       expect(output).not.toContain(`${expression},,`);
@@ -1054,17 +989,15 @@ export default {
   it("allocates collision-free bindings for inserted imports", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
-      "const vinext = 1; const cloudflare = 2; const path = 3; export default {};\n",
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
+      "const vinext = 1; const cloudflare = 2; export default {};\n",
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
     expect(output).toContain('import vinext2 from "vinext"');
     expect(output).toContain('import { cloudflare as cloudflare2 } from "@cloudflare/vite-plugin"');
-    expect(output).toContain('import path2 from "node:path"');
     expect(output).toContain("vinext2()");
     expect(output).toContain("cloudflare2()");
-    expect(output).toContain('path2.resolve(__dirname, "empty-stub.js")');
   });
 
   it("uses the collision-free Response Store adapter binding", () => {
@@ -1073,7 +1006,6 @@ export default {
       "const responseStoreAdapter = customFactory; export default { plugins: [] };\n",
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "response-store",
@@ -1096,7 +1028,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `${declaration}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -1110,7 +1042,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `${existingImport}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -1119,33 +1051,15 @@ export default {
     expect(output).toContain("vinext()");
   });
 
-  it.each([
-    ['import "node:path";', 'import path from "node:path";'],
-    ['import { resolve } from "node:path";', 'import path from "node:path";'],
-  ])("adds a separate default path import for %s", (existingImport, expectedImport) => {
-    const output = updateViteConfigForCloudflare(
-      "vite.config.ts",
-      `${existingImport}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
-    );
-
-    expectValidConfig(output);
-    expect(output).toContain(existingImport);
-    expect(output).toContain(expectedImport);
-    expect(output).toContain('path.resolve(__dirname, "empty-stub.js")');
-  });
-
   it("is idempotent", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext()] };
 `;
     const once = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
     const twice = updateViteConfigForCloudflare("vite.config.ts", once, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
     expectValidConfig(twice);
     expect(twice).toBe(once);
@@ -1157,7 +1071,6 @@ export default { plugins: [vinext()] };
       `import vinext from "vinext";\nexport default { plugins: [vinext()] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "kv",
           cdnCache: "workers-cache",
@@ -1177,7 +1090,6 @@ export default { plugins: [vinext({ prerender: true })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1191,7 +1103,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nexport default { plugins: [vinext({ images: { optimizer: ${value} } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "workers-cache",
@@ -1209,7 +1120,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nimport { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";\nexport default { plugins: [vinext({ images: { optimizer: imagesOptimizer() } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
@@ -1228,7 +1138,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nexport default { plugins: [vinext({ images: { optimizer: customOptimizer() } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
@@ -1241,18 +1150,18 @@ export default { plugins: [vinext({ prerender: true })] };
     expect(output).not.toContain("imagesOptimizer");
   });
 
-  it("adds native module aliases through AST object updates", () => {
+  // The vinext plugin stubs native modules for Cloudflare itself (#4196).
+  it("leaves resolve.alias alone", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `import vinext from "vinext";
 export default { plugins: [vinext()], resolve: { alias: { existing: "/tmp/existing" } } };
 `,
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
+      { isAppRouter: false },
     );
 
-    expect(output).toContain('import path from "node:path"');
-    expect(output).toContain('"sharp": path.resolve(__dirname, "empty-stub.js")');
-    expect(output).toContain('existing: "/tmp/existing"');
+    expect(output).toContain('resolve: { alias: { existing: "/tmp/existing" } }');
+    expect(output).not.toContain("node:path");
   });
 
   it("rejects dynamic plugin arrays", () => {
@@ -1260,7 +1169,7 @@ export default { plugins: [vinext()], resolve: { alias: { existing: "/tmp/existi
       updateViteConfigForCloudflare(
         "vite.config.ts",
         `const plugins = []; export default { plugins };`,
-        { isAppRouter: false, nativeModulesToStub: [] },
+        { isAppRouter: false },
       ),
     ).toThrow("plugins option must be an array");
   });
@@ -1272,7 +1181,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "kv", cdnCache: "workers-cache", imageOptimization: "cloudflare-images" },
     });
     expectValidConfig(output);
@@ -1284,7 +1192,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
   it("falls through to the data cache and omits image optimization", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1297,7 +1204,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
   it("configures image optimization independently of cache adapters", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "data-cache",
@@ -1315,7 +1221,6 @@ export default { plugins: [vinext({ imageOptimization: true })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1615,7 +1520,6 @@ export default defineConfig({
 `;
       const output = updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "workers-cache",
@@ -1629,7 +1533,6 @@ export default defineConfig({
       expect(
         updateViteConfigForCloudflare("vite.config.ts", output, {
           isAppRouter: false,
-          nativeModulesToStub: [],
           cache: {
             dataCache: "none",
             cdnCache: "workers-cache",

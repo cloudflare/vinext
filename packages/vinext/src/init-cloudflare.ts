@@ -18,7 +18,6 @@ export type CloudflareProjectInfo = {
   hasMDX: boolean;
   /** The effective Next.js config sets `output: "export"`. */
   isStaticExport?: boolean;
-  nativeModulesToStub: string[];
 };
 
 const DEFAULT_CLOUDFLARE_INIT_OPTIONS: CloudflareInitOptions = {
@@ -124,7 +123,6 @@ export function validateCloudflarePlatformSetup(
         fs.readFileSync(context.existingViteConfigPath, "utf-8"),
         {
           isAppRouter: context.isAppRouter,
-          nativeModulesToStub: detectProject(context.root).nativeModulesToStub,
           cache: cloudflare,
         },
       );
@@ -141,7 +139,6 @@ export function validateCloudflarePlatformSetup(
     );
   }
 
-  const projectInfo = detectProject(context.root);
   const wranglerPath = ["wrangler.jsonc", "wrangler.json"]
     .map((fileName) => path.join(context.root, fileName))
     .find((candidate) => fs.existsSync(candidate));
@@ -179,7 +176,6 @@ export function validateCloudflarePlatformSetup(
       fs.readFileSync(context.existingViteConfigPath, "utf-8"),
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -232,7 +228,6 @@ export function setupCloudflarePlatform(
       currentConfig,
       {
         isAppRouter: context.isAppRouter,
-        nativeModulesToStub: projectInfo.nativeModulesToStub,
         cache: cloudflare,
         assetsBinding,
         assetsDirectory,
@@ -267,7 +262,6 @@ export function setupCloudflarePlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           imagesBinding,
           versionMetadataBinding,
@@ -381,7 +375,6 @@ function setupCfPlatform(
     const current = fs.readFileSync(context.existingViteConfigPath, "utf-8");
     let updated = updateViteConfigForCloudflare(context.existingViteConfigPath, current, {
       isAppRouter: context.isAppRouter,
-      nativeModulesToStub: projectInfo.nativeModulesToStub,
       cache: cloudflare,
     });
     if (context.hasCssModules) {
@@ -406,7 +399,6 @@ function setupCfPlatform(
           context.hasCssModules,
         )
       : generatePagesRouterViteConfig(
-          projectInfo,
           cloudflare,
           "IMAGES",
           DEFAULT_VERSION_METADATA_BINDING,
@@ -1601,9 +1593,7 @@ export function generateAppRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   const plugins: string[] = [];
   if (hasCssModules) plugins.push('    patchCssModules({ exportMode: "default" }),');
@@ -1631,34 +1621,18 @@ export function generateAppRouterViteConfig(
       },
     }),`);
 
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
-
   return `${imports.join("\n")}
 
 export default defineConfig({
   plugins: [
 ${plugins.join("\n")}
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
 
 /** Generate vite.config.ts for Pages Router */
 export function generatePagesRouterViteConfig(
-  info?: CloudflareProjectInfo,
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   imagesBinding = "IMAGES",
   versionMetadataBinding = DEFAULT_VERSION_METADATA_BINDING,
@@ -1684,24 +1658,7 @@ export function generatePagesRouterViteConfig(
       : []),
   ];
 
-  if (hasCssModules || (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0)) {
-    imports.push(`import path from "node:path";`);
-  }
-
-  // Build resolve.alias for native module stubs (tsconfig paths are handled
-  // by the vinext plugin's native Vite support).
-  let resolveBlock = "";
-  const aliases: string[] = [];
-
-  if (info?.nativeModulesToStub && info.nativeModulesToStub.length > 0) {
-    for (const mod of info.nativeModulesToStub) {
-      aliases.push(`      "${mod}": path.resolve(__dirname, "empty-stub.js"),`);
-    }
-  }
-
-  if (aliases.length > 0) {
-    resolveBlock = `\n  resolve: {\n    alias: {\n${aliases.join("\n")}\n    },\n  },`;
-  }
+  if (hasCssModules) imports.push(`import path from "node:path";`);
 
   return `${imports.join("\n")}
 
@@ -1718,7 +1675,7 @@ ${hasCssModules ? '    patchCssModules({ exportMode: "default" }),\n' : ""}    $
     assetsDirectory,
   ).replace(/\n/g, "\n    ")},
     cloudflare(${legacyStaticAssets ? '{ viteEnvironment: { name: "ssr" } }' : serviceBinding ? "{ auxiliaryWorkers: [{ config: responseStoreServiceBinding }] }" : ""}),
-  ],${resolveBlock}${hasCssModules ? cssModulesConfigSource() : ""}
+  ],${hasCssModules ? cssModulesConfigSource() : ""}
 });
 `;
 }
@@ -2828,67 +2785,11 @@ export function updateViteConfigForCssModules(
   };
 }
 
-function ensureNativeAliases(
-  output: MagicString,
-  config: AstObject,
-  modules: string[],
-  pathBinding: string,
-  code: string,
-): void {
-  if (modules.length === 0) return;
-  const resolve = findProperty(config, "resolve");
-  if (resolve && resolve.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve option must be an object for vinext init to update it.",
-    );
-  }
-  const resolveObject = resolve?.value as AstObject | undefined;
-  const alias = resolveObject ? findProperty(resolveObject, "alias") : undefined;
-  if (alias && alias.value.type !== "ObjectExpression") {
-    throw new Error(
-      "The Vite config's resolve.alias option must be an object for vinext init to update it.",
-    );
-  }
-  const aliasLines = modules.map(
-    (moduleName) =>
-      `      ${JSON.stringify(moduleName)}: ${pathBinding}.resolve(__dirname, "empty-stub.js"),`,
-  );
-  if (!resolveObject) {
-    insertObjectProperty(
-      output,
-      config,
-      `  resolve: {\n    alias: {\n${aliasLines.join("\n")}\n    },\n  },`,
-      code,
-    );
-    return;
-  }
-  if (!alias) {
-    insertObjectProperty(
-      output,
-      resolveObject,
-      `    alias: {\n${aliasLines.join("\n")}\n    },`,
-      code,
-    );
-    return;
-  }
-  const aliasObject = alias.value as AstObject;
-  const existingAliases = new Set(
-    aliasObject.properties.flatMap((property) =>
-      property.type === "Property" && propertyName(property) ? [propertyName(property)!] : [],
-    ),
-  );
-  const missingLines = aliasLines.filter((_, index) => !existingAliases.has(modules[index]));
-  if (missingLines.length > 0) {
-    insertObjectProperty(output, aliasObject, missingLines.join("\n"), code);
-  }
-}
-
 export function updateViteConfigForCloudflare(
   filePath: string,
   code: string,
   options: {
     isAppRouter: boolean;
-    nativeModulesToStub: string[];
     cache?: CloudflareInitOptions;
     assetsBinding?: string;
     assetsDirectory?: string;
@@ -3245,26 +3146,6 @@ export function updateViteConfigForCloudflare(
         );
       }
     }
-  }
-
-  if (options.nativeModulesToStub.length > 0) {
-    const existingPathBinding = commonJs
-      ? findRequiredBinding(program, "node:path", "default")
-      : program.body
-          .filter(
-            (statement): statement is ESTree.ImportDeclaration =>
-              statement.type === "ImportDeclaration",
-          )
-          .find((statement) => statement.source.value === "node:path")
-          ?.specifiers.find(
-            (specifier): specifier is ESTree.ImportDefaultSpecifier =>
-              specifier.type === "ImportDefaultSpecifier",
-          )?.local.name;
-    const pathLocal = existingPathBinding ?? allocateBinding(bindings, "path");
-    const pathBinding = commonJs
-      ? ensureDefaultRequire(program, output, "node:path", pathLocal)
-      : ensureDefaultImport(program, output, "node:path", pathLocal);
-    ensureNativeAliases(output, config, options.nativeModulesToStub, pathBinding, code);
   }
 
   return formatInlineConfig(filePath, output.toString(), code);

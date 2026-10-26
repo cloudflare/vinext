@@ -2,15 +2,15 @@
 
 ## Common Migration Errors
 
-| Error                                         | Cause                                                | Fix                                                                                                                    |
-| --------------------------------------------- | ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `ERR_REQUIRE_ESM` or `require() of ES Module` | Project missing `"type": "module"`                   | Add `"type": "module"` to package.json                                                                                 |
-| `module.exports` syntax error in config file  | CJS config loaded as ESM                             | Rename `.js` config to `.cjs` (e.g., `postcss.config.js` → `postcss.config.cjs`)                                       |
-| `Cannot find module '@vitejs/plugin-rsc'`     | App Router project missing RSC plugin                | `npm install -D @vitejs/plugin-rsc`                                                                                    |
-| `Cannot find module 'vite'`                   | Vite not installed                                   | `npm install -D vite`                                                                                                  |
-| `vinext: command not found`                   | vinext not installed or not in PATH                  | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts                                |
-| RSC environment crash on dev start            | Native Node module (sharp, satori) loaded in RSC env | vinext auto-stubs these in production; in dev, ensure these are only imported in server code behind dynamic `import()` |
-| `ASSETS binding not found`                    | wrangler.jsonc missing assets config                 | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                     |
+| Error                                         | Cause                                    | Fix                                                                                                                                                                             |
+| --------------------------------------------- | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ERR_REQUIRE_ESM` or `require() of ES Module` | Project missing `"type": "module"`       | Add `"type": "module"` to package.json                                                                                                                                          |
+| `module.exports` syntax error in config file  | CJS config loaded as ESM                 | Rename `.js` config to `.cjs` (e.g., `postcss.config.js` → `postcss.config.cjs`)                                                                                                |
+| `Cannot find module '@vitejs/plugin-rsc'`     | App Router project missing RSC plugin    | `npm install -D @vitejs/plugin-rsc`                                                                                                                                             |
+| `Cannot find module 'vite'`                   | Vite not installed                       | `npm install -D vite`                                                                                                                                                           |
+| `vinext: command not found`                   | vinext not installed or not in PATH      | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts                                                                                         |
+| RSC environment crash on dev start            | Native Node module loaded in Worker code | vinext stubs sharp, @resvg/resvg-js, lightningcss and @napi-rs/canvas on Workers; keep other native modules out of Worker code paths, or open a PR adding them to the stub list |
+| `ASSETS binding not found`                    | wrangler.jsonc missing assets config     | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                                                                              |
 
 ## Vite 8 Migration Notes
 
