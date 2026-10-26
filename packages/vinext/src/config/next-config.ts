@@ -270,8 +270,8 @@ export type MdxOptions = {
 };
 
 /**
- * The webpack rule `createNextIntlPlugin` adds for its `experimental.messages`
- * catalogs. vinext runs the same loader on the files it matches.
+ * The webpack/Turbopack rule `createNextIntlPlugin` adds for its
+ * `experimental.messages` catalogs. vinext runs the same loader on the files it matches.
  */
 export type NextIntlCatalogLoader = {
   /** Absolute catalog directories (the rule's `include`). */
@@ -2437,7 +2437,7 @@ export async function resolveNextConfig(
     resolved.nextIntlCatalogLoader === null
   ) {
     console.warn(
-      "[vinext] next-intl's `experimental.messages.precompile` is enabled, but vinext could not find next-intl's catalog loader in the webpack config. Messages with arguments or rich text will render their raw ICU source; remove `precompile` to format them at runtime",
+      "[vinext] next-intl's `experimental.messages.precompile` is enabled, but vinext could not find next-intl's catalog loader in the webpack or Turbopack config. Messages with arguments or rich text will render their raw ICU source; remove `precompile` to format them at runtime",
     );
   }
 
