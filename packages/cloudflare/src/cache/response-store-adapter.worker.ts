@@ -237,22 +237,45 @@ export function createVinextResponseStoreOptions<Env extends VinextResponseStore
     async regenerate(input: RevalidationInput, { env, ctx }): Promise<Response> {
       if (input.id === ROUTE_REVALIDATOR_ID) {
         const invocation = parseInvocation(input.args.at(-1));
+        const request = restoreRequest(invocation);
+        // Regenerating one part of a page rewrites the other too, as the
+        // render that stored it did. Only a page's query-free identity has
+        // the other part.
+        const otherPart =
+          request.method === "GET" && isQueryFreeRequest(request)
+            ? otherPagePart(request, invocation.props)
+            : undefined;
+        const capture = otherPagePartCapture(otherPart);
         // No client waits on a regeneration, so it renders the document
         // whole, as Next.js renders a static page. Only the store invokes
         // this callback, and only for an entry it holds, so the render may
         // skip request-time admission such as getStaticPaths().
         const response = await invokeResponseStage(
-          restoreRequest(invocation),
+          request,
           invocation.props,
           env,
           ctx,
           { cache: "shared", regeneratesStoredEntry: true, renderWholeDocument: true },
+          capture,
         );
         if (!isCacheable(response)) {
           await response.body?.cancel().catch(() => {});
+          void capture.rscData?.catch(() => {});
           throw new Error("Vinext response-stage regeneration was not cacheable");
         }
-        return withoutRequestScopedHeaders(response, invocation.props);
+        const stored = withoutRequestScopedHeaders(response, invocation.props);
+        // The Store can cancel unawaited work once the regeneration returns.
+        try {
+          await putOtherPagePart(otherPart, capture, stored);
+        } catch (error) {
+          console.error(
+            JSON.stringify({
+              message: "Vinext response-store regeneration failed to store the page's other part",
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        }
+        return stored;
       }
       if (
         input.id === CACHE_FUNCTION_REVALIDATOR_ID &&
@@ -373,18 +396,65 @@ function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean):
   );
 }
 
-/** The request an HTML request for an RSC request's page dispatches. */
-function documentRequest(rscRequest: Request): Request {
+/** Whether a request's only query is an RSC request's cache-busting `_rsc`. */
+function isQueryFreeRequest(request: Request): boolean {
+  const url = new URL(request.url);
+  stripRscCacheBustingSearchParam(url);
+  return url.search === "";
+}
+
+/** The invocation an RSC navigation to an HTML invocation's page stores under. */
+function rscPartInvocation(htmlRequest: Request, htmlProps: unknown): StoredInvocation {
+  return prepareInvocation(
+    new Request(new URL(createCanonicalRscRequestUrl(htmlRequest.url), htmlRequest.url), {
+      headers: createCanonicalRscRequestHeaders(),
+    }),
+    { ...(htmlProps as Record<string, unknown>), isRscRequest: true, renderMode: "navigation" },
+  );
+}
+
+/** The invocation an HTML request for an RSC invocation's page stores under. */
+function documentPartInvocation(rscRequest: Request, rscProps: unknown): StoredInvocation {
   const url = new URL(rscRequest.url);
   stripRscCacheBustingSearchParam(url);
-  return new Request(url);
+  return prepareInvocation(new Request(url), {
+    ...(rscProps as Record<string, unknown>),
+    isRscRequest: false,
+  });
 }
 
 /**
- * The page's document an RSC miss rendered, with the headers an HTML request
- * for the page stores: the admitted RSC response's, without the payload's own.
+ * The page's RSC payload an HTML render produced, with its document's headers
+ * and status.
  */
-function documentResponse(rscResponse: Response, document: CdnAppPageDocument): Response {
+function rscPartResponse(htmlResponse: Response, rscData: ArrayBuffer): Response {
+  const headers = new Headers(htmlResponse.headers);
+  headers.delete("Content-Length");
+  headers.delete("Link");
+  headers.delete("X-Vinext-Response-Store-Replayable");
+  headers.delete(VINEXT_PARAMS_HEADER);
+  headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
+  headers.set("Content-Type", VINEXT_RSC_CONTENT_TYPE);
+  headers.set("Vary", VINEXT_RSC_VARY_HEADER);
+  applyRscCompatibilityIdHeader(headers);
+  applyRscDeploymentIdHeader(headers);
+  // The request stage sends it to a Link's segment prefetch as a 200.
+  if (isStoredErrorStatus(htmlResponse.status)) {
+    headers.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(htmlResponse.status));
+  }
+  return new Response(rscData, {
+    headers,
+    // As in Next.js, the page's RSC payload takes its document's status,
+    // except that it carries a redirect as a 200.
+    status: htmlResponse.status >= 300 && htmlResponse.status < 400 ? 200 : htmlResponse.status,
+  });
+}
+
+/**
+ * The page's document an RSC render produced, with the headers an HTML request
+ * for the page stores: the RSC response's, without the payload's own.
+ */
+function documentPartResponse(rscResponse: Response, document: CdnAppPageDocument): Response {
   const headers = new Headers(rscResponse.headers);
   for (const name of [
     "Content-Length",
@@ -399,6 +469,74 @@ function documentResponse(rscResponse: Response, document: CdnAppPageDocument): 
   headers.set("Content-Type", "text/html; charset=utf-8");
   if (document.linkHeader) headers.append("Link", document.linkHeader);
   return new Response(document.html, { headers, status: rscResponse.status });
+}
+
+type PagePart = { invocation: StoredInvocation; kind: "document" | "rsc" };
+
+/**
+ * The other part of the page a canonical App page render stores. Next.js
+ * keeps a page's document and RSC payload in one entry, so a render that
+ * stores one part also stores the other, under the key a request for that
+ * part reads. A variant has no other part.
+ */
+function otherPagePart(identityRequest: Request, identityProps: unknown): PagePart | undefined {
+  if (isCanonicalAppPage(identityProps, false)) {
+    return { invocation: rscPartInvocation(identityRequest, identityProps), kind: "rsc" };
+  }
+  // A `.rsc` path reaches its page's HTML path only through the app's
+  // trailingSlash policy, and vinext's client never sends one, so it stores
+  // its payload alone.
+  if (
+    isCanonicalAppPage(identityProps, true) &&
+    !new URL(identityRequest.url).pathname.endsWith(".rsc")
+  ) {
+    return { invocation: documentPartInvocation(identityRequest, identityProps), kind: "document" };
+  }
+  return undefined;
+}
+
+/** What a render captures for the other part of its page. */
+function otherPagePartCapture(part: PagePart | undefined): ResponseStoreInvocationCapture {
+  if (part?.kind === "rsc") return { captureRscData: true };
+  if (part?.kind === "document") return { captureDocument: true };
+  return {};
+}
+
+/**
+ * Store the other part of the page from the render that stores this one.
+ * Admission settles the document before it completes the response. A miss
+ * stores it first, so a failed write leaves the render's own part missing too
+ * and the next miss retries both. A regeneration's other part stays stale
+ * when it fails, so the next read of that part regenerates it. Concurrent
+ * misses coalesce each key on its own, so their parts can come from different
+ * renders of the page.
+ */
+async function putOtherPagePart(
+  part: PagePart | undefined,
+  capture: ResponseStoreInvocationCapture,
+  stored: Response,
+): Promise<void> {
+  let response: Response;
+  if (part?.kind === "rsc" && capture.rscData) {
+    response = rscPartResponse(stored, await capture.rscData);
+  } else if (part?.kind === "document" && capture.document) {
+    response = documentPartResponse(stored, capture.document);
+  } else {
+    return;
+  }
+  const result = await responseStore.put(await cacheRequest(part.invocation), response, {
+    coalesce: true,
+    // One part can miss, or regenerate, beside the other part stored, which
+    // this replaces.
+    purgeExisting: true,
+    revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(part.invocation)] },
+  });
+  // An unpublished write leaves the pair to the next miss. A purge, as for the
+  // data cache's replacements, is best-effort: the edge keeps an earlier
+  // render's part until its own policy ends.
+  if (!result.backingStoreUpdated) {
+    throw new Error(`Vinext response-store did not publish the App page ${part.kind} part`);
+  }
 }
 
 // A page's notFound(), forbidden() and unauthorized() are stored with their
@@ -603,23 +741,19 @@ const handler = {
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
-      const canSeedRsc = isWarmup && isCanonicalAppPage(props, false);
-      const rscSeed = canSeedRsc
-        ? {
-            props: {
-              ...(identityProps as Record<string, unknown>),
-              isRscRequest: true,
-              renderMode: "navigation",
-            },
-            request: new Request(
-              new URL(createCanonicalRscRequestUrl(identityRequest.url), identityRequest.url),
-              { headers: createCanonicalRscRequestHeaders() },
-            ),
-          }
-        : undefined;
+      // A dispatch without a query-free identity stores its own part only. A
+      // shared HEAD dispatches as GET and stores the GET entry, so it stores
+      // both parts.
+      const otherPart =
+        isWarmup || options.cacheIdentity !== undefined
+          ? otherPagePart(identityRequest, identityProps)
+          : undefined;
+      // A warm-up renders the page again when its RSC payload is missing.
+      const rscKey =
+        isWarmup && otherPart?.kind === "rsc"
+          ? await cacheRequest(otherPart.invocation)
+          : undefined;
       const invocation = prepareInvocation(identityRequest, identityProps);
-      const rscInvocation = rscSeed ? prepareInvocation(rscSeed.request, rscSeed.props) : undefined;
-      const rscKey = rscInvocation ? await cacheRequest(rscInvocation) : undefined;
       const key = await cacheRequest(invocation);
       const stored = await readStoredResponse(key);
       if (stored) {
@@ -635,54 +769,11 @@ const handler = {
         void stored.body?.cancel().catch(() => {});
       }
 
-      // Next.js keeps a page's document and RSC payload in one entry, so an
-      // RSC miss stores the page's document under the key an HTML request for
-      // the page reads, the reverse of the warm-up's RSC seed. A `.rsc` path
-      // reaches its page's HTML path only through the app's trailingSlash
-      // policy, and vinext's client never sends one, so it stores its payload
-      // alone. A shared HEAD dispatches as GET and stores the GET entry, so it
-      // stores the document too.
-      const documentInvocation =
-        !isWarmup &&
-        options.cacheIdentity &&
-        !new URL(identityRequest.url).pathname.endsWith(".rsc") &&
-        isCanonicalAppPage(props, true)
-          ? prepareInvocation(documentRequest(identityRequest), {
-              ...(identityProps as Record<string, unknown>),
-              isRscRequest: false,
-            })
-          : undefined;
-      const capture: ResponseStoreInvocationCapture = rscSeed
-        ? { captureRscData: true }
-        : isWarmup
-          ? {}
-          : { streamResponse: true, ...(documentInvocation ? { captureDocument: true } : {}) };
-      const serializedInvocation = JSON.stringify(invocation);
-      // Admission sets the document before it completes the response. It is
-      // stored first, so a failed write leaves the RSC entry missing too and
-      // the next RSC miss retries both. Concurrent misses coalesce each key on
-      // its own, so their parts can come from different renders of the page,
-      // as an HTML miss's and a concurrent RSC miss's can.
-      const putDocument = async (stored: Response) => {
-        if (!documentInvocation || !capture.document) return;
-        const result = await responseStore.put(
-          await cacheRequest(documentInvocation),
-          documentResponse(stored, capture.document),
-          {
-            coalesce: true,
-            // The RSC entry can miss beside a stored document, which this
-            // replaces.
-            purgeExisting: true,
-            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(documentInvocation)] },
-          },
-        );
-        // An unpublished write leaves the pair to the next RSC miss. A purge,
-        // as for the data cache's replacements, is best-effort: the edge keeps
-        // an earlier render's document until its own policy ends.
-        if (!result.backingStoreUpdated) {
-          throw new Error("Vinext response-store did not publish the App page document");
-        }
+      const capture: ResponseStoreInvocationCapture = {
+        ...(isWarmup ? {} : { streamResponse: true }),
+        ...otherPagePartCapture(otherPart),
       };
+      const serializedInvocation = JSON.stringify(invocation);
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
       // No client waits on a warm-up either, so it renders the document whole.
@@ -711,11 +802,12 @@ const handler = {
             .then(async (admitted) => {
               if (!isCacheable(admitted)) {
                 await admitted.body?.cancel().catch(() => {});
+                void capture.rscData?.catch(() => {});
                 return;
               }
               const stored = withoutRequestScopedHeaders(admitted, props);
               try {
-                await putDocument(stored);
+                await putOtherPagePart(otherPart, capture, stored);
               } catch (error) {
                 await stored.body?.cancel().catch(() => {});
                 throw error;
@@ -750,10 +842,10 @@ const handler = {
           : publicResponse(notModified, "MISS", props, true);
       }
       if (!isCacheable(rendered)) {
-        void capture?.rscData?.catch(() => {});
+        void capture.rscData?.catch(() => {});
         return publicResponse(foreground(rendered), "BYPASS", props);
       }
-      if (rscSeed && !capture?.rscData) {
+      if (rscKey && !capture.rscData) {
         await rendered.body?.cancel();
         throw new Error("Vinext response-store warmup did not capture the App page RSC payload");
       }
@@ -762,7 +854,7 @@ const handler = {
       const cacheResponse = withoutRequestScopedHeaders(new Response(cacheBody, rendered), props);
       try {
         // A manifest-backed admission completes the response before it returns.
-        await putDocument(cacheResponse);
+        await putOtherPagePart(otherPart, capture, cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
           revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
@@ -779,37 +871,6 @@ const handler = {
         );
       }
 
-      if (rscSeed && rscInvocation && rscKey && capture?.rscData) {
-        const rscData = await capture.rscData;
-        const rscHeaders = new Headers(rendered.headers);
-        rscHeaders.delete("Content-Length");
-        rscHeaders.delete("Link");
-        rscHeaders.delete("X-Vinext-Response-Store-Replayable");
-        rscHeaders.delete(VINEXT_PARAMS_HEADER);
-        rscHeaders.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
-        rscHeaders.set("Content-Type", VINEXT_RSC_CONTENT_TYPE);
-        rscHeaders.set("Vary", VINEXT_RSC_VARY_HEADER);
-        applyRscCompatibilityIdHeader(rscHeaders);
-        applyRscDeploymentIdHeader(rscHeaders);
-        // The request stage sends it to a Link's segment prefetch as a 200.
-        if (isStoredErrorStatus(rendered.status)) {
-          rscHeaders.set(VINEXT_SPECIAL_ERROR_STATUS_HEADER, String(rendered.status));
-        }
-        const serializedRscInvocation = JSON.stringify(rscInvocation);
-        await responseStore.put(
-          rscKey,
-          new Response(rscData, {
-            headers: rscHeaders,
-            // As in Next.js, the page's RSC payload takes its document's
-            // status, except that it carries a redirect as a 200.
-            status: rendered.status >= 300 && rendered.status < 400 ? 200 : rendered.status,
-          }),
-          {
-            coalesce: true,
-            revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedRscInvocation] },
-          },
-        );
-      }
       return publicResponse(foreground(new Response(foregroundBody, rendered)), "MISS", props);
     };
 
