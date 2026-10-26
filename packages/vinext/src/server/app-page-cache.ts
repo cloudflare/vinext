@@ -134,7 +134,8 @@ type ReadAppPageCacheResponseOptions = {
   revalidateSeconds: number;
   /**
    * Whether this is an RSC request Next.js renders dynamically under PPR (one
-   * that is not a prefetch), and so never regenerates the page's document.
+   * that is not a prefetch, for a path not generated at build time), and so
+   * never regenerates the page's document.
    */
   isDynamicRscRequest?: boolean;
   /**

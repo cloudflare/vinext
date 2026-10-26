@@ -929,10 +929,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isForceStatic,
         revalidateSeconds: currentRevalidateSeconds,
       }),
+      // As in Next.js, a path generated at build time answers its RSC requests
+      // from the cache, and its regeneration renders the document.
       isDynamicRscRequest:
         options.pprRuntime !== undefined &&
         options.isRscRequest &&
-        options.request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) !== "1",
+        options.request.headers.get(NEXT_ROUTER_PREFETCH_HEADER) !== "1" &&
+        options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
       renderFreshPageForCache: async ({ renderDocument }) => {
         const revalidationTarget = await resolveCacheRenderTarget();
 

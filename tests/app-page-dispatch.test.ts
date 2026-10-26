@@ -4318,6 +4318,70 @@ describe("app page dispatch", () => {
     expect(afterRan).toBe(true);
   });
 
+  // Under PPR, Next.js renders a non-prefetch RSC request dynamically unless its
+  // path was generated at build time, whose RSC request is answered from the
+  // page's entry and regenerates its document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it.each([
+    {
+      label: "a path generated at build time",
+      renderedConcreteUrlPaths: new Set(["/posts/hello"]),
+      scheduledKey: "html:/posts/hello",
+      stored: ["rsc:/posts/hello", "html:/posts/hello"],
+    },
+    {
+      label: "a path not generated at build time",
+      renderedConcreteUrlPaths: new Set(["/posts/other"]),
+      scheduledKey: "rsc:/posts/hello",
+      stored: ["rsc:/posts/hello"],
+    },
+  ])(
+    "regenerates the document from a stale PPR RSC request only for $label",
+    async ({ renderedConcreteUrlPaths, scheduledKey, stored }) => {
+      const scheduled: Array<{ key: string; renderFn: () => Promise<void> }> = [];
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const { options } = createDispatchOptions({
+        cleanPathname: "/posts/hello",
+        isProduction: true,
+        isRscRequest: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(
+            buildCachedAppPageValue("", new TextEncoder().encode("stale-flight").buffer),
+            true,
+          ),
+        ),
+        isrSet,
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        pprRuntime: appPagePprRuntime,
+        renderedConcreteUrlPaths,
+        request: new Request("https://example.test/posts/hello", { headers: { RSC: "1" } }),
+        revalidateSeconds: 60,
+        route: createRoute({ pattern: "/posts/[slug]", routeSegments: ["posts", "[slug]"] }),
+        scheduleBackgroundRegeneration(key, renderFn) {
+          scheduled.push({ key, renderFn });
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.arrayBuffer();
+
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(scheduled.map(({ key }) => key)).toEqual([scheduledKey]);
+      await scheduled[0].renderFn();
+      expect(isrSet.mock.calls.map(([key]) => key)).toEqual(stored);
+    },
+  );
+
   it("exposes the request's root params to a stale HTML regeneration", async () => {
     // Background regeneration runs in its own request context. Without the
     // request's root params, `next/root-params` getters resolve to undefined

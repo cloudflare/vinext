@@ -2914,7 +2914,7 @@ describe("App Router Production server (startProdServer)", () => {
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
   it("App Router ISR: a stale RSC request regenerates the page's document too", async () => {
     const readTimestamp = (html: string) =>
-      html.match(/data-testid="timestamp"[^>]*>(?:<!--.*?-->)*(\d+)/)?.[1];
+      html.replaceAll("<!-- -->", "").match(/data-testid="timestamp"[^>]*>(\d+)/)?.[1];
     const fetchRsc = () =>
       fetch(`${baseUrl}/isr-test.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
 
