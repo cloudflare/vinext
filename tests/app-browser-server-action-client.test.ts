@@ -14,6 +14,18 @@ import {
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { navigationPlanner } from "../packages/vinext/src/server/navigation-planner.js";
+import { VINEXT_RSC_COMPATIBILITY_ID_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { startAppPrefetchRevalidationCooldown } from "../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js";
+
+vi.mock(
+  "../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js")
+    >()),
+    startAppPrefetchRevalidationCooldown: vi.fn(),
+  }),
+);
 
 vi.mock("@vitejs/plugin-rsc/browser", () => ({
   createFromFetch: vi.fn(),
@@ -403,6 +415,242 @@ describe("app browser server action client", () => {
     });
     rejectActionResult(thrown);
     await rejection;
+  });
+
+  // Next.js: server-action-reducer.ts calls startRevalidationCooldown() for
+  // every revalidation kind, and never for an action that didn't revalidate.
+  it.each([
+    ["1", true],
+    ["2", true],
+    [null, false],
+  ] as const)(
+    "holds prefetches for the revalidation cooldown (x-action-revalidated: %s)",
+    async (revalidatedHeader, startsCooldown) => {
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("flight", {
+            status: 200,
+            headers: {
+              "content-type": "text/x-component",
+              ...(revalidatedHeader === null
+                ? {}
+                : { [ACTION_REVALIDATED_HEADER]: revalidatedHeader }),
+            },
+          }),
+        ),
+      );
+      let decode!: () => void;
+      vi.mocked(createFromFetch).mockReturnValueOnce(
+        new Promise((resolve) => {
+          decode = () => resolve({ returnValue: { ok: true, data: "value" } });
+        }) as ReturnType<typeof createFromFetch>,
+      );
+      const clearClientNavigationCaches = vi.fn();
+
+      const invoked = invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath: "",
+        clearClientNavigationCaches,
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation: vi.fn(),
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      });
+      const cooldownStarts = vi.mocked(startAppPrefetchRevalidationCooldown).mock;
+
+      // The caches are cleared while the response is still decoding, so a
+      // navigation meanwhile can't reuse data from before the revalidation.
+      await vi.waitFor(() => expect(createFromFetch).toHaveBeenCalledOnce());
+      expect(cooldownStarts.calls.length).toBe(startsCooldown ? 1 : 0);
+      expect(clearClientNavigationCaches).toHaveBeenCalledTimes(startsCooldown ? 1 : 0);
+      if (startsCooldown) {
+        // Started before the cache clear, so its re-prefetches are held.
+        expect(cooldownStarts.invocationCallOrder[0]).toBeLessThan(
+          clearClientNavigationCaches.mock.invocationCallOrder[0]!,
+        );
+      }
+
+      // Decoding restarts the cooldown, so the window ends 300ms after the
+      // action completes, as in Next.js.
+      decode();
+      await invoked;
+      expect(cooldownStarts.calls.length).toBe(startsCooldown ? 2 : 0);
+      expect(clearClientNavigationCaches).toHaveBeenCalledTimes(startsCooldown ? 1 : 0);
+    },
+  );
+
+  it.each([
+    ["an invalid response", "text/plain", null],
+    ["a response that fails to decode", "text/x-component", new Error("decode failed")],
+  ] as const)(
+    "clears the client caches when a revalidating action returns %s",
+    async (_name, contentType, decodeError) => {
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response("action failed", {
+            status: 500,
+            headers: { "content-type": contentType, [ACTION_REVALIDATED_HEADER]: "1" },
+          }),
+        ),
+      );
+      if (decodeError !== null) vi.mocked(createFromFetch).mockRejectedValueOnce(decodeError);
+      const clearClientNavigationCaches = vi.fn();
+
+      await expect(
+        invokeClientServerAction("action-id", [], actionInitiation, {
+          basePath: "",
+          clearClientNavigationCaches,
+          clientRscCompatibilityId: null,
+          commitSameUrlNavigatePayload: vi.fn(),
+          navigationPlanner,
+          performHardNavigation: vi.fn(),
+          renderRedirectPayload: vi.fn(),
+          syncCurrentHistoryState: vi.fn(),
+          syncServerActionHttpFallbackHead: vi.fn(),
+        }),
+      ).rejects.toThrow(decodeError?.message ?? "action failed");
+
+      // The server revalidated, so the caches can't keep data from before it.
+      expect(startAppPrefetchRevalidationCooldown).toHaveBeenCalledOnce();
+      expect(clearClientNavigationCaches).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    {
+      name: "a header-only redirect",
+      redirect: "/source",
+      basePath: "",
+      navigatesTo: "https://example.com/source",
+    },
+    {
+      name: "a redirect outside basePath",
+      redirect: "/outside",
+      basePath: "/base",
+      navigatesTo: "/outside",
+    },
+    {
+      name: "an external redirect",
+      redirect: "https://other.example/landing",
+      basePath: "",
+      navigatesTo: "https://other.example/landing",
+    },
+  ])(
+    "clears the client caches before hard navigating to $name that revalidated",
+    async ({ redirect, basePath, navigatesTo }) => {
+      const actionInitiation = createServerActionInitiationSnapshot({
+        href: "https://example.com/source",
+        navigationId: 1,
+        routerState: createActionTestRouterState(),
+      });
+      vi.stubGlobal("window", {
+        location: { href: "https://example.com/source", origin: "https://example.com" },
+      });
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue(
+          new Response(null, {
+            status: 303,
+            headers: {
+              [ACTION_REDIRECT_HEADER]: redirect,
+              [ACTION_REVALIDATED_HEADER]: "1",
+              "content-type": "text/plain",
+            },
+          }),
+        ),
+      );
+      const clearClientNavigationCaches = vi.fn();
+      // The loop guard refused the navigation, so this document stays.
+      const performHardNavigation = vi.fn();
+
+      await invokeClientServerAction("action-id", [], actionInitiation, {
+        basePath,
+        clearClientNavigationCaches,
+        clientRscCompatibilityId: null,
+        commitSameUrlNavigatePayload: vi.fn(),
+        navigationPlanner,
+        performHardNavigation,
+        renderRedirectPayload: vi.fn(),
+        syncCurrentHistoryState: vi.fn(),
+        syncServerActionHttpFallbackHead: vi.fn(),
+      });
+
+      expect(performHardNavigation).toHaveBeenCalledOnce();
+      expect(performHardNavigation.mock.calls[0]?.[0]).toBe(navigatesTo);
+      expect(startAppPrefetchRevalidationCooldown).toHaveBeenCalledOnce();
+      expect(clearClientNavigationCaches).toHaveBeenCalledOnce();
+      expect(clearClientNavigationCaches.mock.invocationCallOrder[0]).toBeLessThan(
+        performHardNavigation.mock.invocationCallOrder[0]!,
+      );
+    },
+  );
+
+  it("starts the cooldown before a revalidating action's compatibility hard navigation", async () => {
+    const actionInitiation = createServerActionInitiationSnapshot({
+      href: "https://example.com/source",
+      navigationId: 1,
+      routerState: createActionTestRouterState(),
+    });
+    vi.stubGlobal("window", {
+      location: { href: "https://example.com/source", origin: "https://example.com" },
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response("flight", {
+          status: 200,
+          headers: {
+            "content-type": "text/x-component",
+            [ACTION_REVALIDATED_HEADER]: "1",
+            [VINEXT_RSC_COMPATIBILITY_ID_HEADER]: "new-build",
+          },
+        }),
+      ),
+    );
+    const clearClientNavigationCaches = vi.fn();
+    // The loop guard refused the navigation, so this document stays.
+    const performHardNavigation = vi.fn();
+
+    await invokeClientServerAction("action-id", [], actionInitiation, {
+      basePath: "",
+      clearClientNavigationCaches,
+      clientRscCompatibilityId: "old-build",
+      commitSameUrlNavigatePayload: vi.fn(),
+      navigationPlanner,
+      performHardNavigation,
+      renderRedirectPayload: vi.fn(),
+      syncCurrentHistoryState: vi.fn(),
+      syncServerActionHttpFallbackHead: vi.fn(),
+    });
+
+    expect(performHardNavigation).toHaveBeenCalledOnce();
+    expect(createFromFetch).not.toHaveBeenCalled();
+    const cooldownStarts = vi.mocked(startAppPrefetchRevalidationCooldown).mock;
+    expect(cooldownStarts.calls.length).toBe(1);
+    expect(clearClientNavigationCaches).toHaveBeenCalledOnce();
+    expect(cooldownStarts.invocationCallOrder[0]).toBeLessThan(
+      clearClientNavigationCaches.mock.invocationCallOrder[0]!,
+    );
   });
 
   it("commits the RSC tree for revalidated actions and returns the action value", async () => {

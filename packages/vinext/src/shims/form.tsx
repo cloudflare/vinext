@@ -22,7 +22,7 @@ import {
   forwardRef,
   useActionState,
   useCallback,
-  useEffect,
+  useLayoutEffect,
   useRef,
   type FormHTMLAttributes,
   type ForwardedRef,
@@ -32,13 +32,16 @@ import {
   loadNavigationRuntimeRouteManifest,
 } from "../client/navigation-runtime.js";
 import { useMergedRef } from "./use-merged-ref.js";
+import { runAfterAppPrefetchRevalidationCooldown } from "./internal/app-prefetch-fetch-queue.js";
 import {
   getMountedSlotsHeader,
+  getPrefetchCache,
   getPrefetchInterceptionContext,
   getPrefetchedUrls,
   hasPrefetchCacheEntryForNavigation,
   navigateClientSide,
   prefetchRscResponse,
+  type PrefetchCacheEntry,
 } from "./navigation.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { withBasePath } from "./url-utils.js";
@@ -68,6 +71,41 @@ type FormSubmitter = HTMLButtonElement | HTMLInputElement;
 const SUPPORTED_FORM_ENCTYPE = "application/x-www-form-urlencoded";
 const SUPPORTED_FORM_METHOD = "GET";
 const SUPPORTED_FORM_TARGET = "_self";
+
+type FormPrefetchOwner = {
+  /** Called when the request is sent; the Form no longer needs observing. */
+  sent(): void;
+};
+
+type HeldFormPrefetch = {
+  /** The Forms that still want the request. */
+  owners: Set<FormPrefetchOwner>;
+  /** The cache entry the request reserved. */
+  reservation: PrefetchCacheEntry | undefined;
+};
+
+/**
+ * Viewport prefetches the revalidation cooldown holds, by cache key. A Form
+ * with the same action shares the held request instead of skipping it, so the
+ * request is dropped only once every Form that wants it has gone.
+ */
+const heldFormPrefetches = new Map<string, HeldFormPrefetch>();
+
+function releaseHeldFormPrefetch(
+  cacheKey: string,
+  held: HeldFormPrefetch,
+  owner: FormPrefetchOwner,
+): void {
+  held.owners.delete(owner);
+  // Already sent, or another Form still wants it.
+  if (held.owners.size > 0 || heldFormPrefetches.get(cacheKey) !== held) return;
+  heldFormPrefetches.delete(cacheKey);
+  // A replacement Form with the same action can enter the viewport while the
+  // held request waits to be dropped; let it prefetch.
+  if (getPrefetchCache().get(cacheKey) === held.reservation) {
+    getPrefetchedUrls().delete(cacheKey);
+  }
+}
 
 function isPrefetchableAction(action: string): boolean {
   // Browser-only: callers must guard this behind a client environment check.
@@ -304,8 +342,10 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
   // Viewport-based prefetch: when the form enters the viewport, prefetch the
   // RSC payload for the action URL. App Router only; disabled in dev (matches
   // Next.js behavior). Gated by `prefetch !== false` and string action.
-  // Reference: link.tsx IntersectionObserver wiring pattern.
-  useEffect(() => {
+  // Reference: link.tsx IntersectionObserver wiring pattern. A layout effect, as
+  // in link.tsx, so unmounting drops a prefetch the revalidation cooldown holds
+  // in the commit that detaches the form, before the cooldown can release it.
+  useLayoutEffect(() => {
     if (typeof action !== "string") return;
     if (prefetch === false || process.env.NODE_ENV !== "production") return;
     // External destinations remain valid form markup and native navigation
@@ -316,86 +356,123 @@ const Form = forwardRef(function Form(props: FormProps, ref: ForwardedRef<HTMLFo
     if (!node) return;
     if (typeof IntersectionObserver === "undefined") return;
 
+    let active = true;
+    let isVisible = false;
+    let prefetchStarted = false;
+    const owner: FormPrefetchOwner = { sent: () => observer.unobserve(node) };
+    let releaseHeldReservation: (() => void) | undefined;
+    // Resolves whether to keep observing the form: only while the revalidation
+    // cooldown holds its request, or when it left before deciding.
+    const startPrefetch = async (): Promise<boolean> => {
+      if (isBotUserAgent(window.navigator?.userAgent ?? "")) return false;
+      // Mirror the Link/router prefetch computation so the cache key the
+      // navigation later looks up matches what we prefetch here. Without
+      // this, intercepted routes or pages with mounted parallel slots
+      // would key under a different context and miss the cached payload.
+      // (See link.tsx:373-389 and navigation.ts:1909-1916.) The context
+      // is captured now; the interception context, which reads the
+      // RouteManifest, resolves from it once the manifest has loaded.
+      const currentPathname = window.location.pathname;
+      const resolvedAction = new URL(actionHref, window.location.href);
+      const prefetchHref = resolvedAction.pathname + resolvedAction.search;
+      const mountedSlotsHeader = getMountedSlotsHeader();
+      const routeManifestLoad = loadNavigationRuntimeRouteManifest();
+      if (routeManifestLoad !== null && !(await routeManifestLoad)) return false;
+      const interceptionContext = getPrefetchInterceptionContext(prefetchHref, currentPathname);
+      const headers = createRscRequestHeaders({
+        interceptionContext,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      });
+      if (mountedSlotsHeader) {
+        headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
+      }
+      const rscUrl = await createRscRequestUrl(prefetchHref, headers);
+      if (!active) return false;
+      // It left the viewport meanwhile; prefetch if it comes back.
+      if (!isVisible) return true;
+      const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
+      const sharedHeld = heldFormPrefetches.get(cacheKey);
+      if (sharedHeld && getPrefetchCache().get(cacheKey) === sharedHeld.reservation) {
+        sharedHeld.owners.add(owner);
+        releaseHeldReservation = () => releaseHeldFormPrefetch(cacheKey, sharedHeld, owner);
+        return true;
+      }
+      // Dedup: skip if already in-flight or a fresh cache entry exists,
+      // matching the gate link.tsx applies to avoid double-fetching a
+      // payload that a nearby <Link> already prefetched. A pending Link
+      // prefetch is not reused: this Form prefetches only once, and the
+      // Link cancels its request if it leaves before the request starts.
+      const prefetched = getPrefetchedUrls();
+      if (prefetched.has(cacheKey)) return false;
+      if (
+        hasPrefetchCacheEntryForNavigation(rscUrl, interceptionContext, mountedSlotsHeader, {
+          reusePending: false,
+        })
+      )
+        return false;
+      prefetched.add(cacheKey);
+      const held: HeldFormPrefetch = { owners: new Set([owner]), reservation: undefined };
+      heldFormPrefetches.set(cacheKey, held);
+      const fetchPromise = runAfterAppPrefetchRevalidationCooldown(() => {
+        if (heldFormPrefetches.get(cacheKey) === held) heldFormPrefetches.delete(cacheKey);
+        // Every form that wanted it left the viewport, unmounted or
+        // changed its action while the revalidation cooldown held the
+        // request.
+        if (held.owners.size === 0) {
+          throw new DOMException("Prefetch is no longer wanted", "AbortError");
+        }
+        for (const heldOwner of held.owners) heldOwner.sent();
+        return fetch(rscUrl, {
+          headers,
+          credentials: "include",
+          // Match link.tsx: deprioritize the background prefetch and tag it
+          // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
+          priority: "low",
+          // @ts-expect-error — purpose is a valid fetch option in some browsers
+          purpose: "prefetch",
+        });
+      });
+      prefetchRscResponse(
+        rscUrl,
+        fetchPromise,
+        interceptionContext,
+        mountedSlotsHeader,
+        undefined,
+        {
+          cacheForNavigation: false,
+          optimisticRouteShell: true,
+        },
+      );
+      held.reservation = getPrefetchCache().get(cacheKey);
+      releaseHeldReservation = () => releaseHeldFormPrefetch(cacheKey, held, owner);
+      return true;
+    };
     const observer = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
-          if (entry.isIntersecting || entry.intersectionRatio > 0) {
-            void (async () => {
-              if (isBotUserAgent(window.navigator?.userAgent ?? "")) return;
-              // Mirror the Link/router prefetch computation so the cache key the
-              // navigation later looks up matches what we prefetch here. Without
-              // this, intercepted routes or pages with mounted parallel slots
-              // would key under a different context and miss the cached payload.
-              // (See link.tsx:373-389 and navigation.ts:1909-1916.) The context
-              // is captured now; the interception context, which reads the
-              // RouteManifest, resolves from it once the manifest has loaded.
-              const currentPathname = window.location.pathname;
-              const resolvedAction = new URL(actionHref, window.location.href);
-              const prefetchHref = resolvedAction.pathname + resolvedAction.search;
-              const mountedSlotsHeader = getMountedSlotsHeader();
-              const routeManifestLoad = loadNavigationRuntimeRouteManifest();
-              if (routeManifestLoad !== null && !(await routeManifestLoad)) return;
-              const interceptionContext = getPrefetchInterceptionContext(
-                prefetchHref,
-                currentPathname,
-              );
-              const headers = createRscRequestHeaders({
-                interceptionContext,
-                renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-              });
-              if (mountedSlotsHeader) {
-                headers.set(VINEXT_MOUNTED_SLOTS_HEADER, mountedSlotsHeader);
-              }
-              const rscUrl = await createRscRequestUrl(prefetchHref, headers);
-              const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
-              // Dedup: skip if already in-flight or a fresh cache entry exists,
-              // matching the gate link.tsx applies to avoid double-fetching a
-              // payload that a nearby <Link> already prefetched. A pending Link
-              // prefetch is not reused: this Form prefetches only once, and the
-              // Link cancels its request if it leaves before the request starts.
-              const prefetched = getPrefetchedUrls();
-              if (prefetched.has(cacheKey)) return;
-              if (
-                hasPrefetchCacheEntryForNavigation(
-                  rscUrl,
-                  interceptionContext,
-                  mountedSlotsHeader,
-                  {
-                    reusePending: false,
-                  },
-                )
-              )
-                return;
-              prefetched.add(cacheKey);
-              const fetchPromise = fetch(rscUrl, {
-                headers,
-                credentials: "include",
-                // Match link.tsx: deprioritize the background prefetch and tag it
-                // as a prefetch so it surfaces correctly in devtools / `Sec-Purpose`.
-                priority: "low",
-                // @ts-expect-error — purpose is a valid fetch option in some browsers
-                purpose: "prefetch",
-              });
-              prefetchRscResponse(
-                rscUrl,
-                fetchPromise,
-                interceptionContext,
-                mountedSlotsHeader,
-                undefined,
-                {
-                  cacheForNavigation: false,
-                  optimisticRouteShell: true,
-                },
-              );
-            })();
-            observer.unobserve(node);
+          isVisible = entry.isIntersecting || entry.intersectionRatio > 0;
+          if (!isVisible) {
+            // Like Next.js, a form that leaves the viewport drops a request the
+            // revalidation cooldown still holds, and prefetches again if it
+            // comes back.
+            releaseHeldReservation?.();
+            releaseHeldReservation = undefined;
+            prefetchStarted = false;
+            continue;
           }
+          if (prefetchStarted) continue;
+          prefetchStarted = true;
+          void startPrefetch().then((keepObserving) => {
+            if (!keepObserving) observer.unobserve(node);
+          });
         }
       },
       { rootMargin: "200px" },
     );
     observer.observe(node);
     return () => {
+      active = false;
+      releaseHeldReservation?.();
       observer.unobserve(node);
     };
     // `actionHref` is derived purely from `action` (+ the module-constant

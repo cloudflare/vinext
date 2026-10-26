@@ -2048,6 +2048,105 @@ describe("prefetch cache eviction", () => {
     expect(getPrefetchedUrls().has(rscUrl)).toBe(false);
   });
 
+  it("fetches instead of waiting on a gated prefetch held by the revalidation cooldown", async () => {
+    // Next.js navigations never wait on a prefetch, so the 300ms cooldown after
+    // a revalidating Server Action never delays one (REVALIDATION_COOLDOWN_MS in
+    // client/components/segment-cache/scheduler.ts).
+    vi.useFakeTimers();
+    try {
+      const queue =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      const rscUrl = "/dashboard.rsc";
+      const deferred = createDeferredResponse();
+      prefetchRscResponse(rscUrl, queue.markGatedAppPrefetchFetch(deferred.promise), null, null);
+
+      queue.startAppPrefetchRevalidationCooldown();
+      await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.toBeNull();
+      expect(getPrefetchCache().get(rscUrl)?.outcome).toBe("pending");
+
+      // A navigation already waiting stops when a revalidation starts a cooldown.
+      await vi.advanceTimersByTimeAsync(300);
+      const waiting = consumePrefetchResponseForNavigation(rscUrl, null, null);
+      await Promise.resolve();
+      queue.startAppPrefetchRevalidationCooldown();
+      await expect(waiting).resolves.toBeNull();
+
+      // Once the cooldown ends the gated prefetch is in flight, so the
+      // navigation waits on it again.
+      await vi.advanceTimersByTimeAsync(300);
+      const consumed = consumePrefetchResponseForNavigation(rscUrl, null, null);
+      deferred.resolve(new Response("flight", { headers: { "content-type": "text/x-component" } }));
+      await expect(consumed).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fetches instead of waiting on a route-tree-gated router.prefetch during the cooldown", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: true,
+        patternParts: [":rootParam"],
+        isDynamic: true,
+        hasRootParams: true,
+      },
+    ];
+    const routeTree = createDeferredResponse();
+    const fetch = vi
+      .fn<(input: RequestInfo | URL, init?: RequestInit) => Promise<Response>>()
+      .mockImplementationOnce(() => routeTree.promise);
+    (globalThis as any).fetch = fetch;
+
+    appRouterInstance.prefetch("/aaa");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const [cacheKey, entry] = Array.from(getPrefetchCache().entries()).find(
+      ([, candidate]) => candidate.prefetchKind === "navigation",
+    )!;
+    expect(entry.outcome).toBe("pending");
+
+    const queue = await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+    queue.startAppPrefetchRevalidationCooldown();
+    // The payload stage will be held, so the navigation fetches its own
+    // response instead of waiting out the cooldown.
+    const consumed = await Promise.race([
+      consumePrefetchResponseForNavigation(cacheKey, null, null),
+      new Promise((resolve) => setTimeout(() => resolve("waited"), 100)),
+    ]);
+    expect(consumed).toBeNull();
+
+    routeTree.resolve(new Response("tree", { headers: { "content-type": "text/x-component" } }));
+    await new Promise((resolve) => setTimeout(resolve, 350));
+    await settlePrefetchSetup();
+  });
+
+  it("fetches instead of sending a queued prefetch held by the revalidation cooldown", async () => {
+    vi.useFakeTimers();
+    try {
+      const queue =
+        await import("../packages/vinext/src/shims/internal/app-prefetch-fetch-queue.js");
+      const rscUrl = "/dashboard.rsc";
+      const fetcher = vi.fn(
+        async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+      );
+      queue.startAppPrefetchRevalidationCooldown();
+      prefetchRscResponse(rscUrl, queue.scheduleAppPrefetchFetch(fetcher, "high"), null, null);
+
+      // The navigation neither sends the held prefetch early nor waits for it.
+      await expect(consumePrefetchResponseForNavigation(rscUrl, null, null)).resolves.toBeNull();
+      expect(fetcher).not.toHaveBeenCalled();
+
+      // The prefetch still goes out once the cooldown ends.
+      await vi.advanceTimersByTimeAsync(300);
+      expect(fetcher).toHaveBeenCalledTimes(1);
+      await expect(
+        consumePrefetchResponseForNavigation(rscUrl, null, null),
+      ).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("honors an explicit fallback stale window above the minimum for prefetched responses", async () => {
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
