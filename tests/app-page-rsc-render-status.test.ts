@@ -6,6 +6,7 @@ function resolveWithDocument(
   handleSsr: AppPageSsrHandler["handleSsr"],
   deadlineAt: number,
   specialError: unknown = null,
+  loadSsrHandler: () => Promise<AppPageSsrHandler> = async () => ({ handleSsr }),
 ) {
   return createAppPageRscRenderStatusResolver({
     capturedRscData: Promise.resolve(new ArrayBuffer(0)),
@@ -19,7 +20,7 @@ function resolveWithDocument(
     getCapturedSpecialError: () => specialError,
     getCapturedSpecialErrors: () => [],
     isForceStatic: false,
-    loadSsrHandler: async () => ({ handleSsr }),
+    loadSsrHandler,
     navigationContext: null,
     routePattern: "/page",
   })();
@@ -76,6 +77,26 @@ describe("createAppPageRscRenderStatusResolver document deadline", () => {
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(cancelled).toBe(true);
+  });
+
+  it("gives up a document at a deadline that has already passed", async () => {
+    let rendered = false;
+    const status = await resolveWithDocument(async () => {
+      rendered = true;
+      return new Response("<html>page</html>").body!;
+    }, Date.now() - 1);
+    expect(status).toEqual({ kind: "page" });
+    expect(rendered).toBe(false);
+  });
+
+  it("gives up a document whose SSR handler hasn't loaded at its deadline", async () => {
+    const status = await resolveWithDocument(
+      async () => new Response("<html>page</html>").body!,
+      Date.now() + 20,
+      null,
+      () => new Promise(() => {}),
+    );
+    expect(status).toEqual({ kind: "page" });
   });
 
   it("stores no render with a special error whose document missed its deadline", async () => {

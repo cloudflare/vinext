@@ -91,9 +91,16 @@ async function resolveAppPageRscRenderStatus(
   const deadlineAt = options.document?.deadlineAt;
   if (deadlineAt === undefined) return renderAppPageRscRenderStatus(options);
   const expired = new AbortController();
-  const timer = setTimeout(() => expired.abort(), Math.max(0, deadlineAt - Date.now()));
+  const remaining = deadlineAt - Date.now();
+  const timer = remaining > 0 ? setTimeout(() => expired.abort(), remaining) : undefined;
+  if (timer === undefined) expired.abort();
   try {
-    return await renderAppPageRscRenderStatus(options, expired.signal);
+    const status = await unlessExpired(
+      renderAppPageRscRenderStatus(options, expired.signal),
+      expired.signal,
+      () => {},
+    );
+    return status ?? expiredDocumentStatus(options);
   } finally {
     clearTimeout(timer);
   }
@@ -171,6 +178,7 @@ async function renderAppPageRscRenderStatus(
   if (!documentOptions && options.getCapturedSpecialError() === null) return PAGE_STATUS;
 
   const ssrHandler = await options.loadSsrHandler();
+  if (signal?.aborted) return expiredDocumentStatus(options);
   const fontData = documentOptions?.getFontData() ?? { links: [], preloads: [], styles: [] };
   const clientTraceMetadataMarker =
     documentOptions?.clientTraceMetadata && documentOptions.clientTraceMetadata.length > 0
