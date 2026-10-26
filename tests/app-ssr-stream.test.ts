@@ -920,8 +920,15 @@ async function runTickedTransform(
   } = {},
 ): Promise<Uint8Array[]> {
   let flushes = 0;
+  // Each tick waits for the transform's flush of the previous one, so a
+  // loaded machine can't close the source before the flush timer fires.
+  let onFlush = (): void => {};
   const rscEmbed = {
-    flush: () => utf8(`<script>rsc(${++flushes})</script>`),
+    flush: () => {
+      const scripts = utf8(`<script>rsc(${++flushes})</script>`);
+      onFlush();
+      return scripts;
+    },
     finalize: async () => utf8("<script>done()</script>"),
     getRawBuffer: async () => new ArrayBuffer(0),
   };
@@ -935,10 +942,13 @@ async function runTickedTransform(
           controller.close();
           return;
         }
+        onFlush = () => {
+          onFlush = () => {};
+          setTimeout(enqueueNext, 0);
+        };
         for (const chunk of tick) {
           controller.enqueue(typeof chunk === "string" ? encoder.encode(chunk) : chunk);
         }
-        setTimeout(enqueueNext, 5);
       };
       enqueueNext();
     },

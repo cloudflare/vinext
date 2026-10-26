@@ -56,7 +56,6 @@ import { DEFAULT_GLOBAL_ERROR_MODULE } from "./default-global-error-module.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import type { MetadataFileRoute } from "./metadata-routes.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import { createAppPageRenderIdentity } from "./app-page-render-identity.js";
 import {
   createAppPageMetadataSearchParamsObserver,
@@ -262,6 +261,8 @@ export type AppPagePageRequest<TModule extends AppPageModule = AppPageModule> = 
   isForceStatic?: boolean;
   /** The render can never be stored (see buildAppPageElements). */
   isUncacheableRender?: boolean;
+  /** Layouts the navigating client holds (see buildAppPageElements). */
+  mountedLayouts?: ReadonlySet<string> | null;
   /** Observe page metadata `searchParams` access for cache-safety classification. */
   observeMetadataSearchParamsAccess?: boolean;
   /** Whether generated metadata may stream into the response body. */
@@ -303,7 +304,6 @@ export type BuildPageElementsOptions<
   rootUnauthorizedModule?: TModule | null;
   /** File-based metadata routes (favicon, manifest, sitemap, etc.). */
   metadataRoutes: readonly MetadataFileRoute[];
-  layoutParamAccess?: AppLayoutParamAccessTracker;
   /**
    * Configured next.config `basePath`. Threaded through `resolveAppPageHead`
    * so file-based metadata route URLs emitted in <head> are prefixed.
@@ -381,6 +381,7 @@ export async function buildPageElements<
     observePageSearchParamsAccess = false,
     isForceStatic = false,
     isUncacheableRender = false,
+    mountedLayouts = null,
     serveStreamingMetadata,
     placeStreamedMetadataInHead = false,
     isProduction = process.env.NODE_ENV === "production",
@@ -1033,7 +1034,7 @@ export async function buildPageElements<
       isRscRequest,
       isUncacheableRender,
       interceptionId: opts?.interceptionId ?? null,
-      layoutParamAccess: options.layoutParamAccess,
+      mountedLayouts,
       mountedSlotIds,
       makeThenableParams,
       matchedParams: params,

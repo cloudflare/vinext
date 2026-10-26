@@ -187,7 +187,15 @@ describe("slot primitives", () => {
       const html = await renderHtml(
         createContextProvider(
           mod.ElementsContext,
-          { "slot:metadata-warning:/": { "layout:/": "s" } },
+          {
+            "slot:metadata-warning:/": {
+              slotId: "slot:modal:/",
+              sourceMatchedUrl: "/feed",
+              sourceRouteId: "route:/feed",
+              targetMatchedUrl: "/photos/1",
+              targetRouteId: "route:/photos/[id]",
+            },
+          },
           React.createElement(mod.Slot, { id: "slot:metadata-warning:/" }),
         ),
       );
