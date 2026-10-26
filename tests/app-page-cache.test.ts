@@ -47,6 +47,12 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
+import { createWorkerCacheabilityAdmissionContext } from "../packages/vinext/src/server/cacheability-request.js";
+import {
+  CACHEABILITY_REQUEST_STATE,
+  type RouteCacheabilityState,
+} from "../packages/vinext/src/shims/cacheability-classification.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { withEnvVar } from "./env-test-helpers.js";
 import {
   buildQueryInvariantRenderObservation,
@@ -2396,6 +2402,99 @@ describe("app page cache helpers", () => {
     for (const [, , policy] of isrSet.mock.calls) {
       expect(policy).toEqual({ cacheControl: { revalidate: 60 }, tags: ["_N_T_/rsc-miss"] });
     }
+  });
+});
+
+describe("an RSC miss's document under completed-response admission", () => {
+  // An adapter that stores completed responses takes the page's document from
+  // admission, as an origin store takes it from the RSC cache write.
+  async function admitRscMiss(options: {
+    dynamicUsage?: boolean;
+    readsSearchParams?: boolean;
+    renderStatus: AppPageRscRenderStatus;
+  }) {
+    const calls: string[] = [];
+    const documents: unknown[] = [];
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/rsc-miss", {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      }),
+      null,
+      "build-a",
+      true,
+    );
+    const state = Reflect.get(context, CACHEABILITY_REQUEST_STATE) as RouteCacheabilityState;
+    state.route = { kind: "app-page", pattern: "/rsc-miss" };
+    const response = await runWithExecutionContext(context, () =>
+      finalizeAppPageRscCacheResponse(new Response("flight"), {
+        ...queryInvariantObservationBuilders,
+        captureAdmittedDocument(document) {
+          documents.push(document);
+        },
+        capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+        cleanPathname: "/rsc-miss",
+        consumeDynamicUsage: () => options.dynamicUsage === true,
+        consumeRenderObservationState() {
+          calls.push("observations");
+          return {
+            dynamicFetches: [],
+            requestApis: options.readsSearchParams ? ["searchParams"] : [],
+          };
+        },
+        dynamicUsedDuringBuild: false,
+        getPageTags: () => ["_N_T_/rsc-miss"],
+        getRequestCacheLife() {
+          calls.push("cacheLife");
+          return null;
+        },
+        isrRscKey: (pathname) => "rsc:" + pathname,
+        isrSet: vi.fn(),
+        isStaticEligible: true,
+        async resolveRscRenderStatus() {
+          calls.push("status");
+          return options.renderStatus;
+        },
+        revalidateSeconds: 60,
+      }),
+    );
+    await response.text();
+    return { calls, documents, outcome: await state.completion };
+  }
+
+  const document = { html: "<h1>page</h1>", linkHeader: "</page.css>; rel=preload; as=style" };
+
+  it("hands the adapter the document, rendered before cacheLife and observations are consumed", async () => {
+    const { calls, documents, outcome } = await admitRscMiss({
+      renderStatus: { kind: "page", document },
+    });
+
+    expect(documents).toEqual([document]);
+    expect(calls).toEqual(["status", "observations", "cacheLife"]);
+    expect(outcome).toMatchObject({ cacheable: true, searchParamsUnread: true });
+  });
+
+  it.each([
+    {
+      label: "a render that read searchParams",
+      readsSearchParams: true,
+      renderStatus: { kind: "page", document },
+    },
+    {
+      label: "a special error that rejects the shell",
+      renderStatus: { kind: "special-error", status: 404 },
+    },
+    { label: "a render with no document", renderStatus: { kind: "page" } },
+    { label: "a dynamic render", dynamicUsage: true, renderStatus: { kind: "page", document } },
+  ] satisfies Array<{
+    dynamicUsage?: boolean;
+    label: string;
+    readsSearchParams?: boolean;
+    renderStatus: AppPageRscRenderStatus;
+  }>)("hands the adapter no document for $label", async (options) => {
+    const { documents } = await admitRscMiss(options);
+
+    expect(documents).toEqual([null]);
   });
 });
 

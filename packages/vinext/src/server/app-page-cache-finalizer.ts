@@ -31,7 +31,7 @@ import {
   isRouteCacheabilityEvaluation,
   type RouteCacheabilityOutcome,
 } from "vinext/shims/cacheability-classification";
-import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getCdnCacheAdapter, type CdnAppPageDocument } from "vinext/shims/cdn-cache";
 import {
   resolveAppPageRscResponseStatus,
   type AppPageRscRenderStatus,
@@ -70,6 +70,8 @@ type FinalizeAppPageCacheabilityEvaluationOptions = {
   /** An RSC render's status, from its document's shell. */
   resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   revalidateSeconds: number | null;
+  /** Hands the CDN adapter the page's document to store beside the response. */
+  captureAdmittedDocument?: (document: CdnAppPageDocument | null) => void;
 };
 
 type FinalizeAppPageHtmlCacheResponseOptions = {
@@ -108,6 +110,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
 
 type ScheduleAppPageRscCacheWriteOptions = {
   bypassInterceptionContextCache?: boolean;
+  /** Hands the CDN adapter the page's document to store beside the response. */
+  captureAdmittedDocument?: (document: CdnAppPageDocument | null) => void;
   capturedRscDataPromise: Promise<ArrayBuffer> | null;
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
@@ -246,58 +250,80 @@ function finalizeEvaluatedAppPageResponse(
 ): Response | null {
   if (!isRouteCacheabilityEvaluation()) return null;
   const complete = deferRouteCacheability();
-  if (!complete) return response;
+  if (!complete) {
+    options.captureAdmittedDocument?.(null);
+    return response;
+  }
   captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
+
+  const admit = (renderStatus?: AppPageRscRenderStatus): void => {
+    const observationState = options.consumeRenderObservationState?.();
+    const cacheControl = resolveAppPageCacheControl({
+      expireSeconds: options.expireSeconds,
+      requestCacheLife: options.getRequestCacheLife?.(),
+      revalidateSeconds: options.revalidateSeconds,
+    });
+    const outcome: RouteCacheabilityOutcome = cacheControl
+      ? {
+          cacheable: true,
+          cacheControl: appPageCacheControlHeader(cacheControl),
+          ...(observationState && !observationState.requestApis.includes("searchParams")
+            ? { searchParamsUnread: true }
+            : {}),
+          tags: options.getPageTags(),
+        }
+      : { cacheable: false, reason: "render did not produce a cache policy" };
+    const admitted = renderStatus ? applyRscRenderStatus(outcome, renderStatus) : outcome;
+    // Every query shares the document's entry too.
+    options.captureAdmittedDocument?.(
+      admitted.cacheable && admitted.searchParamsUnread === true && renderStatus?.kind === "page"
+        ? (renderStatus.document ?? null)
+        : null,
+    );
+    complete(admitted);
+  };
 
   let completed = false;
   const finish = (): void => {
     if (completed) return;
     completed = true;
 
-    const observationState = options.consumeRenderObservationState?.();
-    let outcome: RouteCacheabilityOutcome;
+    let ineligible: RouteCacheabilityOutcome | undefined;
     if (
       options.capturedDynamicUsageBeforeContextCleanup?.() === true ||
       options.consumeDynamicUsage()
     ) {
-      outcome = {
+      ineligible = {
         cacheable: false,
         dynamicUsage: true,
         reason: "dynamic API used during render",
       };
     } else if (options.isStaticEligible === false) {
-      outcome = { cacheable: false, reason: "route is not statically generated" };
+      ineligible = { cacheable: false, reason: "route is not statically generated" };
     } else if (
       response.headers.has("set-cookie") ||
       hasExplicitNonCacheableResponsePolicy(response.headers)
     ) {
-      outcome = { cacheable: false, reason: "response explicitly opts out of shared caching" };
-    } else {
-      const cacheControl = resolveAppPageCacheControl({
-        expireSeconds: options.expireSeconds,
-        requestCacheLife: options.getRequestCacheLife?.(),
-        revalidateSeconds: options.revalidateSeconds,
-      });
-      outcome = cacheControl
-        ? {
-            cacheable: true,
-            cacheControl: appPageCacheControlHeader(cacheControl),
-            ...(observationState && !observationState.requestApis.includes("searchParams")
-              ? { searchParamsUnread: true }
-              : {}),
-            tags: options.getPageTags(),
-          }
-        : { cacheable: false, reason: "render did not produce a cache policy" };
+      ineligible = { cacheable: false, reason: "response explicitly opts out of shared caching" };
     }
-    if (outcome.cacheable && options.resolveRscRenderStatus) {
-      const cacheableOutcome = outcome;
-      void options.resolveRscRenderStatus().then(
-        (renderStatus) => complete(applyRscRenderStatus(cacheableOutcome, renderStatus)),
-        () => complete({ cacheable: false, reason: "render status could not be resolved" }),
-      );
+    if (ineligible) {
+      options.consumeRenderObservationState?.();
+      options.captureAdmittedDocument?.(null);
+      complete(ineligible);
       return;
     }
-    complete(outcome);
+    if (!options.resolveRscRenderStatus) {
+      admit();
+      return;
+    }
+    // The document renders before the render's cacheLife and observations are
+    // consumed, which its navigation cache metadata reads as an HTML request's
+    // does.
+    void options.resolveRscRenderStatus().then(admit, () => {
+      options.consumeRenderObservationState?.();
+      options.captureAdmittedDocument?.(null);
+      complete({ cacheable: false, reason: "render status could not be resolved" });
+    });
   };
 
   if (!response.body) {
@@ -474,6 +500,7 @@ export function finalizeAppPageRscCacheResponse(
     void options.capturedRscDataPromise?.catch(() => {});
     return probeResponse;
   }
+  options.captureAdmittedDocument?.(null);
   // Persisting to the ISR store and finalizing the client-facing headers are
   // independent decisions. Mounted-slot and unverified-interception variants
   // are deliberately never stored, but a fresh MISS stream can still reach a

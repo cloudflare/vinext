@@ -13,9 +13,12 @@ import type {
   VinextResponseStageTransport,
 } from "vinext/server/multi-stage";
 import {
+  NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
+  VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
 } from "vinext/internal/server/headers";
 import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
@@ -26,12 +29,20 @@ import {
   SHARED_RESPONSE_STAGE_HEADER,
   type SharedResponseStage,
 } from "./browser-cache-policy.js";
-import { hasSharedCacheCredentials, isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
+import {
+  hasSharedCacheCredentials,
+  isNonCacheableCacheControl,
+  type CdnAppPageDocument,
+} from "vinext/shims/cdn-cache";
 import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
   createCanonicalRscRequestHeaders,
   createCanonicalRscRequestUrl,
+  stripRscCacheBustingSearchParam,
+  stripRscSuffix,
+  VINEXT_RSC_BUILD_ID_HEADER,
+  VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
   VINEXT_RSC_VARY_HEADER,
 } from "vinext/internal/server/app-rsc-cache-busting";
@@ -341,6 +352,54 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
   });
 }
 
+/**
+ * Whether the response-stage props select an App page's own document or RSC
+ * payload, the two parts Next.js keeps in one entry, rather than a variant.
+ */
+function isCanonicalAppPage(responseStageProps: unknown, isRscRequest: boolean): boolean {
+  return (
+    responseStageProps !== null &&
+    typeof responseStageProps === "object" &&
+    Reflect.get(responseStageProps, "kind") === "app-page" &&
+    Reflect.get(responseStageProps, "isRscRequest") === isRscRequest &&
+    Reflect.get(responseStageProps, "matchKind") === "request" &&
+    // A document always renders the whole page.
+    (!isRscRequest || Reflect.get(responseStageProps, "renderMode") === "navigation") &&
+    Reflect.get(responseStageProps, "interceptionContext") === null &&
+    Reflect.get(responseStageProps, "interceptionId") === null &&
+    Reflect.get(responseStageProps, "mountedSlotsHeader") === null
+  );
+}
+
+/** The request an HTML request for an RSC request's page dispatches. */
+function documentRequest(rscRequest: Request): Request {
+  const url = new URL(rscRequest.url);
+  url.pathname = stripRscSuffix(url.pathname);
+  stripRscCacheBustingSearchParam(url);
+  return new Request(url);
+}
+
+/**
+ * The page's document an RSC miss rendered, with the headers an HTML request
+ * for the page stores: the admitted RSC response's, without the payload's own.
+ */
+function documentResponse(rscResponse: Response, document: CdnAppPageDocument): Response {
+  const headers = new Headers(rscResponse.headers);
+  for (const name of [
+    "Content-Length",
+    NEXTJS_DEPLOYMENT_ID_HEADER,
+    VINEXT_RSC_BUILD_ID_HEADER,
+    VINEXT_RSC_COMPATIBILITY_ID_HEADER,
+    VINEXT_RSC_COMPLETION_METADATA_HEADER,
+    VINEXT_STALE_TIME_PENDING_HEADER,
+  ]) {
+    headers.delete(name);
+  }
+  headers.set("Content-Type", "text/html; charset=utf-8");
+  if (document.linkHeader) headers.append("Link", document.linkHeader);
+  return new Response(document.html, { headers, status: rscResponse.status });
+}
+
 // A page's notFound(), forbidden() and unauthorized() are stored with their
 // status, as in Next.js.
 function isStoredErrorStatus(status: number): boolean {
@@ -543,16 +602,7 @@ const handler = {
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
-      const canSeedRsc =
-        isWarmup &&
-        props !== null &&
-        typeof props === "object" &&
-        Reflect.get(props, "kind") === "app-page" &&
-        Reflect.get(props, "isRscRequest") === false &&
-        Reflect.get(props, "matchKind") === "request" &&
-        Reflect.get(props, "interceptionContext") === null &&
-        Reflect.get(props, "interceptionId") === null &&
-        Reflect.get(props, "mountedSlotsHeader") === null;
+      const canSeedRsc = isWarmup && isCanonicalAppPage(props, false);
       const rscSeed = canSeedRsc
         ? {
             props: {
@@ -584,11 +634,24 @@ const handler = {
         void stored.body?.cancel().catch(() => {});
       }
 
+      // Next.js keeps a page's document and RSC payload in one entry, so an
+      // RSC miss stores the page's document under the key an HTML request for
+      // the page reads, the reverse of the warm-up's RSC seed.
+      const documentInvocation =
+        !isWarmup &&
+        options.cacheIdentity &&
+        stageRequest.method === "GET" &&
+        isCanonicalAppPage(props, true)
+          ? prepareInvocation(documentRequest(identityRequest), {
+              ...(identityProps as Record<string, unknown>),
+              isRscRequest: false,
+            })
+          : undefined;
       const capture: ResponseStoreInvocationCapture = rscSeed
         ? { captureRscData: true }
         : isWarmup
           ? {}
-          : { streamResponse: true };
+          : { streamResponse: true, ...(documentInvocation ? { captureDocument: true } : {}) };
       const serializedInvocation = JSON.stringify(invocation);
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
@@ -620,10 +683,24 @@ const handler = {
                 await admitted.body?.cancel().catch(() => {});
                 return;
               }
-              await responseStore.put(key, withoutRequestScopedHeaders(admitted, props), {
+              const stored = withoutRequestScopedHeaders(admitted, props);
+              await responseStore.put(key, stored, {
                 coalesce: true,
                 revalidator: { id: ROUTE_REVALIDATOR_ID, args: [serializedInvocation] },
               });
+              // Admission sets the document before it completes the response.
+              if (!documentInvocation || !capture.document) return;
+              await responseStore.put(
+                await cacheRequest(documentInvocation),
+                documentResponse(stored, capture.document),
+                {
+                  coalesce: true,
+                  revalidator: {
+                    id: ROUTE_REVALIDATOR_ID,
+                    args: [JSON.stringify(documentInvocation)],
+                  },
+                },
+              );
             })
             .catch((error) => {
               console.error(

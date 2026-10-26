@@ -1,3 +1,4 @@
+import type { CdnAppPageDocument } from "vinext/shims/cdn-cache";
 import type { NavigationContext } from "vinext/shims/navigation";
 import type { RootParams } from "vinext/shims/root-params";
 import { isRenderDynamicLatched } from "vinext/shims/headers";
@@ -24,7 +25,7 @@ export type AppPageRscRenderStatus =
   | {
       kind: "page";
       /** The page's document, when the resolver rendered one to store. */
-      document?: AppPageRscRenderDocument;
+      document?: CdnAppPageDocument;
     }
   | { kind: "special-error"; status: number; headers?: Record<string, string> }
   /**
@@ -32,12 +33,6 @@ export type AppPageRscRenderStatus =
    * generateMetadata()'s special error, whose document an RSC miss can't write.
    */
   | { kind: "unstorable" };
-
-type AppPageRscRenderDocument = {
-  html: string;
-  /** The renderer's own `Link` header. */
-  linkHeader?: string;
-};
 
 /** What the page's document renders with, as an HTML request renders it. */
 type AppPageRscRenderDocumentOptions = {

@@ -871,68 +871,77 @@ async function renderAppPageLifecycleImpl(
   };
 
   if (options.isRscRequest) {
+    // A stored RSC render takes the status of its document's shell, as in
+    // Next.js, which renders HTML beside RSC for a cache entry.
+    const capturedRscData = capturedRscDataRef.value;
+    const resolvesRscRenderStatus =
+      options.isProduction &&
+      shouldCaptureRscForCacheMetadata &&
+      capturedRscData !== null &&
+      options.isPrerender !== true &&
+      options.isRoutePPREnabled !== true;
     // Next.js keeps a page's document and RSC payload in one entry, so an RSC
     // miss for a page's own payload renders the page's document from it, as an
     // HTML request whose render may be stored renders it. A variant's payload
     // (a prefetch shell, an interception) isn't the one an HTML request
-    // stores, and a document with a nonce is never stored. An edge adapter
-    // stores responses itself and keeps no origin page entries, so the
-    // document would be discarded.
-    const rendersDocument =
+    // stores, and a document with a nonce is never stored.
+    const isPageDocumentRender =
       options.isCacheCandidate === true &&
-      getCdnCacheAdapter().ownsBackgroundRevalidation &&
       !options.scriptNonce &&
       !options.mountedSlotsHeader &&
       !options.interceptionContext &&
       !options.interceptionId &&
       (options.renderMode === undefined || options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION);
-    // A stored RSC render takes the status of its document's shell, as in
-    // Next.js, which renders HTML beside RSC for a cache entry.
-    const resolveRscRenderStatus =
-      options.isProduction &&
-      shouldCaptureRscForCacheMetadata &&
-      capturedRscDataRef.value !== null &&
-      options.isPrerender !== true &&
-      options.isRoutePPREnabled !== true
-        ? createAppPageRscRenderStatusResolver({
-            basePath: options.basePath,
-            capturedRscData: capturedRscDataRef.value,
-            ...(rendersDocument
-              ? {
-                  document: {
-                    clientTraceMetadata: options.clientTraceMetadata,
-                    getFontData: () =>
-                      createAppPageFontData({
-                        getLinks: options.getFontLinks,
-                        getPreloads: options.getFontPreloads,
-                        getStyles: options.getFontStyles,
-                      }),
-                    getInitialNavigationCacheMetadata: () =>
-                      resolveInitialNavigationCacheMetadata(
-                        peekDynamicUsage(),
-                        options.peekRequestCacheLife?.(),
-                      ),
-                    mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
-                    onSsrError: createAppPageSsrErrorHandler(
-                      options.createRscOnErrorHandler(options.cleanPathname, options.routePattern, {
-                        ...errorContextOverrides,
-                        renderSource: "server-rendering",
-                      }),
-                      rscErrorTracker.isCapturedError,
-                    ),
-                    reactMaxHeadersLength: options.reactMaxHeadersLength,
-                  },
-                }
-              : {}),
-            getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
-            getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
-            isForceStatic: options.isForceStatic,
-            loadSsrHandler: options.loadSsrHandler,
-            navigationContext: options.getNavigationContext(),
-            rootParams: options.rootParams,
-            routePattern: options.routePattern,
-          })
+    // An edge adapter keeps no origin page entries, so only one that stores
+    // the document beside the completed response gets it.
+    const cdnCacheAdapter = getCdnCacheAdapter();
+    const captureAdmittedDocument =
+      resolvesRscRenderStatus && isPageDocumentRender && !cdnCacheAdapter.ownsBackgroundRevalidation
+        ? cdnCacheAdapter.captureAppPageDocument?.()
         : undefined;
+    const rendersDocument =
+      isPageDocumentRender &&
+      (cdnCacheAdapter.ownsBackgroundRevalidation || captureAdmittedDocument !== undefined);
+    const resolveRscRenderStatus = resolvesRscRenderStatus
+      ? createAppPageRscRenderStatusResolver({
+          basePath: options.basePath,
+          capturedRscData,
+          ...(rendersDocument
+            ? {
+                document: {
+                  clientTraceMetadata: options.clientTraceMetadata,
+                  getFontData: () =>
+                    createAppPageFontData({
+                      getLinks: options.getFontLinks,
+                      getPreloads: options.getFontPreloads,
+                      getStyles: options.getFontStyles,
+                    }),
+                  getInitialNavigationCacheMetadata: () =>
+                    resolveInitialNavigationCacheMetadata(
+                      peekDynamicUsage(),
+                      options.peekRequestCacheLife?.(),
+                    ),
+                  mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
+                  onSsrError: createAppPageSsrErrorHandler(
+                    options.createRscOnErrorHandler(options.cleanPathname, options.routePattern, {
+                      ...errorContextOverrides,
+                      renderSource: "server-rendering",
+                    }),
+                    rscErrorTracker.isCapturedError,
+                  ),
+                  reactMaxHeadersLength: options.reactMaxHeadersLength,
+                },
+              }
+            : {}),
+          getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
+          getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
+          isForceStatic: options.isForceStatic,
+          loadSsrHandler: options.loadSsrHandler,
+          navigationContext: options.getNavigationContext(),
+          rootParams: options.rootParams,
+          routePattern: options.routePattern,
+        })
+      : undefined;
     let requestCacheLifeForPrerender: AppPageRequestCacheLife | null = null;
     if (shouldWaitForAllReady) {
       await settleCapturedRscRenderForCacheMetadata(capturedRscDataRef.value);
@@ -1070,6 +1079,7 @@ async function renderAppPageLifecycleImpl(
       capturedRscDataPromise:
         options.isProduction && shouldCaptureRscForCacheMetadata ? capturedRscDataRef.value : null,
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
+      captureAdmittedDocument,
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState,

@@ -12,6 +12,7 @@ import type {
   IncrementalCacheValue,
 } from "vinext/shims/cache";
 import { cacheForRequest } from "vinext/cache";
+import type { CdnAppPageDocument } from "vinext/shims/cdn-cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
@@ -38,7 +39,11 @@ type ResponseStoreInvocation = {
 
 export type ResponseStoreInvocationCapture = {
   admittedResponse?: Promise<Response>;
+  /** Store the page's document beside an App page RSC response. */
+  captureDocument?: boolean;
   captureRscData?: boolean;
+  /** The page's document, set before admission completes the response. */
+  document?: CdnAppPageDocument;
   /** The render matched the request's If-None-Match; the adapter sends the 304. */
   notModified?: boolean;
   rscData?: Promise<ArrayBuffer>;
@@ -82,6 +87,20 @@ export function captureResponseStoreRscData(rscData: Promise<ArrayBuffer>): void
   } else {
     void rscData.catch(() => {});
   }
+}
+
+/**
+ * Retain the page's document only when the outer response-store invocation
+ * requested it. Admission settles it before it completes the response.
+ */
+export function captureResponseStoreAppPageDocument():
+  | ((document: CdnAppPageDocument | null) => void)
+  | undefined {
+  const capture = invocationStorage.getStore()?.capture;
+  if (!capture?.captureDocument) return undefined;
+  return (document) => {
+    capture.document = document ?? undefined;
+  };
 }
 
 /** A shared invocation stores the page, so its adapter sends the page's 304. */
