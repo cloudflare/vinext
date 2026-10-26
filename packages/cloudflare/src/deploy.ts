@@ -609,11 +609,6 @@ export function resolveViteBuildMode(
   return deploymentTool === "cf" ? (env ?? "production") : "production";
 }
 
-/** Resolve a `--vite-config` value to an absolute path; undefined keeps Vite's default lookup. */
-export function resolveViteConfigFile(root: string, viteConfig: string | undefined) {
-  return viteConfig ? path.resolve(root, viteConfig) : undefined;
-}
-
 async function loadDeployViteConfigMetadata(
   root: string,
   mode: string,
@@ -2218,7 +2213,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
     );
   }
   const viteMode = resolveViteBuildMode(deploymentTool, deployEnv);
-  const viteConfigFile = resolveViteConfigFile(root, options.viteConfig);
+  // Undefined keeps Vite's default vite.config.* lookup in the root.
+  const viteConfigFile = options.viteConfig ? path.resolve(root, options.viteConfig) : undefined;
   const wranglerFallbackEnv = deploymentTool === "cf" ? undefined : deployEnv;
   loadDotenv({ root, mode: viteMode });
 

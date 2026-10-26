@@ -131,9 +131,10 @@ export function formatPreviewsDeployHelp(): string {
     preview-name    Optional Preview name (cf uses the CI or Git branch if omitted)
 
   Options:
-    --mode <mode>   Vite mode to build and deploy in (default: production)
-    --skip-build    Deploy existing Preview Build Output without rebuilding
-    -h, --help      Show this help
+    --mode <mode>          Vite mode to build and deploy in (default: production)
+    --skip-build           Deploy existing Preview Build Output without rebuilding
+    --vite-config <path>   Vite config file to build with (default: vite.config.*)
+    -h, --help             Show this help
 
   Examples:
     vinext-cloudflare previews deploy

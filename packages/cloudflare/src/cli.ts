@@ -102,6 +102,7 @@ async function previewsCommand(): Promise<void> {
     root: process.cwd(),
     env: options.mode,
     skipBuild: options.skipBuild,
+    viteConfig: options.viteConfig,
     target: { type: "preview", name: options.name },
   });
 }
