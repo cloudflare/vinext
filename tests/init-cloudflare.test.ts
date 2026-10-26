@@ -335,7 +335,7 @@ export default {
     });
 
     expectValidConfig(output);
-    expect(output).toContain("server: { port: 3902 }, /* keep server comment */");
+    expect(output).toMatch(/server: \{ port: 3902 \}, \/\* keep server comment \*\/\s+plugins: \[/);
     expect(output).not.toContain("*/,");
   });
 
