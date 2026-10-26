@@ -85,6 +85,25 @@ describe("next-intl catalog plugin", () => {
     );
   });
 
+  // With resolve.preserveSymlinks, Vite keeps the symlinked (logical) path in ids.
+  it("loads catalogs through both the real and a symlinked directory path", async () => {
+    const linkDir = path.join(path.dirname(catalogDir), `${path.basename(catalogDir)}-link`);
+    fs.symlinkSync(catalogDir, linkDir, "junction");
+    try {
+      const hook = createLoadHook({
+        include: [linkDir],
+        test: /\.json$/,
+        options: { messages: { path: "./messages", format: "json", precompile: true } },
+      })!;
+      const logical = await load(hook, toSlash(path.join(linkDir, "en.json")));
+      const real = await load(hook, toSlash(path.join(catalogDir, "en.json")));
+      expect(logical?.code).toContain('[\\"About \\",[\\"house\\"]]');
+      expect(real?.code).toBe(logical?.code);
+    } finally {
+      fs.rmSync(linkDir, { force: true });
+    }
+  });
+
   it("leaves other files and explicit raw/url imports to Vite", async () => {
     const hook = createLoadHook({
       include: [catalogDir],

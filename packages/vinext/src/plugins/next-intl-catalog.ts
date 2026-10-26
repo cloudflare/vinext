@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
-import path from "pathslash";
+import path, { toSlash } from "pathslash";
 import type { Plugin } from "vite";
 import type { NextIntlCatalogLoader } from "../config/next-config.js";
 import { canonicalizeFilePath, stripViteModuleQuery } from "../utils/path.js";
@@ -35,9 +35,10 @@ export function createNextIntlCatalogPlugin(
 }
 
 function createCatalogLoadPlugin(root: string, catalogLoader: NextIntlCatalogLoader): Plugin {
-  const catalogDirs = catalogLoader.include.map(
-    (dir) => `${escapeRegExp(canonicalizeFilePath(dir))}/`,
-  );
+  // Vite ids use the real path, or the logical one with resolve.preserveSymlinks.
+  const catalogDirs = [
+    ...new Set(catalogLoader.include.flatMap((dir) => [toSlash(dir), canonicalizeFilePath(dir)])),
+  ].map((dir) => `${escapeRegExp(dir)}/`);
   let loaderPromise: Promise<WebpackLoader> | undefined;
 
   return {
