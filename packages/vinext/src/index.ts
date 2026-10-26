@@ -272,7 +272,6 @@ import {
 import { createMiddlewareServerOnlyPlugin } from "./plugins/middleware-server-only.js";
 import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.js";
 import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
-import { createCloudflareNativeModuleStubsPlugin } from "./plugins/cloudflare-native-module-stubs.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
@@ -5495,7 +5494,6 @@ export const loadServerActionClient = ${
         },
       },
     },
-    createCloudflareNativeModuleStubsPlugin(() => hasCloudflarePlugin),
     {
       // Workers render with React's edge Fizz build. React's exports map picks
       // it for `react-dom/server` and `react-dom/static` under the `workerd`
