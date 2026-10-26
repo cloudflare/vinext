@@ -3776,6 +3776,11 @@ describe("app page dispatch", () => {
       const isrGet = vi.fn(async () =>
         buildISRCacheEntry(buildCachedAppPageValue("<html>stored</html>"), isStale),
       );
+      let releaseWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(() => writeReleased);
       const scheduleBackgroundRegeneration = vi.fn();
       const { options } = createDispatchOptions({
         async buildPageElement() {
@@ -3784,6 +3789,7 @@ describe("app page dispatch", () => {
         },
         isProduction: true,
         isrGet,
+        isrSet,
         revalidateSeconds: 60,
         scheduleBackgroundRegeneration,
       });
@@ -3791,7 +3797,17 @@ describe("app page dispatch", () => {
       await runWithRequestContext(
         createRequestContext({ isOnDemandRevalidate: true }),
         async () => {
-          const response = await dispatchAppPage(options);
+          let dispatched = false;
+          const pending = dispatchAppPage(options).then((response) => {
+            dispatched = true;
+            return response;
+          });
+          // Like Next.js, it answers only once the regenerated entry is stored.
+          await vi.waitFor(() => expect(isrSet).toHaveBeenCalled());
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(dispatched).toBe(false);
+          releaseWrite();
+          const response = await pending;
           expect(response.headers.get("x-vinext-cache")).not.toBe(isStale ? "STALE" : "HIT");
           expect(await response.text()).not.toContain("stored");
         },
@@ -3800,7 +3816,6 @@ describe("app page dispatch", () => {
       expect(isrGet).not.toHaveBeenCalled();
       expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
       expect(readPolicy).toEqual([true]);
-      await vi.waitFor(() => expect(options.isrSet).toHaveBeenCalled());
     },
   );
 

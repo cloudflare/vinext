@@ -1404,8 +1404,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
+  // Next.js's ResponseCache awaits an on-demand revalidation's writes before
+  // it answers, so `await res.revalidate()` resolves once the entry is stored.
+  const onDemandCacheWrites: Promise<void>[] | null = _isOnDemandRevalidate() ? [] : null;
 
-  return renderAppPageLifecycle({
+  const response = await renderAppPageLifecycle({
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
     clientTraceMetadata: options.clientTraceMetadata,
@@ -1514,9 +1517,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,
     waitUntil(cachePromise) {
+      onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
   });
+  // Each write reads its own branch of the render's streams, so it completes
+  // while the response's branch stays unread.
+  if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
+  return response;
 }
 
 /** One render's head, once it prepares one, and how that render resolves it. */

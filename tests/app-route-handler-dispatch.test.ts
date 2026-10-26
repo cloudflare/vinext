@@ -873,13 +873,18 @@ describe("app route handler dispatch", () => {
       const isrGet = vi.fn(async () =>
         buildISRCacheEntry(buildCachedRouteValue("stored"), isStale),
       );
-      const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+      let releaseWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const isrSet = vi.fn((_key: string, ..._rest: unknown[]) => writeReleased);
       const scheduleBackgroundRegeneration = vi.fn();
 
       await runWithRequestContext(
         createRequestContext({ isOnDemandRevalidate: true }),
         async () => {
-          const response = await dispatchAppRouteHandler({
+          let dispatched = false;
+          const pending = dispatchAppRouteHandler({
             cleanPathname: "/api/on-demand",
             clearRequestContext() {},
             draftModeSecret: "test-draft-secret",
@@ -910,8 +915,16 @@ describe("app route handler dispatch", () => {
             },
             scheduleBackgroundRegeneration,
             searchParams: new URLSearchParams(),
+          }).then((response) => {
+            dispatched = true;
+            return response;
           });
-
+          // Like Next.js, it answers only once the regenerated entry is stored.
+          await vi.waitFor(() => expect(isrSet).toHaveBeenCalled());
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(dispatched).toBe(false);
+          releaseWrite();
+          const response = await pending;
           expect(await response.text()).toBe("regenerated");
         },
       );
