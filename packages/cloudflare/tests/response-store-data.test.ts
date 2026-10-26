@@ -656,11 +656,19 @@ test("refreshes the revision behind the stale entry a write passes as staleEntry
     vi.setSystemTime(10_000);
     const store = new TestStore();
     const handler = new WorkersResponseStoreCacheHandler(store);
-    const readAs = async (status: string, revision: string | null, revalidate?: number) => {
+    const readAs = async (
+      status: string,
+      revision: string | null,
+      revalidate?: number,
+      softTags?: string[],
+    ) => {
       store.response?.headers.set("X-Workers-Response-Store", status);
       if (revision === null) store.response?.headers.delete("X-Workers-Response-Store-Revision");
       else store.response?.headers.set("X-Workers-Response-Store-Revision", revision);
-      const entry = await handler.get("key", revalidate === undefined ? undefined : { revalidate });
+      const entry = await handler.get("key", {
+        ...(revalidate === undefined ? {} : { revalidate }),
+        ...(softTags ? { softTags } : {}),
+      });
       expect(entry).not.toBeNull();
       return entry!;
     };
@@ -682,7 +690,17 @@ test("refreshes the revision behind the stale entry a write passes as staleEntry
     expect(await write(fresh)).not.toHaveProperty("replacesRevision");
     await handler.revalidateTag("tag", { expire: 0 });
     expect(await write(stale)).toMatchObject({ replacesRevision: 7 });
+    expect(await write(stale)).not.toHaveProperty("replacesTagExpiration");
     expect(await write("7")).not.toHaveProperty("replacesRevision");
+
+    // The Store can't see soft tags expire, so the refresh carries the expiration it read.
+    store.tagExpiration = 5_000;
+    const softStale = await readAs("BLOB-STALE", "9", undefined, ["_N_T_/b", "_N_T_/a"]);
+    expect(await write(softStale)).toMatchObject({
+      replacesRevision: 9,
+      replacesTagExpiration: { tags: store.tagExpirationCalls.at(-1), expiration: 5_000 },
+    });
+    store.tagExpiration = 0;
 
     // A copy stale only to its caller may be an edge copy: replacing it must purge it.
     vi.setSystemTime(40_000);

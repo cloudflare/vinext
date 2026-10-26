@@ -42,10 +42,11 @@ export type PurgeReservation = {
   tombstoneSequence: number;
 };
 
-/** The revision a refresh read stale, and whether readers see a newer one in R2. */
+/** The revision a refresh read stale, and the expiration of the soft tags that read saw. */
 export type RefreshedRevision = {
   revision: number;
-  replacedInR2: boolean;
+  tags?: string[];
+  tagExpiration?: number;
 };
 
 type TombstoneDrainResult = {
@@ -156,6 +157,8 @@ type EntryRow = Record<string, SqlStorageValue> & {
   expiry_behavior: string | null;
   cache_tags: string | null;
   tombstoned: number;
+  replaced_revision: number | null;
+  invalidated_revision: number | null;
 };
 
 type PurgeEntryRow = Pick<EntryRow, "key_hash" | "cache_key" | "latest_revision" | "object_key">;
@@ -305,7 +308,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           revalidator_args TEXT,
           expiry_behavior TEXT,
           cache_tags TEXT,
-          tombstoned INTEGER NOT NULL DEFAULT 0
+          tombstoned INTEGER NOT NULL DEFAULT 0,
+          replaced_revision INTEGER,
+          invalidated_revision INTEGER
         );
         CREATE INDEX IF NOT EXISTS entries_cache_key ON entries(cache_key);
         CREATE INDEX IF NOT EXISTS entries_active_object_key
@@ -369,12 +374,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 7) return;
+        if (migrations.size === 8) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -477,6 +482,16 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             `);
           }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (8)");
+        }
+        if (!migrations.has(9)) {
+          const entries = schemas.find(({ name }) => name === "entries")?.sql;
+          if (!entries?.includes("replaced_revision")) {
+            ctx.storage.sql.exec(`
+              ALTER TABLE entries ADD COLUMN replaced_revision INTEGER;
+              ALTER TABLE entries ADD COLUMN invalidated_revision INTEGER;
+            `);
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
         }
       });
       ctx.storage.sql.exec(`
@@ -1023,16 +1038,20 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         current.pending_publishable !== 1 ||
         revision > current.latest_revision ||
         (current.active_revision !== null && revision <= current.active_revision) ||
-        // A refresh of a revision another write or invalidate() has since replaced: the
-        // newer one is fresh, or stale where readers see it in R2, and refreshed by them. A
-        // stale one they can't see never reached R2. After a tombstone there is nothing to
-        // refresh. In both cases the write goes ahead.
+        // Another refresh of the revision this one read is already published and fresh. Like
+        // Next.js, any other write still lands, last writer wins. Once that refresh is stale,
+        // so is its edge copy, and this one lands without a purge, which also heals a key
+        // whose winning refresh never reached R2. After an invalidation or purge of the key,
+        // or of the soft tags the caller checked when reading (e.g. revalidatePath()), the two
+        // may straddle it, so both land.
         (replaces !== undefined &&
-          !current.tombstoned &&
-          current.active_revision !== null &&
-          current.active_revision > replaces.revision &&
-          (replaces.replacedInR2 ||
-            (current.fresh_until !== null && Date.now() < current.fresh_until))) ||
+          current.replaced_revision === replaces.revision &&
+          (current.invalidated_revision === null ||
+            current.invalidated_revision <= replaces.revision) &&
+          current.fresh_until !== null &&
+          Date.now() < current.fresh_until &&
+          (replaces.tags === undefined ||
+            this.getTagExpiration(replaces.tags) <= replaces.tagExpiration!)) ||
         (claimId !== undefined &&
           (current.claim_id !== claimId ||
             current.claim_revision !== revision ||
@@ -1070,7 +1089,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
-          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0
+          revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0,
+          replaced_revision = ?
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,
@@ -1084,6 +1104,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
+        replaces?.revision ?? null,
         keyHash,
         revision,
         revision,
@@ -1172,8 +1193,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           latest_revision = ?, active_revision = ?, object_key = NULL,
           status_text = NULL, response_headers = NULL, fresh_until = NULL,
           swr_until = NULL, revalidator_id = NULL, revalidator_args = NULL,
-          expiry_behavior = NULL, cache_tags = NULL, tombstoned = 1
+          expiry_behavior = NULL, cache_tags = NULL, tombstoned = 1, invalidated_revision = ?
         WHERE key_hash = ? AND active_revision = ?`,
+        tombstoneRevision,
         tombstoneRevision,
         tombstoneRevision,
         keyHash,
@@ -1362,7 +1384,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             revalidator_args = NULL,
             expiry_behavior = NULL,
             cache_tags = NULL,
-            tombstoned = 1
+            tombstoned = 1,
+            invalidated_revision = latest_revision + 1
           WHERE key_hash IN (${placeholders})`,
           ...keyHashes,
         );
@@ -1474,7 +1497,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             latest_revision = latest_revision + 1,
             active_revision = latest_revision + 1,
             fresh_until = MIN(fresh_until, ?),
-            swr_until = MIN(swr_until, COALESCE(?, swr_until))
+            swr_until = MIN(swr_until, COALESCE(?, swr_until)),
+            invalidated_revision = latest_revision + 1
           WHERE key_hash IN (${placeholders})`,
           invalidatedAt,
           expiresAt ?? null,
