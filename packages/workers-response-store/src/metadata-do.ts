@@ -491,6 +491,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
               ALTER TABLE entries ADD COLUMN invalidated_revision INTEGER;
             `);
           }
+          // Invalidations before the upgrade weren't recorded: count the active revision as one.
+          ctx.storage.sql.exec("UPDATE entries SET invalidated_revision = active_revision");
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
         }
       });
@@ -1104,7 +1106,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         metadata.revalidator ? JSON.stringify(metadata.revalidator.args) : null,
         metadata.expiryBehavior === "miss" ? "miss" : null,
         JSON.stringify(metadata.cacheTags),
-        replaces?.revision ?? null,
+        // Only a revision the key has reached is one this write can have replaced.
+        replaces !== undefined &&
+          current.active_revision !== null &&
+          replaces.revision <= current.active_revision
+          ? replaces.revision
+          : null,
         keyHash,
         revision,
         revision,

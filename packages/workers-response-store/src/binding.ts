@@ -157,6 +157,8 @@ type StoreResult = {
   published: boolean;
   entry: StoredEntry | null;
   response?: Response;
+  /** The revision a published refresh replaced. */
+  replacedRevision?: number;
 };
 
 type PublicationResult = {
@@ -1114,6 +1116,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgePurgeRequired: publication.edgePurgeRequired,
       published: true,
       entry,
+      ...(replaces ? { replacedRevision: replaces.revision } : {}),
       ...(stored && entry
         ? {
             response: this.createStoredResponse(
@@ -1398,8 +1401,14 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         }
         if (result?.published && result.entry) {
           // A leader no newer than the revision this refresh read, e.g. one published before
-          // an invalidate(), can't stand in for it. A newer one does, as for any coalesced write.
-          if (replacesRevision !== undefined && result.entry.activeRevision <= replacesRevision) {
+          // an invalidate(), can't stand in for it. Behind another refresh of that revision,
+          // only the metadata DO knows whether the key was invalidated since: it drops a
+          // duplicate before any R2 call. Any other leader stands in, as for any coalesced write.
+          if (
+            replaces !== undefined &&
+            (result.entry.activeRevision <= replaces.revision ||
+              result.replacedRevision === replaces.revision)
+          ) {
             break;
           }
           const objectKey = reservation.objectKey;
@@ -1407,10 +1416,6 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
             .finishPendingObjects([objectKey])
             .catch((error) => this.logCleanupFailure(objectKey, error));
           void response.body?.cancel().catch(() => {});
-          // The leading write already replaced that revision, purging its edge copy if needed.
-          if (replacesRevision !== undefined && result.entry.activeRevision > replacesRevision) {
-            return { backingStoreUpdated: false, edgePurgeAccepted: false };
-          }
           return {
             backingStoreUpdated: true,
             edgePurgeAccepted:

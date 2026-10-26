@@ -472,6 +472,9 @@ test("replacesRevision drops a refresh of a revision another refresh already rep
     assert.equal(write.json.backingStoreUpdated, true, value);
     assert.equal(await (await read("/refresh-race")).text(), value);
   }
+  // Nor is one recorded: the same future value again is another plain write.
+  const again = await put("/refresh-race", "again", { ...refresh, replacesRevision: "1000000" });
+  assert.equal(again.json.backingStoreUpdated, true);
 
   // Like Next.js, refreshes read before invalidate() or purge() still land, last writer wins:
   // R2 may still serve the read revision, so a duplicate can straddle the mutation.
@@ -681,6 +684,35 @@ test("replacesRevision lets refreshes land after a refresh whose R2 write failed
   }
 });
 
+test("replacesRevision lets a refresh coalesced behind another land after an invalidate()", async () => {
+  const path = "/refresh-race-coalesced-invalidated";
+  const tags = [path.slice(1)];
+  const edgeCalls = async () =>
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length;
+  await put(path, "first", { tags });
+  const fresh = await read(path);
+  await fresh.arrayBuffer();
+  const replacesRevision = fresh.headers.get("X-Workers-Response-Store-Revision");
+  assert.ok(replacesRevision);
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
+  const options = { coalesce: true, purgeExisting: true, replacesRevision, tags };
+  // The leader replaces the fresh copy, and stays coalescible while its purge is pending.
+  const leader = put(path, "second", options);
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await edgeCalls()) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await edgeCalls(), 1);
+  await invalidate({ tags });
+  // Like Next.js, a refresh of the same revision that lands after the invalidate() is stored.
+  const follower = await put(path, "third", options);
+  assert.equal(follower.json.backingStoreUpdated, true);
+  assert.equal((await leader).json.backingStoreUpdated, true);
+  const after = await read(path);
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "third");
+});
+
 test("replacesRevision doesn't coalesce a refresh into a leader older than its revision", async () => {
   const path = "/refresh-race-old-leader";
   const tags = [path.slice(1)];
@@ -745,6 +777,33 @@ test("replacesRevision drops an overlapping refresh coalesced into one that repl
     1,
   );
   assert.equal(await (await read("/refresh-race-coalesced")).text(), "second");
+});
+
+test("replacesRevision leaves a refresh coalesced behind an ordinary write to it", async () => {
+  await put("/refresh-race-coalesced-ordinary", "first");
+  const fresh = await read("/refresh-race-coalesced-ordinary");
+  await fresh.arrayBuffer();
+  const replacesRevision = fresh.headers.get("X-Workers-Response-Store-Revision");
+  assert.ok(replacesRevision);
+  const leader = put("/refresh-race-coalesced-ordinary", "second", {
+    coalesce: true,
+    purgeExisting: true,
+    bodyDelayMs: 300,
+  });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) === 1) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await metadataRowCount("pending_objects"), 1);
+  // As for any coalesced write, the leader stands in for it: no second R2 write.
+  const follower = await put("/refresh-race-coalesced-ordinary", "third", {
+    coalesce: true,
+    purgeExisting: true,
+    replacesRevision,
+  });
+  assert.equal(follower.json.backingStoreUpdated, true);
+  assert.equal((await leader).json.backingStoreUpdated, true);
+  assert.equal(await (await read("/refresh-race-coalesced-ordinary")).text(), "second");
 });
 
 test("an entry without a revalidator keeps its edge policy with response metadata in the body", async () => {
@@ -2971,6 +3030,9 @@ test("the previous metadata schema is upgraded in place", async () => {
                 this.ctx.storage.sql.exec(
                   "INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned) VALUES ('legacy-entry', '/legacy-entry', 1, 1, 'legacy-object', '', '[]', 1, 1, json_array('Legacy-Entry-Tag', 'ÜBER'), 0)"
                 );
+                this.ctx.storage.sql.exec(
+                  "INSERT INTO entries (key_hash, cache_key, active_revision, latest_revision, object_key, status_text, response_headers, fresh_until, swr_until, cache_tags, tombstoned) VALUES ('legacy-kept', '/legacy-kept', 3, 3, 'legacy-kept-object', '', '[]', 1, 1, json_array(), 0)"
+                );
               }
             }
             export default { fetch() { return new Response("ok"); } };
@@ -3052,6 +3114,14 @@ test("the previous metadata schema is upgraded in place", async () => {
       ),
       // The purge above recorded the revision it tombstoned.
       [{ expiry_behavior: null, invalidated_revision: 2, replaced_revision: null }],
+    );
+    // Invalidations before the upgrade weren't recorded, so the active revision counts as one.
+    assert.deepEqual(
+      await storage.exec(
+        "SELECT replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
+        "legacy-kept",
+      ),
+      [{ invalidated_revision: 3, replaced_revision: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(
