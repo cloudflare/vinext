@@ -529,6 +529,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
               cache: "shared",
               cacheIdentity: {
                 props: { ...props, resolvedUrl: url.pathname },
+                queryFree: true,
                 request: new Request(identityUrl, { headers: request.headers }),
               },
             }
@@ -620,6 +621,43 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       "https://example.com/page?q=a",
       "https://example.com/page?q=b",
     ]);
+  });
+
+  it("stores both parts of a page only under a query-free identity", async () => {
+    stages.response.mockImplementation(async () => {
+      captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+      return new Response("html", { headers: { "Cache-Control": "public, max-age=60" } });
+    });
+    const storedUrls = async () => {
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const ctx = context();
+      const response = await handler.fetch(
+        new Request("https://example.com/page?q=a"),
+        {} as never,
+        ctx,
+      );
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+      return [...entries.values()].map((entry) => revalidatorInvocation(entry).request.url);
+    };
+
+    dispatchWithIdentity();
+    expect((await storedUrls()).sort()).toEqual([
+      "https://example.com/page",
+      "https://example.com/page?_rsc",
+    ]);
+
+    // An identity that keeps the query, as a public cache policy's does, is
+    // cached per full URL, so it stores its own part.
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) => {
+      const props = pageProps("/page?q=a");
+      return dispatchResponseStage(request, props, {
+        cache: "shared",
+        cacheIdentity: { props, request: new Request(request.url) },
+      });
+    });
+    expect(await storedUrls()).toEqual(["https://example.com/page?q=a"]);
   });
 
   it("stores and regenerates App page RSC without the request's params and path headers", async () => {
@@ -823,6 +861,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
           cache: "shared",
           cacheIdentity: {
             props,
+            queryFree: true,
             request: new Request("https://example.com/page?_rsc", {
               headers: createCanonicalRscRequestHeaders(),
             }),

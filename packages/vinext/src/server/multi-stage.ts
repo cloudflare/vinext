@@ -89,6 +89,12 @@ export type VinextResponseStageDispatchOptions = {
    */
   cacheIdentity?: {
     props: unknown;
+    /**
+     * Set when the identity dropped the user query. A transport stores a
+     * page's other part from one render only under such an identity: one
+     * that keeps the query is cached per full URL, and stores its own part.
+     */
+    queryFree?: true;
     request: Request;
   };
 };

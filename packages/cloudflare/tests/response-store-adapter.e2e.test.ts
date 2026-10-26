@@ -427,21 +427,23 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const onHost = (host: string, pathname: string, init?: Init) =>
       miniflare.dispatchFetch(`https://${host}${pathname}`, init);
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
-    const entries: Array<[string, Init | undefined, number]> = [
-      ["/static-default", undefined, 200],
-      ["/static-default.rsc?_rsc=", rscInit, 200],
-      ["/api/host-shared", undefined, 200],
-      ["/metadata-storage/status-404/opengraph-image", undefined, 404],
-      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200],
+    // A page's document stores its RSC payload too; a `.rsc` path stores its
+    // payload alone.
+    const entries: Array<[string, Init | undefined, number, number]> = [
+      ["/static-default", undefined, 200, 2],
+      ["/static-default.rsc?_rsc=", rscInit, 200, 1],
+      ["/api/host-shared", undefined, 200, 1],
+      ["/metadata-storage/status-404/opengraph-image", undefined, 404, 1],
+      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200, 1],
     ];
-    for (const [pathname, init, status] of entries) {
+    for (const [pathname, init, status, stored] of entries) {
       const entryPath = new URL(pathname, "https://app.test").pathname.replace(/\.rsc$/, "");
       const before = (await responseEntries(entryPath)).length;
       const fill = await onHost("tenant-a.test", pathname, init);
       const fillBody = await fill.text();
       assert.equal(fill.status, status, `${pathname}: ${fillBody}`);
       assert.equal(fill.headers.get("x-vinext-cache"), "MISS", pathname);
-      await waitForStoredEntries(() => responseEntries(entryPath), before + 1);
+      await waitForStoredEntries(() => responseEntries(entryPath), before + stored);
 
       for (const host of ["tenant-b.test", "tenant-b.test:8443"]) {
         const hit = await onHost(host, pathname, init);

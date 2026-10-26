@@ -186,11 +186,10 @@ export function createSharedAppPageCacheIdentity(
     // props. Transports key these Vary fields, so keep them out of the key.
     for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
   }
-  return sharedAppCacheIdentity(
-    queryFree.url,
-    { headers, method: request.method },
-    queryFree.props,
-  );
+  return {
+    ...sharedAppCacheIdentity(queryFree.url, { headers, method: request.method }, queryFree.props),
+    queryFree: true,
+  };
 }
 
 /**

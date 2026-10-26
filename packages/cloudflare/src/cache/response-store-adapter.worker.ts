@@ -717,10 +717,10 @@ const handler = {
         );
       }
 
-      // Core supplies a query-free identity only for shared App page dispatches,
-      // whose admission requires a negative searchParams proof. The render
-      // still receives the real request; the key, route replay and RSC seed
-      // use the identity.
+      // Core supplies a host-free identity for shared App Router dispatches,
+      // query-free for App pages, behind completed-response admission. The
+      // render still receives the real request; the key, route replay and RSC
+      // seed use the identity.
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
@@ -728,7 +728,7 @@ const handler = {
       // shared HEAD dispatches as GET and stores the GET entry, so it stores
       // both parts.
       const otherPart =
-        isWarmup || options.cacheIdentity !== undefined
+        isWarmup || options.cacheIdentity?.queryFree
           ? otherPagePart(identityRequest, identityProps)
           : undefined;
       // A warm-up renders the page again when its RSC payload is missing.

@@ -1067,6 +1067,7 @@ describe("createAppRscHandler", () => {
           `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
         );
         expect(options.cacheIdentity?.request.method).toBe("GET");
+        expect(options.cacheIdentity?.queryFree).toBe(true);
         expect(options.cacheIdentity?.props).toEqual({
           ...props,
           requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
@@ -1349,6 +1350,7 @@ describe("createAppRscHandler", () => {
       expect(options.cacheIdentity?.request.url).toBe(
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about?tab=latest`,
       );
+      expect(options.cacheIdentity?.queryFree).toBeUndefined();
       expect(options.cacheIdentity?.props).toEqual({
         ...props,
         requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
@@ -1426,6 +1428,7 @@ describe("createAppRscHandler", () => {
           `${VINEXT_CACHE_IDENTITY_ORIGIN}${pathAndSearch(request.url)}`,
         );
         expect([...options.cacheIdentity!.request.headers]).toEqual([...request.headers]);
+        expect(options.cacheIdentity?.queryFree).toBeUndefined();
         expect(options.cacheIdentity?.props).toEqual({
           ...props,
           requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
