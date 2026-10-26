@@ -1,9 +1,12 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { Readable, Writable } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
-import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -128,14 +131,31 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
-  if (!request.body) {
-    return "";
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+  decoder: ReturnType<typeof createPagesBodyDecoder>["decoder"],
+): Promise<string> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: string[] = [];
+  let totalSize = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      totalSize += value.byteLength;
+      if (totalSize > maxBytes) {
+        void reader.cancel();
+        throw new PagesBodyParseError("Request body too large", 413);
+      }
+      chunks.push(decoder.write(Buffer.from(value)));
+    }
+    chunks.push(decoder.end() || "");
+    return chunks.join("");
+  } finally {
+    reader.releaseLock();
   }
-
-  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
-    throw new PagesBodyParseError("Request body too large", 413);
-  });
 }
 
 /**
@@ -157,9 +177,10 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
+  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
   let rawBody = "";
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -167,7 +188,6 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
     return isJsonMediaType(mediaType)
       ? {}
