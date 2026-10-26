@@ -258,10 +258,11 @@ function lowerRequires(
   }
   // @vitejs/plugin-rsc's `__cjs_interop__`: a namespace is `module.exports`'s
   // wrapper when plugin-rsc converted it or its default export holds every
-  // other export, as Node's CommonJS and builtin namespaces do.
+  // other export, as Node's CommonJS and builtin namespaces do. Node 24 also
+  // adds a "module.exports" key to the namespaces of CommonJS it imports.
   output.append(
     deferred +
-      `\nfunction ${interop}(m) { return m.__cjs_module_runner_transform || ("default" in m && Object.keys(m).every((k) => k === "default" || m[k] === m.default?.[k])) ? m.default : m; }` +
+      `\nfunction ${interop}(m) { return m.__cjs_module_runner_transform || ("default" in m && Object.keys(m).every((k) => k === "default" || k === "module.exports" || m[k] === m.default?.[k])) ? m.default : m; }` +
       (hoisted.size > 0
         ? `\nfunction ${load}(load) { return load.then((m) => () => ${interop}(m), (error) => () => { throw error; }); }`
         : ""),

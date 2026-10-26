@@ -379,7 +379,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
         `export function read() {`,
         `  let nested = "fallback";`,
         `  try { nested = require("missing"); } catch (error) { nested = error.message; }`,
-        `  return { optional, nested, cjs: require("cjs"), converted: require("converted"),`,
+        `  return { optional, nested, cjs: require("cjs"), native: require("native"), converted: require("converted"),`,
         `    esm: require("esm"), nullDefault: require("null-default"), workers: require("workers") };`,
         `}`,
       ].join("\n"),
@@ -391,8 +391,10 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     const nullDefault = { default: null, named: "named" };
     const workers = { env: {} };
     const { read, loads } = await evaluate(result!.code, {
-      // CommonJS through Node and builtins, and through plugin-rsc's transform.
+      // CommonJS through Node and builtins, Node 24's native CommonJS, and
+      // plugin-rsc's transform.
       cjs: async () => ({ default: exports, named: "named" }),
+      native: async () => ({ default: exports, "module.exports": exports, named: "named" }),
       converted: async () => ({ default: exports, __cjs_module_runner_transform: true }),
       // ESM, an ESM default that is not module.exports, and a module without one.
       esm: async () => esm,
@@ -404,6 +406,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       optional: "fallback",
       nested: "Cannot find module 'missing'",
       cjs: exports,
+      native: exports,
       converted: exports,
       esm,
       nullDefault,
@@ -413,6 +416,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     expect(loads).toEqual([
       "missing",
       "cjs",
+      "native",
       "converted",
       "esm",
       "null-default",
