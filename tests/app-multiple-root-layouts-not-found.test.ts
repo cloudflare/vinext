@@ -6,9 +6,10 @@
  * Next.js has no multiple-root-layout not-found test. A real next@16 build of
  * this app answers with the same status codes and never shows the [locale]
  * not-found or its metadata outside the [locale] tree. Where the built-in
- * not-found renders differs: Next.js serves its error shell for a notFound()
- * call and its /_not-found page for a dynamicParams miss, while vinext renders
- * it inside the route's layouts, so these tests only check what is absent.
+ * not-found renders differs: Next.js serves its error shell when a page or
+ * layout calls notFound() and its /_not-found page for a dynamicParams miss,
+ * while vinext renders it inside the route's layouts. So these tests check the
+ * not-found's text and what is absent, not where it renders.
  */
 import fs from "node:fs";
 import os from "node:os";
