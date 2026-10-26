@@ -19,6 +19,7 @@ import {
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_VARY_HEADER,
 } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import type { AppPageRscRenderStatus } from "../packages/vinext/src/server/app-page-rsc-render-status.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import type { RenderObservation } from "../packages/vinext/src/server/cache-proof.js";
 import {
@@ -2308,6 +2309,93 @@ describe("app page cache helpers", () => {
     expect(debugCalls).toEqual([
       ["RSC cache write skipped (no cache policy)", "rsc:/invalid-cache-life"],
     ]);
+  });
+
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // miss stores the document as well.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it.each([
+    {
+      label: "stores the rendered document beside the RSC entry",
+      renderStatus: {
+        kind: "page",
+        document: { html: "<h1>fresh</h1>", linkHeader: "</fresh.css>; rel=preload; as=style" },
+      },
+      htmlUnproven: false,
+      stored: [
+        { key: "rsc:/rsc-miss", html: "", link: undefined, status: 200 },
+        {
+          key: "html:/rsc-miss",
+          html: "<h1>fresh</h1>",
+          link: "</fresh.css>; rel=preload; as=style",
+          status: 200,
+        },
+      ],
+    },
+    {
+      label: "stores the RSC entry alone when the document may have read searchParams",
+      renderStatus: { kind: "page", document: { html: "<h1>fresh</h1>" } },
+      htmlUnproven: true,
+      stored: [{ key: "rsc:/rsc-miss", html: "", link: undefined, status: 200 }],
+    },
+    {
+      label: "stores the RSC entry alone for a special error that rejects the shell",
+      renderStatus: { kind: "special-error", status: 404 },
+      htmlUnproven: false,
+      stored: [{ key: "rsc:/rsc-miss", html: "", link: undefined, status: 404 }],
+    },
+  ] satisfies Array<{
+    label: string;
+    renderStatus: AppPageRscRenderStatus;
+    htmlUnproven: boolean;
+    stored: Array<{ key: string; html: string; link: string | undefined; status: number }>;
+  }>)("$label", async ({ renderStatus, htmlUnproven, stored }) => {
+    const pendingCacheWrites: Promise<void>[] = [];
+    const isrSet = vi.fn<AppPageCacheSetter>(async () => {});
+
+    scheduleAppPageRscCacheWrite({
+      ...queryInvariantObservationBuilders,
+      ...(htmlUnproven
+        ? { createHtmlRenderObservation: buildSearchParamsReadRenderObservation }
+        : {}),
+      isStaticEligible: true,
+      capturedRscDataPromise: Promise.resolve(new TextEncoder().encode("flight").buffer),
+      cleanPathname: "/rsc-miss",
+      consumeDynamicUsage() {
+        return false;
+      },
+      dynamicUsedDuringBuild: false,
+      getPageTags() {
+        return ["_N_T_/rsc-miss"];
+      },
+      isrHtmlKey(pathname) {
+        return "html:" + pathname;
+      },
+      isrRscKey(pathname) {
+        return "rsc:" + pathname;
+      },
+      isrSet,
+      async resolveRscRenderStatus() {
+        return renderStatus;
+      },
+      revalidateSeconds: 60,
+      waitUntil(promise) {
+        pendingCacheWrites.push(promise);
+      },
+    });
+    await pendingCacheWrites[0];
+
+    expect(
+      isrSet.mock.calls.map(([key, value]) => ({
+        key,
+        html: value.html,
+        link: value.headers?.link,
+        status: value.status,
+      })),
+    ).toEqual(stored);
+    for (const [, , policy] of isrSet.mock.calls) {
+      expect(policy).toEqual({ cacheControl: { revalidate: 60 }, tags: ["_N_T_/rsc-miss"] });
+    }
   });
 });
 

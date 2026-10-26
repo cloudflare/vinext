@@ -51,7 +51,8 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
+import type { InitialNavigationCacheMetadata } from "./app-ssr-stream.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
@@ -832,7 +833,55 @@ async function renderAppPageLifecycleImpl(
     capturedRscDataRef.value = readAppPageBinaryStream(rscCapture.sideStream);
   }
 
+  // The navigation cache metadata of a document's done script. It runs after
+  // the RSC embed drains, so its peeks observe the completed render's minimum.
+  // Peek, not consume — the cache-write closure owns the consuming read.
+  const resolveInitialNavigationCacheMetadata = (
+    dynamicUsed: boolean,
+    requestCacheLife: AppPageRequestCacheLife | null | undefined,
+  ): InitialNavigationCacheMetadata => {
+    let kind: "dynamic" | "static";
+    if (options.isForceStatic) {
+      kind = "static";
+    } else if (options.isForceDynamic || dynamicUsed) {
+      kind = "dynamic";
+    } else {
+      const observation = options.peekRenderObservationState?.();
+      kind =
+        observation && (observation.dynamicFetches.length > 0 || observation.requestApis.length > 0)
+          ? "dynamic"
+          : "static";
+    }
+    const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
+    return {
+      kind,
+      // Unlike the RSC header, the done script never emits the pending
+      // marker, so there is no 30s floor to fall back on: a render that
+      // turned dynamic must carry the config bound even when the
+      // speculative capture was still armed, or the cacheLife claim
+      // becomes the only bound on reusing dynamic output.
+      ...(kind === "dynamic" &&
+      dynamicStaleTimeSeconds !== undefined &&
+      options.isPrerender !== true
+        ? { dynamicStaleTimeSeconds }
+        : {}),
+      ...(staleTimeSeconds === undefined ? {} : { staleTimeSeconds: Math.floor(staleTimeSeconds) }),
+    };
+  };
+
   if (options.isRscRequest) {
+    // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+    // miss for a page's own payload renders the page's document from it, as an
+    // HTML request whose render may be stored renders it. A variant's payload
+    // (a prefetch shell, an interception) isn't the one an HTML request
+    // stores, and a document with a nonce is never stored.
+    const rendersDocument =
+      options.isCacheCandidate === true &&
+      !options.scriptNonce &&
+      !options.mountedSlotsHeader &&
+      !options.interceptionContext &&
+      !options.interceptionId &&
+      (options.renderMode === undefined || options.renderMode === APP_RSC_RENDER_MODE_NAVIGATION);
     // A stored RSC render takes the status of its document's shell, as in
     // Next.js, which renders HTML beside RSC for a cache entry.
     const resolveRscRenderStatus =
@@ -844,6 +893,33 @@ async function renderAppPageLifecycleImpl(
         ? createAppPageRscRenderStatusResolver({
             basePath: options.basePath,
             capturedRscData: capturedRscDataRef.value,
+            ...(rendersDocument
+              ? {
+                  document: {
+                    clientTraceMetadata: options.clientTraceMetadata,
+                    getFontData: () =>
+                      createAppPageFontData({
+                        getLinks: options.getFontLinks,
+                        getPreloads: options.getFontPreloads,
+                        getStyles: options.getFontStyles,
+                      }),
+                    getInitialNavigationCacheMetadata: () =>
+                      resolveInitialNavigationCacheMetadata(
+                        peekDynamicUsage(),
+                        options.peekRequestCacheLife?.(),
+                      ),
+                    mirrorNextFlight: () => rscErrorTracker.getCapturedSpecialError() !== null,
+                    onSsrError: createAppPageSsrErrorHandler(
+                      options.createRscOnErrorHandler(options.cleanPathname, options.routePattern, {
+                        ...errorContextOverrides,
+                        renderSource: "server-rendering",
+                      }),
+                      rscErrorTracker.isCapturedError,
+                    ),
+                    reactMaxHeadersLength: options.reactMaxHeadersLength,
+                  },
+                }
+              : {}),
             getCapturedSpecialError: rscErrorTracker.getCapturedSpecialError,
             getCapturedSpecialErrors: rscErrorTracker.getCapturedSpecialErrors,
             isForceStatic: options.isForceStatic,
@@ -993,6 +1069,18 @@ async function renderAppPageLifecycleImpl(
       cleanPathname: options.cleanPathname,
       consumeDynamicUsage: finalizeRenderDynamicUsage,
       consumeRenderObservationState,
+      createHtmlRenderObservation(input) {
+        return createAppPageRenderObservation({
+          boundaryOutcome: { kind: "success" },
+          cacheability: "public",
+          cacheTags: input.cacheTags,
+          cleanPathname: options.cleanPathname,
+          completeness: "complete",
+          output: htmlOutputScope,
+          params: options.navigationParams,
+          state: input.state,
+        });
+      },
       createRscRenderObservation(input) {
         return createAppPageRenderObservation({
           boundaryOutcome: { kind: "success" },
@@ -1013,6 +1101,7 @@ async function renderAppPageLifecycleImpl(
         return readRequestCacheLifeForCachePolicy(options);
       },
       isrDebug: options.isrDebug,
+      isrHtmlKey: options.isrHtmlKey,
       isrRscKey: options.isrRscKey,
       isrSet: options.isrSet,
       interceptionContext: options.interceptionContext,
@@ -1330,53 +1419,21 @@ async function renderAppPageLifecycleImpl(
       };
       return renderAppPageHtmlStream({
         capturedRscDataRef,
-        getInitialNavigationCacheMetadata: () => {
-          let kind: "dynamic" | "static";
-          if (options.isForceStatic) {
-            kind = "static";
-          } else if (options.isForceDynamic || dynamicUsedDuringHtmlRender || peekDynamicUsage()) {
-            kind = "dynamic";
-          } else {
-            const observation = options.peekRenderObservationState?.();
-            kind =
-              observation &&
-              (observation.dynamicFetches.length > 0 || observation.requestApis.length > 0)
-                ? "dynamic"
-                : "static";
-          }
-          // Runs after the RSC embed drains, so this peek observes the
-          // completed render's minimum. Peek, not consume — the cache-write
-          // closure owns the consuming read.
-          // During prerendering the done-script callback can run immediately
-          // after the RSC capture drains, before the outer lifecycle performs
-          // its consuming cacheLife read. Use the live non-destructive peek in
-          // that window, then reuse the captured value after the outer read;
-          // peeking only after consumption would omit the client stale claim
-          // even though the seeded cache entry retains it.
-          // Runtime renders have not consumed the state yet and still use the
-          // non-destructive peek so the cache-write closure remains its owner.
-          const requestCacheLife =
+        getInitialNavigationCacheMetadata: () =>
+          resolveInitialNavigationCacheMetadata(
+            dynamicUsedDuringHtmlRender || peekDynamicUsage(),
+            // During prerendering the done-script callback can run immediately
+            // after the RSC capture drains, before the outer lifecycle performs
+            // its consuming cacheLife read. Use the live non-destructive peek in
+            // that window, then reuse the captured value after the outer read;
+            // peeking only after consumption would omit the client stale claim
+            // even though the seeded cache entry retains it.
+            // Runtime renders have not consumed the state yet and still use the
+            // non-destructive peek so the cache-write closure remains its owner.
             options.isPrerender === true
               ? (requestCacheLifeForPrerender ?? options.peekRequestCacheLife?.())
-              : options.peekRequestCacheLife?.();
-          const staleTimeSeconds = resolveClientStaleTimeSeconds(requestCacheLife);
-          return {
-            kind,
-            // Unlike the RSC header, the done script never emits the pending
-            // marker, so there is no 30s floor to fall back on: a render that
-            // turned dynamic must carry the config bound even when the
-            // speculative capture was still armed, or the cacheLife claim
-            // becomes the only bound on reusing dynamic output.
-            ...(kind === "dynamic" &&
-            dynamicStaleTimeSeconds !== undefined &&
-            options.isPrerender !== true
-              ? { dynamicStaleTimeSeconds }
-              : {}),
-            ...(staleTimeSeconds === undefined
-              ? {}
-              : { staleTimeSeconds: Math.floor(staleTimeSeconds) }),
-          };
-        },
+              : options.peekRequestCacheLife?.(),
+          ),
         fontData,
         hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),

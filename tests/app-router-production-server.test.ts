@@ -2943,6 +2943,27 @@ describe("App Router Production server (startProdServer)", () => {
     expect(documentTimestamp).not.toBe(filledTimestamp);
   });
 
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // miss stores the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: an RSC miss stores the page's document too", async () => {
+    const pathname = "/route-cache-identity/rsc-miss-document";
+    const fetchRsc = () =>
+      fetch(`${baseUrl}${pathname}.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+    const miss = await fetchRsc();
+    await miss.arrayBuffer();
+    expect(miss.headers.get("x-vinext-cache")).toBe("MISS");
+    await waitForCondition(async () => {
+      const res = await fetchRsc();
+      await res.arrayBuffer();
+      return res.headers.get("x-vinext-cache") === "HIT";
+    });
+
+    const document = await fetch(`${baseUrl}${pathname}`);
+    expect(document.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await document.text()).toContain("CACHE_IDENTITY_CATCH_ALL:<!-- -->rsc-miss-document");
+  });
+
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {
     // Ensure cache is warm
     const getRes = await fetch(`${baseUrl}/api/static-data`);

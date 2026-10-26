@@ -112,11 +112,14 @@ type ScheduleAppPageRscCacheWriteOptions = {
   cleanPathname: string;
   consumeDynamicUsage: () => boolean;
   consumeRenderObservationState?: () => AppPageRenderObservationState;
+  /** Observes the document the render's status resolution rendered, if any. */
+  createHtmlRenderObservation?: BuildAppPageCacheRenderObservation;
   createRscRenderObservation: BuildAppPageCacheRenderObservation;
   dynamicUsedDuringBuild: boolean;
   getPageTags: () => string[];
   getRequestCacheLife?: () => AppPageRequestCacheLife | null;
   isrDebug?: AppPageDebugLogger;
+  isrHtmlKey?: (pathname: string) => string;
   isrRscKey: AppPageRscCacheKeyBuilder;
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
@@ -124,7 +127,10 @@ type ScheduleAppPageRscCacheWriteOptions = {
   mountedSlotsHeader?: string | null;
   omitPendingDynamicCacheState?: boolean;
   renderMode?: AppRscRenderMode;
-  /** The render's status, from its document's shell. Without it the render is a 200. */
+  /**
+   * The render's status, from its document's shell, and the page's document
+   * when it rendered one to store. Without it the render is a 200.
+   */
   resolveRscRenderStatus?: () => Promise<AppPageRscRenderStatus>;
   preserveClientResponseHeaders?: boolean;
   expireSeconds?: number;
@@ -529,6 +535,12 @@ export function scheduleAppPageRscCacheWrite(
         return;
       }
 
+      // Like Next.js, store the status and `location` of a special error that
+      // rejects the document's shell. Replay sends a redirect as a 200. The
+      // document renders before the render's cacheLife and observations are
+      // consumed, which its navigation cache metadata reads as an HTML
+      // request's does.
+      const renderStatus = (await options.resolveRscRenderStatus?.()) ?? { kind: "page" };
       const cacheControl = resolveAppPageCacheControl({
         expireSeconds: options.expireSeconds,
         requestCacheLife: options.getRequestCacheLife?.(),
@@ -552,9 +564,6 @@ export function scheduleAppPageRscCacheWrite(
         options.isrDebug?.("RSC cache write skipped (searchParams not proven unread)", rscKey);
         return;
       }
-      // Like Next.js, store the status and `location` of a special error that
-      // rejects the document's shell. Replay sends a redirect as a 200.
-      const renderStatus = (await options.resolveRscRenderStatus?.()) ?? { kind: "page" };
       if (renderStatus.kind === "unstorable") {
         options.isrDebug?.("RSC cache write skipped (unstorable special error)", rscKey);
         return;
@@ -573,6 +582,33 @@ export function scheduleAppPageRscCacheWrite(
         { cacheControl, tags: pageTags },
       );
       options.isrDebug?.("RSC cache written", rscKey);
+
+      // Next.js keeps a page's document and RSC payload in one entry, so an
+      // RSC miss stores the document as well.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+      const document = renderStatus.kind === "page" ? renderStatus.document : undefined;
+      if (!document || !options.isrHtmlKey || !options.createHtmlRenderObservation) return;
+      const htmlKey = options.isrHtmlKey(options.cleanPathname);
+      const htmlRenderObservation = options.createHtmlRenderObservation({
+        cacheTags: pageTags,
+        state: observationState,
+      });
+      if (!hasQueryInvariantRenderProof(htmlRenderObservation)) {
+        options.isrDebug?.("HTML cache write skipped (searchParams not proven unread)", htmlKey);
+        return;
+      }
+      await options.isrSet(
+        htmlKey,
+        buildAppPageCacheValue(
+          document.html,
+          undefined,
+          200,
+          htmlRenderObservation,
+          document.linkHeader ? { link: document.linkHeader } : undefined,
+        ),
+        { cacheControl, tags: pageTags },
+      );
+      options.isrDebug?.("HTML cache written", htmlKey);
     } catch (cacheError) {
       console.error("[vinext] ISR RSC cache write error:", cacheError);
     }
