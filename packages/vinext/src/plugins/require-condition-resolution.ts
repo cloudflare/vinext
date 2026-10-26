@@ -24,7 +24,7 @@ import {
 } from "./ast-scope.js";
 import { canNodeImport } from "./pages-node-externals.js";
 import { magicStringTransformResult } from "./transform-result.js";
-import { stripViteModuleQuery } from "../utils/path.js";
+import { isPathInside, stripViteModuleQuery } from "../utils/path.js";
 
 const LITERAL_REQUIRE_RE = /\brequire\s*\(/;
 const CONDITIONAL_REQUIRE_SCRIPT_ID_RE = /\.vinext-require\.(?:js|jsx|ts|tsx)$/i;
@@ -190,11 +190,11 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
  * the packages with a `react` peer dependency that @vitejs/plugin-rsc excludes
  * from it.
  */
-function isUnbundledServerDependency(environment: Environment, id: string): boolean {
+function isUnbundledServerDependency(environment: Environment, file: string): boolean {
   return (
     environment.mode === "dev" &&
     environment.config.dev.moduleRunnerTransform === true &&
-    !id.startsWith(environment.config.cacheDir) &&
+    !isPathInside(environment.config.cacheDir, file) &&
     // Vitest's module runner defines `require` in the modules it evaluates.
     !environment.config.plugins.some((plugin) => plugin.name.startsWith("vitest:"))
   );
@@ -350,7 +350,7 @@ export function createRequireConditionResolutionPlugin(
         // filter so their nested conditional requires still recurse.
         if (commonjsDisposition === false) return null;
         if (commonjsDisposition !== true && cleanId.includes("node_modules")) {
-          if (!isUnbundledServerDependency(this.environment, id)) return null;
+          if (!isUnbundledServerDependency(this.environment, cleanId)) return null;
           // Lower only the ES modules @vitejs/plugin-rsc leaves as they are. It
           // converts a `.js` file without module syntax outside a
           // `"type": "module"` package as CommonJS; the module runner evaluates

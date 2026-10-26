@@ -480,6 +480,12 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       `export const x = require("x");`,
     ],
     [
+      "optimized dependencies with a query",
+      devServer,
+      `${CACHE_DIR}/deps/x.js?v=1234`,
+      `export const x = require("x");`,
+    ],
+    [
       "CommonJS files",
       devServer,
       "/app/node_modules/dependency/index.cjs",
@@ -525,6 +531,19 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it("lowers dependencies whose path only shares a prefix with the cache directory", async () => {
+    const { transform } = createDependencyTransform({
+      ...devServer,
+      config: { ...devServer.config, cacheDir: "/app/node_modules/cache" },
+    });
+    const result = await transform(
+      `export const x = require("x");`,
+      "/app/node_modules/cache-helper/index.js",
+    );
+
+    expect(result?.code).toContain(`export const x = __vinext_require__(await import("x"));`);
   });
 
   it("lowers ESM dependencies whose only module syntax is import.meta", async () => {
