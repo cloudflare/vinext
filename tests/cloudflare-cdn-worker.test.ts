@@ -2137,7 +2137,12 @@ describe("Workers Cache page parts", () => {
   it("stores a page's document when its RSC payload renders for the cache", async () => {
     const { calls } = await dispatchPagePart(
       new Request("https://example.com/page?_rsc", {
-        headers: { RSC: "1", "Next-Router-State-Tree": "tree", "User-Agent": "browser" },
+        headers: {
+          RSC: "1",
+          "Next-Router-State-Tree": "tree",
+          "User-Agent": "browser",
+          "x-deployment-id": "deployment",
+        },
       }),
       rscPageProps,
       ["UPDATING", "UPDATING"],
@@ -2153,9 +2158,28 @@ describe("Workers Cache page parts", () => {
       expect(other.request.headers.get(name.trim())).toBeNull();
     }
     expect(other.request.headers.get("User-Agent")).toBe("browser");
+    expect(other.request.headers.get("x-deployment-id")).toBeNull();
     // No client waits on this document, so the entrypoint renders it whole.
     expect(other.request.headers.get("x-vinext-internal-render-whole-document")).toBe("1");
   });
+
+  it.each([
+    ["document", "https://example.com/page", pageProps],
+    ["RSC payload", "https://example.com/page?_rsc", rscPageProps],
+  ])(
+    "gives the other part the cf properties of a request for the %s",
+    async (_part, url, props) => {
+      const requestCf = { country: "NZ" };
+      const request = new Request(url, { headers: { RSC: "1" } });
+      Object.defineProperty(request, "cf", { enumerable: true, value: requestCf });
+
+      const { calls } = await dispatchPagePart(request, props, ["MISS", "MISS"]);
+
+      expect(calls).toHaveLength(2);
+      const transported = calls[1]!.request.headers.get("x-vinext-internal-request-cf");
+      expect(JSON.parse(decodeURIComponent(transported!))).toEqual(requestCf);
+    },
+  );
 
   it("fetches the other part under the entry its own request reads", async () => {
     const { calls } = await dispatchPagePart(

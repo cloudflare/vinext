@@ -169,16 +169,20 @@ function stripUntrustedTransportHeaders(request: Request): Request {
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
-  const sanitized = new Request(request, { headers });
-  const requestCf = Reflect.get(request, "cf");
+  return withRequestCf(new Request(request, { headers }), request);
+}
+
+/** Give a request built from another the platform's `request.cf` of that one. */
+function withRequestCf(request: Request, source: Request): Request {
+  const requestCf = Reflect.get(source, "cf");
   if (requestCf !== undefined) {
-    Object.defineProperty(sanitized, "cf", {
+    Object.defineProperty(request, "cf", {
       configurable: true,
       enumerable: true,
       value: requestCf,
     });
   }
-  return sanitized;
+  return request;
 }
 
 function withWorkerHostRuntime(
@@ -665,19 +669,22 @@ function otherPagePartDispatch(request: Request, props: unknown): ResponseStageD
   if (isRscRequest) {
     const url = new URL(request.url);
     stripRscCacheBustingSearchParam(url);
+    // Only the client's RSC requests name the deployment they expect.
+    headers.delete("x-deployment-id");
     headers.set("Accept", "text/html");
     headers.set(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER, "1");
     return {
       props: { ...(props as Record<string, unknown>), isRscRequest: false },
-      request: new Request(url, { headers }),
+      request: withRequestCf(new Request(url, { headers }), request),
     };
   }
   for (const [name, value] of createCanonicalRscRequestHeaders()) headers.set(name, value);
   return {
     props: { ...(props as Record<string, unknown>), isRscRequest: true, renderMode: "navigation" },
-    request: new Request(new URL(createCanonicalRscRequestUrl(request.url), request.url), {
-      headers,
-    }),
+    request: withRequestCf(
+      new Request(new URL(createCanonicalRscRequestUrl(request.url), request.url), { headers }),
+      request,
+    ),
   };
 }
 
