@@ -5,6 +5,7 @@ import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
+import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
 import { getAppPageLayoutGate } from "./app-page-layout-gate.js";
@@ -874,9 +875,12 @@ async function renderAppPageLifecycleImpl(
     // miss for a page's own payload renders the page's document from it, as an
     // HTML request whose render may be stored renders it. A variant's payload
     // (a prefetch shell, an interception) isn't the one an HTML request
-    // stores, and a document with a nonce is never stored.
+    // stores, and a document with a nonce is never stored. An edge adapter
+    // stores responses itself and keeps no origin page entries, so the
+    // document would be discarded.
     const rendersDocument =
       options.isCacheCandidate === true &&
+      getCdnCacheAdapter().ownsBackgroundRevalidation &&
       !options.scriptNonce &&
       !options.mountedSlotsHeader &&
       !options.interceptionContext &&
