@@ -10,7 +10,10 @@ import {
   handlePagesApiRoute,
   type PagesApiRouteMatch,
 } from "../packages/vinext/src/server/pages-api-route.js";
-import { isVinextStreamedApiResponse } from "../packages/vinext/src/server/pages-node-compat.js";
+import {
+  createPagesReqRes,
+  isVinextStreamedApiResponse,
+} from "../packages/vinext/src/server/pages-node-compat.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { registerFrameworkTracingIntegration } from "../packages/vinext/src/server/tracer.js";
 import type {
@@ -62,6 +65,154 @@ function createMatch(
 }
 
 describe("pages api route", () => {
+  it("does not generate API ETags on the shared page response helpers", async () => {
+    const { res, responsePromise } = createPagesReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("http://localhost/page"),
+      url: "/page",
+    });
+    res.json({ message: "hello" });
+    const response = await responsePromise;
+    expect(await response.text()).toBe('{"message":"hello"}');
+    expect(response.headers.get("etag")).toBeNull();
+  });
+
+  it.each([null, undefined])(
+    "does not add a generated ETag to a nullish send: %s",
+    async (value) => {
+      const response = await handlePagesApiRoute({
+        request: new Request("http://localhost/api/test"),
+        url: "/api/test",
+        match: createMatch((_req, res) => res.send(value)),
+      });
+      await response.text();
+      expect(response.headers.get("etag")).toBeNull();
+    },
+  );
+
+  it.each([204, 304])(
+    "does not add an ETag to an explicitly bodyless status: %s",
+    async (status) => {
+      const response = await handlePagesApiRoute({
+        request: new Request("http://localhost/api/test"),
+        url: "/api/test",
+        match: createMatch((_req, res) => {
+          res.status(status).json({ message: "hello" });
+        }),
+      });
+      expect(response.status).toBe(status);
+      expect(await response.text()).toBe("");
+      expect(response.headers.get("etag")).toBeNull();
+    },
+  );
+
+  it("keeps object toJSON returning undefined empty without a generated validator", async () => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test"),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.send({ toJSON: () => undefined })),
+    });
+    expect(await response.text()).toBe("");
+    expect(response.headers.get("etag")).toBeNull();
+  });
+
+  it("keeps res.json(undefined) empty and without a generated validator", async () => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test"),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.json(undefined)),
+    });
+    expect(await response.text()).toBe("");
+    expect(response.headers.get("etag")).toBeNull();
+  });
+
+  it("serializes a send object's toJSON only once", async () => {
+    const toJSON = vi.fn(() => ({ message: "hello" }));
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test"),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.send({ toJSON })),
+    });
+    expect(await response.text()).toBe('{"message":"hello"}');
+    expect(response.headers.get("etag")).toBe('"4ikvm414xlj"');
+    expect(toJSON).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps Buffer bytes and computes Next's Buffer validator", async () => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test"),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.send(Buffer.from([0, 255, 128]))),
+    });
+    expect([...new Uint8Array(await response.arrayBuffer())]).toEqual([0, 255, 128]);
+    expect(response.headers.get("content-type")).toBe("application/octet-stream");
+    expect(response.headers.get("etag")).toBe('"4dzrnmdlel10"');
+  });
+
+  it("does not add an ETag to raw res.end responses", async () => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test"),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.end("hello")),
+    });
+    expect(await response.text()).toBe("hello");
+    expect(response.headers.get("etag")).toBeNull();
+  });
+
+  it.each([
+    { conditional: '"4ikvm414xlj"', status: 304 },
+    { conditional: 'W/"4ikvm414xlj"', status: 304 },
+    { conditional: "*", status: 304 },
+    { conditional: '"other"', status: 200 },
+  ])("matches buffered JSON validators: $conditional", async ({ conditional, status }) => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        headers: { "If-None-Match": conditional },
+      }),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.json({ message: "hello" })),
+    });
+    expect(response.status).toBe(status);
+    expect(response.headers.get("etag")).toBe('"4ikvm414xlj"');
+    expect(await response.text()).toBe(status === 304 ? "" : '{"message":"hello"}');
+  });
+
+  it.each([
+    new Headers({ "Cache-Control": "no-cache" }),
+    new Headers({ "If-Modified-Since": "Wed, 21 Oct 2015 07:28:00 GMT" }),
+  ])("does not return304when freshness is overridden: %j", async (headers) => {
+    const response = await handlePagesApiRoute({
+      request: new Request("http://localhost/api/test", {
+        headers: new Headers([...headers, ["If-None-Match", '"4ikvm414xlj"']]),
+      }),
+      url: "/api/test",
+      match: createMatch((_req, res) => res.json({ message: "hello" })),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('{"message":"hello"}');
+  });
+
+  it("validates buffered sends with an ETag and a bodyless conditional response", async () => {
+    const invoke = (headers?: HeadersInit) =>
+      handlePagesApiRoute({
+        request: new Request("http://localhost/api/test", { headers }),
+        url: "/api/test",
+        match: createMatch((_req, res) => {
+          res.setHeader("Cache-Control", "private, max-age=60");
+          res.json({ message: "hello" });
+        }),
+      });
+    const first = await invoke();
+    const etag = first.headers.get("etag");
+    expect(etag).toBeTruthy();
+    const second = await invoke({ "If-None-Match": etag! });
+    expect(second.status).toBe(304);
+    expect(await second.text()).toBe("");
+    expect(second.headers.get("cache-control")).toBe("private, max-age=60");
+    expect(second.headers.get("etag")).toBe(etag);
+  });
+
   it("lets a handler override response headers installed before user code", async () => {
     const response = await handlePagesApiRoute({
       initialResponseHeaders: new Headers({
