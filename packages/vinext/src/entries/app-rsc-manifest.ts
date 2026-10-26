@@ -300,7 +300,7 @@ function lazyLoaderArray(
 }
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
-  return routes.map((route, routeIdx) => {
+  return routes.map((route) => {
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
     // dynamic-route prefetch can be reused when navigating to a static
@@ -441,8 +441,6 @@ ${interceptEntries.join(",\n")}
       ? imports.getLazyLoaderVar(route.routePath)
       : "null";
     return `  {
-    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
-    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
     canUseCanonicalLoadingShell: ${appRouteHasMainTreeLoadingBoundary(route)},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},
