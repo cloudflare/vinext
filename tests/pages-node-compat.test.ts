@@ -417,3 +417,194 @@ describe("Pages Node compat appendHeader", () => {
     expect(response.headers.get("x-count")).toBe("123, later");
   });
 });
+
+it("cancels a pending Fetch request read when the Node readable is destroyed", async () => {
+  let cancelled: unknown = false;
+  let pulled!: () => void;
+  const started = new Promise<void>((resolve) => {
+    pulled = resolve;
+  });
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        pulled();
+      },
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  req.resume();
+  await started;
+  req.destroy();
+  for (let i = 0; i < 10; i++) await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(cancelled).toBe(true);
+  expect(req.closed).toBe(true);
+});
+
+it("propagates a Node request destroy error to the pending Fetch body cancellation", async () => {
+  const reason = new Error("consumer stopped");
+  let cancelled: unknown;
+  let started!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        started();
+      },
+      cancel(error) {
+        cancelled = error;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  const closed = new Promise<void>((resolve) => req.once("close", resolve));
+  req.on("error", () => {});
+  req.resume();
+  await pending;
+  req.destroy(reason);
+  await closed;
+  expect(cancelled).toBe(reason);
+});
+
+it("delivers the Fetch request source error to Node consumers", async () => {
+  const reason = new Error("source failed");
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.error(reason);
+    },
+  });
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  await expect(
+    (async () => {
+      for await (const chunk of req) void chunk;
+    })(),
+  ).rejects.toBe(reason);
+});
+
+it("cancels an unread body when its Node request is destroyed", async () => {
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      cancel() {
+        cancelled = true;
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  const closed = new Promise<void>((resolve) => req.once("close", resolve));
+  req.destroy();
+  await closed;
+  expect(cancelled).toBe(true);
+});
+
+it("does not read the Fetch body before the Node request is consumed", async () => {
+  let reads = 0;
+  const body = new ReadableStream<Uint8Array>(
+    {
+      pull(controller) {
+        reads++;
+        controller.enqueue(new Uint8Array([1, 2]));
+        controller.close();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(reads).toBe(0);
+  const chunks: Buffer[] = [];
+  for await (const chunk of req) chunks.push(chunk);
+  expect(reads).toBe(1);
+  expect(Buffer.concat(chunks)).toEqual(Buffer.from([1, 2]));
+});
+
+it("keeps a previously parsed request empty while preserving req.body", async () => {
+  const request = new Request("http://localhost/api/test", { method: "POST", body: "parsed" });
+  await request.text();
+  const { req } = createPagesReqRes({
+    body: { parsed: true },
+    query: {},
+    url: "/api/test",
+    request,
+  });
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  expect(chunks).toHaveLength(0);
+  expect(req.body).toEqual({ parsed: true });
+});
+
+it("decodes UTF8 characters split across Web request chunks with setEncoding", async () => {
+  const bytes = Buffer.from("café 😀");
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const value of bytes) controller.enqueue(new Uint8Array([value]));
+      controller.close();
+    },
+  });
+  const { req } = createPagesReqRes({
+    body: undefined,
+    query: {},
+    url: "/api/test",
+    request: new Request("http://localhost/api/test", {
+      method: "POST",
+      body,
+      duplex: "half",
+    } as RequestInit),
+  });
+  req.setEncoding("utf8");
+  let text = "";
+  for await (const chunk of req) text += chunk;
+  expect(text).toBe("café 😀");
+});
