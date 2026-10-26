@@ -299,6 +299,11 @@ export async function resolveInitOptions(
   if (ignoreWranglerConfig && platform !== "cloudflare") {
     throw new Error("--ignore-wrangler-config requires --platform=cloudflare.");
   }
+  if (ignoreWranglerConfig && legacyWrangler) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
+  }
   if (name && platform !== "cloudflare") {
     throw new Error("--name requires --platform=cloudflare.");
   }
