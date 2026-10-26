@@ -74,6 +74,12 @@ export function validateCloudflarePlatformSetup(
 ): void {
   // Programmatic callers skip parseNameArg, so validate the name here too.
   if (cloudflare.name !== undefined) validateWorkerName(cloudflare.name);
+  // The legacy setup updates the root Wrangler config, so it cannot ignore it.
+  if (cloudflare.legacyWrangler && cloudflare.ignoreWranglerConfig) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
+  }
   if (!cloudflare.legacyWrangler) {
     const existingWrangler = cloudflare.ignoreWranglerConfig
       ? undefined
