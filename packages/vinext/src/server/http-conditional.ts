@@ -1,3 +1,4 @@
+import { fnv1a52 } from "../utils/hash.js";
 import { parseHttpDate } from "./http-date.js";
 
 /**
@@ -192,4 +193,37 @@ export function evaluateStaticPreconditions(
 
 function joinHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value.join(", ") : value;
+}
+
+type ApiHeaders = Record<string, string | string[] | undefined>;
+type ApiResponse = {
+  statusCode: number;
+  setHeader(name: string, value: string): unknown;
+  end(): unknown;
+};
+
+/** Mirrors apiResolver's buffered-body ETag and sendEtagResponse handling. */
+export function sendPagesApiEtag(headers: ApiHeaders, res: ApiResponse, payload: string): boolean {
+  if (res.statusCode === 204 || res.statusCode === 304) return false;
+  const etag = '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+  res.setHeader("ETag", etag);
+  const value = (name: string) => {
+    const header = headers[name];
+    return Array.isArray(header) ? header.join(", ") : header;
+  };
+  if (
+    isPageNotModified(
+      {
+        cacheControl: value("cache-control"),
+        ifModifiedSince: value("if-modified-since"),
+        ifNoneMatch: value("if-none-match"),
+      },
+      etag,
+    )
+  ) {
+    res.statusCode = 304;
+    res.end();
+    return true;
+  }
+  return false;
 }
