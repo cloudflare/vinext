@@ -147,6 +147,8 @@ Other options: `--port <port>` (default: 3001), `--skip-check`, `--force`.
 Cloudflare init uses `cf` and `cloudflare.config.ts` by default. Both `vinext init`
 and `create-vinext-app` accept `--legacy-wrangler-cloudflare-init` to retain the
 legacy Wrangler setup. Existing Wrangler configs are not automatically migrated.
+If a root Wrangler config belongs to another Worker, `vinext init --ignore-wrangler-config`
+sets up `cloudflare.config.ts` and leaves that file untouched.
 `vinext init --name <name>` sets the Worker name in the generated config instead of
 deriving it from `package.json`. An existing config keeps its own Worker name, and init
 prints a warning.

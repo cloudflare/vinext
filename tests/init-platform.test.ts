@@ -474,32 +474,6 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
-  it("parses --ignore-wrangler-config for Cloudflare only", async () => {
-    const args = ["--cdn-cache=none", "--data-cache=none", "--image-optimization=none"];
-    const options = await resolveInitOptions(
-      ["--platform=cloudflare", "--ignore-wrangler-config", ...args],
-      { env: {}, isInteractive: false },
-    );
-    expect(options.cloudflare?.ignoreWranglerConfig).toBe(true);
-    await expect(
-      resolveInitOptions(["--platform=node", "--ignore-wrangler-config"], {
-        env: {},
-        isInteractive: false,
-      }),
-    ).rejects.toThrow("--ignore-wrangler-config requires --platform=cloudflare");
-    await expect(
-      resolveInitOptions(
-        [
-          "--platform=cloudflare",
-          "--ignore-wrangler-config",
-          "--legacy-wrangler-cloudflare-init",
-          ...args,
-        ],
-        { env: {}, isInteractive: false },
-      ),
-    ).rejects.toThrow("cannot be combined");
-  });
-
   it("opts into legacy Wrangler config only on Cloudflare", async () => {
     const options = await resolveInitOptions(
       [

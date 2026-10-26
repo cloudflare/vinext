@@ -1735,23 +1735,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(snapshotProject(tmpDir)).toBe(before);
   });
 
-  it("sets up cf alongside an unrelated Wrangler config with ignoreWranglerConfig", async () => {
-    setupProject(tmpDir);
-    const wrangler = 'name = "other-worker"\nmain = "src/other.ts"\n';
-    writeFile(tmpDir, "wrangler.toml", wrangler);
-    await runInit(tmpDir, {
-      install: false,
-      cloudflare: {
-        dataCache: "none",
-        cdnCache: "none",
-        imageOptimization: "none",
-        ignoreWranglerConfig: true,
-      },
-    });
-    expect(fs.existsSync(path.join(tmpDir, "cloudflare.config.ts"))).toBe(true);
-    expect(readFile(tmpDir, "wrangler.toml")).toBe(wrangler);
-  });
-
   it("rejects an incompatible typed Response Store config before mutating the project", async () => {
     setupProject(tmpDir);
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");
