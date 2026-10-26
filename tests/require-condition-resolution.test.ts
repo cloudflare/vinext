@@ -380,7 +380,8 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
         `  let nested = "fallback";`,
         `  try { nested = require("missing"); } catch (error) { nested = error.message; }`,
         `  return { optional, nested, cjs: require("cjs"), native: require("native"), converted: require("converted"),`,
-        `    esm: require("esm"), nullDefault: require("null-default"), workers: require("workers") };`,
+        `    esm: require("esm"), esmModuleExports: require("esm-module-exports"),`,
+        `    nullDefault: require("null-default"), workers: require("workers") };`,
         `}`,
       ].join("\n"),
       ID,
@@ -390,14 +391,17 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
     const esm = { default: "default", named: "named" };
     const nullDefault = { default: null, named: "named" };
     const workers = { env: {} };
+    const marker = { marker: true };
     const { read, loads } = await evaluate(result!.code, {
       // CommonJS through Node and builtins, Node 24's native CommonJS, and
       // plugin-rsc's transform.
       cjs: async () => ({ default: exports, named: "named" }),
       native: async () => ({ default: exports, "module.exports": exports, named: "named" }),
       converted: async () => ({ default: exports, __cjs_module_runner_transform: true }),
-      // ESM, an ESM default that is not module.exports, and a module without one.
+      // ESM, an ESM default that is not module.exports, ESM naming the value
+      // require() returns, and a module without a default.
       esm: async () => esm,
+      "esm-module-exports": async () => ({ default: "default", "module.exports": marker }),
       "null-default": async () => nullDefault,
       workers: async () => workers,
     });
@@ -409,6 +413,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       native: exports,
       converted: exports,
       esm,
+      esmModuleExports: marker,
       nullDefault,
       workers,
     });
@@ -419,6 +424,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       "native",
       "converted",
       "esm",
+      "esm-module-exports",
       "null-default",
       "workers",
       "missing",
