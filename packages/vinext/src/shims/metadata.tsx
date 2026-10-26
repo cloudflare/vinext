@@ -404,6 +404,7 @@ type IconsMap = {
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
 
 export type MetadataMergeEntry = {
+  /** Passes on the title template it received rather than its own. */
   isPage?: boolean;
   metadata: Metadata;
 };
@@ -411,11 +412,8 @@ export type MetadataMergeEntry = {
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
- * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
- * the segment that defines the template itself. `title.absolute`
- * skips all templates. `title.default` is the fallback when no
- * child provides a title.
+ * The list is ordered [rootLayout, nestedLayout, ..., page], with titles
+ * resolved as {@link mergeMetadataEntries} does.
  *
  * Shallow merge: later entries override earlier ones (per Next.js docs).
  */
@@ -576,14 +574,16 @@ export function postProcessMetadata(merged: Metadata): Metadata {
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
- * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
- * the segment that defines the template itself. `title.absolute`
- * skips all templates. `title.default` is the fallback when no
- * child provides a title.
+ * The list is ordered [rootLayout, nestedLayout, ..., page]. Like Next.js's
+ * accumulateMetadata, each title resolves with the template of the title
+ * before it: a `title.template` wraps later titles, not its own entry's
+ * `title.default`, and a plain-string title, or one without a template,
+ * clears it. An `isPage` entry passes on the template it received.
+ * `title.absolute` skips all templates.
  *
  * For top-level keys, later entries override earlier ones. `other` custom meta
  * tags are the exception: Next.js merges those across segments.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
  */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   return mergeEntries(entries, false);
@@ -593,8 +593,9 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
  * Merge metadata into the `parent` a later segment's resolver receives. Like
  * {@link mergeMetadataEntries}, except the title stays resolved as Next.js's
  * `{ absolute, template }`, so `(await parent).title?.absolute` reads the
- * title so far. `template` is the one the next title gets, so merging this
- * parent with later entries resolves their titles as the full merge does.
+ * title so far. `template` is the last title's own, the one the next title
+ * gets, so merging this parent with later entries resolves their titles as
+ * the full merge does.
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
  */
 export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
@@ -606,12 +607,13 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
   const merged: Metadata = {};
 
-  // Track the most recent ancestor title template from layouts (not from page).
-  let parentTemplate: string | undefined;
+  // The resolved title's own template, as Next.js's resolveTitle returns it,
+  // and the one the next title gets (Next.js's `titleTemplates.title`).
+  let titleTemplate: string | null = null;
+  let stashedTemplate: string | null = null;
 
   for (const entry of entries) {
     const meta = entry.metadata;
-    const isPage = Boolean(entry.isPage);
 
     // Merge non-title keys
     for (const key of Object.keys(meta)) {
@@ -630,20 +632,16 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
     // Title resolution
     if (meta.title !== undefined) {
-      merged.title = resolveTitle(meta.title, parentTemplate);
+      merged.title = resolveTitle(meta.title, stashedTemplate ?? undefined);
+      titleTemplate = (typeof meta.title === "object" && meta.title?.template) || null;
     }
-
-    // Collect the current layout template after resolving its own title so
-    // title.default is wrapped by the ancestor template, not by its own template.
-    if (!isPage && meta.title && typeof meta.title === "object" && meta.title.template) {
-      parentTemplate = meta.title.template;
-    }
+    if (!entry.isPage) stashedTemplate = titleTemplate;
   }
 
   if (resolvedTitle && Object.hasOwn(merged, "title")) {
     merged.title = {
       absolute: resolveStringTitle(merged.title) ?? "",
-      template: parentTemplate ?? null,
+      template: titleTemplate,
     };
   }
 

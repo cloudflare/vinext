@@ -2464,6 +2464,21 @@ describe("metadata title templates", () => {
     expect(result).toEqual({});
   });
 
+  it("clears the template after a title without one, as Next.js's resolved title does", async () => {
+    // Next.js stashes the resolved title's own template, which a plain string,
+    // or a title object without a template, resets to null.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const site = { title: { template: "%s | Site", default: "Site" } };
+    expect(mergeMetadata([site, { title: "Mid" }, { title: "Leaf" }]).title).toBe("Leaf");
+    expect(mergeMetadata([site, { title: { default: "Blog" } }, { title: "Post" }]).title).toBe(
+      "Post",
+    );
+    expect(
+      mergeParentMetadataEntries([{ metadata: site }, { metadata: { title: "Mid" } }]).title,
+    ).toEqual({ absolute: "Mid | Site", template: null });
+  });
+
   it("uses explicit page markers instead of assuming the last entry is the page", () => {
     const result = mergeMetadataEntries([
       {

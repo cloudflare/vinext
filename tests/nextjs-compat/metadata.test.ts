@@ -55,22 +55,59 @@ describe("Next.js compat: metadata", () => {
 
   // ── Title template ───────────────────────────────────────────
   // Next.js: 'should support title template'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L34-L38
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L36-L40
 
-  it("should apply title template from layout", async () => {
+  it("should not apply a layout's title template to the page beside it", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template");
-    // Layout has template "%s | Layout", page has title "Page"
-    // Result should be "Page | Layout"
-    expect(html).toContain("<title>Page | Layout</title>");
+    // The layout's template "%s | Layout" wraps only titles in segments below
+    // it, so the page beside it keeps its own title, as Next.js expects.
+    expect(html).toContain("<title>Page</title>");
   });
-
-  // Next.js: 'should support stashed title in one layer'
-  // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/metadata/metadata.test.ts#L40-L44
 
   it("should apply title template to child page", async () => {
     const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/child");
     // Layout template "%s | Layout", child page title "Extra Page"
     expect(html).toContain("<title>Extra Page | Layout</title>");
+  });
+
+  // Next.js: 'should support stashed title in one layer of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L42-L46
+
+  it("should apply the parent layout's template beside a nested layout's", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra");
+    expect(html).toContain("<title>Extra Page | Layout</title>");
+  });
+
+  // Next.js: 'should use parent layout title when no title is defined in page'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L48-L53
+
+  it("should use parent layout title when no title is defined in page", async () => {
+    const { html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/use-layout-title",
+    );
+    expect(html).toContain("<title>title template layout default</title>");
+  });
+
+  // Next.js: 'should support stashed title in two layers of page and layout'
+  // Source: https://github.com/vercel/next.js/blob/v16.2.7/test/e2e/app-dir/metadata/metadata.test.ts#L55-L61
+
+  it("should support stashed title in two layers of page and layout", async () => {
+    const inner = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/extra/inner");
+    expect(inner.html).toContain("<title>Inner Page | Extra Layout</title>");
+
+    const deep = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/metadata-title-template/extra/inner/deep",
+    );
+    expect(deep.html).toContain("<title>extra layout default | Layout</title>");
+  });
+
+  it("should clear the title template after a plain-string layout title", async () => {
+    // Next.js 16.2.7 titles this "Leaf Page": the resolved title's template
+    // is the plain string's own, null.
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-title-template/plain/leaf");
+    expect(html).toContain("<title>Leaf Page</title>");
   });
 
   // ── Basic metadata tags ──────────────────────────────────────
