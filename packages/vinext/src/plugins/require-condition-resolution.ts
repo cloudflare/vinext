@@ -156,6 +156,17 @@ function collectLiteralRequires(root: ESTree.Program): LiteralRequire[] {
       }
     }
 
+    // An instance field's value runs when the class is constructed.
+    if (
+      (node.type === "PropertyDefinition" || node.type === "AccessorProperty") &&
+      !node.static &&
+      node.value
+    ) {
+      const value = node.value;
+      forEachAstChild(node, (child) => visit(child, scope, child === value ? "function" : context));
+      return;
+    }
+
     // Class fields and static blocks cannot await; TypeScript compiles
     // namespace and enum bodies to functions.
     const childContext =
@@ -199,8 +210,9 @@ function isUnbundledServerDependency(environment: Environment, id: string): bool
  * by the module, as `try`/`catch` around the call expects. A package or
  * builtin loads when the module starts to evaluate, so a function the module
  * calls while evaluating, such as a bundled `__commonJS` wrapper, can require
- * it, and so does anything a class or namespace body requires. A file of the
- * same package that only functions require loads after the module has
+ * it, and so does anything a class's static members or a namespace body
+ * require. A file of the same package that only functions and instance fields
+ * require loads after the module has
  * evaluated: such a lazy `require()` usually breaks an import cycle, and
  * loading it first would evaluate the cycle before this module's bindings
  * exist. Code is inserted

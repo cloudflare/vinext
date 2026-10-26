@@ -321,7 +321,7 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
         `  return [helper, path, require("./data.json"), require("./data.json"), require("server-only")];`,
         `}`,
         `export const shadowed = ((require) => require("./local.js"))(String);`,
-        `export class Reader { static value = require("./static.js"); }`,
+        `export class Reader { static value = require("./static.js"); instance = require("./instance.js"); }`,
       ].join("\n"),
       ID,
     );
@@ -339,9 +339,11 @@ describe("vinext:require-condition-resolution in unbundled ESM dependencies", ()
       `  return [helper, path, __vinext_require_0__(), __vinext_require_0__(), __vinext_require_1__()];`,
       `}`,
       `export const shadowed = ((require) => require("./local.js"))(String);`,
-      `export class Reader { static value = __vinext_require_2__(); }`,
-      // Files of the same package that only functions require load last.
+      `export class Reader { static value = __vinext_require_2__(); instance = __vinext_require_3__(); }`,
+      // Files of the same package that only functions and instance fields
+      // require load last.
       `const __vinext_require_0__ = await __vinext_require_load__(import("./data.json"));`,
+      `const __vinext_require_3__ = await __vinext_require_load__(import("./instance.js"));`,
       expect.stringMatching(/^function __vinext_require__\(m\)/),
       expect.stringMatching(/^function __vinext_require_load__\(load\)/),
     ]);
