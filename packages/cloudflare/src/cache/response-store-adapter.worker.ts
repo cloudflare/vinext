@@ -663,7 +663,7 @@ const handler = {
       // the next RSC miss retries both.
       const putDocument = async (stored: Response) => {
         if (!documentInvocation || !capture.document) return;
-        await responseStore.put(
+        const result = await responseStore.put(
           await cacheRequest(documentInvocation),
           documentResponse(stored, capture.document),
           {
@@ -674,6 +674,12 @@ const handler = {
             revalidator: { id: ROUTE_REVALIDATOR_ID, args: [JSON.stringify(documentInvocation)] },
           },
         );
+        // An unpublished write leaves the pair to the next RSC miss. A purge,
+        // as for the data cache's replacements, is best-effort: the edge keeps
+        // an earlier render's document until its own policy ends.
+        if (!result.backingStoreUpdated) {
+          throw new Error("Vinext response-store did not publish the App page document");
+        }
       };
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
