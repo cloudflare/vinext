@@ -573,6 +573,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           BACKEND: ${{ matrix.backend }}
         run: |
+          set +e
           vp exec wrangler delete "$WORKER_NAME" --force
           if [[ "$BACKEND" == "response-store" ]]; then
             vp exec wrangler delete "$WORKER_NAME-rs" --force
