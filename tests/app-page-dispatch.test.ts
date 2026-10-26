@@ -5715,6 +5715,58 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-nextjs-postponed")).toBe("1");
   });
 
+  it("renders normally when generateStaticParams throws while choosing a fallback shell", async () => {
+    const isrGetFallbackShell = vi.fn(async () => null);
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { options } = createPprBlogDispatchOptions({
+      generateStaticParams: async () => {
+        throw new Error("params unavailable");
+      },
+      loadSsrHandler: createFreshBodySsrHandler("concrete"),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, isrGetFallbackShell }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("concrete");
+    expect(isrGetFallbackShell).not.toHaveBeenCalled();
+    expect(consoleError).toHaveBeenCalledWith(
+      "[vinext] ISR fallback shell params error:",
+      expect.any(Error),
+    );
+    consoleError.mockRestore();
+  });
+
+  it("renders normally when a missing fallback shell can't be produced", async () => {
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    let ssrCalls = 0;
+    const { options } = createPprBlogDispatchOptions({
+      isrGet: vi.fn(async () => null),
+      loadSsrHandler: async () => ({
+        async handleSsr() {
+          ssrCalls++;
+          // The shell's render is the first SSR pass.
+          if (ssrCalls === 1) throw new Error("shell unavailable");
+          return createStream(["<html><head></head><body>concrete</body></html>"]);
+        },
+      }),
+    });
+
+    const response = await runWithRequestContext(createRequestContext(), () =>
+      dispatchAppPage({ ...options, isrSetFallbackShell }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("concrete");
+    expect(isrSetFallbackShell).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
   it("renders a missing fallback shell once for concurrent requests", async () => {
     const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
       async () => {},
