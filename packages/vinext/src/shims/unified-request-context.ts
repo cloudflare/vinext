@@ -113,7 +113,6 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
-    cacheLifeSink: null,
     pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
@@ -131,10 +130,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
-    unstableCacheObservations: new Map(),
     unstableCacheRevalidation: "foreground",
     _privateCache: null,
-    cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
@@ -388,11 +385,11 @@ export function runWithUnifiedStateMutation<T>(
   // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren,
   // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
-  // cacheableFetchUrls, dynamicFetchUrls),
-  // Map fields (unstableCacheObservations, _privateCache),
+  // dynamicFetchUrls),
+  // Map fields (_privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
-  // requestScopedCacheLife, renderDynamicLatch, cacheLifeSink) still share references with
+  // requestScopedCacheLife, renderDynamicLatch) still share references with
   // the parent until replaced. requestCache is intentionally shared — nested
   // scopes within the same request should see the same cached values.
   // renderDynamicLatch must stay shared: dynamic usage in an isolated child

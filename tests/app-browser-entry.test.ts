@@ -77,7 +77,6 @@ import {
   APP_CACHE_ENTRY_REUSE_PROOF_KEY,
   APP_ARTIFACT_COMPATIBILITY_KEY,
   AppElementsWire,
-  APP_LAYOUT_FLAGS_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_ROUTE_KEY,
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
@@ -248,7 +247,6 @@ function createState(overrides: Partial<AppRouterState> = {}): AppRouterState {
     elements: createResolvedElements("route:/initial", "/"),
     interception: null,
     layoutIds: [AppElementsWire.encodeLayoutId("/")],
-    layoutFlags: {},
     navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/initial", {}),
     renderId: 0,
     activeOperation: null,
@@ -652,7 +650,6 @@ type ApprovedTestCommitOptions = {
   interception?: AppElementsInterception | null;
   interceptionContext?: string | null;
   layoutIds?: readonly string[];
-  layoutFlags?: AppRouterState["layoutFlags"];
   navigationSnapshot?: AppRouterState["navigationSnapshot"];
   operationLane?: OperationLane;
   previousNextUrl?: string | null;
@@ -678,7 +675,6 @@ async function applyApprovedTestCommit(
         options.rootLayoutTreePath,
         options.interceptionContext ?? null,
         {
-          [APP_LAYOUT_FLAGS_KEY]: options.layoutFlags ?? {},
           ...options.extraEntries,
         },
         options.layoutIds,
@@ -3410,37 +3406,6 @@ describe("app browser entry state helpers", () => {
       "https://example.com/dashboard?from=planner",
     );
     expect(hardNavigateApproval.approvedCommit).toBeNull();
-  });
-
-  it("preserves layoutFlags only for approved same-layout ancestors", async () => {
-    const state = createState({
-      bfcacheIds: { "layout:/": "0" },
-      layoutFlags: { "layout:/": "s", "layout:/old": "d" },
-    });
-    const nextState = await applyApprovedTestCommit(state, {
-      layoutFlags: { "layout:/blog": "d" },
-      layoutIds: ["layout:/", "layout:/blog"],
-      rootLayoutTreePath: "/",
-      routeId: "route:/next",
-    });
-
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/blog": "d",
-    });
-  });
-
-  it("replaces layoutFlags on approved replace commits", async () => {
-    const state = createState({ layoutFlags: { "layout:/": "s", "layout:/old": "d" } });
-    const nextState = await applyApprovedTestCommit(state, {
-      layoutFlags: { "layout:/": "d" },
-      rootLayoutTreePath: "/",
-      routeId: "route:/next",
-      type: "replace",
-    });
-
-    // Replace: only new flags
-    expect(nextState.layoutFlags).toEqual({ "layout:/": "d" });
   });
 
   it("stores previousNextUrl on approved navigate commits", async () => {
@@ -6781,11 +6746,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         },
         ["layout:/", "layout:/dashboard"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/dashboard": "s",
-        "layout:/stale": "d",
-      },
       layoutIds: ["layout:/", "layout:/dashboard"],
     });
 
@@ -6794,7 +6754,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         "page:/dashboard/settings": React.createElement("main", null, "settings"),
       },
       layoutIds: ["layout:/", "layout:/dashboard", "layout:/dashboard/settings"],
-      layoutFlags: { "layout:/dashboard/settings": "d" },
       rootLayoutTreePath: "/",
       routeId: "route:/dashboard/settings",
     });
@@ -6803,11 +6762,6 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.elements["layout:/dashboard"]).toBe(dashboardLayout);
     expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
     expect(Object.hasOwn(nextState.elements, "page:/stale")).toBe(false);
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
-      "layout:/dashboard": "s",
-      "layout:/dashboard/settings": "d",
-    });
     expect(nextState.layoutIds).toEqual([
       "layout:/",
       "layout:/dashboard",
@@ -7079,7 +7033,6 @@ describe("app browser entry previousNextUrl helpers", () => {
 
   it("preserves explicitly skipped retained layouts on approved navigate commits", async () => {
     const rootLayout = React.createElement("div", null, "root layout");
-    const staleLayout = React.createElement("div", null, "stale layout");
     const currentState = createState({
       bfcacheIds: {
         "layout:/": "0",
@@ -7090,14 +7043,9 @@ describe("app browser entry previousNextUrl helpers", () => {
         null,
         {
           "layout:/": rootLayout,
-          "layout:/stale": staleLayout,
         },
         ["layout:/"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/stale": "s",
-      },
       layoutIds: ["layout:/"],
     });
     const pending = await createPendingNavigationCommit({
@@ -7109,8 +7057,7 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
-            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/", "layout:/stale"],
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
             "page:/settings": React.createElement("main", null, "settings"),
           },
           ["layout:/"],
@@ -7138,10 +7085,74 @@ describe("app browser entry previousNextUrl helpers", () => {
     const nextState = applyApprovedVisibleCommit(currentState, approval.approvedCommit);
 
     expect(nextState.elements["layout:/"]).toBe(rootLayout);
-    expect(Object.hasOwn(nextState.elements, "layout:/stale")).toBe(false);
-    expect(nextState.layoutFlags).toEqual({
-      "layout:/": "s",
+  });
+
+  // The navigation refetches a whole payload when its state no longer holds a
+  // layout the payload left out, so one that still can't be restored loads as
+  // a document instead of committing a tree missing that layout.
+  it.each([
+    {
+      name: "the client doesn't hold",
+      skipped: ["layout:/", "layout:/stale"],
+      layoutIds: ["layout:/", "layout:/stale"],
+      identities: undefined,
+    },
+    {
+      name: "changed identity",
+      skipped: ["layout:/"],
+      layoutIds: ["layout:/"],
+      identities: { "layout:/": "other-identity" },
+    },
+  ])("hard-navigates for a skipped layout with $name", async (testCase) => {
+    const currentState = createState({
+      bfcacheIds: {
+        "layout:/": "0",
+      },
+      elements: createResolvedElements(
+        "route:/dashboard",
+        "/",
+        null,
+        {
+          "layout:/": React.createElement("div", null, "root layout"),
+        },
+        ["layout:/"],
+      ),
+      layoutIds: ["layout:/"],
     });
+    const pending = await createPendingNavigationCommit({
+      currentState,
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/settings", {}),
+      nextElements: Promise.resolve(
+        createResolvedElements(
+          "route:/settings",
+          "/",
+          null,
+          {
+            ...(testCase.identities
+              ? { [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: testCase.identities }
+              : {}),
+            [APP_SKIPPED_LAYOUT_IDS_KEY]: testCase.skipped,
+            "page:/settings": React.createElement("main", null, "settings"),
+          },
+          testCase.layoutIds,
+        ),
+      ),
+      operationLane: "navigation",
+      payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+      renderId: 1,
+      type: "navigate",
+    });
+    const approval = approvePendingNavigationCommit({
+      activeNavigationId: 1,
+      currentState,
+      pending,
+      routeManifest: null,
+      startedNavigationId: 1,
+      targetHref: "https://example.com/settings",
+    });
+
+    expect(approval.approvedCommit).toBeNull();
+    expect(approval.decision.disposition).toBe("hard-navigate");
   });
 
   it("does not preserve skipped layouts when target bfcache ids mismatch", async () => {
@@ -7225,9 +7236,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         },
         ["layout:/"],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-      },
       layoutIds: ["layout:/"],
     });
     const pending = await createPendingNavigationCommit({
@@ -7239,7 +7247,6 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
             [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/"],
             "page:/settings": React.createElement("main", null, "settings"),
           },
@@ -7269,7 +7276,6 @@ describe("app browser entry previousNextUrl helpers", () => {
 
     expect(Object.hasOwn(nextState.elements, "layout:/")).toBe(false);
     expect(nextState.elements["page:/settings"]).toBeDefined();
-    expect(nextState.layoutFlags).toEqual({});
     expect(nextState.bfcacheIds["layout:/"]).toMatch(/^_b_\d+_$/);
     expect(nextState.bfcacheIds["layout:/"]).not.toBe("_b_4_");
   });
@@ -7302,10 +7308,6 @@ describe("app browser entry previousNextUrl helpers", () => {
         ["layout:/", "layout:/dashboard"],
         [currentModalBinding],
       ),
-      layoutFlags: {
-        "layout:/": "s",
-        "layout:/dashboard": "s",
-      },
       layoutIds: ["layout:/", "layout:/dashboard"],
       navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/dashboard", {}),
       routeId: "route:/dashboard",
@@ -7328,7 +7330,6 @@ describe("app browser entry previousNextUrl helpers", () => {
           "/",
           null,
           {
-            [APP_LAYOUT_FLAGS_KEY]: {},
             [APP_SKIPPED_LAYOUT_IDS_KEY]: ["layout:/dashboard"],
             "page:/dashboard/settings": React.createElement("main", null, "settings"),
           },

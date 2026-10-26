@@ -5610,6 +5610,7 @@ describe("Plugin config", () => {
         command: "serve",
         cacheDir: path.join(FIXTURE_DIR, "node_modules/.vite"),
         configFile: false,
+        environments: {},
         plugins: [
           { name: "vite:react-babel" },
           { name: "vite:react-refresh" },

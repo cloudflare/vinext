@@ -3625,6 +3625,7 @@ describe("next/headers shim", () => {
     const reqHeaders = new Headers({
       rsc: "1",
       "Next-Router-State-Tree": "tree",
+      "X-Vinext-Mounted-Layouts": "0123456789abcdef",
       "x-nextjs-request-id": "dev-request",
       "x-nextjs-html-request-id": "dev-html-request",
       "x-custom": "test-value",
@@ -3638,6 +3639,7 @@ describe("next/headers shim", () => {
     expect(h.get("x-custom")).toBe("test-value");
     expect(h.get("rsc")).toBeNull();
     expect(h.get("Next-Router-State-Tree")).toBeNull();
+    expect(h.get("X-Vinext-Mounted-Layouts")).toBeNull();
     expect(h.get("x-nextjs-request-id")).toBeNull();
     expect(h.get("x-nextjs-html-request-id")).toBeNull();
     expect(reqHeaders.get("x-nextjs-request-id")).toBe("dev-request");
@@ -10765,6 +10767,7 @@ describe("double-encoded path handling in middleware", () => {
           "next-router-segment-prefetch": "/dashboard",
           "next-hmr-refresh": "1",
           "x-vinext-rsc-state-fingerprint": "state-a",
+          "x-vinext-mounted-layouts": "0123456789abcdef",
           "x-user-visible": "keep",
         },
       }),
@@ -10776,6 +10779,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(capturedHeaders?.get("next-router-prefetch")).toBeNull();
     expect(capturedHeaders?.get("next-router-segment-prefetch")).toBeNull();
     expect(capturedHeaders?.get("x-vinext-rsc-state-fingerprint")).toBeNull();
+    expect(capturedHeaders?.get("x-vinext-mounted-layouts")).toBeNull();
     expect(capturedHeaders?.get("next-hmr-refresh")).toBeNull();
     expect(capturedHeaders?.get("x-user-visible")).toBe("keep");
   });
@@ -31782,6 +31786,11 @@ describe("cache scope guards for dynamic APIs", () => {
   });
 });
 
+// Stands in for Vite's resolver, which version-stamps node_modules files in dev.
+async function viteResolve(id: string) {
+  return { id: `${id}?v=hash` };
+}
+
 describe("shim alias map .js variants", () => {
   it("every top-level next/* alias has a corresponding .js variant", async () => {
     const plugins = vinext() as Plugin[];
@@ -31818,7 +31827,7 @@ describe("shim alias map .js variants", () => {
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 
-  it("resolves next/error to the react-server shim only in the RSC environment", () => {
+  it("resolves next/error to the react-server shim only in the RSC environment", async () => {
     const plugins = vinext() as Plugin[];
     const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
     if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
@@ -31826,8 +31835,12 @@ describe("shim alias map .js variants", () => {
     }
 
     const hook = configPlugin.resolveId as {
-      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+      handler: (
+        this: { environment?: { name?: string }; resolve: typeof viteResolve },
+        id: string,
+      ) => unknown;
     };
+    const resolve = viteResolve;
     // resolveId returns Vite-style ids: forward slashes on every platform.
     const clientShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx"),
@@ -31836,11 +31849,15 @@ describe("shim alias map .js variants", () => {
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.react-server.ts"),
     );
 
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error")).toBe(reactServerShim);
-    expect(hook.handler.call({ environment: { name: "ssr" } }, "next/error")).toBe(clientShim);
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
-      reactServerShim,
-    );
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "next/error"),
+    ).resolves.toEqual({ id: `${reactServerShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "ssr" }, resolve }, "next/error"),
+    ).resolves.toEqual({ id: `${clientShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "next/error.js"),
+    ).resolves.toEqual({ id: `${reactServerShim}?v=hash` });
   });
 
   it("resolves the next/image alias target to the RSC entry only in the RSC environment", () => {
@@ -31895,10 +31912,15 @@ describe("shim alias map .js variants", () => {
     expect(resolve).toHaveBeenCalledWith("next/image", "/x.js", { skipSelf: true });
 
     resolve.mockClear();
-    expect(
-      hook.handler.call({ environment: { name: "rsc" }, resolve }, "vinext/shims/image", "/x.js"),
-    ).toBe(toSlash(path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx")));
-    expect(resolve).not.toHaveBeenCalled();
+    const imageShim = toSlash(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx"),
+    );
+    await hook.handler.call(
+      { environment: { name: "rsc" }, resolve },
+      "vinext/shims/image",
+      "/x.js",
+    );
+    expect(resolve).toHaveBeenCalledWith(imageShim, "/x.js", { skipSelf: true });
   });
 
   it("keeps the App Router request handler source-resolved in source checkouts", () => {
@@ -31993,10 +32015,10 @@ describe("vinext shim package-subpath resolution", () => {
   type ResolveIdHook = {
     filter: { id: RegExp };
     handler: (
-      this: { environment?: { name?: string } },
+      this: { environment?: { name?: string }; resolve?: typeof viteResolve },
       id: string,
       importer?: string,
-    ) => string | undefined;
+    ) => unknown;
   };
 
   function getResolveIdHook(): ResolveIdHook {
@@ -32008,7 +32030,7 @@ describe("vinext shim package-subpath resolution", () => {
     return configPlugin.resolveId as ResolveIdHook;
   }
 
-  it("strips JavaScript extensions and Vite queries from package subpaths", () => {
+  it("strips JavaScript extensions and Vite queries from package subpaths", async () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
     const expectedShim = toSlash(
@@ -32026,11 +32048,18 @@ describe("vinext shim package-subpath resolution", () => {
     expect(hook.filter.id.test("\0next/navigation")).toBe(true);
     expect(hook.filter.id.test("\0@vercel/og")).toBe(true);
     expect(hook.handler.call({}, "unrelated-next/navigation")).toBeUndefined();
-    expect(hook.handler.call({}, "vinext/shims/navigation.js?v=123")).toBe(expectedShim);
-    expect(hook.handler.call({}, "\0vinext/shims/navigation.js?v=123")).toBe(expectedShim);
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "\0next/navigation")).toBe(
-      expectedReactServerShim,
-    );
+    // Shim paths are finalized by Vite's resolver, which version-stamps
+    // node_modules files in dev like vinext's runtime and its relative imports.
+    const resolve = viteResolve;
+    await expect(
+      hook.handler.call({ resolve }, "vinext/shims/navigation.js?v=123"),
+    ).resolves.toEqual({ id: `${expectedShim}?v=hash` });
+    await expect(
+      hook.handler.call({ resolve }, "\0vinext/shims/navigation.js?v=123"),
+    ).resolves.toEqual({ id: `${expectedShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "\0next/navigation"),
+    ).resolves.toEqual({ id: `${expectedReactServerShim}?v=hash` });
     expect(
       hook.handler.call({}, "\0@vercel/og", path.join(FIXTURE_DIR, "app/opengraph-image.tsx")),
     ).toBe(expectedOgShim);

@@ -11,7 +11,6 @@ import {
   type AppElementsInterception,
   type AppElementsBfcacheSegmentIdentities,
   type AppElementsSlotBinding,
-  type LayoutFlags,
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import {
@@ -196,12 +195,6 @@ export function stageBfcacheSlotEntryForRender(
   };
 }
 
-function isLayoutFlagsValue(value: unknown): value is LayoutFlags {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const entries = Object.values(value);
-  return entries.length > 0 && entries.every((entry) => entry === "s" || entry === "d");
-}
-
 function isArtifactCompatibilityEnvelopeValue(
   value: unknown,
 ): value is ArtifactCompatibilityEnvelope {
@@ -281,7 +274,6 @@ function isTransportMetadataValue(
   id: string,
   value: AppElementValue | undefined,
 ): value is
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -289,7 +281,6 @@ function isTransportMetadataValue(
   | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
-    isLayoutFlagsValue(value) ||
     isBfcacheSegmentIdentitiesMetadataValue(id, value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||

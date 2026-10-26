@@ -253,6 +253,32 @@ describe("deprecated config warnings", () => {
     }
   });
 
+  it("moves the legacy experimental.cacheComponents over the top-level key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      resolveNextConfig({ experimental: { cacheComponents: true } as never }),
+    ).resolves.toMatchObject({ cacheComponents: true });
+    await expect(
+      resolveNextConfig({
+        cacheComponents: true,
+        experimental: { cacheComponents: false } as never,
+      }),
+    ).resolves.toMatchObject({ cacheComponents: false });
+    for (const legacy of [undefined, null]) {
+      await expect(
+        resolveNextConfig({
+          cacheComponents: true,
+          experimental: { cacheComponents: legacy } as never,
+        }),
+      ).resolves.toMatchObject({ cacheComponents: true });
+    }
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.cacheComponents` has been moved to `cacheComponents`. Please update your next.config.js file accordingly.",
+    ]);
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,

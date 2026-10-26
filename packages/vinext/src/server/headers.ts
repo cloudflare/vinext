@@ -134,8 +134,11 @@ export const VINEXT_PRERENDER_SPECIAL_ERROR_HEADER = "x-vinext-prerender-special
 /** Internal marker persisted only inside metadata-route APP_ROUTE cache values. */
 export const VINEXT_METADATA_ROUTE_CACHE_HEADER = "x-vinext-metadata-route-cache";
 
-/** Disabled-by-default client hint describing already-held App Router payload entries. */
-export const VINEXT_CLIENT_REUSE_MANIFEST_HEADER = "X-Vinext-Client-Reuse-Manifest";
+/**
+ * Hashed identities of the layouts a client navigation already holds, so a
+ * render that's never stored can leave them out. Not part of the RSC cache key.
+ */
+export const VINEXT_MOUNTED_LAYOUTS_HEADER = "X-Vinext-Mounted-Layouts";
 
 /**
  * Side-channel signal that an RSC response (HTTP 200) encodes a `redirect()`
@@ -261,6 +264,7 @@ export const FLIGHT_HEADERS: readonly string[] = [
   "next-hmr-refresh",
   "next-router-segment-prefetch",
   "x-vinext-rsc-state-fingerprint",
+  "x-vinext-mounted-layouts",
 ];
 
 // ---------------------------------------------------------------------------
