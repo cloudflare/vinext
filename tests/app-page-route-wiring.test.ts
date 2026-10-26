@@ -13,6 +13,7 @@ import { notFound, useSelectedLayoutSegments } from "../packages/vinext/src/shim
 import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_LAYOUT_IDS_KEY,
+  APP_SKIPPED_LAYOUT_IDS_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_ROOT_LAYOUT_KEY,
   APP_SOURCE_PAGE_SEGMENTS_KEY,
@@ -20,8 +21,6 @@ import {
   AppElementsWire,
   APP_SLOT_BINDINGS_KEY,
   APP_UNMATCHED_SLOT_WIRE_VALUE,
-  buildOutgoingAppPayload,
-  isAppElementsRecord,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
@@ -31,11 +30,10 @@ import {
   type AppPageSlotOverride,
   buildAppPageElements,
   createAppPageLayoutEntries,
-  probeAppPageLayoutWithTracking,
+  probeAppPageLayout,
   resolveAppPageChildSegments,
   resolveAppPageLoadingModuleAtOrAbove,
 } from "../packages/vinext/src/server/app-page-route-wiring.js";
-import { createAppLayoutParamAccessTracker } from "../packages/vinext/src/server/app-layout-param-observation.js";
 import {
   APP_PAGE_NOT_FOUND_BOUNDARY_ID,
   resolveAppPageCaughtNotFoundBoundaries,
@@ -48,11 +46,6 @@ import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import { MemoryCacheHandler, setCacheHandler } from "../packages/vinext/src/shims/cache.js";
 import {
-  createRequestContext,
-  getRequestContext,
-  runWithRequestContext,
-} from "../packages/vinext/src/shims/unified-request-context.js";
-import {
   APP_PAGE_INTERCEPTION_MARKER_TRAVERSALS,
   buildPageElements as buildResolvedPageElements,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
@@ -64,6 +57,7 @@ import {
   createOptimisticRouteTemplate,
 } from "../packages/vinext/src/server/app-optimistic-routing.js";
 import { createNestedBfcacheSlotSegmentId } from "../packages/vinext/src/server/bfcache-identity.js";
+import { hashMountedLayoutIdentity } from "../packages/vinext/src/server/app-mounted-layouts.js";
 import type {
   GraphVersion,
   RouteManifest,
@@ -630,9 +624,8 @@ describe("app page route wiring helpers", () => {
     ).toBe(legacyLoading);
   });
 
-  it("probes returned layout children with param and revalidate tracking", async () => {
+  it("probes the server components a layout returns", async () => {
     const calls: string[] = [];
-    const layoutParamAccess = createAppLayoutParamAccessTracker();
 
     function Child() {
       calls.push("child");
@@ -644,65 +637,46 @@ describe("app page route wiring helpers", () => {
       return createElement("section", null, createElement(Child));
     }
 
-    await probeAppPageLayoutWithTracking({
+    await probeAppPageLayout({
       layoutIndex: 0,
-      layoutParamAccess,
       makeThenableParams,
       matchedParams: {},
       route: {
         layoutTreePositions: [0],
-        layouts: [{ default: Layout, revalidate: 60 }],
+        layouts: [{ default: Layout }],
         routeSegments: ["dashboard"],
       },
     });
 
     expect(calls).toEqual(["layout", "child"]);
-    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
-      completeness: "complete",
-      finiteRevalidateSeconds: 60,
-    });
   });
 
   it("probes layout branches that render only when children are present", async () => {
     const calls: string[] = [];
-    const layoutParamAccess = createAppLayoutParamAccessTracker();
 
-    function ChromeThatUsesTaggedData() {
+    function Chrome() {
       calls.push("chrome");
-      getRequestContext().currentRequestTags.push("tag:dashboard-chrome");
       return null;
     }
 
     function Layout(props: { children?: ReactNode }) {
       calls.push("layout");
       if (!props.children) return null;
-      return createElement(
-        "section",
-        null,
-        createElement(ChromeThatUsesTaggedData),
-        props.children,
-      );
+      return createElement("section", null, createElement(Chrome), props.children);
     }
 
-    await runWithRequestContext(createRequestContext(), () =>
-      probeAppPageLayoutWithTracking({
-        layoutIndex: 0,
-        layoutParamAccess,
-        makeThenableParams,
-        matchedParams: {},
-        route: {
-          layoutTreePositions: [0],
-          layouts: [{ default: Layout }],
-          routeSegments: ["dashboard"],
-        },
-      }),
-    );
+    await probeAppPageLayout({
+      layoutIndex: 0,
+      makeThenableParams,
+      matchedParams: {},
+      route: {
+        layoutTreePositions: [0],
+        layouts: [{ default: Layout }],
+        routeSegments: ["dashboard"],
+      },
+    });
 
     expect(calls).toEqual(["layout", "chrome"]);
-    expect(layoutParamAccess.getLayoutObservation("layout:/")).toMatchObject({
-      cacheTags: ["tag:dashboard-chrome"],
-      completeness: "complete",
-    });
   });
 
   it("streams generated metadata into the body for streaming-capable requests", async () => {
@@ -2033,6 +2007,120 @@ describe("app page route wiring helpers", () => {
 
     expect(elements["route:/dashboard"]).not.toBeNull();
     expect(elements["page:/dashboard"]).not.toBeNull();
+  });
+
+  describe("layouts the navigating client holds", () => {
+    const buildDashboardSettings = (
+      overrides: Partial<Parameters<typeof buildAppPageElements>[0]> = {},
+    ) =>
+      buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: {},
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 1],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["dashboard", "settings"],
+          templateTreePositions: [],
+          templates: [],
+        },
+        routePath: "/dashboard/settings",
+        rootNotFoundModule: null,
+        isRscRequest: true,
+        isUncacheableRender: true,
+        ...overrides,
+      });
+    const identities =
+      AppElementsWire.readMetadata(buildDashboardSettings()).bfcacheSegmentIdentities;
+    const held = (...layoutIds: string[]) =>
+      new Set(layoutIds.map((layoutId) => hashMountedLayoutIdentity(identities[layoutId] ?? "")));
+
+    it("leaves out the outermost layouts it holds", async () => {
+      const elements = buildDashboardSettings({
+        mountedLayouts: held("layout:/", "layout:/dashboard"),
+      });
+
+      expect(elements["layout:/"]).toBeUndefined();
+      expect(elements["layout:/dashboard"]).toBeUndefined();
+      expect(elements[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/", "layout:/dashboard"]);
+      // The metadata still describes every layout, so the client can check
+      // that it holds the ones left out.
+      const metadata = AppElementsWire.readMetadata(elements);
+      expect(metadata.layoutIds).toEqual(["layout:/", "layout:/dashboard"]);
+      expect(metadata.bfcacheSegmentIdentities["layout:/dashboard"]).toBe(
+        identities["layout:/dashboard"],
+      );
+      // The page waits on no layout the render left out.
+      expect(await renderRouteEntry(elements, "page:/dashboard/settings")).toContain("Page");
+    });
+
+    it("renders every layout below the first one it doesn't hold", () => {
+      const rootOnly = buildDashboardSettings({ mountedLayouts: held("layout:/") });
+      expect(rootOnly["layout:/"]).toBeUndefined();
+      expect(rootOnly["layout:/dashboard"]).toBeDefined();
+      expect(rootOnly[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/"]);
+
+      const nestedOnly = buildDashboardSettings({ mountedLayouts: held("layout:/dashboard") });
+      expect(nestedOnly["layout:/"]).toBeDefined();
+      expect(nestedOnly["layout:/dashboard"]).toBeDefined();
+      expect(nestedOnly[APP_SKIPPED_LAYOUT_IDS_KEY]).toBeUndefined();
+    });
+
+    it("renders a layout whose params changed", () => {
+      const buildTeamSettings = (team: string, mountedLayouts?: ReadonlySet<string>) =>
+        buildDashboardSettings({
+          matchedParams: { team },
+          mountedLayouts,
+          route: {
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 1],
+            layouts: [{ default: RootLayout }, { default: GroupLayout }],
+            loading: null,
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["[team]", "settings"],
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: `/${team}/settings`,
+        });
+      const teamA = AppElementsWire.readMetadata(buildTeamSettings("a"));
+      const heldOnTeamA = new Set(
+        teamA.layoutIds.map((layoutId) =>
+          hashMountedLayoutIdentity(teamA.bfcacheSegmentIdentities[layoutId] ?? ""),
+        ),
+      );
+
+      const teamB = buildTeamSettings("b", heldOnTeamA);
+
+      // The root layout sits above the param, so it's the one the client holds.
+      expect(teamB[APP_SKIPPED_LAYOUT_IDS_KEY]).toEqual(["layout:/"]);
+      expect(teamB["layout:/[team]"]).toBeDefined();
+    });
+
+    it.each<{ name: string; overrides: Partial<Parameters<typeof buildAppPageElements>[0]> }>([
+      { name: "a render that may be stored", overrides: { isUncacheableRender: false } },
+      { name: "a document render", overrides: { isRscRequest: false } },
+      {
+        name: "a prefetch",
+        overrides: { renderMode: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL },
+      },
+    ])("renders every layout for $name", ({ overrides }) => {
+      const elements = buildDashboardSettings({
+        mountedLayouts: held("layout:/", "layout:/dashboard"),
+        ...overrides,
+      });
+
+      expect(elements[APP_SKIPPED_LAYOUT_IDS_KEY]).toBeUndefined();
+    });
   });
 
   it("renders a slot-only loading shell for a render that can never be stored", async () => {
@@ -4642,62 +4730,6 @@ describe("app page route wiring helpers", () => {
 
     expect(body).toContain("page:de");
     expect(body).not.toContain("page:en");
-  });
-
-  it("releases skipped layout dependencies before serializing retained child entries", async () => {
-    let activeLocale = "en";
-
-    async function StaticLayout(props: Record<string, unknown>) {
-      await Promise.resolve();
-      activeLocale = "de";
-      return createElement("div", { "data-layout": "static" }, readChildren(props.children));
-    }
-
-    function LocalePage() {
-      return createElement("main", null, `page:${activeLocale}`);
-    }
-
-    const elements = buildAppPageElements({
-      element: createElement(LocalePage),
-      makeThenableParams(params) {
-        return Promise.resolve(params);
-      },
-      matchedParams: {},
-      route: {
-        error: null,
-        errors: [null],
-        layoutTreePositions: [0],
-        layouts: [{ default: StaticLayout }],
-        loading: null,
-        notFound: null,
-        notFounds: [null],
-        routeSegments: ["skip-layout"],
-        slots: null,
-        templateTreePositions: [],
-        templates: [],
-      },
-      routePath: "/skip-layout",
-      rootNotFoundModule: null,
-    });
-
-    const payload = buildOutgoingAppPayload({
-      element: elements,
-      layoutFlags: { "layout:/": "s" },
-      skipDisposition: {
-        code: "SKIP_STATIC_LAYOUT_VERIFIED",
-        enabled: true,
-        mode: "skipStaticLayout",
-        skippedEntryIds: ["layout:/"],
-      },
-    });
-
-    expect(isAppElementsRecord(payload)).toBe(true);
-    if (!isAppElementsRecord(payload)) return;
-    expect(Object.hasOwn(payload, "layout:/")).toBe(false);
-
-    const body = await withTimeout(renderHtml(readChildren(payload["page:/skip-layout"])), 1_000);
-
-    expect(body).toContain("page:en");
   });
 
   it("renders template-only segments in the route entry even without a matching layout", async () => {

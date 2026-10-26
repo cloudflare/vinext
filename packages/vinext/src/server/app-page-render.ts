@@ -9,6 +9,7 @@ import { isResumeDataCacheEmpty, stringifyResumeDataCache } from "vinext/shims/r
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
 import { AppElementsWire, isAppElementsRecord, type AppOutgoingElements } from "./app-elements.js";
+import { getAppPageLayoutGate } from "./app-page-layout-gate.js";
 import { hasDigest } from "./app-rsc-errors.js";
 import { internalServerErrorResponse } from "./http-error-responses.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -28,9 +29,7 @@ import {
   teeAppPageRscStreamForCapture,
   type AppPageFontPreload,
   type AppPageSpecialError,
-  type LayoutClassificationOptions,
 } from "./app-page-execution.js";
-import { probeAppPageBeforeRender } from "./app-page-probe.js";
 import { createAppPageRscRenderStatusResolver } from "./app-page-rsc-render-status.js";
 import {
   applyClientStaleTimeHeader,
@@ -54,29 +53,12 @@ import {
   renderAppPageHtmlStreamWithRecovery,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
-import {
-  APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
-  type AppRscRenderMode,
-} from "./app-rsc-render-mode.js";
+import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   createArtifactCompatibilityEnvelope,
   createArtifactCompatibilityGraphVersion,
   type ArtifactCompatibilityEnvelope,
 } from "./artifact-compatibility.js";
-import {
-  buildCacheVariantWithRouteBudget,
-  buildRenderObservation,
-  buildRenderRequestApiObservations,
-  createStaticLayoutArtifactReuseDecision,
-  DEFAULT_CACHE_VARIANT_BUDGET,
-  type StaticLayoutCacheProofOutputScope,
-} from "./cache-proof.js";
-import type {
-  ClientReuseManifestEntry,
-  ClientReuseManifestParseResult,
-  ClientReuseManifestSkipDisposition,
-  ClientReuseManifestTraceFields,
-} from "./client-reuse-manifest.js";
 import {
   applyCdnResponseHeaders,
   isCdnResponsePolicyHeader,
@@ -84,29 +66,12 @@ import {
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
-  createClientReuseSkipTransportPlan,
-  createStaticLayoutClientReuseArtifactCompatibility,
-  createStaticLayoutClientReusePayloadHash,
-  createStaticLayoutClientReuseRouteId,
-  crossCheckClientReuseManifestEntryWithCache,
-} from "./skip-cache-proof.js";
-import {
   createAppPageHtmlOutputScope,
   createAppPageRenderObservation,
   createAppPageRscOutputScope,
   type AppPageRenderObservationState,
 } from "./app-page-render-observation.js";
-import type {
-  AppLayoutParamAccessTracker,
-  StaticLayoutObservationSkipRejection,
-} from "./app-layout-param-observation.js";
-import { getStaticLayoutObservationSkipRejection } from "./app-layout-param-observation.js";
-import {
-  isRenderDynamicLatched,
-  markDynamicUsage,
-  peekDynamicUsage,
-  runWithDetachedDynamicUsage,
-} from "vinext/shims/headers";
+import { isRenderDynamicLatched, peekDynamicUsage } from "vinext/shims/headers";
 import {
   bindRequestContext,
   preserveFullyBufferedBodyMetadata,
@@ -245,7 +210,6 @@ type RenderAppPageLifecycleOptionsBase = {
   isrSet: AppPageCacheSetter;
   interceptionContext?: string | null;
   interceptionId?: string | null;
-  layoutCount: number;
   loadSsrHandler: () => Promise<AppPageSsrHandler>;
   middlewareContext: AppPageMiddlewareContext;
   navigationParams: Record<string, unknown>;
@@ -255,7 +219,6 @@ type RenderAppPageLifecycleOptionsBase = {
   abortPprFallbackShell?: () => void;
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
-  probeLayoutAt: (layoutIndex: number) => unknown;
   expireSeconds?: number;
   formState?: ReactFormState | null;
   revalidateSeconds: number | null;
@@ -263,10 +226,6 @@ type RenderAppPageLifecycleOptionsBase = {
     error: unknown,
     errorOrigin: "rsc" | "ssr",
   ) => Promise<Response | null>;
-  renderLayoutSpecialError: (
-    specialError: AppPageSpecialError,
-    layoutIndex: number,
-  ) => Promise<Response>;
   renderPageSpecialError: (
     specialError: AppPageSpecialError,
     renderOptions?: AppPageSpecialErrorRenderOptions,
@@ -280,18 +239,11 @@ type RenderAppPageLifecycleOptionsBase = {
     options: { onError: AppPageBoundaryOnError; signal?: AbortSignal },
   ) => Promise<{ prelude: ReadableStream<Uint8Array> }>;
   routePattern: string;
-  runWithSuppressedHookWarning<T>(probe: () => Promise<T>): Promise<T>;
   scriptNonce?: string;
-  clientReuseManifest?: ClientReuseManifestParseResult;
-  skipDisposition?: ClientReuseManifestSkipDisposition;
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
   waitUntil?: (promise: Promise<void>) => void;
-  // Per-layout observation tracker. Constructed in dispatch, consumed by the
-  // skip transport planner to reject layouts that are unsafe for static reuse.
-  layoutParamAccess?: AppLayoutParamAccessTracker;
-  classification?: LayoutClassificationOptions | null;
 };
 
 type RenderAppPageLifecycleOptions = RenderAppPageLifecycleOptionsBase &
@@ -409,16 +361,17 @@ export function applyIneligibleRouteCachePolicy(
     | "revalidateSeconds"
     | "scriptNonce"
   >,
-  probeCacheLife: AppPageRequestCacheLife | null = null,
+  requestCacheLife: AppPageRequestCacheLife | null = null,
 ): Response {
   const cacheControl = resolveEarlyResponseCacheControl(options);
   const isRscRedirect = options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER);
   if (!cacheControl) {
-    // A probe has completed by the time it answers, so a static RSC redirect
-    // carries the probe's cacheLife stale bound like a prerender. As in
-    // Next.js, a known-dynamic redirect carries only `staleTimes.dynamic`.
+    // A layout's redirect answers once the layouts above it rendered, so a
+    // static RSC redirect carries their cacheLife stale bound like a
+    // prerender. As in Next.js, a known-dynamic redirect carries only
+    // `staleTimes.dynamic`.
     const staleTimeSeconds = isRscRedirect
-      ? resolveClientStaleTimeSeconds(probeCacheLife)
+      ? resolveClientStaleTimeSeconds(requestCacheLife)
       : undefined;
     if (staleTimeSeconds === undefined) return response;
     const stamped = cloneForStamping(response);
@@ -499,19 +452,6 @@ function resolveAppPageCacheWriteRevalidateSeconds(options: {
   return options.revalidateSeconds;
 }
 
-/**
- * A loading-shell prefetch without a loading boundary that can never be stored
- * renders only the route tree (see buildAppPageElements), so no layout runs and
- * none is probed. Next.js runs no layout for its no-loading prefetch either.
- */
-function isRouteTreeOnlyLoadingShell(options: ResolvedRenderAppPageLifecycleOptions): boolean {
-  if (options.renderMode !== APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) return false;
-  if (options.isCacheCandidate === true) return false;
-  if (!isAppElementsRecord(options.element)) return false;
-  const routeId = options.element[AppElementsWire.keys.route];
-  return typeof routeId === "string" && options.element[routeId] === null;
-}
-
 function readRootBoundaryId(element: Readonly<Record<string, unknown>>): string | null {
   const rootLayoutTreePath = element[AppElementsWire.keys.rootLayout];
   return typeof rootLayoutTreePath === "string" ? rootLayoutTreePath : null;
@@ -534,241 +474,6 @@ function createAppPageArtifactCompatibility(
     deploymentVersion: process.env.__VINEXT_BUILD_ID ?? null,
     rootBoundaryId,
   });
-}
-
-function readStringMetadata(
-  element: Readonly<Record<string, unknown>>,
-  key: string,
-): string | null {
-  const value = element[key];
-  return typeof value === "string" ? value : null;
-}
-
-function createStaticLayoutOutputScope(input: {
-  artifactCompatibility: ArtifactCompatibilityEnvelope;
-  element: Readonly<Record<string, unknown>>;
-  layoutId: string;
-}): StaticLayoutCacheProofOutputScope | null {
-  const routeId = readStringMetadata(input.element, AppElementsWire.keys.route);
-  if (routeId === null) return null;
-
-  return {
-    kind: "layout",
-    layoutId: input.layoutId,
-    rootBoundaryId: input.artifactCompatibility.rootBoundaryId,
-    routeId,
-  };
-}
-
-function createRenderAndSendSkipDisposition(): ClientReuseManifestSkipDisposition {
-  return {
-    code: "SKIP_MODEL_DISABLED",
-    enabled: false,
-    mode: "renderAndSend",
-  };
-}
-
-function rejectStaticLayoutObservation(
-  entry: ClientReuseManifestEntry,
-  code: StaticLayoutObservationSkipRejection["code"],
-  fields: ClientReuseManifestTraceFields = {},
-): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> {
-  return {
-    kind: "rejected",
-    rejection: {
-      code,
-      entryId: entry.id,
-      fields,
-    },
-    skipDisposition: createRenderAndSendSkipDisposition(),
-  };
-}
-
-function rejectUnsafeStaticLayoutObservation(
-  entry: ClientReuseManifestEntry,
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined,
-): ReturnType<typeof crossCheckClientReuseManifestEntryWithCache> | null {
-  // getLayoutObservation always returns an observation (defaults to
-  // completeness:"unknown" for missing/unknown layouts), so the optional-chain
-  // is the only path that produces a falsy value — this guards the missing-
-  // tracker case, not a missing observation.
-  const observation = layoutParamAccess?.getLayoutObservation(entry.id);
-  if (!observation) {
-    return rejectStaticLayoutObservation(entry, "SKIP_LAYOUT_PARAMS_OBSERVATION_INCOMPLETE");
-  }
-
-  const observationRejection = getStaticLayoutObservationSkipRejection(observation);
-  if (observationRejection) {
-    return rejectStaticLayoutObservation(
-      entry,
-      observationRejection.code,
-      observationRejection.fields,
-    );
-  }
-
-  return null;
-}
-
-function createRenderLifecycleSkipDisposition(input: {
-  artifactCompatibility: ArtifactCompatibilityEnvelope | undefined;
-  cleanPathname: string;
-  clientReuseManifest: ClientReuseManifestParseResult | undefined;
-  element: ReactNode | Readonly<Record<string, ReactNode>>;
-  isRscRequest: boolean;
-  layoutFlags: Readonly<Record<string, "s" | "d">>;
-  layoutParamAccess: AppLayoutParamAccessTracker | undefined;
-}): ClientReuseManifestSkipDisposition | undefined {
-  if (!input.isRscRequest || input.clientReuseManifest === undefined) {
-    return undefined;
-  }
-  const clientReuseManifest = input.clientReuseManifest;
-  if (clientReuseManifest.kind !== "parsed" || clientReuseManifest.manifest.entries.length === 0) {
-    return undefined;
-  }
-  if (!isAppElementsRecord(input.element) || input.artifactCompatibility === undefined) {
-    return {
-      code: "SKIP_MODEL_DISABLED",
-      enabled: false,
-      mode: "renderAndSend",
-    };
-  }
-  const element = input.element;
-  const artifactCompatibility = input.artifactCompatibility;
-
-  const staticLayoutIds = new Set(
-    Object.entries(input.layoutFlags)
-      .filter(([, flag]) => flag === "s")
-      .map(([layoutId]) => layoutId),
-  );
-  const plan = createClientReuseSkipTransportPlan({
-    manifest: clientReuseManifest,
-    verifyEntry(entry) {
-      if (
-        entry.kind !== "layout" ||
-        !staticLayoutIds.has(entry.id) ||
-        AppElementsWire.parseElementKey(entry.id)?.kind !== "layout"
-      ) {
-        return crossCheckClientReuseManifestEntryWithCache({
-          artifact: {
-            compatibility: artifactCompatibility,
-            invalidation: { kind: "unknown" },
-            payloadHash: null,
-          },
-          cacheDecision: null,
-          entry,
-        });
-      }
-
-      const currentOutput = createStaticLayoutOutputScope({
-        artifactCompatibility,
-        element,
-        layoutId: entry.id,
-      });
-      if (currentOutput === null) {
-        return crossCheckClientReuseManifestEntryWithCache({
-          artifact: {
-            compatibility: artifactCompatibility,
-            invalidation: { kind: "unknown" },
-            payloadHash: null,
-          },
-          cacheDecision: null,
-          entry,
-        });
-      }
-      const observationRejection = rejectUnsafeStaticLayoutObservation(
-        entry,
-        input.layoutParamAccess,
-      );
-      if (observationRejection) {
-        return observationRejection;
-      }
-      const candidateRouteId = createStaticLayoutClientReuseRouteId(entry.id);
-      const candidateOutput: StaticLayoutCacheProofOutputScope = {
-        ...currentOutput,
-        routeId: candidateRouteId,
-      };
-
-      const candidateVariant = buildCacheVariantWithRouteBudget({
-        budget: DEFAULT_CACHE_VARIANT_BUDGET,
-        dimensions: [],
-        output: candidateOutput,
-        routeBudget: {
-          routeId: candidateRouteId,
-          variantCacheKeys: [],
-        },
-      });
-      const skipArtifactCompatibility =
-        candidateVariant.kind === "variant"
-          ? createStaticLayoutClientReuseArtifactCompatibility({
-              artifactCompatibility,
-              layoutId: entry.id,
-              rootBoundaryId: candidateOutput.rootBoundaryId,
-              routeId: candidateOutput.routeId,
-              variantCacheKey: candidateVariant.variant.cacheKey,
-            })
-          : artifactCompatibility;
-      const cacheDecision = createStaticLayoutArtifactReuseDecision({
-        candidateArtifactCompatibility: skipArtifactCompatibility,
-        // Static layout classification plus the per-layout observation gate
-        // above are the authority for this synthetic cache proof. Before a
-        // layout reaches this point, skip has already rejected param-scoped
-        // layouts, finite-revalidate segment configs, dynamic usage, request API
-        // reads, cacheLife(), unstable_cache(), cache-tagged/cacheable fetches,
-        // and dynamic fetches.
-        candidateObservation: buildRenderObservation({
-          boundaryOutcome: { kind: "success" },
-          cacheability: "public",
-          cacheTags: [],
-          completeness: "complete",
-          dynamicFetches: [],
-          output: candidateOutput,
-          pathTags: [input.cleanPathname],
-          // Invariant: reaching this point requires staticLayoutIds.has(entry.id),
-          // and a layout that observed any request API is flagged "d" by
-          // isLayoutObservationDynamic (isAppLayoutObservationUnsafeForStaticReuse
-          // rejects requestApis.length > 0) and excluded from staticLayoutIds. So
-          // the observed request-API set is necessarily empty here. Hardcoded
-          // rather than read back from the per-layout observation so that a future
-          // reordering of the classification gate cannot feed stale request-API
-          // reads into this synthetic cache proof.
-          requestApis: buildRenderRequestApiObservations({
-            completeness: "complete",
-            observed: [],
-          }),
-        }),
-        candidateVariant,
-        currentArtifactCompatibility: skipArtifactCompatibility,
-        currentOutput,
-      });
-
-      return crossCheckClientReuseManifestEntryWithCache({
-        artifact: {
-          compatibility: skipArtifactCompatibility,
-          invalidation: { kind: "valid" },
-          payloadHash:
-            candidateVariant.kind === "variant"
-              ? createStaticLayoutClientReusePayloadHash({
-                  artifactCompatibility: skipArtifactCompatibility,
-                  layoutId: entry.id,
-                  rootBoundaryId: candidateOutput.rootBoundaryId,
-                  routeId: candidateOutput.routeId,
-                  variantCacheKey: candidateVariant.variant.cacheKey,
-                })
-              : null,
-        },
-        cacheDecision,
-        entry,
-      });
-    },
-  });
-
-  return plan.skipDisposition;
-}
-
-function isSkipTransportEnabled(
-  skipDisposition: ClientReuseManifestSkipDisposition | undefined,
-): boolean {
-  return skipDisposition?.enabled === true;
 }
 
 /**
@@ -919,8 +624,8 @@ async function renderAppPageLifecycleImpl(
   // HTML renders that decide whether the page is static also read the
   // request's dynamic latch: a candidate's store decision, the Worker's probe
   // and admission, and the build prerender. The latch sees usage in child
-  // scopes that never reach this render's flag: the layout probe, and SSR, where
-  // a client page reads its searchParams. A candidate's SSR useSearchParams()
+  // scopes that never reach this render's flag, such as SSR, where a client
+  // page reads its searchParams. A candidate's SSR useSearchParams()
   // gate also opens with the real query once the render latches dynamic.
   // PPR fallback shells discard their warmup render's usage and keep their
   // client page query untracked, so they don't read it.
@@ -954,43 +659,6 @@ async function renderAppPageLifecycleImpl(
     }
     return dynamicUsageObserved;
   };
-  // The probe runs layouts outside React's render, without its
-  // cache() scope, so what it sees can differ from the render. As in Next.js,
-  // which has no probe, the render alone decides whether the page is dynamic.
-  const probeOutcome = await runWithDetachedDynamicUsage(() =>
-    probeAppPageBeforeRender({
-      skipProbes:
-        options.pprFallbackShellSignal !== undefined || isRouteTreeOnlyLoadingShell(options),
-      layoutCount: options.layoutCount,
-      probeLayoutAt(layoutIndex) {
-        return options.probeLayoutAt(layoutIndex);
-      },
-      renderLayoutSpecialError(specialError, layoutIndex) {
-        return options.renderLayoutSpecialError(specialError, layoutIndex);
-      },
-      resolveSpecialError: resolveAppPageSpecialError,
-      runWithSuppressedHookWarning(probe) {
-        return options.runWithSuppressedHookWarning(probe);
-      },
-      classification: options.classification,
-    }),
-  );
-  const preRenderResult = probeOutcome.result;
-  if (preRenderResult.response) {
-    // This response replaces the render, so the probe's usage classifies it.
-    if (probeOutcome.dynamicDetected) markDynamicUsage();
-    return applyIneligibleRouteCachePolicy(
-      preRenderResult.response,
-      options,
-      probeOutcome.cacheLife,
-    );
-  }
-
-  const layoutFlags = preRenderResult.layoutFlags;
-
-  // Render the CANONICAL element. The outgoing payload carries per-layout
-  // static/dynamic flags under `__layoutFlags` so the client can later tell
-  // which layouts are safe to skip on subsequent navigations.
   const artifactCompatibility = createAppPageArtifactCompatibility(
     options.element,
     options.routePattern,
@@ -1010,33 +678,23 @@ async function renderAppPageLifecycleImpl(
     rootBoundaryId,
     routePattern: options.routePattern,
   });
-  const skipDisposition =
-    options.skipDisposition ??
-    createRenderLifecycleSkipDisposition({
-      artifactCompatibility,
-      cleanPathname: options.cleanPathname,
-      clientReuseManifest: options.clientReuseManifest,
-      element: options.element,
-      isRscRequest: options.isRscRequest,
-      layoutFlags,
-      layoutParamAccess: options.layoutParamAccess,
-    });
-  const shouldBypassRscCacheForSkipTransport =
-    options.isRscRequest && isSkipTransportEnabled(skipDisposition);
-  const shouldBypassRscCache =
-    shouldBypassRscCacheForSkipTransport || options.bypassInterceptionContextCache === true;
+  // A payload that leaves out the layouts its client holds is that client's
+  // alone, so it's never stored or sent with shared cache headers.
+  const isPartialPayload =
+    options.isRscRequest &&
+    isAppElementsRecord(options.element) &&
+    Object.hasOwn(options.element, AppElementsWire.keys.skippedLayoutIds);
+  const shouldBypassRscCache = options.bypassInterceptionContextCache === true || isPartialPayload;
   const dynamicStaleTimeSeconds =
     options.dynamicStaleTimeSeconds ?? resolveConfiguredDynamicStaleTimeSeconds();
   const outgoingElement = AppElementsWire.encodeOutgoingPayload({
     element: options.element,
-    layoutFlags,
     ...(dynamicStaleTimeSeconds !== undefined &&
     options.isPrerender !== true &&
     !options.isForceStatic
       ? { dynamicStaleTimeSeconds }
       : {}),
     ...(artifactCompatibility ? { artifactCompatibility } : {}),
-    skipDisposition: options.isRscRequest ? skipDisposition : undefined,
   });
 
   const compileEnd = options.isProduction ? undefined : performance.now();
@@ -1051,6 +709,14 @@ async function renderAppPageLifecycleImpl(
     options.routePattern,
     errorContextOverrides,
   );
+  // A client navigation's response waits for the layouts above the first
+  // loading boundary, as their redirect() answers it through a header.
+  const layoutGate =
+    options.isRscRequest &&
+    options.isPrerender !== true &&
+    options.pprFallbackShellSignal === undefined
+      ? getAppPageLayoutGate(options.element)
+      : null;
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
     return baseOnError(error, requestInfo, errorContext);
@@ -1083,6 +749,40 @@ async function renderAppPageLifecycleImpl(
   let pprFallbackShellRsc: Uint8Array | null = null;
   if (options.pprFallbackShellSignal) {
     pprFallbackShellRsc = new Uint8Array(await readAppPageBinaryStream(rscStream));
+  }
+
+  if (layoutGate) {
+    // A branch read only while waiting tells the gate when the render ends,
+    // completed or failed, before every held layout renders.
+    const [heldStream, watchedStream] = rscStream.tee();
+    rscStream = heldStream;
+    const watchedReader = watchedStream.getReader();
+    const renderEnded = (async () => {
+      while (!(await watchedReader.read()).done);
+    })();
+    const layoutFailure = await layoutGate.wait(
+      (layoutId) =>
+        isAppElementsRecord(outgoingElement) && Object.hasOwn(outgoingElement, layoutId),
+      renderEnded,
+    );
+    void watchedReader.cancel().catch(() => {});
+    const layoutSpecialError = layoutFailure
+      ? resolveAppPageSpecialError(layoutFailure.error)
+      : null;
+    if (layoutFailure && layoutSpecialError) {
+      // This response replaces the render, which classifies it.
+      void rscStream.cancel().catch(() => {});
+      const response = await options.renderPageSpecialError(
+        layoutSpecialError.kind === "http-access-fallback"
+          ? { ...layoutSpecialError, layoutIndex: layoutFailure.layoutIndex }
+          : layoutSpecialError,
+      );
+      return applyIneligibleRouteCachePolicy(
+        response,
+        options,
+        options.peekRequestCacheLife?.() ?? options.getRequestCacheLife(),
+      );
+    }
   }
 
   let revalidateSeconds = options.revalidateSeconds;
@@ -1169,27 +869,31 @@ async function renderAppPageLifecycleImpl(
     }
 
     const dynamicUsedDuringBuild = consumeRenderDynamicUsage();
-    // When skip transport is enabled, omit cacheState because the response is a
-    // per-client payload, not a shared-cache MISS/HIT artifact. The absence also
-    // keeps finalizeAppPageRscCacheResponse from overwriting no-store.
-    const rscResponsePolicy = shouldBypassRscCache
-      ? { cacheControl: NO_STORE_CACHE_CONTROL }
-      : resolveAppPageRscResponsePolicy({
-          dynamicUsedDuringBuild,
-          isDraftMode: options.isDraftMode,
-          isDynamicError: options.isDynamicError,
-          isForceDynamic: options.isForceDynamic,
-          isForceStatic: options.isForceStatic,
-          isProduction: options.isProduction,
-          isStaticEligible: options.isStaticEligible,
-          expireSeconds,
-          revalidateSeconds,
-        });
+    // An unverified interception context or a partial payload omits
+    // cacheState, as the response is not a shared-cache MISS/HIT artifact. The
+    // absence also keeps finalizeAppPageRscCacheResponse from overwriting
+    // no-store. A partial payload only comes from a render that's never
+    // stored, so it keeps that render's uncacheable header.
+    const rscResponsePolicy = isPartialPayload
+      ? { cacheControl: resolveUncacheableCacheControl(options.isProduction) }
+      : shouldBypassRscCache
+        ? { cacheControl: NO_STORE_CACHE_CONTROL }
+        : resolveAppPageRscResponsePolicy({
+            dynamicUsedDuringBuild,
+            isDraftMode: options.isDraftMode,
+            isDynamicError: options.isDynamicError,
+            isForceDynamic: options.isForceDynamic,
+            isForceStatic: options.isForceStatic,
+            isProduction: options.isProduction,
+            isStaticEligible: options.isStaticEligible,
+            expireSeconds,
+            revalidateSeconds,
+          });
     if (shouldBypassRscCache) {
       options.isrDebug?.(
-        options.bypassInterceptionContextCache === true
-          ? "RSC cache write skipped (unverified interception context)"
-          : "RSC cache write skipped (skip transport payload)",
+        isPartialPayload
+          ? "RSC cache write skipped (partial payload)"
+          : "RSC cache write skipped (unverified interception context)",
         options.cleanPathname,
       );
     }

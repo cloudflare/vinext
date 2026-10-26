@@ -900,7 +900,6 @@ export function createAppBrowserNavigationController(
         elements: options.restoredState.elements,
         interception: options.restoredState.interception,
         interceptionContext: options.restoredState.interceptionContext,
-        layoutFlags: options.restoredState.layoutFlags,
         layoutIds: options.restoredState.layoutIds,
         navigationSnapshot: options.restoredState.navigationSnapshot,
         operation,

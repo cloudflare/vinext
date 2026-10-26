@@ -238,9 +238,7 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     expect(code).toContain("configRedirects: __configRedirects");
     expect(code).toContain("dispatchMatchedPage(__pageArgs) {");
     expect(code).toContain("withRequest(requestArgs) {");
-    expect(code).toContain("    clientReuseManifest,");
     expect(code).toContain("    rootParams,\n    request,");
-    expect(code).toContain("      clientReuseManifest,");
     expect(code).toContain("      rootParams,\n      probeLayoutAt");
     expect(code).toContain("dispatchMatchedRouteHandler({");
     expect(code).toContain("matchRoute,");

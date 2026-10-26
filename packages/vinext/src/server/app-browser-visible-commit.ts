@@ -296,7 +296,6 @@ function reduceApprovedVisibleCommitState(
           elements: mergedElements,
           interception: action.interception,
           interceptionContext: action.interceptionContext,
-          layoutFlags: mergeLayoutFlags(state.layoutFlags, action.layoutFlags, preserveElementIds),
           layoutIds: action.layoutIds,
           navigationSnapshot: action.navigationSnapshot,
           previousNextUrl: action.previousNextUrl,
@@ -364,20 +363,6 @@ function createVisibleCommitDecision(
     preservePreviousSlotIds: [...preservePreviousSlotIds],
     trace,
   };
-}
-
-function mergeLayoutFlags(
-  previousFlags: AppRouterState["layoutFlags"],
-  nextFlags: AppRouterState["layoutFlags"],
-  preserveElementIds: readonly string[],
-): AppRouterState["layoutFlags"] {
-  const merged: Record<string, "s" | "d"> = { ...nextFlags };
-  for (const id of preserveElementIds) {
-    if (Object.hasOwn(merged, id)) continue;
-    const value = previousFlags[id];
-    if (value) merged[id] = value;
-  }
-  return merged;
 }
 
 function createApprovedVisibleCommit(options: {

@@ -1,5 +1,15 @@
 # @cloudflare/workers-response-store
 
+## 1.1.3
+
+### Bug Fixes
+
+- **Cloudflare:** stop non-replayable Response Store data refreshes from spending edge purges (#4259)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.2
 
 Read the [Vinext 1.3 release post](https://vinext.dev/blog/vinext-1-3) for the highlights.
