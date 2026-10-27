@@ -505,6 +505,17 @@ describe("prefetch cache eviction", () => {
       expect(onInvalidate).not.toHaveBeenCalled();
       vi.advanceTimersByTime(1);
       expect(onInvalidate).toHaveBeenCalledTimes(1);
+
+      // Or when the visited responses are cleared, such as by a Server
+      // Action's dynamic revalidation, and only then.
+      const onClearedInvalidate = vi.fn();
+      navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate: onClearedInvalidate });
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+      navigation.invalidateVisitedResponsePrefetches();
+      expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(180_000);
+      expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+      expect(fetch).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }

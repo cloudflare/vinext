@@ -997,6 +997,8 @@ function notifyPrefetchInvalidated(entry: PrefetchCacheEntry): void {
  */
 type RetainedPrefetchInvalidation = {
   callbacks: Set<() => void>;
+  /** Retained for a visited response, which dynamic invalidation also clears. */
+  forVisitedResponse?: true;
   timer: ReturnType<typeof setTimeout>;
 };
 const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
@@ -1007,10 +1009,15 @@ function retainPrefetchInvalidationAfterConsume(entry: PrefetchCacheEntry): void
   retainPrefetchInvalidation(callbacks, resolvePrefetchCacheEntryExpiresAt(entry));
 }
 
-function retainPrefetchInvalidation(callbacks: Set<() => void>, expiresAt: number): void {
+function retainPrefetchInvalidation(
+  callbacks: Set<() => void>,
+  expiresAt: number,
+  forVisitedResponse = false,
+): void {
   const delay = Math.max(0, expiresAt - Date.now());
   const retained: RetainedPrefetchInvalidation = {
     callbacks,
+    ...(forVisitedResponse ? { forVisitedResponse: true as const } : {}),
     timer: setTimeout(() => fireRetainedPrefetchInvalidation(retained), delay),
   };
   retainedPrefetchInvalidations.add(retained);
@@ -1228,6 +1235,16 @@ export function invalidateDynamicPrefetchCache(): void {
 }
 
 /**
+ * Notify the prefetches that stood in for a visited response (see
+ * `hasNavigationFreshVisitedResponse`), as the visited responses are cleared.
+ */
+export function invalidateVisitedResponsePrefetches(): void {
+  for (const retained of retainedPrefetchInvalidations) {
+    if (retained.forVisitedResponse === true) fireRetainedPrefetchInvalidation(retained);
+  }
+}
+
+/**
  * Prevent completed navigation responses from becoming authoritative again
  * after restoring a history snapshot. Explicit Link/router prefetches remain
  * consumable. Responses with a positive cache lifetime and interception
@@ -1338,7 +1355,9 @@ export function hasNavigationFreshVisitedResponse(
     mountedSlotsHeader,
   )?.navigationFreshUntil;
   if (freshUntil === undefined || freshUntil === null) return false;
-  if (onInvalidate !== undefined) retainPrefetchInvalidation(new Set([onInvalidate]), freshUntil);
+  if (onInvalidate !== undefined) {
+    retainPrefetchInvalidation(new Set([onInvalidate]), freshUntil, true);
+  }
   return true;
 }
 

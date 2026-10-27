@@ -38,6 +38,7 @@ import {
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidateDynamicPrefetchCache,
+  invalidateVisitedResponsePrefetches,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
@@ -579,6 +580,7 @@ function stageClientParams(params: Record<string, string | string[]>): void {
 
 function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
+  invalidateVisitedResponsePrefetches();
 }
 
 function clearPrefetchState(options?: InvalidatePrefetchCacheOptions): void {
