@@ -1,0 +1,3 @@
+---
+"@vinext/cloudflare": minor
+---

@@ -34,6 +34,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
   resolveAppPageHead,
   type ActiveParallelRouteHeadInput,
@@ -763,6 +764,10 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
                     effectiveParams,
                     layoutSegments,
                   ),
+                ),
+                layoutsBesidePage: resolveInterceptLayoutsBesidePage(
+                  intercept?.interceptLayoutSegments,
+                  intercept?.interceptBranchSegments,
                 ),
                 pageModule: intercept?.interceptPage ?? null,
                 params: effectiveParams,

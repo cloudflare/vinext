@@ -29,6 +29,11 @@ export type FetchCacheState = {
   currentFetchCacheMode: FetchCacheMode | null;
   currentFetchRevalidate: number | null;
   currentForceDynamicFetchDefault: boolean;
+  /**
+   * Pages Router preview/draft render. App Router draft state is read from the
+   * headers context instead; Pages renders don't have one.
+   */
+  isDraftMode: boolean;
   dynamicFetchUrls: Set<string>;
   refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
@@ -55,6 +60,7 @@ function createFetchCacheState(): FetchCacheState {
     currentFetchCacheMode: null,
     currentFetchRevalidate: null,
     currentForceDynamicFetchDefault: false,
+    isDraftMode: false,
     dynamicFetchUrls: new Set<string>(),
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,

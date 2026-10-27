@@ -191,39 +191,54 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-async function* requestBodyChunks(request: Request): AsyncGenerator<Buffer> {
-  if (!request.body || request.bodyUsed) {
-    return;
-  }
+function createRequestReadable(request: Request): Readable {
+  const body = request.bodyUsed ? null : request.body;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
-  const reader = request.body.getReader();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) {
+  // A byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
+  // semantics, byte-based highWaterMark). The body is only locked on the
+  // first read: a handler that never consumes it must not observe a client
+  // abort as an unhandled `error` event, and `Readable.fromWeb` would attach
+  // to the body eagerly. `destroy()` cancels a pending read directly, so a
+  // stalled upload still emits `close`.
+  return new Readable({
+    read() {
+      if (!body) {
+        this.push(null);
         return;
       }
-      // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
-      // handler code routinely calls `chunk.toString("utf8")`, which on a
-      // raw Uint8Array comma-joins the byte values instead of decoding.
-      // Buffer.from(buffer, offset, length) is a zero-copy view.
-      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Ignore cancellation errors from the upstream source.
-    }
-    reader.releaseLock();
-  }
-}
-
-function createRequestReadable(request: Request): Readable {
-  // `Readable.from` defaults to objectMode — opt out so the request is a
-  // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
-  // semantics, byte-based highWaterMark).
-  return Readable.from(requestBodyChunks(request), { objectMode: false });
+      reader ??= body.getReader();
+      reader.read().then(
+        ({ value, done }) => {
+          if (this.destroyed) return;
+          if (done) {
+            this.push(null);
+            return;
+          }
+          // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
+          // handler code routinely calls `chunk.toString("utf8")`, which on a
+          // raw Uint8Array comma-joins the byte values instead of decoding.
+          // Buffer.from(buffer, offset, length) is a zero-copy view.
+          this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        },
+        (error: unknown) => this.destroy(error as Error),
+      );
+    },
+    destroy(error, callback) {
+      const cancelled = reader
+        ? reader.cancel(error ?? undefined)
+        : body?.cancel(error ?? undefined);
+      if (!cancelled) {
+        callback(error);
+        return;
+      }
+      // Cancellation errors from the upstream source are not the consumer's.
+      cancelled.then(
+        () => callback(error),
+        () => callback(error),
+      );
+    },
+  });
 }
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {

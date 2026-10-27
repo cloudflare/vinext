@@ -113,6 +113,7 @@ const projectServers = {
       "app-router-prod/prefetch-queue-viewport.spec.ts",
       "app-router-prod/prefetched-shell-async-metadata.spec.ts",
       "app-router-prod/soft-nav-rsc-cache.spec.ts",
+      "app-router-prod/rsc-miss-document.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
     ],

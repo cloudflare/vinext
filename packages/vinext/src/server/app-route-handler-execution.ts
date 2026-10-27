@@ -371,7 +371,7 @@ async function executeAppRouteHandlerImpl(
             };
           } catch (error) {
             if (
-              resolveAppRouteHandlerSpecialError(error, options.request.url, {
+              resolveAppRouteHandlerSpecialError(error, {
                 isAction: isPossibleAppRouteActionRequest(options.request),
               })
             ) {
@@ -631,9 +631,14 @@ async function executeAppRouteHandlerImpl(
     if (handlerDraftCookie != null) {
       markKnownDynamicAppRoute(options.routePattern);
     }
-    const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url, {
+    const specialError = resolveAppRouteHandlerSpecialError(error, {
       isAction: isPossibleAppRouteActionRequest(options.request),
     });
+    // A request read before redirect() or notFound() makes the response
+    // depend on the request, so no provider policy may share it.
+    if (specialError && options.consumeDynamicUsage()) {
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+    }
     options.clearRequestContext();
 
     if (specialError) {

@@ -149,6 +149,8 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      /** Aborts a streaming render whose document is given up. */
+      signal?: AbortSignal;
       /** Route whose client references load before the render; null for none. */
       preloadRoutePattern?: string | null;
       /** When true, wait for the full React tree before emitting bytes. */

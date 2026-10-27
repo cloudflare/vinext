@@ -676,7 +676,181 @@ test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
     .toBe(false);
 });
 
+// Next.js keys its response cache by pathname, so every host an app serves
+// shares one entry, and Workers Cache leaves the host out of its key:
+// https://developers.cloudflare.com/workers/cache/cache-keys/
+// A preview alias and a Version URL are two hosts of one uploaded version:
+// https://developers.cloudflare.com/workers/configuration/previews/
+// A Version URL is not compared with production traffic: on a deployed Worker
+// it never reached the entries production requests filled, which those docs
+// leave unspecified.
+const previewAliasURL = process.env.VINEXT_E2E_PREVIEW_ALIAS_URL;
+const previewAlias = process.env.VINEXT_E2E_PREVIEW_ALIAS;
+
+test("Workers Cache shares one entry across the hosts of a deployed Worker", async ({
+  request,
+}) => {
+  test.skip(backend !== "workers-cache", "the preview URL host is specific to Workers Cache");
+  test.skip(!previewAliasURL || !previewAlias, "requires a preview alias of a deployed Worker");
+  test.setTimeout(240_000);
+  const baseURL = previewAliasURL!;
+
+  const versionResponse = await request.get(`${baseURL}/api/worker-version`);
+  expect(versionResponse.ok()).toBe(true);
+  const { id } = (await versionResponse.json()) as { id: string | null };
+  expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  const aliasHost = new URL(baseURL).hostname;
+  expect(aliasHost.startsWith(`${previewAlias}-`)).toBe(true);
+  const previewURL = `https://${id!.slice(0, 8)}${aliasHost.slice(previewAlias!.length)}`;
+
+  // Only an entry shared across hosts gives the Version URL a HIT carrying
+  // the render the alias was served. Each data center has its own lower-tier
+  // cache and consults one upper tier on a miss, so the alias is a HIT, its
+  // render stored, before the Version URL first asks for it:
+  // https://developers.cloudflare.com/workers/cache/
+  // A retry asks for new entries, never ones an earlier attempt filled.
+  const attempt = `?attempt=${test.info().retry}`;
+  for (const [pathname, renderOf] of [
+    ["/static-default", (body: string) => /static-default-render-id[^>]*>([^<]+)</.exec(body)?.[1]],
+    [
+      "/host-shared-static",
+      (body: string) => /data-testid="render-id"[^>]*>([^<]+)</.exec(body)?.[1],
+    ],
+    ["/api/host-shared", (body: string) => (JSON.parse(body) as { renderId?: string }).renderId],
+  ] as const) {
+    let filledRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const filled = await request.get(`${baseURL}${pathname}${attempt}`);
+          expect(filled.ok(), pathname).toBe(true);
+          filledRender = renderOf(await filled.text());
+          return filled.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+    expect(filledRender, pathname).toBeTruthy();
+    // The first request answers: a later one could hit an entry the Version
+    // URL filled itself.
+    const other = await request.get(`${previewURL}${pathname}${attempt}`);
+    const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
+    expect({
+      pathname,
+      otherStatus: other.status(),
+      otherCacheStatus: other.headers()["cf-cache-status"],
+      sameRender: otherRender === filledRender,
+    }).toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
+  }
+
+  // A page whose getInitialProps runs renders per request, as in Next.js, so
+  // a CDN policy stores it per host and each host hits its own entry.
+  for (const origin of [baseURL, previewURL]) {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${origin}/host-echo-initial`);
+          expect(response.ok()).toBe(true);
+          expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
+          return response.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+  }
+});
+
 if (backend) {
   testRouteHandlerStoragePolicies();
   testPagesStoragePolicies();
 }
+
+const RSC_HEADERS = { accept: "text/x-component", rsc: "1" };
+
+/** The render id a page's document or RSC payload carries. */
+function cachedPageRenderId(body: string): string {
+  const renderId = /data-render-id\W+([0-9a-f]{8}-[0-9a-f-]{27})/.exec(body)?.[1];
+  expect(renderId).toBeTruthy();
+  return renderId!;
+}
+
+/**
+ * Workers Cache renders a page's other part in the background, and stores it
+ * once its body has been read. A request for that part before then would
+ * render and store it itself, so wait once instead of polling.
+ */
+function waitForOtherPagePart(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5_000));
+}
+
+for (const [first, other] of [
+  ["document", "RSC payload"],
+  ["RSC payload", "document"],
+] as const) {
+  test(`Workers Cache stores a page's ${other} when its ${first} misses`, async ({
+    baseURL,
+    request,
+  }) => {
+    test.skip(
+      backend !== "workers-cache" || !baseURL?.startsWith("https://"),
+      "requires a deployed Workers Cache backend",
+    );
+    const path = `${baseURL}/cached/parts-${randomUUID()}`;
+    const read = (part: "document" | "RSC payload") =>
+      part === "document"
+        ? request.get(path, { headers: { accept: "text/html" } })
+        : request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
+
+    const miss = await read(first);
+    expect(miss.ok(), JSON.stringify(miss.headers())).toBe(true);
+    expect(miss.headers()["cf-cache-status"]).toBe("MISS");
+    await miss.dispose();
+
+    await waitForOtherPagePart();
+    const hit = await read(other);
+    expect(hit.ok(), JSON.stringify(hit.headers())).toBe(true);
+    expect(hit.headers()["cf-cache-status"], JSON.stringify(hit.headers())).toBe("HIT");
+    cachedPageRenderId(await hit.text());
+  });
+}
+
+test("Workers Cache refreshes a page's RSC payload when its document regenerates", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(
+    backend !== "workers-cache" || !baseURL?.startsWith("https://"),
+    "requires a deployed Workers Cache backend",
+  );
+  test.setTimeout(120_000);
+  const slug = `parts-${randomUUID()}`;
+  const path = `${baseURL}/cached/${slug}`;
+  const readDocument = () => request.get(path, { headers: { accept: "text/html" } });
+  const readPayload = () => request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
+
+  const documentRenderId = cachedPageRenderId(await (await readDocument()).text());
+  await waitForOtherPagePart();
+  const stored = await readPayload();
+  expect(stored.headers()["cf-cache-status"], JSON.stringify(stored.headers())).toBe("HIT");
+  const storedRenderId = cachedPageRenderId(await stored.text());
+
+  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: `post:${slug}` },
+  });
+  expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  // The revalidation reaches each part's entry on its own, so a document read
+  // straight away can find its payload still fresh.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  // Each read of the stale document refreshes it and fetches its payload.
+  await expect
+    .poll(async () => cachedPageRenderId(await (await readDocument()).text()), {
+      intervals: [1_000],
+      timeout: 60_000,
+    })
+    .not.toBe(documentRenderId);
+
+  await waitForOtherPagePart();
+  const refreshed = await readPayload();
+  expect(refreshed.headers()["cf-cache-status"], JSON.stringify(refreshed.headers())).toBe("HIT");
+  expect(cachedPageRenderId(await refreshed.text())).not.toBe(storedRenderId);
+});

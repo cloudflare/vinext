@@ -474,6 +474,22 @@ describe("resolveInitPlatform", () => {
 });
 
 describe("resolveInitOptions", () => {
+  it("rejects --ignore-wrangler-config with the legacy setup before init runs", async () => {
+    await expect(
+      resolveInitOptions(
+        [
+          "--platform=cloudflare",
+          "--ignore-wrangler-config",
+          "--legacy-wrangler-cloudflare-init",
+          "--cdn-cache=none",
+          "--data-cache=none",
+          "--image-optimization=none",
+        ],
+        { env: {}, isInteractive: false },
+      ),
+    ).rejects.toThrow("cannot be combined with --legacy-wrangler-cloudflare-init");
+  });
+
   it("opts into legacy Wrangler config only on Cloudflare", async () => {
     const options = await resolveInitOptions(
       [
