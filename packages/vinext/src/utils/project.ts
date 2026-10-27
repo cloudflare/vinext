@@ -328,7 +328,11 @@ export function hasWranglerConfig(root: string): boolean {
  * deploy-related dependencies. This lives in core because `vinext init`, the
  * Vite plugin, and platform packages all need the same project facts.
  */
-export function detectProject(root: string): ProjectInfo {
+export function detectProject(
+  root: string,
+  /** Override for testing: defaults to `isPackageResolvable`. */
+  isResolvable: PackageResolver = isPackageResolvable,
+): ProjectInfo {
   const hasApp = resolveProjectDir(root, "app") !== null;
   const hasPages = resolveProjectDir(root, "pages") !== null;
 
@@ -348,7 +352,7 @@ export function detectProject(root: string): ProjectInfo {
   // root rather than the app root.
   const hasCloudflarePlugin = findInNodeModules(root, "@cloudflare/vite-plugin") !== null;
   const hasRscPlugin = findInNodeModules(root, "@vitejs/plugin-rsc") !== null;
-  const hasWrangler = isPackageResolvable(root, "wrangler/package.json");
+  const hasWrangler = isResolvable(root, "wrangler/package.json");
 
   const pkgPath = path.join(root, "package.json");
   let pkg: Record<string, unknown> | null = null;
@@ -538,6 +542,8 @@ type MissingDep = {
   version: string;
 };
 
+export type PackageResolver = (root: string, packageName: string) => boolean;
+
 /**
  * Check if a package is resolvable from a given root directory using Node's
  * module resolution. Handles hoisting, pnpm symlinks, monorepos, and Yarn PnP.
@@ -555,7 +561,7 @@ export function isPackageResolvable(root: string, packageName: string): boolean 
 export function getMissingDeps(
   info: ProjectInfo,
   /** Override for testing — defaults to `isPackageResolvable` */
-  _isResolvable: (root: string, pkg: string) => boolean = isPackageResolvable,
+  _isResolvable: PackageResolver = isPackageResolvable,
 ): MissingDep[] {
   const missing: MissingDep[] = [];
 
