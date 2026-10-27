@@ -578,7 +578,14 @@ async function executeAppRouteHandlerImpl(
           console.error("[vinext] ISR route cache write error:", cacheErr);
         }
       })();
-      options.executionContext?.waitUntil(routeWritePromise);
+      // Next.js's ResponseCache awaits an on-demand revalidation's write
+      // before it answers, so `await res.revalidate()` resolves once the entry
+      // is stored.
+      if (options.revalidateReason === "on-demand") {
+        await routeWritePromise;
+      } else {
+        options.executionContext?.waitUntil(routeWritePromise);
+      }
     }
 
     let finalized = applyDraftModeCachePolicy(
