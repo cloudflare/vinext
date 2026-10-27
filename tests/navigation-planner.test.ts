@@ -754,25 +754,38 @@ describe("navigationPlanner root-boundary decisions", () => {
     });
   });
 
-  it("uses an unproven payload fallback when the target root identity is unknown", () => {
+  it("hard-navigates when the flight target uses the global-not-found root (null root boundary)", () => {
     const decision = planFlightResponse(null);
 
-    expect(decision.kind).toBe("proposeCommit");
-    if (decision.kind !== "proposeCommit") {
-      throw new Error("Expected proposeCommit decision");
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
     }
-    expect(decision.proposal.reason).toBe("unprovenTopologyFallback");
-    expect(decision.proposal.preserveAbsentSlots).toBe(false);
-    expect(decision.proposal.preserveElementIds).toEqual([]);
-    expect(decision.proposal.preservePreviousSlotIds).toEqual([]);
-    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryUnknown);
+    expect(decision.reason).toBe("rootBoundaryChanged");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
   });
 
-  it("uses an unproven payload fallback when the visible root identity is unknown", () => {
+  it("hard-navigates when leaving the global-not-found document for a normal app route", () => {
     const transition = navigationPlanner.classifyRootBoundaryTransition(null, "/");
     const decision = planFlightResponseFromRootBoundaries({
       currentRootBoundaryId: null,
       nextRootBoundaryId: "/",
+    });
+
+    expect(transition).toBe("rootBoundaryChanged");
+    expect(decision.kind).toBe("hardNavigate");
+    if (decision.kind !== "hardNavigate") {
+      throw new Error("Expected hardNavigate decision");
+    }
+    expect(decision.reason).toBe("rootBoundaryChanged");
+    expect(decision.trace.entries[0]?.code).toBe(NavigationTraceReasonCodes.rootBoundaryChanged);
+  });
+
+  it("uses an unproven payload fallback when both root identities are unknown", () => {
+    const transition = navigationPlanner.classifyRootBoundaryTransition(null, null);
+    const decision = planFlightResponseFromRootBoundaries({
+      currentRootBoundaryId: null,
+      nextRootBoundaryId: null,
     });
 
     expect(transition).toBe("rootBoundaryUnknown");
