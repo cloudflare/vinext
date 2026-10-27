@@ -261,7 +261,14 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc
+        run: |
+          args=(--config wrangler.response-store.jsonc)
+          # Edge purges share an account-wide rate limit with production, so the
+          # PR service that the deployed E2E exercises never sends them.
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            args+=(--var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled)
+          fi
+          node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" "${args[@]}"
 
       - name: Build example
         # `previews deploy` builds the Preview Build Output itself.
