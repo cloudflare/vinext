@@ -15,5 +15,5 @@ const VALUES: Record<string, unknown> = {
  */
 export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (typeof req.query.type === "string") res.setHeader("Content-Type", req.query.type);
-  res.status(200).send(VALUES[String(req.query.value)]);
+  res.status(Number(req.query.status) || 200).send(VALUES[String(req.query.value)]);
 }
