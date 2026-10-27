@@ -938,49 +938,46 @@ describe("app route handler dispatch", () => {
   );
 
   // Next.js stores an ISR route's regenerated response whatever its status.
-  it.each([400, 500])(
-    "stores a %s response from an on-demand revalidation",
-    async (status) => {
-      const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
-      const response = await runWithRequestContext(
-        createRequestContext({ isOnDemandRevalidate: true }),
-        () =>
-          dispatchAppRouteHandler({
-            cleanPathname: "/api/on-demand",
-            clearRequestContext() {},
-            draftModeSecret: "test-draft-secret",
-            i18n: null,
-            isDevelopment: false,
-            isProduction: true,
-            isrGet: async () => null,
-            isrRouteKey(pathname) {
-              return "route:" + pathname;
-            },
-            isrSet,
-            middlewareContext: { headers: null, status: null },
-            middlewareRequestHeaders: null,
-            params: {},
-            request: new Request("https://example.com/api/on-demand", {
-              headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
-            }),
-            route: {
-              pattern: "/api/on-demand",
-              routeHandler: {
-                revalidate: 60,
-                GET: () => new Response("regenerated error", { status }),
-              },
-              routeSegments: ["api", "on-demand"],
-            },
-            scheduleBackgroundRegeneration: vi.fn(),
-            searchParams: new URLSearchParams(),
+  it.each([400, 500])("stores a %s response from an on-demand revalidation", async (status) => {
+    const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        dispatchAppRouteHandler({
+          cleanPathname: "/api/on-demand",
+          clearRequestContext() {},
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          isrGet: async () => null,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: {},
+          request: new Request("https://example.com/api/on-demand", {
+            headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
           }),
-      );
+          route: {
+            pattern: "/api/on-demand",
+            routeHandler: {
+              revalidate: 60,
+              GET: () => new Response("regenerated error", { status }),
+            },
+            routeSegments: ["api", "on-demand"],
+          },
+          scheduleBackgroundRegeneration: vi.fn(),
+          searchParams: new URLSearchParams(),
+        }),
+    );
 
-      expect(response.status).toBe(status);
-      await expect.poll(() => isrSet.mock.calls.length).toBe(1);
-      expect((isrSet.mock.calls[0]?.[1] as { status?: number } | undefined)?.status).toBe(status);
-    },
-  );
+    expect(response.status).toBe(status);
+    await expect.poll(() => isrSet.mock.calls.length).toBe(1);
+    expect((isrSet.mock.calls[0]?.[1] as { status?: number } | undefined)?.status).toBe(status);
+  });
 
   // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
   // concurrent on-demand revalidations of one route share a run and a write.
