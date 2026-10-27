@@ -281,6 +281,56 @@ describe("handleMetadataRouteRequest", () => {
     expect(isrSet).toHaveBeenCalledTimes(1);
   });
 
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one metadata route share a render.
+  it("shares one render between concurrent on-demand revalidations", async () => {
+    let renders = 0;
+    let releaseRender!: () => void;
+    const renderReleased = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const isrSet = vi.fn(async () => {});
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/robots.txt",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: async () => {
+                  renders++;
+                  await renderReleased;
+                  return { rules: { userAgent: "*", allow: "/regenerated" } };
+                },
+              },
+            },
+          ],
+        }),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(renders).toBe(1));
+    releaseRender();
+    const responses = await Promise.all(pending);
+
+    expect(renders).toBe(1);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    for (const response of responses) {
+      expect(await response?.text()).toContain("/regenerated");
+    }
+  });
+
   it("rejects excluded dynamic metadata images without rendering or storing them", async () => {
     let cacheWrites = 0;
     const response = await handleMetadataRouteRequest({

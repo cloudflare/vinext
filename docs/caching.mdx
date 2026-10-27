@@ -513,7 +513,7 @@ vinext follows Next.js-style cache semantics:
 - An **expired** entry is not returned and must be regenerated.
 - `revalidatePath()` invalidates content associated with a path.
 - `revalidateTag()` invalidates content associated with a cache tag.
-- Pages Router's `res.revalidate()` requests on-demand page regeneration from an API route, subject to the [Response Store limitation above](#which-pages-router-pages-are-cached). As in Next.js, that regeneration ignores the stored page or route handler entry and the cached `"use cache"`, `fetch` and `unstable_cache` values. It renders in the foreground, stores the fresh results, and resolves only once the new entry is stored. Concurrent revalidations of the same page or route share one render.
+- Pages Router's `res.revalidate()` requests on-demand page regeneration from an API route, subject to the [Response Store limitation above](#which-pages-router-pages-are-cached). As in Next.js, that regeneration ignores the stored page or route handler entry and the cached `"use cache"`, `fetch` and `unstable_cache` values. It renders in the foreground, stores the fresh results, and resolves only once the new entry is stored. Concurrent revalidations of the same page, route handler or metadata route share one render.
 
 With the KV or in-memory cache, when a background regeneration of an App Router page fails, the previous entry is kept and regeneration is retried later, as in Next.js.
 

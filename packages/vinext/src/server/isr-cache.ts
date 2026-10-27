@@ -251,18 +251,20 @@ export function coalesceOnDemandRevalidation<T>(
 
 /**
  * Coalesce same-key on-demand revalidations whose render answers with a
- * Response. Every caller gets its own copy of the one render's response.
+ * Response, or null for no match. Every caller gets its own copy of the one
+ * render's response. `method` is the request method the response answers.
  */
-export async function coalesceOnDemandResponse(
+export async function coalesceOnDemandResponse<R extends Response | null>(
   key: string,
-  request: Request,
-  renderFn: () => Promise<Response>,
-): Promise<Response> {
+  method: string,
+  renderFn: () => Promise<R>,
+): Promise<R> {
   const snapshot = await coalesceOnDemandRevalidation(key, async () => {
     const response = await renderFn();
+    if (!response) return null;
     return {
       body:
-        request.method === "HEAD" || response.status === 204 || response.status === 304
+        method === "HEAD" || response.status === 204 || response.status === 304
           ? null
           : new Uint8Array(await response.arrayBuffer()),
       headers: [...response.headers.entries()] as Array<[string, string]>,
@@ -270,11 +272,12 @@ export async function coalesceOnDemandResponse(
       statusText: response.statusText,
     };
   });
+  if (!snapshot) return null as R;
   return new Response(snapshot.body?.slice() ?? null, {
     headers: snapshot.headers,
     status: snapshot.status,
     statusText: snapshot.statusText,
-  });
+  }) as R;
 }
 
 /**

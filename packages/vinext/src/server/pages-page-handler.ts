@@ -712,7 +712,7 @@ export function createPagesPageHandler(
       isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
     if (shouldCoalesceOnDemand) {
       const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
-      return coalesceOnDemandResponse(cacheKey, request, () =>
+      return coalesceOnDemandResponse(cacheKey, request.method, () =>
         renderPage(
           request,
           url,

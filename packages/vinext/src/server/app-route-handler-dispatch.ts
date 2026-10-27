@@ -417,7 +417,7 @@ async function dispatchAppRouteHandlerImpl(
     if (isOnDemandRevalidate && isStoredRoute) {
       return coalesceOnDemandResponse(
         `${method}:${options.isrRouteKey(options.cleanPathname)}`,
-        options.request,
+        method,
         runHandler,
       );
     }

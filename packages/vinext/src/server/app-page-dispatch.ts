@@ -1564,7 +1564,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       : options.isrHtmlKey(options.cleanPathname);
     return coalesceOnDemandResponse(
       `${options.request.method}:${cacheKey}`,
-      options.request,
+      options.request.method,
       renderResponse,
     );
   }
