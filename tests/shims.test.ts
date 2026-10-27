@@ -6196,6 +6196,82 @@ describe("next/cache shim", () => {
     ).toEqual({ first: "inner-1", afterRevalidate: "inner-1", innerCalls: 1 });
   });
 
+  // Next.js dates a "use cache" entry from when its generation started, so a tag
+  // revalidated while it ran still covers it:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  it.each([
+    { profile: undefined, expected: ["value-1", "value-2"] },
+    { profile: "max", expected: ["value-1", "value-1"] },
+  ])(
+    "use cache dates an entry from when its generation started (profile $profile)",
+    async ({ profile, expected }) => {
+      const {
+        _drainPendingRevalidations,
+        _runWithCacheState,
+        revalidateTag,
+        setCacheHandler,
+        MemoryCacheHandler,
+      } = await import("../packages/vinext/src/shims/cache.js");
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+
+      const handler = new MemoryCacheHandler();
+      setCacheHandler(handler);
+      const set = vi.spyOn(handler, "set");
+      const id = `generation-start-${profile ?? "expire"}`;
+      const waitUntil: Promise<unknown>[] = [];
+      const request = <T>(fn: () => Promise<T>) =>
+        runWithRequestContext(
+          createRequestContext({
+            unstableCacheRevalidation: "background",
+            executionContext: { waitUntil: (p) => void waitUntil.push(p) },
+          }),
+          fn,
+        );
+      try {
+        let calls = 0;
+        let release: () => void = () => {};
+        const generating = new Promise<void>((resolve) => (release = resolve));
+        let started: () => void = () => {};
+        const running = new Promise<void>((resolve) => (started = resolve));
+        const cached = registerCachedFunction(async () => {
+          const { cacheTag } = await import("../packages/vinext/src/shims/cache.js");
+          cacheTag(id);
+          const call = ++calls;
+          if (call === 1) {
+            started();
+            await generating;
+          }
+          return `value-${call}`;
+        }, `test:${id}`);
+
+        const first = request(() => cached());
+        await running;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        const revalidatedAt = Date.now();
+        await _runWithCacheState(async () => {
+          revalidateTag(id, profile as "max");
+          await _drainPendingRevalidations();
+        });
+        // The generation finishes well after the revalidation.
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        release();
+        expect(await first).toBe(expected[0]);
+        expect(set.mock.calls[0]?.[2]?.timestamp).toBeLessThan(revalidatedAt);
+
+        // A plain revalidateTag() expires it, so the next call regenerates it. A profile
+        // leaves it stale, served while it regenerates in the background.
+        expect(await request(() => cached())).toBe(expected[1]);
+        await Promise.all(waitUntil);
+        expect(calls).toBe(2);
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
   it("revalidateTag accepts optional cacheLife profile (Next.js 16)", async () => {
     const { revalidateTag, setCacheHandler, MemoryCacheHandler } =
       await import("../packages/vinext/src/shims/cache.js");

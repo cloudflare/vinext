@@ -104,6 +104,46 @@ test("treats a failed cached body read as a miss", async () => {
   await expect(new WorkersResponseStoreCacheHandler(store).get("key")).resolves.toBeNull();
 });
 
+test("dates a use cache entry from when its generation started, like Next.js", async () => {
+  vi.useFakeTimers({ toFake: ["Date"], now: 1_000_000 });
+  try {
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const cacheControl = { revalidate: 60, expire: 120 };
+    await handler.set("generated", null, { cacheControl, timestamp: 1_000_000 - 2_500 });
+    expect(store.response?.headers.get("X-Workers-Response-Store-Generated-At")).toBe("997500");
+    // The Store ages it from then, including any wait before the write reaches it.
+    expect(store.response?.headers.has("Age")).toBe(false);
+    expect(store.response?.headers.get("Cache-Control")).toBe(
+      "public, max-age=60, stale-while-revalidate=60",
+    );
+    const entry = await handler.get("generated");
+    expect(entry?.lastModified).toBe(997_500);
+
+    // A generation that ran without I/O starts on the write's own frozen clock; the Store's
+    // invalidation clock may still have moved past it.
+    await handler.set("instant", null, { cacheControl, timestamp: 1_000_000 });
+    expect(store.response?.headers.get("X-Workers-Response-Store-Generated-At")).toBe("1000000");
+
+    // Writes without a valid generation start are dated now, as before.
+    for (const timestamp of [undefined, Number.NaN, 0, 1_000_001, "997500"]) {
+      await handler.set("written", null, { cacheControl, timestamp });
+      expect(
+        store.response?.headers.get("X-Workers-Response-Store-Generated-At"),
+        String(timestamp),
+      ).toBeNull();
+      await expect(handler.get("written")).resolves.toMatchObject({ lastModified: 1_000_000 });
+    }
+
+    // A revalidatePath() during its generation expires it, as Next.js's implicit tags do.
+    await handler.set("generated", null, { cacheControl, timestamp: 997_500 });
+    store.tagExpiration = 998_000;
+    await expect(handler.get("generated", { softTags: ["_N_T_/page"] })).resolves.toBeNull();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("only attaches loopback regeneration to replayable requests", async () => {
   const store = new TestStore();
   const handler = new WorkersResponseStoreCacheHandler(store);

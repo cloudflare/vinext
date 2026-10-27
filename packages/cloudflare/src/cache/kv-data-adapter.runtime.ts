@@ -33,7 +33,11 @@ import {
   getRequestExecutionContext,
   type ExecutionContextLike,
 } from "vinext/shims/request-context";
-import { isUnknownRecord, readCacheControlNumberField } from "../utils/cache-control-metadata.js";
+import {
+  isUnknownRecord,
+  readCacheControlNumberField,
+  readCacheTimestamp,
+} from "../utils/cache-control-metadata.js";
 import type { KvDataAdapterOptions } from "./kv-data-adapter.js";
 import { createKvKeySpace, resolveKvExpirationTtlSeconds, type KvKeySpace } from "./kv-key.js";
 import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
@@ -524,7 +528,7 @@ export class KVCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return Promise.resolve();
 
-    const now = Date.now();
+    const now = readCacheTimestamp(ctx, Date.now());
     // `revalidate = false` never goes stale, so it gets no revalidateAt. It
     // still gets the KV TTL below, like every entry.
     const revalidateAt =
