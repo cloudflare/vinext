@@ -1,3 +1,7 @@
-import { testPagesApiBodyCharsets } from "../pages-api-body-charset";
+import {
+  testPagesApiBodyCharsetRejections,
+  testPagesApiBodyCharsets,
+} from "../pages-api-body-charset";
 
 testPagesApiBodyCharsets();
+testPagesApiBodyCharsetRejections();

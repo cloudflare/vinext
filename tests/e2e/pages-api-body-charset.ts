@@ -41,7 +41,12 @@ export function testPagesApiBodyCharsets(fallbackBaseURL?: string): void {
       expect(await response.json()).toEqual(expected);
     });
   }
+}
 
+// These responses leave the request body unread, which makes `wrangler dev`
+// exit (https://github.com/cloudflare/workers-sdk/issues/15203), so the
+// Cloudflare suite doesn't run them.
+export function testPagesApiBodyCharsetRejections(fallbackBaseURL?: string): void {
   // raw-body checks the charset before the size limit (8 bytes on /api/parse-limited).
   for (const [name, path] of [
     ["", "/api/parse"],
