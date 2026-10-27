@@ -1004,8 +1004,11 @@ const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
 function retainPrefetchInvalidationAfterConsume(entry: PrefetchCacheEntry): void {
   const callbacks = entry.onInvalidateCallbacks;
   if (callbacks === undefined || callbacks.size === 0) return;
+  retainPrefetchInvalidation(callbacks, resolvePrefetchCacheEntryExpiresAt(entry));
+}
 
-  const delay = Math.max(0, resolvePrefetchCacheEntryExpiresAt(entry) - Date.now());
+function retainPrefetchInvalidation(callbacks: Set<() => void>, expiresAt: number): void {
+  const delay = Math.max(0, expiresAt - Date.now());
   const retained: RetainedPrefetchInvalidation = {
     callbacks,
     timer: setTimeout(() => fireRetainedPrefetchInvalidation(retained), delay),
@@ -1319,21 +1322,24 @@ export function seedFullPrefetchFromVisitedResponse(
 /**
  * Whether a navigation to the URL would reuse the response of an earlier one,
  * so a prefetch has nothing to fetch. Like Next.js, whose navigation keeps the
- * route and its segments for `staleTimes.dynamic`.
+ * route and its segments for `staleTimes.dynamic`. `onInvalidate` fires when
+ * that reuse ends.
  */
 export function hasNavigationFreshVisitedResponse(
   rscUrl: string,
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
   additionalRscUrls: readonly string[] = [],
+  onInvalidate?: () => void,
 ): boolean {
-  return (
-    getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
-      [rscUrl, ...additionalRscUrls],
-      interceptionContext,
-      mountedSlotsHeader,
-    )?.navigationFresh === true
-  );
+  const freshUntil = getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
+    [rscUrl, ...additionalRscUrls],
+    interceptionContext,
+    mountedSlotsHeader,
+  )?.navigationFreshUntil;
+  if (freshUntil === undefined || freshUntil === null) return false;
+  if (onInvalidate !== undefined) retainPrefetchInvalidation(new Set([onInvalidate]), freshUntil);
+  return true;
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -3347,6 +3353,7 @@ const _appRouter: AppRouterInstance = {
           interceptionContext,
           mountedSlotsHeader,
           additionalRscUrls,
+          options?.onInvalidate,
         )
       ) {
         return;

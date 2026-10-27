@@ -2933,7 +2933,7 @@ describe("Link prefetch scheduling", () => {
       const navigatedAt = now - navigation.PREFETCH_CACHE_TTL + 1;
       const readVisitedResponseForFullPrefetch = vi.fn(() => ({
         navigatedAt,
-        navigationFresh: false,
+        navigationFreshUntil: null,
         response: visitedResponse,
       }));
       const runtime = Reflect.get(

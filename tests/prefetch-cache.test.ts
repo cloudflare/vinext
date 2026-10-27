@@ -473,10 +473,12 @@ describe("prefetch cache eviction", () => {
         new Response("fresh", { headers: { "content-type": "text/x-component" } }),
     );
     (globalThis as any).fetch = fetch;
-    let navigationFresh = true;
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    let navigationFreshUntil: number | null = now + 180_000;
     const readVisitedResponseForFullPrefetch = vi.fn(() => ({
-      navigatedAt: Date.now(),
-      navigationFresh,
+      navigatedAt: now,
+      navigationFreshUntil,
       response: {
         buffer: new TextEncoder().encode("visited").buffer,
         contentType: "text/x-component",
@@ -490,13 +492,25 @@ describe("prefetch cache eviction", () => {
       functions: { navigate: vi.fn(), readVisitedResponseForFullPrefetch },
     };
 
-    navigation.appRouterInstance.prefetch("/dynamic");
-    await settlePrefetchSetup();
-    expect(readVisitedResponseForFullPrefetch).toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const onInvalidate = vi.fn();
+      navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate });
+      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+      expect(readVisitedResponseForFullPrefetch).toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+
+      // Its subscriber hears when a navigation stops reusing the response.
+      vi.advanceTimersByTime(179_999);
+      expect(onInvalidate).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1);
+      expect(onInvalidate).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
 
     // Once a navigation wouldn't reuse it, the prefetch fetches.
-    navigationFresh = false;
+    navigationFreshUntil = null;
     navigation.appRouterInstance.prefetch("/dynamic");
     await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
     expect(fetch).toHaveBeenCalledTimes(1);

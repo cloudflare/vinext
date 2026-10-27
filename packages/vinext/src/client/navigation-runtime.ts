@@ -94,13 +94,17 @@ export type NavigationRuntimeFunctions = {
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
   /**
    * The visited (BFCache) response a full prefetch can be fulfilled from, and
-   * whether a navigation would still reuse it.
+   * until when a navigation would still reuse it (null if it wouldn't).
    */
   readVisitedResponseForFullPrefetch?: (
     rscUrls: readonly string[],
     interceptionContext: string | null,
     mountedSlotsHeader: string | null,
-  ) => { navigatedAt: number; navigationFresh: boolean; response: CachedRscResponse } | null;
+  ) => {
+    navigatedAt: number;
+    navigationFreshUntil: number | null;
+    response: CachedRscResponse;
+  } | null;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
