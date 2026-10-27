@@ -14,6 +14,12 @@ concurrency:
 
 permissions: {}
 
+# The experimental typescript_implemented_streams compatibility flag only starts in
+# local workerd with the per-isolate bootstrap autogate, plus the RPC externals
+# hydration autogate to receive streams over RPC. Miniflare reads this variable.
+env:
+  MINIFLARE_WORKERD_AUTOGATES: workerd-autogate-per-isolate-javascript-bootstrap workerd-autogate-rpc-externals-hydration
+
 jobs:
   response_store:
     # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
@@ -655,6 +661,8 @@ jobs:
 
             const body = [
               marker,
+              'Workers run with the experimental `typescript_implemented_streams` compatibility flag.',
+              '',
               '| Example | Preview | Production | Original |',
               '|---------|---------|------------|----------|',
               rows,

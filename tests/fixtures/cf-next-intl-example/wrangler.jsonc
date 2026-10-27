@@ -1,7 +1,7 @@
 {
   "name": "cf-next-intl-example",
   "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "main": "vinext/server/fetch-handler",
   "assets": {
     "not_found_handling": "none",
