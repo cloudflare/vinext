@@ -101,15 +101,27 @@ export function mergeHeaders(
 
   if (shouldDropBody) {
     cancelResponseBody(response);
-    merged.delete("content-encoding");
-    merged.delete("content-length");
-    merged.delete("content-type");
-    merged.delete("transfer-encoding");
-    return new Response(null, {
+    // Only a nullish Pages API send bypasses Next.js's entity-header cleanup.
+    // A middleware status override still needs ordinary no-body normalization.
+    const nullishApiSend =
+      (response as Response & { __vinextNullishApiSend?: boolean }).__vinextNullishApiSend ===
+        true && status === response.status;
+    if (!nullishApiSend) {
+      merged.delete("content-encoding");
+      merged.delete("content-length");
+      merged.delete("content-type");
+      merged.delete("transfer-encoding");
+    }
+    const bodylessResponse = new Response(null, {
       status,
       statusText: status === response.status ? response.statusText : undefined,
       headers: merged,
     });
+    if (nullishApiSend) {
+      (bodylessResponse as Response & { __vinextNullishApiSend?: boolean }).__vinextNullishApiSend =
+        true;
+    }
+    return bodylessResponse;
   }
 
   if (shouldStripStreamLength) {
