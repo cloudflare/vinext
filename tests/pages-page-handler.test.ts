@@ -35,7 +35,7 @@ import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
 import { pagesPathCacheTag } from "../packages/vinext/src/server/pages-cache-tag.js";
-import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
+import { generatePagesETag } from "../packages/vinext/src/server/http-conditional.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import {
   CACHEABILITY_REQUEST_STATE,

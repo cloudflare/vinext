@@ -11,8 +11,8 @@ import { describe, expect, it, vi } from "vite-plus/test";
 import {
   renderPagesPageResponse,
   isPagesStreamingBot,
-  generatePagesETag,
 } from "../packages/vinext/src/server/pages-page-response.js";
+import { generatePagesETag } from "../packages/vinext/src/server/http-conditional.js";
 import { resolvePagesPageData } from "../packages/vinext/src/server/pages-page-data.js";
 import { renderTracedPagesPageResponse } from "../packages/vinext/src/server/pages-page-handler.js";
 

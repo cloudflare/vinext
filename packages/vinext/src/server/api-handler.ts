@@ -7,10 +7,10 @@
  * The req/res objects are Node.js IncomingMessage/ServerResponse with
  * Next.js extensions: req.query, req.body, res.json(), res.status(), etc.
  */
-import { sendPagesApiEtag } from "./http-conditional.js";
 import "./server-globals.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { NextI18nConfig } from "../config/next-config.js";
+import { sendPagesApiNotModified } from "./http-conditional.js";
 import { decode as decodeQueryString } from "node:querystring";
 import { Buffer } from "node:buffer";
 import { type Route, matchRoute } from "../routing/pages-router.js";
@@ -332,13 +332,14 @@ function enhanceApiObjects(
     json(this: NextApiResponse, data: unknown) {
       this.setHeader("Content-Type", "application/json");
       const payload = JSON.stringify(data);
-      if (payload !== undefined && sendPagesApiEtag(req.headers, this, payload)) return;
+      if (payload !== undefined && sendPagesApiNotModified(req.headers, this, payload)) return;
       this.end(payload);
     },
 
     send(this: NextApiResponse, data: unknown) {
       if (Buffer.isBuffer(data)) {
-        if (sendPagesApiEtag(req.headers, this, JSON.stringify(data))) return;
+        // Next.js hashes a Buffer's JSON form but sends its bytes.
+        if (sendPagesApiNotModified(req.headers, this, JSON.stringify(data))) return;
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "application/octet-stream");
         }
@@ -348,17 +349,22 @@ function enhanceApiObjects(
       }
 
       if (typeof data === "object" && data !== null) {
-        this.setHeader("Content-Type", "application/json");
         const payload = JSON.stringify(data);
-        if (payload !== undefined && sendPagesApiEtag(req.headers, this, payload)) return;
+        if (payload !== undefined && sendPagesApiNotModified(req.headers, this, payload)) return;
+        this.setHeader("Content-Type", "application/json");
         this.end(payload);
       } else {
+        const payload = String(data);
+        if (
+          data !== null &&
+          data !== undefined &&
+          sendPagesApiNotModified(req.headers, this, payload)
+        ) {
+          return;
+        }
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "text/plain");
         }
-        const payload = String(data);
-        if (data !== null && data !== undefined && sendPagesApiEtag(req.headers, this, payload))
-          return;
         this.end(payload);
       }
     },

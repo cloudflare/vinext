@@ -15,15 +15,14 @@ import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
+import { generatePagesETag, isPageNotModified } from "./http-conditional.js";
 import {
-  generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
   type PagesGsspResponse,
   type PagesI18nRenderContext,
   type PagesNextDataExtras,
 } from "./pages-page-response.js";
-import { isPageNotModified } from "./http-conditional.js";
 import {
   createPagesGetInitialPropsRouter,
   hasPagesGetInitialProps,

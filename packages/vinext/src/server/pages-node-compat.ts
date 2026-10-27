@@ -1,6 +1,6 @@
-import { sendPagesApiEtag } from "./http-conditional.js";
 import { decode as decodeQueryString } from "node:querystring";
 import { Readable, Writable } from "node:stream";
+import { sendPagesApiNotModified } from "./http-conditional.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
@@ -111,6 +111,7 @@ type PagesRequestCookiesCarrier = {
 };
 
 type CreatePagesReqResOptions = {
+  /** API routes validate buffered sends with an ETag; page responses don't. */
   apiEtag?: boolean;
   body: unknown;
   initialResponseHeaders?: Headers;
@@ -299,8 +300,9 @@ class PagesResponseStream extends Writable {
   constructor(
     private readonly resolveResponse: (value: Response) => void,
     private readonly rejectResponse: (error: Error) => void,
-    private readonly requestHeaders: Record<string, string>,
-    private readonly apiEtag: boolean,
+    // Request headers of an API route, whose buffered sends Next.js validates
+    // with an ETag. Page responses leave this undefined.
+    private readonly apiRequestHeaders?: Record<string, string>,
   ) {
     super();
     this.once("error", (err) => {
@@ -367,18 +369,14 @@ class PagesResponseStream extends Writable {
   json(data: unknown): void {
     this.resHeaders["content-type"] = "application/json";
     const payload = JSON.stringify(data);
-    if (
-      payload !== undefined &&
-      this.apiEtag &&
-      sendPagesApiEtag(this.requestHeaders, this, payload)
-    )
-      return;
+    if (payload !== undefined && this.sendApiNotModified(payload)) return;
     this.end(payload);
   }
 
   send(data: unknown): void {
     if (Buffer.isBuffer(data)) {
-      if (this.apiEtag && sendPagesApiEtag(this.requestHeaders, this, JSON.stringify(data))) return;
+      // Next.js hashes a Buffer's JSON form but sends its bytes.
+      if (this.sendApiNotModified(JSON.stringify(data))) return;
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
       }
@@ -388,30 +386,26 @@ class PagesResponseStream extends Writable {
     }
 
     if (typeof data === "object" && data !== null) {
-      this.resHeaders["content-type"] = "application/json";
       const payload = JSON.stringify(data);
-      if (
-        payload !== undefined &&
-        this.apiEtag &&
-        sendPagesApiEtag(this.requestHeaders, this, payload)
-      )
-        return;
+      if (payload !== undefined && this.sendApiNotModified(payload)) return;
+      this.resHeaders["content-type"] = "application/json";
       this.end(payload);
       return;
     }
 
+    const payload = String(data);
+    if (data !== null && data !== undefined && this.sendApiNotModified(payload)) return;
     if (!this.resHeaders["content-type"]) {
       this.resHeaders["content-type"] = "text/plain";
     }
-    const payload = String(data);
-    if (
-      data !== null &&
-      data !== undefined &&
-      this.apiEtag &&
-      sendPagesApiEtag(this.requestHeaders, this, payload)
-    )
-      return;
     this.end(payload);
+  }
+
+  private sendApiNotModified(payload: string): boolean {
+    return (
+      this.apiRequestHeaders !== undefined &&
+      sendPagesApiNotModified(this.apiRequestHeaders, this, payload)
+    );
   }
 
   redirect(statusOrUrl: number | string, url?: string): PagesReqResResponse {
@@ -666,8 +660,7 @@ export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePage
   const res: PagesReqResResponse = new PagesResponseStream(
     resolveResponse,
     rejectResponse,
-    headersObj,
-    options.apiEtag === true,
+    options.apiEtag ? headersObj : undefined,
   ) as PagesReqResResponse;
   for (const [name, value] of options.initialResponseHeaders ?? []) {
     if (name.toLowerCase() === "set-cookie") continue;

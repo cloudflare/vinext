@@ -2,6 +2,15 @@ import { fnv1a52 } from "../utils/hash.js";
 import { parseHttpDate } from "./http-date.js";
 
 /**
+ * A strong ETag for a response body, matching Next.js's `generateETag()` in
+ * packages/next/src/server/lib/etag.ts with weak=false, which Next.js uses at
+ * runtime.
+ */
+export function generatePagesETag(payload: string): string {
+  return '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+}
+
+/**
  * Test an If-None-Match field value against a current entity tag.
  *
  * RFC 9110 requires weak comparison for If-None-Match: a weak and strong
@@ -195,35 +204,40 @@ function joinHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value.join(", ") : value;
 }
 
-type ApiHeaders = Record<string, string | string[] | undefined>;
-type ApiResponse = {
+type PagesApiEtagResponse = {
   statusCode: number;
   setHeader(name: string, value: string): unknown;
   end(): unknown;
 };
 
-/** Mirrors apiResolver's buffered-body ETag and sendEtagResponse handling. */
-export function sendPagesApiEtag(headers: ApiHeaders, res: ApiResponse, payload: string): boolean {
+/**
+ * Validate a buffered Pages API body the way Next.js's apiResolver `sendData`
+ * does: set the body's ETag, and answer a fresh request with a bodyless 304.
+ * Returns true when it sent the 304. `payload` is the string Next.js hashes:
+ * the body itself, or `JSON.stringify(body)` for objects and Buffers.
+ */
+export function sendPagesApiNotModified(
+  headers: Record<string, string | string[] | undefined>,
+  res: PagesApiEtagResponse,
+  payload: string,
+): boolean {
+  // sendData answers 204 and 304 without a body before it computes an ETag.
   if (res.statusCode === 204 || res.statusCode === 304) return false;
-  const etag = '"' + fnv1a52(payload).toString(36) + payload.length.toString(36) + '"';
+  const etag = generatePagesETag(payload);
   res.setHeader("ETag", etag);
-  const value = (name: string) => {
-    const header = headers[name];
-    return Array.isArray(header) ? header.join(", ") : header;
-  };
   if (
-    isPageNotModified(
+    !isPageNotModified(
       {
-        cacheControl: value("cache-control"),
-        ifModifiedSince: value("if-modified-since"),
-        ifNoneMatch: value("if-none-match"),
+        cacheControl: joinHeader(headers["cache-control"]),
+        ifModifiedSince: joinHeader(headers["if-modified-since"]),
+        ifNoneMatch: joinHeader(headers["if-none-match"]),
       },
       etag,
     )
   ) {
-    res.statusCode = 304;
-    res.end();
-    return true;
+    return false;
   }
-  return false;
+  res.statusCode = 304;
+  res.end();
+  return true;
 }
