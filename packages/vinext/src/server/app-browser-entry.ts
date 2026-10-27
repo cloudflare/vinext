@@ -43,6 +43,7 @@ import {
   peekStaticShellPrefetchForNavigation,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
+  seedStaticShellPrefetchFromVaryingShell,
   decodeRedirectError,
   isRedirectError,
   pushHistoryStateWithoutNotify,
@@ -174,6 +175,7 @@ import {
 } from "vinext/shims/error-boundary";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import { AppRouterContext } from "vinext/shims/internal/app-router-context";
+import { createVaryingStaticShellResolver } from "vinext/shims/internal/app-static-shell-vary-params";
 import {
   BfcacheIdentityMapContext,
   bindAppElementsRenderedSearch,
@@ -2456,18 +2458,42 @@ function bootstrapHydration(
           visitedResponse,
         });
         let routeManifest = navigationKind === "navigate" ? getBrowserRouteManifest() : null;
-        const hasPrefetchCandidate =
+        const hasPrefetchCacheEntry = () =>
+          hasPrefetchCacheEntryForNavigation(
+            rscUrl,
+            requestInterceptionContext,
+            mountedSlotsHeader,
+            {
+              additionalRscUrls: additionalPrefetchRscUrls,
+              notifyInvalidation: false,
+            },
+          );
+        let hasPrefetchCandidate =
           settledPrefetchedResponse !== null ||
-          (prefetchProbeDecision.kind === "probe" &&
-            hasPrefetchCacheEntryForNavigation(
-              rscUrl,
-              requestInterceptionContext,
-              mountedSlotsHeader,
-              {
-                additionalRscUrls: additionalPrefetchRscUrls,
-                notifyInvalidation: false,
-              },
-            ));
+          (prefetchProbeDecision.kind === "probe" && hasPrefetchCacheEntry());
+        // Like Next.js's segment cache, a navigation with no prefetch of its own
+        // reuses another URL's static shell when they agree on the params its
+        // render read (`varyParams`). A client rewrite's target isn't the URL
+        // the shell keys on.
+        if (
+          !hasPrefetchCandidate &&
+          prefetchProbeDecision.kind === "probe" &&
+          navigationKind === "navigate" &&
+          additionalPrefetchRscUrls.length === 0 &&
+          peekStaticShellPrefetchForNavigation(
+            rscUrl,
+            requestInterceptionContext,
+            mountedSlotsHeader,
+          ) === null &&
+          seedStaticShellPrefetchFromVaryingShell(
+            rscUrl,
+            requestInterceptionContext,
+            mountedSlotsHeader,
+            createVaryingStaticShellResolver(currentHref),
+          )
+        ) {
+          hasPrefetchCandidate = hasPrefetchCacheEntry();
+        }
         const reuseDecision = navigationPlanner.classifyNavigationReuse({
           bypassNavigationCache: shouldBypassNavigationCache,
           navigationKind,
