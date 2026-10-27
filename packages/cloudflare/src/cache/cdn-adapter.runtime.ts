@@ -235,6 +235,10 @@ function formatCacheTag(tags: readonly string[]): string | null {
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   readonly requiresCompletedResponseAdmission = true;
+  // Workers Cache keys the dispatched path and query, not the host, so the
+  // response stage keys a shared dispatch by core's host-free identity.
+  // https://developers.cloudflare.com/workers/cache/cache-keys/
+  readonly responseStageCacheIdentity = "host-free" as const;
   readonly responseVary = "verbatim" as const;
   readonly responsePolicy = {
     isHeader(name: string): boolean {

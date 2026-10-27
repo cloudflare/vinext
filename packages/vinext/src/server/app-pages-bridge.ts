@@ -1,13 +1,18 @@
 import type { AppMiddlewareContext } from "./app-middleware.js";
 import type { EdgeApiExecutionRuntime } from "./edge-api-runtime.js";
 import type { MiddlewareResponseMergeOptions } from "./middleware-response-headers.js";
-import { beginRouteCacheability } from "vinext/shims/cacheability-classification";
+import {
+  beginRouteCacheability,
+  markRouteCacheabilityDynamic,
+} from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
+import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
 
 export type PagesEntry = {
+  getRuntimePageDataKind?: (url: string, request: Request) => RuntimePagesDataKind;
   handleApiRoute?: (
     request: Request,
     url: string,
@@ -84,6 +89,8 @@ type RenderPagesFallbackOptions = {
   pathname?: string;
   pagesDataRequest?: Request | null;
   request: Request;
+  /** The shared cache entry answers every host; a request-time render is not stored. */
+  sharedAcrossHosts?: boolean;
   url: URL;
 };
 
@@ -129,6 +136,7 @@ export async function renderPagesFallback(
     pathname = options.url.pathname,
     pagesDataRequest = null,
     request,
+    sharedAcrossHosts = false,
     url,
   } = options;
   const {
@@ -226,6 +234,18 @@ export async function renderPagesFallback(
     // can use a separate module graph. Register ownership here so the outer
     // admission finalizer can apply the Pages manifest decision.
     beginRouteCacheability("pages-page", pageMatch.route.pattern);
+    const runtimeDataKind = sharedAcrossHosts
+      ? pagesEntry.getRuntimePageDataKind?.(pagesUrl, matchRequest)
+      : undefined;
+    if (runtimeDataKind === "server" || runtimeDataKind === "initial") {
+      // The build keeps the host in the key of a page that names getInitialProps,
+      // or under a custom _app that does. One an imported wrapper attaches is only
+      // seen here, after the key was chosen, and it can read the host this entry
+      // is shared across, so the render isn't stored. It counts as dynamic, as
+      // Next.js counts a getInitialProps page, so a Workers Cache probe of
+      // the shared dispatch classifies it as one too.
+      markRouteCacheabilityDynamic("getInitialProps render shares a cache entry across hosts");
+    }
   }
   const pagesRequest = claimPagesRequest();
   const renderRequest = pagesDataRequest

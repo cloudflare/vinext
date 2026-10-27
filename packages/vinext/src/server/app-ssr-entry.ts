@@ -393,6 +393,8 @@ export async function handleSsr(
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     pprFallbackShellSignal?: AbortSignal;
+    /** Aborts a streaming render whose document is given up. */
+    signal?: AbortSignal;
     /**
      * Pattern of the route this render shows, whose client references load
      * before it starts, or null for a render without a route (a route-miss
@@ -721,6 +723,7 @@ export async function handleSsr(
               }
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
+          signal: options?.signal,
           onError(error: unknown) {
             if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
               return undefined;

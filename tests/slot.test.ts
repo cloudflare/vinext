@@ -96,6 +96,37 @@ describe("slot primitives", () => {
     expect(nestedId).not.toBe(collidingUserSlotId);
   });
 
+  it.each([false, true])(
+    "BfcacheChildrenBoundary renders its children directly without a retaining segment (cacheComponents=%s)",
+    async (cacheComponents) => {
+      const { BfcacheChildrenBoundary } = await import("../packages/vinext/src/shims/slot.js");
+      const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+      if (cacheComponents) {
+        process.env.__NEXT_CACHE_COMPONENTS = "true";
+      } else {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      }
+      try {
+        // Without Cache Components there's no Activity retention, and with it
+        // a boundary outside a layout's segment has no list to join.
+        const html = await renderHtml(
+          React.createElement(BfcacheChildrenBoundary, {
+            // oxlint-disable-next-line react/no-children-prop
+            children: React.createElement("p", null, "child"),
+            id: "page:/",
+          }),
+        );
+        expect(html).toBe("<p>child</p>");
+      } finally {
+        if (previousCacheComponents === undefined) {
+          delete process.env.__NEXT_CACHE_COMPONENTS;
+        } else {
+          process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+        }
+      }
+    },
+  );
+
   it("Children renders null outside a Slot provider", async () => {
     const { Children } = await import("../packages/vinext/src/shims/slot.js");
 

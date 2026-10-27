@@ -135,7 +135,19 @@ type ReadAppPageCacheResponseOptions = {
   renderMode?: AppRscRenderMode;
   expireSeconds?: number;
   revalidateSeconds: number;
-  renderFreshPageForCache: () => Promise<AppPageCacheRenderResult>;
+  /**
+   * Whether this is an RSC request Next.js renders dynamically under PPR (one
+   * that is not a prefetch, for a path not generated at build time), and so
+   * never regenerates the page's document.
+   */
+  isDynamicRscRequest?: boolean;
+  /**
+   * Renders the page for its cache entries. `renderDocument` asks for the
+   * document as an HTML request renders it, to be stored beside the RSC payload.
+   */
+  renderFreshPageForCache: (options: {
+    renderDocument: boolean;
+  }) => Promise<AppPageCacheRenderResult>;
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 };
 
@@ -313,6 +325,29 @@ function resolveRegenerationFailureCacheControl(
   };
 }
 
+/**
+ * Next.js stamps every prerender with the stale time it collected. A render
+ * that made no `cacheLife` claim keeps the `INFINITE_CACHE` sentinel, which
+ * resolves to `experimental.staleTimes.static` (`createSelectStaleTime` in
+ * `server/app-render/stale-time.ts`, applied by
+ * `applyMetadataFromPrerenderResult` in `app-render.tsx`). Its client only
+ * caches a navigation response for that long under
+ * `experimental.cachedNavigations` (`fetch-server-response.ts`); otherwise the
+ * value only dates prefetches. vinext's client reuses navigation responses for
+ * any advertised stale time, so the unclaimed value is only advertised when
+ * cached navigations are on.
+ */
+function resolveUnclaimedPrerenderStaleTimeSeconds(
+  isRoutePPREnabled: boolean | undefined,
+): number | undefined {
+  if (isRoutePPREnabled !== true) return undefined;
+  if (String(process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS) !== "true") return undefined;
+  const raw = process.env.__NEXT_CLIENT_ROUTER_STATIC_STALETIME;
+  // Next.js' default `staleTimes.static` when the plugin define is absent.
+  const seconds = raw === undefined || raw === "" ? 300 : Number(raw);
+  return Number.isFinite(seconds) && seconds >= 0 ? Math.floor(seconds) : undefined;
+}
+
 function isRedirectStatus(status: number): boolean {
   return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
 }
@@ -346,7 +381,9 @@ export function buildAppPageCachedResponse(
   // Replay the producing render's claim verbatim, not aged — Next.js re-emits
   // the stored header unchanged on every hit, and the cached HTML body embeds
   // the same original value in its done-script.
-  const staleTimeSeconds = resolveClientStaleTimeSeconds(options.cacheControl);
+  const staleTimeSeconds =
+    resolveClientStaleTimeSeconds(options.cacheControl) ??
+    resolveUnclaimedPrerenderStaleTimeSeconds(options.isRoutePPREnabled);
   if (options.isRscRequest) {
     if (!cachedValue.rscData) {
       return null;
@@ -609,11 +646,29 @@ export async function readAppPageCacheResponse(
       // still trigger background regeneration even if this request cannot use
       // the stale payload and will fall through to a fresh render.
       //
-      // The regeneration key is derived from exactly the same inputs as `isrKey`
-      // above (the RSC variant when `isRscRequest`, the HTML key otherwise), so
-      // reuse it instead of recomputing the hash.
+      // A regeneration that writes the document is keyed by the page's HTML
+      // key below. Any other reuses `isrKey`, the stale entry's own key,
+      // instead of recomputing the hash.
+      //
+      // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+      // request regenerates the document too. Here a regeneration of the
+      // canonical RSC entry does the same. An RSC variant (an interception, a
+      // prefetch shell) regenerates its own entry alone, as does an RSC request
+      // Next.js renders dynamically under PPR, which never regenerates a page.
+      // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+      const regeneratesDocument =
+        !options.isRscRequest ||
+        (options.isDynamicRscRequest !== true &&
+          isrKey === options.isrRscKey(options.cleanPathname, null));
+      const htmlKey = options.isRscRequest
+        ? regeneratesDocument
+          ? options.isrHtmlKey(options.cleanPathname)
+          : null
+        : isrKey;
       const regenerate = async (): Promise<void> => {
-        const revalidatedPage = await options.renderFreshPageForCache();
+        const revalidatedPage = await options.renderFreshPageForCache({
+          renderDocument: regeneratesDocument,
+        });
         const cacheControl = resolveRegeneratedAppPageCacheControl({
           expireSeconds: options.expireSeconds,
           renderCacheControl: revalidatedPage.cacheControl,
@@ -638,11 +693,14 @@ export async function readAppPageCacheResponse(
               "\nsee more here https://nextjs.org/docs/messages/app-static-to-dynamic-error",
           );
         }
+        // An RSC request whose shell's special error has no document of its
+        // own stores its RSC entry alone.
+        const documentKey = options.isRscRequest && revalidatedPage.html === "" ? null : htmlKey;
         // Every query shares these entries, so a render not proven to leave
         // the query unread is never stored.
         if (
           !hasQueryInvariantRenderProof(revalidatedPage.rscRenderObservation) ||
-          (!options.isRscRequest &&
+          (documentKey !== null &&
             !hasQueryInvariantRenderProof(revalidatedPage.htmlRenderObservation))
         ) {
           options.isrDebug?.("regen write skipped (searchParams not proven unread)", isrKey);
@@ -687,13 +745,9 @@ export async function readAppPageCacheResponse(
         // key isn't written either.
         if (!storedRsc) return;
 
-        if (!options.isRscRequest) {
-          // HTML cache is slot-state-independent (canonical), so only refresh it
-          // during HTML-triggered regens. RSC-triggered regens only update the
-          // requesting client's RSC slot variant; a stale HTML cache entry will
-          // be regenerated independently by the next full-page HTML request.
+        if (documentKey !== null) {
           const storedHtml = await store(
-            isrKey,
+            documentKey,
             buildAppPageCacheValue(
               revalidatedPage.html,
               undefined,
@@ -705,15 +759,15 @@ export async function readAppPageCacheResponse(
             ),
           );
           // A failed HTML write leaves this regeneration's RSC beside the
-          // stale HTML: the state an RSC-triggered regeneration leaves anyway,
-          // and the stale HTML regenerates on its next request.
+          // stale HTML, which regenerates on its next request.
           if (!storedHtml) return;
         }
         options.isrDebug?.("regen complete", options.cleanPathname);
       };
       // As in Next.js, a failed render keeps the previous entry, re-stored
-      // with a backoff policy.
-      options.scheduleBackgroundRegeneration(isrKey, async () => {
+      // with a backoff policy. A regeneration that writes the document shares
+      // its key with the document's own, so a page regenerates once.
+      options.scheduleBackgroundRegeneration(htmlKey ?? isrKey, async () => {
         try {
           await regenerate();
         } catch (error) {

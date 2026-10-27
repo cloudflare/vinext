@@ -662,9 +662,9 @@ const __requestHandler = createAppRscRequestHandler({
   renderNotFound: async () => null,
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
+      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url },
       {
         async loadPagesEntry() {
           if (!dispatchPagesResponseStage) {
@@ -674,8 +674,8 @@ const __requestHandler = createAppRscRequestHandler({
             ...__pagesRequestEntry,
             handleApiRoute(stageRequest) { return dispatchPagesResponseStage(stageRequest, "api"); },
             renderPage(stageRequest, pagesUrl) {
-              const dataKind = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
-              return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesRequestEntry.hasRequestAwareDocument);
+              const route = __pagesRequestEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route;
+              return dispatchPagesResponseStage(stageRequest, "page", route?.dataKind, __pagesRequestEntry.hasRequestAwareDocument, route?.runsInitialProps === true);
             },
           };
         },
@@ -1790,6 +1790,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       hasPageRoute: __hasPageRoute,
+      currentRoute: routeMatch?.route ?? null,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
@@ -2088,9 +2089,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   },
   ${
     hasPagesDir
-      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url }) {
+      ? `async renderPagesFallback({ allowRscDocumentFallback, appRouteMatch, dispatchPagesResponseStage, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url }) {
     return __renderPagesFallback(
-      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, url },
+      { allowRscDocumentFallback, appRouteMatch, initialResponseHeaders, isDataRequest, isRscRequest, matchKind, middlewareContext, pathname, pagesDataRequest, request, sharedAcrossHosts, url },
       {
         async loadPagesEntry() {
           const __pagesEntry = await __ensureHybridPagesApplication();
@@ -2109,8 +2110,8 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
             ...(typeof __pagesEntry.renderPage === "function"
               ? {
                   renderPage(stageRequest, pagesUrl) {
-                    const dataKind = __pagesEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route.dataKind;
-                    return dispatchPagesResponseStage(stageRequest, "page", dataKind, __pagesEntry.hasRequestAwareDocument);
+                    const route = __pagesEntry.matchPageRoute?.(pagesUrl, stageRequest)?.route;
+                    return dispatchPagesResponseStage(stageRequest, "page", route?.dataKind, __pagesEntry.hasRequestAwareDocument, route?.runsInitialProps === true);
                   },
                 }
               : {}),

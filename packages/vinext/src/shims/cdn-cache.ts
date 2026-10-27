@@ -62,6 +62,13 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
+/** A page's document, rendered from an RSC request's payload. */
+export type CdnAppPageDocument = {
+  html: string;
+  /** The renderer's own `Link` header. */
+  linkHeader?: string;
+};
+
 export type CdnResponsePolicy = {
   /** Whether a provider-specific response header controls shared caching. */
   isHeader(name: string): boolean;
@@ -168,12 +175,15 @@ export type CdnCacheAdapter = {
   readonly requiresCompletedResponseAdmission?: boolean;
 
   /**
-   * This adapter's response-stage transport keys shared App page dispatches by
-   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies one.
-   * Core supplies it only when completed-response admission is also required,
-   * because that admission is what makes a query-free identity safe.
+   * This adapter's response-stage transport keys shared dispatches by
+   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies
+   * one. Core supplies it only when completed-response admission is also
+   * required, because that admission is what makes a host-free identity, and
+   * a page's query-free one, safe. `"query-free"` also drops the user query
+   * from App page identities; `"host-free"` keeps every dispatch's query, for
+   * a transport whose cache keys the dispatched query itself.
    */
-  readonly responseStageCacheIdentity?: "query-free";
+  readonly responseStageCacheIdentity?: "host-free" | "query-free";
 
   /**
    * Optionally return a foreground page response while completed-response
@@ -187,6 +197,15 @@ export type CdnCacheAdapter = {
 
   /** Capture the full-route RSC side stream while admitting a completed HTML response. */
   captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
+  /**
+   * Store the page's document beside an RSC request's completed response, as
+   * Next.js keeps a page's document and RSC payload in one entry. Returns the
+   * callback admission calls with the document the render rendered from its
+   * payload, or with `null` when the page has no document to store, or
+   * `undefined` when this render's response stores no document.
+   */
+  captureAppPageDocument?(): ((document: CdnAppPageDocument | null) => void) | undefined;
 
   /**
    * Whether this adapter sends the 304 for a Pages render whose If-None-Match

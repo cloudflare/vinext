@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import { createBuilder, createServer, build, type ViteDevServer } from "vite-plus";
-import { get as httpGet, request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import {
+  createServer as createHttpServer,
+  get as httpGet,
+  request as httpRequest,
+  type IncomingHttpHeaders,
+} from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -730,6 +736,47 @@ describe("Pages Router integration", () => {
     // The trailingSlash: false rule strips the redirect target to the root;
     // it is never relativized to a protocol-relative `//`.
     expect(res.headers.get("location")).toBe("/");
+  });
+
+  // Next.js never caches fetches in Pages Router renders (they have no
+  // workStore, see server/lib/patch-fetch.ts); vinext does, so a preview
+  // render must at least skip the published entry and not replace it.
+  it("bypasses the fetch cache in preview renders", async () => {
+    let upstreamCalls = 0;
+    const upstream = createHttpServer((_req, res) => {
+      upstreamCalls++;
+      res.end(`token-${upstreamCalls}`);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { port } = upstream.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${port}/data?run=${Date.now()}`;
+      const enabled = await fetch(`${baseUrl}/api/encoded-isr-preview`);
+      const cookie = enabled.headers
+        .getSetCookie()
+        .map((value) => value.split(";", 1)[0])
+        .join("; ");
+      expect(cookie).toContain("__next_preview_data=");
+      const readToken = async (headers?: HeadersInit) => {
+        const response = await fetch(
+          `${baseUrl}/preview-fetch-cache?upstream=${encodeURIComponent(upstreamUrl)}`,
+          { headers },
+        );
+        expect(response.status).toBe(200);
+        return (await response.text()).match(/id="token">([^<]*)</)?.[1];
+      };
+
+      expect(await readToken()).toBe("token-1");
+      expect(await readToken()).toBe("token-1");
+      expect(await readToken({ cookie })).toBe("token-2");
+      expect(await readToken({ cookie })).toBe("token-3");
+      expect(await readToken()).toBe("token-1");
+      expect(upstreamCalls).toBe(3);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   it("renders the index page with correct HTML", async () => {

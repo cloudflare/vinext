@@ -461,6 +461,8 @@ jobs:
           PLAYWRIGHT_PROJECT: cloudflare-workers
           VINEXT_E2E_CACHE_BACKEND: ${{ matrix.example.cache_backend }}
           VINEXT_E2E_BASE_URL: https://prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}.vinext.workers.dev
+          VINEXT_E2E_PREVIEW_ALIAS: pr-${{ github.event.pull_request.number }}
+          VINEXT_E2E_PREVIEW_ALIAS_URL: ${{ !matrix.example.worker_name && format('https://pr-{0}-{1}.vinext.workers.dev', github.event.pull_request.number, matrix.example.project) || '' }}
         run: vp exec playwright test tests/e2e/cloudflare-workers/cache-prewarm.spec.ts
 
       - name: Delete cache prewarm E2E Worker

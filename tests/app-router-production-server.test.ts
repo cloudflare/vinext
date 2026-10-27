@@ -2909,6 +2909,83 @@ describe("App Router Production server (startProdServer)", () => {
     expect(freshBody.timestamp).not.toBe(coldBody.timestamp);
   });
 
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // request that finds it stale regenerates the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: a stale RSC request regenerates the page's document too", async () => {
+    const readTimestamp = (html: string) =>
+      html.replaceAll("<!-- -->", "").match(/data-testid="timestamp"[^>]*>(\d+)/)?.[1];
+    const fetchRsc = () =>
+      fetch(`${baseUrl}/isr-test.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+
+    // An HTML render stores both entries; let them go stale (revalidate = 1).
+    const filled = await fetch(`${baseUrl}/isr-test`);
+    const filledTimestamp = readTimestamp(await filled.text());
+    expect(filledTimestamp).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Only RSC requests reach the page until its RSC entry regenerates.
+    const stale = await fetchRsc();
+    await stale.arrayBuffer();
+    expect(stale.headers.get("x-vinext-cache")).toBe("STALE");
+    await waitForCondition(
+      async () => {
+        const res = await fetchRsc();
+        await res.arrayBuffer();
+        return res.headers.get("x-vinext-cache") === "HIT";
+      },
+      { timeoutMs: 5000 },
+    );
+
+    const document = await fetch(`${baseUrl}/isr-test`);
+    const documentTimestamp = readTimestamp(await document.text());
+    expect(documentTimestamp).toBeTruthy();
+    expect(documentTimestamp).not.toBe(filledTimestamp);
+  });
+
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // miss stores the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: an RSC miss stores the page's document too", async () => {
+    const pathname = "/route-cache-identity/rsc-miss-document";
+    const fetchRsc = () =>
+      fetch(`${baseUrl}${pathname}.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+    const miss = await fetchRsc();
+    await miss.arrayBuffer();
+    expect(miss.headers.get("x-vinext-cache")).toBe("MISS");
+    await waitForCondition(async () => {
+      const res = await fetchRsc();
+      await res.arrayBuffer();
+      return res.headers.get("x-vinext-cache") === "HIT";
+    });
+
+    const document = await fetch(`${baseUrl}${pathname}`);
+    expect(document.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await document.text()).toContain("CACHE_IDENTITY_CATCH_ALL:<!-- -->rsc-miss-document");
+  });
+
+  // Next.js prerenders a page's document beside its payload, so a client page
+  // that reads its searchParams makes the route dynamic. An RSC miss renders
+  // the document too, so it stores neither part.
+  it("App Router ISR: an RSC miss for a client page that reads searchParams stores nothing", async () => {
+    const pathname = "/client-page-search-params";
+    const fetchRsc = (q: string) =>
+      fetch(`${baseUrl}${pathname}.rsc?q=${q}`, {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+    const miss = await fetchRsc("first");
+    await miss.arrayBuffer();
+    // Give the background cache write time to settle.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const rsc = await fetchRsc("second");
+    await rsc.arrayBuffer();
+    expect(rsc.headers.get("x-vinext-cache")).not.toBe("HIT");
+    const document = await fetch(`${baseUrl}${pathname}?q=document`);
+    expect(document.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(await document.text()).toContain('data-testid="client-page-search-params-q">document<');
+  });
+
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {
     // Ensure cache is warm
     const getRes = await fetch(`${baseUrl}/api/static-data`);
