@@ -53,6 +53,7 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
   for (const [button, message] of [
     ["#show-failing-load", "dynamic chunk failed to load"],
+    ["#show-failing-load-no-ssr", "ssr:false chunk failed to load"],
     ["#show-throwing-render", "dynamic component threw while rendering"],
   ] as const) {
     test(`${message}: the error reaches error.tsx, not the loading component`, async ({ page }) => {
@@ -64,6 +65,15 @@ test.describe("Next.js compat: next/dynamic (browser)", () => {
       await expect(page.locator("#dynamic-loading")).toHaveCount(0);
     });
   }
+
+  test("a load that fails during SSR reaches error.tsx after hydration", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/dynamic/loading-error/ssr`);
+
+    await expect(page.locator("#dynamic-error-boundary")).toHaveText(
+      "ssr dynamic chunk failed to load",
+    );
+    await expect(page.locator("#dynamic-loading")).toHaveCount(0);
+  });
 
   // Next.js: 'should support dynamic import with accessing named exports'
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/dynamic/dynamic.test.ts#L97-L100

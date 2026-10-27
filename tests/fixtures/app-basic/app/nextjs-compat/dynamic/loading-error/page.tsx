@@ -11,6 +11,11 @@ const FailingLoad = dynamic(
   { loading: () => <p id="dynamic-loading">Loading...</p> },
 );
 
+const FailingLoadNoSSR = dynamic(
+  () => Promise.reject<{ default: () => null }>(new Error("ssr:false chunk failed to load")),
+  { ssr: false, loading: () => <p id="dynamic-loading">Loading...</p> },
+);
+
 const ThrowingRender = dynamic(
   () =>
     Promise.resolve({
@@ -22,16 +27,20 @@ const ThrowingRender = dynamic(
 );
 
 export default function Page() {
-  const [shown, setShown] = useState<"load" | "render" | null>(null);
+  const [shown, setShown] = useState<"load" | "load-no-ssr" | "render" | null>(null);
   return (
     <div>
       <button id="show-failing-load" onClick={() => setShown("load")}>
         Show failing load
       </button>
+      <button id="show-failing-load-no-ssr" onClick={() => setShown("load-no-ssr")}>
+        Show failing ssr:false load
+      </button>
       <button id="show-throwing-render" onClick={() => setShown("render")}>
         Show throwing render
       </button>
       {shown === "load" ? <FailingLoad /> : null}
+      {shown === "load-no-ssr" ? <FailingLoadNoSSR /> : null}
       {shown === "render" ? <ThrowingRender /> : null}
     </div>
   );
