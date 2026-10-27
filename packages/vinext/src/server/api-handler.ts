@@ -340,6 +340,15 @@ function enhanceApiObjects(
         return;
       }
 
+      // Match Next.js sendData: nullish sends return above without header cleanup.
+      if (this.statusCode === 204 || this.statusCode === 304) {
+        this.removeHeader("Content-Type");
+        this.removeHeader("Content-Length");
+        this.removeHeader("Transfer-Encoding");
+        this.end();
+        return;
+      }
+
       if (Buffer.isBuffer(data)) {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "application/octet-stream");
