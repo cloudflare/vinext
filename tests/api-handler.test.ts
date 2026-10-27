@@ -135,6 +135,9 @@ function mockRes(): http.ServerResponse & {
     getHeader(name: string) {
       return headers[name.toLowerCase()];
     },
+    removeHeader(name: string) {
+      delete headers[name.toLowerCase()];
+    },
     writeHead(status: number, hdrs?: Record<string, string>) {
       res.statusCode = status;
       res._statusCode = status;
@@ -812,6 +815,26 @@ describe("handleApiRoute", () => {
   });
 
   describe("res.send()", () => {
+    it.each([204, 304])("strips entity headers from non-null %i sends", async (status) => {
+      // Next.js sendData checks these statuses after the nullish early return.
+      const handler = vi.fn((_req: any, res: any) => {
+        res.setHeader("Content-Type", "text/custom");
+        res.setHeader("Content-Length", "2");
+        res.setHeader("Transfer-Encoding", "chunked");
+        res.setHeader("X-Custom", "kept");
+        res.status(status).send(42);
+      });
+      const server = mockServer({ default: handler });
+      const req = mockReq("GET", "/api/users");
+      const res = mockRes();
+      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
+      expect(res._headers["content-type"]).toBeUndefined();
+      expect(res._headers["content-length"]).toBeUndefined();
+      expect(res._headers["transfer-encoding"]).toBeUndefined();
+      expect(res._headers["x-custom"]).toBe("kept");
+      expect(res._body).toBe("");
+    });
+
     it("sends object data as JSON", async () => {
       const handler = vi.fn((_req: any, res: any) => {
         res.send({ key: "value" });
