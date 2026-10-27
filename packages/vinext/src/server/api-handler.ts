@@ -109,11 +109,6 @@ async function parseBody(
   sizeLimit: number = MAX_BODY_SIZE,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    // Like Next.js (raw-body), a declared oversize body is rejected before the
-    // charset is checked.
-    if (Number.parseInt(req.headers["content-length"] || "0", 10) > sizeLimit) {
-      throw new PagesBodyParseError("Request body too large", 413);
-    }
     const { mediaType, decoder } = createPagesBodyDecoder(req.headers["content-type"]);
     const chunks: Buffer[] = [];
     let totalSize = 0;

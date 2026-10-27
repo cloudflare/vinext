@@ -165,12 +165,13 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
+  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
   let rawBody = "";
   try {
     rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);

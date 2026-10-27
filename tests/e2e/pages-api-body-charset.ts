@@ -42,12 +42,18 @@ export function testPagesApiBodyCharsets(fallbackBaseURL?: string): void {
     });
   }
 
-  test("Pages API rejects an unknown body charset", async ({ baseURL, request }) => {
-    const response = await request.post(`${baseURL ?? fallbackBaseURL}/api/parse`, {
-      headers: { "content-type": "text/plain; charset=unknown-charset" },
-      data: Buffer.from("test"),
+  // raw-body checks the charset before the size limit (8 bytes on /api/parse-limited).
+  for (const [name, path] of [
+    ["", "/api/parse"],
+    [" before the size limit", "/api/parse-limited"],
+  ] as const) {
+    test(`Pages API rejects an unknown body charset${name}`, async ({ baseURL, request }) => {
+      const response = await request.post(`${baseURL ?? fallbackBaseURL}${path}`, {
+        headers: { "content-type": "text/plain; charset=unknown-charset" },
+        data: Buffer.from("more than eight bytes"),
+      });
+      expect(response.status()).toBe(400);
+      expect(await response.text()).toBe("Invalid body");
     });
-    expect(response.status()).toBe(400);
-    expect(await response.text()).toBe("Invalid body");
-  });
+  }
 }
