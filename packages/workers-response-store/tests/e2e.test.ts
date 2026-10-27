@@ -53,14 +53,14 @@ let worker: { fetch(...args: any[]): Promise<any> };
 beforeEach(async () => {
   mf = new Miniflare({
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
     unsafeEphemeralDurableObjects: true,
     unsafeInspectDurableObjects: true,
     workers: [
       {
         name: "user-worker",
         compatibilityDate: "2026-04-08",
-        compatibilityFlags: ["nodejs_compat"],
+        compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
         modules: [
           {
             type: "ESModule",
@@ -3431,7 +3431,7 @@ test("the previous metadata schema is upgraded in place", async () => {
 
     upgraded = new Miniflare({
       compatibilityDate: "2026-04-08",
-      compatibilityFlags: ["nodejs_compat"],
+      compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
       resourcePersistencePath: persistencePath,
       unsafeEphemeralDurableObjects: true,
       unsafeInspectDurableObjects: true,
@@ -3439,7 +3439,7 @@ test("the previous metadata schema is upgraded in place", async () => {
         {
           name: "migration-worker",
           compatibilityDate: "2026-04-08",
-          compatibilityFlags: ["nodejs_compat"],
+          compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
           modules: true,
           scriptPath: workerScript,
           durableObjects: {
