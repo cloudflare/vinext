@@ -1037,7 +1037,7 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual(capturedAppState);
       expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(8);
       expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
-      // Every write through the patched methods, app-owned or not, lets a
+      // Every write made outside a router write, app-owned or not, lets a
       // committing navigation write its URL first.
       expect(flushCommittingNavigationUrl).toHaveBeenCalledTimes(10);
       expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
@@ -1053,6 +1053,118 @@ describe("next/navigation shim", () => {
         "replace",
         capturedAppState,
       );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("sends router writes with a URL through history wrappers installed after boot", async () => {
+    // Next.js writes router history through the live window.history methods
+    // and its own patch forwards `__NA` writes, so a wrapper installed after
+    // hydration (GTM, GA4) sees every navigation (#4339).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L60-L100
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L331-L370
+    const externalHistoryStateKey = "__vinext_externalHistoryState";
+    const previousWindow = (globalThis as any).window;
+    const historyTraversalIndexKey = "__vinext_historyIndex";
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: { [historyTraversalIndexKey]: 4 } as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const flushCommittingNavigationUrl = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl,
+      });
+      const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      // Shaped like delayed-scroll-restoration-polyfill: its pushState wrapper
+      // first stamps the current entry through the replaceState it saved. The
+      // test wrappers also make their own writes once, before and after
+      // forwarding, which must not be mistaken for the router's write.
+      const calls: string[] = [];
+      const savedPushState = win.history.pushState.bind(win.history);
+      const savedReplaceState = win.history.replaceState.bind(win.history);
+      let wrapperPushed = false;
+      let wrapperReplaced = false;
+      win.history.pushState = function (data, unused, url) {
+        calls.push(`pushState ${String(url)}`);
+        savedReplaceState({ ...(win.history.state as object), stamp: 1 }, "");
+        if (wrapperPushed) {
+          savedPushState(data, unused, url);
+          return;
+        }
+        wrapperPushed = true;
+        savedPushState({ own: true }, "", "/before");
+        expect(win.history.state).toEqual({
+          [externalHistoryStateKey]: true,
+          [historyTraversalIndexKey]: 4,
+          own: true,
+        });
+        savedPushState(data, unused, url);
+        expect(win.history.state).toBeNull();
+        savedPushState(null, "", "/extra");
+      };
+      win.history.replaceState = function (data, unused, url) {
+        calls.push(`replaceState ${String(url)}`);
+        savedReplaceState(data, unused, url);
+        if (wrapperReplaced) return;
+        wrapperReplaced = true;
+        savedReplaceState(null, "", "/extra-replace");
+      };
+
+      // Not app-owned data, so a router write that lost its marker would take
+      // the external path and claim the tree snapshot.
+      pushHistoryStateWithoutNotify(null, "", "/b");
+      expect(win.location.href).toBe("http://localhost/extra");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(2);
+      replaceHistoryStateWithoutNotify(null, "", "/c");
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
+      // State-only bookkeeping (scroll position, tree snapshot, metadata) is
+      // kept off the wrapper; Next.js passes the URL on every router write.
+      replaceHistoryStateWithoutNotify({ [historyTraversalIndexKey]: 5, scroll: 1 }, "");
+
+      expect(calls).toEqual(["pushState /b", "replaceState /c"]);
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [historyTraversalIndexKey]: 5, scroll: 1 });
+      // The wrapper's own writes must not publish the committing navigation
+      // early or turn the router's writes into external ones.
+      expect(flushCommittingNavigationUrl).not.toHaveBeenCalled();
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {

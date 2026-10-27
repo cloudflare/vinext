@@ -2045,9 +2045,17 @@ type ClientNavigationState = {
   originalPushState: typeof window.history.pushState;
   originalReplaceState: typeof window.history.replaceState;
   patchInstalled: boolean;
+  routerHistoryWriteDepth: number;
+  routerHistoryWrite: RouterHistoryWrite | null;
   hasPendingNavigationUpdate: boolean;
   suppressUrlNotifyCount: number;
   navigationSnapshotActiveCount: number;
+};
+
+type RouterHistoryWrite = {
+  method: "pushState" | "replaceState";
+  data: unknown;
+  url: string | URL;
 };
 
 type CommitClientNavigationStateOptions = {
@@ -2090,9 +2098,13 @@ export function getClientNavigationState(): ClientNavigationState | null {
     // native ones. If a third-party library (analytics, router) has already patched
     // history methods before this module loads, we intentionally preserve that
     // wrapper. With Symbol.for global state, the first module instance to load wins.
+    // Router writes with a URL still go through the live window.history methods
+    // (see writeRouterHistoryState) so wrappers installed after boot see them too.
     originalPushState: window.history.pushState.bind(window.history),
     originalReplaceState: window.history.replaceState.bind(window.history),
     patchInstalled: false,
+    routerHistoryWriteDepth: 0,
+    routerHistoryWrite: null,
     hasPendingNavigationUpdate: false,
     suppressUrlNotifyCount: 0,
     navigationSnapshotActiveCount: 0,
@@ -2665,15 +2677,61 @@ export function commitClientNavigationState(
   }
 }
 
-export function pushHistoryStateWithoutNotify(
+function consumeRouterHistoryWrite(
+  state: ClientNavigationState,
+  method: RouterHistoryWrite["method"],
+  data: unknown,
+  url: string | URL | null | undefined,
+): boolean {
+  const write = state.routerHistoryWrite;
+  if (write?.method !== method || write.data !== data || write.url !== url) return false;
+  state.routerHistoryWrite = null;
+  return true;
+}
+
+function writeRouterHistoryState(
+  method: "pushState" | "replaceState",
   data: unknown,
   unused: string,
   url?: string | URL | null,
 ): void {
   withSuppressedUrlNotifications(() => {
     const state = getClientNavigationState();
-    state?.originalPushState.call(window.history, data, unused, url);
+    if (!state) return;
+    if (url == null) {
+      // State-only writes (scroll position, tree snapshot, navigation metadata)
+      // stay off wrappers installed after boot, which would otherwise count
+      // them as extra history changes. Next.js passes the URL on every router
+      // write, including same-URL replaces after refresh and back/forward,
+      // which vinext keeps state-only, so wrappers see fewer of those.
+      const original =
+        method === "pushState" ? state.originalPushState : state.originalReplaceState;
+      original.call(window.history, data, unused, url);
+      return;
+    }
+    // Call the live method, as Next.js does, so a wrapper installed after boot
+    // (GTM History Change, GA4 history page views) still sees router writes.
+    // The patched method below recognises this exact write, consumes the
+    // marker and forwards it unchanged, like Next.js' `data?.__NA` check. A
+    // wrapper's own writes don't match, so they leave the marker in place.
+    const previousWrite = state.routerHistoryWrite;
+    state.routerHistoryWriteDepth += 1;
+    state.routerHistoryWrite = { method, data, url };
+    try {
+      window.history[method](data, unused, url);
+    } finally {
+      state.routerHistoryWriteDepth -= 1;
+      state.routerHistoryWrite = previousWrite;
+    }
   });
+}
+
+export function pushHistoryStateWithoutNotify(
+  data: unknown,
+  unused: string,
+  url?: string | URL | null,
+): void {
+  writeRouterHistoryState("pushState", data, unused, url);
 }
 
 export function replaceHistoryStateWithoutNotify(
@@ -2681,10 +2739,7 @@ export function replaceHistoryStateWithoutNotify(
   unused: string,
   url?: string | URL | null,
 ): void {
-  withSuppressedUrlNotifications(() => {
-    const state = getClientNavigationState();
-    state?.originalReplaceState.call(window.history, data, unused, url);
-  });
+  writeRouterHistoryState("replaceState", data, unused, url);
 }
 
 /**
@@ -3672,9 +3727,17 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
+      if (consumeRouterHistoryWrite(state, "pushState", data, url)) {
+        state.originalPushState.call(window.history, data, unused, url);
+        return;
+      }
       // Publish a committing navigation's URL first, so a write from a
       // destination layout effect is published on top of it, as in Next.js.
-      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
+      // A wrapper's write made during a router write must not publish it
+      // early: the router's own write is still in progress.
+      if (state.routerHistoryWriteDepth === 0) {
+        getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
+      }
       // Match Next.js' `data?.__NA` escape hatch. Reusing a captured internal
       // history entry must remain a real traversal target so back/forward can
       // fetch it (and follow redirects) instead of treating it as a copied
@@ -3717,7 +3780,13 @@ if (!isServer) {
       unused: string,
       url?: string | URL | null,
     ): void {
-      getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
+      if (consumeRouterHistoryWrite(state, "replaceState", data, url)) {
+        state.originalReplaceState.call(window.history, data, unused, url);
+        return;
+      }
+      if (state.routerHistoryWriteDepth === 0) {
+        getNavigationRuntime()?.functions.flushCommittingNavigationUrl?.();
+      }
       if (isAppOwnedHistoryState(data)) {
         const previousHistoryState = window.history.state;
         state.originalReplaceState.call(window.history, data, unused, url);
