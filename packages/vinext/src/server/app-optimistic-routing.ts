@@ -76,7 +76,7 @@ export function getOptimisticPrefetchSourceKey(options: {
 function buildRouteTrie(routeManifest: BrowserRouteManifest): OptimisticRouteTrieNode {
   return buildOptimisticRouteTrie(
     routeManifest.segmentGraph.routes.values(),
-    import.meta.env.DEV
+    process.env.NODE_ENV !== "production"
       ? (existingParamName, part) =>
           console.warn(
             `[vinext] Optimistic route trie found conflicting dynamic segments at the same level: :${existingParamName} vs ${part}`,
