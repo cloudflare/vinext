@@ -10,5 +10,11 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
   if (typeof req.query.contentType === "string") {
     res.setHeader("Content-Type", req.query.contentType);
   }
+  if (typeof req.query.status === "string") {
+    // This stream never produces data: a 204/304 response must end without
+    // waiting for it.
+    res.status(Number(req.query.status)).send(new Readable({ read() {} }));
+    return;
+  }
   res.status(200).send(Readable.from(["hello ", "from ", "a stream"]));
 }

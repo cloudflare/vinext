@@ -335,6 +335,16 @@ function enhanceApiObjects(
     },
 
     send(this: NextApiResponse, data: unknown) {
+      // Next.js's sendData() ends 204/304 responses before it inspects the
+      // data, so a stream is never piped into them.
+      if (this.statusCode === 204 || this.statusCode === 304) {
+        this.removeHeader("Content-Type");
+        this.removeHeader("Content-Length");
+        this.removeHeader("Transfer-Encoding");
+        this.end();
+        return;
+      }
+
       if (data instanceof Stream) {
         if (!this.getHeader("Content-Type")) {
           this.setHeader("Content-Type", "application/octet-stream");

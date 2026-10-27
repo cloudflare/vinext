@@ -25,6 +25,15 @@ test.describe("Pages Router API routes on Cloudflare Workers", () => {
     const typed = await request.get(BASE + "/api/send-stream?contentType=text/event-stream");
     expect(typed.headers()["content-type"]).toBe("text/event-stream");
     expect(await typed.text()).toBe("hello from a stream");
+
+    for (const status of [204, 304]) {
+      const empty = await request.get(
+        `${BASE}/api/send-stream?status=${status}&contentType=text/plain`,
+      );
+      expect(empty.status()).toBe(status);
+      expect(empty.headers()["content-type"]).toBeUndefined();
+      expect(await empty.text()).toBe("");
+    }
   });
 
   test("returns 404 for non-existent API routes", async ({ request }) => {

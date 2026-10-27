@@ -16,4 +16,15 @@ test.describe("res.send() with a Node stream", () => {
     expect(response.headers()["content-type"]).toBe("text/event-stream");
     expect(await response.text()).toBe("hello from a stream");
   });
+
+  for (const status of [204, 304]) {
+    test(`ends a ${status} response without piping the stream`, async ({ request }) => {
+      const response = await request.get(
+        `${BASE}/api/send-stream?status=${status}&contentType=text/plain`,
+      );
+      expect(response.status()).toBe(status);
+      expect(response.headers()["content-type"]).toBeUndefined();
+      expect(await response.text()).toBe("");
+    });
+  }
 });

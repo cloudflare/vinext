@@ -366,6 +366,13 @@ class PagesResponseStream extends Writable {
   }
 
   send(data: unknown): void {
+    // Next.js's sendData() ends 204/304 responses before it inspects the data,
+    // so a stream is never piped into them. resolveOnce() strips the headers.
+    if (this.resStatusCode === 204 || this.resStatusCode === 304) {
+      this.end();
+      return;
+    }
+
     if (data instanceof Stream) {
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
