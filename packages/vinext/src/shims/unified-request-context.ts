@@ -139,6 +139,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     currentFetchCacheMode: null,
     currentFetchRevalidate: null,
     currentForceDynamicFetchDefault: false,
+    isDraftMode: false,
     dynamicFetchUrls: new Set<string>(),
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,

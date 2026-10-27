@@ -58,7 +58,7 @@ Set `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (ou
   }}
 />
 
-The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview.
+The deploy command validates the initialized setup, builds all Vite environments, and deploys the application Worker's Build Output using `cf`. `--env staging` selects the staging Vite mode. The existing `--preview` flag is an alias for `--env preview`; it selects the preview mode but does not create a Worker Preview. If your vinext and `cloudflare()` config is not the root `vite.config.*` (for example because another tool owns that file), pass it with `--vite-config vite.web.config.ts`. `--config` remains the Wrangler config path.
 
 For Response Store service-binding mode, build and deploy the cache Worker explicitly before the first application deployment:
 
@@ -102,7 +102,7 @@ As with `cf previews deploy`, the Preview name and the Vite mode are independent
   }}
 />
 
-The subcommand accepts the optional name, `--mode`, `--skip-build`, and `--help`. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
+The subcommand accepts the optional name, `--mode`, `--skip-build`, `--vite-config`, and `--help`. Configure Preview-specific settings in `cloudflare.config.ts` using `isPreview`.
 
 ## Use Workers bindings
 

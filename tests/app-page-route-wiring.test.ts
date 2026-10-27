@@ -893,6 +893,41 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("retains each layout's children under the segment rendered below it", () => {
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(params) {
+        return Promise.resolve(params);
+      },
+      matchedParams: {},
+      route: {
+        error: null,
+        errors: [null, null],
+        layoutTreePositions: [0, 1],
+        layouts: [{ default: RootLayout }, { default: GroupLayout }],
+        loading: null,
+        notFound: null,
+        notFounds: [null, null],
+        routeSegments: ["blog"],
+        slots: {},
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/blog",
+      rootNotFoundModule: null,
+    });
+
+    const route = elements["route:/blog"];
+    const childrenBoundaryId = (layoutId: string) => {
+      const slot = findSlotById(route, layoutId);
+      return findElementByTypeName(slot?.props.children, "BfcacheChildrenBoundary")?.props.id;
+    };
+    // Next.js keeps the Activity list in the parent's layout router, so the
+    // root layout retains the nested layout and the nested layout the page.
+    expect(childrenBoundaryId("layout:/")).toBe("layout:/blog");
+    expect(childrenBoundaryId("layout:/blog")).toBe("page:/blog");
+  });
+
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
     lastGroupTemplateProps = null;
     const elements = buildAppPageElements({

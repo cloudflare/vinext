@@ -85,6 +85,7 @@ describe("app browser server action client", () => {
         {
           basePath: "",
           clearClientNavigationCaches: vi.fn(),
+          clearDynamicClientNavigationCaches: vi.fn(),
           clientRscCompatibilityId: null,
           commitSameUrlNavigatePayload: vi.fn(),
           navigationPlanner,
@@ -160,6 +161,7 @@ describe("app browser server action client", () => {
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
@@ -235,6 +237,7 @@ describe("app browser server action client", () => {
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "/base",
       clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload: vi.fn(),
       navigationPlanner,
@@ -288,6 +291,7 @@ describe("app browser server action client", () => {
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
         clearClientNavigationCaches,
+        clearDynamicClientNavigationCaches: vi.fn(),
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
@@ -330,6 +334,7 @@ describe("app browser server action client", () => {
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
         clearClientNavigationCaches: vi.fn(),
+        clearDynamicClientNavigationCaches: vi.fn(),
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
@@ -388,6 +393,7 @@ describe("app browser server action client", () => {
     const result = invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches: vi.fn(),
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
@@ -443,10 +449,12 @@ describe("app browser server action client", () => {
     });
     const commitSameUrlNavigatePayload = vi.fn();
     const clearClientNavigationCaches = vi.fn();
+    const clearDynamicClientNavigationCaches = vi.fn();
 
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches,
+      clearDynamicClientNavigationCaches,
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,
@@ -456,7 +464,9 @@ describe("app browser server action client", () => {
       syncServerActionHttpFallbackHead: vi.fn(),
     });
 
-    expect(clearClientNavigationCaches).toHaveBeenCalledTimes(1);
+    // Like Next.js, `refresh()` alone keeps the static prefetches.
+    expect(clearClientNavigationCaches).not.toHaveBeenCalled();
+    expect(clearDynamicClientNavigationCaches).toHaveBeenCalledTimes(1);
     expect(commitSameUrlNavigatePayload).toHaveBeenCalledTimes(1);
     const [elementsArg, , returnValueArg, revalidationArg, renderedPathAndSearchArg] =
       commitSameUrlNavigatePayload.mock.calls[0];
@@ -511,6 +521,7 @@ describe("app browser server action client", () => {
       invokeClientServerAction("action-id", [], actionInitiation, {
         basePath: "",
         clearClientNavigationCaches,
+        clearDynamicClientNavigationCaches: vi.fn(),
         clientRscCompatibilityId: null,
         commitSameUrlNavigatePayload,
         navigationPlanner,
@@ -564,6 +575,7 @@ describe("app browser server action client", () => {
     await invokeClientServerAction("action-id", [], actionInitiation, {
       basePath: "",
       clearClientNavigationCaches,
+      clearDynamicClientNavigationCaches: vi.fn(),
       clientRscCompatibilityId: null,
       commitSameUrlNavigatePayload,
       navigationPlanner,

@@ -738,6 +738,108 @@ describe("app page execution helpers", () => {
     await expect(response.text()).resolves.toBe("E:NEXT_REDIRECT;replace;/redirected;307;");
   });
 
+  // Next.js's digest keeps the target redirect() received, so one shared
+  // cache entry sends every host to the same place.
+  it("keeps a same-origin absolute redirect target in the RSC flight on every host", async () => {
+    const payloads = [];
+    for (const origin of ["https://www.example.com", "https://example.com"]) {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request(`${origin}/start.rsc`),
+        specialError: {
+          kind: "redirect",
+          location: "https://www.example.com/target",
+          statusCode: 307,
+          type: "replace",
+        },
+      });
+      payloads.push({
+        body: await response.text(),
+        header: response.headers.get("x-vinext-rsc-redirect"),
+      });
+    }
+
+    expect(payloads[0]).toEqual({
+      body: "NEXT_REDIRECT;replace;https://www.example.com/target;307;",
+      header: "https://www.example.com/target",
+    });
+    expect(payloads[1]).toEqual(payloads[0]);
+  });
+
+  it.each([
+    ["./subpage", "/docs/subpage"],
+    ["?tab=1", "/docs/page?tab=1"],
+    ["#section", "/docs/page#section"],
+  ])(
+    "resolves a relative RSC redirect target %s against the request path",
+    async (location, url) => {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request("https://example.com/docs/page"),
+        specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+      });
+
+      expect(response.headers.get("x-vinext-rsc-redirect")).toBe(url);
+      await expect(response.text()).resolves.toBe(`NEXT_REDIRECT;replace;${url};307;`);
+    },
+  );
+
+  // One shared entry answers HTTP and HTTPS hosts, so a target that inherits
+  // the scheme keeps its reference form and each client resolves it.
+  it.each(["//other.test/out", "//other.test:443/out", "https:foo", "http:foo"])(
+    "keeps the RSC redirect target %s in the same form on every scheme",
+    async (location) => {
+      const payloads = [];
+      for (const origin of ["http://tenant-a.example", "https://tenant-b.example"]) {
+        const response = await buildAppPageSpecialErrorResponse({
+          buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+          clearRequestContext: vi.fn(),
+          isRscRequest: true,
+          request: new Request(`${origin}/start.rsc`),
+          specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+        });
+        payloads.push({
+          body: await response.text(),
+          header: response.headers.get("x-vinext-rsc-redirect"),
+        });
+      }
+
+      expect(payloads[0]).toEqual({
+        body: `NEXT_REDIRECT;replace;${location};307;`,
+        header: location,
+      });
+      expect(payloads[1]).toEqual(payloads[0]);
+    },
+  );
+
+  it.each([
+    [" https://other.test/out", "https://other.test/out"],
+    ["https://other.test/😀", "https://other.test/%F0%9F%98%80"],
+    ["https://other.tést/a b", "https://other.t%C3%A9st/a%20b"],
+    ["//other.test/😀", "//other.test/%F0%9F%98%80"],
+    ["https://a.redirect-base.vinext.invalid/out", "https://a.redirect-base.vinext.invalid/out"],
+    ["//a.redirect-base.vinext.invalid/out", "//a.redirect-base.vinext.invalid/out"],
+    ["http://b.redirect-base.vinext.invalid/out", "http://b.redirect-base.vinext.invalid/out"],
+  ])(
+    "keeps the absolute RSC redirect target %s in the digest and parses it for the header",
+    async (location, header) => {
+      const response = await buildAppPageSpecialErrorResponse({
+        buildRscRedirectFlightStream: ({ digest }) => createStream([digest]),
+        clearRequestContext: vi.fn(),
+        isRscRequest: true,
+        request: new Request("https://example.com/docs/page"),
+        specialError: { kind: "redirect", location, statusCode: 307, type: "replace" },
+      });
+
+      expect(response.headers.get("x-vinext-rsc-redirect")).toBe(header);
+      await expect(response.text()).resolves.toBe(`NEXT_REDIRECT;replace;${location};307;`);
+    },
+  );
+
   it("preserves explicit push semantics in RSC redirect flights", async () => {
     const buildRscRedirectFlightStream = vi.fn(
       ({ digest }: { digest: string }) =>

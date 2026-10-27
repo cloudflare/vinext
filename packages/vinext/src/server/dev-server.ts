@@ -13,7 +13,7 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
-import { ensureFetchPatch } from "vinext/shims/fetch-cache";
+import { ensureFetchPatch, setCurrentFetchDraftMode } from "vinext/shims/fetch-cache";
 import {
   closeAfterResponse,
   createRequestContext,
@@ -948,6 +948,7 @@ export function createSSRHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const requestPreviewData = requestPreview.data;
+        setCurrentFetchDraftMode(requestPreviewData !== false);
         const pagesNextData = {
           ...buildPagesReadinessNextData({
             pageModule,

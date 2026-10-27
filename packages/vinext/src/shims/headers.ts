@@ -552,7 +552,7 @@ class ReadonlyHeadersError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyHeadersError();
   }
 }
@@ -567,7 +567,7 @@ class ReadonlyRequestCookiesError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyRequestCookiesError();
   }
 }
@@ -700,10 +700,12 @@ function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
 }
 
 function _sealCookies(cookies: RequestCookies): RequestCookies {
+  // Like Next.js's RequestCookiesAdapter.seal, the mutating methods throw when
+  // called, not when read.
   return new Proxy(cookies, {
     get(target, prop) {
-      if (prop === "set" || prop === "delete") {
-        throw new ReadonlyRequestCookiesError();
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
       }
 
       const value = Reflect.get(target, prop, target);
@@ -1120,7 +1122,8 @@ class RequestCookies {
       : null;
   }
 
-  get(name: string): ResponseCookie | undefined {
+  get(nameOrOptions: string | { name: string }): ResponseCookie | undefined {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     if (this._responseCookies) return this._responseCookies.get(name);
     const value = this._cookies.get(name);
     if (value === undefined) return undefined;
