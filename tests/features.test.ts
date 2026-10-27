@@ -853,6 +853,43 @@ describe("ISR cache internals", () => {
     }
   });
 
+  // Like Next.js's IncrementalCache: another fetch of the same request may
+  // have stored the entry under different tags.
+  it("MemoryCacheHandler checks a fetch read's own tags, not only the ones its entry carries", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+      const handler = new MemoryCacheHandler();
+      const value = {
+        kind: "FETCH" as const,
+        data: { headers: {}, body: "test", url: "" },
+        tags: ["other"],
+        revalidate: 3600,
+      };
+      await handler.set("shared", value, { revalidate: 3600, tags: ["other"] });
+      await handler.set("expired", value, { revalidate: 3600, tags: ["other"] });
+
+      vi.advanceTimersByTime(1000);
+      await handler.revalidateTag("mine", { expire: 60 });
+      await expect(handler.get("shared", { kind: "FETCH", tags: ["mine"] })).resolves.toMatchObject(
+        { cacheState: "stale" },
+      );
+      // Only a fetch read checks its own tags.
+      await expect(handler.get("shared", { tags: ["mine"] })).resolves.not.toMatchObject({
+        cacheState: "stale",
+      });
+
+      await handler.revalidateTag("gone");
+      await expect(handler.get("expired", { kind: "FETCH", tags: ["gone"] })).resolves.toBeNull();
+      // The entry stays for a read whose tags weren't revalidated.
+      await expect(
+        handler.get("expired", { kind: "FETCH", tags: ["other"] }),
+      ).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("MemoryCacheHandler skips storage when data.revalidate is 0", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
     const handler = new MemoryCacheHandler();

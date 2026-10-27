@@ -378,12 +378,12 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       const softTags = [
         ...new Set(readStringArrayField(context, "softTags").map(encodeCloudflareCacheTag)),
       ].sort();
-      const getTagExpiration = () => {
-        const key = softTags.join(",");
+      const getTagExpiration = (tags: string[]) => {
+        const key = tags.join(",");
         const expirations = this.tagExpirations();
         let expiration = expirations.get(key);
         if (!expiration) {
-          expiration = Promise.resolve().then(() => this.store.getTagExpiration(softTags));
+          expiration = Promise.resolve().then(() => this.store.getTagExpiration(tags));
           expirations.set(key, expiration);
           void expiration.catch(() => {
             if (expirations.get(key) === expiration) expirations.delete(key);
@@ -395,7 +395,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       const body = response.text();
       const eagerExpiration =
         softTags.length && (storeStatus === "BLOB-FRESH" || storeStatus === "BLOB-STALE")
-          ? getTagExpiration().then(
+          ? getTagExpiration(softTags).then(
               (value) => ({ value }) as const,
               (error: unknown) => ({ error }) as const,
             )
@@ -410,10 +410,27 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       if (softTags.length) {
         const expiration = eagerExpiration
           ? await eagerExpiration
-          : { value: await getTagExpiration() };
+          : { value: await getTagExpiration(softTags) };
         if ("error" in expiration) throw expiration.error;
         if (expiration.value >= entry.lastModified) return null;
         tagExpiration = { tags: softTags, expiration: expiration.value };
+      }
+
+      // Like Next.js's IncrementalCache, a fetch's own tags count whatever the
+      // entry carries: another fetch of the same request may have stored it
+      // under different tags. The Store already tracks the tags it carries.
+      if (context?.kind === "FETCH" && entry.value?.kind === "FETCH") {
+        const storedTags = new Set(entry.value.tags ?? []);
+        const untrackedTags = [
+          ...new Set(
+            readStringArrayField(context, "tags")
+              .filter((tag) => !storedTags.has(tag))
+              .map(encodeCloudflareCacheTag),
+          ),
+        ].sort();
+        if (untrackedTags.length && (await getTagExpiration(untrackedTags)) >= entry.lastModified) {
+          return null;
+        }
       }
 
       const age = Date.now() - entry.lastModified;
