@@ -215,8 +215,10 @@ function resolveThemeColor(themeColor: Viewport["themeColor"]): ResolvedViewport
 // Metadata types and resolution
 // ---------------------------------------------------------------------------
 
+type MetadataTitle = string | { default?: string; template?: string | null; absolute?: string };
+
 export type Metadata = {
-  title?: string | { default?: string; template?: string | null; absolute?: string };
+  title?: MetadataTitle;
   description?: string;
   generator?: string;
   applicationName?: string;
@@ -234,7 +236,7 @@ export type Metadata = {
         [key: string]: unknown;
       };
   openGraph?: {
-    title?: string;
+    title?: MetadataTitle;
     description?: string;
     url?: string | URL;
     siteName?: string;
@@ -250,19 +252,19 @@ export type Metadata = {
     publishedTime?: string;
     modifiedTime?: string;
     authors?: string[];
-  };
+  } | null;
   twitter?: {
     card?: string;
     site?: string;
     siteId?: string;
-    title?: string;
+    title?: MetadataTitle;
     description?: string;
     images?: string | URL | SocialImageDescriptor | Array<string | URL | SocialImageDescriptor>;
     creator?: string;
     creatorId?: string;
     players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
     app?: TwitterAppDescriptor;
-  };
+  } | null;
   icons?: IconsMetadata;
   manifest?: string | URL;
   alternates?: {
@@ -404,6 +406,7 @@ type IconsMap = {
 type IconsMetadata = IconInput | IconInput[] | IconsMap;
 
 export type MetadataMergeEntry = {
+  /** Passes on the title template it received rather than its own. */
   isPage?: boolean;
   metadata: Metadata;
 };
@@ -411,11 +414,8 @@ export type MetadataMergeEntry = {
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
- * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
- * the segment that defines the template itself. `title.absolute`
- * skips all templates. `title.default` is the fallback when no
- * child provides a title.
+ * The list is ordered [rootLayout, nestedLayout, ..., page], with titles
+ * resolved as {@link mergeMetadataEntries} does.
  *
  * Shallow merge: later entries override earlier ones (per Next.js docs).
  */
@@ -452,6 +452,11 @@ function resolveStringTitle(title: Metadata["title"]): string | undefined {
     return title.absolute ?? title.default ?? undefined;
   }
   return undefined;
+}
+
+/** The text a social title renders, a raw `{ default }` title's default if it is not resolved. */
+function renderedTitle(title: MetadataTitle | undefined): string | undefined {
+  return title && typeof title === "object" ? title.absolute || title.default : title;
 }
 
 function applyTitleTemplate(template: string | undefined, title: string): string {
@@ -511,7 +516,7 @@ export function postProcessMetadata(merged: Metadata): Metadata {
 
   if (result.openGraph) {
     const autoFill: {
-      title?: string;
+      title?: MetadataTitle;
       description?: string;
       images?: NonNullable<Metadata["twitter"]>["images"];
     } = {};
@@ -576,14 +581,16 @@ export function postProcessMetadata(merged: Metadata): Metadata {
 /**
  * Merge metadata from multiple sources (layouts + page).
  *
- * The list is ordered [rootLayout, nestedLayout, ..., page].
- * Title template from layouts applies to the page title but NOT to
- * the segment that defines the template itself. `title.absolute`
- * skips all templates. `title.default` is the fallback when no
- * child provides a title.
+ * The list is ordered [rootLayout, nestedLayout, ..., page]. Like Next.js's
+ * accumulateMetadata, each title resolves with the template of the title
+ * before it: a `title.template` wraps later titles, not its own entry's
+ * `title.default`, and a plain-string title, or one without a template,
+ * clears it. An `isPage` entry passes on the template it received.
+ * `title.absolute` skips all templates.
  *
  * For top-level keys, later entries override earlier ones. `other` custom meta
  * tags are the exception: Next.js merges those across segments.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
  */
 export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   return mergeEntries(entries, false);
@@ -593,12 +600,22 @@ export function mergeMetadataEntries(entries: readonly MetadataMergeEntry[]): Me
  * Merge metadata into the `parent` a later segment's resolver receives. Like
  * {@link mergeMetadataEntries}, except the title stays resolved as Next.js's
  * `{ absolute, template }`, so `(await parent).title?.absolute` reads the
- * title so far. `template` is the one the next title gets, so merging this
- * parent with later entries resolves their titles as the full merge does.
+ * title so far. `template` is the last title's own, the one the next title
+ * gets, so merging this parent with later entries resolves their titles as
+ * the full merge does.
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
  */
 export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[]): Metadata {
   return mergeEntries(entries, true);
+}
+
+// The other keys whose `title` takes its own template, like `title`'s.
+const SOCIAL_TITLE_KEYS = ["openGraph", "twitter"] as const;
+type TitleTemplates = Record<"title" | (typeof SOCIAL_TITLE_KEYS)[number], string | null>;
+
+// Next.js's resolved title keeps an empty template as `""`; applying one is a no-op.
+function titleTemplateOf(title: MetadataTitle | undefined): string | null {
+  return typeof title === "object" && title ? (title.template ?? null) : null;
 }
 
 function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boolean): Metadata {
@@ -606,12 +623,15 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
   const merged: Metadata = {};
 
-  // Track the most recent ancestor title template from layouts (not from page).
-  let parentTemplate: string | undefined;
+  // The resolved titles' own templates, as Next.js's resolveTitle returns
+  // them, and the ones the next titles get (Next.js's `titleTemplates`). An
+  // `openGraph` or `twitter` value replaces the whole object, so one without a
+  // title clears its template.
+  const titleTemplates: TitleTemplates = { title: null, openGraph: null, twitter: null };
+  let stashedTemplates: TitleTemplates = { ...titleTemplates };
 
   for (const entry of entries) {
     const meta = entry.metadata;
-    const isPage = Boolean(entry.isPage);
 
     // Merge non-title keys
     for (const key of Object.keys(meta)) {
@@ -630,21 +650,41 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
 
     // Title resolution
     if (meta.title !== undefined) {
-      merged.title = resolveTitle(meta.title, parentTemplate);
+      merged.title = resolveTitle(meta.title, stashedTemplates.title ?? undefined);
+      titleTemplates.title = titleTemplateOf(meta.title);
     }
-
-    // Collect the current layout template after resolving its own title so
-    // title.default is wrapped by the ancestor template, not by its own template.
-    if (!isPage && meta.title && typeof meta.title === "object" && meta.title.template) {
-      parentTemplate = meta.title.template;
+    for (const key of SOCIAL_TITLE_KEYS) {
+      if (!Object.hasOwn(meta, key)) continue;
+      const social = meta[key];
+      titleTemplates[key] = titleTemplateOf(social?.title);
+      // Like Next.js's resolveOpenGraph and resolveTwitter, a present but
+      // falsy value, `undefined` included, resolves to `null`.
+      merged[key] = social
+        ? { ...social, title: resolveTitle(social.title, stashedTemplates[key] ?? undefined) }
+        : null;
     }
+    if (!entry.isPage) stashedTemplates = { ...titleTemplates };
   }
 
-  if (resolvedTitle && Object.hasOwn(merged, "title")) {
-    merged.title = {
-      absolute: resolveStringTitle(merged.title) ?? "",
-      template: parentTemplate ?? null,
-    };
+  if (resolvedTitle) {
+    if (Object.hasOwn(merged, "title")) {
+      merged.title = {
+        absolute: resolveStringTitle(merged.title) ?? "",
+        template: titleTemplates.title,
+      };
+    }
+    for (const key of SOCIAL_TITLE_KEYS) {
+      const social = merged[key];
+      if (social) {
+        merged[key] = {
+          ...social,
+          title: {
+            absolute: resolveStringTitle(social.title) ?? "",
+            template: titleTemplates[key],
+          },
+        };
+      }
+    }
   }
 
   return merged;
@@ -1125,7 +1165,8 @@ export function MetadataHead({
   // Open Graph
   if (metadata.openGraph) {
     const og = metadata.openGraph;
-    if (og.title) elements.push(<meta key={key++} property="og:title" content={og.title} />);
+    const ogTitle = renderedTitle(og.title);
+    if (ogTitle) elements.push(<meta key={key++} property="og:title" content={ogTitle} />);
     if (og.description)
       elements.push(<meta key={key++} property="og:description" content={og.description} />);
     if (og.url) {
@@ -1248,7 +1289,8 @@ export function MetadataHead({
     if (tw.card) elements.push(<meta key={key++} name="twitter:card" content={tw.card} />);
     if (tw.site) elements.push(<meta key={key++} name="twitter:site" content={tw.site} />);
     if (tw.siteId) elements.push(<meta key={key++} name="twitter:site:id" content={tw.siteId} />);
-    if (tw.title) elements.push(<meta key={key++} name="twitter:title" content={tw.title} />);
+    const twTitle = renderedTitle(tw.title);
+    if (twTitle) elements.push(<meta key={key++} name="twitter:title" content={twTitle} />);
     if (tw.description)
       elements.push(<meta key={key++} name="twitter:description" content={tw.description} />);
     if (tw.creator) elements.push(<meta key={key++} name="twitter:creator" content={tw.creator} />);

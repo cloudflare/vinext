@@ -37,7 +37,13 @@ import {
   type Metadata,
   type Viewport,
 } from "vinext/shims/metadata";
-import { BfcacheSegmentBoundary, Children, ParallelSlot, Slot } from "vinext/shims/slot";
+import {
+  BfcacheChildrenBoundary,
+  BfcacheSegmentBoundary,
+  Children,
+  ParallelSlot,
+  Slot,
+} from "vinext/shims/slot";
 import { StreamedIconsInsertion } from "vinext/shims/streamed-icons";
 import { fnv1a64 } from "vinext/internal/utils/hash";
 import { createInlineScriptTag, escapeHtmlAttr } from "./html.js";
@@ -2213,6 +2219,8 @@ export function buildAppPageElements<
   const renderedTreePositions = isPrefetchLoadingShell
     ? orderedTreePositions.filter(includesPrefetchTreePosition)
     : orderedTreePositions;
+  // The segment a layout's children render: the page, or the nearest layout below.
+  let childSegmentElementId = pageElementId;
   for (let index = renderedTreePositions.length - 1; index >= 0; index--) {
     const treePosition = renderedTreePositions[index];
     const segmentResetKey = resolveRouteSegmentResetKey(treePosition);
@@ -2356,13 +2364,16 @@ export function buildAppPageElements<
               resolveSlotOverride,
             )}
           >
-            {segmentChildren}
+            <BfcacheChildrenBoundary id={childSegmentElementId}>
+              {segmentChildren}
+            </BfcacheChildrenBoundary>
           </Slot>
         ) : (
           segmentChildren
         )}
       </LayoutSegmentProvider>
     );
+    if (layoutHasElement) childSegmentElementId = layoutEntry.id;
   }
 
   const globalErrorComponent = getErrorBoundaryExport(options.globalErrorModule);

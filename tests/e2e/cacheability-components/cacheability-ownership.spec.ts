@@ -108,3 +108,25 @@ test("preserves Cache Components ownership while probing inside workerd", async 
   const state = await request.get("/use-cache-private-in-unstable-cache/state");
   await expect(state.json()).resolves.toEqual({ privateExecutions: 0 });
 });
+
+// Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.test.ts
+// ("should fully prerender pages that use `unstable_noStore()`")
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.test.ts
+test("keeps a Cache Components page that calls unstable_noStore() static", async ({ request }) => {
+  const headers = { [probeHeader]: "1", [secretHeader]: prerenderSecret() };
+  const probe = await request.get("/unstable-no-store", { headers });
+  await expect(probe.json()).resolves.toMatchObject({
+    kind: "app-page",
+    pattern: "/unstable-no-store",
+    state: "static-candidate",
+    status: 200,
+    version: 1,
+  });
+
+  // The runtime render stays static too, so it gets the same browser policy as
+  // the stored /use-cache-public-no-store page instead of a dynamic page's
+  // `no-store`. wrangler dev has no Workers Cache, so every request renders.
+  const runtime = await request.get("/unstable-no-store");
+  expect(runtime.status()).toBe(200);
+  expect(runtime.headers()["cache-control"]).toBe("private, max-age=0, must-revalidate");
+});

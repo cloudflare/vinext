@@ -25,6 +25,7 @@ export function parsePreviewsDeployArgs(args: string[]) {
       help: { type: "boolean", short: "h", default: false },
       mode: { type: "string" },
       "skip-build": { type: "boolean", default: false },
+      "vite-config": { type: "string" },
     },
   });
 
@@ -37,5 +38,6 @@ export function parsePreviewsDeployArgs(args: string[]) {
     name: positionals[0] === undefined ? undefined : validatePreviewName(positionals[0]),
     mode: values.mode === undefined ? undefined : validateMode(values.mode),
     skipBuild: values["skip-build"],
+    viteConfig: values["vite-config"]?.trim() || undefined,
   };
 }
