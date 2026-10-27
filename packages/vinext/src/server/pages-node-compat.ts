@@ -1,6 +1,7 @@
 import { decode as decodeQueryString } from "node:querystring";
 import { Readable, Writable } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
+import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
 import {
   PagesBodyParseError,
@@ -134,28 +135,20 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
 async function readPagesRequestBodyWithLimit(
   request: Request,
   maxBytes: number,
-  decoder: ReturnType<typeof createPagesBodyDecoder>["decoder"],
+  decoder: TextDecoder,
 ): Promise<string> {
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: string[] = [];
-  let totalSize = 0;
-  try {
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      totalSize += value.byteLength;
-      if (totalSize > maxBytes) {
-        void reader.cancel();
-        throw new PagesBodyParseError("Request body too large", 413);
-      }
-      chunks.push(decoder.write(Buffer.from(value)));
-    }
-    chunks.push(decoder.end() || "");
-    return chunks.join("");
-  } finally {
-    reader.releaseLock();
+  if (!request.body) {
+    return "";
   }
+
+  return readStreamAsTextWithLimit(
+    request.body,
+    maxBytes,
+    () => {
+      throw new PagesBodyParseError("Request body too large", 413);
+    },
+    decoder,
+  );
 }
 
 /**

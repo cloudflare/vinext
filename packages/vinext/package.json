@@ -232,15 +232,12 @@
     "@unpic/react": "catalog:",
     "@vercel/og": "catalog:",
     "@vinext/types": "workspace:^",
-    "content-type": "1.0.5",
-    "iconv-lite": "0.7.2",
     "ipaddr.js": "catalog:",
     "magic-string": "catalog:",
     "vite-plugin-commonjs": "catalog:",
     "web-vitals": "catalog:"
   },
   "devDependencies": {
-    "@types/content-type": "1.1.9",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
