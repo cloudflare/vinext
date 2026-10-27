@@ -331,6 +331,12 @@ One deliberate exception to the rule above: **source files under `packages/vinex
 
 **Tests are the opposite:** keep building fixture **inputs** with native `node:path` (`mkdtemp`, `path.join`, `path.resolve`) so a Windows run feeds real backslash paths into the source and actually exercises the conversion. Only the **expectations** that compare against source output move to canonical form — wrap them with `toSlash(path.join(...))` (many test files define a local `canonical()` helper for this). Switching test inputs to pathslash would make Windows runs vacuous: both sides would be forward-slash by construction and a source regression that stops normalizing would pass silently.
 
+### Import Test APIs From `vite-plus/test`, Never `vitest`
+
+Test files import `describe`, `it`, `expect`, `vi`, etc. from `"vite-plus/test"`, never from `"vitest"` (lint-enforced via `no-restricted-imports`). `vite-plus/test` re-exports the Vitest that ships inside vite-plus, so test imports always resolve to the same Vitest that `vp test` actually runs. A separately pinned `vitest` can drift from the runner's bundled version — a 4.1.9 vs 4.1.10 mismatch broke CI before (#2748).
+
+`vitest` stays in the root `package.json` only to satisfy `@vitest/coverage-istanbul`'s peer dependency. Do not import from it, and do not remove it.
+
 ### Never Install With `--no-frozen-lockfile`
 
 **NEVER run installs with `--no-frozen-lockfile`** (e.g. `pnpm install --no-frozen-lockfile`) on your own. Installs are frozen by default, so updating the lockfile requires this flag — which is exactly why an agent must never run it unattended. Bypassing the frozen lockfile opens the door to supply chain attacks: a frozen lockfile pins exact, vetted dependency versions and integrity hashes, and unfreezing it can pull in unreviewed or tampered packages. If you genuinely believe the lockfile needs to change, stop and ask the user to run the install with `--no-frozen-lockfile` themselves; never run it yourself.
