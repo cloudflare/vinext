@@ -252,7 +252,7 @@ export type Metadata = {
     publishedTime?: string;
     modifiedTime?: string;
     authors?: string[];
-  };
+  } | null;
   twitter?: {
     card?: string;
     site?: string;
@@ -264,7 +264,7 @@ export type Metadata = {
     creatorId?: string;
     players?: TwitterPlayerDescriptor | TwitterPlayerDescriptor[];
     app?: TwitterAppDescriptor;
-  };
+  } | null;
   icons?: IconsMetadata;
   manifest?: string | URL;
   alternates?: {
@@ -657,12 +657,11 @@ function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boo
       if (!Object.hasOwn(meta, key)) continue;
       const social = meta[key];
       titleTemplates[key] = titleTemplateOf(social?.title);
-      if (social) {
-        merged[key] = {
-          ...social,
-          title: resolveTitle(social.title, stashedTemplates[key] ?? undefined),
-        };
-      }
+      // Like Next.js's resolveOpenGraph and resolveTwitter, a present but
+      // falsy value, `undefined` included, resolves to `null`.
+      merged[key] = social
+        ? { ...social, title: resolveTitle(social.title, stashedTemplates[key] ?? undefined) }
+        : null;
     }
     if (!entry.isPage) stashedTemplates = { ...titleTemplates };
   }

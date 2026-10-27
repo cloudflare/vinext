@@ -1576,7 +1576,8 @@ describe("app page head resolution", () => {
         titled("Page"),
       ),
     ).toEqual(["Page | OG", "Page | TW"]);
-    expect(seenTitles.at(-1)).toEqual([null, undefined]);
+    // Next.js resolves a present `undefined` to `null` too.
+    expect(seenTitles.at(-1)).toStrictEqual([null, null]);
   });
 
   it("hands each resolver the title resolved before it as { absolute, template }", async () => {
