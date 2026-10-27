@@ -500,13 +500,15 @@ jobs:
       - name: Build vinext plugin
         run: vp run build
 
+      # Edge purges share an account-wide rate limit with every other PR's
+      # deployed E2E, and these specs never check eviction, so the Store skips them.
       - name: Deploy a Response Store service
         if: matrix.backend == 'response-store'
         working-directory: examples/response-store-demo
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc --name "$WORKER_NAME-rs"
+        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc --name "$WORKER_NAME-rs" --var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled
 
       - name: Bind the Response Store service
         if: matrix.backend == 'response-store'
