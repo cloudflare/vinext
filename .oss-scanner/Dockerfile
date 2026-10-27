@@ -27,5 +27,5 @@ ENV PATH=/src/node_modules/.bin:$PATH
 RUN pnpm exec playwright install --with-deps chromium
 
 # Smoke test: cheap security-focused unit tests. A failure is logged, not fatal.
-RUN vp test run --project unit tests/action-runtime-security.test.ts tests/middleware-matcher-auth.test.ts \
+RUN vp test run --project unit tests/action-runtime-security.test.ts tests/api-handler-trust-proxy.test.ts \
     || echo "WARNING: smoke tests reported failures"
