@@ -463,6 +463,63 @@ describe("prefetch cache eviction", () => {
     await expect(navigation.restoreRscResponse(consumed!).text()).resolves.toBe("visited");
   });
 
+  it("router.prefetch skips a URL a navigation would serve from its visited response", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression/optimistic-route-cache-keying-regression.test.ts
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("fresh", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    let navigationFreshUntil: number | null = now + 1_000;
+    const readVisitedResponseForFullPrefetch = vi.fn(() => ({
+      navigatedAt: now,
+      navigationFreshUntil,
+      response: {
+        buffer: new TextEncoder().encode("visited").buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/dynamic.rsc",
+      },
+    }));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn(), readVisitedResponseForFullPrefetch },
+    };
+
+    const onInvalidate = vi.fn();
+    navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate });
+    await vi.waitFor(() => expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(1));
+    expect(fetch).not.toHaveBeenCalled();
+
+    // Its subscriber hears when a navigation stops reusing the response.
+    expect(onInvalidate).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onInvalidate).toHaveBeenCalledTimes(1), { timeout: 3_000 });
+
+    // Or when the visited responses are cleared, such as by a Server Action's
+    // dynamic revalidation, and only then.
+    navigationFreshUntil = now + 500;
+    const onClearedInvalidate = vi.fn();
+    navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate: onClearedInvalidate });
+    await vi.waitFor(() => expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(2));
+    navigation.invalidateVisitedResponsePrefetches();
+    expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+
+    // Once a navigation wouldn't reuse it, the prefetch fetches.
+    navigationFreshUntil = null;
+    navigation.appRouterInstance.prefetch("/dynamic");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("router.prefetch kind full fetches when the byte budget evicts the visited response it seeded", async () => {
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
@@ -1593,96 +1650,6 @@ describe("prefetch cache eviction", () => {
     appRouterInstance.prefetch("/reports", { kind: "full" });
     await waitForPrefetchSetup(() => onInvalidate.mock.calls.length > 0);
     expect(onInvalidate).toHaveBeenCalledTimes(1);
-  });
-
-  it("skips a shell while a navigation would reuse the page's kept visited response", async () => {
-    // Ported from Next.js: test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression
-    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
-      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
-    ];
-    const fetch = vi.fn(
-      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
-    );
-    (globalThis as any).fetch = fetch;
-    const hasNavigableVisitedResponse = vi.fn(
-      (_rscUrl: string, _context: string | null, _slots: string | null) => true,
-    );
-    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-      bootstrap: { routeManifest: null, rsc: undefined },
-      functions: {
-        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
-        hasNavigableVisitedResponse,
-        navigate: vi.fn(),
-      },
-    };
-
-    appRouterInstance.prefetch("/reports");
-    await waitForPrefetchSetup(() => hasNavigableVisitedResponse.mock.calls.length > 0);
-    expect(hasNavigableVisitedResponse).toHaveBeenCalledWith(
-      expect.stringContaining("/reports"),
-      null,
-      null,
-    );
-    expect(hasNavigableVisitedResponse).toHaveBeenCalledTimes(1);
-    expect(fetch).not.toHaveBeenCalled();
-
-    // An onInvalidate callback needs a prefetch entry to expire with.
-    appRouterInstance.prefetch("/reports", { onInvalidate: vi.fn() });
-    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
-    expect(fetch).toHaveBeenCalledTimes(1);
-  });
-
-  it("fetches a shell for a search change, whose navigation bypasses the visited response", async () => {
-    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
-      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
-    ];
-    const location = (globalThis as any).window.location;
-    location.pathname = "/reports";
-    location.search = "?tab=a";
-    location.href = "http://localhost/reports?tab=a";
-    const fetch = vi.fn(
-      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
-    );
-    (globalThis as any).fetch = fetch;
-    const hasNavigableVisitedResponse = vi.fn(() => true);
-    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-      bootstrap: { routeManifest: null, rsc: undefined },
-      functions: {
-        getPrefetchRouterState: () => ({
-          pathAndSearch: "/reports?tab=a",
-          routeId: "route:/reports",
-        }),
-        hasNavigableVisitedResponse,
-        navigate: vi.fn(),
-      },
-    };
-
-    appRouterInstance.prefetch("/reports?tab=b");
-    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(hasNavigableVisitedResponse).not.toHaveBeenCalled();
-  });
-
-  it("fetches a shell when no kept visited response would serve the navigation", async () => {
-    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
-      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
-    ];
-    const fetch = vi.fn(
-      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
-    );
-    (globalThis as any).fetch = fetch;
-    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
-      bootstrap: { routeManifest: null, rsc: undefined },
-      functions: {
-        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
-        hasNavigableVisitedResponse: () => false,
-        navigate: vi.fn(),
-      },
-    };
-
-    appRouterInstance.prefetch("/reports");
-    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
-    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("aborts an in-flight learning-only request when a full prefetch supersedes it (#2707)", async () => {

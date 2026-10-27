@@ -58,7 +58,7 @@ import {
   isrGet,
   isrSet,
   pagesIsrCacheKey,
-  coalesceOnDemandRevalidation,
+  coalesceOnDemandResponse,
   triggerBackgroundRegeneration,
   PRERENDER_REVALIDATE_HEADER,
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
@@ -712,8 +712,8 @@ export function createPagesPageHandler(
       isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER));
     if (shouldCoalesceOnDemand) {
       const cacheKey = pageIsrCacheKey("pages", routeUrl.split("?")[0]);
-      const snapshot = await coalesceOnDemandRevalidation(cacheKey, async () => {
-        const response = await renderPage(
+      return coalesceOnDemandResponse(cacheKey, request.method, () =>
+        renderPage(
           request,
           url,
           manifest,
@@ -723,22 +723,8 @@ export function createPagesPageHandler(
             __skipOnDemandCoalesce: true,
           },
           initialResponseHeaders,
-        );
-        return {
-          body:
-            request.method === "HEAD" || response.status === 204 || response.status === 304
-              ? null
-              : new Uint8Array(await response.arrayBuffer()),
-          headers: [...response.headers.entries()] as Array<[string, string]>,
-          status: response.status,
-          statusText: response.statusText,
-        };
-      });
-      return new Response(snapshot.body?.slice() ?? null, {
-        headers: snapshot.headers,
-        status: snapshot.status,
-        statusText: snapshot.statusText,
-      });
+        ),
+      );
     }
     const routePattern = patternToNextFormat(route.pattern);
     const renderStatusCode =
@@ -778,6 +764,11 @@ export function createPagesPageHandler(
       : routerAsPathSource;
     const uCtx = createRequestContext({
       executionContext: getRequestExecutionContext(),
+      // Like Next.js's per-request IncrementalCache, an authorized on-demand
+      // revalidation makes unstable_cache skip its read in getStaticProps.
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(
+        request.headers.get(PRERENDER_REVALIDATE_HEADER),
+      ),
     });
 
     // The req/res `_app`, the page data and `_document` share for this render.

@@ -8,6 +8,11 @@ export type VisitedResponseCacheEntry = {
   createdAt: number;
   elements?: AppElements;
   expiresAt: number;
+  /**
+   * Stored by initial hydration, which Next.js keeps out of its route cache
+   * (outside Cache Components), so a visible Link still prefetches the URL.
+   */
+  fromHydration?: true;
   mountedSlotsHeader: string | null;
   /**
    * A history restore revoked navigation reuse. The entry stays only as the
@@ -33,6 +38,7 @@ export function hasNavigationResponseHistoryLifetime(snapshot: CachedRscResponse
 export function createVisitedResponseCacheEntry(options: {
   elements?: AppElements;
   fallbackTtlMs?: number;
+  fromHydration?: boolean;
   now: number;
   mountedSlotsHeader?: string | null;
   params: Record<string, string | string[]>;
@@ -47,6 +53,7 @@ export function createVisitedResponseCacheEntry(options: {
       options.response,
       options.fallbackTtlMs ?? VISITED_RESPONSE_CACHE_TTL,
     ),
+    ...(options.fromHydration === true ? { fromHydration: true as const } : {}),
     mountedSlotsHeader: options.mountedSlotsHeader ?? null,
     params: options.params,
     response: options.response,
@@ -152,33 +159,6 @@ export function revokeHistoryRestoreNavigationReuse(
 }
 
 /**
- * Whether a navigation to the URL would reuse a visited response kept for
- * `staleTimes.dynamic`, which Next.js writes into its segment cache. The entry
- * is read as a navigation reads it: under the URL's own identity, fresh, still
- * reusable after any history restore, and fitting the mounted slots unless it
- * replays committed elements.
- */
-export function hasNavigableVisitedResponse(
-  cache: Map<string, VisitedResponseCacheEntry>,
-  rscUrl: string,
-  interceptionContext: string | null,
-  mountedSlotsHeader: string | null,
-  now: number,
-): boolean {
-  const entry = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)?.entry;
-  const dynamicStaleTime =
-    entry?.response.completedDynamicStaleTimeSeconds ?? entry?.response.dynamicStaleTimeSeconds;
-  return (
-    entry !== undefined &&
-    dynamicStaleTime !== undefined &&
-    dynamicStaleTime > 0 &&
-    entry.navigationReuseRevoked !== true &&
-    isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now }) &&
-    (entry.elements !== undefined || entry.mountedSlotsHeader === mountedSlotsHeader)
-  );
-}
-
-/**
  * Next.js fulfills a full prefetch from the BFCache, which holds the data of
  * every navigation, while it is within the static stale time of that
  * navigation (`attemptToFulfillDynamicSegmentFromBFCache`). Navigation reuse
@@ -202,7 +182,11 @@ export function findVisitedResponseForFullPrefetch(
   rscUrls: readonly string[],
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
-): { navigatedAt: number; response: CachedRscResponse } | null {
+): {
+  navigatedAt: number;
+  navigationFreshUntil: number | null;
+  response: CachedRscResponse;
+} | null {
   for (const rscUrl of rscUrls) {
     const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
     if (match === null) continue;
@@ -214,8 +198,16 @@ export function findVisitedResponseForFullPrefetch(
     ) {
       continue;
     }
+    // The navigation's own reuse rule (`readVisitedResponseCacheCandidate`),
+    // with its stricter slot match.
+    const navigationFresh =
+      entry.fromHydration !== true &&
+      entry.navigationReuseRevoked !== true &&
+      (entry.elements !== undefined || entry.mountedSlotsHeader === mountedSlotsHeader) &&
+      isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now: Date.now() });
     return {
       navigatedAt: entry.response.receivedAt ?? entry.createdAt,
+      navigationFreshUntil: navigationFresh ? entry.expiresAt : null,
       response:
         entry.elements === undefined
           ? entry.response

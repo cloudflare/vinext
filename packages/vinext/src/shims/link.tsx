@@ -474,11 +474,11 @@ function prefetchUrl(
           hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
-          hasNavigableVisitedResponse,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
           promotePrefetchCacheEntryForNavigation,
           seedFullPrefetchFromVisitedResponse,
+          hasNavigationFreshVisitedResponse,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -711,17 +711,22 @@ function prefetchUrl(
           }
           return;
         }
-        // A navigation reuses an earlier navigation's response kept for
-        // `staleTimes.dynamic`, so a shell adds nothing.
-        if (
-          !autoPrefetch.cacheForNavigation &&
-          hasNavigableVisitedResponse(fullHref, rscUrl, interceptionContext, mountedSlotsHeader)
-        ) {
-          return;
-        }
         if (
           autoPrefetch.dynamicStaleTime === "full-prefetch" &&
           seedFullPrefetchFromVisitedResponse(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            additionalRscUrls,
+          )
+        ) {
+          return;
+        }
+        // A navigation to the URL would reuse its visited response. A full
+        // prefetch reads it above instead.
+        if (
+          autoPrefetch.dynamicStaleTime !== "full-prefetch" &&
+          hasNavigationFreshVisitedResponse(
             rscUrl,
             interceptionContext,
             mountedSlotsHeader,

@@ -997,6 +997,8 @@ function notifyPrefetchInvalidated(entry: PrefetchCacheEntry): void {
  */
 type RetainedPrefetchInvalidation = {
   callbacks: Set<() => void>;
+  /** Retained for a visited response, which dynamic invalidation also clears. */
+  forVisitedResponse?: true;
   timer: ReturnType<typeof setTimeout>;
 };
 const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
@@ -1004,10 +1006,18 @@ const retainedPrefetchInvalidations = new Set<RetainedPrefetchInvalidation>();
 function retainPrefetchInvalidationAfterConsume(entry: PrefetchCacheEntry): void {
   const callbacks = entry.onInvalidateCallbacks;
   if (callbacks === undefined || callbacks.size === 0) return;
+  retainPrefetchInvalidation(callbacks, resolvePrefetchCacheEntryExpiresAt(entry));
+}
 
-  const delay = Math.max(0, resolvePrefetchCacheEntryExpiresAt(entry) - Date.now());
+function retainPrefetchInvalidation(
+  callbacks: Set<() => void>,
+  expiresAt: number,
+  forVisitedResponse = false,
+): void {
+  const delay = Math.max(0, expiresAt - Date.now());
   const retained: RetainedPrefetchInvalidation = {
     callbacks,
+    ...(forVisitedResponse ? { forVisitedResponse: true as const } : {}),
     timer: setTimeout(() => fireRetainedPrefetchInvalidation(retained), delay),
   };
   retainedPrefetchInvalidations.add(retained);
@@ -1225,6 +1235,16 @@ export function invalidateDynamicPrefetchCache(): void {
 }
 
 /**
+ * Notify the prefetches that stood in for a visited response (see
+ * `hasNavigationFreshVisitedResponse`), as the visited responses are cleared.
+ */
+export function invalidateVisitedResponsePrefetches(): void {
+  for (const retained of retainedPrefetchInvalidations) {
+    if (retained.forVisitedResponse === true) fireRetainedPrefetchInvalidation(retained);
+  }
+}
+
+/**
  * Prevent completed navigation responses from becoming authoritative again
  * after restoring a history snapshot. Explicit Link/router prefetches remain
  * consumable. Responses with a positive cache lifetime and interception
@@ -1317,34 +1337,28 @@ export function seedFullPrefetchFromVisitedResponse(
 }
 
 /**
- * Whether a navigation to the href would reuse the visited response of an
- * earlier navigation, kept for `staleTimes.dynamic`. Next.js writes that
- * navigation's data into its segment cache, so a prefetch finds it there. A
- * navigation within the current pathname bypasses that response, as
- * `classifyEarlyNavigationIntent` decides.
+ * Whether a navigation to the URL would reuse the response of an earlier one,
+ * so a prefetch has nothing to fetch. Like Next.js, whose navigation keeps the
+ * route and its segments for `staleTimes.dynamic`. `onInvalidate` fires when
+ * that reuse ends.
  */
-export function hasNavigableVisitedResponse(
-  href: string,
+export function hasNavigationFreshVisitedResponse(
   rscUrl: string,
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
+  additionalRscUrls: readonly string[] = [],
+  onInvalidate?: () => void,
 ): boolean {
-  const intent = navigationPlanner.classifyEarlyNavigationIntent({
-    basePath: __basePath,
-    currentUrlSpace: "browser",
-    currentHref: window.location.href,
-    mode: "push",
-    scroll: false,
-    targetHref: href,
-  });
-  if (intent.kind !== "flightNavigation" || intent.bypassNavigationCache) return false;
-  return (
-    getNavigationRuntime()?.functions.hasNavigableVisitedResponse?.(
-      rscUrl,
-      interceptionContext,
-      mountedSlotsHeader,
-    ) === true
-  );
+  const freshUntil = getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
+    [rscUrl, ...additionalRscUrls],
+    interceptionContext,
+    mountedSlotsHeader,
+  )?.navigationFreshUntil;
+  if (freshUntil === undefined || freshUntil === null) return false;
+  if (onInvalidate !== undefined) {
+    retainPrefetchInvalidation(new Set([onInvalidate]), freshUntil, true);
+  }
+  return true;
 }
 
 export function deletePrefetchResponseSnapshot(
@@ -3348,13 +3362,19 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
-      } else if (
-        options?.onInvalidate === undefined &&
-        hasNavigableVisitedResponse(fullHref, rscUrl, interceptionContext, mountedSlotsHeader)
+      }
+      // A navigation to the URL would reuse its visited response. A full
+      // prefetch reads it above instead.
+      if (
+        policy.dynamicStaleTime !== "full-prefetch" &&
+        hasNavigationFreshVisitedResponse(
+          rscUrl,
+          interceptionContext,
+          mountedSlotsHeader,
+          additionalRscUrls,
+          options?.onInvalidate,
+        )
       ) {
-        // The navigation reuses that response, so a shell adds nothing. An
-        // `onInvalidate` callback needs a prefetch entry to expire with, so a
-        // prefetch that passes one still fetches its shell.
         return;
       }
       prefetched.add(cacheKey);

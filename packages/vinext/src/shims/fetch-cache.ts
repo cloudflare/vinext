@@ -45,7 +45,11 @@ import {
   isInsideAnyCacheScope,
   markDynamicUsage,
 } from "./headers.js";
-import { _hasPendingRevalidatedTag, _setRequestScopedCacheLife } from "./cache-request-state.js";
+import {
+  _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
+  _setRequestScopedCacheLife,
+} from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
 
@@ -1459,16 +1463,18 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // refresh fails.
     let staleEntry: CacheHandlerValue | undefined;
 
-    // Try cache first
+    // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
+    // skips the read but still fetches and stores the fresh response.
     try {
-      let cached = mustBypassPendingRevalidation
-        ? null
-        : await handler.get(cacheKey, {
-            kind: "FETCH",
-            tags,
-            softTags,
-            revalidate: revalidateSeconds,
-          });
+      let cached =
+        mustBypassPendingRevalidation || _isOnDemandRevalidate()
+          ? null
+          : await handler.get(cacheKey, {
+              kind: "FETCH",
+              tags,
+              softTags,
+              revalidate: revalidateSeconds,
+            });
       if (
         cached?.value?.kind === "FETCH" &&
         _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
@@ -1563,7 +1569,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
     if (cacheValue) {
-      handler
+      const write = handler
         .set(cacheKey, cacheValue, {
           fetchCache: true,
           tags,
@@ -1573,6 +1579,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);
         });
+      // Next.js keeps the request alive for its pending fetch cache writes, so
+      // an on-demand revalidation's fresh response is stored.
+      getRequestExecutionContext()?.waitUntil(write);
     }
 
     return recordFetchOutcome(response, "miss", cacheReason);

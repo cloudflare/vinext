@@ -23,6 +23,11 @@ type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+  /**
+   * Published stale, or expired: generated before an invalidation, or with no fresh window
+   * left by this transaction's clock.
+   */
+  publishedStale?: true;
 };
 
 type WriteReservation = {
@@ -333,7 +338,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           tag TEXT PRIMARY KEY,
           invalidated_at INTEGER NOT NULL,
           invalidation_sequence INTEGER NOT NULL DEFAULT 0,
-          expires_at INTEGER
+          expires_at INTEGER,
+          stale_at INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
         CREATE TABLE IF NOT EXISTS metadata_schema_migrations (
           version INTEGER PRIMARY KEY
@@ -374,12 +380,12 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         const migrations = new Set(
           ctx.storage.sql
             .exec<{ version: number }>(
-              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9)",
+              "SELECT version FROM metadata_schema_migrations WHERE version IN (2, 3, 4, 5, 6, 7, 8, 9, 10)",
             )
             .toArray()
             .map(({ version }) => version),
         );
-        if (migrations.size === 8) return;
+        if (migrations.size === 9) return;
 
         const schemas = ctx.storage.sql
           .exec<{ name: string; sql: string }>(
@@ -494,6 +500,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           // Invalidations before the upgrade weren't recorded: count the active revision as one.
           ctx.storage.sql.exec("UPDATE entries SET invalidated_revision = active_revision");
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
+        }
+        if (!migrations.has(10)) {
+          const tagInvalidations = schemas.find(({ name }) => name === "tag_invalidations")?.sql;
+          if (!tagInvalidations?.includes("stale_at")) {
+            ctx.storage.sql.exec(
+              "ALTER TABLE tag_invalidations ADD COLUMN stale_at INTEGER NOT NULL DEFAULT 0",
+            );
+          }
+          ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (10)");
         }
       });
       ctx.storage.sql.exec(`
@@ -1085,8 +1100,31 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
       // published before it.
       const now = Date.now();
       const deadline = this.getTagExpiryDeadline(metadata.cacheTags, now);
-      const freshUntil = Math.min(metadata.freshUntil, deadline);
-      const swrUntil = Math.min(metadata.swrUntil, deadline);
+      let freshUntil = Math.min(metadata.freshUntil, deadline);
+      let swrUntil = Math.min(metadata.swrUntil, deadline);
+      // Like Next.js "use cache", an entry whose generation started before its tags were
+      // purged, or before an `expire` deadline that has since passed, lands expired, and one
+      // that started before they were invalidated lands stale. Only an invalidation between
+      // generation start and the write's reservation gets here: the fence above drops a write
+      // reserved before one. Workers clocks are coarse and frozen between I/O, so an
+      // invalidation in the same millisecond as the start counts as after it.
+      let startedBeforeInvalidation = false;
+      if (metadata.generatedAt !== undefined) {
+        if (
+          this.getTagInvalidationMaximum(metadata.cacheTags, "invalidated_at") >=
+            metadata.generatedAt ||
+          this.hasTagExpiredSince(metadata.cacheTags, metadata.generatedAt, now)
+        ) {
+          freshUntil = Math.min(freshUntil, now);
+          swrUntil = Math.min(swrUntil, now);
+          startedBeforeInvalidation = true;
+        } else if (
+          this.getTagInvalidationMaximum(metadata.cacheTags, "stale_at") >= metadata.generatedAt
+        ) {
+          freshUntil = Math.min(freshUntil, now);
+          startedBeforeInvalidation = true;
+        }
+      }
       const update = this.ctx.storage.sql.exec<{ key_hash: string }>(
         `UPDATE entries SET
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
@@ -1167,6 +1205,9 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           published && current.active_revision !== null && !replacedEdgeCopyExpired,
         entry: published ? entry : null,
         published,
+        ...(published && (startedBeforeInvalidation || freshUntil <= now)
+          ? { publishedStale: true }
+          : {}),
       };
     });
   }
@@ -1229,7 +1270,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
   private getTagInvalidationMaximum(
     tags: string[],
-    column: "invalidated_at" | "invalidation_sequence",
+    column: "invalidated_at" | "invalidation_sequence" | "stale_at",
   ): number {
     const normalized = normalizeTags(tags);
     let expiration = 0;
@@ -1266,6 +1307,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
     return deadline;
   }
 
+  /** Whether an `expire` deadline among `tags` passed at or after `since`, by `now`. */
+  private hasTagExpiredSince(tags: string[], since: number, now: number): boolean {
+    for (const batch of batches(normalizeTags(tags), MAX_SQL_PARAMETERS - 2)) {
+      const expired = this.ctx.storage.sql
+        .exec(
+          `SELECT 1 FROM tag_invalidations
+          WHERE expires_at >= ? AND expires_at <= ? AND tag IN (${batch.map(() => "?").join(", ")})
+          LIMIT 1`,
+          since,
+          now,
+          ...batch,
+        )
+        .toArray();
+      if (expired.length) return true;
+    }
+    return false;
+  }
+
   getTagExpiration(tags: string[]): number {
     return this.getTagInvalidationMaximum(tags, "invalidated_at");
   }
@@ -1296,12 +1355,15 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
    * `invalidatedAt` also expires the tags for soft-tag reads; pass 0 to leave
    * their expiration unchanged. Like Next.js, `expiresAt` replaces the tags'
    * deadline for entries published before it; null keeps the current one.
+   * `staleAt` marks the tags stale for entries generated before it; pass 0 to
+   * leave it unchanged.
    */
   private recordInvalidations(
     keyHashes: string[],
     tags: string[],
     invalidatedAt: number,
     expiresAt: number | null,
+    staleAt: number,
   ): void {
     this.ctx.storage.sql.exec(
       `UPDATE metadata_state SET tag_invalidation_sequence = tag_invalidation_sequence + 1
@@ -1319,23 +1381,24 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         ...batch,
       );
     }
-    for (const batch of batches(tags, Math.floor(MAX_SQL_PARAMETERS / 3))) {
+    for (const batch of batches(tags, Math.floor(MAX_SQL_PARAMETERS / 4))) {
       this.ctx.storage.sql.exec(
         `INSERT INTO tag_invalidations
-          (tag, invalidated_at, expires_at, invalidation_sequence) VALUES ${batch
+          (tag, invalidated_at, expires_at, stale_at, invalidation_sequence) VALUES ${batch
             .map(
               () =>
-                "(?, ?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
+                "(?, ?, ?, ?, (SELECT tag_invalidation_sequence FROM metadata_state WHERE singleton = 1))",
             )
             .join(", ")}
         ON CONFLICT(tag) DO UPDATE SET invalidated_at =
           MAX(tag_invalidations.invalidated_at, excluded.invalidated_at),
           expires_at = COALESCE(excluded.expires_at, tag_invalidations.expires_at),
+          stale_at = MAX(tag_invalidations.stale_at, excluded.stale_at),
           invalidation_sequence = MAX(
             tag_invalidations.invalidation_sequence,
             excluded.invalidation_sequence
           )`,
-        ...batch.flatMap((tag) => [tag, invalidatedAt, expiresAt]),
+        ...batch.flatMap((tag) => [tag, invalidatedAt, expiresAt, staleAt]),
       );
     }
   }
@@ -1357,6 +1420,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tags,
         invalidatedAt,
         invalidatedAt,
+        0,
       );
 
       for (const batch of batches(matches, MAX_SQL_PARAMETERS - 1)) {
@@ -1446,6 +1510,7 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
         tags,
         0,
         expiresAt ?? null,
+        invalidatedAt,
       );
       for (const batch of batches(reserved, MAX_SQL_PARAMETERS)) {
         this.ctx.storage.sql.exec(

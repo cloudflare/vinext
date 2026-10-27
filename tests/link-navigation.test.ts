@@ -2081,69 +2081,50 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
-  it("skips a Link's loading shell while a navigation would reuse its kept visited response", async () => {
+  it("skips a Link's loading shell while a navigation would reuse its visited response", async () => {
     // Ported from Next.js: test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({ href: "/products/1", nodeEnv: "production" });
 
     try {
-      const hasNavigableVisitedResponse = vi.fn(
-        (_rscUrl: string, _context: string | null, _slots: string | null) => true,
+      let navigationFreshUntil: number | null = Date.now() + 180_000;
+      const readVisitedResponseForFullPrefetch = vi.fn(
+        (_rscUrls: readonly string[], _context: string | null, _slots: string | null) => ({
+          navigatedAt: Date.now(),
+          navigationFreshUntil,
+          response: {
+            buffer: new TextEncoder().encode("visited").buffer,
+            contentType: "text/x-component",
+            paramsHeader: null,
+            renderedPathAndSearch: null,
+            url: "/products/1.rsc",
+          },
+        }),
       );
       const runtime = Reflect.get(
         window,
         Symbol.for("vinext.navigationRuntime"),
       ) as NavigationRuntime;
-      runtime.functions.hasNavigableVisitedResponse = hasNavigableVisitedResponse;
+      runtime.functions.readVisitedResponseForFullPrefetch = readVisitedResponseForFullPrefetch;
 
       observer.dispatchIntersectingEntry(result.anchor);
       await flushPrefetchTasks(
         () =>
-          hasNavigableVisitedResponse.mock.calls.length > 0 || result.fetch.mock.calls.length > 0,
+          readVisitedResponseForFullPrefetch.mock.calls.length > 0 ||
+          result.fetch.mock.calls.length > 0,
       );
 
-      expect(hasNavigableVisitedResponse).toHaveBeenCalledWith(
-        expect.stringContaining("/products/1"),
+      expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.stringContaining("/products/1")]),
         null,
         null,
       );
       expect(result.fetch).not.toHaveBeenCalled();
 
-      // Without one, the shell is fetched.
-      hasNavigableVisitedResponse.mockReturnValue(false);
+      // Once a navigation wouldn't reuse it, the shell is fetched.
+      navigationFreshUntil = null;
       result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
       await waitForFetchCalls(result.fetch, 1);
-    } finally {
-      result.restoreNodeEnv();
-    }
-  });
-
-  it("fetches a Link's shell for a search change, whose navigation bypasses the visited response", async () => {
-    const observer = stubIntersectionObserver();
-    const result = await renderIsolatedLink({
-      href: "/products/1?tab=b",
-      nodeEnv: "production",
-      windowOverrides: {
-        location: {
-          href: "https://example.com/products/1?tab=a",
-          origin: "https://example.com",
-          pathname: "/products/1",
-          search: "?tab=a",
-        },
-      },
-    });
-
-    try {
-      const hasNavigableVisitedResponse = vi.fn(() => true);
-      const runtime = Reflect.get(
-        window,
-        Symbol.for("vinext.navigationRuntime"),
-      ) as NavigationRuntime;
-      runtime.functions.hasNavigableVisitedResponse = hasNavigableVisitedResponse;
-
-      observer.dispatchIntersectingEntry(result.anchor);
-      await waitForFetchCalls(result.fetch, 1);
-      expect(hasNavigableVisitedResponse).not.toHaveBeenCalled();
     } finally {
       result.restoreNodeEnv();
     }
@@ -3001,6 +2982,7 @@ describe("Link prefetch scheduling", () => {
       const navigatedAt = now - navigation.PREFETCH_CACHE_TTL + 1;
       const readVisitedResponseForFullPrefetch = vi.fn(() => ({
         navigatedAt,
+        navigationFreshUntil: null,
         response: visitedResponse,
       }));
       const runtime = Reflect.get(
