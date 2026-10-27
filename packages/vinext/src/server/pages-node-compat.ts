@@ -151,6 +151,18 @@ async function readPagesRequestBodyWithLimit(
   );
 }
 
+async function drainRequestBody(request: Request): Promise<void> {
+  if (!request.body) return;
+  const reader = request.body.getReader();
+  try {
+    for (;;) {
+      if ((await reader.read()).done) return;
+    }
+  } catch {
+    // The client went away; there is nothing left to drain.
+  }
+}
+
 /**
  * Read and parse a Pages Router API request body for the Workers/prod path.
  *
@@ -165,11 +177,20 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
-  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
-  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
-  const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
-  if (contentLength > maxBytes) {
-    throw new PagesBodyParseError("Request body too large", 413);
+  let mediaType: string;
+  let decoder: TextDecoder;
+  try {
+    // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+    ({ mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type")));
+    const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
+    if (contentLength > maxBytes) {
+      throw new PagesBodyParseError("Request body too large", 413);
+    }
+  } catch (err) {
+    // Drain the unread body before rejecting, as Node does: answering while
+    // the upload is still pending crashes `wrangler dev` under concurrent load.
+    await drainRequestBody(request);
+    throw err;
   }
 
   let rawBody = "";
