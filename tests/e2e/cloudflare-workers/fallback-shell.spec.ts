@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { randomUUID } from "node:crypto";
+import { waitForAppRouterHydration } from "../helpers";
 
 // Runs against app-router-playground deployed with --warm-cache and no
 // prerender, so every fallback shell is produced at runtime.
@@ -70,6 +71,8 @@ test.describe("fallback shells on a warmed deploy", () => {
     const id = randomUUID();
     const response = await page.goto(`${baseURL}${route}/${id}`);
     expect(response?.headers()["x-nextjs-postponed"]).toBe("1");
+    // The param is in the server's HTML, so wait for hydration to report errors.
+    await waitForAppRouterHydration(page);
     await expect(page.locator("#param")).toHaveText(id);
     expect(errors).toEqual([]);
   });
