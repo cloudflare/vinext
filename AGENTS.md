@@ -106,15 +106,15 @@ The `.nextjs-ref` directory is gitignored. Use it for searching source, tests, a
 
 ```bash
 # Search test suite for how Next.js handles a behavior
-rg -rn "javascript:" .nextjs-ref/test/ --include "*.test.*" -l
-rg -rn "router\.push" .nextjs-ref/test/e2e/ -l | head -20
+rg -l "javascript:" .nextjs-ref/test/ -g "*.test.*"
+rg -l "router\.push" .nextjs-ref/test/e2e/ | head -20
 
 # Search source for implementation details
-rg -rn "x-middleware-override-headers" .nextjs-ref/packages/next/src/
-rg -rn "isExternalUrl" .nextjs-ref/packages/next/src/
+rg -n "x-middleware-override-headers" .nextjs-ref/packages/next/src/
+rg -n "isExternalUrl" .nextjs-ref/packages/next/src/
 
 # Search for how config headers/redirects are ordered relative to middleware
-rg -rn "headers.*redirect.*middleware" .nextjs-ref/packages/next/src/server/
+rg -n "headers.*redirect.*middleware" .nextjs-ref/packages/next/src/server/
 ```
 
 **Use `gh search code` when the local clone is not available:**
