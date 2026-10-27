@@ -77,6 +77,12 @@ export type AppPageHeadParallelRoute<TModule extends AppPageHeadModule = AppPage
   layoutParams?: readonly AppPageParams[] | null;
   layoutModule?: TModule | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
+  /**
+   * Whether each layout is in its page's own loader-tree segment, from the
+   * filesystem: route groups are segments, and an intercept's
+   * `layoutTreePositions` don't count its page's. Unmarked layouts are above it.
+   */
+  layoutsBesidePage?: readonly boolean[] | null;
   layoutTreePositions?: readonly number[] | null;
   moduleRoutePrefixSegments?: readonly string[] | null;
   moduleRouteSegments?: readonly string[] | null;
@@ -118,6 +124,11 @@ type AppPageHeadSlot<TModule extends AppPageHeadModule = AppPageHeadModule> = {
   /** Directory depth of the folder holding the `@slot` directory. */
   ownerTreePosition?: number | null;
   page?: TModule | null;
+  /**
+   * The active page's tree position below the slot root, route groups
+   * included, in the coordinates of `configLayoutTreePositions`.
+   */
+  pageTreePosition?: number | null;
   routeSegments?: readonly string[] | null;
 };
 
@@ -259,6 +270,8 @@ type AppPageHeadSegment<TModule extends AppPageHeadModule> = {
   moduleRoute: string;
   /** Pages get `searchParams`; layouts don't. */
   page: boolean;
+  /** A layout in the same loader-tree segment as its branch's page. */
+  besidePage?: boolean;
   params: AppPageParams;
 };
 
@@ -282,7 +295,12 @@ type AppPageHeadHiddenBranch<TModule extends AppPageHeadModule> = AppPageHeadBra
 /** How metadata or viewport resolves a segment and merges its value. */
 type AppPageHeadKind<TResolved, TValue> = {
   initial: TResolved;
-  merge: (resolved: TResolved, value: TValue) => TResolved;
+  /**
+   * `stashed` is everything resolved up to the last item that may set the
+   * title template for this one: `resolved` itself, except for the page that
+   * comes last (see {@link walkAppPageHead}).
+   */
+  merge: (resolved: TResolved, value: TValue, stashed: TResolved) => TResolved;
   resolve: (
     segment: AppPageHeadSegment<AppPageHeadModule>,
     parent: Promise<TResolved>,
@@ -325,6 +343,14 @@ type AppPageHeadWalk<TResolved, TValue> = {
   /** Each value of each slot's segments. */
   slots: Promise<TValue | null>[][];
 };
+
+/** Whether each intercepting layout is in its intercepting page's own directory. */
+export function resolveInterceptLayoutsBesidePage(
+  layoutSegments: readonly (readonly string[])[] | null | undefined,
+  branchSegments: readonly string[] | null | undefined,
+): boolean[] {
+  return (layoutSegments ?? []).map((segments) => segments.length === branchSegments?.length);
+}
 
 export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHeadModule>(
   options: ResolveActiveParallelRouteHeadInputsOptions<TModule>,
@@ -399,6 +425,13 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
               };
             }),
           ],
+          layoutsBesidePage: [
+            ...(slot.layout ? [false] : []),
+            ...resolveInterceptLayoutsBesidePage(
+              options.interceptLayoutSegments,
+              options.interceptBranchSegments,
+            ),
+          ],
           layoutTreePositions: [
             ...(slot.layout ? [0] : []),
             ...interceptLayouts.filter(isPresent).map(() => options.routeSegments.length),
@@ -421,6 +454,11 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
 
     const slotRouteSegments = slot.routeSegments ?? options.routeSegments;
     const moduleRouteSegments = slot.routeSegments ?? [];
+    const layoutTreePositions = [
+      ...(slot.layout ? [0] : []),
+      ...(slot.configLayoutTreePositions ?? []),
+    ];
+    const pageTreePosition = slot.pageTreePosition;
     return {
       head: {
         layoutModules: [slot.layout, ...(slot.configLayouts ?? [])].filter(isPresent),
@@ -435,10 +473,14 @@ export function resolveActiveParallelRouteHeadInputs<TModule extends AppPageHead
             ),
           })),
         ],
-        layoutTreePositions: [
-          ...(slot.layout ? [0] : []),
-          ...(slot.configLayoutTreePositions ?? []),
-        ],
+        ...(pageTreePosition == null
+          ? {}
+          : {
+              layoutsBesidePage: layoutTreePositions.map(
+                (treePosition) => treePosition >= pageTreePosition,
+              ),
+            }),
+        layoutTreePositions,
         pageModule: slot.page,
         params: slotParams,
         ...(ownerRouteSegments.length > 0 ? { moduleRoutePrefixSegments: ownerRouteSegments } : {}),
@@ -669,11 +711,21 @@ function createLayoutInputs<TModule extends AppPageHeadModule>(
   return layoutInputs;
 }
 
-/** The walk's accumulated metadata, with its resolved title as the shown string. */
+type MetadataTitle = Metadata["title"];
+
+/** The walk's accumulated metadata, with its resolved titles as the shown strings. */
 function toShownMetadata(accumulated: Metadata): Metadata {
-  const title = accumulated.title;
-  if (title === undefined || typeof title === "string") return accumulated;
-  return { ...accumulated, title: title.absolute || undefined };
+  const shown = (title: MetadataTitle) =>
+    typeof title === "object" && title ? title.absolute || undefined : title;
+  const result = { ...accumulated };
+  if (typeof accumulated.title === "object") result.title = shown(accumulated.title);
+  if (accumulated.openGraph) {
+    result.openGraph = { ...accumulated.openGraph, title: shown(accumulated.openGraph.title) };
+  }
+  if (accumulated.twitter) {
+    result.twitter = { ...accumulated.twitter, title: shown(accumulated.twitter.title) };
+  }
+  return result;
 }
 
 function getParallelRouteModules<TModule extends AppPageHeadModule>(
@@ -698,6 +750,7 @@ function createRouteHeadBranch<TModule extends AppPageHeadModule>(
   pageModule: TModule | null | undefined,
 ): AppPageHeadBranch<TModule> {
   const segments: AppPageHeadSegment<TModule>[] = layoutInputs.map((layoutInput) => ({
+    besidePage: layoutInput.treePosition >= routeSegments.length,
     module: layoutInput.module,
     moduleRoute: createAppMetadataModuleRoute(
       routeSegments.slice(0, layoutInput.treePosition),
@@ -730,6 +783,7 @@ function createParallelRouteHeadBranch<TModule extends AppPageHeadModule>(
   const layoutParams = parallelRoute.layoutParams ?? [];
   const segments = getParallelRouteModules(parallelRoute).map(
     (module, index): AppPageHeadSegment<TModule> => ({
+      besidePage: parallelRoute.layoutsBesidePage?.[index] ?? false,
       module,
       moduleRoute: createAppMetadataModuleRoute(
         [
@@ -793,6 +847,7 @@ function startAppPageHeadItem<TResolved, TValue>(
   segment: AppPageHeadSegment<AppPageHeadModule>,
   parent: Promise<TResolved>,
   deferParentErrors = false,
+  stashed: Promise<TResolved> = parent,
 ): AppPageHeadItem<TResolved, TValue> {
   const observedParent = observeParent(parent);
   const parentRead = new Promise<null>((resolve) => {
@@ -801,7 +856,11 @@ function startAppPageHeadItem<TResolved, TValue>(
   const result = kind.resolve(segment, observedParent);
   void result.catch(() => null);
   const resolved = parent.then((resolvedParent) =>
-    result.then((value) => (value ? kind.merge(resolvedParent, value) : resolvedParent)),
+    stashed.then((resolvedStashed) =>
+      result.then((value) =>
+        value ? kind.merge(resolvedParent, value, resolvedStashed) : resolvedParent,
+      ),
+    ),
   );
   void resolved.catch(() => null);
   // Once its value resolved, a failed merge is the item's own error, unless
@@ -884,8 +943,25 @@ function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
   let slotBranchParent: Promise<TResolved> | null = null;
   // Whether the shown chain has passed an item of the outlet branch.
   let afterOutlet = false;
-  const start = (segment: AppPageHeadSegment<TModule>, parent: Promise<TResolved>) => {
-    const item = startAppPageHeadItem(kind, segment, parent, !slotBranchParent && afterOutlet);
+  // Next.js's last two items, the last branch's page and its segment, never
+  // set the title template (`i < metadataItems.length - 2`), so that page's
+  // title gets the template from before a layout beside it.
+  const lastBranch = slots.at(-1) ?? route;
+  const lastPage = lastBranch.segments.at(-1)?.page ? lastBranch.segments.at(-1) : undefined;
+  const lastPageLayout = lastPage && lastBranch.segments.at(-2);
+  let beforeLastPageLayout: Promise<TResolved> | undefined;
+  const start = (
+    segment: AppPageHeadSegment<TModule>,
+    parent: Promise<TResolved>,
+    stashed?: Promise<TResolved>,
+  ) => {
+    const item = startAppPageHeadItem(
+      kind,
+      segment,
+      parent,
+      !slotBranchParent && afterOutlet,
+      stashed,
+    );
     if (item.deferredError) deferredErrors.push(item.deferredError);
     if (slotBranchParent) {
       const error = slotBranchParent.then(
@@ -900,7 +976,8 @@ function walkAppPageHead<TModule extends AppPageHeadModule, TResolved, TValue>(
     return item;
   };
   const startShown = (segment: AppPageHeadSegment<TModule>) => {
-    const item = start(segment, resolved);
+    if (segment === lastPageLayout && segment.besidePage) beforeLastPageLayout = resolved;
+    const item = start(segment, resolved, segment === lastPage ? beforeLastPageLayout : undefined);
     resolved = item.resolved;
     return item.result;
   };
@@ -1072,9 +1149,17 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
   const metadataWalk = walkAppPageHead<TModule, Metadata, Metadata>(
     {
       initial: {},
-      merge: (resolved, metadata) => {
+      merge: (resolved, metadata, stashed) => {
         try {
-          return mergeParentMetadataEntries([{ metadata: resolved }, { metadata }]);
+          // `stashed` is everything resolved up to the last item that may set
+          // the title templates. Merged after it as a page entry, `resolved`
+          // keeps its values but hands `metadata` the templates of `stashed`,
+          // even for a value it cleared, such as `openGraph: null`.
+          return mergeParentMetadataEntries(
+            resolved === stashed
+              ? [{ metadata: resolved }, { metadata }]
+              : [{ metadata: stashed }, { isPage: true, metadata: resolved }, { metadata }],
+          );
         } catch (error) {
           throw tagAppPageMetadataError(error);
         }
@@ -1132,10 +1217,8 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
     // set the title template (`i < metadataItems.length - 2`). Each slot adds at
     // least two items, its directory and its page or default, so with a slot
     // after it a page's template wraps later titles: the route's page's, and
-    // every slot page's but the last slot's. A template only wraps later items,
-    // and the pages it leaves out are the last shown ones, so the walk applies
-    // that rule to pages as is. Layouts keep vinext's own rule (see Known
-    // limitations).
+    // every slot page's but the last slot's. The last branch's page and a
+    // layout beside it are the last two, which the walk handles.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
     // https://github.com/vercel/next.js/blob/canary/crates/next-core/src/app_structure.rs
     const hasMetadata = [...routeResults, ...slotResults.flat()].some(isPresent);

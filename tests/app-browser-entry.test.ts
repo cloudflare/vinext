@@ -6510,7 +6510,7 @@ describe("app browser entry previousNextUrl helpers", () => {
     const state = createExternalHistoryStatePreservingMetadata(
       { caller: "state" },
       createHistoryStateWithNavigationMetadata(
-        { __vinext_treeSnapshotId: 9 },
+        { __vinext_treeSnapshotId: "doc:9" },
         {
           bfcacheIds: { "page:/feed": "_b_1_" },
           bfcacheVersion: 2,
@@ -6527,7 +6527,7 @@ describe("app browser entry previousNextUrl helpers", () => {
       __vinext_historyIndex: 4,
       __vinext_previousNextUrl: "/feed",
       __vinext_treeSnapshotClaimed: true,
-      __vinext_treeSnapshotId: 9,
+      __vinext_treeSnapshotId: "doc:9",
       caller: "state",
     });
     expect(isExternalHistoryState(state)).toBe(true);
@@ -6549,10 +6549,10 @@ describe("app browser entry previousNextUrl helpers", () => {
   it("clears stale claim metadata when assigning a different tree snapshot id", () => {
     expect(
       createHistoryStateWithTreeSnapshotId(
-        { __vinext_treeSnapshotClaimed: true, __vinext_treeSnapshotId: 9 },
-        10,
+        { __vinext_treeSnapshotClaimed: true, __vinext_treeSnapshotId: "doc:9" },
+        "doc:10",
       ),
-    ).toEqual({ __vinext_treeSnapshotId: 10 });
+    ).toEqual({ __vinext_treeSnapshotId: "doc:10" });
   });
 
   it("stores previousNextUrl alongside existing history state", () => {

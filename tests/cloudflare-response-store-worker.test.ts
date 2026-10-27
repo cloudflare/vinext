@@ -404,7 +404,7 @@ describe("Cloudflare Response Store Worker", () => {
         fetch,
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
-        put: vi.fn(),
+        put: vi.fn(async () => ({ backingStoreUpdated: true, edgePurgeAccepted: true })),
         invalidate: vi.fn(),
         refresh: vi.fn(),
       };
@@ -458,7 +458,7 @@ describe("Cloudflare Response Store Worker", () => {
 });
 
 describe("Cloudflare Response Store Worker query-free cache identity", () => {
-  type PutOptions = { revalidator?: { id: string; args: unknown[] } };
+  type PutOptions = { purgeExisting?: boolean; revalidator?: { id: string; args: unknown[] } };
   type StoredEntry = { body: string; headers: Headers; options?: PutOptions; status: number };
 
   beforeEach(() => {
@@ -542,7 +542,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
   }
 
   function revalidatorInvocation(entry: StoredEntry | undefined) {
-    return JSON.parse(String(entry?.options?.revalidator?.args[0])) as {
+    return JSON.parse(String(entry?.options?.revalidator?.args.at(-1))) as {
       props: { resolvedUrl: string; isRscRequest: boolean };
       request: { url: string };
     };
@@ -786,16 +786,28 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     );
     await warmup.text();
 
+    // The seed is stored first, so a failed write leaves the document missing too.
     const invocations = [...entries.values()].map(revalidatorInvocation);
     expect(invocations).toEqual([
-      expect.objectContaining({
-        props: expect.objectContaining({ isRscRequest: false, resolvedUrl: "/page" }),
-        request: expect.objectContaining({ url: "https://example.com/page" }),
-      }),
       expect.objectContaining({
         props: expect.objectContaining({ isRscRequest: true, resolvedUrl: "/page" }),
         request: expect.objectContaining({ url: "https://example.com/page?_rsc" }),
       }),
+      expect.objectContaining({
+        props: expect.objectContaining({ isRscRequest: false, resolvedUrl: "/page" }),
+        request: expect.objectContaining({ url: "https://example.com/page" }),
+      }),
+    ]);
+    // Both parts regenerate together.
+    expect([...entries.values()].map((entry) => entry.options?.revalidator?.args[0])).toEqual([
+      "vinext:page-parts",
+      "vinext:page-parts",
+    ]);
+    // Neither write purges an edge copy. Regenerations write the other part
+    // the same way.
+    expect([...entries.values()].map((entry) => entry.options?.purgeExisting)).toEqual([
+      undefined,
+      undefined,
     ]);
 
     // A later canonical RSC navigation with any query reaches the seeded entry.
@@ -867,8 +879,8 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         status: entry.status,
       }));
       expect(stored).toEqual([
-        { body: "html", location, marker: null, status: documentStatus },
         { body: "rsc", location, marker, status: rscStatus },
+        { body: "html", location, marker: null, status: documentStatus },
       ]);
     },
   );

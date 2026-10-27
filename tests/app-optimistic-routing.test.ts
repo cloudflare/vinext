@@ -10,6 +10,7 @@ import {
   canCommitOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
   keepOptimisticStreamingMetadata,
@@ -1059,6 +1060,84 @@ describe("App Router optimistic routing", () => {
         templates: new Map(),
       }),
     ).toBeNull();
+  });
+});
+
+describe("optimistic route template store", () => {
+  function storedTemplate(routeId: string): OptimisticRouteTemplate {
+    return {
+      elements: {},
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: [],
+      routeId,
+    };
+  }
+
+  function deferredLearning() {
+    let resolve!: (template: OptimisticRouteTemplate) => void;
+    const learned = new Promise<OptimisticRouteTemplate>((done) => {
+      resolve = done;
+    });
+    return {
+      learnTemplate: async () => {
+        const template = await learned;
+        return { key: template.routeId, template };
+      },
+      resolve,
+    };
+  }
+
+  it("keeps a learned template and its source until cleared", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const template = storedTemplate("route:/posts/[id]");
+
+    await store.learn("source:/posts/1", async () => ({ key: template.routeId, template }));
+
+    expect(store.templates.get(template.routeId)).toBe(template);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
+
+    store.clear();
+
+    expect(store.templates.size).toBe(0);
+    expect(store.hasSource("source:/posts/1")).toBe(false);
+  });
+
+  it("does not let a learning started before a clear repopulate the store", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const learning = deferredLearning();
+
+    const pending = store.learn("source:/posts/1", learning.learnTemplate);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
+
+    store.clear();
+    expect(store.pendingLearning()).toEqual([]);
+    learning.resolve(storedTemplate("route:/posts/[id]"));
+    await pending;
+
+    expect(store.templates.size).toBe(0);
+    expect(store.hasSource("source:/posts/1")).toBe(false);
+  });
+
+  it("keeps a source learned again after a clear while the earlier learning settles", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const earlier = deferredLearning();
+    const later = deferredLearning();
+    const template = storedTemplate("route:/posts/[id]");
+
+    const earlierPending = store.learn("source:/posts/1", earlier.learnTemplate);
+    store.clear();
+    const laterPending = store.learn("source:/posts/1", later.learnTemplate);
+
+    earlier.resolve(storedTemplate("route:/posts/[id]"));
+    await earlierPending;
+    expect(store.pendingLearning()).toEqual([laterPending]);
+
+    later.resolve(template);
+    await laterPending;
+    expect(store.templates.get(template.routeId)).toBe(template);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
   });
 });
 

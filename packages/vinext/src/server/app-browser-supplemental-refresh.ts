@@ -1,4 +1,5 @@
 import {
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_INTERCEPTION_CONTEXT_KEY,
   APP_INTERCEPTION_KEY,
   APP_SLOT_BINDINGS_KEY,
@@ -8,6 +9,7 @@ import {
   type AppElementsSlotBinding,
 } from "./app-elements.js";
 import type { AppRouterState } from "./app-browser-state.js";
+import { isNestedBfcacheSlotSegmentIdFor } from "./bfcache-identity.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { addBasePathToPathname, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
 import { normalizePath } from "./normalize-path.js";
@@ -134,6 +136,12 @@ export function mergeRefreshedParallelSlot(
       for (const binding of retainedBindings) {
         merged[binding.slotId] = currentElements[binding.slotId];
       }
+      copySlotIdentities(
+        merged,
+        refreshedElements,
+        currentElements,
+        retainedBindings.map((binding) => binding.slotId),
+      );
       if (promotedBindings.length === 1) {
         merged[promotedBindings[0].slotId] = refreshedElements[refreshedChildrenBindings[0].slotId];
       }
@@ -155,6 +163,12 @@ export function mergeRefreshedParallelSlot(
     for (const binding of refreshedBindings) {
       merged[binding.slotId] = refreshedElements[binding.slotId];
     }
+    copySlotIdentities(
+      merged,
+      currentElements,
+      refreshedElements,
+      refreshedBindings.map((binding) => binding.slotId),
+    );
     copyRefreshedBranchElements(merged, refreshedElements);
     return merged;
   }
@@ -178,8 +192,44 @@ export function mergeRefreshedParallelSlot(
       layoutIds: currentMetadata.layoutIds,
     }),
   };
+  copySlotIdentities(merged, currentElements, refreshedElements, [interception.slotId]);
   copyRefreshedBranchElements(merged, refreshedElements);
   return merged;
+}
+
+// A slot's content and its BFCache segment entries are one unit. Keeping the
+// base payload's entries (a default slot's, say) beside the slot's content
+// would re-mint its ids and remount the client state a refresh keeps. The
+// listed slots take their entries from slotElements, every other segment keeps
+// baseElements' entries.
+function copySlotIdentities(
+  target: Record<string, AppElements[keyof AppElements]>,
+  baseElements: AppElements,
+  slotElements: AppElements,
+  slotIds: readonly string[],
+): void {
+  const isSlotSegment = (id: string) =>
+    slotIds.some((slotId) => id === slotId || isNestedBfcacheSlotSegmentIdFor(id, slotId));
+  const isNestedSegment = (id: string) => !slotIds.includes(id) && isSlotSegment(id);
+  for (const id of Object.keys(baseElements)) {
+    if (isNestedSegment(id)) delete target[id];
+  }
+  for (const [id, element] of Object.entries(slotElements)) {
+    if (isNestedSegment(id)) target[id] = element;
+  }
+  const identities: Record<string, string> = {};
+  for (const [id, identity] of Object.entries(
+    AppElementsWire.readMetadata(baseElements).bfcacheSegmentIdentities,
+  )) {
+    if (!isSlotSegment(id)) identities[id] = identity;
+  }
+  for (const [id, identity] of Object.entries(
+    AppElementsWire.readMetadata(slotElements).bfcacheSegmentIdentities,
+  )) {
+    if (isSlotSegment(id)) identities[id] = identity;
+  }
+  if (Object.keys(identities).length > 0) target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = identities;
+  else delete target[APP_BFCACHE_SEGMENT_IDENTITIES_KEY];
 }
 
 function copyRefreshedBranchElements(

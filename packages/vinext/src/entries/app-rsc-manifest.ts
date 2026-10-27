@@ -6,6 +6,7 @@ import {
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
+import { findSlotPageTreePosition } from "../routing/app-route-graph.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -405,6 +406,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
         __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
         configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
+        pageTreePosition: ${findSlotPageTreePosition(slot) ?? "null"},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
         loadings: ${moduleArray(slot.loadingPaths?.length ?? 0)},

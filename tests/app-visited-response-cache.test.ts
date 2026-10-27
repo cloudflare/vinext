@@ -4,11 +4,12 @@ import {
   VISITED_RESPONSE_CACHE_TTL,
   createVisitedResponseCacheEntry,
   deleteAllVisitedResponseCacheEntries,
-  deleteInvalidatedHistoryRestoreEntries,
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
+  findVisitedResponseForFullPrefetch,
   hasNavigationResponseHistoryLifetime,
   isVisitedResponseCacheEntryFresh,
+  revokeHistoryRestoreNavigationReuse,
 } from "../packages/vinext/src/server/app-visited-response-cache.js";
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import type { CachedRscResponse } from "../packages/vinext/src/shims/navigation.js";
@@ -104,9 +105,88 @@ describe("visited response cache freshness", () => {
       ["/intercepted.rsc\0/", createEntry(createCachedResponse({ url: "/intercepted.rsc" }), true)],
     ]);
 
-    deleteInvalidatedHistoryRestoreEntries(cache);
+    revokeHistoryRestoreNavigationReuse(cache);
 
-    expect([...cache.keys()]).toEqual(["/static.rsc", "/dynamic.rsc", "/intercepted.rsc\0/"]);
+    expect(
+      [...cache].filter(([, entry]) => !entry.navigationReuseRevoked).map(([key]) => key),
+    ).toEqual(["/static.rsc", "/dynamic.rsc", "/intercepted.rsc\0/"]);
+    // A revoked entry remains the BFCache a full prefetch reads.
+    expect(
+      findVisitedResponseForFullPrefetch(cache, ["/expired.rsc?_rsc=prefetch"], null, null)
+        ?.response,
+    ).toBe(cache.get("/expired.rsc")?.response);
+  });
+
+  it("finds a full prefetch's visited response by any of its URLs, slot context, and interception", () => {
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      mountedSlotsHeader: "slot:modal",
+      params: {},
+      response: createCachedResponse({ mountedSlotsHeader: "slot:modal" }),
+    });
+    const cache = new Map([["/dynamic.rsc?_rsc=navigation", entry]]);
+
+    expect(
+      findVisitedResponseForFullPrefetch(
+        cache,
+        ["/other.rsc?_rsc=a", "/dynamic.rsc?_rsc=b"],
+        null,
+        "slot:modal",
+      ),
+    ).toEqual({ navigatedAt: 1_000_000, response: entry.response });
+    expect(findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc?_rsc=b"], null, null)).toBe(
+      null,
+    );
+    expect(
+      findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc?_rsc=b"], "/feed", "slot:modal"),
+    ).toBe(null);
+  });
+
+  it("dates a full prefetch's visited response from when its payload arrived", () => {
+    // A navigation that committed a payload prefetched at 1_000_000 does not
+    // make that data fresh again for a later full prefetch.
+    const response = createCachedResponse({ receivedAt: 1_000_000 });
+    const entry = createVisitedResponseCacheEntry({
+      now: 1_030_000,
+      params: {},
+      response,
+    });
+    const cache = new Map([["/dynamic.rsc?_rsc=navigation", entry]]);
+
+    expect(findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc"], null, null)).toEqual({
+      navigatedAt: 1_000_000,
+      response,
+    });
+  });
+
+  it("replays a full prefetch's committed elements and matches the response-declared slots", () => {
+    const elements = { "page:/dynamic": "committed" } as unknown as AppElements;
+    const committed = createVisitedResponseCacheEntry({
+      elements,
+      now: 1_000_000,
+      mountedSlotsHeader: "slot:old",
+      params: {},
+      response: createCachedResponse({ url: "/committed.rsc" }),
+    });
+    const declared = createVisitedResponseCacheEntry({
+      now: 1_000_000,
+      mountedSlotsHeader: "slot:request",
+      params: {},
+      response: createCachedResponse({ mountedSlotsHeader: "slot:modal", url: "/declared.rsc" }),
+    });
+    const cache = new Map([
+      ["/committed.rsc", committed],
+      ["/declared.rsc", declared],
+    ]);
+
+    // A possibly skip-pruned response replays its committed tree instead.
+    expect(
+      findVisitedResponseForFullPrefetch(cache, ["/committed.rsc"], null, "slot:modal")?.response,
+    ).toEqual({ ...committed.response, preparedElements: elements });
+    expect(
+      findVisitedResponseForFullPrefetch(cache, ["/declared.rsc"], null, "slot:modal")?.response,
+    ).toBe(declared.response);
+    expect(findVisitedResponseForFullPrefetch(cache, ["/declared.rsc"], null, null)).toBe(null);
   });
 
   it("uses per-response dynamic stale time for regular navigations", () => {
