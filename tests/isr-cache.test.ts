@@ -633,6 +633,17 @@ describe("coalesceOnDemandResponse", () => {
     expect(response?.body).toBeNull();
     expect(response?.headers.get("x-test")).toBe("1");
   });
+
+  it.each([204, 205, 304])("copies a bodyless %s response", async (status) => {
+    const response = await coalesceOnDemandResponse(
+      `coalesce-bodyless-${status}`,
+      "GET",
+      async () => new Response(null, { status }),
+    );
+
+    expect(response?.status).toBe(status);
+    expect(response?.body).toBeNull();
+  });
 });
 
 describe("triggerBackgroundRegeneration", () => {
