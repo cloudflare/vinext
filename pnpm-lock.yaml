@@ -148,6 +148,9 @@ catalogs:
     fumadocs-ui:
       specifier: 16.7.9
       version: 16.7.9
+    iconv-lite:
+      specifier: 0.4.24
+      version: 0.4.24
     ignore:
       specifier: 5.3.2
       version: 5.3.2
@@ -1323,6 +1326,9 @@ importers:
       am-i-vibing:
         specifier: 'catalog:'
         version: 0.5.0
+      iconv-lite:
+        specifier: 'catalog:'
+        version: 0.4.24
       ignore:
         specifier: 'catalog:'
         version: 5.3.2
@@ -9040,6 +9046,10 @@ packages:
     peerDependenciesMeta:
       typescript:
         optional: true
+
+  iconv-lite@0.4.24:
+    resolution: {integrity: sha512-v3MXnZAcvnywkTUEZomIActle7RXXeedOR31wwl7VlyoXO4Qi9arvSenNQWne1TcRwhCL1HwLI21bEqdpj8/rA==}
+    engines: {node: '>=0.10.0'}
 
   iconv-lite@0.7.2:
     resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==}
@@ -17705,6 +17715,10 @@ snapshots:
       '@babel/runtime': 7.29.2
     optionalDependencies:
       typescript: 7.0.2
+
+  iconv-lite@0.4.24:
+    dependencies:
+      safer-buffer: 2.1.2
 
   iconv-lite@0.7.2:
     dependencies:
