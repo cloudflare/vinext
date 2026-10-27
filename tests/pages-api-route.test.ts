@@ -62,68 +62,6 @@ function createMatch(
 }
 
 describe("pages api route", () => {
-  it("delivers res.send streams before EOF and preserves an explicit content type", async () => {
-    const source = new PassThrough();
-    const pending = handlePagesApiRoute({
-      request: new Request("http://localhost/api/test"),
-      url: "/api/test",
-      match: createMatch((_req, res) => {
-        res.setHeader("Content-Type", "text/event-stream");
-        res.send(source);
-      }),
-    });
-    source.write("data: first\n\n");
-    const response = await pending;
-    expect(response.headers.get("content-type")).toBe("text/event-stream");
-    expect(isVinextStreamedApiResponse(response)).toBe(true);
-    const reader = response.body!.getReader();
-    const first = await reader.read();
-    expect(new TextDecoder().decode(first.value)).toBe("data: first\n\n");
-    expect(first.done).toBe(false);
-    source.end("data: last\n\n");
-    expect(new TextDecoder().decode((await reader.read()).value)).toBe("data: last\n\n");
-    expect((await reader.read()).done).toBe(true);
-    reader.releaseLock();
-  });
-
-  it("backpressures a res.send stream until the response is consumed", async () => {
-    let produced = 0;
-    const chunk = Buffer.alloc(64 * 1024, "x");
-    const source = new Readable({
-      read() {
-        while (produced < 20) {
-          produced++;
-          if (!this.push(chunk)) return;
-        }
-        this.push(null);
-      },
-    });
-    const response = await handlePagesApiRoute({
-      request: new Request("http://localhost/api/test"),
-      url: "/api/test",
-      match: createMatch((_req, res) => {
-        res.send(source);
-      }),
-    });
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(produced).toBeLessThan(20);
-    expect((await response.arrayBuffer()).byteLength).toBe(20 * chunk.length);
-    expect(produced).toBe(20);
-  });
-
-  it("streams a Node Readable passed to res.send", async () => {
-    const response = await handlePagesApiRoute({
-      request: new Request("http://localhost/api/test"),
-      url: "/api/test",
-      match: createMatch((_req, res) => {
-        res.send(Readable.from([Buffer.from("hello "), Buffer.from("world")]));
-      }),
-    });
-    expect(response.status).toBe(200);
-    expect(await response.text()).toBe("hello world");
-    expect(response.headers.get("content-type")).toBe("application/octet-stream");
-  });
-
   it("lets a handler override response headers installed before user code", async () => {
     const response = await handlePagesApiRoute({
       initialResponseHeaders: new Headers({

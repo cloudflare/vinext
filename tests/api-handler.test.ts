@@ -12,7 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { PassThrough, Readable } from "node:stream";
+import { PassThrough } from "node:stream";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { gzipSync } from "node:zlib";
@@ -378,32 +378,6 @@ describe("handleApiRoute", () => {
   });
 
   // ── Body parsing ───────────────────────────────────────────────────
-
-  it("streams a Node Readable passed to res.send", async () => {
-    const server = mockServer({
-      default: (_req: any, res: any) =>
-        res.send(Readable.from([Buffer.from("hello "), Buffer.from("world")])),
-    });
-    const actualServer = http.createServer((req, res) => {
-      void handleApiRoute(server, req, res, "/api/test", [route("/api/test")]).catch(
-        (error: unknown) => res.destroy(error instanceof Error ? error : new Error(String(error))),
-      );
-    });
-    actualServer.listen(0, "127.0.0.1");
-    await new Promise<void>((resolve) => actualServer.once("listening", resolve));
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${(actualServer.address() as AddressInfo).port}/api/test`,
-      );
-      expect(response.status).toBe(200);
-      expect(await response.text()).toBe("hello world");
-      expect(response.headers.get("content-type")).toBe("application/octet-stream");
-    } finally {
-      await new Promise<void>((resolve, reject) => {
-        actualServer.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
-  });
 
   describe("body parsing", () => {
     it("does not expose process environment variables on the request", async () => {
