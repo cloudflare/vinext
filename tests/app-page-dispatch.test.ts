@@ -60,6 +60,7 @@ import {
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  cookies,
   draftMode,
   getHeadersContext,
   headers,
@@ -1602,53 +1603,118 @@ describe("app page dispatch", () => {
       expect([...created.stored.keys()]).toEqual([expect.stringContaining("/source")]);
     });
 
-    // Next.js renders a runtime prefetch (`unstable_instant`'s
-    // `prefetch: "runtime"`) for the request, instead of the static shell.
-    it("answers a runtime prefetch with the page's payload", async () => {
-      const { options, isrSetFallbackShell } = createStaticShellOptions({
-        route: createRoute({
+    // Next.js prerenders a runtime prefetch (`unstable_instant`'s
+    // `prefetch: "runtime"`) for the request, instead of serving the static
+    // shell: the request's cookies render, and `connection()` leaves a hole.
+    describe("runtime prefetch", () => {
+      const runtimeRoute = () =>
+        createRoute({
           layouts: [{ default: () => null, unstable_instant: { prefetch: "runtime" } }],
           pattern: "/posts",
           routeSegments: ["posts"],
-        }),
-      });
-      const withRequest = vi.fn(options.withRequest!);
+        });
 
-      const response = await runWithRequestContext(createRequestContext(), () =>
-        dispatchAppPage({ ...options, withRequest }),
-      );
-      expect(response.headers.get("x-vinext-static-shell")).toBe("runtime");
-      expect(isrSetFallbackShell).not.toHaveBeenCalled();
-      // Rebuilt, so what closes over the render mode renders the payload.
-      expect(withRequest).toHaveBeenCalledWith({ renderMode: APP_RSC_RENDER_MODE_NAVIGATION });
-    });
-
-    it.each(["page", "layout", "config layout"])(
-      "answers a runtime prefetch for a parallel slot's %s config with the page's payload",
-      async (moduleKind) => {
-        const runtimeModule = { default: () => null, unstable_instant: { prefetch: "runtime" } };
-        const page = { default: () => null };
-        const panelSlot =
-          moduleKind === "page"
-            ? { page: runtimeModule }
-            : moduleKind === "layout"
-              ? { layout: runtimeModule, page }
-              : { configLayouts: [runtimeModule], page };
+      it("renders the request's cookies and leaves io() a hole", async () => {
+        const seenCookies: (string | undefined)[] = [];
+        const request = new Request("https://example.test/posts", {
+          headers: { cookie: "theme=dark" },
+        });
         const { options, isrSetFallbackShell } = createStaticShellOptions({
-          route: createRoute({
-            pattern: "/posts",
-            routeSegments: ["posts"],
-            slots: { panel: panelSlot },
-          }),
+          async buildPageElement() {
+            seenCookies.push((await cookies()).get("theme")?.value);
+            void io();
+            return React.createElement("main", null, "page");
+          },
+          request,
+          route: runtimeRoute(),
+        });
+        const requestContext = createRequestContext({
+          headersContext: headersContextFromRequest(request),
+        });
+
+        const response = await runWithRequestContext(requestContext, () =>
+          dispatchAppPage(options),
+        );
+        expect(seenCookies).toEqual(["dark"]);
+        expect(response.headers.get("x-vinext-static-shell")).toBe("partial");
+        expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+        // It holds the request's data, so it's never stored.
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      });
+      it("renders the request's search params and a fallback shell's params", async () => {
+        const seen: { params: unknown; query: string }[] = [];
+        const { options, isrSetFallbackShell } = createStaticShellOptions({
+          async buildPageElement(_route, params, _opts, searchParams) {
+            seen.push({ params, query: searchParams.toString() });
+            return React.createElement("main", null, "page");
+          },
+          params: { lang: "en" },
+          pprFallbackShell: { fallbackParamNames: ["lang"], routePattern: "/posts" },
+          route: runtimeRoute(),
+          searchParams: new URLSearchParams("q=1"),
         });
 
         const response = await runWithRequestContext(createRequestContext(), () =>
           dispatchAppPage(options),
         );
+        expect(seen).toEqual([{ params: { lang: "en" }, query: "q=1" }]);
+        expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      });
+
+      it.each(["page", "layout", "config layout"] as const)(
+        "prefetches at runtime for a parallel slot's %s config",
+        async (moduleKind) => {
+          const seenQueries: string[] = [];
+          const panelModule = { default: () => null, unstable_instant: { prefetch: "runtime" } };
+          const page = { default: () => null };
+          const panelSlot =
+            moduleKind === "page"
+              ? { page: panelModule }
+              : moduleKind === "layout"
+                ? { layout: panelModule, page }
+                : { configLayouts: [panelModule], page };
+          const { options } = createStaticShellOptions({
+            async buildPageElement(_route, _params, _opts, searchParams) {
+              seenQueries.push(searchParams.toString());
+              return React.createElement("main", null, "page");
+            },
+            route: createRoute({
+              pattern: "/posts",
+              routeSegments: ["posts"],
+              slots: {
+                panel: panelSlot,
+              },
+            }),
+            searchParams: new URLSearchParams("q=1"),
+          });
+
+          const response = await runWithRequestContext(createRequestContext(), () =>
+            dispatchAppPage(options),
+          );
+          expect(seenQueries).toEqual(["q=1"]);
+          expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+        },
+      );
+
+      it("answers a draft mode prefetch with the page's payload", async () => {
+        const { options, isrSetFallbackShell } = createStaticShellOptions({
+          request: new Request("https://example.test/posts", {
+            headers: { cookie: "__prerender_bypass=draft-secret" },
+          }),
+          route: runtimeRoute(),
+        });
+        const withRequest = vi.fn(options.withRequest!);
+
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage({ ...options, withRequest }),
+        );
         expect(response.headers.get("x-vinext-static-shell")).toBe("runtime");
         expect(isrSetFallbackShell).not.toHaveBeenCalled();
-      },
-    );
+        // Rebuilt, so what closes over the render mode renders the payload.
+        expect(withRequest).toHaveBeenCalledWith({ renderMode: APP_RSC_RENDER_MODE_NAVIGATION });
+      });
+    });
 
     it.each([
       ["a search string", { searchParams: new URLSearchParams("q=1") }],

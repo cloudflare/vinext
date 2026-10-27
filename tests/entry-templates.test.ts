@@ -20,6 +20,8 @@ import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-
 import {
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
+  readAppInterceptInstantConfig,
+  readAppPageRouteInstantConfig,
 } from "../packages/vinext/src/build/app-page-static-eligibility.js";
 import {
   generateAppRequestRscEntry,
@@ -620,6 +622,55 @@ describe("App Router generated manifest construction", () => {
     } finally {
       fs.rmSync(appDir, { force: true, recursive: true });
     }
+  });
+
+  it("records each route's unstable_instant config, parallel slots' and intercepts' included", async () => {
+    const graph = await buildAppRouteGraph(
+      path.resolve(import.meta.dirname, "fixtures/app-instant-config/app"),
+      createValidFileMatcher(),
+    );
+    const prefetchRoutes = toLinkPrefetchRoutes(graph.routes, undefined, {
+      route: (route) => readAppPageRouteInstantConfig(route, null),
+      intercept: (intercept, layoutPaths) =>
+        readAppInterceptInstantConfig(intercept, layoutPaths, null),
+    });
+    const instantByPattern = Object.fromEntries(
+      prefetchRoutes.map((route) => [route.patternParts.join("/"), route.instant]),
+    );
+    expect(instantByPattern).toEqual({
+      "": undefined,
+      feed: undefined,
+      "opted-out": undefined,
+      "photos/:id": undefined,
+      "runtime/:id": "runtime",
+      slot: "runtime",
+      static: "static",
+    });
+    // The intercepting page's config applies under its interception context.
+    expect(
+      prefetchRoutes.find((route) => route.patternParts.join("/") === "photos/:id")?.intercepts,
+    ).toEqual([
+      { instant: "static", sourcePatternParts: ["feed"], targetPatternParts: ["photos", ":id"] },
+    ]);
+  });
+
+  it("reads an intercepting page's unstable_instant config from its own layouts only", () => {
+    const appDir = path.resolve(import.meta.dirname, "fixtures/app-instant-config/app");
+    const intercept = {
+      convention: "..",
+      targetPattern: "/photos/:id",
+      sourceMatchPattern: "/feed",
+      pagePath: path.join(appDir, "feed/@modal/(..)photos/[id]/page.tsx"),
+      layoutPaths: [],
+      loadingPaths: [],
+      loadingTreePositions: [],
+      params: ["id"],
+    } satisfies AppRoute["siblingIntercepts"][number];
+    // `runtime/layout.tsx` opts into runtime prefetches but isn't above the page.
+    const layoutPaths = ["layout.tsx", "feed/layout.tsx", "runtime/layout.tsx"].map((file) =>
+      path.join(appDir, file),
+    );
+    expect(readAppInterceptInstantConfig(intercept, layoutPaths, null)).toBe("static");
   });
 
   it("classifies each intercepting page as its own route for its target", async () => {

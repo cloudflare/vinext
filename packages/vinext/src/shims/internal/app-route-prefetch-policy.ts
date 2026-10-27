@@ -9,7 +9,10 @@
  * React module while `navigation.ts` must stay importable without React —
  * mirrors the layering of `internal/app-route-detection.ts`.
  */
-import type { VinextLinkPrefetchRoute } from "../../client/vinext-next-data.js";
+import type {
+  VinextLinkPrefetchIntercept,
+  VinextLinkPrefetchRoute,
+} from "../../client/vinext-next-data.js";
 import {
   createRouteTrieCache,
   matchRouteWithTrie,
@@ -110,26 +113,34 @@ function resolveRendersDynamically(
   interceptionContext: string | null,
   pathname: string,
 ): boolean {
-  if (interceptionContext !== null && route.intercepts) {
-    // Raw segments, as the server's intercept gate matches the still-encoded
-    // target and source: `/%70hotos/1` isn't `/photos/:id`, and `/%61dmin`
-    // doesn't claim an `/admin` intercept.
-    const pathParts = splitPathSegments(pathname);
-    const contextParts = splitPathSegments(interceptionContext);
-    const matching = route.intercepts.filter(
-      (intercept) =>
-        matchRoutePatternRaw(pathParts, intercept.targetPatternParts) !== null &&
-        matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
+  const matching = findActiveIntercepts(route, interceptionContext, pathname);
+  if (interceptionContext !== null && matching.length > 0) {
+    return (
+      matching.some((intercept) => intercept.rendersDynamically === true) ||
+      matchRouteWithTrieRawPathname(interceptionContext, routes, linkPrefetchRouteTrieCache)?.route
+        .rendersDynamically === true
     );
-    if (matching.length > 0) {
-      return (
-        matching.some((intercept) => intercept.rendersDynamically === true) ||
-        matchRouteWithTrieRawPathname(interceptionContext, routes, linkPrefetchRouteTrieCache)
-          ?.route.rendersDynamically === true
-      );
-    }
   }
   return route.rendersDynamically === true;
+}
+
+/** The route's intercepting pages that the interception context renders instead. */
+function findActiveIntercepts(
+  route: VinextLinkPrefetchRoute,
+  interceptionContext: string | null,
+  pathname: string,
+): VinextLinkPrefetchIntercept[] {
+  if (interceptionContext === null || !route.intercepts) return [];
+  // Raw segments, as the server's intercept gate matches the still-encoded
+  // target and source: `/%70hotos/1` isn't `/photos/:id`, and `/%61dmin`
+  // doesn't claim an `/admin` intercept.
+  const pathParts = splitPathSegments(pathname);
+  const contextParts = splitPathSegments(interceptionContext);
+  return route.intercepts.filter(
+    (intercept) =>
+      matchRoutePatternRaw(pathParts, intercept.targetPatternParts) !== null &&
+      matchRoutePatternPrefix(contextParts, intercept.sourcePatternParts),
+  );
 }
 
 /**
@@ -205,9 +216,14 @@ export function resolveAutoAppRoutePrefetch(
   // Like Next.js, a Cache Components build prefetches a page's static shell,
   // so the prefetch never renders the page's dynamic holes. An intercepted
   // page has none: it's never prerendered.
+  //
+  // A route that prefetches at runtime renders the prefetch with the request's
+  // search params and root params, so those hrefs get one too
+  // (`PrefetchHint.HasRuntimePrefetch`).
   const staticShell =
-    isReusablePage &&
-    !requiresRouteTreePrefetch &&
+    (isReusablePage ||
+      (route.instant === "runtime" && !hasCacheComponentsLearningOnlyDynamicPath)) &&
+    (!requiresRouteTreePrefetch || route.instant === "runtime") &&
     interceptionContext === null &&
     process.env.NODE_ENV === "production" &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
@@ -236,6 +252,37 @@ export function resolveAutoAppRoutePrefetch(
     shouldPrefetch: true,
     ...(staticShell ? { staticShell: true } : {}),
   };
+}
+
+/**
+ * Whether the page the href renders sets an `unstable_instant` config. Next.js
+ * ignores a full prefetch of such a page (`SubtreeHasInstant` in the segment
+ * cache's `scheduler.ts`): its instant config decides what's prefetched, so
+ * the prefetch is an automatic one. Under an interception context that one of
+ * the route's intercepting pages matches, that page's tree counts instead,
+ * with the route the context resolves to.
+ */
+export function hasAppRouteInstantConfig(
+  href: string,
+  interceptionContext: string | null = null,
+): boolean {
+  if (typeof window === "undefined") return false;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return false;
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) return false;
+  const match = matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache);
+  if (!match) return false;
+  const pathname = new URL(routeHref, "http://vinext.local").pathname;
+  const matching = findActiveIntercepts(match.route, interceptionContext, pathname);
+  if (interceptionContext !== null && matching.length > 0) {
+    return (
+      matching.some((intercept) => intercept.instant !== undefined) ||
+      matchRouteWithTrieRawPathname(interceptionContext, routes, linkPrefetchRouteTrieCache)?.route
+        .instant !== undefined
+    );
+  }
+  return match.route.instant !== undefined;
 }
 
 export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {

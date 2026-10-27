@@ -11,6 +11,7 @@ import {
 } from "../packages/vinext/src/shims/link-prefetch.js";
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
@@ -2544,6 +2545,92 @@ describe("Link prefetch scheduling", () => {
       expect(entry?.optimisticRouteShell).toBe(true);
       expect(entry?.searchAgnosticShell).toBe(true);
     } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches a full Link to a route with an unstable_instant config as an automatic one", async () => {
+    // Next.js ignores a full prefetch of a route that sets `unstable_instant`
+    // (`SubtreeHasInstant` in the segment cache's scheduler).
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: false,
+            instant: "static",
+            isDynamic: false,
+            patternParts: ["instant-target"],
+          },
+        ],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("prefetches a runtime prefetch route's search-param href as its own static shell", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/runtime-target?searchParam=a",
+      nodeEnv: "production",
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: false,
+            instant: "runtime",
+            isDynamic: false,
+            patternParts: ["runtime-target"],
+          },
+        ],
+      },
+    });
+
+    try {
+      result.fetch.mockImplementation(() => {
+        const response = createFlightResponse("runtime prefetch");
+        response.headers.set("X-Vinext-Static-Shell", "runtime");
+        return Promise.resolve(response);
+      });
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+      );
+      const { getPrefetchCache } = await import("../packages/vinext/src/shims/navigation.js");
+      const entry = Array.from(getPrefetchCache().values())[0];
+      await entry?.pending;
+      expect(entry?.prefetchKind).toBe("static-shell");
+      // It renders this query's values, so a navigation to it reuses it and
+      // no other query does.
+      expect(entry?.cacheForNavigation).toBe(true);
+      expect(entry?.searchAgnosticShell).toBe(false);
+    } finally {
+      await flushPrefetchTasks();
       result.restoreNodeEnv();
     }
   });

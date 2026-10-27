@@ -60,6 +60,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  hasAppRouteInstantConfig,
   resolveAutoAppRoutePrefetch,
   resolveFullAppRoutePrefetch,
 } from "./internal/app-route-prefetch-policy.js";
@@ -507,6 +508,11 @@ function prefetchUrl(
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
+        // Like Next.js, a route with an `unstable_instant` config ignores a
+        // full prefetch: it's prefetched as an automatic one.
+        if (mode !== "auto" && hasAppRouteInstantConfig(prefetchPolicyHref, interceptionContext)) {
+          mode = "auto";
+        }
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref, interceptionContext)
@@ -515,8 +521,13 @@ function prefetchUrl(
 
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
+        // A static shell with search params is a runtime prefetch, which
+        // renders them.
         const isAutomaticSearchParamShell =
-          mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
+          mode === "auto" &&
+          isOptimisticRouteShellPrefetch &&
+          hasSearchParams &&
+          autoPrefetch.staticShell !== true;
         // A prefetch never renders the page of a route that renders
         // dynamically, so its search-param href fetches the loading shell.
         const hasSearchAgnosticShell =

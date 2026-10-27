@@ -3298,17 +3298,23 @@ const _appRouter: AppRouterInstance = {
       const rewrittenPrefetchHref = HAS_CLIENT_REWRITES
         ? resolveLoadedHybridClientRewriteHref(fullHref, __basePath)
         : null;
-      const kind = options?.kind === "full" ? "full" : "auto";
       // Dynamic import keeps the policy module and its route-trie
       // dependencies off the startup path of every next/navigation consumer.
       const [
-        { resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
+        { hasAppRouteInstantConfig, resolveAutoAppRoutePrefetch, resolveFullAppRoutePrefetch },
         { resolveAppPrefetchRscRequest },
       ] = await Promise.all([
         import("./internal/app-route-prefetch-policy.js"),
         import("./internal/app-prefetch-rsc-request.js"),
       ]);
       if (setup.cancelled) return;
+      // Like Next.js, a route with an `unstable_instant` config ignores a full
+      // prefetch: it's prefetched as an automatic one.
+      const kind =
+        options?.kind === "full" &&
+        !hasAppRouteInstantConfig(rewrittenPrefetchHref ?? fullHref, interceptionContext)
+          ? "full"
+          : "auto";
       const policy =
         kind === "full"
           ? resolveFullAppRoutePrefetch()

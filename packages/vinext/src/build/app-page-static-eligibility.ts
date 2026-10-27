@@ -12,6 +12,7 @@ import {
 import {
   extractExportConstNumber,
   extractExportConstString,
+  extractInstantPrefetchConfig,
   hasRuntimeExportedName,
 } from "./report.js";
 
@@ -127,6 +128,71 @@ export function isAppPageRouteRenderedDynamically(
   } catch {
     return false;
   }
+}
+
+/**
+ * The route's `unstable_instant` config, read from every segment, parallel
+ * slots included, as Next.js reads it (`anySegmentHasRuntimePrefetchEnabled`):
+ * "runtime" when a segment opts into a runtime prefetch, "static" when a
+ * segment sets any other config, and null when none does. A source that can't
+ * be read counts as unset.
+ */
+export function readAppPageRouteInstantConfig(
+  route: AppRoute,
+  readMdxEsm: ((source: string) => string) | null,
+): "runtime" | "static" | null {
+  return readInstantConfig(
+    [
+      ...route.layouts,
+      route.pagePath,
+      ...route.parallelSlots.flatMap((slot) => [
+        ...(slot.configLayoutPaths ?? []),
+        slot.layoutPath,
+        slot.pagePath ?? slot.defaultPath,
+      ]),
+    ],
+    readMdxEsm,
+  );
+}
+
+/**
+ * An intercepting page's `unstable_instant` config, read from it and the
+ * layouts above it, as for a route. `layoutPaths` are the candidate layouts;
+ * those outside the page's folder chain are ignored, as in
+ * `isAppInterceptRenderedDynamically`.
+ */
+export function readAppInterceptInstantConfig(
+  intercept: AppRouteIntercept,
+  layoutPaths: readonly string[],
+  readMdxEsm: ((source: string) => string) | null,
+): "runtime" | "static" | null {
+  const pageDir = path.dirname(intercept.pagePath);
+  const ancestorLayoutPaths = layoutPaths.filter((layoutPath) => {
+    const relative = path.relative(path.dirname(layoutPath), pageDir);
+    return !relative.startsWith("..") && !path.isAbsolute(relative);
+  });
+  return readInstantConfig([...ancestorLayoutPaths, intercept.pagePath], readMdxEsm);
+}
+
+function readInstantConfig(
+  filePaths: readonly (string | null | undefined)[],
+  readMdxEsm: ((source: string) => string) | null,
+): "runtime" | "static" | null {
+  let config: "runtime" | "static" | null = null;
+  for (const filePath of filePaths) {
+    if (!filePath) continue;
+    let segmentConfig: "runtime" | "static" | null;
+    try {
+      let code = fs.readFileSync(filePath, "utf8");
+      if (filePath.toLowerCase().endsWith(".mdx")) code = readMdxEsm?.(code) ?? "";
+      segmentConfig = extractInstantPrefetchConfig(code);
+    } catch {
+      continue;
+    }
+    if (segmentConfig === "runtime") return "runtime";
+    config ??= segmentConfig;
+  }
+  return config;
 }
 
 type AppRouteIntercept = AppRoute["siblingIntercepts"][number];

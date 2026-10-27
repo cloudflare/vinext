@@ -3430,6 +3430,109 @@ describe("static-shell prefetch", () => {
     expect(resolveAutoAppRoutePrefetch("/test").staticShell).toBeUndefined();
   });
 
+  it("prefetches a runtime prefetch route's search-param and root-param hrefs as static shells", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        instant: "runtime",
+        isDynamic: false,
+        patternParts: ["runtime"],
+      },
+      {
+        canPrefetchLoadingShell: false,
+        hasRootParams: true,
+        instant: "runtime",
+        isDynamic: true,
+        patternParts: [":lang", "runtime-root"],
+      },
+      { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["test"] },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    // Next.js renders a runtime prefetch with the request's search params and
+    // root params, so those hrefs prefetch it too.
+    expect(resolveAutoAppRoutePrefetch("/runtime?q=1")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/en/runtime-root")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/test?q=1").staticShell).toBeUndefined();
+    expect(resolveAutoAppRoutePrefetch("/runtime?q=1", "/feed").staticShell).toBeUndefined();
+  });
+
+  it("prefetches a route with an unstable_instant config automatically, even when asked for a full prefetch", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        instant: "static",
+        isDynamic: false,
+        patternParts: ["test"],
+      },
+    ];
+    // Like Next.js (`SubtreeHasInstant`), the route's instant config decides
+    // what's prefetched, so the full prefetch gets the static shell.
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("0:shell", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
+        navigate: vi.fn(),
+      },
+    };
+    appRouterInstance.prefetch("/test", { kind: "full" } as never);
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const headers = fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+    expect(headers?.get("X-Vinext-Rsc-Render-Mode")).toBe("prefetch-static-shell");
+    expect(headers?.get("Next-Router-Prefetch")).toBe("1");
+  });
+
+  it("reads an intercepting page's unstable_instant config under its interception context", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        intercepts: [
+          {
+            instant: "static",
+            sourcePatternParts: ["feed"],
+            targetPatternParts: ["photos", ":id"],
+          },
+          { sourcePatternParts: ["gallery"], targetPatternParts: ["photos", ":id"] },
+          { sourcePatternParts: ["other"], targetPatternParts: ["photos", ":id"] },
+        ],
+        isDynamic: true,
+        patternParts: ["photos", ":id"],
+      },
+      { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["feed"] },
+      {
+        canPrefetchLoadingShell: false,
+        instant: "static",
+        isDynamic: false,
+        patternParts: ["gallery"],
+      },
+      { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["other"] },
+    ];
+    const { hasAppRouteInstantConfig } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    expect(hasAppRouteInstantConfig("/photos/1")).toBe(false);
+    // The intercepting page renders instead, so its config counts...
+    expect(hasAppRouteInstantConfig("/photos/1", "/feed")).toBe(true);
+    // ...with the route the interception context renders it in.
+    expect(hasAppRouteInstantConfig("/photos/1", "/gallery")).toBe(true);
+    expect(hasAppRouteInstantConfig("/photos/1", "/other")).toBe(false);
+  });
+
   it("keeps a partial shell for navigations to show, never to consume", async () => {
     useCacheComponentsProduction();
     const rscUrl = await prefetchStaticShell("partial");
