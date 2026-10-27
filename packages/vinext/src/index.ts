@@ -456,14 +456,17 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
-// vinext's cache runtime lazily imports plugin-rsc's React serializer. The
-// Worker scan never crawls vinext's own server modules, so without this the
-// optimizer discovers it while the Worker entry is loading and rewrites the
-// deps directory mid-import. Nested through vinext because plugin-rsc is an
-// optional peer that apps need not depend on directly.
+// vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
+// next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
+// crawls vinext's own server modules, so without these the optimizer discovers
+// them while the Worker entry is loading and rewrites the deps directory
+// mid-import. Nested through vinext because apps need not depend on them
+// directly (plugin-rsc is an optional peer).
 const PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
   "vinext > @vitejs/plugin-rsc/react/rsc",
+  "vinext > @unpic/react",
+  "vinext > ipaddr.js",
 ]);
 
 // In dev, @vitejs/plugin-rsc can serve "use client" modules nested inside a
