@@ -4,6 +4,7 @@ import {
   createPagesApiReqRes,
   createPagesReqRes,
 } from "../packages/vinext/src/server/pages-node-compat.js";
+import { mergeHeaders } from "../packages/vinext/src/server/worker-utils.js";
 import type { NextApiHandler, NextApiRequest, NextApiResponse, PreviewData } from "next";
 
 declare module "next" {
@@ -68,6 +69,37 @@ void previewDataValues;
 void nextApiHandler;
 
 describe("Pages Node compat response", () => {
+  for (const status of [204, 304]) {
+    for (const value of [null, undefined]) {
+      it(`preserves explicit headers for nullish send at ${status}: ${value}`, async () => {
+        // Next.js sendData returns before its 204/304 entity-header cleanup.
+        const { res, responsePromise } = createPagesApiReqRes({
+          body: undefined,
+          query: {},
+          request: new Request("https://example.test/api/send"),
+          url: "/api/send",
+        });
+        res.setHeader("Content-Type", "text/custom");
+        res.setHeader("Content-Length", "0");
+        res.setHeader("X-Custom", "kept");
+        res.status(status).send(value);
+        const response = await responsePromise;
+        expect(response.status).toBe(status);
+        expect(response.body).toBeNull();
+        expect(response.headers.get("content-type")).toBe("text/custom");
+        expect(response.headers.get("content-length")).toBe("0");
+        expect(response.headers.get("x-custom")).toBe("kept");
+        const merged = mergeHeaders(mergeHeaders(response, { "x-config": "kept" }), {
+          "x-middleware": "kept",
+        });
+        expect(merged.body).toBeNull();
+        expect(merged.headers.get("content-type")).toBe("text/custom");
+        expect(merged.headers.get("content-length")).toBe("0");
+        expect(merged.headers.get("x-middleware")).toBe("kept");
+      });
+    }
+  }
+
   it.each([204, 205, 304])(
     "creates a bodyless %i response while preserving custom headers",
     async (status) => {
@@ -102,6 +134,21 @@ describe("Pages Node compat response", () => {
       expect((res as unknown as { bufferedChunks: Buffer[] }).bufferedChunks).toHaveLength(0);
     },
   );
+
+  it("still strips entity headers if middleware changes a nullish send status", async () => {
+    const { res, responsePromise } = createPagesApiReqRes({
+      body: undefined,
+      query: {},
+      request: new Request("https://example.test/api/send"),
+      url: "/api/send",
+    });
+    res.setHeader("Content-Type", "text/custom");
+    res.status(204).send(null);
+    const merged = mergeHeaders(await responsePromise, {}, 205);
+    expect(merged.status).toBe(205);
+    expect(merged.body).toBeNull();
+    expect(merged.headers.get("content-type")).toBeNull();
+  });
 
   // Next.js only attaches res.revalidate() in apiResolver:
   // packages/next/src/server/api-utils/node/api-resolver.ts
