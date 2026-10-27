@@ -32,4 +32,19 @@ test.describe("Pages API res.send() scalar values", () => {
       expect(res.headers()["content-type"]).toBe("application/json; charset=utf-8");
     });
   }
+
+  for (const status of [204, 304]) {
+    for (const value of ["null", "undefined", "number", "false"]) {
+      test(`res.send(${value}) handles ${status} headers`, async ({ request }) => {
+        const res = await request.get(
+          `${BASE}/api/send-value?value=${value}&status=${status}&type=text/custom`,
+        );
+        expect(res.status()).toBe(status);
+        expect(await res.text()).toBe("");
+        expect(res.headers()["content-type"]).toBe(
+          value === "null" || value === "undefined" ? "text/custom" : undefined,
+        );
+      });
+    }
+  }
 });
