@@ -557,17 +557,16 @@ export async function handleImageOptimization(
 // The image optimizer is the pluggable transform backend (e.g. Cloudflare
 // Images via `env.IMAGES`). It is configured declaratively through the
 // `images` option on the `vinext()` plugin — see `image/image-adapters-virtual.ts`
-// — and registered on the first request by the generated
-// `virtual:vinext-image-adapters` module, which imports `setImageOptimizer`
-// from here.
+// — and created by the generated `virtual:vinext-image-adapters` module.
+// Workers register it on the first request; Node servers retain their own
+// backend at startup.
 //
-// The active optimizer is stored on `globalThis` via `Symbol.for` so a single
+// The registered optimizer is stored on `globalThis` via `Symbol.for` so a single
 // registration is visible across the separate RSC and SSR Vite environments
 // (they load distinct module instances), mirroring the data-cache handler
-// resolution in `shims/cache.ts`. When no optimizer is registered (no adapter
-// configured, or the adapter factory threw on a runtime without the required
-// binding — e.g. Node.js / dev), image requests fall back to serving the
-// original asset unoptimized.
+// resolution in `shims/cache.ts`. Node configuration does not overwrite this
+// process-wide default. Without an active backend, image requests fall back
+// to serving the original asset unoptimized.
 // ---------------------------------------------------------------------------
 
 /**
@@ -585,7 +584,9 @@ export type ImageOptimizer = {
 };
 
 const _IMAGE_OPTIMIZER_KEY = Symbol.for("vinext.imageOptimizer");
+const _IMAGE_OPTIMIZER_REVISION_KEY = Symbol.for("vinext.imageOptimizerRevision");
 const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptimizer | undefined>;
+const _gImageOptimizerRevision = globalThis as unknown as Record<PropertyKey, number | undefined>;
 
 /**
  * Register the active image optimizer (transform backend). An explicit
@@ -605,28 +606,33 @@ const _gImageOptimizer = globalThis as unknown as Record<PropertyKey, ImageOptim
  * });
  * ```
  *
- * The plugin registers the optimizer across every runtime/router entry, so you
- * don't have to wire `env.IMAGES` into a custom worker entry. This setter
- * remains the internal registration target.
+ * Workers register the configured optimizer through this setter. Node servers
+ * retain their build's backend separately; a later explicit call to this setter
+ * overrides that backend, including when `null` disables optimization.
  */
 export function setImageOptimizer(optimizer: ImageOptimizer | null): void {
   _gImageOptimizer[_IMAGE_OPTIMIZER_KEY] = optimizer ?? undefined;
+  _gImageOptimizerRevision[_IMAGE_OPTIMIZER_REVISION_KEY] = getImageOptimizerRevision() + 1;
 }
 
-/** Get the active image optimizer, or `null` when none is configured. */
+/** Get the process-wide registered optimizer, excluding Node server-owned backends. */
 export function getImageOptimizer(): ImageOptimizer | null {
   return _gImageOptimizer[_IMAGE_OPTIMIZER_KEY] ?? null;
+}
+
+/** @internal Distinguish every explicit registration, including repeated values and null. */
+export function getImageOptimizerRevision(): number {
+  return _gImageOptimizerRevision[_IMAGE_OPTIMIZER_REVISION_KEY] ?? 0;
 }
 
 /**
  * Handle an image optimization request using the configured optimizer (if any).
  *
- * This is the single entry point every runtime/router seam (App Router worker,
- * Pages worker, Node prod server) should call: it reads the registered
- * {@link ImageOptimizer} and wires its `transformImage` into
- * {@link handleImageOptimization}, with the caller supplying the runtime's
- * `fetchAsset` (e.g. the Cloudflare `ASSETS` binding, or filesystem reads on
- * Node). When no optimizer is registered, the request is served unoptimized
+ * Worker hosts use the registered {@link ImageOptimizer}, with the caller
+ * supplying its runtime's `fetchAsset` (e.g. the Cloudflare `ASSETS` binding).
+ * Node hosts pass their server-owned backend directly to
+ * {@link handleImageOptimization} so separate builds cannot replace each
+ * other's configuration. Without a backend, the request is served unoptimized
  * (passthrough) with the same security/cache headers.
  */
 export function handleConfiguredImageOptimization(

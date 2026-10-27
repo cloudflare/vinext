@@ -13,6 +13,7 @@
  *    config exports.
  */
 import path from "node:path";
+import { runInNewContext } from "node:vm";
 import { describe, it, expect, afterEach } from "vite-plus/test";
 import {
   generateImageAdaptersModule,
@@ -37,6 +38,7 @@ describe("generateImageAdaptersModule", () => {
   it("emits a no-op registrar when no optimizer is configured", () => {
     for (const images of [undefined, {}, { optimizer: undefined }]) {
       const code = generateImageAdaptersModule(images);
+      expect(code).toContain("export function createConfiguredImageOptimizer() { return null; }");
       expect(code).toContain("export function registerConfiguredImageOptimizer() {}");
       expect(code).not.toContain("import");
       expect(code).not.toContain("setImageOptimizer");
@@ -47,9 +49,7 @@ describe("generateImageAdaptersModule", () => {
     const code = generateImageAdaptersModule({ optimizer: { adapter: "my-image-adapter" } });
     expect(code).toContain(`import __vinextImageOptimizerFactory from "my-image-adapter";`);
     expect(code).toContain(`import { setImageOptimizer } from "vinext/server/image-optimization";`);
-    expect(code).toContain(
-      "setImageOptimizer(__vinextImageOptimizerFactory({ env, options: undefined }));",
-    );
+    expect(code).toContain("return __vinextImageOptimizerFactory({ env, options: undefined });");
   });
 
   it("inlines descriptor options and forwards them to the factory", () => {
@@ -60,8 +60,51 @@ describe("generateImageAdaptersModule", () => {
       },
     });
     expect(code).toContain(
-      `setImageOptimizer(__vinextImageOptimizerFactory({ env, options: {"binding":"MY_IMAGES"} }));`,
+      `return __vinextImageOptimizerFactory({ env, options: {"binding":"MY_IMAGES"} });`,
     );
+  });
+
+  it("creates Node backends without global registration and registers Workers only once", () => {
+    const code = generateImageAdaptersModule({
+      optimizer: { adapter: "my-image-adapter", options: { binding: "MY_IMAGES" } },
+    });
+    const env = { IMAGES: {} };
+    const factoryCalls: { env: unknown; options: unknown }[] = [];
+    const registrations: unknown[] = [];
+    const loadModule = () =>
+      runInNewContext(
+        code.replace(/^import .*\n/gm, "").replace(/^export /gm, "") +
+          "\n({ createConfiguredImageOptimizer, registerConfiguredImageOptimizer });",
+        {
+          process: { env: {} },
+          __vinextImageOptimizerFactory: (input: { env: unknown; options: unknown }) => {
+            factoryCalls.push(input);
+            return { id: factoryCalls.length };
+          },
+          setImageOptimizer: (optimizer: unknown) => registrations.push(optimizer),
+        },
+      ) as {
+        createConfiguredImageOptimizer(env: unknown): unknown;
+        registerConfiguredImageOptimizer(env: unknown): void;
+      };
+
+    const nodeModule = loadModule();
+    const firstBackend = nodeModule.createConfiguredImageOptimizer(env);
+    const secondBackend = nodeModule.createConfiguredImageOptimizer(env);
+    expect(firstBackend).not.toBe(secondBackend);
+    expect(factoryCalls).toEqual([
+      { env, options: { binding: "MY_IMAGES" } },
+      { env, options: { binding: "MY_IMAGES" } },
+    ]);
+    nodeModule.registerConfiguredImageOptimizer(env);
+    expect(factoryCalls).toHaveLength(2);
+    expect(registrations).toEqual([]);
+
+    const workerModule = loadModule();
+    workerModule.registerConfiguredImageOptimizer(env);
+    workerModule.registerConfiguredImageOptimizer(env);
+    expect(factoryCalls).toHaveLength(3);
+    expect(registrations).toEqual([{ id: 3 }]);
   });
 
   it("guards against double registration", () => {
