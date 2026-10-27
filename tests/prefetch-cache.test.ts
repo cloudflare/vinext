@@ -463,6 +463,45 @@ describe("prefetch cache eviction", () => {
     await expect(navigation.restoreRscResponse(consumed!).text()).resolves.toBe("visited");
   });
 
+  it("router.prefetch skips a URL a navigation would serve from its visited response", async () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression/optimistic-route-cache-keying-regression.test.ts
+    vi.resetModules();
+    const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const fetch = vi.fn(
+      async (_input: RequestInfo | URL, _init?: RequestInit) =>
+        new Response("fresh", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    let navigationFresh = true;
+    const readVisitedResponseForFullPrefetch = vi.fn(() => ({
+      navigatedAt: Date.now(),
+      navigationFresh,
+      response: {
+        buffer: new TextEncoder().encode("visited").buffer,
+        contentType: "text/x-component",
+        paramsHeader: null,
+        renderedPathAndSearch: null,
+        url: "/dynamic.rsc",
+      },
+    }));
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: { navigate: vi.fn(), readVisitedResponseForFullPrefetch },
+    };
+
+    navigation.appRouterInstance.prefetch("/dynamic");
+    await settlePrefetchSetup();
+    expect(readVisitedResponseForFullPrefetch).toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+
+    // Once a navigation wouldn't reuse it, the prefetch fetches.
+    navigationFresh = false;
+    navigation.appRouterInstance.prefetch("/dynamic");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("router.prefetch kind full fetches when the byte budget evicts the visited response it seeded", async () => {
     vi.resetModules();
     const navigation = await import("../packages/vinext/src/shims/navigation.js");

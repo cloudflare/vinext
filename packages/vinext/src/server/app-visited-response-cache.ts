@@ -175,7 +175,7 @@ export function findVisitedResponseForFullPrefetch(
   rscUrls: readonly string[],
   interceptionContext: string | null,
   mountedSlotsHeader: string | null,
-): { navigatedAt: number; response: CachedRscResponse } | null {
+): { navigatedAt: number; navigationFresh: boolean; response: CachedRscResponse } | null {
   for (const rscUrl of rscUrls) {
     const match = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext);
     if (match === null) continue;
@@ -189,6 +189,9 @@ export function findVisitedResponseForFullPrefetch(
     }
     return {
       navigatedAt: entry.response.receivedAt ?? entry.createdAt,
+      navigationFresh:
+        entry.navigationReuseRevoked !== true &&
+        isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now: Date.now() }),
       response:
         entry.elements === undefined
           ? entry.response

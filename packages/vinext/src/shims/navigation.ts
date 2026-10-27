@@ -1316,6 +1316,26 @@ export function seedFullPrefetchFromVisitedResponse(
   return true;
 }
 
+/**
+ * Whether a navigation to the URL would reuse the response of an earlier one,
+ * so a prefetch has nothing to fetch. Like Next.js, whose navigation keeps the
+ * route and its segments for `staleTimes.dynamic`.
+ */
+export function hasNavigationFreshVisitedResponse(
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  additionalRscUrls: readonly string[] = [],
+): boolean {
+  return (
+    getNavigationRuntime()?.functions.readVisitedResponseForFullPrefetch?.(
+      [rscUrl, ...additionalRscUrls],
+      interceptionContext,
+      mountedSlotsHeader,
+    )?.navigationFresh === true
+  );
+}
+
 export function deletePrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
@@ -3317,6 +3337,19 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
+      }
+      // A navigation to the URL would reuse its visited response. A full
+      // prefetch reads it above instead.
+      if (
+        policy.dynamicStaleTime !== "full-prefetch" &&
+        hasNavigationFreshVisitedResponse(
+          rscUrl,
+          interceptionContext,
+          mountedSlotsHeader,
+          additionalRscUrls,
+        )
+      ) {
+        return;
       }
       prefetched.add(cacheKey);
       const fetchFullRscPayload = () =>
