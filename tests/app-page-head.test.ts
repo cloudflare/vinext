@@ -4,6 +4,8 @@ import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
+  resolveInterceptLayoutsBesidePage,
+  type AppPageHeadParallelRoute,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { resolveHttpAccessFallbackMetadata } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
@@ -867,6 +869,7 @@ describe("app page head resolution", () => {
         head: {
           layoutModules: [slotLayout, interceptLayout],
           layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+          layoutsBesidePage: [false, false],
           layoutTreePositions: [0, 2],
           pageModule: interceptPage,
           params: { locale: "en", photo: "42", comment: "7" },
@@ -1193,6 +1196,388 @@ describe("app page head resolution", () => {
     expect(
       await resolveTitle({ metadata: { title: { default: "P", template: "%s | P" } } }, [slotB]),
     ).toBe("B | P");
+  });
+
+  it("resolves each title with the template of the title before it, as Next.js does", async () => {
+    // Next.js's accumulateMetadata stashes the resolved title's own template
+    // after every loader-tree item but the last two, the page's segment and
+    // the page. So a layout's template skips the page beside it, and a title
+    // without a template clears it. Each case is titled as Next.js 16.2.7
+    // titles it (Turbopack and webpack, `next build`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    const template = (name: string, defaultTitle?: string) => ({
+      metadata: {
+        title: { template: `%s | ${name}`, ...(defaultTitle ? { default: defaultTitle } : {}) },
+      },
+    });
+    const titled = (title: unknown) => ({ metadata: { title } });
+    const resolveTitle = async (
+      routeSegments: string[],
+      layouts: [number, Record<string, unknown>][],
+      pageModule: Record<string, unknown>,
+      parallelRoutes?: {
+        layoutModules?: Record<string, unknown>[];
+        layoutsBesidePage?: boolean[];
+        pageModule: Record<string, unknown>;
+      }[],
+    ) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: layouts.map(([, module]) => module),
+          layoutTreePositions: layouts.map(([position]) => position),
+          metadataRoutes: [],
+          pageModule,
+          parallelRoutes,
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+
+    // A root layout's template and the home page beside it.
+    const acme = template("Acme", "Acme");
+    expect(await resolveTitle([], [[0, acme]], titled("Home"))).toBe("Home");
+    expect(await resolveTitle(["child"], [[0, acme]], titled("Child"))).toBe("Child | Acme");
+    expect(await resolveTitle(["child", "grand"], [[0, acme]], titled("Grand"))).toBe(
+      "Grand | Acme",
+    );
+    expect(await resolveTitle(["notitle"], [[0, acme]], {})).toBe("Acme");
+
+    // `/td` and `/te/child`: a nested layout's template beside its page, and above it.
+    const td = template("TD", "TD");
+    expect(
+      await resolveTitle(
+        ["td"],
+        [
+          [0, {}],
+          [1, td],
+        ],
+        titled("DP"),
+      ),
+    ).toBe("DP");
+    expect(
+      await resolveTitle(
+        ["td", "child"],
+        [
+          [0, {}],
+          [1, td],
+        ],
+        titled("EP"),
+      ),
+    ).toBe("EP | TD");
+
+    // `/tf/mid/leaf`: a plain-string middle layout clears the template.
+    const tf: [number, Record<string, unknown>][] = [
+      [0, {}],
+      [1, template("TF", "TF")],
+      [2, titled("Mid")],
+    ];
+    expect(await resolveTitle(["tf", "mid", "leaf"], tf, titled("Leaf"))).toBe("Leaf");
+    expect(await resolveTitle(["tf", "mid", "notitle"], tf, {})).toBe("Mid | TF");
+
+    // `/tg/child`: `title.absolute` skips the template.
+    expect(
+      await resolveTitle(["tg", "child"], [[1, template("TG", "TG")]], titled({ absolute: "A" })),
+    ).toBe("A");
+
+    // `/th`: a template-only layout without a default.
+    const th = template("TH");
+    expect(await resolveTitle(["th"], [[1, th]], {})).toBeUndefined();
+    expect(await resolveTitle(["th", "child"], [[1, th]], titled("Child"))).toBe("Child | TH");
+
+    // `/ti/nested` and `/tj/extra`: a nested layout's template overrides its
+    // parent's below it, but not beside its own page.
+    const nested: [number, Record<string, unknown>][] = [
+      [1, template("TI", "TI")],
+      [2, template("NESTED", "Nested")],
+    ];
+    expect(await resolveTitle(["ti", "nested"], nested, {})).toBe("Nested | TI");
+    expect(await resolveTitle(["ti", "nested"], nested, titled("Extra"))).toBe("Extra | TI");
+    expect(await resolveTitle(["ti", "nested", "child"], nested, titled("C"))).toBe("C | NESTED");
+    expect(await resolveTitle(["ti", "nested", "child", "deep"], nested, {})).toBe("Nested | TI");
+
+    // `/tk`: the last slot's layout template beside its page.
+    expect(
+      await resolveTitle(["tk"], [[1, template("TK", "TK")]], {}, [
+        {
+          layoutModules: [template("YL", "YL")],
+          layoutsBesidePage: [true],
+          pageModule: titled("Y"),
+        },
+      ]),
+    ).toBe("Y | TK");
+    // `/tl`: an earlier slot's plain-string page clears its layout's template.
+    expect(
+      await resolveTitle(["tl"], [[1, template("TL", "TL")]], {}, [
+        { layoutModules: [template("XL", "XL")], pageModule: titled("X") },
+        { pageModule: titled("Y") },
+      ]),
+    ).toBe("Y");
+  });
+
+  it("treats only an intercepting layout in its page's own directory as beside it", async () => {
+    // Next.js 16.2.7 (Turbopack) soft-navigates `/k` to `k/(.)photo/[id]`,
+    // titled "Photo", under a root `%s | Root` template: "Photo | Root" when
+    // `(.)photo/[id]/layout` is titled "Plain", but "Photo" when
+    // `(.)photo/layout` is titled "Mid". The same holds for `/` to `(.)rp/[id]`.
+    const root = { metadata: { title: { default: "Root", template: "%s | Root" } } };
+    const photo = { metadata: { title: "Photo" } };
+    const leaf = { layout: { metadata: { title: "Plain" } }, segments: ["(.)photo", "[id]"] };
+    const middle = { layout: { metadata: { title: "Mid" } }, segments: ["(.)photo"] };
+    const branchSegments = ["(.)photo", "[id]"];
+    const resolveTitle = async (
+      routeSegments: string[],
+      parallelRoute: AppPageHeadParallelRoute<Record<string, unknown>>,
+    ) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: [root],
+          layoutTreePositions: [0],
+          metadataRoutes: [],
+          pageModule: null,
+          parallelRoutes: [parallelRoute],
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+
+    // A sibling intercept, which replaces `children`.
+    for (const [routeSegments, { layout, segments }, title] of [
+      [["k"], leaf, "Photo | Root"],
+      [["k"], middle, "Photo"],
+      [[], leaf, "Photo | Root"],
+      [[], middle, "Photo"],
+    ] as const) {
+      const layoutsBesidePage = resolveInterceptLayoutsBesidePage([segments], branchSegments);
+      expect(
+        await resolveTitle([...routeSegments], {
+          layoutModules: [layout],
+          layoutsBesidePage,
+          pageModule: photo,
+          routeSegments: [...routeSegments],
+        }),
+      ).toBe(title);
+    }
+
+    // A slot intercept that heads the route.
+    for (const [{ layout, segments }, title] of [
+      [leaf, "Photo | Root"],
+      [middle, "Photo"],
+    ] as const) {
+      const [input] = resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: branchSegments,
+        interceptLayoutSegments: [segments],
+        interceptLayouts: [layout],
+        interceptPage: photo,
+        interceptSlotKey: "modal",
+        interceptSourcePageSegments: ["g", "@modal", ...branchSegments],
+        layoutTreePositions: [0],
+        params: {},
+        routeSegments: ["g"],
+        slots: { modal: { layoutIndex: 0 } },
+      });
+      expect(await resolveTitle(["g"], input.head)).toBe(title);
+    }
+  });
+
+  it("counts a slot page's route groups as segments between it and the slot's layouts", async () => {
+    // Next.js 16.2.7 (Turbopack) titles `/s` "Grouped Page | Slot" for
+    // `@slot/layout` with a template and `@slot/(group)/page`, and `/u`
+    // "Deep Page | A" for `@slot/(a)/layout` and `@slot/(a)/(b)/page`: each
+    // route group is a loader-tree segment, though `routeSegments` is `[]`.
+    const root = { metadata: { title: { default: "Root", template: "%s | Root" } } };
+    const slotLayout = { metadata: { title: { default: "Slot", template: "%s | Slot" } } };
+    const groupLayout = { metadata: { title: { default: "A", template: "%s | A" } } };
+    const resolveTitle = async (slot: {
+      configLayouts?: Record<string, unknown>[];
+      configLayoutTreePositions?: number[];
+      page: Record<string, unknown>;
+      pageTreePosition: number;
+    }) => {
+      const parallelRoutes = resolveActiveParallelRouteHeadInputs({
+        layoutTreePositions: [0, 1],
+        params: {},
+        routeSegments: ["s"],
+        slots: { slot: { ...slot, layout: slotLayout, layoutIndex: 1, routeSegments: [] } },
+      }).map((input) => input.head);
+      return (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: [root, {}],
+          layoutTreePositions: [0, 1],
+          metadataRoutes: [],
+          pageModule: {},
+          parallelRoutes,
+          params: {},
+          routePath: "/s",
+          routeSegments: ["s"],
+        })
+      ).metadata?.title;
+    };
+
+    expect(
+      await resolveTitle({ page: { metadata: { title: "Grouped Page" } }, pageTreePosition: 1 }),
+    ).toBe("Grouped Page | Slot");
+    expect(
+      await resolveTitle({
+        configLayouts: [groupLayout],
+        configLayoutTreePositions: [1],
+        page: { metadata: { title: "Deep Page" } },
+        pageTreePosition: 2,
+      }),
+    ).toBe("Deep Page | A");
+    // `/t`: without the group, the slot's layout is beside its page.
+    expect(
+      await resolveTitle({ page: { metadata: { title: "Direct Page" } }, pageTreePosition: 0 }),
+    ).toBe("Direct Page | Root");
+  });
+
+  it("hands a page the template of the title before it, even one it doesn't apply", async () => {
+    // Next.js's `parent` is its ResolvedMetadata, whose title keeps the last
+    // title's own template, even one the page beside it doesn't get.
+    const seenTitles: unknown[] = [];
+    const page = {
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        seenTitles.push((await parent).title);
+        return { title: "Page" };
+      },
+    };
+    const resolveTitle = async (routeSegments: string[], layouts: Record<string, unknown>[]) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: layouts,
+          layoutTreePositions: layouts.map((_, index) => index),
+          metadataRoutes: [],
+          pageModule: page,
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+    const site = { metadata: { title: { default: "Site", template: "%s | Site" } } };
+
+    // A plain-string layout beside the page clears the template it hands on,
+    // but the page still gets the one from before that layout.
+    expect(await resolveTitle(["mid"], [site, { metadata: { title: "Mid" } }])).toBe("Page | Site");
+    // Above the page, it clears the template for the page too.
+    expect(await resolveTitle(["mid", "leaf"], [site, { metadata: { title: "Mid" } }])).toBe(
+      "Page",
+    );
+    // A template beside the page reaches it in `parent` without wrapping it.
+    expect(await resolveTitle([], [site])).toBe("Page");
+    expect(seenTitles).toEqual([
+      { absolute: "Mid | Site", template: null },
+      { absolute: "Mid | Site", template: null },
+      { absolute: "Site", template: "%s | Site" },
+    ]);
+  });
+
+  it("resolves openGraph and twitter titles with their own templates, as Next.js does", async () => {
+    // Next.js's accumulateMetadata stashes `titleTemplates.openGraph` and
+    // `.twitter` under the same `i < metadataItems.length - 2` rule as
+    // `title`'s. Each case is titled as Next.js 16.2.7 titles it (Turbopack
+    // and webpack, `next dev`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    const seenTitles: unknown[] = [];
+    const social = {
+      metadata: {
+        openGraph: { title: { template: "%s | OG", default: "OG Default" } },
+        twitter: { title: { template: "%s | TW", default: "TW Default" } },
+      },
+    };
+    const titled = (title: string) => ({
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const resolved = await parent;
+        seenTitles.push([resolved.openGraph, resolved.twitter]);
+        return { openGraph: { title }, twitter: { title } };
+      },
+    });
+    const resolveSocialTitles = async (
+      routeSegments: string[],
+      layouts: [number, Record<string, unknown>][],
+      pageModule: Record<string, unknown>,
+    ) => {
+      const { metadata } = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: layouts.map(([, module]) => module),
+        layoutTreePositions: layouts.map(([position]) => position),
+        metadataRoutes: [],
+        pageModule,
+        params: {},
+        routePath: `/${routeSegments.join("/")}`,
+        routeSegments,
+      });
+      return [metadata?.openGraph?.title, metadata?.twitter?.title];
+    };
+
+    // `/social`: the layout's templates skip the page beside it.
+    expect(await resolveSocialTitles(["social"], [[1, social]], titled("Beside"))).toEqual([
+      "Beside",
+      "Beside",
+    ]);
+    // `/social/child`: they wrap a deeper page's titles, and `parent` holds
+    // each title as `{ absolute, template }`.
+    expect(await resolveSocialTitles(["social", "child"], [[1, social]], titled("Child"))).toEqual([
+      "Child | OG",
+      "Child | TW",
+    ]);
+    expect(seenTitles.at(-1)).toEqual([
+      { title: { absolute: "OG Default", template: "%s | OG" } },
+      { title: { absolute: "TW Default", template: "%s | TW" } },
+    ]);
+    // `/social/inherit`: a page without them shows the layout's defaults.
+    expect(await resolveSocialTitles(["social", "inherit"], [[1, social]], {})).toEqual([
+      "OG Default",
+      "TW Default",
+    ]);
+    // `/social/extra`: a template beside the page gives way to the one above it.
+    const extra = {
+      metadata: { openGraph: { title: { template: "%s | Extra OG", default: "Extra" } } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "extra"],
+        [
+          [1, social],
+          [2, extra],
+        ],
+        { metadata: { openGraph: { title: "Extra" } } },
+      ),
+    ).toEqual(["Extra | OG", "TW Default"]);
+    // `/social/plain/leaf`: a plain-string title, or a value without a title,
+    // clears the template.
+    const plain = {
+      metadata: { openGraph: { title: "Plain OG" }, twitter: { description: "Plain TW" } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "plain", "leaf"],
+        [
+          [1, social],
+          [2, plain],
+        ],
+        titled("Leaf"),
+      ),
+    ).toEqual(["Leaf", "Leaf"]);
+    // `/social/og-only`: a missing twitter title comes from openGraph's.
+    expect(
+      await resolveSocialTitles(["social", "og-only"], [[1, social]], {
+        metadata: { openGraph: { title: "OG Only" }, twitter: { card: "summary" } },
+      }),
+    ).toEqual(["OG Only | OG", "OG Only | OG"]);
+    // `/social/cleared`: a layout beside the page that clears them still
+    // hands the page the templates from before it.
+    expect(
+      await resolveSocialTitles(
+        ["social", "cleared"],
+        [
+          [1, social],
+          [2, { metadata: { openGraph: null, twitter: undefined } }],
+        ],
+        titled("Page"),
+      ),
+    ).toEqual(["Page | OG", "Page | TW"]);
+    // Next.js resolves a present `undefined` to `null` too.
+    expect(seenTitles.at(-1)).toStrictEqual([null, null]);
   });
 
   it("hands each resolver the title resolved before it as { absolute, template }", async () => {

@@ -29,6 +29,14 @@ type RscErrorReporter = (
 type CreateRscOnErrorHandlerOptions = {
   attachDigest?: boolean;
   errorContext: RscErrorContext | null;
+  /**
+   * The errors this request already logged, shared by its handlers so an error
+   * reaching more than one, such as in the RSC and then the SSR pass, is logged
+   * once. Like Next.js, a digest alone does not mean an error was logged: user
+   * code can set its own. Request-scoped, as a failed module evaluation throws
+   * the same error on every request. Defaults to this handler's own.
+   */
+  loggedErrors?: WeakSet<object>;
   nodeEnv?: string;
   reportRequestError: RscErrorReporter;
   requestInfo: RscRequestInfo | null;
@@ -120,6 +128,13 @@ export function createRscOnErrorHandler(
   options: CreateRscOnErrorHandlerOptions,
 ): (error: unknown) => string | undefined {
   let loggedPrerenderErrors: Set<unknown> | undefined;
+  const loggedErrors = options.loggedErrors ?? new WeakSet<object>();
+  const wasLogged = (error: unknown): boolean => {
+    if ((typeof error !== "object" && typeof error !== "function") || error === null) return false;
+    if (loggedErrors.has(error)) return true;
+    loggedErrors.add(error);
+    return false;
+  };
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
     const reportableError =
@@ -212,8 +227,13 @@ export function createRscOnErrorHandler(
           reportableError,
         );
       }
-    } else if (nodeEnv !== "production" && !thrownHasDigest) {
-      // Preserve dev logging, where a digest suppresses repeat RSC/SSR callbacks.
+    } else if (
+      // A sanitized error was reported where it was sanitized.
+      !(reportableError !== error && thrownHasDigest) &&
+      !wasLogged(reportableError)
+    ) {
+      // Like Next.js, log in production too: without an onRequestError hook,
+      // reportRequestError is a no-op and the failure would leave no trace.
       console.error("[vinext] Server render error:", properError);
     }
 

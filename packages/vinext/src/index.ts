@@ -264,6 +264,7 @@ import {
   createInstrumentationClientTransformPlugin,
   createInstrumentationServerTransformPlugin,
 } from "./plugins/instrumentation-client.js";
+import { createNextIntlCatalogPlugin } from "./plugins/next-intl-catalog.js";
 import { createStyledJsxPlugin } from "./plugins/styled-jsx.js";
 import {
   generateInstrumentationClientInjectModule,
@@ -1277,6 +1278,12 @@ function resolveTsconfigAliases(
     };
     break;
   }
+  // Shims with react-server variants are resolved per environment by
+  // vinext's resolveId hook. A tsconfig alias for one of them would apply to
+  // every environment and give Server Components the client variant.
+  aliases.vite = Object.fromEntries(
+    Object.entries(aliases.vite).filter(([find]) => !_reactServerShims.has(find)),
+  );
 
   _tsconfigAliasCache.set(cacheKey, aliases);
   return aliases;
@@ -2136,7 +2143,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   // resolves to the configured RSC plugin array. Vite's asyncFlatten
   // will resolve this before processing the plugin list.
   let rscPluginPromise: Promise<Plugin[]> | null = null;
-  let manualUseCachePluginPromise: Promise<Plugin> | null = null;
+  let manualUseCachePluginPromise: Promise<Plugin[]> | null = null;
   // Set by the config hook once `.env` files are loaded. @vitejs/plugin-rsc
   // reads `defineEncryptionKey` in its configEnvironment hook, which runs
   // after every config hook.
@@ -2163,7 +2170,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       .then(async (mod) => {
         const rsc = mod.default;
         const plugins: Plugin[] = rsc(rscPluginOptions);
-        const useCachePlugin = await createUseCacheCallablePlugin({
+        const useCachePlugins = await createUseCacheCallablePlugin({
           projectRoot: earlyBaseDir,
           cacheRuntime: pathToFileURL(resolveShimModulePath(shimsDir, "cache-callable-runtime"))
             .href,
@@ -2173,7 +2180,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (useServerIndex === -1) {
           throw new Error("vinext: Failed to locate @vitejs/plugin-rsc use-server plugin.");
         }
-        plugins.splice(useServerIndex, 0, useCachePlugin);
+        plugins.splice(useServerIndex, 0, ...useCachePlugins);
         return plugins.map(scopeRscPlugin);
       })
       .catch((cause) => {
@@ -3235,6 +3242,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // See: packages/next/src/build/define-env.ts
         defines["process.env.__NEXT_CACHE_COMPONENTS"] = JSON.stringify(
           nextConfig.cacheComponents ?? false,
+        );
+        // Boolean like Next.js' define-env entry; gates whether the static stage
+        // of a navigation response is cached for `staleTimes.static`.
+        defines["process.env.__NEXT_EXPERIMENTAL_CACHED_NAVIGATIONS"] = JSON.stringify(
+          nextConfig.cachedNavigations,
         );
 
         // User-defined compile-time constants from `compiler.define` in
@@ -5969,6 +5981,10 @@ export const loadServerActionClient = ${
     createInstrumentationServerTransformPlugin(
       () => instrumentationPath,
       () => nextConfig.instrumentationServerValueInjections,
+    ),
+    createNextIntlCatalogPlugin(
+      () => root,
+      () => nextConfig.nextIntlCatalogLoader,
     ),
     {
       name: "vinext:instrumentation-client-inject",
