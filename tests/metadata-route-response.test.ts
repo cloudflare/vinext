@@ -224,6 +224,63 @@ describe("handleMetadataRouteRequest", () => {
     expect(response?.headers.has("x-vinext-metadata-route-cache")).toBe(false);
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the metadata function runs and is stored.
+  it.each([
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
+  ])("regenerates a $name cached response for an on-demand revalidation", async ({ isStale }) => {
+    const isrGet = vi.fn(async () => ({
+      isStale,
+      value: {
+        lastModified: 1,
+        value: {
+          kind: "APP_ROUTE" as const,
+          body: new TextEncoder().encode("User-Agent: *\nAllow: /stored\n").buffer,
+          headers: {
+            "content-type": "text/plain",
+            "x-vinext-metadata-route-cache": "1",
+          },
+          status: 200,
+        },
+      },
+    }));
+    const isrSet = vi.fn(async () => {});
+    const scheduleBackgroundRegeneration = vi.fn();
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/robots.txt",
+          isrRouteKey: (pathname) => pathname,
+          isrGet,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "robots",
+              isDynamic: true,
+              filePath: "/tmp/app/robots.ts",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/robots.txt",
+              contentType: "text/plain",
+              module: {
+                default: async () => ({ rules: { userAgent: "*", allow: "/regenerated" } }),
+              },
+            },
+          ],
+          scheduleBackgroundRegeneration,
+        }),
+    );
+
+    expect(await response?.text()).toContain("/regenerated");
+    expect(isrGet).not.toHaveBeenCalled();
+    expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects excluded dynamic metadata images without rendering or storing them", async () => {
     let cacheWrites = 0;
     const response = await handleMetadataRouteRequest({

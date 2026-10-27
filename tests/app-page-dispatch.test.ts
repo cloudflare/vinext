@@ -3820,6 +3820,46 @@ describe("app page dispatch", () => {
     },
   );
 
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one page share a render and a write.
+  it("shares one render between concurrent on-demand revalidations", async () => {
+    let renders = 0;
+    let releaseRender!: () => void;
+    const renderReleased = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        renders++;
+        await renderReleased;
+        return React.createElement("div", null, "fresh");
+      },
+      isProduction: true,
+      isrGet: vi.fn(async () => null),
+      isrSet,
+      revalidateSeconds: 60,
+    });
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        dispatchAppPage(options),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(renders).toBe(1));
+    releaseRender();
+    const responses = await Promise.all(pending);
+
+    expect(renders).toBe(1);
+    expect(
+      isrSet.mock.calls.filter(([key]) => key === options.isrHtmlKey(options.cleanPathname)),
+    ).toHaveLength(1);
+    // Each caller reads its own copy of the one response.
+    const bodies = await Promise.all(responses.map((response) => response.text()));
+    expect(bodies[0]).not.toBe("");
+    expect(bodies[1]).toBe(bodies[0]);
+  });
+
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(

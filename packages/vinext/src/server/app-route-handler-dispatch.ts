@@ -27,7 +27,7 @@ import {
   getRequestContext,
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
-import type { ISRCacheEntry } from "./isr-cache.js";
+import { coalesceOnDemandResponse, type ISRCacheEntry } from "./isr-cache.js";
 import {
   getAppRouteHandlerRevalidateSeconds,
   hasAppRouteHandlerDefaultExport,
@@ -268,8 +268,7 @@ async function dispatchAppRouteHandlerImpl(
   // Like Next.js's ResponseCache, an authorized on-demand revalidation never
   // serves the stored entry: it runs the handler in the foreground and stores
   // that.
-  const shouldReadRouteCache =
-    !isOnDemandRevalidate &&
+  const isStoredRoute =
     options.bypassSharedCache !== true &&
     revalidateSeconds !== null &&
     !getRouteCacheabilityDynamicReason() &&
@@ -283,6 +282,7 @@ async function dispatchAppRouteHandlerImpl(
       method,
       revalidateSeconds,
     });
+  const shouldReadRouteCache = isStoredRoute && !isOnDemandRevalidate;
   const revalidateReason = isOnDemandRevalidate
     ? "on-demand"
     : shouldReadRouteCache && revalidateSeconds !== Infinity
@@ -365,7 +365,7 @@ async function dispatchAppRouteHandlerImpl(
   }
 
   if (resolvedHandlerFn) {
-    const response = await executeAppRouteHandler({
+    const handlerOptions: Parameters<typeof executeAppRouteHandler>[0] = {
       isRevalidation,
       basePath: options.basePath,
       bypassSharedCache: options.bypassSharedCache,
@@ -408,8 +408,20 @@ async function dispatchAppRouteHandlerImpl(
       revalidateReason,
       routePattern: route.pattern,
       setHeadersAccessPhase,
-    });
-    return applyCdnResponseBuildIdentityHeaders(response);
+    };
+    const runHandler = async () =>
+      applyCdnResponseBuildIdentityHeaders(await executeAppRouteHandler(handlerOptions));
+    // Concurrent on-demand revalidations of one stored entry share a single
+    // run, as Next.js batches ResponseCache work by its key and
+    // isOnDemandRevalidate.
+    if (isOnDemandRevalidate && isStoredRoute) {
+      return coalesceOnDemandResponse(
+        `${method}:${options.isrRouteKey(options.cleanPathname)}`,
+        options.request,
+        runHandler,
+      );
+    }
+    return runHandler();
   }
 
   return finalizeFrameworkResponse(new Response(null, { status: 405 }));

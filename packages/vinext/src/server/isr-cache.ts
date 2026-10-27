@@ -250,6 +250,34 @@ export function coalesceOnDemandRevalidation<T>(
 }
 
 /**
+ * Coalesce same-key on-demand revalidations whose render answers with a
+ * Response. Every caller gets its own copy of the one render's response.
+ */
+export async function coalesceOnDemandResponse(
+  key: string,
+  request: Request,
+  renderFn: () => Promise<Response>,
+): Promise<Response> {
+  const snapshot = await coalesceOnDemandRevalidation(key, async () => {
+    const response = await renderFn();
+    return {
+      body:
+        request.method === "HEAD" || response.status === 204 || response.status === 304
+          ? null
+          : new Uint8Array(await response.arrayBuffer()),
+      headers: [...response.headers.entries()] as Array<[string, string]>,
+      status: response.status,
+      statusText: response.statusText,
+    };
+  });
+  return new Response(snapshot.body?.slice() ?? null, {
+    headers: snapshot.headers,
+    status: snapshot.status,
+    statusText: snapshot.statusText,
+  });
+}
+
+/**
  * Trigger a background regeneration for a cache key.
  *
  * If a regeneration for this key is already in progress, this is a no-op.

@@ -937,6 +937,65 @@ describe("app route handler dispatch", () => {
     },
   );
 
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one route share a run and a write.
+  it("shares one handler run between concurrent on-demand revalidations", async () => {
+    let runs = 0;
+    let releaseRun!: () => void;
+    const runReleased = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        dispatchAppRouteHandler({
+          cleanPathname: "/api/on-demand",
+          clearRequestContext() {},
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          isrGet: async () => null,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: {},
+          request: new Request("https://example.com/api/on-demand", {
+            headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+          }),
+          route: {
+            pattern: "/api/on-demand",
+            routeHandler: {
+              revalidate: 60,
+              async GET() {
+                runs++;
+                await runReleased;
+                return new Response("regenerated");
+              },
+            },
+            routeSegments: ["api", "on-demand"],
+          },
+          scheduleBackgroundRegeneration: vi.fn(),
+          searchParams: new URLSearchParams(),
+        }),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(runs).toBe(1));
+    releaseRun();
+    const responses = await Promise.all(pending);
+
+    expect(runs).toBe(1);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(await Promise.all(responses.map((response) => response.text()))).toEqual([
+      "regenerated",
+      "regenerated",
+    ]);
+  });
+
   it("drains tag invalidation during stale route background regeneration", async () => {
     const previousHandler = getDataCacheHandler();
     let markInvalidationStarted!: () => void;

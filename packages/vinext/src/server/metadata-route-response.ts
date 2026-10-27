@@ -25,6 +25,7 @@ import {
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
+  _isOnDemandRevalidate,
   type CacheLifeConfig,
 } from "vinext/shims/cache-request-state";
 import {
@@ -456,6 +457,9 @@ async function readMatchedPrerenderedMetadataRouteResponse(
     !isOuterMetadataCacheEnabled() ||
     !options.isrGet ||
     !options.isrRouteKey ||
+    // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+    // serves the stored entry: it renders in the foreground and stores that.
+    _isOnDemandRevalidate() ||
     getActiveDraftModeState() ||
     hasDraftModeCookieHeader() ||
     route.module?.dynamic === "force-dynamic" ||
