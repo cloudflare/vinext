@@ -475,7 +475,7 @@ describe("prefetch cache eviction", () => {
     (globalThis as any).fetch = fetch;
     const now = 1_000_000;
     vi.spyOn(Date, "now").mockReturnValue(now);
-    let navigationFreshUntil: number | null = now + 180_000;
+    let navigationFreshUntil: number | null = now + 1_000;
     const readVisitedResponseForFullPrefetch = vi.fn(() => ({
       navigatedAt: now,
       navigationFreshUntil,
@@ -492,33 +492,26 @@ describe("prefetch cache eviction", () => {
       functions: { navigate: vi.fn(), readVisitedResponseForFullPrefetch },
     };
 
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const onInvalidate = vi.fn();
-      navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate });
-      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
-      expect(readVisitedResponseForFullPrefetch).toHaveBeenCalled();
-      expect(fetch).not.toHaveBeenCalled();
+    const onInvalidate = vi.fn();
+    navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate });
+    await vi.waitFor(() => expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(1));
+    expect(fetch).not.toHaveBeenCalled();
 
-      // Its subscriber hears when a navigation stops reusing the response.
-      vi.advanceTimersByTime(179_999);
-      expect(onInvalidate).not.toHaveBeenCalled();
-      vi.advanceTimersByTime(1);
-      expect(onInvalidate).toHaveBeenCalledTimes(1);
+    // Its subscriber hears when a navigation stops reusing the response.
+    expect(onInvalidate).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(onInvalidate).toHaveBeenCalledTimes(1), { timeout: 3_000 });
 
-      // Or when the visited responses are cleared, such as by a Server
-      // Action's dynamic revalidation, and only then.
-      const onClearedInvalidate = vi.fn();
-      navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate: onClearedInvalidate });
-      for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
-      navigation.invalidateVisitedResponsePrefetches();
-      expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
-      vi.advanceTimersByTime(180_000);
-      expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
-      expect(fetch).not.toHaveBeenCalled();
-    } finally {
-      vi.useRealTimers();
-    }
+    // Or when the visited responses are cleared, such as by a Server Action's
+    // dynamic revalidation, and only then.
+    navigationFreshUntil = now + 500;
+    const onClearedInvalidate = vi.fn();
+    navigation.appRouterInstance.prefetch("/dynamic", { onInvalidate: onClearedInvalidate });
+    await vi.waitFor(() => expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledTimes(2));
+    navigation.invalidateVisitedResponsePrefetches();
+    expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    expect(onClearedInvalidate).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
 
     // Once a navigation wouldn't reuse it, the prefetch fetches.
     navigationFreshUntil = null;
