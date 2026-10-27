@@ -125,6 +125,7 @@ type AppPrefetchModules = [
   typeof import("./internal/app-prefetch-rsc-request.js"),
   typeof import("../server/app-rsc-render-mode.js"),
   typeof import("../server/headers.js"),
+  typeof import("./internal/app-static-shell-vary-params.js"),
 ];
 
 let appRscCacheBustingModulePromise: Promise<AppRscCacheBustingModule> | null = null;
@@ -144,6 +145,7 @@ function loadAppPrefetchModules(): Promise<AppPrefetchModules> {
     import("./internal/app-prefetch-rsc-request.js"),
     import("../server/app-rsc-render-mode.js"),
     import("../server/headers.js"),
+    import("./internal/app-static-shell-vary-params.js"),
   ]));
 }
 
@@ -449,6 +451,7 @@ function prefetchUrl(
               APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
             },
             headersModule,
+            { createVaryingStaticShellResolver },
           ],
           hybridRouteOwner,
           routeManifestLoaded,
@@ -480,6 +483,7 @@ function prefetchUrl(
           prepareNavigationPrefetchSnapshot,
           promotePrefetchCacheEntryForNavigation,
           seedFullPrefetchFromVisitedResponse,
+          seedStaticShellPrefetchFromVaryingShell,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -731,6 +735,20 @@ function prefetchUrl(
             interceptionContext,
             mountedSlotsHeader,
             additionalRscUrls,
+          )
+        ) {
+          return;
+        }
+        // Another URL's shell serves this one when they agree on the params it
+        // read. A client rewrite's target isn't the URL the shell keys on.
+        if (
+          autoPrefetch.staticShell === true &&
+          rewrittenPrefetchHref === null &&
+          seedStaticShellPrefetchFromVaryingShell(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            createVaryingStaticShellResolver(fullHref),
           )
         ) {
           return;

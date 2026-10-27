@@ -3576,6 +3576,144 @@ describe("static-shell prefetch", () => {
     expect(consumePrefetchResponse(rscUrl, null, null)?.staticShell).toBe("runtime");
   });
 
+  describe("vary params", () => {
+    function setUpShopRoute(): void {
+      vi.stubEnv("NODE_ENV", "production");
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+      (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+        {
+          canPrefetchLoadingShell: false,
+          // A runtime prefetch reads search params, so it's asked for with them.
+          instant: "runtime",
+          isDynamic: true,
+          patternParts: ["shop", ":category", ":item"],
+        },
+      ];
+      (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+        bootstrap: {
+          routeManifest: decodeBrowserRouteManifest({
+            graphVersion: "graph:test",
+            routes: [
+              {
+                isDynamic: true,
+                layoutIds: ["layout:/"],
+                pageId: "page:/shop/:category/:item",
+                paramNames: ["category", "item"],
+                patternParts: ["shop", ":category", ":item"],
+                rootBoundaryId: null,
+                slotIds: [],
+              },
+            ],
+            layouts: [],
+            slotBindings: [],
+            interceptions: [],
+            interceptionsBySlotId: [],
+            rootBoundaries: [],
+          }),
+          rsc: undefined,
+        },
+        functions: { navigate: vi.fn() },
+      };
+    }
+
+    function mockShellFetch(
+      shell: { renderedPathAndSearch?: string; varyParams: readonly string[] } | null = null,
+    ) {
+      const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
+        const url = new URL(toRscUrlString(input), "http://localhost");
+        const [, , category, item] = url.pathname.split("/");
+        const headers = new Headers({
+          "content-type": "text/x-component",
+          "X-Vinext-Static-Shell": "partial",
+          "X-Vinext-Params": encodeURIComponent(JSON.stringify({ category, item })),
+          "X-Vinext-Rendered-Path-And-Search": encodeURIComponent(
+            shell?.renderedPathAndSearch ??
+              `${url.pathname}${url.search}`.replace(/[?&]_rsc=[^&]*/, ""),
+          ),
+          "X-Vinext-Vary-Params": JSON.stringify(shell?.varyParams ?? ["category"]),
+        });
+        return new Response(`0:${category}`, { headers });
+      });
+      (globalThis as any).fetch = fetch;
+      return fetch;
+    }
+
+    function findEntry(pathAndSearch: string): PrefetchCacheEntry | undefined {
+      for (const [cacheKey, entry] of getPrefetchCache()) {
+        const url = new URL(cacheKey, "http://localhost");
+        url.searchParams.delete("_rsc");
+        if (`${url.pathname}${url.search}` === pathAndSearch) return entry;
+      }
+      return undefined;
+    }
+
+    async function prefetch(href: string, fetch: ReturnType<typeof mockShellFetch>, calls: number) {
+      appRouterInstance.prefetch(href);
+      await waitForPrefetchSetup(
+        () => fetch.mock.calls.length === calls && findEntry(href)?.outcome === "cache-seeded",
+      );
+    }
+
+    // Like Next.js's segment cache, a shell is shared by the URLs of its route
+    // that agree on the params its render read.
+    it("reuses a partial shell for a URL with the same values for the params it read", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch();
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/tablet", fetch, 1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const alias = findEntry("/shop/electronics/tablet");
+      expect(alias?.prefetchKind).toBe("static-shell");
+      expect(alias?.snapshot?.staticShell).toBe("partial");
+      // The shell renders with the URL's own params.
+      expect(JSON.parse(decodeURIComponent(alias!.snapshot!.paramsHeader!))).toEqual({
+        category: "electronics",
+        item: "tablet",
+      });
+      expect(alias?.snapshot?.renderedPathAndSearch).toBe("/shop/electronics/tablet");
+      expect(new TextDecoder().decode(alias!.snapshot!.buffer)).toBe("0:electronics");
+
+      await prefetch("/shop/clothing/shirt", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("compares search strings only when the shell read them", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch({ varyParams: ["?"] });
+
+      await prefetch("/shop/electronics/phone?q=1", fetch, 1);
+      await prefetch("/shop/clothing/shirt?q=1", fetch, 1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await prefetch("/shop/clothing/shirt?q=2", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("doesn't reuse a rewritten URL's shell", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch({
+        renderedPathAndSearch: "/shop/electronics/other",
+        varyParams: [],
+      });
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/tablet", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("doesn't reuse the shell of a URL rewritten to another query", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch({
+        renderedPathAndSearch: "/shop/electronics/phone?q=2",
+        varyParams: ["?"],
+      });
+
+      await prefetch("/shop/electronics/phone?q=1", fetch, 1);
+      await prefetch("/shop/electronics/tablet?q=1", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
   it("treats a prefetch the server answered without a shell as a loading shell", async () => {
     useCacheComponentsProduction();
     const rscUrl = await prefetchStaticShell(null);

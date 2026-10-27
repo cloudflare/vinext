@@ -488,6 +488,8 @@ Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `c
 
 With `cacheComponents`, a production `<Link>` prefetch of a page gets the page's static shell, as in Next.js. That's the page rendered with `cookies()`, `headers()`, `connection()` and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. vinext renders a page's shell on its first prefetch and stores it in the data cache with the page's `cacheLife` and tags, so `revalidatePath()` and `revalidateTag()` refresh it. A navigation shows a shell that has holes at once while the page renders, and uses a shell with none without another request.
 
+As with Next.js's `varyParams`, a shell records which params its render read, `?` standing for the query string. A prefetch of another URL of the same route reuses a shell that has holes, without a request, when the URL has the same values for those params. For example, a page that reads only `category` shares one shell between `/shop/shoes/a` and `/shop/shoes/b`. vinext tracks the params for the whole shell, where Next.js tracks them per segment.
+
 A page under a `loading.tsx` boundary, an href with a query string, an intercepted route and the dev server keep the loading-shell prefetch.
 
 ## Query strings
