@@ -353,7 +353,9 @@ async function captureRenderedMetadataRoute(
   const frameworkRevalidate = Math.min(observedCacheLife?.revalidate ?? Infinity, revalidate);
   const cacheLife = { ...observedCacheLife, revalidate: frameworkRevalidate };
   const cacheable =
-    (response.status < 400 || response.status === 404) &&
+    // Like Next.js's ResponseCache, an on-demand revalidation stores whatever
+    // status the route answers with, as route handlers do.
+    (_isOnDemandRevalidate() || response.status < 400 || response.status === 404) &&
     completed &&
     !isRenderDynamicLatched() &&
     !getActiveDraftModeState() &&

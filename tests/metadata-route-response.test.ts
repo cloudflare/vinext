@@ -281,6 +281,38 @@ describe("handleMetadataRouteRequest", () => {
     expect(isrSet).toHaveBeenCalledTimes(1);
   });
 
+  // Next.js's ResponseCache stores an on-demand revalidation's response,
+  // whatever its status.
+  it.each([400, 500])("stores a %s response from an on-demand revalidation", async (status) => {
+    const isrSet = vi.fn(async () => {});
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        handleMetadataRouteRequest({
+          cleanPathname: "/icon",
+          isrRouteKey: (pathname) => pathname,
+          isrGet: async () => null,
+          isrSet,
+          makeThenableParams,
+          metadataRoutes: [
+            {
+              type: "icon",
+              isDynamic: true,
+              filePath: "/tmp/app/icon.tsx",
+              routePrefix: "",
+              routeSegments: [],
+              servedUrl: "/icon",
+              contentType: "image/png",
+              module: { default: async () => new Response("failed", { status }) },
+            },
+          ],
+        }),
+    );
+
+    expect(response?.status).toBe(status);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+  });
+
   // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
   // concurrent on-demand revalidations of one metadata route share a render.
   it("shares one render between concurrent on-demand revalidations", async () => {
