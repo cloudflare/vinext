@@ -4,10 +4,12 @@ const personalizedPaths = ["/prewarm-target", "/pages-prewarm", "/api/browser-ca
 const personalizedVisitors = ["config-a", "config-b"] as const;
 
 export default {
+  rewrites: async () => [{ source: "/rewritten/:slug", destination: "/cached/:slug" }],
   headers: async () => [
     { source: "/storage-policy/short-browser", headers: [{ key: "Cache-Control", value: "public, max-age=1" }] },
     { source: "/storage-policy/long-browser", headers: [{ key: "Cache-Control", value: "private, max-age=300" }] },
     { source: "/storage-policy/no-store", headers: [{ key: "Cache-Control", value: "no-store" }] },
+    { source: "/cached/public-policy", headers: [{ key: "Cache-Control", value: "public, s-maxage=300" }] },
     {
       source: "/vary-cookie",
       headers: [

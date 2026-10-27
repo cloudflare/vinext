@@ -215,6 +215,7 @@ type RouteNotFoundHeadPlanRoute<TModule extends AppPageHeadModule> = {
   notFounds?: readonly (TModule | null | undefined)[] | null;
   notFoundTreePosition?: number | null;
   routeSegments?: readonly string[] | null;
+  segmentNotFoundTreePositions?: readonly number[] | null;
 };
 
 /**
@@ -238,7 +239,10 @@ export function createRouteNotFoundHeadPlanOptions<TModule extends AppPageHeadMo
   if (!boundaryModule) {
     const parentBoundary = resolveAppPageParentHttpAccessBoundary({
       layoutIndex: layoutModules.length,
-      rootNotFoundModule: options.rootNotFoundModule,
+      // Segment data already holds the not-found files of the route's own
+      // tree. The manifest's root file stands in only without it: with several
+      // root layouts it can belong to another root layout's tree.
+      rootNotFoundModule: route.segmentNotFoundTreePositions ? null : options.rootNotFoundModule,
       routeNotFoundModules: route.notFounds,
       statusCode: 404,
     });

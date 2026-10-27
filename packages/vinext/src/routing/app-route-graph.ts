@@ -1618,6 +1618,19 @@ function findSlotConfigLayoutTreePositions(
   });
 }
 
+/**
+ * The tree position of a slot's active page relative to the slot root, in the
+ * coordinates of configLayoutTreePositions. Route groups count, unlike in
+ * `routeSegments`, since each is its own loader-tree segment.
+ */
+export function findSlotPageTreePosition(
+  slot: Pick<ParallelSlot, "ownerDir" | "pagePath">,
+): number | null {
+  return slot.pagePath
+    ? findSlotConfigLayoutTreePositions(slot.ownerDir, [slot.pagePath])[0]
+    : null;
+}
+
 function findSlotLoadingEntries(
   slotDir: string,
   pagePath: string | null,

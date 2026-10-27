@@ -36,6 +36,29 @@ describe("createAppRscOnErrorHandler", () => {
     expect(reportRequestError.mock.calls[0]?.[0]).toBe(error);
   });
 
+  it("logs an error reaching a request's RSC and SSR handlers once per request", () => {
+    // Regression for #4305: a failed module evaluation throws the same error on
+    // every request, so each request must log it.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const error = new Error("module evaluation failed");
+      for (const request of [makeReq(), makeReq()]) {
+        const rscOnError = createAppRscOnErrorHandler(() => {}, request, "/feed", "/feed");
+        const ssrOnError = createAppRscOnErrorHandler(() => {}, request, "/feed", "/feed", {
+          renderSource: "server-rendering",
+        });
+        rscOnError(error);
+        ssrOnError(error);
+      }
+
+      expect(consoleError).toHaveBeenCalledTimes(2);
+      expect(consoleError).toHaveBeenNthCalledWith(1, "[vinext] Server render error:", error);
+      expect(consoleError).toHaveBeenNthCalledWith(2, "[vinext] Server render error:", error);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("reports non-digest errors via reportRequestError with a derived requestInfo from the Web Request", () => {
     const reportRequestError = vi.fn();
     const req = makeReq("https://example.com/feed", "POST", {

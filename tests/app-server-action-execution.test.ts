@@ -33,6 +33,7 @@ import {
 import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
   getDataCacheHandler,
+  MemoryCacheHandler,
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import {
@@ -2790,6 +2791,74 @@ describe("app server action execution helpers", () => {
       setDataCacheHandler(previousHandler);
     }
   });
+
+  // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
+  // ("should not use stale caches in server actions that have revalidated").
+  // Next.js runs an action in its page's request store, whose implicit tags
+  // let a cache read inside the action observe the action's own revalidatePath().
+  it.each([
+    { kind: "fetch", pathname: "/dashboard" },
+    { kind: "progressive", pathname: "/action-source" },
+  ])(
+    "reads caches inside a $kind action with its page's implicit tags",
+    async ({ kind, pathname }) => {
+      const previousHandler = getDataCacheHandler();
+      const memoryHandler = new MemoryCacheHandler();
+      const getSoftTags: string[][] = [];
+      setDataCacheHandler({
+        get(key, ctx) {
+          getSoftTags.push([...((ctx as { softTags?: string[] } | undefined)?.softTags ?? [])]);
+          return memoryHandler.get(key, ctx);
+        },
+        set: memoryHandler.set.bind(memoryHandler),
+        revalidateTag: memoryHandler.revalidateTag.bind(memoryHandler),
+      });
+      let calls = 0;
+      const readCached = registerCachedFunction(
+        async () => ++calls,
+        `test:action-implicit-tags-${kind}`,
+      );
+      const values: unknown[] = [];
+      const action = async () => {
+        values.push(await readCached());
+        revalidatePath(pathname);
+        values.push(await readCached());
+        return "done";
+      };
+
+      try {
+        await runWithRequestContext(createRequestContext(), () => readCached());
+        getSoftTags.length = 0;
+        await runWithRequestContext(createRequestContext(), () =>
+          kind === "fetch"
+            ? handleServerActionRscRequest(
+                createRscOptions({
+                  loadServerAction() {
+                    return Promise.resolve(action);
+                  },
+                }),
+              )
+            : handleProgressiveServerActionRequest(
+                createOptions({
+                  currentRoute: { pattern: pathname, routeSegments: [pathname.slice(1)] },
+                  async decodeAction() {
+                    return action;
+                  },
+                  readFormDataWithLimit() {
+                    const formData = new FormData();
+                    formData.set("$ACTION_ID_test", "");
+                    return Promise.resolve(formData);
+                  },
+                }),
+              ),
+        );
+        expect(getSoftTags[0]).toContain(`_N_T_${pathname}`);
+        expect(values).toEqual([1, 2]);
+      } finally {
+        setDataCacheHandler(previousHandler);
+      }
+    },
+  );
 
   it("emits dynamic-only x-action-revalidated when a fetch action refreshes", async () => {
     const response = await handleServerActionRscRequest(

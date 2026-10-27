@@ -650,6 +650,81 @@ test("revalidates an entry the Store cannot regenerate once the Store reports it
   }
 });
 
+test("refreshes the revision behind the stale entry a write passes as staleEntry", async () => {
+  vi.useFakeTimers();
+  try {
+    vi.setSystemTime(10_000);
+    const store = new TestStore();
+    const handler = new WorkersResponseStoreCacheHandler(store);
+    const readAs = async (
+      status: string,
+      revision: string | null,
+      revalidate?: number,
+      softTags?: string[],
+    ) => {
+      store.response?.headers.set("X-Workers-Response-Store", status);
+      if (revision === null) store.response?.headers.delete("X-Workers-Response-Store-Revision");
+      else store.response?.headers.set("X-Workers-Response-Store-Revision", revision);
+      const entry = await handler.get("key", {
+        ...(revalidate === undefined ? {} : { revalidate }),
+        ...(softTags ? { softTags } : {}),
+      });
+      expect(entry).not.toBeNull();
+      return entry!;
+    };
+    const write = async (staleEntry?: unknown) => {
+      store.options = undefined;
+      await handler.set("key", null, { revalidate: 60, ...(staleEntry ? { staleEntry } : {}) });
+      expect(store.options).toBeDefined();
+      return store.options;
+    };
+    await write();
+
+    const stale = await readAs("BLOB-STALE", "7");
+    expect(stale).toMatchObject({ cacheState: "stale" });
+    // Reads and writes in between, even the request's own invalidation, leave the refresh
+    // of that entry a refresh, and every other write an ordinary one.
+    const fresh = await readAs("BLOB-FRESH", "8");
+    expect(fresh).not.toHaveProperty("cacheState");
+    expect(await write()).not.toHaveProperty("replacesRevision");
+    expect(await write(fresh)).not.toHaveProperty("replacesRevision");
+    await handler.revalidateTag("tag", { expire: 0 });
+    expect(await write(stale)).toMatchObject({ replacesRevision: 7 });
+    expect(await write(stale)).not.toHaveProperty("replacesTagExpiration");
+    expect(await write("7")).not.toHaveProperty("replacesRevision");
+
+    // The Store can't see soft tags expire, so the refresh carries the expiration it read.
+    store.tagExpiration = 5_000;
+    const softStale = await readAs("BLOB-STALE", "9", undefined, ["_N_T_/b", "_N_T_/a"]);
+    expect(await write(softStale)).toMatchObject({
+      replacesRevision: 9,
+      replacesTagExpiration: { tags: store.tagExpirationCalls.at(-1), expiration: 5_000 },
+    });
+    store.tagExpiration = 0;
+
+    // A copy stale only to its caller may be an edge copy: replacing it must purge it.
+    vi.setSystemTime(40_000);
+    const callerStale = await readAs("BLOB-FRESH", "14", 10);
+    expect(callerStale).toMatchObject({ cacheState: "stale" });
+    expect(await write(callerStale)).not.toHaveProperty("replacesRevision");
+
+    // A stale read without a usable revision leaves its refresh an ordinary write.
+    for (const revision of [null, "0", "-1", "1.5", "abc"]) {
+      const entry = await readAs("BLOB-STALE", revision);
+      expect(entry).toMatchObject({ cacheState: "stale" });
+      expect(await write(entry), String(revision)).not.toHaveProperty("replacesRevision");
+    }
+
+    // The Store regenerates a replayable entry itself, so its caller's write is no refresh.
+    store.response?.headers.set("X-Vinext-Response-Store-Replayable", "1");
+    const replayable = await readAs("BLOB-STALE", "16");
+    expect(replayable).not.toHaveProperty("cacheState");
+    expect(await write(replayable)).not.toHaveProperty("replacesRevision");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 test("honors a shorter revalidate requested by a later read", async () => {
   vi.useFakeTimers();
   try {
