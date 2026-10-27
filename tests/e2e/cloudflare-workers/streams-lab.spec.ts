@@ -23,9 +23,9 @@ async function runsTypeScriptStreams(request: APIRequestContext): Promise<boolea
 // expected to fail while the Worker runs the TypeScript implementation, so a
 // workerd fix turns it red.
 const FORM_DATA_BUG =
-  "workerd: Body.formData() reads the body through consumeReadableStreamAsText, so binary file parts are UTF-8 decoded";
+  "workerd: formData() UTF-8 decodes binary file parts (https://github.com/cloudflare/workerd/issues/8037)";
 const DISCONNECT_BUG =
-  "workerd: a client disconnect never calls the response stream source's cancel()";
+  "workerd: a client disconnect never cancels the response stream (https://github.com/cloudflare/workerd/issues/8038)";
 
 function pattern(length: number): Buffer {
   const buffer = Buffer.alloc(length);
