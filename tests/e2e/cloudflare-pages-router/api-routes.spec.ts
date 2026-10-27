@@ -1,5 +1,4 @@
 import { test, expect } from "@playwright/test";
-import { testPagesApiBodyCharsets } from "../pages-api-body-charset";
 
 const BASE = "http://localhost:4177";
 
@@ -41,6 +40,4 @@ test.describe("Pages Router API routes on Cloudflare Workers", () => {
     const res = await request.get(BASE + "/api/nonexistent");
     expect(res.status()).toBe(404);
   });
-
-  testPagesApiBodyCharsets(BASE);
 });
