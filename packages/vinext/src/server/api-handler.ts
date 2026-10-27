@@ -20,11 +20,7 @@ import {
   parseQueryString,
   urlQueryToSearchParams,
 } from "../utils/query.js";
-import {
-  PagesBodyParseError,
-  createPagesBodyDecoder,
-  isJsonMediaType,
-} from "./pages-media-type.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { finalizeEdgeApiResponse, isEdgeApiRuntime } from "./edge-api-runtime.js";
 import {
   DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
@@ -110,7 +106,6 @@ async function parseBody(
   sizeLimit: number = MAX_BODY_SIZE,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
-    const { mediaType, decoder } = createPagesBodyDecoder(req.headers["content-type"]);
     const chunks: Buffer[] = [];
     let totalSize = 0;
     let settled = false;
@@ -133,7 +128,8 @@ async function parseBody(
     req.on("end", () => {
       if (settled) return;
       settled = true;
-      const raw = decoder.decode(Buffer.concat(chunks));
+      const raw = Buffer.concat(chunks).toString("utf-8");
+      const mediaType = getMediaType(req.headers["content-type"]);
       if (!raw) {
         resolve(
           isJsonMediaType(mediaType)
