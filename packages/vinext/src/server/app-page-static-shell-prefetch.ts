@@ -46,11 +46,18 @@ function hasRuntimePrefetchConfig(module: unknown): boolean {
 
 /**
  * Whether the page opts into a runtime prefetch through a segment's
- * `unstable_instant`, which Next.js renders with the request's cookies and
- * params instead of serving the static shell.
+ * `unstable_instant`, a parallel slot's included, which Next.js renders with
+ * the request's cookies and params instead of serving the static shell
+ * (`anySegmentHasRuntimePrefetchEnabled`).
  */
 export function prefetchesAtRuntime(route: AppPageDispatchRoute & { page?: unknown }): boolean {
-  return route.layouts.some(hasRuntimePrefetchConfig) || hasRuntimePrefetchConfig(route.page);
+  return (
+    route.layouts.some(hasRuntimePrefetchConfig) ||
+    hasRuntimePrefetchConfig(route.page) ||
+    Object.values(route.slots ?? {}).some((slot) =>
+      hasRuntimePrefetchConfig(slot.page ?? slot.default),
+    )
+  );
 }
 
 /** Mark a runtime prefetch's response, which a navigation reuses like its own. */
@@ -86,6 +93,25 @@ function canServeStaticShell<TRoute extends AppPageDispatchRoute>(
 }
 
 /**
+ * Whether a prefetch can be prerendered at runtime. Unlike a static shell, it
+ * renders the request's search params and the params a fallback shell leaves
+ * out, since it's never shared.
+ */
+function canServeRuntimePrefetch<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  isDraftMode: boolean,
+): boolean {
+  return (
+    options.isProduction &&
+    options.pprRuntime !== undefined &&
+    options.request.method === "GET" &&
+    !isDraftMode &&
+    options.interceptionContext === null &&
+    options.dynamicConfig !== "force-dynamic"
+  );
+}
+
+/**
  * Serve a shell to one request. The shell is shared, so the request's own
  * middleware headers and status merge over it, as they do over a cached page.
  */
@@ -116,8 +142,9 @@ function buildStaticShellResponse(
 async function produceStaticShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   key: string | null,
+  isRuntimePrefetch = false,
 ): Promise<CachedAppPageValue | null> {
-  const { isPartial, response } = await renderAppPageStaticShell(options);
+  const { isPartial, response } = await renderAppPageStaticShell(options, isRuntimePrefetch);
   const cacheControlHeader = response.headers.get("cache-control") ?? "";
   const rscData = await response.arrayBuffer();
   if (response.status !== 200 || rscData.byteLength === 0) {
@@ -236,6 +263,28 @@ export async function serveAppPageStaticShellPrefetch<TRoute extends AppPageDisp
   } catch (renderError) {
     options.isrDebug?.("MISS (static shell render error)", options.cleanPathname);
     console.error("[vinext] ISR static shell render error:", renderError);
+    return null;
+  }
+  return value ? buildStaticShellResponse(value, options.middlewareContext) : null;
+}
+
+/**
+ * Answer a runtime prefetch, as Next.js prerenders it for the request: the
+ * page's shell with the request's cookies, headers, params, search params and
+ * private caches rendered, and only `connection()` and caches about to go stale left at their
+ * Suspense fallbacks. It's never stored, as it holds the
+ * request's data. Returns null when the prefetch can't be prerendered.
+ */
+export async function serveAppPageRuntimePrefetch<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  isDraftMode: boolean,
+): Promise<Response | null> {
+  if (!canServeRuntimePrefetch(options, isDraftMode)) return null;
+  let value: CachedAppPageValue | null;
+  try {
+    value = await produceStaticShell(options, null, true);
+  } catch (renderError) {
+    console.error("[vinext] Runtime prefetch render error:", renderError);
     return null;
   }
   return value ? buildStaticShellResponse(value, options.middlewareContext) : null;

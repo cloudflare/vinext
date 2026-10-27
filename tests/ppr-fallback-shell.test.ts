@@ -541,3 +541,72 @@ describe("ppr fallback shell short-lived caches", () => {
     expect(hasDynamicBoundary).toBe(false);
   });
 });
+
+// Like Next.js's runtime prerender (use-cache-wrapper.ts,
+// `RUNTIME_PREFETCH_DYNAMIC_STALE`), a runtime prefetch renders private and
+// short-lived caches, and leaves out only those about to go stale.
+describe("ppr fallback shell runtime prefetch caches", () => {
+  async function renderRuntimeCached(
+    life: string | { stale: number; revalidate: number; expire: number },
+    id: string,
+    variant?: string,
+  ) {
+    setCacheHandler(new MemoryCacheHandler());
+    const cached = registerCachedFunction(
+      async () => {
+        cacheLife(life);
+        return "value";
+      },
+      id,
+      variant,
+    );
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      isRuntimePrefetch: true,
+      routePattern: "/page",
+    });
+    preparePprFallbackShellFinalRender(state);
+    const result = runWithPprFallbackShellState(state, () => cached());
+    const settled = await Promise.race([result, delay(20).then(() => "pending")]);
+    state.abortController.abort();
+    return { hasDynamicBoundary: state.hasDynamicBoundary, settled };
+  }
+
+  it("keeps a short-lived cache", async () => {
+    const { hasDynamicBoundary, settled } = await renderRuntimeCached(
+      "seconds",
+      "runtime-short-lived",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+
+  it("leaves out a cache about to go stale", async () => {
+    const { hasDynamicBoundary, settled } = await renderRuntimeCached(
+      { stale: 10, revalidate: 60, expire: 600 },
+      "runtime-soon-stale",
+    );
+    expect(settled).toBe("pending");
+    expect(hasDynamicBoundary).toBe(true);
+  });
+
+  it("leaves out a private cache about to go stale", async () => {
+    const { hasDynamicBoundary, settled } = await renderRuntimeCached(
+      { stale: 10, revalidate: 60, expire: 600 },
+      "runtime-private-soon-stale",
+      "private",
+    );
+    expect(settled).toBe("pending");
+    expect(hasDynamicBoundary).toBe(true);
+  });
+
+  it("renders a private cache", async () => {
+    const { hasDynamicBoundary, settled } = await renderRuntimeCached(
+      "minutes",
+      "runtime-private",
+      "private",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+});

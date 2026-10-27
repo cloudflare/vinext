@@ -515,8 +515,13 @@ function prefetchUrl(
 
         const isOptimisticRouteShellPrefetch = !autoPrefetch.cacheForNavigation;
         const hasSearchParams = new URL(fullHref, window.location.href).search !== "";
+        // A static shell with search params is a runtime prefetch, which
+        // renders them.
         const isAutomaticSearchParamShell =
-          mode === "auto" && isOptimisticRouteShellPrefetch && hasSearchParams;
+          mode === "auto" &&
+          isOptimisticRouteShellPrefetch &&
+          hasSearchParams &&
+          autoPrefetch.staticShell !== true;
         // A prefetch never renders the page of a route that renders
         // dynamically, so its search-param href fetches the loading shell.
         const hasSearchAgnosticShell =

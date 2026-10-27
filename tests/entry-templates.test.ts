@@ -20,6 +20,7 @@ import { buildAppRscManifestCode } from "../packages/vinext/src/entries/app-rsc-
 import {
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
+  readAppPageRouteInstantConfig,
 } from "../packages/vinext/src/build/app-page-static-eligibility.js";
 import {
   generateAppRequestRscEntry,
@@ -620,6 +621,25 @@ describe("App Router generated manifest construction", () => {
     } finally {
       fs.rmSync(appDir, { force: true, recursive: true });
     }
+  });
+
+  it("records each route's unstable_instant config, a parallel slot's included", async () => {
+    const graph = await buildAppRouteGraph(
+      path.resolve(import.meta.dirname, "fixtures/app-instant-config/app"),
+      createValidFileMatcher(),
+    );
+    const instantByPattern = Object.fromEntries(
+      toLinkPrefetchRoutes(graph.routes, undefined, (route) =>
+        readAppPageRouteInstantConfig(route, null),
+      ).map((route) => [route.patternParts.join("/"), route.instant]),
+    );
+    expect(instantByPattern).toEqual({
+      "": undefined,
+      "opted-out": undefined,
+      "runtime/:id": "runtime",
+      slot: "runtime",
+      static: "static",
+    });
   });
 
   it("classifies each intercepting page as its own route for its target", async () => {

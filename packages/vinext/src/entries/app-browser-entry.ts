@@ -28,10 +28,11 @@ export function generateBrowserEntry(
   },
   locales: readonly string[] = [],
   classifier?: AppRouteDynamicRenderClassifier,
+  readInstantConfig?: (route: AppRoute) => "runtime" | "static" | null,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  const prefetchRoutes = toLinkPrefetchRoutes(routes, classifier);
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, classifier, readInstantConfig);
   // Route handlers only feed hybrid App/Pages ownership. An App-only client
   // learns a handler URL from its non-Flight response (a prefetch miss, then a
   // document navigation), like Next.js, so it gets none (issue #3624).
@@ -154,11 +155,13 @@ export function toLinkPrefetchRoute(
 /**
  * Project App routes together so sibling-intercept loading is applied to its
  * target route. `classifier` reads each route's segment config, and each
- * intercepting page's, which applies to its target route.
+ * intercepting page's, which applies to its target route. `readInstantConfig`
+ * reads a route's `unstable_instant` config.
  */
 export function toLinkPrefetchRoutes(
   routes: readonly AppRoute[],
   classifier?: AppRouteDynamicRenderClassifier,
+  readInstantConfig?: (route: AppRoute) => "runtime" | "static" | null,
 ): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
@@ -178,14 +181,16 @@ export function toLinkPrefetchRoutes(
       ),
       classifier?.route(route) ?? false,
     );
+    const instant = readInstantConfig?.(route) ?? null;
+    const classifiedRoute = instant !== null ? { ...prefetchRoute, instant } : prefetchRoute;
     const routeIntercepts = intercepts
       .filter(({ targetPatternParts }) =>
         interceptTargetMayMatchRoute(targetPatternParts, route.patternParts),
       )
       .map(({ intercept }) => intercept);
     return routeIntercepts.length > 0
-      ? { ...prefetchRoute, intercepts: routeIntercepts }
-      : prefetchRoute;
+      ? { ...classifiedRoute, intercepts: routeIntercepts }
+      : classifiedRoute;
   });
 }
 

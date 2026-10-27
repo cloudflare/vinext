@@ -58,6 +58,7 @@ import {
 import {
   consumeDynamicUsage,
   consumeRenderRequestApiUsage,
+  cookies,
   draftMode,
   getHeadersContext,
   headers,
@@ -1558,22 +1559,105 @@ describe("app page dispatch", () => {
       expect([...created.stored.keys()]).toEqual([expect.stringContaining("/source")]);
     });
 
-    // Next.js renders a runtime prefetch (`unstable_instant`'s
-    // `prefetch: "runtime"`) for the request, instead of the static shell.
-    it("answers a runtime prefetch with the page's payload", async () => {
-      const { options, isrSetFallbackShell } = createStaticShellOptions({
-        route: createRoute({
+    // Next.js prerenders a runtime prefetch (`unstable_instant`'s
+    // `prefetch: "runtime"`) for the request, instead of serving the static
+    // shell: the request's cookies render, and `connection()` leaves a hole.
+    describe("runtime prefetch", () => {
+      const runtimeRoute = () =>
+        createRoute({
           layouts: [{ default: () => null, unstable_instant: { prefetch: "runtime" } }],
           pattern: "/posts",
           routeSegments: ["posts"],
-        }),
+        });
+
+      it("renders the request's cookies and leaves connection() a hole", async () => {
+        const seenCookies: (string | undefined)[] = [];
+        const request = new Request("https://example.test/posts", {
+          headers: { cookie: "theme=dark" },
+        });
+        const { options, isrSetFallbackShell } = createStaticShellOptions({
+          async buildPageElement() {
+            seenCookies.push((await cookies()).get("theme")?.value);
+            void createPprFallbackShellSuspensePromise("`connection()`");
+            return React.createElement("main", null, "page");
+          },
+          request,
+          route: runtimeRoute(),
+        });
+        const requestContext = createRequestContext({
+          headersContext: headersContextFromRequest(request),
+        });
+
+        const response = await runWithRequestContext(requestContext, () =>
+          dispatchAppPage(options),
+        );
+        expect(seenCookies).toEqual(["dark"]);
+        expect(response.headers.get("x-vinext-static-shell")).toBe("partial");
+        expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+        // It holds the request's data, so it's never stored.
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
       });
 
-      const response = await runWithRequestContext(createRequestContext(), () =>
-        dispatchAppPage(options),
-      );
-      expect(response.headers.get("x-vinext-static-shell")).toBe("runtime");
-      expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      it("renders the request's search params and a fallback shell's params", async () => {
+        const seen: { params: unknown; query: string }[] = [];
+        const { options, isrSetFallbackShell } = createStaticShellOptions({
+          async buildPageElement(_route, params, _opts, searchParams) {
+            seen.push({ params, query: searchParams.toString() });
+            return React.createElement("main", null, "page");
+          },
+          params: { lang: "en" },
+          pprFallbackShell: { fallbackParamNames: ["lang"], routePattern: "/posts" },
+          route: runtimeRoute(),
+          searchParams: new URLSearchParams("q=1"),
+        });
+
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage(options),
+        );
+        expect(seen).toEqual([{ params: { lang: "en" }, query: "q=1" }]);
+        expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      });
+
+      it("prefetches at runtime for a parallel slot's config", async () => {
+        const seenQueries: string[] = [];
+        const panelPage = { default: () => null, unstable_instant: { prefetch: "runtime" } };
+        const { options } = createStaticShellOptions({
+          async buildPageElement(_route, _params, _opts, searchParams) {
+            seenQueries.push(searchParams.toString());
+            return React.createElement("main", null, "page");
+          },
+          route: createRoute({
+            pattern: "/posts",
+            routeSegments: ["posts"],
+            slots: {
+              panel: { page: panelPage },
+            },
+          }),
+          searchParams: new URLSearchParams("q=1"),
+        });
+
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage(options),
+        );
+        expect(seenQueries).toEqual(["q=1"]);
+        expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+      });
+
+      it("answers a draft mode prefetch with the page's payload", async () => {
+        const { options, isrSetFallbackShell } = createStaticShellOptions({
+          request: new Request("https://example.test/posts", {
+            headers: { cookie: "__prerender_bypass=draft-secret" },
+          }),
+          route: runtimeRoute(),
+        });
+
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage(options),
+        );
+        expect(response.headers.get("x-vinext-static-shell")).toBe("runtime");
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      });
     });
 
     it.each([

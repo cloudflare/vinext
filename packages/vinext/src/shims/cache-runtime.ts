@@ -61,7 +61,7 @@ import {
 import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
-  createPprFallbackShellSuspensePromise,
+  createPprFallbackShellRequestDataSuspensePromise,
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
   trackPprFallbackShellCacheTask,
@@ -109,12 +109,24 @@ export function replayCachedFunction(fn: object, args: CacheFlightArguments): Pr
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
 
+/**
+ * Stale time under which a runtime prefetch leaves a cache out (30 seconds), as
+ * Next.js's `RUNTIME_PREFETCH_DYNAMIC_STALE`: it's not worth prefetching.
+ */
+const RUNTIME_PREFETCH_DYNAMIC_STALE = 30;
+
 /** A cache result a shell render leaves out, as a dynamic hole. */
 const OMITTED_FROM_SHELL: unique symbol = Symbol("vinext.omittedFromShell");
 type ShellResult<T> = T | typeof OMITTED_FROM_SHELL;
 
-function isShortLivedCacheLife(life: { revalidate?: number | false; expire?: number }): boolean {
+type ShellCacheLife = { revalidate?: number | false; expire?: number; stale?: number };
+
+function isShortLivedCacheLife(life: ShellCacheLife): boolean {
   return life.revalidate === 0 || (life.expire !== undefined && life.expire < DYNAMIC_EXPIRE);
+}
+
+function isSoonStaleCacheLife(life: ShellCacheLife): boolean {
+  return life.stale !== undefined && life.stale < RUNTIME_PREFETCH_DYNAMIC_STALE;
 }
 
 /**
@@ -666,10 +678,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       markDynamicUsage();
       const expression = '"use cache: private"';
       const workUnit = workUnitAsyncStorage.getStore();
+      // A runtime prerender renders private caches, as Next.js's does.
       const isPrerenderWorkUnit =
-        workUnit?.type === "prerender" ||
-        workUnit?.type === "prerender-client" ||
-        workUnit?.type === "prerender-runtime";
+        workUnit?.type === "prerender" || workUnit?.type === "prerender-client";
       if (isPrerenderWorkUnit) {
         if (isRouteCacheabilityProbe()) {
           recordRouteCacheabilityProbeBailout("private-cache", {
@@ -682,7 +693,8 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         workUnit.signalPrerenderBailout?.(expression);
         return new Promise<TResult>(() => {});
       }
-      const fallbackShellPromise = createPprFallbackShellSuspensePromise<TResult>(expression);
+      const fallbackShellPromise =
+        createPprFallbackShellRequestDataSuspensePromise<TResult>(expression);
       if (fallbackShellPromise) return fallbackShellPromise;
       if (isRouteCacheabilityProbe()) {
         recordRouteCacheabilityProbeBailout("private-cache", {
@@ -698,9 +710,13 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
     // Like Next.js's final prerender, a shell leaves a short-lived outermost
     // cache out: it's not worth a static shell, so its lifetime and tags don't
     // count toward the shell's either. The value is still stored for requests.
+    // A runtime prefetch keeps short-lived caches and leaves out those about to
+    // go stale instead.
     const shellState = cacheContextStorage.getStore() ? null : getPprFallbackShellState();
-    const omitFromShell = (life: { revalidate?: number | false; expire?: number } | undefined) =>
-      shellState?.phase === "final" && life !== undefined && isShortLivedCacheLife(life);
+    const omitFromShell = (life: ShellCacheLife | undefined) =>
+      shellState?.phase === "final" &&
+      life !== undefined &&
+      (shellState.isRuntimePrefetch ? isSoonStaleCacheLife(life) : isShortLivedCacheLife(life));
 
     const task = trackPprFallbackShellCacheTask(async (): Promise<ShellResult<TResult>> => {
       const codec = await getRscModule();
@@ -835,9 +851,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       if (cacheVariant === "private") {
         const privateCache = _getPrivateState()._privateCache!;
         const privateHit = privateCache.get(cacheKey) as
-          | { result: TResult; serialized?: SerializedCacheResult["cacheEntry"] }
+          | {
+              isOmittedFromShell: boolean;
+              result: TResult;
+              serialized?: SerializedCacheResult["cacheEntry"];
+            }
           | undefined;
         if (privateHit !== undefined) {
+          if (privateHit.isOmittedFromShell) return OMITTED_FROM_SHELL;
           // The private cache is heterogeneous across cached functions; the key
           // includes this function's stable id, so a hit belongs to this TResult.
           if (privateHit.serialized) {
@@ -850,9 +871,15 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           return privateHit.result;
         }
 
-        const execution = await executeWithContext(callFn, callArgs, cacheVariant, rsc);
+        const execution = await executeWithContext(
+          callFn,
+          callArgs,
+          cacheVariant,
+          rsc,
+          omitFromShell,
+        );
         if (execution.cacheable) privateCache.set(cacheKey, execution);
-        return execution.result;
+        return execution.isOmittedFromShell ? OMITTED_FROM_SHELL : execution.result;
       }
 
       // Draft mode joins dev in skipping shared cache lookup/storage: the key
@@ -1279,7 +1306,9 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   args: any[],
   variant: string,
   rsc: RscModule,
+  omitFromShell?: (life: CacheLifeConfig) => boolean,
 ): Promise<{
+  isOmittedFromShell: boolean;
   result: Awaited<ReturnType<T>>;
   cacheable: boolean;
   serialized?: SerializedCacheResult["cacheEntry"];
@@ -1295,8 +1324,11 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
     variant,
     (value) => serializeCacheResult(value, rsc),
   );
-  recordRequestScopedCacheLife(effectiveLife);
+  // A cache left out of a shell doesn't count toward its lifetime.
+  const isOmittedFromShell = omitFromShell?.(effectiveLife) === true;
+  if (!isOmittedFromShell) recordRequestScopedCacheLife(effectiveLife);
   return {
+    isOmittedFromShell,
     result: collectedResult ? collectedResult.result : result,
     cacheable: collectedResult?.cacheEntry !== null,
     serialized: collectedResult?.cacheEntry,

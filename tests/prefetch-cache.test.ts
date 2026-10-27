@@ -3430,6 +3430,41 @@ describe("static-shell prefetch", () => {
     expect(resolveAutoAppRoutePrefetch("/test").staticShell).toBeUndefined();
   });
 
+  it("prefetches a runtime prefetch route's search-param and root-param hrefs as static shells", async () => {
+    useCacheComponentsProduction();
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      {
+        canPrefetchLoadingShell: false,
+        instant: "runtime",
+        isDynamic: false,
+        patternParts: ["runtime"],
+      },
+      {
+        canPrefetchLoadingShell: false,
+        hasRootParams: true,
+        instant: "runtime",
+        isDynamic: true,
+        patternParts: [":lang", "runtime-root"],
+      },
+      { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["test"] },
+    ];
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    // Next.js renders a runtime prefetch with the request's search params and
+    // root params, so those hrefs prefetch it too.
+    expect(resolveAutoAppRoutePrefetch("/runtime?q=1")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/en/runtime-root")).toMatchObject({
+      cacheForNavigation: false,
+      staticShell: true,
+    });
+    expect(resolveAutoAppRoutePrefetch("/test?q=1").staticShell).toBeUndefined();
+    expect(resolveAutoAppRoutePrefetch("/runtime?q=1", "/feed").staticShell).toBeUndefined();
+  });
+
   it("keeps a partial shell for navigations to show, never to consume", async () => {
     useCacheComponentsProduction();
     const rscUrl = await prefetchStaticShell("partial");

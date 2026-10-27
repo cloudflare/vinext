@@ -20,6 +20,8 @@ type WorkUnitOptions = {
   /** Prerender outside the build, as a runtime fallback-shell render does. */
   prerender?: boolean;
   route?: string | (() => string);
+  /** Prerender a runtime prefetch, with the request's data. */
+  runtime?: boolean;
 };
 
 export function runWithPrerenderWorkUnit(
@@ -53,7 +55,7 @@ function runWithWorkUnit(
 
 async function runWithPrerenderWorkUnitOwner(
   fn: () => Promise<Response>,
-  options?: { route?: string | (() => string) },
+  options?: { route?: string | (() => string); runtime?: boolean },
 ): Promise<Response> {
   const controller = new AbortController();
   const route = typeof options?.route === "function" ? options.route() : options?.route;
@@ -63,7 +65,7 @@ async function runWithPrerenderWorkUnitOwner(
   });
   const render = workUnitAsyncStorage.run(
     {
-      type: "prerender",
+      type: options?.runtime === true ? "prerender-runtime" : "prerender",
       renderSignal: controller.signal,
       route,
       signalPrerenderBailout: signalBailout,

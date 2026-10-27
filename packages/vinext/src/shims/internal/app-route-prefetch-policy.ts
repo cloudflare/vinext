@@ -205,9 +205,14 @@ export function resolveAutoAppRoutePrefetch(
   // Like Next.js, a Cache Components build prefetches a page's static shell,
   // so the prefetch never renders the page's dynamic holes. An intercepted
   // page has none: it's never prerendered.
+  //
+  // A route that prefetches at runtime renders the prefetch with the request's
+  // search params and root params, so those hrefs get one too
+  // (`PrefetchHint.HasRuntimePrefetch`).
   const staticShell =
-    isReusablePage &&
-    !requiresRouteTreePrefetch &&
+    (isReusablePage ||
+      (route.instant === "runtime" && !hasCacheComponentsLearningOnlyDynamicPath)) &&
+    (!requiresRouteTreePrefetch || route.instant === "runtime") &&
     interceptionContext === null &&
     process.env.NODE_ENV === "production" &&
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true";

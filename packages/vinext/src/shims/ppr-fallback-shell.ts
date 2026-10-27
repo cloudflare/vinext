@@ -16,6 +16,12 @@ export type PprFallbackShellState = {
   hasDynamicBoundary: boolean;
   isFinalRenderStarted: boolean;
   isAbortScheduled: boolean;
+  /**
+   * A runtime prefetch's render, as Next.js's `prerender-runtime`: the
+   * request's cookies, headers and private caches are rendered, and only
+   * `connection()` and caches about to go stale leave holes.
+   */
+  isRuntimePrefetch: boolean;
   pendingAbortCleanup: (() => void) | null;
   pendingCacheReadyCleanup: (() => void) | null;
   pendingCacheTasks: number;
@@ -25,6 +31,7 @@ export type PprFallbackShellState = {
 
 type CreatePprFallbackShellStateOptions = {
   fallbackParamNames: readonly string[];
+  isRuntimePrefetch?: boolean;
   routePattern: string;
 };
 
@@ -159,6 +166,7 @@ export function createPprFallbackShellState(
     hasDynamicBoundary: false,
     isFinalRenderStarted: false,
     isAbortScheduled: false,
+    isRuntimePrefetch: options.isRuntimePrefetch === true,
     pendingAbortCleanup: null,
     pendingCacheReadyCleanup: null,
     pendingCacheTasks: 0,
@@ -180,7 +188,8 @@ export function trackPprFallbackShellCacheTask<T>(
   cacheVariant: string,
 ): Promise<T> {
   const state = getPprFallbackShellState();
-  if (state === null || cacheVariant === "private") {
+  // A runtime prefetch renders private caches, so the shell waits for them.
+  if (state === null || (cacheVariant === "private" && !state.isRuntimePrefetch)) {
     return fn();
   }
 
@@ -286,6 +295,19 @@ export function markPprFallbackShellDynamicBoundary(): void {
 export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
   const state = getPprFallbackShellState();
   if (state === null) return null;
+  return createPprFallbackShellSuspensePromiseForState<T>(state, expression);
+}
+
+/**
+ * The hole a request-data API (`cookies()`, `headers()`, a private cache)
+ * leaves in a shell, or null when it renders: outside a shell, and in a runtime
+ * prefetch, which renders the request's data.
+ */
+export function createPprFallbackShellRequestDataSuspensePromise<T>(
+  expression: string,
+): Promise<T> | null {
+  const state = getPprFallbackShellState();
+  if (state === null || state.isRuntimePrefetch) return null;
   return createPprFallbackShellSuspensePromiseForState<T>(state, expression);
 }
 
