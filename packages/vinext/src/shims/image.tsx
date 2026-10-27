@@ -26,17 +26,23 @@ import type {
   StaticRequire,
 } from "@vinext/types/next/upstream/dist/shared/lib/get-img-props";
 import {
+  __customImageLoader,
   __dangerouslyAllowSVG,
   __globallyUnoptimized,
   __isDev,
   RESPONSIVE_WIDTHS,
   generateImageAttributes,
+  generateLoaderAttributes,
   getFillStyle,
   imageOptimizationUrl,
+  isInlineSrc,
   isRemoteUrl,
   isSvgUrl,
   resolveImageSource,
   sanitizeBlurDataURL,
+  missingLoaderError,
+  type LegacyLayoutProp,
+  withConfiguredLoader,
   validateRemoteUrl,
 } from "./image-props.js";
 import { useMergedRef } from "./use-merged-ref.js";
@@ -136,6 +142,11 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   },
   ref,
 ) {
+  // Next.js drops a caller-provided srcSet (`delete rest.srcSet` in getImgProps)
+  // so it can't override the generated candidates.
+  delete (rest as { srcSet?: unknown }).srcSet;
+  const legacyLayout = (rest as LegacyLayoutProp).__vinextLegacyLayout;
+  delete (rest as LegacyLayoutProp).__vinextLegacyLayout;
   // Dedup refs: ensure onLoad and onError fire at most once per src per mount.
   // Matches Next.js behavior — prevents double-firing from React re-renders,
   // strict-mode double-invocation, or state updates inside the handler itself.
@@ -183,6 +194,13 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
     height: imgHeight,
     blurDataURL: imgBlurDataURL,
   } = resolveImageSource({ src: srcProp, width, height, blurDataURL });
+  // next/legacy/image's built-in "custom" loader only throws when it has to
+  // build a URL. next/image rejects a missing loader earlier, regardless of
+  // `unoptimized` (shims/image-external.tsx).
+  const unoptimizedProp = _unoptimized === true || __globallyUnoptimized;
+  if (!loader && __customImageLoader && !unoptimizedProp && !isInlineSrc(src)) {
+    throw missingLoaderError(src);
+  }
   const shouldPreload = preload === true || priority === true;
   const priorityFetchPriority = priority ? "high" : undefined;
   const imageLoading = priority ? "eager" : shouldPreload ? loading : (loading ?? "lazy");
@@ -272,11 +290,29 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         }
       : undefined;
 
-  if (_unoptimized === true || __globallyUnoptimized) {
+  // Next.js (getImgProps and next/legacy/image) treats empty, data: and blob:
+  // sources as unoptimized, so neither a custom loader nor /_next/image sees them.
+  const unoptimized = unoptimizedProp || isInlineSrc(src);
+  if (unoptimized || loader) {
     // Unoptimized images are fetched directly by the browser, so intentionally
     // skip remote URL validation: there is no server-side optimizer fetch and
-    // therefore no SSRF surface. This matches Next.js behavior.
-    const renderedSrc = overrideSrc || src;
+    // therefore no SSRF surface. This matches Next.js behavior. A custom
+    // loader (the `loader` prop, or `images.loaderFile` when no prop is given)
+    // owns the URL the same way, and gets the built-in loader's per-width
+    // srcSet. `quality` is passed through as given (possibly undefined); only
+    // the built-in loader defaults it to 75.
+    const loaderAttributes =
+      loader && !unoptimized
+        ? generateLoaderAttributes(
+            loader,
+            src,
+            fill ? undefined : imgWidth,
+            typeof quality === "string" ? Number(quality) : quality,
+            sizes,
+            legacyLayout,
+          )
+        : undefined;
+    const resolvedSrc = overrideSrc || (loaderAttributes ? loaderAttributes.src : src);
     const sanitizedBlur = imgBlurDataURL ? sanitizeBlurDataURL(imgBlurDataURL) : undefined;
     const blurStyle =
       !blurComplete && placeholder === "blur" && sanitizedBlur
@@ -289,53 +325,30 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
         : undefined;
     preloadImageResource({
       shouldPreload,
-      src: renderedSrc,
+      src: resolvedSrc,
+      srcSet: loaderAttributes?.srcSet,
+      sizes: loaderAttributes?.sizes,
       fetchPriority: priorityFetchPriority,
     });
     return (
       <img
         ref={mergedRef}
-        src={renderedSrc}
         alt={alt}
         width={fill ? undefined : imgWidth}
         height={fill ? undefined : imgHeight}
         loading={imageLoading}
         fetchPriority={priorityFetchPriority}
         decoding="async"
+        srcSet={loaderAttributes?.srcSet}
+        sizes={loaderAttributes?.sizes}
+        // After srcSet/sizes, as in Next.js: Safari would otherwise start
+        // fetching `src` before it sees the responsive candidates.
+        src={resolvedSrc}
         className={className}
         data-nimg={fill ? "fill" : "1"}
         onLoad={handleLoad}
         onError={handleError}
         style={fill ? getFillStyle(style, blurStyle) : { ...blurStyle, ...style }}
-        {...rest}
-      />
-    );
-  }
-
-  // If a custom loader is provided, use basic img with loader URL
-  if (loader) {
-    const resolvedQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
-    const resolvedSrc = loader({ src, width: imgWidth ?? 0, quality: resolvedQuality });
-    preloadImageResource({
-      shouldPreload,
-      src: resolvedSrc,
-      sizes,
-      fetchPriority: priorityFetchPriority,
-    });
-    return (
-      <img
-        ref={mergedRef}
-        src={resolvedSrc}
-        alt={alt}
-        width={fill ? undefined : imgWidth}
-        height={fill ? undefined : imgHeight}
-        loading={imageLoading}
-        decoding="async"
-        sizes={sizes}
-        className={className}
-        onLoad={handleLoad}
-        onError={handleError}
-        style={fill ? getFillStyle(style) : style}
         {...rest}
       />
     );
@@ -449,7 +462,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // Each entry points to /_next/image with the appropriate width.
   const optimizedAttributes =
     imgWidth && !fill && !skipOptimization
-      ? generateImageAttributes(src, imgWidth, imgQuality, sizes)
+      ? generateImageAttributes(imageOptimizationUrl, src, imgWidth, imgQuality, sizes)
       : undefined;
   const srcSet = optimizedAttributes
     ? optimizedAttributes.srcSet
@@ -515,7 +528,13 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
 
 // Annotated so declaration emit references ImageProps by name and keeps its
 // @deprecated tags (https://github.com/vercel/next.js/pull/98597).
+//
+// next/image applies `images.loaderFile`; next/legacy/image (which sets the
+// internal layout prop) does not, as in Next.js.
 const Image: React.ForwardRefExoticComponent<ImageProps & React.RefAttributes<HTMLImageElement>> =
-  ImageImpl;
+  forwardRef<HTMLImageElement, ImageProps>(function Image(props, ref) {
+    const isLegacy = (props as LegacyLayoutProp).__vinextLegacyLayout !== undefined;
+    return <ImageImpl {...(isLegacy ? props : withConfiguredLoader(props))} ref={ref} />;
+  });
 
 export default Image;
