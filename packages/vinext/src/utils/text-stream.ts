@@ -34,11 +34,10 @@ export async function readStreamAsText(stream: ReadableStream<Uint8Array>): Prom
 }
 
 /**
- * Drain a byte stream up to `maxBytes` of *raw* input, returning the decoded
- * text (UTF-8 unless the caller passes its own `decoder`). If the raw size
- * limit is exceeded, cancellation is signalled and `onLimitExceeded` is
- * invoked; it MUST throw — its return type is `never` to enforce that. Each
- * caller passes its own error type.
+ * Drain a UTF-8 byte stream up to `maxBytes` of *raw* input, returning the
+ * decoded text. If the raw size limit is exceeded, cancellation is signalled
+ * and `onLimitExceeded` is invoked; it MUST throw — its return type is
+ * `never` to enforce that. Each caller passes its own error type.
  *
  * The size check is on raw bytes (pre-decode) to bound memory before
  * paying the decoder cost.
@@ -47,9 +46,9 @@ export async function readStreamAsTextWithLimit(
   stream: ReadableStream<Uint8Array>,
   maxBytes: number,
   onLimitExceeded: () => never,
-  decoder: TextDecoder = new TextDecoder(),
 ): Promise<string> {
   const reader = stream.getReader();
+  const decoder = new TextDecoder();
   const chunks: string[] = [];
   let totalSize = 0;
 
