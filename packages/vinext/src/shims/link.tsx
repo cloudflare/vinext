@@ -474,6 +474,7 @@ function prefetchUrl(
           hasFreshLearningOnlyPrefetchCacheEntry,
           hasSearchAgnosticPrefetchShellForRoute,
           hasPrefetchCacheEntryForNavigation,
+          hasNavigableVisitedResponse,
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
           promotePrefetchCacheEntryForNavigation,
@@ -708,6 +709,14 @@ function prefetchUrl(
               .then((response) => response.arrayBuffer())
               .catch(() => {});
           }
+          return;
+        }
+        // A navigation reuses an earlier navigation's response kept for
+        // `staleTimes.dynamic`, so a shell adds nothing.
+        if (
+          !autoPrefetch.cacheForNavigation &&
+          hasNavigableVisitedResponse(fullHref, rscUrl, interceptionContext, mountedSlotsHeader)
+        ) {
           return;
         }
         if (

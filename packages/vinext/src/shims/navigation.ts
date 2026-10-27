@@ -1316,6 +1316,37 @@ export function seedFullPrefetchFromVisitedResponse(
   return true;
 }
 
+/**
+ * Whether a navigation to the href would reuse the visited response of an
+ * earlier navigation, kept for `staleTimes.dynamic`. Next.js writes that
+ * navigation's data into its segment cache, so a prefetch finds it there. A
+ * navigation within the current pathname bypasses that response, as
+ * `classifyEarlyNavigationIntent` decides.
+ */
+export function hasNavigableVisitedResponse(
+  href: string,
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+): boolean {
+  const intent = navigationPlanner.classifyEarlyNavigationIntent({
+    basePath: __basePath,
+    currentUrlSpace: "browser",
+    currentHref: window.location.href,
+    mode: "push",
+    scroll: false,
+    targetHref: href,
+  });
+  if (intent.kind !== "flightNavigation" || intent.bypassNavigationCache) return false;
+  return (
+    getNavigationRuntime()?.functions.hasNavigableVisitedResponse?.(
+      rscUrl,
+      interceptionContext,
+      mountedSlotsHeader,
+    ) === true
+  );
+}
+
 export function deletePrefetchResponseSnapshot(
   rscUrl: string,
   snapshot: CachedRscResponse,
@@ -3317,6 +3348,14 @@ const _appRouter: AppRouterInstance = {
         ) {
           return;
         }
+      } else if (
+        options?.onInvalidate === undefined &&
+        hasNavigableVisitedResponse(fullHref, rscUrl, interceptionContext, mountedSlotsHeader)
+      ) {
+        // The navigation reuses that response, so a shell adds nothing. An
+        // `onInvalidate` callback needs a prefetch entry to expire with, so a
+        // prefetch that passes one still fetches its shell.
+        return;
       }
       prefetched.add(cacheKey);
       const fetchFullRscPayload = () =>

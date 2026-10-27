@@ -7,6 +7,7 @@ import {
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
   findVisitedResponseForFullPrefetch,
+  hasNavigableVisitedResponse,
   hasNavigationResponseHistoryLifetime,
   isVisitedResponseCacheEntryFresh,
   revokeHistoryRestoreNavigationReuse,
@@ -140,6 +141,66 @@ describe("visited response cache freshness", () => {
     expect(
       findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc?_rsc=b"], "/feed", "slot:modal"),
     ).toBe(null);
+  });
+
+  it("finds a navigable visited response kept for staleTimes.dynamic", () => {
+    const now = 1_000_000;
+    const kept = createVisitedResponseCacheEntry({
+      fallbackTtlMs: 0,
+      now,
+      mountedSlotsHeader: "slot:modal",
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 180 }),
+    });
+    const cache = new Map([["/photo/1.rsc?_rsc=navigation", kept]]);
+
+    // Found whatever the prefetch's `_rsc` value.
+    expect(
+      hasNavigableVisitedResponse(
+        cache,
+        "/photo/1.rsc?_rsc=prefetch",
+        null,
+        "slot:modal",
+        now + 1_000,
+      ),
+    ).toBe(true);
+    // Read as a navigation reads it.
+    expect(hasNavigableVisitedResponse(cache, "/photo/1.rsc", null, null, now + 1_000)).toBe(false);
+    expect(
+      hasNavigableVisitedResponse(cache, "/photo/1.rsc", "/feed", "slot:modal", now + 1_000),
+    ).toBe(false);
+    expect(
+      hasNavigableVisitedResponse(cache, "/photo/1.rsc", null, "slot:modal", now + 181_000),
+    ).toBe(false);
+    revokeHistoryRestoreNavigationReuse(cache);
+    expect(
+      hasNavigableVisitedResponse(cache, "/photo/1.rsc", null, "slot:modal", now + 1_000),
+    ).toBe(false);
+  });
+
+  it("ignores a visited response that staleTimes.dynamic did not keep", () => {
+    const now = 1_000_000;
+    const cache = new Map([
+      [
+        "/static.rsc",
+        createVisitedResponseCacheEntry({
+          now,
+          params: {},
+          response: createCachedResponse({ serverStaleTime: { kind: "resolved", seconds: 300 } }),
+        }),
+      ],
+      [
+        "/dynamic.rsc",
+        createVisitedResponseCacheEntry({
+          now,
+          params: {},
+          response: createCachedResponse({ dynamicStaleTimeSeconds: 0 }),
+        }),
+      ],
+    ]);
+
+    expect(hasNavigableVisitedResponse(cache, "/static.rsc", null, null, now + 1_000)).toBe(false);
+    expect(hasNavigableVisitedResponse(cache, "/dynamic.rsc", null, null, now + 1_000)).toBe(false);
   });
 
   it("dates a full prefetch's visited response from when its payload arrived", () => {

@@ -98,6 +98,12 @@ export type NavigationRuntimeFunctions = {
     interceptionContext: string | null,
     mountedSlotsHeader: string | null,
   ) => { navigatedAt: number; response: CachedRscResponse } | null;
+  /** Whether a navigation to the URL would reuse a visited response kept for `staleTimes.dynamic`. */
+  hasNavigableVisitedResponse?: (
+    rscUrl: string,
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+  ) => boolean;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
@@ -173,6 +179,7 @@ export function isNavigationRuntimeFunctions(value: unknown): value is Navigatio
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "readVisitedResponseForFullPrefetch")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "hasNavigableVisitedResponse")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&

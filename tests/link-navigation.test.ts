@@ -2081,6 +2081,74 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("skips a Link's loading shell while a navigation would reuse its kept visited response", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({ href: "/products/1", nodeEnv: "production" });
+
+    try {
+      const hasNavigableVisitedResponse = vi.fn(
+        (_rscUrl: string, _context: string | null, _slots: string | null) => true,
+      );
+      const runtime = Reflect.get(
+        window,
+        Symbol.for("vinext.navigationRuntime"),
+      ) as NavigationRuntime;
+      runtime.functions.hasNavigableVisitedResponse = hasNavigableVisitedResponse;
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks(
+        () =>
+          hasNavigableVisitedResponse.mock.calls.length > 0 || result.fetch.mock.calls.length > 0,
+      );
+
+      expect(hasNavigableVisitedResponse).toHaveBeenCalledWith(
+        expect.stringContaining("/products/1"),
+        null,
+        null,
+      );
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      // Without one, the shell is fetched.
+      hasNavigableVisitedResponse.mockReturnValue(false);
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
+  it("fetches a Link's shell for a search change, whose navigation bypasses the visited response", async () => {
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({
+      href: "/products/1?tab=b",
+      nodeEnv: "production",
+      windowOverrides: {
+        location: {
+          href: "https://example.com/products/1?tab=a",
+          origin: "https://example.com",
+          pathname: "/products/1",
+          search: "?tab=a",
+        },
+      },
+    });
+
+    try {
+      const hasNavigableVisitedResponse = vi.fn(() => true);
+      const runtime = Reflect.get(
+        window,
+        Symbol.for("vinext.navigationRuntime"),
+      ) as NavigationRuntime;
+      runtime.functions.hasNavigableVisitedResponse = hasNavigableVisitedResponse;
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      expect(hasNavigableVisitedResponse).not.toHaveBeenCalled();
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches a dynamically rendered search-param Link's loading shell instead of its page", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({

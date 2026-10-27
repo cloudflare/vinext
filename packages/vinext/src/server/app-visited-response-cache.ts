@@ -152,6 +152,33 @@ export function revokeHistoryRestoreNavigationReuse(
 }
 
 /**
+ * Whether a navigation to the URL would reuse a visited response kept for
+ * `staleTimes.dynamic`, which Next.js writes into its segment cache. The entry
+ * is read as a navigation reads it: under the URL's own identity, fresh, still
+ * reusable after any history restore, and fitting the mounted slots unless it
+ * replays committed elements.
+ */
+export function hasNavigableVisitedResponse(
+  cache: Map<string, VisitedResponseCacheEntry>,
+  rscUrl: string,
+  interceptionContext: string | null,
+  mountedSlotsHeader: string | null,
+  now: number,
+): boolean {
+  const entry = findVisitedResponseCacheEntry(cache, rscUrl, interceptionContext)?.entry;
+  const dynamicStaleTime =
+    entry?.response.completedDynamicStaleTimeSeconds ?? entry?.response.dynamicStaleTimeSeconds;
+  return (
+    entry !== undefined &&
+    dynamicStaleTime !== undefined &&
+    dynamicStaleTime > 0 &&
+    entry.navigationReuseRevoked !== true &&
+    isVisitedResponseCacheEntryFresh(entry, { navigationKind: "navigate", now }) &&
+    (entry.elements !== undefined || entry.mountedSlotsHeader === mountedSlotsHeader)
+  );
+}
+
+/**
  * Next.js fulfills a full prefetch from the BFCache, which holds the data of
  * every navigation, while it is within the static stale time of that
  * navigation (`attemptToFulfillDynamicSegmentFromBFCache`). Navigation reuse

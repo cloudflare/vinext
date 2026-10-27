@@ -156,6 +156,7 @@ import {
   deleteVisitedResponseCacheEntry,
   findVisitedResponseCacheEntry,
   findVisitedResponseForFullPrefetch,
+  hasNavigableVisitedResponse,
   hasNavigationResponseHistoryLifetime,
   revokeHistoryRestoreNavigationReuse,
   isVisitedResponseCacheEntryFresh,
@@ -3149,6 +3150,14 @@ function bootstrapHydration(
         rscUrls,
         interceptionContext,
         mountedSlotsHeader,
+      ),
+    hasNavigableVisitedResponse: (rscUrl, interceptionContext, mountedSlotsHeader) =>
+      hasNavigableVisitedResponse(
+        visitedResponseCache,
+        rscUrl,
+        interceptionContext,
+        mountedSlotsHeader,
+        Date.now(),
       ),
     preparePrefetchResponse: (response) => {
       if (!isRscResponseCompatible(response.headers.get(VINEXT_RSC_COMPATIBILITY_ID_HEADER))) {

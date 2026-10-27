@@ -1595,6 +1595,96 @@ describe("prefetch cache eviction", () => {
     expect(onInvalidate).toHaveBeenCalledTimes(1);
   });
 
+  it("skips a shell while a navigation would reuse the page's kept visited response", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const hasNavigableVisitedResponse = vi.fn(
+      (_rscUrl: string, _context: string | null, _slots: string | null) => true,
+    );
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
+        hasNavigableVisitedResponse,
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() => hasNavigableVisitedResponse.mock.calls.length > 0);
+    expect(hasNavigableVisitedResponse).toHaveBeenCalledWith(
+      expect.stringContaining("/reports"),
+      null,
+      null,
+    );
+    expect(hasNavigableVisitedResponse).toHaveBeenCalledTimes(1);
+    expect(fetch).not.toHaveBeenCalled();
+
+    // An onInvalidate callback needs a prefetch entry to expire with.
+    appRouterInstance.prefetch("/reports", { onInvalidate: vi.fn() });
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches a shell for a search change, whose navigation bypasses the visited response", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    const location = (globalThis as any).window.location;
+    location.pathname = "/reports";
+    location.search = "?tab=a";
+    location.href = "http://localhost/reports?tab=a";
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    const hasNavigableVisitedResponse = vi.fn(() => true);
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({
+          pathAndSearch: "/reports?tab=a",
+          routeId: "route:/reports",
+        }),
+        hasNavigableVisitedResponse,
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/reports?tab=b");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(hasNavigableVisitedResponse).not.toHaveBeenCalled();
+  });
+
+  it("fetches a shell when no kept visited response would serve the navigation", async () => {
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
+    ];
+    const fetch = vi.fn(
+      async () => new Response("flight", { headers: { "content-type": "text/x-component" } }),
+    );
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
+        hasNavigableVisitedResponse: () => false,
+        navigate: vi.fn(),
+      },
+    };
+
+    appRouterInstance.prefetch("/reports");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length > 0);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("aborts an in-flight learning-only request when a full prefetch supersedes it (#2707)", async () => {
     (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
       { canPrefetchLoadingShell: true, patternParts: ["reports"], isDynamic: false },
