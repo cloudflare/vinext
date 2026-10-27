@@ -3,11 +3,7 @@ import { Readable, Writable, Stream } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import {
-  PagesBodyParseError,
-  createPagesBodyDecoder,
-  isJsonMediaType,
-} from "./pages-media-type.js";
+import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -132,23 +128,14 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(
-  request: Request,
-  maxBytes: number,
-  decoder: TextDecoder,
-): Promise<string> {
+async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
   if (!request.body) {
     return "";
   }
 
-  return readStreamAsTextWithLimit(
-    request.body,
-    maxBytes,
-    () => {
-      throw new PagesBodyParseError("Request body too large", 413);
-    },
-    decoder,
-  );
+  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
+    throw new PagesBodyParseError("Request body too large", 413);
+  });
 }
 
 /**
@@ -165,8 +152,6 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
-  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
-  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
@@ -174,7 +159,7 @@ export async function parsePagesApiBody(
 
   let rawBody = "";
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -182,6 +167,7 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
+  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
     return isJsonMediaType(mediaType)
       ? {}
