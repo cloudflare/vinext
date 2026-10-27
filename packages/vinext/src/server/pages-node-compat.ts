@@ -361,7 +361,7 @@ class PagesResponseStream extends Writable {
   }
 
   json(data: unknown): void {
-    this.resHeaders["content-type"] = "application/json";
+    this.resHeaders["content-type"] = "application/json; charset=utf-8";
     this.end(JSON.stringify(data));
   }
 
@@ -382,7 +382,7 @@ class PagesResponseStream extends Writable {
     }
 
     if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
-      this.resHeaders["content-type"] = "application/json";
+      this.resHeaders["content-type"] = "application/json; charset=utf-8";
       this.end(JSON.stringify(data));
       return;
     }

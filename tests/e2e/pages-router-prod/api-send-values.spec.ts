@@ -11,6 +11,7 @@ test.describe("Pages API res.send() scalar values", () => {
       const res = await request.get(`${BASE}/api/send-value?value=${value}`);
       expect(res.status()).toBe(200);
       expect(await res.text()).toBe("");
+      expect(res.headers()["content-type"]).toBeUndefined();
 
       const typed = await request.get(`${BASE}/api/send-value?value=${value}&type=text/custom`);
       expect(await typed.text()).toBe("");
@@ -28,7 +29,7 @@ test.describe("Pages API res.send() scalar values", () => {
       const res = await request.get(`${BASE}/api/send-value?value=${value}`);
       expect(res.status()).toBe(200);
       expect(await res.text()).toBe(body);
-      expect(res.headers()["content-type"]).toBe("application/json");
+      expect(res.headers()["content-type"]).toBe("application/json; charset=utf-8");
     });
   }
 });

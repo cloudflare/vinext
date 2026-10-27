@@ -329,7 +329,7 @@ function enhanceApiObjects(
     },
 
     json(this: NextApiResponse, data: unknown) {
-      this.setHeader("Content-Type", "application/json");
+      this.setHeader("Content-Type", "application/json; charset=utf-8");
       this.end(JSON.stringify(data));
     },
 
@@ -350,7 +350,7 @@ function enhanceApiObjects(
       }
 
       if (typeof data === "object" || typeof data === "number" || typeof data === "boolean") {
-        this.setHeader("Content-Type", "application/json");
+        this.setHeader("Content-Type", "application/json; charset=utf-8");
         this.end(JSON.stringify(data));
       } else {
         if (!this.getHeader("Content-Type")) {

@@ -776,7 +776,7 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(res._statusCode).toBe(201);
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ ok: true });
     });
   });
@@ -792,7 +792,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ message: "hello" });
     });
 
@@ -822,7 +822,7 @@ describe("handleApiRoute", () => {
 
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
-      expect(res._headers["content-type"]).toBe("application/json");
+      expect(res._headers["content-type"]).toBe("application/json; charset=utf-8");
       expect(JSON.parse(res._body as string)).toEqual({ key: "value" });
     });
 
