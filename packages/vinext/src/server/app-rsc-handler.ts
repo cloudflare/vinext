@@ -3167,6 +3167,11 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     const requestContext = createRequestContext({
       headersContext,
       executionContext,
+      // Like Next.js's work store, an authorized on-demand revalidation makes
+      // the data caches skip their reads for the whole request.
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(
+        request.headers.get(PRERENDER_REVALIDATE_HEADER),
+      ),
       // The Node production server's request already follows its signal, so
       // it passes the signal itself.
       requestSignal: executionContext?.requestSignal ?? rawRequestSignal,

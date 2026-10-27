@@ -39,6 +39,7 @@ type PutOptions = {
   purgeExisting?: boolean;
   replacesRevision?: string | null;
   replacesTagExpiration?: { tags: string[]; expiration: number };
+  generatedAt?: number;
   revalidator?: Record<string, SerializableValue>;
   status?: number;
   shards?: number;
@@ -183,6 +184,9 @@ async function put(path: string, body: BodyInit | null, options: PutOptions = {}
   if (options.replacesRevision) headers.set("X-Replaces-Revision", options.replacesRevision);
   if (options.replacesTagExpiration) {
     headers.set("X-Replaces-Tag-Expiration", JSON.stringify(options.replacesTagExpiration));
+  }
+  if (options.generatedAt !== undefined) {
+    headers.set("X-Generated-At", String(options.generatedAt));
   }
   if (options.expiryBehavior) headers.set("X-Expiry-Behavior", options.expiryBehavior);
   if (options.bodyFailure) headers.set("X-Body-Failure", "1");
@@ -652,6 +656,380 @@ test("replacesRevision lets a refresh land once the soft tags its read checked e
     replacesTagExpiration: { tags: [1], expiration: 0 } as never,
   });
   assert.equal(malformed.json.backingStoreUpdated, true);
+});
+
+test("generatedAt publishes an entry generated before its tags were invalidated stale", async () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const options = { noRevalidator: true, tags: ["generated-at-invalidated"] };
+  const generatedAt = Date.now();
+  await tick();
+  await invalidate({ tags: options.tags });
+  await tick();
+
+  await put("/generated-at-invalidated", "before", { ...options, generatedAt });
+  const before = await read("/generated-at-invalidated");
+  assert.equal(before.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await before.text(), "before");
+
+  await put("/generated-at-invalidated", "after", { ...options, generatedAt: Date.now() });
+  const after = await read("/generated-at-invalidated");
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "after");
+
+  // Without a valid generatedAt, the write is dated at its publication, as before.
+  await put("/generated-at-invalidated-unset", "unset", options);
+  await put("/generated-at-invalidated-malformed", "malformed", {
+    ...options,
+    generatedAt: Number.NaN,
+  });
+  for (const path of ["/generated-at-invalidated-unset", "/generated-at-invalidated-malformed"]) {
+    const response = await read(path);
+    assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH", path);
+    await response.arrayBuffer();
+  }
+});
+
+test("generatedAt publishes an entry generated before its tags were purged expired", async () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const options = {
+    expiryBehavior: "miss" as const,
+    noRevalidator: true,
+    tags: ["generated-at-purged"],
+  };
+  const generatedAt = Date.now();
+  await tick();
+  await purge({ tags: options.tags });
+  await tick();
+
+  const before = await put("/generated-at-purged", "before", { ...options, generatedAt });
+  assert.equal(before.json.backingStoreUpdated, true);
+  const expired = await read("/generated-at-purged");
+  assert.equal(expired.status, 404);
+  assert.equal(expired.headers.get("X-Workers-Response-Store"), "MISS");
+  await expired.arrayBuffer();
+
+  await put("/generated-at-purged", "after", { ...options, generatedAt: Date.now() });
+  const after = await read("/generated-at-purged");
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "after");
+});
+
+test("generatedAt counts an invalidation in the generation's starting millisecond as after it", async () => {
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const invalidated = { noRevalidator: true, tags: ["generated-at-tie-invalidated"] };
+  await invalidate({ tags: invalidated.tags });
+  const [{ stale_at: staleAt }] = (await storage.exec(
+    "SELECT stale_at FROM tag_invalidations WHERE tag = ?",
+    invalidated.tags[0],
+  )) as [{ stale_at: number }];
+  await put("/generated-at-tie-invalidated", "tie", { ...invalidated, generatedAt: staleAt });
+  const stale = await read("/generated-at-tie-invalidated");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await stale.arrayBuffer();
+
+  const purged = {
+    expiryBehavior: "miss" as const,
+    noRevalidator: true,
+    tags: ["generated-at-tie-purged"],
+  };
+  await purge({ tags: purged.tags });
+  const purgedAt = await tagExpiration(purged.tags);
+  await put("/generated-at-tie-purged", "tie", { ...purged, generatedAt: purgedAt });
+  const expired = await read("/generated-at-tie-purged");
+  assert.equal(expired.headers.get("X-Workers-Response-Store"), "MISS");
+  await expired.arrayBuffer();
+});
+
+test("generatedAt expires a regeneration that outlasted an expire deadline", async () => {
+  const path = "/generated-at-regeneration-deadline";
+  const tags = [path.slice(1)];
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const entry = async () =>
+    (
+      (await storage.exec(
+        "SELECT active_revision, swr_until FROM entries WHERE cache_key LIKE ?",
+        `%${path}%`,
+      )) as { active_revision: number; swr_until: number }[]
+    )[0]!;
+  await put(path, "first", {
+    tags,
+    revalidator: { cacheTags: tags, delayMs: 1500, generatedAt: true },
+  });
+  // invalidate() publishes the stale copy as a new revision.
+  await invalidate({ tags, expire: 1 });
+  const { active_revision: revision } = await entry();
+  // The stale read starts a regeneration that is still running at the deadline.
+  const stale = await read(path);
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await stale.arrayBuffer();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await entry()).active_revision > revision) break;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  const regenerated = await entry();
+  assert.ok(regenerated.active_revision > revision);
+  assert.ok(regenerated.swr_until <= Date.now());
+});
+
+test("generatedAt publishes an entry generated before a passed expire deadline expired", async () => {
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+  const options = {
+    expiryBehavior: "miss" as const,
+    noRevalidator: true,
+    tags: ["generated-at-deadline"],
+  };
+  const generatedBefore = Date.now();
+  await tick();
+  await invalidate({ tags: options.tags, expire: 1 });
+  await tick();
+  // Generated while the tag was stale, but before its deadline.
+  const generatedStale = Date.now();
+  await new Promise((resolve) => setTimeout(resolve, 1100));
+
+  for (const [path, generatedAt] of [
+    ["/generated-at-deadline-before", generatedBefore],
+    ["/generated-at-deadline-stale", generatedStale],
+  ] as const) {
+    const write = await put(path, "expired", { ...options, generatedAt });
+    assert.equal(write.json.backingStoreUpdated, true, path);
+    const expired = await read(path);
+    assert.equal(expired.headers.get("X-Workers-Response-Store"), "MISS", path);
+    await expired.arrayBuffer();
+  }
+
+  await put("/generated-at-deadline-after", "after", { ...options, generatedAt: Date.now() });
+  const after = await read("/generated-at-deadline-after");
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "after");
+});
+
+test.each([
+  { follower: "after", body: "third", status: "BLOB-FRESH" },
+  // A write without generatedAt is dated at publication, after the leader started.
+  { follower: "unset", body: "third", status: "BLOB-FRESH" },
+  // One no newer than the leader is as stale as it, so the leader stands in.
+  { follower: "before", body: "second", status: "BLOB-STALE" },
+])(
+  "generatedAt coalesces a write into a stale leader only if generated no later (%o)",
+  async ({ follower: generated, body, status }) => {
+    const path = `/generated-at-coalesced-${generated}`;
+    const tags = [path.slice(1)];
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const edgeCalls = async () =>
+      ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[])
+        .length;
+    await put(path, "first", { tags });
+    const generatedBefore = Date.now();
+    await tick();
+    await invalidate({ tags });
+    await tick();
+    const generatedAfter = Date.now();
+
+    const calls = await edgeCalls();
+    await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
+    const options = { coalesce: true, purgeExisting: true, tags };
+    // The leader lands stale, and stays coalescible while its purge is pending.
+    const leader = put(path, "second", { ...options, generatedAt: generatedBefore });
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if ((await edgeCalls()) > calls) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await edgeCalls(), calls + 1);
+    // Like Next.js, a write generated after the invalidate() is stored fresh.
+    const follower = await put(path, "third", {
+      ...options,
+      ...(generated === "unset"
+        ? {}
+        : { generatedAt: generated === "after" ? generatedAfter : generatedBefore }),
+    });
+    assert.equal(follower.json.backingStoreUpdated, true);
+    assert.equal((await leader).json.backingStoreUpdated, true);
+    const after = await read(path);
+    assert.equal(after.headers.get("X-Workers-Response-Store"), status);
+    assert.equal(await after.text(), body);
+  },
+);
+
+test("generatedAt ages a write from its generation start, however late it reaches the Store", async () => {
+  const storage = await mf.unsafeGetDurableObjectStorage("user-worker", "CacheMetadata", {
+    name: metadataName,
+  });
+  const options = { expiryBehavior: "miss" as const, noRevalidator: true };
+  // Generated 2.5 seconds before it reaches the Store, e.g. delayed behind a coalesced write.
+  const generatedAt = Date.now() - 2500;
+  await put("/generated-at-aged-stale", "stale", {
+    ...options,
+    cacheControl: "public, max-age=2, stale-while-revalidate=2",
+    generatedAt,
+  });
+  const stale = await read("/generated-at-aged-stale");
+  assert.equal(stale.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  await stale.arrayBuffer();
+  const [{ swr_until: swrUntil }] = (await storage.exec(
+    "SELECT swr_until FROM entries WHERE cache_key LIKE ?",
+    "%/generated-at-aged-stale%",
+  )) as [{ swr_until: number }];
+  // Its stale window still ends 4 seconds after its generation started.
+  assert.equal(swrUntil, generatedAt + 4000);
+
+  await put("/generated-at-aged-expired", "expired", {
+    ...options,
+    cacheControl: "public, max-age=1, stale-while-revalidate=1",
+    generatedAt,
+  });
+  const expired = await read("/generated-at-aged-expired");
+  assert.equal(expired.headers.get("X-Workers-Response-Store"), "MISS");
+  await expired.arrayBuffer();
+});
+
+test("generatedAt doesn't coalesce a newer write into a leader that aged past its freshness", async () => {
+  const path = "/generated-at-coalesced-aged";
+  const tags = [path.slice(1)];
+  const edgeCalls = async () =>
+    ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[]).length;
+  await put(path, "first", { tags });
+  const calls = await edgeCalls();
+  await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
+  const options = { coalesce: true, purgeExisting: true, tags };
+  // The leader lands stale by its own age, with no invalidation.
+  const leader = put(path, "second", {
+    ...options,
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    generatedAt: Date.now() - 2500,
+  });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await edgeCalls()) > calls) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(await edgeCalls(), calls + 1);
+  const follower = await put(path, "third", { ...options, generatedAt: Date.now() });
+  assert.equal(follower.json.backingStoreUpdated, true);
+  assert.equal((await leader).json.backingStoreUpdated, true);
+  const after = await read(path);
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "third");
+});
+
+test.each([
+  {
+    case: "goes stale while its edge purge runs",
+    leader: { cacheControl: "public, max-age=1, stale-while-revalidate=60", generatedAgo: 600 },
+    waitMs: 600,
+  },
+  // A future generation start, e.g. from a skewed clock, counts as the leader's ingestion.
+  {
+    case: "has a future generation start",
+    leader: { cacheControl: "public, max-age=0, stale-while-revalidate=60", generatedAgo: -60_000 },
+    waitMs: 5,
+  },
+  // A leader without a generation start is dated at its publication.
+  {
+    case: "was published stale without a generation start",
+    leader: { cacheControl: "public, max-age=0, stale-while-revalidate=60" },
+    waitMs: 5,
+  },
+] as { case: string; leader: { cacheControl: string; generatedAgo?: number }; waitMs: number }[])(
+  "generatedAt doesn't coalesce a newer write into a leader that $case",
+  async ({ case: name, leader: leaderOptions, waitMs }) => {
+    const path = `/generated-at-coalesced-${name.replaceAll(" ", "-")}`;
+    const tags = [path.slice(1)];
+    const edgeCalls = async () =>
+      ((await (await worker.fetch("https://user.test/admin/edge-calls")).json()) as unknown[])
+        .length;
+    await put(path, "first", { tags });
+    const calls = await edgeCalls();
+    await worker.fetch("https://user.test/admin/edge-purge?mode=rate-limit&delay-first-ms=1500");
+    const options = { coalesce: true, purgeExisting: true, tags };
+    const leader = put(path, "second", {
+      ...options,
+      cacheControl: leaderOptions.cacheControl,
+      ...(leaderOptions.generatedAgo === undefined
+        ? {}
+        : { generatedAt: Date.now() - leaderOptions.generatedAgo }),
+    });
+    for (let attempt = 0; attempt < 50; attempt++) {
+      if ((await edgeCalls()) > calls) break;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(await edgeCalls(), calls + 1);
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    const follower = await put(path, "third", { ...options, generatedAt: Date.now() });
+    assert.equal(follower.json.backingStoreUpdated, true);
+    assert.equal((await leader).json.backingStoreUpdated, true);
+    const after = await read(path);
+    assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+    assert.equal(await after.text(), "third");
+  },
+);
+
+test("generatedAt doesn't coalesce a newer write into a leader whose body outlasted its freshness", async () => {
+  const path = "/generated-at-coalesced-slow-body";
+  const pending = await metadataRowCount("pending_objects");
+  // The leader's freshness ends while its body is still being read.
+  const leader = put(path, "second", {
+    coalesce: true,
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    generatedAt: Date.now(),
+    bodyDelayMs: 1500,
+  });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) > pending) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok((await metadataRowCount("pending_objects")) > pending);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const follower = await put(path, "third", { coalesce: true, generatedAt: Date.now() });
+  assert.equal(follower.json.backingStoreUpdated, true);
+  assert.equal((await leader).json.backingStoreUpdated, true);
+  const after = await read(path);
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await after.text(), "third");
+});
+
+test("generatedAt rounds a fractional generation start down for the stored metadata", async () => {
+  await put("/generated-at-fractional", "fractional", { generatedAt: Date.now() - 500.5 });
+  const object = await (
+    await mf.getR2Bucket("CACHE_BODIES", "user-worker")
+  ).head((await r2Objects()).objects[0].key);
+  // The R2 fallback reads only integer metadata.
+  assert.match(object?.customMetadata?.freshUntil ?? "", /^\d+$/);
+  assert.match(object?.customMetadata?.swrUntil ?? "", /^\d+$/);
+  const response = await read("/generated-at-fractional");
+  assert.equal(response.headers.get("X-Workers-Response-Store"), "BLOB-FRESH");
+  assert.equal(await response.text(), "fractional");
+});
+
+test("generatedAt ages a future-dated write from its admission, including its coalescing wait", async () => {
+  const path = "/generated-at-future-follower";
+  const pending = await metadataRowCount("pending_objects");
+  // A leader that lands stale, so the newer follower writes its own response after it.
+  const leader = put(path, "second", {
+    coalesce: true,
+    cacheControl: "public, max-age=0, stale-while-revalidate=60",
+    generatedAt: Date.now(),
+    bodyDelayMs: 1500,
+  });
+  for (let attempt = 0; attempt < 50; attempt++) {
+    if ((await metadataRowCount("pending_objects")) > pending) break;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.ok((await metadataRowCount("pending_objects")) > pending);
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  const follower = await put(path, "third", {
+    coalesce: true,
+    cacheControl: "public, max-age=1, stale-while-revalidate=60",
+    generatedAt: Date.now() + 60_000,
+  });
+  assert.equal(follower.json.backingStoreUpdated, true);
+  assert.equal((await leader).json.backingStoreUpdated, true);
+  // Its second-long freshness ran out while it waited behind the leader.
+  const after = await read(path);
+  assert.equal(after.headers.get("X-Workers-Response-Store"), "BLOB-STALE");
+  assert.equal(await after.text(), "third");
 });
 
 test("replacesRevision lets refreshes land after a refresh whose R2 write failed", async () => {
@@ -3105,6 +3483,7 @@ test("the previous metadata schema is upgraded in place", async () => {
         { version: 7 },
         { version: 8 },
         { version: 9 },
+        { version: 10 },
       ],
     );
     assert.deepEqual(
@@ -3141,8 +3520,10 @@ test("the previous metadata schema is upgraded in place", async () => {
     assert.ok(Number(invalidations[0]?.invalidated_at) > 123);
     assert.deepEqual(invalidations[1], { invalidated_at: 123, tag: "old-tag" });
     assert.deepEqual(
-      await storage.exec("SELECT expires_at FROM tag_invalidations WHERE tag = 'old-tag'"),
-      [{ expires_at: null }],
+      await storage.exec(
+        "SELECT expires_at, stale_at FROM tag_invalidations WHERE tag = 'old-tag'",
+      ),
+      [{ expires_at: null, stale_at: 0 }],
     );
     assert.deepEqual(
       await storage.exec("SELECT invalidation_sequence, publishable FROM pending_objects"),

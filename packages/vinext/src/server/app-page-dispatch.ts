@@ -5,6 +5,7 @@ import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import {
   _captureRequestScopedCacheLifeAccessors,
   _getResumeDataCacheSeed,
+  _isOnDemandRevalidate,
   _setResumeDataCacheCollector,
   _setResumeDataCacheSeed,
 } from "vinext/shims/cache-request-state";
@@ -105,7 +106,11 @@ import {
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
-import type { AppPageCacheSetter, ISRCacheEntry } from "./isr-cache.js";
+import {
+  coalesceOnDemandResponse,
+  type AppPageCacheSetter,
+  type ISRCacheEntry,
+} from "./isr-cache.js";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
@@ -992,11 +997,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isNeverStoredPath =
     options.pprRuntime === undefined && hasNoManifestAdmissionState(route.pattern);
   // A fallback shell is never the concrete page cached under its pathname.
-  const shouldReadCache =
+  const isStoredRender =
     !isRouteCacheabilityProbe() &&
     isCacheEligibleRender &&
     !isNeverStoredPath &&
     options.pprFallbackShell === undefined;
+  // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+  // serves the stored entry: it renders in the foreground and stores that.
+  const isOnDemandRevalidate = _isOnDemandRevalidate();
+  const shouldReadCache = isStoredRender && !isOnDemandRevalidate;
   // A render that may be stored, and so must not let the request's query reach
   // its output unless it turns out dynamic. The Workers Cache deploy probe
   // renders this way too, so its manifest matches the runtime. A
@@ -1592,8 +1601,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   const isSpeculativePrerender =
     isPrerender && options.request.headers.get(VINEXT_PRERENDER_SPECULATIVE_HEADER) === "1";
   const requestCacheLife = _captureRequestScopedCacheLifeAccessors();
+  // Next.js's ResponseCache awaits an on-demand revalidation's writes before
+  // it answers, so `await res.revalidate()` resolves once the entry is stored.
+  const onDemandCacheWrites: Promise<void>[] | null = isOnDemandRevalidate ? [] : null;
 
-  return renderAppPageLifecycle({
+  const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
     clientTraceMetadata: options.clientTraceMetadata,
@@ -1702,9 +1714,42 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,
     waitUntil(cachePromise) {
+      onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);
     },
-  });
+  };
+  const renderResponse = async () => {
+    const response = await renderAppPageLifecycle(lifecycleOptions);
+    // Each write reads its own branch of the render's streams, so it completes
+    // while the response's branch stays unread.
+    if (onDemandCacheWrites) await Promise.all(onDemandCacheWrites);
+    return response;
+  };
+  // Concurrent on-demand revalidations of one stored entry share a single
+  // render, as Next.js batches ResponseCache work by its key and
+  // isOnDemandRevalidate. A mounted-slots RSC variant is never stored.
+  if (
+    isOnDemandRevalidate &&
+    isStoredRender &&
+    isStaticEligible &&
+    !(options.isRscRequest && options.mountedSlotsHeader)
+  ) {
+    const cacheKey = options.isRscRequest
+      ? options.isrRscKey(
+          options.cleanPathname,
+          null,
+          options.renderMode,
+          options.interceptionContext,
+          interceptionId,
+        )
+      : options.isrHtmlKey(options.cleanPathname);
+    return coalesceOnDemandResponse(
+      `${options.request.method}:${cacheKey}`,
+      options.request.method,
+      renderResponse,
+    );
+  }
+  return renderResponse();
 }
 
 /** One render's head, once it prepares one, and how that render resolves it. */

@@ -38,6 +38,7 @@ import {
   getPrefetchCache,
   hasPrefetchCacheEntryForNavigation,
   invalidateDynamicPrefetchCache,
+  invalidateVisitedResponsePrefetches,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
   preloadHybridClientRouteOwner,
@@ -579,6 +580,7 @@ function stageClientParams(params: Record<string, string | string[]>): void {
 
 function clearVisitedResponseCache(): void {
   visitedResponseCache.clear();
+  invalidateVisitedResponsePrefetches();
 }
 
 function clearPrefetchState(options?: InvalidatePrefetchCacheOptions): void {
@@ -1169,6 +1171,7 @@ function storeVisitedResponseSnapshot(
   seedPrefetchCache: boolean = true,
   prefetchSnapshot: CachedRscResponse = snapshot,
   reuseAfterHistoryRestore: boolean = false,
+  fromHydration: boolean = false,
 ): () => void {
   const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, interceptionContext);
   // Router-state fingerprints intentionally give requests for the same visible
@@ -1181,6 +1184,7 @@ function storeVisitedResponseSnapshot(
   const entry = createVisitedResponseCacheEntry({
     fallbackTtlMs: prefetchFallbackTtlMs,
     elements,
+    fromHydration,
     now,
     mountedSlotsHeader: requestMountedSlotsHeader,
     params,
@@ -2096,6 +2100,7 @@ function bootstrapHydration(
           snapshot,
           initialRscBootstrap?.initialCacheKind === "static" ||
             metadata.interceptionContext !== null,
+          true,
         );
       });
     })

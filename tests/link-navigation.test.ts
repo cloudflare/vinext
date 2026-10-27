@@ -2081,6 +2081,55 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("skips a Link's loading shell while a navigation would reuse its visited response", async () => {
+    // Ported from Next.js: test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression
+    const observer = stubIntersectionObserver();
+    const result = await renderIsolatedLink({ href: "/products/1", nodeEnv: "production" });
+
+    try {
+      let navigationFreshUntil: number | null = Date.now() + 180_000;
+      const readVisitedResponseForFullPrefetch = vi.fn(
+        (_rscUrls: readonly string[], _context: string | null, _slots: string | null) => ({
+          navigatedAt: Date.now(),
+          navigationFreshUntil,
+          response: {
+            buffer: new TextEncoder().encode("visited").buffer,
+            contentType: "text/x-component",
+            paramsHeader: null,
+            renderedPathAndSearch: null,
+            url: "/products/1.rsc",
+          },
+        }),
+      );
+      const runtime = Reflect.get(
+        window,
+        Symbol.for("vinext.navigationRuntime"),
+      ) as NavigationRuntime;
+      runtime.functions.readVisitedResponseForFullPrefetch = readVisitedResponseForFullPrefetch;
+
+      observer.dispatchIntersectingEntry(result.anchor);
+      await flushPrefetchTasks(
+        () =>
+          readVisitedResponseForFullPrefetch.mock.calls.length > 0 ||
+          result.fetch.mock.calls.length > 0,
+      );
+
+      expect(readVisitedResponseForFullPrefetch).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.stringContaining("/products/1")]),
+        null,
+        null,
+      );
+      expect(result.fetch).not.toHaveBeenCalled();
+
+      // Once a navigation wouldn't reuse it, the shell is fetched.
+      navigationFreshUntil = null;
+      result.capturedAnchorProps.onMouseEnter?.({ currentTarget: result.anchor });
+      await waitForFetchCalls(result.fetch, 1);
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches a dynamically rendered search-param Link's loading shell instead of its page", async () => {
     const observer = stubIntersectionObserver();
     const result = await renderIsolatedLink({
@@ -2933,6 +2982,7 @@ describe("Link prefetch scheduling", () => {
       const navigatedAt = now - navigation.PREFETCH_CACHE_TTL + 1;
       const readVisitedResponseForFullPrefetch = vi.fn(() => ({
         navigatedAt,
+        navigationFreshUntil: null,
         response: visitedResponse,
       }));
       const runtime = Reflect.get(
