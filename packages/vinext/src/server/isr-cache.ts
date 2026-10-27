@@ -262,11 +262,11 @@ export async function coalesceOnDemandResponse<R extends Response | null>(
   const snapshot = await coalesceOnDemandRevalidation(key, async () => {
     const response = await renderFn();
     if (!response) return null;
+    const hasBody = method !== "HEAD" && response.status !== 204 && response.status !== 304;
+    // An omitted body is released rather than held until it's collected.
+    if (!hasBody) await response.body?.cancel();
     return {
-      body:
-        method === "HEAD" || response.status === 204 || response.status === 304
-          ? null
-          : new Uint8Array(await response.arrayBuffer()),
+      body: hasBody ? new Uint8Array(await response.arrayBuffer()) : null,
       headers: [...response.headers.entries()] as Array<[string, string]>,
       status: response.status,
       statusText: response.statusText,

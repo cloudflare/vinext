@@ -301,7 +301,9 @@ async function dispatchAppRouteHandlerImpl(
   setCurrentFetchRevalidate(configuredRevalidateSeconds);
   setCurrentForceDynamicFetchDefault(handler.dynamic === "force-dynamic");
 
-  let isRevalidation = false;
+  // An on-demand revalidation replaces the stored entry whatever its status,
+  // as one regenerating a read entry does.
+  let isRevalidation = isStoredRoute && isOnDemandRevalidate;
   if (shouldReadRouteCache && resolvedHandlerFn) {
     const cachedRouteResponse = await readAppRouteHandlerCacheResponse({
       basePath: options.basePath,

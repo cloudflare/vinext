@@ -23,6 +23,7 @@ import {
   normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration,
   coalesceOnDemandRevalidation,
+  coalesceOnDemandResponse,
 } from "../packages/vinext/src/server/isr-cache.js";
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
@@ -611,6 +612,26 @@ describe("coalesceOnDemandRevalidation", () => {
     expect(joiner.waitUntil).not.toHaveBeenCalled();
     finish();
     await first;
+  });
+});
+
+describe("coalesceOnDemandResponse", () => {
+  it("releases the body a HEAD revalidation leaves out", async () => {
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+    });
+    const response = await coalesceOnDemandResponse(
+      "coalesce-head-body",
+      "HEAD",
+      async () => new Response(body, { headers: { "x-test": "1" } }),
+    );
+
+    expect(canceled).toBe(true);
+    expect(response?.body).toBeNull();
+    expect(response?.headers.get("x-test")).toBe("1");
   });
 });
 
