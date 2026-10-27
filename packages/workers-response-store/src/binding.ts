@@ -2,7 +2,7 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 
 import { deriveCachePolicy, edgeCacheControl, representationAge } from "./cache-policy";
 import { IsolateNegativeCache } from "./isolate-negative-cache";
-import type { CacheMetadataStub, PurgeReservation } from "./metadata-do";
+import type { CacheMetadataStub, PurgeReservation, RefreshedRevision } from "./metadata-do";
 
 type RevalidatorDescriptor = {
   id: string;
@@ -20,6 +20,21 @@ export type SerializableValue =
 export type ResponseStorePutOptions = {
   /** @internal Collapse overlapping framework writes for the same cache key. */
   coalesce?: boolean;
+  /**
+   * @internal The revision a stale read returned (`X-Workers-Response-Store-Revision`)
+   * that this write refreshes. While another refresh of that revision is published and
+   * fresh, and the key hasn't been invalidated or purged since, the write is dropped instead
+   * of replacing (and purging) it, and returns
+   * `{ backingStoreUpdated: false, edgePurgeAccepted: false }`. A value that isn't a
+   * positive integer is ignored.
+   */
+  replacesRevision?: number;
+  /**
+   * @internal With `replacesRevision`: tags the caller checks itself when reading (soft
+   * tags), and the `getTagExpiration()` of those tags that the stale read saw. Once they
+   * have expired since, the write isn't dropped. A malformed value leaves an ordinary write.
+   */
+  replacesTagExpiration?: { tags: string[]; expiration: number };
   revalidator?: RevalidatorDescriptor;
   purgeExisting?: boolean;
   /**
@@ -142,6 +157,8 @@ type StoreResult = {
   published: boolean;
   entry: StoredEntry | null;
   response?: Response;
+  /** The revision a published refresh replaced. */
+  replacedRevision?: number;
 };
 
 type PublicationResult = {
@@ -986,6 +1003,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     reservation?: WriteReservation,
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
+    replaces?: RefreshedRevision,
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
@@ -1028,6 +1046,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         candidate,
         write.claimId,
         reservationObjectKey,
+        replaces,
       );
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
@@ -1097,6 +1116,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       edgePurgeRequired: publication.edgePurgeRequired,
       published: true,
       entry,
+      ...(replaces ? { replacedRevision: replaces.revision } : {}),
       ...(stored && entry
         ? {
             response: this.createStoredResponse(
@@ -1325,6 +1345,27 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     const metadata = this.getMetadata(keyHash);
     const cacheTags = cacheTagsFromResponse(response);
     const pendingPutKey = `${this.getVersionId()}:${this.shardCount}:${keyHash}:${Boolean(options.purgeExisting)}`;
+    const tagExpiration = options.replacesTagExpiration;
+    const validTagExpiration =
+      tagExpiration === undefined ||
+      (Array.isArray(tagExpiration?.tags) &&
+        tagExpiration.tags.every((tag) => typeof tag === "string") &&
+        Number.isFinite(tagExpiration.expiration));
+    const replacesRevision =
+      Number.isSafeInteger(options.replacesRevision) &&
+      options.replacesRevision! > 0 &&
+      validTagExpiration
+        ? options.replacesRevision
+        : undefined;
+    const replaces: RefreshedRevision | undefined =
+      replacesRevision === undefined
+        ? undefined
+        : {
+            revision: replacesRevision,
+            ...(tagExpiration
+              ? { tags: tagExpiration.tags, tagExpiration: tagExpiration.expiration }
+              : {}),
+          };
     let reservation: WriteReservation | undefined;
     if (options.coalesce) {
       for (;;) {
@@ -1359,6 +1400,17 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           continue;
         }
         if (result?.published && result.entry) {
+          // A leader no newer than the revision this refresh read, e.g. one published before
+          // an invalidate(), can't stand in for it. Behind another refresh of that revision,
+          // only the metadata DO knows whether the key was invalidated since: it drops a
+          // duplicate before any R2 call. Any other leader stands in, as for any coalesced write.
+          if (
+            replaces !== undefined &&
+            (result.entry.activeRevision <= replaces.revision ||
+              result.replacedRevision === replaces.revision)
+          ) {
+            break;
+          }
           const objectKey = reservation.objectKey;
           await metadata
             .finishPendingObjects([objectKey])
@@ -1388,6 +1440,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         options.expiryBehavior === "miss" ? "miss" : "regenerate",
         reservation,
         cacheTags,
+        undefined,
+        replaces,
       );
     })();
     let cleared = () => {};

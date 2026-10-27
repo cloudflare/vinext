@@ -229,4 +229,29 @@ test.describe("Next.js compat: back/forward cache", () => {
     await expect(nestedCounter(page, "section-b")).toHaveText("Count: 7");
     await expect(nestedCounter(page, "page-b-2")).toHaveText("Count: 9");
   });
+
+  test("preserves page state when returning from a child route with its own layout", async ({
+    page,
+  }) => {
+    // The parent layout's children change from a page to a nested layout here,
+    // so state must be retained above the child's own boundaries.
+    await page.goto("/nextjs-compat/back-forward-cache/sibling-layout");
+    await waitForAppRouterHydration(page);
+    await clickNestedUntilCount(page, "sibling-parent", 2);
+
+    await page
+      .locator('a[href="/nextjs-compat/back-forward-cache/sibling-layout/child"]:visible')
+      .first()
+      .click();
+    await expect(page.locator("h3:visible").first()).toHaveText("Sibling layout child");
+    await clickNestedUntilCount(page, "sibling-child", 3);
+
+    await page.goBack();
+    await expect(page.locator("h3:visible").first()).toHaveText("Sibling layout parent");
+    await expect(nestedCounter(page, "sibling-parent")).toHaveText("Count: 2");
+
+    await page.goForward();
+    await expect(page.locator("h3:visible").first()).toHaveText("Sibling layout child");
+    await expect(nestedCounter(page, "sibling-child")).toHaveText("Count: 3");
+  });
 });

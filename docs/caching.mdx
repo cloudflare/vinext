@@ -119,6 +119,8 @@ vinext({ cache: responseStoreAdapter({ shards: 16 }) });
 
 Each cache key remains strongly coordinated by one SQLite Durable Object. Tag/path refreshes and purges fan out across all shards. The option is disabled by default, and changing the count starts a new cache layout for the deployed Worker version.
 
+Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Response Store stores them under separate keys, so whenever it stores or regenerates one of the two, it stores the other from the same render. Replacing the other one doesn't purge its edge copy, which would spend the [shared purge budget](#workers-cache-and-kv) on every regeneration. Until that copy's own cache policy ends, the edge can serve it from an earlier render beside the new one. Concurrent misses can also leave the two from different renders.
+
 ### Service-binding mode
 
 The default service-binding mode keeps the cache service in a separate Worker. `vinext init` defines both Workers in `cloudflare.config.ts` using the config helper:
@@ -229,6 +231,8 @@ The framework's backing-store policy is separate. An ordinary `Cache-Control` he
 Explicit provider headers remain a Cloudflare extension: `Cloudflare-CDN-Cache-Control` takes precedence over `CDN-Cache-Control` and can select the shared response-cache policy, subject to admission safeguards. Thus `Cache-Control: max-age=10` with `Cloudflare-CDN-Cache-Control: max-age=3600` keeps a 10-second browser lifetime and an hour-long response-cache lifetime. Without a provider override, vinext supplies the framework storage policy to the adapter; it does not infer it from the browser header. The gateway consumes provider headers and preserves the authored client policy. Framework-managed responses without an explicit client policy still require browser revalidation.
 
 This setup is fast when an entry is present at the edge, but Workers Cache is distributed rather than one globally shared cache. A response cached in one region may still miss in another. Tiered caching can reduce this duplication, but without a durable response store a regional miss or eviction can require another render. The KV data cache is also eventually consistent.
+
+Next.js keeps an App Router page's HTML and RSC payload in one cache entry. Workers Cache stores each response under its own key, and only from a request for that key. So when Workers Cache renders one of the two for its cache, on a miss or while refreshing a stale entry, vinext also requests the other one in the background. A page first reached by client navigation is then cached for a hard load too, and the other way round. That background request is billed like any other request to the cached response entrypoint. When the other part isn't cached, it renders it separately; when it's still fresh, the request is a cache hit and changes nothing. Interception, parallel-route slot and prefetch loading-shell payloads are stored on their own. Concurrent misses can leave the two parts from different renders, and a request made just after a revalidation can reach the other part before the revalidation does, leaving that part to refresh on its own next request.
 
 `revalidatePath()` and `revalidateTag()` purge the edge by tag. [Workers Cache purges](https://developers.cloudflare.com/workers/cache/purge/) use Cloudflare's Free-tier purge limits, which every Worker in the account shares. As in Next.js, vinext sends one batched purge per cacheLife profile at the end of a Server Action or Route Handler, not one per call. If a purge fails, for example because the rate limit is reached, vinext logs the error and the action still succeeds: the data cache is already invalidated, but edge-cached responses for those tags stay stale until they expire. A route that only needs the client to refetch dynamic data can call `refresh()`, which doesn't purge.
 
@@ -491,6 +495,14 @@ Next.js keeps one cache entry per static page, whatever the query string, and vi
 With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that an explicit provider policy in a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
 
 In production, most App page responses that vinext knows will not be stored send Next.js's `Cache-Control: private, no-cache, no-store, max-age=0, must-revalidate`, unless middleware or a `next.config` `headers()` rule sets `Cache-Control`.
+
+## Hosts
+
+Next.js keeps one cache entry per path whatever the host, so an app served on several domains shares its cached pages. A render that reads the host, such as `headers().get("host")` in a page or `request.nextUrl.hostname` in a route handler, is dynamic and isn't stored, so one host's response can't reach another.
+
+- **KV and in-memory:** keys leave out the host. A Pages Router page served on a configured [i18n domain](https://nextjs.org/docs/pages/guides/internationalization#domain-routing) keeps that domain.
+- **Workers Response Store and Workers Cache:** entries leave out the host, and a Pages Router page on a configured i18n domain keeps that domain, as with KV. A `getStaticProps` page shares one entry across hosts even when a custom `_app.getInitialProps` runs for it, as in Next.js.
+- **Workers Cache:** Cloudflare [keys an entry](https://developers.cloudflare.com/workers/cache/cache-keys/) by its path and query, entrypoint, `ctx.props`, Worker version and a few request headers that name another host, such as `X-Forwarded-Host`, but not by the host itself. vinext keeps the host out of the key it adds and the `ctx.props` it passes, and gives a cold render the request's real host. A proxy in front of the Worker that sets `X-Forwarded-Host` still gets one entry per forwarded host.
 
 ## Freshness and revalidation
 

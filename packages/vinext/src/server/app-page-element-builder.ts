@@ -16,6 +16,7 @@ import {
   hasAppPageDynamicMetadata,
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
+  resolveInterceptLayoutsBesidePage,
   slotInterceptKeepsSourceHead,
   type AppPagePreparedRouteHead,
   type ApplyAppPageFileBasedMetadata,
@@ -509,6 +510,10 @@ export async function buildPageElements<
               segments,
               effectiveParams,
             ),
+          ),
+          layoutsBesidePage: resolveInterceptLayoutsBesidePage(
+            opts?.interceptLayoutSegments,
+            opts?.interceptBranchSegments,
           ),
           pageModule: effectivePageModule ?? null,
           params: effectiveParams,

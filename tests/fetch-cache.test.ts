@@ -47,6 +47,7 @@ const {
   setCurrentFetchCacheMode,
   setCurrentFetchRevalidate,
   setCurrentForceDynamicFetchDefault,
+  setCurrentFetchDraftMode,
   setCurrentFetchSoftTags,
   setRefreshStaleFetchesInForeground,
   runWithFetchDedupe,
@@ -1230,6 +1231,8 @@ describe("fetch cache shim", () => {
       entry.revalidateAt = Date.now() - 1000; // Expired 1 second ago
     }
     startNewFetchCacheScope();
+    const get = vi.spyOn(handler, "get");
+    const set = vi.spyOn(handler, "set");
 
     // Should return stale data immediately
     const res2 = await fetch("https://api.example.com/stale-test", {
@@ -1241,6 +1244,11 @@ describe("fetch cache shim", () => {
     // Wait for background refetch
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(fetchMock).toHaveBeenCalledTimes(2); // Original + background refetch
+    // The refresh tells the handler which stale entry it replaces.
+    const staleEntry = await get.mock.results[0]?.value;
+    expect(staleEntry).toMatchObject({ cacheState: "stale" });
+    expect(set).toHaveBeenCalledOnce();
+    expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
   });
 
   it("refreshes stale fetch entries when foreground fetch refresh is enabled", async () => {
@@ -1255,6 +1263,8 @@ describe("fetch cache shim", () => {
       entry.revalidateAt = Date.now() - 1000;
     }
     startNewFetchCacheScope();
+    const get = vi.spyOn(handler, "get");
+    const set = vi.spyOn(handler, "set");
 
     await runWithRequestContext(createRequestContext(), async () => {
       setRefreshStaleFetchesInForeground(true);
@@ -1265,6 +1275,42 @@ describe("fetch cache shim", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    const staleEntry = await get.mock.results[0]?.value;
+    expect(staleEntry).toMatchObject({ cacheState: "stale" });
+    expect(set).toHaveBeenCalledOnce();
+    expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
+  });
+
+  it("a failed foreground fetch refresh still passes the stale entry to the fallback write", async () => {
+    await fetch("https://api.example.com/foreground-stale-retry", {
+      next: { revalidate: 1 },
+    });
+
+    const handler = getCacheHandler() as InstanceType<typeof MemoryCacheHandler>;
+    const store = (handler as any).store as Map<string, any>;
+    for (const [, entry] of store) {
+      entry.revalidateAt = Date.now() - 1000;
+    }
+    startNewFetchCacheScope();
+    const get = vi.spyOn(handler, "get");
+    const set = vi.spyOn(handler, "set");
+    fetchMock.mockRejectedValueOnce(new Error("upstream reset"));
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    await runWithRequestContext(createRequestContext(), async () => {
+      setRefreshStaleFetchesInForeground(true);
+      const res2 = await fetch("https://api.example.com/foreground-stale-retry", {
+        next: { revalidate: 1 },
+      });
+      expect((await res2.json()).count).toBe(2);
+    });
+    consoleError.mockRestore();
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const staleEntry = await get.mock.results[0]?.value;
+    expect(staleEntry).toMatchObject({ cacheState: "stale" });
+    expect(set).toHaveBeenCalledOnce();
+    expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
   });
 
   it("foreground fetch refresh treats a shorter current revalidate as stale", async () => {
@@ -1901,6 +1947,69 @@ describe("fetch cache shim", () => {
     const call = fetchMock.mock.calls[0];
     const init = call[1] as RequestInit;
     expect((init as any).next).toBeUndefined();
+  });
+
+  // ── Draft mode bypass ───────────────────────────────────────────────
+  // Next.js: patch-fetch.ts calls the original fetch with `init` unchanged
+  // when workStore.isDraftMode is set.
+
+  describe("draft mode", () => {
+    // Seed a published entry, then fetch the same URL in a draft scope.
+    async function expectDraftBypass(
+      url: string,
+      runDraft: (fetchDraft: () => Promise<Response>) => Promise<void>,
+    ): Promise<void> {
+      const published = await fetch(url, { next: { revalidate: false } });
+      expect((await published.json()).count).toBe(1);
+      startNewFetchCacheScope();
+
+      await runDraft(async () => {
+        const draft = await fetch(url, { next: { revalidate: false, tags: ["draft"] } });
+        expect((await draft.json()).count).toBe(2);
+        expect(getCollectedFetchTags()).toEqual([]);
+        expect(consumeDynamicUsage()).toBe(false);
+        return draft;
+      });
+
+      startNewFetchCacheScope();
+      const after = await fetch(url, { next: { revalidate: false } });
+      expect((await after.json()).count).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    }
+
+    it("skips the cache in App Router draft mode", async () => {
+      await expectDraftBypass("https://api.example.com/draft", async (fetchDraft) => {
+        setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+        try {
+          await fetchDraft();
+        } finally {
+          setHeadersContext(null);
+        }
+      });
+    });
+
+    it("skips the cache in a Pages Router preview render", async () => {
+      await expectDraftBypass("https://api.example.com/pages-preview", async (fetchDraft) => {
+        setCurrentFetchDraftMode(true);
+        await fetchDraft();
+      });
+    });
+
+    it("passes init to the real fetch unchanged", async () => {
+      setHeadersContext({ cookies: new Map(), draftModeEnabled: true, headers: new Headers() });
+      try {
+        // Inherited RequestInit members must reach the real fetch.
+        const init = Object.assign(
+          Object.create({ method: "POST", headers: { "x-draft": "1" }, body: "payload" }),
+          { next: { revalidate: false } },
+        ) as RequestInit;
+        await fetch("https://api.example.com/draft-init", init);
+
+        expect(fetchMock.mock.calls[0][1]).toBe(init);
+      } finally {
+        setHeadersContext(null);
+      }
+    });
   });
 
   // ── Tag collection during rendering ─────────────────────────────────

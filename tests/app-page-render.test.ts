@@ -736,6 +736,38 @@ describe("app page render lifecycle", () => {
     expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
   });
 
+  it.each([
+    {
+      label: "an adapter that keeps origin page entries",
+      createAdapter: () => new DefaultCdnCacheAdapter(),
+      keys: ["rsc:/posts/post", "html:/posts/post"],
+    },
+    {
+      label: "an edge adapter",
+      createAdapter: () => new CloudflareCdnCacheAdapter(),
+      keys: ["rsc:/posts/post"],
+    },
+  ])("renders an RSC miss's document to store only for $label", async ({ createAdapter, keys }) => {
+    setCdnCacheAdapter(createAdapter());
+    const common = createCommonOptions();
+    try {
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        isCacheCandidate: true,
+        isProduction: true,
+        isRscRequest: true,
+        revalidateSeconds: 60,
+      });
+      await response.text();
+      await Promise.all(common.waitUntilPromises);
+
+      expect(common.isrSet.mock.calls.map(([key]) => key)).toEqual(keys);
+      expect(common.loadSsrHandler).toHaveBeenCalledTimes(keys.length - 1);
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
+  });
+
   it("omits RSC cache state and skips cache writes when stream-time searchParams usage is dynamic", async () => {
     const common = createCommonOptions();
     const streamGate = createDeferred();

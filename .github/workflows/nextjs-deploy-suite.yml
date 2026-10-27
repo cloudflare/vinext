@@ -40,12 +40,18 @@ on:
         required: false
         default: ""
         type: string
+      run-skipped-deployment-tests:
+        description: Also run the real tests of suites that skip deploy mode (`skipDeployment`). Never published to /compatibility.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 concurrency:
-  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}
+  # An opt-in skipped-deployment run executes a different test set, so it gets its own group.
+  group: nextjs-deploy-suite-${{ inputs.vinext-ref || github.ref }}-${{ inputs.next-ref || 'v16.2.6' }}-${{ inputs.suite-filter || 'all' }}-${{ inputs.test-path || 'all' }}${{ inputs.run-skipped-deployment-tests && '-skipped-deployment' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -161,6 +167,17 @@ jobs:
           # skipping the transitive postinstall is safe.
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
 
+      # The workspace is the vinext-ref checkout, so a ref from before the
+      # skipped-deployment patch prepares a pristine harness. Fail instead of
+      # silently running the placeholder tests.
+      - name: Check the skipped-deployment harness patch
+        if: inputs.run-skipped-deployment-tests
+        run: |
+          if ! grep -q VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS "$GITHUB_WORKSPACE/next.js/test/lib/e2e-utils/index.ts"; then
+            echo "::error::run-skipped-deployment-tests needs a vinext-ref that includes scripts/patch-nextjs-skip-deployment.mjs"
+            exit 1
+          fi
+
       - name: Generate deploy manifest
         env:
           TEST_PATH: ${{ inputs.test-path }}
@@ -211,6 +228,7 @@ jobs:
           (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
           && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
+          && !inputs.run-skipped-deployment-tests
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))
@@ -352,6 +370,8 @@ jobs:
           NEXT_TEST_DEPLOY_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-deploy.sh
           NEXT_TEST_DEPLOY_LOGS_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-logs.sh
           NEXT_TEST_CLEANUP_SCRIPT_PATH: ${{ github.workspace }}/scripts/e2e-cleanup.sh
+          # Read by the harness patch from scripts/patch-nextjs-skip-deployment.mjs.
+          VINEXT_RUN_SKIPPED_DEPLOYMENT_TESTS: ${{ inputs.run-skipped-deployment-tests && '1' || '' }}
           GROUP: ${{ matrix.group }}
           CONCURRENCY: ${{ inputs.test-concurrency || '2' }}
         run: node run-tests.js --timings --retries 0 -g "$GROUP" -c "$CONCURRENCY" --type e2e
@@ -624,6 +644,8 @@ jobs:
       #   - Only when testing the Next.js version used by the scheduled run.
       #     Manual runs against other refs are useful for investigation but
       #     should not replace the scheduled compatibility snapshot.
+      #   - Not when the run includes suites that skip deploy mode upstream;
+      #     the scheduled snapshot never runs them.
       #   - Historical backfills are an explicit manual exception. They must
       #     supply a full SHA and valid past date; the build job validates both,
       #     while this main-ref gate lets PR branches exercise a dry run safely.
@@ -633,6 +655,7 @@ jobs:
           && (inputs.suite-filter == 'all' || inputs.suite-filter == '' || github.event_name == 'schedule')
           && (inputs.test-path == '' || github.event_name == 'schedule')
           && (inputs.next-ref == 'v16.2.6' || inputs.next-ref == '' || github.event_name == 'schedule')
+          && !inputs.run-skipped-deployment-tests
           && (
             (github.event_name == 'schedule' && github.ref == 'refs/heads/main')
             || (github.event_name == 'workflow_dispatch' && (inputs.vinext-ref == 'main' || inputs.vinext-ref == ''))

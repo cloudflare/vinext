@@ -21,7 +21,12 @@
 
 import { Buffer } from "node:buffer";
 
-import { getDataCacheHandler, type CachedFetchValue, type CacheHandler } from "./cache-handler.js";
+import {
+  getDataCacheHandler,
+  type CachedFetchValue,
+  type CacheHandler,
+  type CacheHandlerValue,
+} from "./cache-handler.js";
 import { encodeCacheTags } from "../utils/encode-cache-tag.js";
 import { sha256Hex } from "../utils/hash.js";
 import { traceAppFetch } from "../server/app-fetch-tracing.js";
@@ -34,7 +39,12 @@ import {
   type FetchCacheMode,
   type FetchDedupeEntry,
 } from "./fetch-cache-state.js";
-import { getHeadersContext, isInsideAnyCacheScope, markDynamicUsage } from "./headers.js";
+import {
+  getHeadersContext,
+  isDraftModeEnabled,
+  isInsideAnyCacheScope,
+  markDynamicUsage,
+} from "./headers.js";
 import {
   _hasPendingRevalidatedTag,
   _isOnDemandRevalidate,
@@ -842,7 +852,7 @@ async function writeFetchCacheResponse(
   response: Response,
   tags: string[],
   revalidateSeconds: number,
-  options?: { cloneForReturn?: boolean },
+  options?: { cloneForReturn?: boolean; staleEntry?: CacheHandlerValue },
 ): Promise<void> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
   if (!cacheValue) return;
@@ -851,6 +861,8 @@ async function writeFetchCacheResponse(
     fetchCache: true,
     tags,
     revalidate: revalidateSeconds,
+    // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+    ...(options?.staleEntry ? { staleEntry: options.staleEntry } : {}),
   });
 }
 
@@ -924,6 +936,11 @@ export function setCurrentFetchRevalidate(revalidate: number | null): void {
 
 export function setCurrentForceDynamicFetchDefault(enabled: boolean): void {
   _getState().currentForceDynamicFetchDefault = enabled;
+}
+
+/** Mark the current Pages Router render as a preview/draft render. */
+export function setCurrentFetchDraftMode(enabled: boolean): void {
+  _getState().isDraftMode = enabled;
 }
 
 export function setRefreshStaleFetchesInForeground(enabled: boolean): void {
@@ -1227,10 +1244,21 @@ function createPatchedFetch(): typeof globalThis.fetch {
     init?: RequestInit,
     span?: FrameworkSpan,
   ): Promise<Response> {
+    // Draft mode skips the fetch cache entirely, before segment fetchCache
+    // config or tag handling: the cache key doesn't cover draft state, so a
+    // preview request would read the published entry or seed draft content
+    // into it. Mirrors Next.js's `workStore.isDraftMode` fallback to the
+    // (deduped) original fetch in server/lib/patch-fetch.ts, which passes
+    // `init` through unchanged.
+    const state = _getState();
+    if (state.isDraftMode || isDraftModeEnabled()) {
+      recordDynamicFetchObservation(input);
+      return dedupeFetch(input, init);
+    }
+
     const nextOpts = (init as ExtendedRequestInit | undefined)?.next as
       | NextFetchOptions
       | undefined;
-    const state = _getState();
     const hasWorkContext =
       isInsideUnifiedScope() || _als.getStore() !== undefined || _fallbackState.isFetchDedupeActive;
     const fetchIdx = hasWorkContext ? (state.nextFetchId ?? 1) + 1 : undefined;
@@ -1431,6 +1459,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
     const handler = getDataCacheHandler();
     let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
+    // A stale entry this fetch refreshes, kept for the miss path below if the
+    // refresh fails.
+    let staleEntry: CacheHandlerValue | undefined;
+
     // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
     // skips the read but still fetches and stores the fresh response.
     try {
@@ -1466,9 +1498,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
       // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
       // However, if we have a stale entry, return it and trigger background refetch.
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+        staleEntry = cached;
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds);
+          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
+            staleEntry: cached,
+          });
           return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
 
@@ -1481,6 +1516,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
             .then(async (freshResp) => {
               await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
                 cloneForReturn: false,
+                staleEntry: cached,
               });
             })
             .catch((err) => {
@@ -1538,6 +1574,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
           fetchCache: true,
           tags,
           revalidate: revalidateSeconds,
+          ...(staleEntry ? { staleEntry } : {}),
         })
         .catch((err) => {
           console.error("[vinext] fetch cache write error:", err);
@@ -1649,6 +1686,7 @@ export async function runWithFetchCache<T>(fn: () => Promise<T>): Promise<T> {
       currentFetchCacheMode: null,
       currentFetchRevalidate: null,
       currentForceDynamicFetchDefault: false,
+      isDraftMode: false,
       dynamicFetchUrls: new Set<string>(),
       refreshStaleFetchesInForeground: false,
       isFetchDedupeActive: true,
