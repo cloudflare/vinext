@@ -297,6 +297,34 @@ describe("createVinextApp", () => {
     expect(calls.some((command) => command.includes("typegen"))).toBe(false);
   });
 
+  it("reports pending build approval instead of success after scaffolding", async () => {
+    const appPath = path.join(tmpDir, "approval-app");
+    const output: string[] = [];
+    const logSpy = vi.spyOn(console, "log").mockImplementation((...args) => {
+      output.push(args.join(" "));
+    });
+    try {
+      await createVinextApp({
+        appPath,
+        packageManager: "pnpm",
+        install: true,
+        git: false,
+        initOptions: cloudflareInitOptions,
+        _exec: (cmd) => {
+          if (cmd.endsWith(" --lockfile-only")) return;
+          throw new Error("ERR_PNPM_IGNORED_BUILDS: run pnpm approve-builds");
+        },
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+
+    expect(output.join("\n")).toContain("pnpm approve-builds");
+    expect(output.join("\n")).toContain("dependency installation needs build-script approval");
+    expect(output.join("\n")).not.toContain("Success!");
+    expect(output.join("\n")).not.toContain("vinext init complete!");
+  });
+
   it("type-checks a Next-less generated app before vinext first runs", async () => {
     const appPath = path.join(tmpDir, "typecheck-app");
 

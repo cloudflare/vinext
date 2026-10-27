@@ -2393,7 +2393,8 @@ describe("init — dependency installation", () => {
     writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
 
     const { result, output } = await runInit(tmpDir, {
-      _exec: () => {
+      _exec: (cmd) => {
+        if (cmd.endsWith(" --lockfile-only")) return;
         const error = new Error("pnpm install failed") as Error & { stderr: string };
         error.stderr =
           "Ignored build scripts: esbuild. Run pnpm approve-builds to pick which dependencies should be allowed to run scripts.";
@@ -2401,8 +2402,9 @@ describe("init — dependency installation", () => {
       },
     });
 
-    expect(result.installedDeps).toEqual([]);
+    expect(result.dependencyInstallNeedsApproval).toBe(true);
     expect(output).toContain("Dependency installation is waiting for build-script approval");
+    expect(output).not.toContain("vinext init complete!");
     expect(output).toContain(
       "Dependency installation is incomplete because pnpm blocked dependency build scripts:",
     );
@@ -2410,8 +2412,62 @@ describe("init — dependency installation", () => {
     expect(output).toContain("pnpm approve-builds");
     expect(output).toContain("2. Finish installing dependencies:");
     expect(output).toContain("pnpm install");
-    expect(output).not.toContain("Added dependencies to devDependencies:");
+    expect(output).toContain("Added dependencies to devDependencies:");
   });
+
+  it("lets pnpm persist dependency ranges after an approval failure without approving builds", async () => {
+    setupProject(tmpDir, { router: "pages" });
+    writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+    const workspace = 'allowBuilds:\n  esbuild: "set this to true or false"\n';
+    writeFile(tmpDir, "pnpm-workspace.yaml", workspace);
+    const dependencies = { vinext: "^1.3.0" };
+    const devDependencies = { vite: "^8.3.5", "@vitejs/plugin-react": "^6.1.1" };
+    const calls: string[] = [];
+
+    const { result } = await runInit(tmpDir, {
+      platform: "node",
+      _exec: (cmd) => {
+        calls.push(cmd);
+        // Model pnpm 12 saving package.json only after its install succeeds:
+        // https://github.com/pnpm/pnpm/blob/v12.0.0/pnpm/crates/package-manager/src/add.rs#L330-L334
+        if (!cmd.endsWith(" --lockfile-only")) {
+          throw new Error("ERR_PNPM_IGNORED_BUILDS: run pnpm approve-builds");
+        }
+        const pkg = readPkg(tmpDir);
+        if (cmd.includes(" -D ")) pkg.devDependencies = devDependencies;
+        else pkg.dependencies = { ...(pkg.dependencies as object), ...dependencies };
+        writeFile(tmpDir, "package.json", JSON.stringify(pkg));
+      },
+    });
+
+    expect(calls).toEqual([
+      'pnpm add "vinext"',
+      'pnpm add "vinext" --lockfile-only',
+      'pnpm add -D "vite" "@vitejs/plugin-react"',
+      'pnpm add -D "vite" "@vitejs/plugin-react" --lockfile-only',
+    ]);
+    const pkg = readPkg(tmpDir);
+    expect(pkg.dependencies).toMatchObject({ ...dependencies, next: "^15.0.0" });
+    expect(pkg.devDependencies).toEqual(devDependencies);
+    expect(readFile(tmpDir, "pnpm-workspace.yaml")).toBe(workspace);
+    expect(result.dependencyInstallNeedsApproval).toBe(true);
+  });
+
+  it.each(["Registry unavailable", "ERR_PNPM_IGNORED_BUILDS: recovery failed"])(
+    "fails when pnpm cannot persist declarations after a build-approval error: %s",
+    async (recoveryError) => {
+      setupProject(tmpDir, { router: "pages" });
+      writeFile(tmpDir, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+      await expect(
+        runInit(tmpDir, {
+          _exec: (cmd) => {
+            if (cmd.endsWith(" --lockfile-only")) throw new Error(recoveryError);
+            throw new Error("ERR_PNPM_IGNORED_BUILDS: run pnpm approve-builds");
+          },
+        }),
+      ).rejects.toThrow(recoveryError);
+    },
+  );
 
   it("detects blocked builds after a successful pnpm install", async () => {
     setupProject(tmpDir, { router: "pages" });
@@ -2462,7 +2518,7 @@ describe("init — dependency installation", () => {
     const { result, output } = await runInit(tmpDir, {
       _exec: (cmd) => {
         commands.push(cmd);
-        if (cmd.includes("react@latest")) {
+        if (cmd.includes("react@latest") && !cmd.endsWith(" --lockfile-only")) {
           throw Object.assign(new Error("pnpm add failed"), {
             output: "Ignored build scripts. Run pnpm approve-builds.",
           });

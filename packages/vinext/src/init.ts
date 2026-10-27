@@ -127,6 +127,8 @@ export type InitOptions = {
 type InitResult = {
   /** Whether dependencies were installed */
   installedDeps: string[];
+  /** Whether dependency build scripts still need the user's approval. */
+  dependencyInstallNeedsApproval: boolean;
   /** Whether "type": "module" was added */
   addedTypeModule: boolean;
   /** CJS config files that were renamed ([old, new] pairs) */
@@ -561,20 +563,28 @@ async function installDeps(
     opts: { cwd: string; stdio: string },
   ) => string | void | Promise<string | void>,
   { dev = true }: { dev?: boolean } = {},
-): Promise<string> {
-  if (deps.length === 0) return "";
+): Promise<{ needsBuildApproval: boolean }> {
+  if (deps.length === 0) return { needsBuildApproval: false };
 
   const baseCmd = detectPackageManager(root);
   // Strip " -D" for non-dev installs (keeps deps in "dependencies", not "devDependencies")
   const installCmd = dev ? baseCmd : baseCmd.replace(/ -D$/, "");
   const depsStr = deps.map((dep) => JSON.stringify(dep)).join(" ");
 
-  return (
-    (await exec(`${installCmd} ${depsStr}`, {
-      cwd: root,
-      stdio: "inherit",
-    })) ?? ""
-  );
+  const command = `${installCmd} ${depsStr}`;
+  const execOptions = { cwd: root, stdio: "inherit" };
+  const isPnpm = detectPackageManagerName(root) === "pnpm";
+  try {
+    const output = await exec(command, execOptions);
+    return { needsBuildApproval: isPnpm && isApproveBuildsError(output ?? "") };
+  } catch (error) {
+    if (!isPnpm || !isApproveBuildsError(error)) throw error;
+    // pnpm 12 can write the lockfile and then fail build approval before
+    // saving package.json. Let pnpm persist its own resolved declarations
+    // without running scripts or approving any dependency builds.
+    await exec(`${command} --lockfile-only`, execOptions);
+    return { needsBuildApproval: true };
+  }
 }
 
 // ─── .gitignore Update ───────────────────────────────────────────────────────
@@ -1001,17 +1011,12 @@ export async function init(options: InitOptions): Promise<InitResult> {
           "    ",
         ),
       );
-      try {
-        if (shouldInstall) {
-          const installOutput = await installDeps(root, reactUpgrade, exec, { dev: false });
-          if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-        } else {
-          const added = addDependencyEntries(root, reactUpgrade, { dev: false });
-          dependencyEntriesAdded.push(...added);
-        }
-      } catch (error) {
-        if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-        dependencyInstallNeedsApproval = true;
+      if (shouldInstall) {
+        const { needsBuildApproval } = await installDeps(root, reactUpgrade, exec, { dev: false });
+        if (needsBuildApproval) dependencyInstallNeedsApproval = true;
+      } else {
+        const added = addDependencyEntries(root, reactUpgrade, { dev: false });
+        dependencyEntriesAdded.push(...added);
       }
     }
   }
@@ -1027,35 +1032,27 @@ export async function init(options: InitOptions): Promise<InitResult> {
         "    ",
       ),
     );
-    try {
-      if (shouldInstall) {
-        const installOutput = await installDeps(root, pluginReactUpgrade, exec);
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-      } else {
-        const added = addDependencyEntries(root, pluginReactUpgrade, { dev: true });
-        devDependencyEntriesAdded.push(...added);
-      }
-    } catch (error) {
-      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-      dependencyInstallNeedsApproval = true;
+    if (shouldInstall) {
+      const { needsBuildApproval } = await installDeps(root, pluginReactUpgrade, exec);
+      if (needsBuildApproval) dependencyInstallNeedsApproval = true;
+    } else {
+      const added = addDependencyEntries(root, pluginReactUpgrade, { dev: true });
+      devDependencyEntriesAdded.push(...added);
     }
   }
 
   if (missingDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing dependencies:"))}`);
     console.log(formatList(missingDependencies, "    "));
-    try {
-      if (shouldInstall) {
-        const installOutput = await installDeps(root, missingDependencies, exec, { dev: false });
-        dependencyEntriesAdded.push(...missingDependencies);
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-      } else {
-        const added = addDependencyEntries(root, missingDependencies, { dev: false });
-        dependencyEntriesAdded.push(...added);
-      }
-    } catch (error) {
-      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-      dependencyInstallNeedsApproval = true;
+    if (shouldInstall) {
+      const { needsBuildApproval } = await installDeps(root, missingDependencies, exec, {
+        dev: false,
+      });
+      dependencyEntriesAdded.push(...missingDependencies);
+      if (needsBuildApproval) dependencyInstallNeedsApproval = true;
+    } else {
+      const added = addDependencyEntries(root, missingDependencies, { dev: false });
+      dependencyEntriesAdded.push(...added);
     }
     console.log();
   }
@@ -1063,18 +1060,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (missingDevDependencies.length > 0) {
     console.log(`  ${terminalStyle.cyan(terminalStyle.bold("Installing devDependencies:"))}`);
     console.log(formatList(missingDevDependencies, "    "));
-    try {
-      if (shouldInstall) {
-        const installOutput = await installDeps(root, missingDevDependencies, exec);
-        devDependencyEntriesAdded.push(...missingDevDependencies);
-        if (isApproveBuildsError(installOutput)) dependencyInstallNeedsApproval = true;
-      } else {
-        const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
-        devDependencyEntriesAdded.push(...added);
-      }
-    } catch (error) {
-      if (pmName !== "pnpm" || !isApproveBuildsError(error)) throw error;
-      dependencyInstallNeedsApproval = true;
+    if (shouldInstall) {
+      const { needsBuildApproval } = await installDeps(root, missingDevDependencies, exec);
+      devDependencyEntriesAdded.push(...missingDevDependencies);
+      if (needsBuildApproval) dependencyInstallNeedsApproval = true;
+    } else {
+      const added = addDependencyEntries(root, missingDevDependencies, { dev: true });
+      devDependencyEntriesAdded.push(...added);
     }
     console.log();
   }
@@ -1099,7 +1091,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   // ── Step 7: Print summary ──────────────────────────────────────────────
 
-  console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
+  console.log(
+    `  ${dependencyInstallNeedsApproval ? terminalStyle.yellow(terminalStyle.bold("vinext init needs build-script approval")) : terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`,
+  );
 
   if (dependencyEntriesAdded.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
@@ -1201,6 +1195,7 @@ ${deployResponseStoreCommandStep}${deployCommandStep}${options.scriptNames === "
 
   return {
     installedDeps,
+    dependencyInstallNeedsApproval,
     addedTypeModule,
     renamedConfigs,
     addedScripts,
