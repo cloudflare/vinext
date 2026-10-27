@@ -62,6 +62,7 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
+  createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
@@ -107,6 +108,14 @@ export function replayCachedFunction(fn: object, args: CacheFlightArguments): Pr
 
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
+
+/** A cache result a shell render leaves out, as a dynamic hole. */
+const OMITTED_FROM_SHELL: unique symbol = Symbol("vinext.omittedFromShell");
+type ShellResult<T> = T | typeof OMITTED_FROM_SHELL;
+
+function isShortLivedCacheLife(life: { revalidate?: number | false; expire?: number }): boolean {
+  return life.revalidate === 0 || (life.expire !== undefined && life.expire < DYNAMIC_EXPIRE);
+}
 
 /**
  * Used purely as `cause` for the nested-dynamic cache error: its captured stack
@@ -686,7 +695,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
     }
 
-    return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+    // Like Next.js's final prerender, a shell leaves a short-lived outermost
+    // cache out: it's not worth a static shell, so its lifetime and tags don't
+    // count toward the shell's either. The value is still stored for requests.
+    const shellState = cacheContextStorage.getStore() ? null : getPprFallbackShellState();
+    const omitFromShell = (life: { revalidate?: number | false; expire?: number } | undefined) =>
+      shellState?.phase === "final" && life !== undefined && isShortLivedCacheLife(life);
+
+    const task = trackPprFallbackShellCacheTask(async (): Promise<ShellResult<TResult>> => {
       const codec = await getRscModule();
       const clientReferences = codec.createClientTemporaryReferenceSet();
       const serverReferences = codec.createTemporaryReferenceSet();
@@ -869,6 +885,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // reads it, so a hit has no enclosing cache to key by root params.
       const resumeEntry = readUseCacheResumeDataCacheEntry(coarseCacheKey);
       if (resumeEntry && !_hasPendingRevalidatedTag([...resumeEntry.tags, ...softTags])) {
+        if (omitFromShell(resumeEntry.cacheControl)) return OMITTED_FROM_SHELL;
         try {
           const result = await rsc.createFromReadableStream<TResult>(
             uint8ToStream(base64ToUint8(resumeEntry.body)),
@@ -922,20 +939,21 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const generate = async (
         propagate: boolean,
         staleEntry?: CacheHandlerValue,
-      ): Promise<TResult> => {
+      ): Promise<ShellResult<TResult>> => {
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
           callFn,
           callArgs,
           cacheVariant,
           (value) => serializeCacheResult(value, rsc),
         );
+        const isOmittedFromShell = propagate && omitFromShell(effectiveLife);
 
         const rootParamNames =
           ctx.readRootParamNames && ctx.readRootParamNames.size > 0
             ? addKnownRootParamNames(id, ctx.readRootParamNames)
             : knownRootParamsByFunctionId.get(id);
 
-        if (propagate) {
+        if (propagate && !isOmittedFromShell) {
           recordRequestScopedCacheLife(effectiveLife);
           // Bubble the cache scope's tags up to the surrounding request so the
           // enclosing page / route-handler ISR entry is tagged for on-demand
@@ -1051,6 +1069,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           }
         }
 
+        if (isOmittedFromShell) return OMITTED_FROM_SHELL;
         return collectedResult ? collectedResult.result : result;
       };
 
@@ -1061,6 +1080,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         isServableCacheState(existing.cacheState) &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
+        if (omitFromShell(existing.cacheControl)) return OMITTED_FROM_SHELL;
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
@@ -1095,6 +1115,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return generate(true, existing?.cacheState ? existing : undefined);
     }, cacheVariant);
+    if (shellState === null) return task as Promise<TResult>;
+    return task.then((result) =>
+      result === OMITTED_FROM_SHELL
+        ? createPprFallbackShellSuspensePromiseForState<TResult>(shellState, 'dynamic "use cache"')
+        : result,
+    );
   };
 
   const cachedFn = memoizeInCacheScope((...args: TArgs) => invoke(args));

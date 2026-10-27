@@ -23,7 +23,9 @@ import {
 import {
   APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+  APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
 } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { createPprFallbackShellSuspensePromise } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
@@ -122,7 +124,12 @@ type TestRoute = {
   segmentUnauthorizeds?: readonly ({ default?: unknown } | null | undefined)[];
   segmentUnauthorizedTreePositions?: readonly number[];
   isDynamic: boolean;
-  layouts: readonly { default?: unknown; dynamic?: unknown; revalidate?: unknown }[];
+  layouts: readonly {
+    default?: unknown;
+    dynamic?: unknown;
+    revalidate?: unknown;
+    unstable_instant?: unknown;
+  }[];
   layoutTreePositions?: readonly number[];
   loading?: { default?: unknown } | null;
   loadings?: readonly ({ default?: unknown } | null | undefined)[];
@@ -1396,6 +1403,195 @@ describe("app page dispatch", () => {
 
     expect(response.status).toBe(200);
     expect(refreshInForeground[0]).toBe(true);
+  });
+
+  // Like Next.js, a Cache Components page's prefetch gets its static shell: a
+  // stored prerender of the page that stops at its dynamic holes.
+  describe("static-shell prefetch", () => {
+    function createStaticShellOptions(overrides: CreateDispatchOptionsOverrides = {}) {
+      const created = createDispatchOptions({
+        cleanPathname: "/posts",
+        isProduction: true,
+        isRscRequest: true,
+        pprRuntime: appPagePprRuntime,
+        renderMode: APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+        request: new Request("https://example.test/posts"),
+        route: createRoute({ pattern: "/posts", routeSegments: ["posts"] }),
+        ...overrides,
+      });
+      const stored = new Map<string, CachedAppPageValue>();
+      const isrSetFallbackShell = vi.fn(async (key: string, value: CachedAppPageValue) => {
+        stored.set(key, value);
+      });
+      created.options.isrGetFallbackShell = vi.fn(async (key: string) => {
+        const value = stored.get(key);
+        return value ? buildISRCacheEntry(value) : null;
+      });
+      created.options.isrSetFallbackShell = isrSetFallbackShell;
+      return { ...created, isrSetFallbackShell, stored };
+    }
+
+    it("never stores a static shell as the page's own payload", async () => {
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+      const waitUntilPromises: Promise<unknown>[] = [];
+      const executionContext = {
+        waitUntil(promise) {
+          waitUntilPromises.push(promise);
+        },
+      } satisfies ExecutionContextLike;
+      const { options, isrSetFallbackShell } = createStaticShellOptions({
+        isrSet,
+        revalidateSeconds: 60,
+      });
+
+      const response = await runWithExecutionContext(executionContext, () =>
+        runWithRequestContext(createRequestContext(), () => dispatchAppPage(options)),
+      );
+      await response.arrayBuffer();
+      await Promise.all(waitUntilPromises.splice(0));
+      expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+      // A navigation to the page must render it whole, not replay the shell.
+      expect(isrSet).not.toHaveBeenCalled();
+    });
+
+    it("renders, stores and then serves a page's static shell", async () => {
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "page"),
+      );
+      const { options, isrSetFallbackShell } = createStaticShellOptions({ buildPageElement });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      // With no cacheLife claim, the client keeps it for staleTimes.static.
+      expect(response.headers.get("x-nextjs-stale-time")).toBe("300");
+      await expect(response.text()).resolves.toBe("flight");
+      expect(isrSetFallbackShell).toHaveBeenCalledTimes(1);
+      expect(isrSetFallbackShell.mock.calls[0]?.[0]).toContain("app-static-shell");
+      // One render, without a warmup.
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+
+      buildPageElement.mockImplementation(async () => {
+        throw new Error("a stored shell is served without rendering");
+      });
+      const cached = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(cached.headers.get("x-vinext-static-shell")).toBe("complete");
+      await expect(cached.text()).resolves.toBe("flight");
+    });
+
+    it("marks a shell that left dynamic holes partial", async () => {
+      const { options } = createStaticShellOptions({
+        async buildPageElement() {
+          // A request API's hole, as `connection()` leaves it.
+          void createPprFallbackShellSuspensePromise("`connection()`");
+          return React.createElement("main", null, "page");
+        },
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-static-shell")).toBe("partial");
+    });
+
+    it("renders a mounted-slot variant's shell without storing it", async () => {
+      const { options, isrSetFallbackShell } = createStaticShellOptions({
+        mountedSlotsHeader: "slot:navbar:/",
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-static-shell")).toBe("complete");
+      await expect(response.text()).resolves.toBe("flight");
+      expect(isrSetFallbackShell).not.toHaveBeenCalled();
+    });
+
+    it("serves each request's own middleware headers over a shared shell", async () => {
+      const { options, stored } = createStaticShellOptions({
+        middlewareContext: { headers: new Headers({ "x-middleware": "first" }), status: null },
+      });
+
+      const first = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(first.headers.get("x-middleware")).toBe("first");
+      const [value] = [...stored.values()];
+      expect(value?.headers).not.toHaveProperty("x-middleware");
+
+      options.middlewareContext = {
+        headers: new Headers({ "x-middleware": "second" }),
+        status: 203,
+      };
+      const second = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(second.headers.get("x-middleware")).toBe("second");
+      expect(second.status).toBe(203);
+    });
+
+    it("keys a rewritten page's shell by its cache pathname and keeps mounted slots", async () => {
+      const created = createStaticShellOptions();
+      const withRequest = vi.fn(created.options.withRequest!);
+      const options = {
+        ...created.options,
+        cachePathname: "/source",
+        mountedSlotsHeader: "slot:navbar:/",
+        withRequest,
+      };
+
+      await runWithRequestContext(createRequestContext(), () => dispatchAppPage(options));
+      expect(withRequest.mock.calls[0]?.[0]).toMatchObject({
+        cachePathname: "/source",
+        cleanPathname: "/posts",
+        middlewareContext: { headers: null, status: null },
+        mountedSlotsHeader: "slot:navbar:/",
+      });
+
+      await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({ ...options, mountedSlotsHeader: null }),
+      );
+      expect([...created.stored.keys()]).toEqual([expect.stringContaining("/source")]);
+    });
+
+    // Next.js renders a runtime prefetch (`unstable_instant`'s
+    // `prefetch: "runtime"`) for the request, instead of the static shell.
+    it("answers a runtime prefetch with the page's payload", async () => {
+      const { options, isrSetFallbackShell } = createStaticShellOptions({
+        route: createRoute({
+          layouts: [{ default: () => null, unstable_instant: { prefetch: "runtime" } }],
+          pattern: "/posts",
+          routeSegments: ["posts"],
+        }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-static-shell")).toBe("runtime");
+      expect(isrSetFallbackShell).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["a search string", { searchParams: new URLSearchParams("q=1") }],
+      ["an interception", { interceptionContext: "/feed" }],
+      ["a development server", { isProduction: false }],
+    ] satisfies [string, CreateDispatchOptionsOverrides][])(
+      "answers a prefetch with %s with the loading shell",
+      async (_name, overrides) => {
+        const { options, isrSetFallbackShell } = createStaticShellOptions(overrides);
+
+        const response = await runWithRequestContext(createRequestContext(), () =>
+          dispatchAppPage(options),
+        );
+        expect(response.headers.get("x-vinext-static-shell")).toBeNull();
+        expect(isrSetFallbackShell).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("seeds a PPR fallback shell's final render with what its warmup collected", async () => {

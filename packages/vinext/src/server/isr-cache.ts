@@ -541,6 +541,15 @@ export function appIsrFallbackShellKey(
   return buildCacheKey(prefix, pathname, suffix);
 }
 
+/** The data cache key of a Cache Components page's static-shell prefetch payload. */
+export function appIsrStaticShellRscKey(
+  pathname: string,
+  buildId = process.env.__VINEXT_BUILD_ID,
+): string {
+  const prefix = buildId ? `app-static-shell:v1:${buildId}` : "app-static-shell:v1";
+  return buildCacheKey(prefix, pathname, "rsc");
+}
+
 export function appIsrHtmlKey(pathname: string): string {
   return appIsrCacheKey(pathname, "html");
 }

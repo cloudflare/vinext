@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
+import {
+  cacheLife,
+  MemoryCacheHandler,
+  setCacheHandler,
+} from "../packages/vinext/src/shims/cache.js";
+import { registerCachedFunction } from "../packages/vinext/src/shims/cache-runtime.js";
 import {
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
@@ -482,5 +488,56 @@ describe("ppr fallback shell render lifecycle", () => {
     expect(state.pendingCacheTasks).toBe(0);
 
     state.abortController.abort();
+  });
+});
+
+// Like Next.js's final prerender (use-cache-wrapper.ts, `DYNAMIC_EXPIRE`), a
+// shell leaves out a cache that's short-lived, though the entry is stored.
+describe("ppr fallback shell short-lived caches", () => {
+  async function renderCached(phase: "warmup" | "final", profile: string, id: string) {
+    const handler = new MemoryCacheHandler();
+    const set = vi.spyOn(handler, "set");
+    setCacheHandler(handler);
+    const cached = registerCachedFunction(async () => {
+      cacheLife(profile);
+      return "value";
+    }, id);
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/page" });
+    if (phase === "final") preparePprFallbackShellFinalRender(state);
+    const result = runWithPprFallbackShellState(state, () => cached());
+    const settled = await Promise.race([result, delay(20).then(() => "pending")]);
+    state.abortController.abort();
+    return { hasDynamicBoundary: state.hasDynamicBoundary, set, settled };
+  }
+
+  it("leaves a short-lived cache out of the final render", async () => {
+    const { hasDynamicBoundary, set, settled } = await renderCached(
+      "final",
+      "seconds",
+      "shell-short-lived-final",
+    );
+    expect(settled).toBe("pending");
+    expect(hasDynamicBoundary).toBe(true);
+    expect(set).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a short-lived cache in the warmup render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "warmup",
+      "seconds",
+      "shell-short-lived-warmup",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
+  });
+
+  it("keeps a long-lived cache in the final render", async () => {
+    const { hasDynamicBoundary, settled } = await renderCached(
+      "final",
+      "minutes",
+      "shell-long-lived-final",
+    );
+    expect(settled).toBe("value");
+    expect(hasDynamicBoundary).toBe(false);
   });
 });

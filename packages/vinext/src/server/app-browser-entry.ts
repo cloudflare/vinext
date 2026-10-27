@@ -40,6 +40,7 @@ import {
   invalidateDynamicPrefetchCache,
   invalidatePrefetchCache,
   parseRenderedPathAndSearchHeader,
+  peekStaticShellPrefetchForNavigation,
   preloadHybridClientRouteOwner,
   seedPrefetchResponseSnapshot,
   decodeRedirectError,
@@ -804,7 +805,8 @@ async function learnOptimisticRouteTemplatesFromPrefetchCache(options: {
     });
     if (optimisticRouteTemplates.hasSource(sourceKey)) continue;
     if (!isSettledPrefetchCacheEntry(entry)) continue;
-    if (entry.prefetchKind === "route-tree") continue;
+    // A static shell is one URL's page, never a template for its route.
+    if (entry.prefetchKind === "route-tree" || entry.prefetchKind === "static-shell") continue;
 
     learning.push(
       optimisticRouteTemplates.learn(sourceKey, () =>
@@ -2644,13 +2646,68 @@ function bootstrapHydration(
           }
         }
 
+        // Like Next.js, a navigation to a page whose static shell was
+        // prefetched shows it at once, as a detached commit the page's render
+        // then replaces.
+        const staticShell =
+          !navResponse && navigationKind === "navigate" && !shouldBypassNavigationCache
+            ? peekStaticShellPrefetchForNavigation(
+                rscUrl,
+                requestInterceptionContext,
+                mountedSlotsHeader,
+                additionalPrefetchRscUrls,
+              )
+            : null;
+        const committedStaticShell =
+          staticShell !== null && isRscResponseCompatible(staticShell.compatibilityIdHeader);
+        if (committedStaticShell) {
+          detachedNavigationCommits = true;
+          const staticShellParams =
+            parseEncodedJsonHeader<Record<string, string | string[]>>(staticShell.paramsHeader) ??
+            {};
+          void renderNavigationPayload({
+            actionType: toActionType(navigationKind),
+            historyUpdateMode: currentHistoryMode,
+            navigationCommitKind: "detached",
+            navigationInitiationState,
+            navigationSnapshot: createClientNavigationRenderSnapshot(
+              currentHref,
+              staticShellParams,
+              staticShell.renderedPathAndSearch,
+            ),
+            navId,
+            operationLane: toOperationLane(navigationKind),
+            params: staticShellParams,
+            payload: decodeAppElementsPromise(
+              createFromFetch<AppWireElements>(Promise.resolve(restoreRscResponse(staticShell))),
+            ),
+            payloadOrigin: FRESH_APP_NAVIGATION_PAYLOAD_ORIGIN,
+            pendingRouterState: null,
+            previousNextUrl: requestPreviousNextUrl,
+            restoredBfcacheIds,
+            reuseCurrentBfcacheIds,
+            scrollIntent,
+            targetHref: currentHref,
+            traversalIntent: activeTraversalIntent,
+            visibleCommitMode,
+          }).catch((error) => {
+            if (browserNavigationController.isCurrentNavigation(navId)) {
+              console.error("[vinext] Static shell navigation error:", error);
+            }
+          });
+        }
+
         // The optimistic shell is intentionally not gated by
         // `shouldBypassNavigationCache`. A same-page search change can still
         // render an optimistic shell from cached route templates before the
         // real fetch commits, but that shell is a detached commit (see below)
         // that is always superseded by the authoritative fetch — the same as
         // cross-route navigations — so it never persists stale page content.
-        if (!navResponse && fallbackReuseDecision.kind === "attemptOptimisticRouteShell") {
+        if (
+          !navResponse &&
+          !committedStaticShell &&
+          fallbackReuseDecision.kind === "attemptOptimisticRouteShell"
+        ) {
           await learnOptimisticRouteTemplatesFromPrefetchCache({
             interceptionContext: requestInterceptionContext,
             mountedSlotsHeader,

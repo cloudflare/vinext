@@ -354,7 +354,8 @@ export function isAppWorkerResponseStageProps(
       (special.renderMode === "navigation" ||
         special.renderMode === "prefetch-empty" ||
         special.renderMode === "prefetch-dynamic-shell" ||
-        special.renderMode === "prefetch-loading-shell")
+        special.renderMode === "prefetch-loading-shell" ||
+        special.renderMode === "prefetch-static-shell")
     );
   }
   return (
@@ -386,7 +387,8 @@ export function isAppWorkerResponseStageProps(
     (props.renderMode === "navigation" ||
       props.renderMode === "prefetch-empty" ||
       props.renderMode === "prefetch-dynamic-shell" ||
-      props.renderMode === "prefetch-loading-shell")
+      props.renderMode === "prefetch-loading-shell" ||
+      props.renderMode === "prefetch-static-shell")
   );
 }
 
