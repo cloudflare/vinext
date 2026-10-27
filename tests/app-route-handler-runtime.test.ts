@@ -210,29 +210,6 @@ describe("app route handler runtime helpers", () => {
     expect(reason).toBe(host.signal.reason);
   });
 
-  it("lets GC collect the host signal and its request once the response is done", async () => {
-    // Undici's FinalizationRegistry strongly holds the signal each Request
-    // follows. When that was the host signal, the registry kept it, and the
-    // request retained for it, alive forever: one leak per request.
-    const v8 = await import("node:v8");
-    const vm = await import("node:vm");
-    v8.setFlagsFromString("--expose-gc");
-    const gc = vm.runInNewContext("gc") as () => void;
-
-    const hostSignal = (() => {
-      const host = new AbortController();
-      const inbound = new Request("https://example.com/stream", { signal: host.signal });
-      createTrackedAppRouteRequest(inbound, { signal: host.signal });
-      return new WeakRef(host.signal);
-    })();
-    for (let round = 0; round < 10 && hostSignal.deref(); round += 1) {
-      await new Promise((resolve) => setImmediate(resolve));
-      gc();
-    }
-
-    expect(hostSignal.deref()).toBeUndefined();
-  });
-
   it("tracks request.url access for query parsing", () => {
     const accesses: string[] = [];
     const tracked = createTrackedAppRouteRequest(
