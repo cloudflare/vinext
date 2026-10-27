@@ -15,6 +15,7 @@ export function formatDeployHelp(): string {
     --env <name>             Cloudflare mode for typed config; Wrangler environment otherwise
     --name <name>            Custom Worker name for Wrangler config projects
     --config <path>          Wrangler config path (default: wrangler.jsonc/json/toml)
+    --vite-config <path>     Vite config file to build with (default: vite.config.*)
     --skip-build             Skip the build step (use existing dist/)
     --dry-run                Validate setup without building or deploying
     --verbose                Print raw output from internal Cloudflare CLI commands
@@ -130,9 +131,10 @@ export function formatPreviewsDeployHelp(): string {
     preview-name    Optional Preview name (cf uses the CI or Git branch if omitted)
 
   Options:
-    --mode <mode>   Vite mode to build and deploy in (default: production)
-    --skip-build    Deploy existing Preview Build Output without rebuilding
-    -h, --help      Show this help
+    --mode <mode>          Vite mode to build and deploy in (default: production)
+    --skip-build           Deploy existing Preview Build Output without rebuilding
+    --vite-config <path>   Vite config file to build with (default: vite.config.*)
+    -h, --help             Show this help
 
   Examples:
     vinext-cloudflare previews deploy

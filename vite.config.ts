@@ -196,6 +196,7 @@ export default defineConfig({
             // When adding a test that calls startFixtureServer() or createServer(),
             // move it here.
             "tests/app-layout-not-found-route-group.test.ts",
+            "tests/app-multiple-root-layouts-not-found.test.ts",
             "tests/app-route-client-preloads-production.test.ts",
             "tests/app-router-client-preloading.test.ts",
             "tests/app-router-deployment-id.test.ts",
@@ -291,6 +292,7 @@ export default defineConfig({
           // `setupServer` rather than reverting this exclusion.
           include: [
             "tests/app-layout-not-found-route-group.test.ts",
+            "tests/app-multiple-root-layouts-not-found.test.ts",
             "tests/app-route-client-preloads-production.test.ts",
             "tests/app-router-client-preloading.test.ts",
             "tests/app-router-deployment-id.test.ts",

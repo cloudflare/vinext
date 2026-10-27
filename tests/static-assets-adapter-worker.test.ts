@@ -41,7 +41,6 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           isAppRouter: true,
           hasISR: false,
           hasMDX: false,
-          nativeModulesToStub: [],
         },
         { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
         "2026-04-01",

@@ -471,7 +471,7 @@ const LIBRARY_SUPPORT: Record<string, { status: Status; detail?: string }> = {
   "next-intl": {
     status: "supported",
     detail:
-      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental messages, precompile and extract options don't work (they need webpack/Turbopack loaders)",
+      "createNextIntlPlugin is only optional with the request config at (src/)i18n/request.*; its experimental extract option doesn't work (it needs a webpack/Turbopack loader)",
   },
   "@clerk/nextjs": {
     status: "supported",

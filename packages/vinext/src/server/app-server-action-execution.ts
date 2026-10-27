@@ -284,6 +284,8 @@ export type HandleProgressiveServerActionRequestOptions = {
    * routes fall through. See issue #1340.
    */
   hasPageRoute: boolean;
+  /** The App Router route the form posted to, whose implicit tags the action runs with. */
+  currentRoute?: AppServerActionRoute | null;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -1350,6 +1352,11 @@ export async function handleProgressiveServerActionRequest(
     let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
+    if (options.currentRoute) {
+      setCurrentFetchSoftTags(
+        buildServerActionPageTags(options.currentRoute, options.cleanPathname),
+      );
+    }
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       actionResult = await runWithRootParamsUsage(
@@ -1709,6 +1716,14 @@ export async function handleServerActionRscRequest<
     let actionThrew = false;
     const actionWasForwarded = Boolean(options.request.headers.get(ACTION_FORWARDED_HEADER));
     const rootParamsUsage = createRootParamsUsageController();
+    // Like Next.js, the action runs with its page's implicit tags, so cache
+    // reads inside it observe path invalidations, including its own
+    // revalidatePath().
+    if (options.currentRouteMatch) {
+      setCurrentFetchSoftTags(
+        buildServerActionPageTags(options.currentRouteMatch.route, options.cleanPathname),
+      );
+    }
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       try {

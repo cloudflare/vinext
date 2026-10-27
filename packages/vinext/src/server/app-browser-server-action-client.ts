@@ -52,6 +52,8 @@ type ActionRedirectTarget = {
 export type ClientServerActionDeps = {
   basePath: string;
   clearClientNavigationCaches(): void;
+  /** Evict only the cached navigation data that may be dynamic. */
+  clearDynamicClientNavigationCaches(): void;
   clientRscCompatibilityId: string | null;
   commitSameUrlNavigatePayload(
     elements: Promise<AppElements>,
@@ -197,7 +199,9 @@ export async function invokeClientServerAction(
   }
 
   const revalidation = parseServerActionRevalidationHeader(fetchResponse.headers);
-  if (revalidation !== "none") deps.clearClientNavigationCaches();
+  // Like Next.js, `refresh()` alone keeps the static prefetches.
+  if (revalidation === "staticAndDynamic") deps.clearClientNavigationCaches();
+  else if (revalidation === "dynamicOnly") deps.clearDynamicClientNavigationCaches();
   const invalidResponseError = await readInvalidServerActionResponseError(
     fetchResponse.clone(),
     actionRedirectTarget !== null,

@@ -75,7 +75,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
-import { ensureFetchPatch } from "vinext/shims/fetch-cache";
+import { ensureFetchPatch, setCurrentFetchDraftMode } from "vinext/shims/fetch-cache";
 import {
   beginRouteCacheability,
   isRouteCacheabilityIdentityProbe,
@@ -855,6 +855,7 @@ export function createPagesPageHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const previewData = preview.data;
+        setCurrentFetchDraftMode(previewData !== false);
         const pagesNextData = {
           ...pagesReadiness,
           ...(previewData === false ? {} : { isPreview: true as const }),

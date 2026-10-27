@@ -8,7 +8,11 @@
     "skipLibCheck": true,
     "types": ["vite/client", "@vitejs/plugin-rsc/types"],
     "paths": {
-      "@/*": ["./*"]
+      "@/*": ["./*"],
+      // Type-checks `next/navigation` without `next` installed (#4212). vinext
+      // must still resolve it per environment, so Server Components keep the
+      // react-server variant (see app/missing-use-client-test).
+      "next/navigation": ["./node_modules/vinext/dist/shims/navigation"]
     }
   },
   "include": ["next-env.d.ts", "app", "*.ts"]

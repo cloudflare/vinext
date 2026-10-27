@@ -477,6 +477,7 @@ function prefetchUrl(
           prefetchRscResponse,
           prepareNavigationPrefetchSnapshot,
           promotePrefetchCacheEntryForNavigation,
+          seedFullPrefetchFromVisitedResponse,
           DYNAMIC_NAVIGATION_CACHE_TTL,
           PREFETCH_CACHE_TTL,
         } = navigation;
@@ -707,6 +708,17 @@ function prefetchUrl(
               .then((response) => response.arrayBuffer())
               .catch(() => {});
           }
+          return;
+        }
+        if (
+          autoPrefetch.dynamicStaleTime === "full-prefetch" &&
+          seedFullPrefetchFromVisitedResponse(
+            rscUrl,
+            interceptionContext,
+            mountedSlotsHeader,
+            additionalRscUrls,
+          )
+        ) {
           return;
         }
         prefetched.add(cacheKey);
