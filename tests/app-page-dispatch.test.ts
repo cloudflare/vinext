@@ -38,6 +38,7 @@ import { appPagePprRuntime } from "../packages/vinext/src/server/app-page-ppr-ru
 import {
   _getResumeDataCacheCollector,
   _getResumeDataCacheSeed,
+  _isOnDemandRevalidate,
   _setRequestScopedCacheLife,
 } from "../packages/vinext/src/shims/cache-request-state.js";
 import {
@@ -4171,6 +4172,101 @@ describe("app page dispatch", () => {
     expect(options.isrSet).not.toHaveBeenCalled();
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the render runs in the foreground and is stored.
+  it.each([
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
+  ])(
+    "regenerates a $name entry in the foreground for an on-demand revalidation",
+    async ({ isStale }) => {
+      const readPolicy: boolean[] = [];
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedAppPageValue("<html>stored</html>"), isStale),
+      );
+      let releaseWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const isrSet = vi.fn<DispatchOptions["isrSet"]>(() => writeReleased);
+      const scheduleBackgroundRegeneration = vi.fn();
+      const { options } = createDispatchOptions({
+        async buildPageElement() {
+          readPolicy.push(_isOnDemandRevalidate());
+          return React.createElement("div", null, "fresh");
+        },
+        isProduction: true,
+        isrGet,
+        isrSet,
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration,
+      });
+
+      await runWithRequestContext(
+        createRequestContext({ isOnDemandRevalidate: true }),
+        async () => {
+          let dispatched = false;
+          const pending = dispatchAppPage(options).then((response) => {
+            dispatched = true;
+            return response;
+          });
+          // Like Next.js, it answers only once the regenerated entry is stored.
+          await vi.waitFor(() => expect(isrSet).toHaveBeenCalled());
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(dispatched).toBe(false);
+          releaseWrite();
+          const response = await pending;
+          expect(response.headers.get("x-vinext-cache")).not.toBe(isStale ? "STALE" : "HIT");
+          expect(await response.text()).not.toContain("stored");
+        },
+      );
+
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+      expect(readPolicy).toEqual([true]);
+    },
+  );
+
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one page share a render and a write.
+  it("shares one render between concurrent on-demand revalidations", async () => {
+    let renders = 0;
+    let releaseRender!: () => void;
+    const renderReleased = new Promise<void>((resolve) => {
+      releaseRender = resolve;
+    });
+    const isrSet = vi.fn<DispatchOptions["isrSet"]>(async () => {});
+    const { options } = createDispatchOptions({
+      async buildPageElement() {
+        renders++;
+        await renderReleased;
+        return React.createElement("div", null, "fresh");
+      },
+      isProduction: true,
+      isrGet: vi.fn(async () => null),
+      isrSet,
+      revalidateSeconds: 60,
+    });
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        dispatchAppPage(options),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(renders).toBe(1));
+    releaseRender();
+    const responses = await Promise.all(pending);
+
+    expect(renders).toBe(1);
+    expect(
+      isrSet.mock.calls.filter(([key]) => key === options.isrHtmlKey(options.cleanPathname)),
+    ).toHaveLength(1);
+    // Each caller reads its own copy of the one response.
+    const bodies = await Promise.all(responses.map((response) => response.text()));
+    expect(bodies[0]).not.toBe("");
+    expect(bodies[1]).toBe(bodies[0]);
+  });
+
   it("bypasses shared caches for an unverified interception context", async () => {
     const isrGet = vi.fn(async () =>
       buildISRCacheEntry(
@@ -6040,6 +6136,25 @@ describe("app page dispatch", () => {
     expect(response.headers.get("x-vinext-cache")).toBe("HIT");
     await expect(response.text()).resolves.toContain("Locale: en");
     expect(buildPageElement).not.toHaveBeenCalled();
+  });
+
+  it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
+    const buildPageElement = createParamTextPageElement();
+    const isrGet = createPprBlogFallbackShellGetter(false);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      isrGet,
+      loadSsrHandler: createFreshBodySsrHandler("fresh"),
+    });
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () => dispatchAppPage(options),
+    );
+
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
+    expect(buildPageElement).toHaveBeenCalled();
+    await expect(response.text()).resolves.toContain("fresh");
   });
 
   it("reads a fallback shell with an encoded kept param under its decoded build key", async () => {

@@ -24,6 +24,7 @@ import {
   normalizeMountedSlotsHeader,
   triggerBackgroundRegeneration,
   coalesceOnDemandRevalidation,
+  coalesceOnDemandResponse,
 } from "../packages/vinext/src/server/isr-cache.js";
 import {
   DefaultCdnCacheAdapter,
@@ -617,6 +618,37 @@ describe("coalesceOnDemandRevalidation", () => {
     expect(joiner.waitUntil).not.toHaveBeenCalled();
     finish();
     await first;
+  });
+});
+
+describe("coalesceOnDemandResponse", () => {
+  it("releases the body a HEAD revalidation leaves out", async () => {
+    let canceled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        canceled = true;
+      },
+    });
+    const response = await coalesceOnDemandResponse(
+      "coalesce-head-body",
+      "HEAD",
+      async () => new Response(body, { headers: { "x-test": "1" } }),
+    );
+
+    expect(canceled).toBe(true);
+    expect(response?.body).toBeNull();
+    expect(response?.headers.get("x-test")).toBe("1");
+  });
+
+  it.each([204, 205, 304])("copies a bodyless %s response", async (status) => {
+    const response = await coalesceOnDemandResponse(
+      `coalesce-bodyless-${status}`,
+      "GET",
+      async () => new Response(null, { status }),
+    );
+
+    expect(response?.status).toBe(status);
+    expect(response?.body).toBeNull();
   });
 });
 

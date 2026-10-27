@@ -17,6 +17,17 @@ export function readCacheControlNumberField(
   return typeof value === "number" ? value : undefined;
 }
 
+/**
+ * When a `"use cache"` entry's generation started (`ctx.timestamp`), which dates
+ * the entry like Next.js does. Absent, malformed or future values fall back to `now`.
+ */
+export function readCacheTimestamp(ctx: Record<string, unknown> | undefined, now: number): number {
+  const value = ctx?.timestamp;
+  return typeof value === "number" && Number.isFinite(value) && value > 0 && value <= now
+    ? value
+    : now;
+}
+
 export function readCacheControlRevalidateField(
   ctx: Record<string, unknown> | undefined,
 ): number | false | undefined {

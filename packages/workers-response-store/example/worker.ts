@@ -16,6 +16,8 @@ type FixtureRevalidatorOptions = {
   cacheTags?: string[];
   delayMs?: number;
   fail?: boolean;
+  /** Date the response from when regeneration started. */
+  generatedAt?: boolean;
   failOnce?: boolean;
 };
 
@@ -77,6 +79,8 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     if (value) headers.set(name, value);
   }
   if (age) headers.set("Age", age);
+  const generatedAt = request.headers.get("X-Generated-At");
+  if (generatedAt) headers.set("X-Workers-Response-Store-Generated-At", generatedAt);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }
@@ -168,6 +172,7 @@ const responseStoreOptions = {
     const cacheKey = requestUrl.pathname + requestUrl.search;
     activeRegenerationRequests.add(cacheKey);
 
+    const startedAt = Date.now();
     try {
       const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
       if (options.delayMs) {
@@ -198,6 +203,9 @@ const responseStoreOptions = {
 
       if (options.cacheTags?.length) {
         headers.set("Cache-Tag", options.cacheTags.join(","));
+      }
+      if (options.generatedAt) {
+        headers.set("X-Workers-Response-Store-Generated-At", String(startedAt));
       }
 
       return new Response(body, { headers });

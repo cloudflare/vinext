@@ -106,6 +106,8 @@ type EntryMetadata = {
 
 export type CandidateMetadata = EntryMetadata & {
   fenceTags: string[];
+  /** When the response's generation started (`GENERATED_AT_HEADER`). */
+  generatedAt?: number;
 };
 
 export type StoredEntry = EntryMetadata & {
@@ -159,12 +161,21 @@ type StoreResult = {
   response?: Response;
   /** The revision a published refresh replaced. */
   replacedRevision?: number;
+  /** When the published response's generation started, if the write said. */
+  generatedAt?: number;
+  /** When it was published, on this isolate's clock. */
+  publishedAt?: number;
+  /** The metadata DO published it stale, or expired. */
+  publishedStale?: true;
+  /** When its own cache policy, derived on this isolate's clock, made it stale. */
+  policyFreshUntil?: number;
 };
 
 type PublicationResult = {
   edgePurgeRequired: boolean;
   entry: StoredEntry | null;
   published: boolean;
+  publishedStale?: true;
 };
 
 type EdgeCacheOperation = "purge" | "invalidate";
@@ -317,6 +328,21 @@ const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 const R2_CUSTOM_METADATA_SAFE_BYTES = 7 * 1024;
 const NULL_BODY_STATUSES = new Set([204, 205, 304]);
 const AGE_BASIS_HEADER = "X-Workers-Response-Store-Age-Basis";
+/**
+ * @internal When a response's generation started (ms since epoch), on a put or a
+ * revalidator's response. Like Next.js "use cache", the entry is published stale if its
+ * tags were invalidated after that, and expired if they were purged, or an `expire` deadline
+ * passed, after it. Its freshness and stale-while-revalidate windows also count from then.
+ * A value that isn't a positive finite number is ignored, a fractional one is rounded down,
+ * and one in the future, e.g. from a skewed clock, counts as when the Store received it. It
+ * isn't stored.
+ */
+const GENERATED_AT_HEADER = "X-Workers-Response-Store-Generated-At";
+
+function generatedAtFromResponse(response: Response): number | undefined {
+  const value = Math.floor(Number(response.headers.get(GENERATED_AT_HEADER) ?? undefined));
+  return Number.isSafeInteger(value) && value > 0 ? Math.min(value, Date.now()) : undefined;
+}
 const STORAGE_LAYOUT_VERSION = "r2-v2";
 const pendingPuts = new Map<string, Promise<StoreResult>>();
 const pendingR2Reads = new Map<string, Promise<boolean>>();
@@ -1004,24 +1030,28 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     cacheTags = cacheTagsFromResponse(response),
     expectedR2Etag?: string | null,
     replaces?: RefreshedRevision,
+    // A put's own, read when it was admitted.
+    generatedAt = generatedAtFromResponse(response),
   ): Promise<StoreResult> {
     const cacheKey = reservation ?? (await this.deriveCacheKey(request));
     const write = reservation ?? (await this.reserveWrite(metadata, cacheKey, cacheTags));
     const { keyHash, objectKey: reservationObjectKey, revision } = write;
 
     let publication: PublicationResult;
+    let publishedAt: number;
     let body: ArrayBuffer;
     let policy: ReturnType<typeof deriveCachePolicy>;
     try {
       const now = Date.now();
-      policy = deriveCachePolicy(response.headers, now);
+      policy = deriveCachePolicy(response.headers, now, generatedAt);
       const responseHeaders = [...response.headers].filter(([name]) => {
         const lower = name.toLowerCase();
         return (
           lower !== "age" &&
           lower !== "cache-tag" &&
           lower !== "cf-cache-status" &&
-          lower !== "content-length"
+          lower !== "content-length" &&
+          lower !== GENERATED_AT_HEADER.toLowerCase()
         );
       });
       const candidate: CandidateMetadata = {
@@ -1034,6 +1064,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         revalidator: revalidator ?? null,
         expiryBehavior,
         cacheTags,
+        ...(generatedAt !== undefined ? { generatedAt } : {}),
       };
 
       // RPC-transferred Response streams do not retain the fixed-length marker
@@ -1048,6 +1079,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         reservationObjectKey,
         replaces,
       );
+      publishedAt = Date.now();
     } catch (error) {
       await this.releaseFailedWrite(metadata, write);
       throw error;
@@ -1117,6 +1149,10 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
       published: true,
       entry,
       ...(replaces ? { replacedRevision: replaces.revision } : {}),
+      ...(generatedAt !== undefined ? { generatedAt } : {}),
+      publishedAt,
+      ...(publication.publishedStale ? { publishedStale: true } : {}),
+      policyFreshUntil: policy.freshUntil,
       ...(stored && entry
         ? {
             response: this.createStoredResponse(
@@ -1340,6 +1376,8 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
     response: Response,
     options: ResponseStorePutOptions = {},
   ): Promise<ResponseStoreMutationResult> {
+    // Read on admission, so any later wait counts towards the response's age.
+    const generatedAt = generatedAtFromResponse(response);
     const cacheKey = await this.deriveCacheKey(request);
     const { keyHash } = cacheKey;
     const metadata = this.getMetadata(keyHash);
@@ -1411,6 +1449,20 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
           ) {
             break;
           }
+          // A leader that is stale can't stand in for a write generated after it. The metadata
+          // DO's publication says whether it landed stale, by its own clock. One that went stale
+          // since, e.g. while its edge purge ran, did so by its cache policy, derived in this
+          // isolate (pending puts are per isolate), so on this clock. A write without
+          // `generatedAt` is dated at publication; two such writes coalesce as before.
+          if (
+            (result.publishedStale ||
+              (result.policyFreshUntil ?? Number.POSITIVE_INFINITY) <= Date.now()) &&
+            (generatedAt !== undefined || result.generatedAt !== undefined) &&
+            (generatedAt ?? Number.POSITIVE_INFINITY) >
+              (result.generatedAt ?? result.publishedAt ?? Number.POSITIVE_INFINITY)
+          ) {
+            break;
+          }
           const objectKey = reservation.objectKey;
           await metadata
             .finishPendingObjects([objectKey])
@@ -1442,6 +1494,7 @@ export class ResponseStoreBinding extends WorkerEntrypoint<
         cacheTags,
         undefined,
         replaces,
+        generatedAt,
       );
     })();
     let cleared = () => {};

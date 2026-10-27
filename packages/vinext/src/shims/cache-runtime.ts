@@ -35,6 +35,7 @@ import {
 import {
   cacheLifeProfiles,
   _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
   _setRequestScopedCacheLife,
   _registerCacheContextAccessor,
   runWithDetachedCacheObservations,
@@ -967,8 +968,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // execution so control-flow signals like notFound()/redirect() thrown by
       // `fn` still propagate with their digest intact instead of being masked
       // by the handler's own exception.
+      //
+      // Like Next.js's `shouldForceRevalidate`, an on-demand revalidation
+      // (`res.revalidate()`) ignores the existing entry but still executes and
+      // stores the fresh result below.
       let existing: CacheHandlerValue | null = null;
-      if (!_hasPendingRevalidatedTag(softTags)) {
+      if (!_hasPendingRevalidatedTag(softTags) && !_isOnDemandRevalidate()) {
         try {
           existing = await handler.get(cacheKey, { kind: "FETCH", softTags });
         } catch (error) {
@@ -1002,6 +1007,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         propagate: boolean,
         staleEntry?: CacheHandlerValue,
       ): Promise<ShellResult<TResult>> => {
+        // Like Next.js, an entry is dated from when its generation started, so a tag
+        // invalidated while it ran still covers it.
+        const timestamp = Date.now();
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
           callFn,
           callArgs,
@@ -1073,6 +1081,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             const cacheContext = {
               fetchCache: true,
               tags: ctx.tags,
+              timestamp,
               ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
               cacheControl: {
                 revalidate: revalidateSeconds,

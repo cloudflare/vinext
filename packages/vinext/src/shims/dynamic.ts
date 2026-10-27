@@ -163,9 +163,11 @@ type DynamicErrorBoundaryState = {
 
 /**
  * Lightweight error boundary that renders the loading component with the error
- * when a dynamic() loader rejects. Without this, loader failures would propagate
- * uncaught through React's rendering — this preserves the Next.js behavior where
- * the `loading` component can display errors.
+ * when a dynamic() loader rejects, as the Pages Router's react-loadable does by
+ * passing `error` to `loading`. App Router trees never get it: Next.js's App
+ * Router next/dynamic is React.lazy inside Suspense with no boundary of its own,
+ * so loader and render errors reach the nearest error.tsx.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
  *
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
@@ -336,6 +338,7 @@ function dynamic<P = {}>(
     const InitialLazyComponent = createLazyComponent(loader);
 
     const ClientSSRFalse = (props: P) => {
+      const isAppRouterTree = useIsAppRouterTree();
       const [mounted, setMounted] = React.useState(false);
       const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
         loader,
@@ -356,7 +359,7 @@ function dynamic<P = {}>(
         : null;
       const lazyElement = createElementWithProps(LazyComponent, props);
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -408,10 +411,10 @@ function dynamic<P = {}>(
         ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
       const lazyElement = createElementWithProps(LazyServer, props);
-      // Wrap with error boundary so loader rejections render the loading
-      // component with the error instead of propagating uncaught.
+      // Outside the App Router, loader rejections render the loading
+      // component with the error, as react-loadable does.
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -446,7 +449,7 @@ function dynamic<P = {}>(
       : null;
     const lazyElement = createElementWithProps(LazyComponent, props);
     let content: React.ReactNode = lazyElement;
-    if (LoadingComponent) {
+    if (LoadingComponent && !isAppRouterTree) {
       const ErrorBoundary = getDynamicErrorBoundary();
       if (ErrorBoundary) {
         content = React.createElement(
