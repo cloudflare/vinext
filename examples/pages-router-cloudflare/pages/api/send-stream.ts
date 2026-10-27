@@ -11,7 +11,7 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
     res.setHeader("Content-Type", req.query.contentType);
   }
   if (typeof req.query.status === "string") {
-    // This stream never produces data: a 204/304 response must end without
+    // This stream never produces data: a bodyless response must end without
     // waiting for it.
     res.status(Number(req.query.status)).send(new Readable({ read() {} }));
     return;
