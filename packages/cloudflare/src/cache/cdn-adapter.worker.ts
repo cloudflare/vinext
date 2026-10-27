@@ -51,6 +51,14 @@ type CloudflareResponseStageInvocation = {
   props: unknown;
   requestMethod: string;
   requestUrl: string;
+  /** The props and URL are a host-free cache identity; the dispatch rides in a header. */
+  restoresDispatch?: true;
+};
+
+/** What a host-free identity replaced in the dispatch it keys. */
+type ResponseStageDispatchRestore = {
+  props: Record<string, unknown>;
+  requestUrl: string;
 };
 
 type CachePurgeOptions = { tags: string[] };
@@ -75,6 +83,9 @@ const REQUEST_CACHE_CONTROL_TRANSPORT_HEADER = "x-vinext-internal-request-cache-
 const REQUEST_CF_TRANSPORT_HEADER = "x-vinext-internal-request-cf";
 const REQUEST_PRAGMA_TRANSPORT_HEADER = "x-vinext-internal-request-pragma";
 const RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER = "x-vinext-internal-render-whole-document";
+const DISPATCH_TRANSPORT_HEADER = "x-vinext-internal-dispatch";
+/** The stage props a host-free cache identity replaces. */
+const HOST_BEARING_PROPS = new Set(["requestHost", "requestOrigin", "requestUrl"]);
 const WARMUP_USER_AGENT = "vinext-cloudflare-cdn-warm";
 const RESPONSE_STAGE_WIRE_CACHE = {
   bypass: "vinext-cloudflare-v1:bypass",
@@ -159,7 +170,8 @@ function stripUntrustedTransportHeaders(request: Request): Request {
     !request.headers.has(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_CF_TRANSPORT_HEADER) &&
     !request.headers.has(REQUEST_PRAGMA_TRANSPORT_HEADER) &&
-    !request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER)
+    !request.headers.has(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER) &&
+    !request.headers.has(DISPATCH_TRANSPORT_HEADER)
   ) {
     return request;
   }
@@ -169,6 +181,7 @@ function stripUntrustedTransportHeaders(request: Request): Request {
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
   return withRequestCf(new Request(request, { headers }), request);
 }
 
@@ -245,6 +258,8 @@ function getResponseStageBinding(
 async function createCacheFacingRequest(
   request: Request,
   serializedInvocation: string,
+  identityRequest: Request,
+  dispatchRestore: ResponseStageDispatchRestore | null,
 ): Promise<Request> {
   const authorization = request.headers.get("Authorization");
   let serializedRequestCf: string | null = null;
@@ -271,11 +286,11 @@ async function createCacheFacingRequest(
   // can collect different tags, so promote the complete framework selector
   // tuple into the opaque primary key instead of relying on Vary alone.
   const frameworkVaryIdentity = JSON.stringify(
-    [...FRAMEWORK_RESPONSE_VARY_FIELDS].map((name) => [name, request.headers.get(name)]),
+    [...FRAMEWORK_RESPONSE_VARY_FIELDS].map((name) => [name, identityRequest.headers.get(name)]),
   );
   const responseStageBuildIdentity = getVinextCdnBuildIdentity() ?? "";
   const bytes = new TextEncoder().encode(
-    `${request.url}\0${serializedInvocation}\0${authorizationIdentity}\0${frameworkVaryIdentity}\0${responseStageBuildIdentity}`,
+    `${identityRequest.url}\0${serializedInvocation}\0${authorizationIdentity}\0${frameworkVaryIdentity}\0${responseStageBuildIdentity}`,
   );
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
   const key = [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("");
@@ -291,8 +306,15 @@ async function createCacheFacingRequest(
   headers.delete(REQUEST_CACHE_CONTROL_TRANSPORT_HEADER);
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
   if (authorization !== null) {
     headers.set(AUTHORIZATION_TRANSPORT_HEADER, encodeURIComponent(authorization));
+  }
+  if (dispatchRestore !== null) {
+    // Workers Cache keys neither the host nor this header, so the real host
+    // reaches a cold render, or the edge's background refresh, without
+    // splitting the entry every host shares.
+    headers.set(DISPATCH_TRANSPORT_HEADER, encodeURIComponent(JSON.stringify(dispatchRestore)));
   }
   if (serializedRequestCf !== null) {
     headers.set(REQUEST_CF_TRANSPORT_HEADER, serializedRequestCf);
@@ -346,6 +368,7 @@ function restoreResponseStageRequest(
   headers.delete(REQUEST_CF_TRANSPORT_HEADER);
   headers.delete(REQUEST_PRAGMA_TRANSPORT_HEADER);
   headers.delete(RENDER_WHOLE_DOCUMENT_TRANSPORT_HEADER);
+  headers.delete(DISPATCH_TRANSPORT_HEADER);
   if (serializedAuthorization !== null) {
     try {
       headers.set("Authorization", decodeURIComponent(serializedAuthorization));
@@ -627,6 +650,8 @@ function getResponseStageInvocation(
   } catch {
     return null;
   }
+  const restoresDispatch = Reflect.get(value, "restoresDispatch");
+  if (restoresDispatch !== undefined && restoresDispatch !== true) return null;
   return {
     ...(typeof expectedResponseStageBuildIdentity === "string"
       ? { expectedResponseStageBuildIdentity }
@@ -635,6 +660,7 @@ function getResponseStageInvocation(
     props: Reflect.get(value, "props"),
     requestMethod,
     requestUrl,
+    ...(restoresDispatch ? { restoresDispatch } : {}),
   };
 }
 
@@ -688,6 +714,81 @@ function otherPagePartDispatch(request: Request, props: unknown): ResponseStageD
   };
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function pathAndSearch(url: URL): string {
+  return `${url.pathname}${url.search}`;
+}
+
+/**
+ * What a shared dispatch's host-free identity replaced: the request URL, and
+ * the top-level props that name the host. Null when the identity is anything
+ * else, so the dispatch keys itself, host and all.
+ */
+function getDispatchRestore(
+  request: Request,
+  props: unknown,
+  identity: NonNullable<VinextResponseStageDispatchOptions["cacheIdentity"]>,
+): ResponseStageDispatchRestore | null {
+  // Workers Cache keys the dispatched path and query, so the identity may
+  // differ from the dispatch only in its origin and props.
+  if (
+    identity.request.method !== request.method ||
+    pathAndSearch(new URL(identity.request.url)) !== pathAndSearch(new URL(request.url))
+  ) {
+    return null;
+  }
+  // Props cross the entrypoint boundary as JSON, so compare them as JSON.
+  const dispatched: unknown = JSON.parse(JSON.stringify(props) ?? "null");
+  const keyed: unknown = JSON.parse(JSON.stringify(identity.props) ?? "null");
+  if (!isPlainObject(dispatched) || !isPlainObject(keyed)) return null;
+  if (Object.keys(keyed).some((name) => !Object.hasOwn(dispatched, name))) return null;
+  const replaced: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(dispatched)) {
+    if (JSON.stringify(value) === JSON.stringify(keyed[name])) continue;
+    // Only the host may differ: a render from any other unkeyed prop would
+    // store it under a key that doesn't name it.
+    if (!HOST_BEARING_PROPS.has(name)) return null;
+    replaced[name] = value;
+  }
+  return { props: replaced, requestUrl: request.url };
+}
+
+/**
+ * Rebuild the dispatch a host-free invocation keys from the restore header
+ * the gateway sent. Null when an identity invocation has no valid restore.
+ */
+function restoreDispatchInvocation(
+  request: Request,
+  invocation: CloudflareResponseStageInvocation,
+): CloudflareResponseStageInvocation | null {
+  if (!invocation.restoresDispatch) return invocation;
+  const serialized = request.headers.get(DISPATCH_TRANSPORT_HEADER);
+  if (serialized === null || !isPlainObject(invocation.props)) return null;
+  let restore: unknown;
+  try {
+    restore = JSON.parse(decodeURIComponent(serialized));
+  } catch {
+    return null;
+  }
+  if (!isPlainObject(restore) || !isPlainObject(restore.props)) return null;
+  if (Object.keys(restore.props).some((name) => !HOST_BEARING_PROPS.has(name))) return null;
+  const requestUrl = restore.requestUrl;
+  if (typeof requestUrl !== "string") return null;
+  let url: URL;
+  try {
+    url = new URL(requestUrl);
+  } catch {
+    return null;
+  }
+  // The restore names the host, never another page under this entry's key.
+  if (pathAndSearch(url) !== pathAndSearch(new URL(invocation.requestUrl))) return null;
+  const { restoresDispatch: _restoresDispatch, ...dispatch } = invocation;
+  return { ...dispatch, props: { ...invocation.props, ...restore.props }, requestUrl };
+}
+
 async function invokeResponseStage(
   request: Request,
   env: unknown,
@@ -735,28 +836,37 @@ export class VinextCachedResponse extends WorkerEntrypoint<unknown, unknown> {
     ) {
       return stampResponseStageBuildIdentity(responseStageUnavailable());
     }
+    const dispatch = restoreDispatchInvocation(request, invocation);
+    if (!dispatch) {
+      return stampResponseStageBuildIdentity(
+        new Response("Invalid vinext response-stage invocation", {
+          status: 400,
+          headers: { "Cache-Control": "no-store" },
+        }),
+      );
+    }
     const restored = restoreResponseStageRequest(
       request,
-      invocation.requestUrl,
-      invocation.requestMethod,
+      dispatch.requestUrl,
+      dispatch.requestMethod,
     );
     // As in Next.js, which renders a static page whole, a document no client
     // waits on has its streamed metadata in <head>.
-    const isAppPageDocument = isAppPageDocumentInvocation(invocation);
-    const isPagesPage = isPagesPageInvocation(invocation);
+    const isAppPageDocument = isAppPageDocumentInvocation(dispatch);
+    const isPagesPage = isPagesPageInvocation(dispatch);
     const response = await invokeResponseStage(
       restored.request,
       this.env,
       context,
       isAppPageDocument && rendersWholeDocument(request)
-        ? { ...invocation, options: { ...invocation.options, renderWholeDocument: true } }
+        ? { ...dispatch, options: { ...dispatch.options, renderWholeDocument: true } }
         : // Only a successful Pages render is stored with a validator, so a
           // conditional revalidation proves the entry stored for this build
           // was admitted, and Next.js regenerates such a path without
           // calling getStaticPaths().
           isPagesPage && revalidatesStoredEntry(request)
-          ? { ...invocation, options: { ...invocation.options, regeneratesStoredEntry: true } }
-          : invocation,
+          ? { ...dispatch, options: { ...dispatch.options, regeneratesStoredEntry: true } }
+          : dispatch,
     );
     // Workers Cache variants share one purge identity and therefore must carry
     // exactly the same Cache-Tag values. Application-defined Vary fields can
@@ -827,11 +937,13 @@ export default {
       options: VinextResponseStageDispatchOptions,
     ): CloudflareResponseStageInvocation => {
       const expectedResponseStageBuildIdentity = getVinextCdnBuildIdentity();
+      // The identity is the key's, not the render's, and holds a Request.
+      const { cacheIdentity: _cacheIdentity, ...stageOptions } = options;
       return {
         ...(expectedResponseStageBuildIdentity === null
           ? {}
           : { expectedResponseStageBuildIdentity }),
-        options,
+        options: stageOptions,
         props,
         requestMethod: stageRequest.method,
         requestUrl: stageRequest.url,
@@ -845,13 +957,31 @@ export default {
     ): Promise<Response> => {
       const invocation = createInvocation(stageRequest, props, options);
       const usesSharedCache = options.cache === "shared";
+      // Workers Cache keys ctx.props, so a shared dispatch with a host-free
+      // identity passes the identity as props and restores the host the
+      // render needs from a header, as Next.js keys its response cache by
+      // pathname for every host.
+      const { cacheIdentity } = options;
+      const dispatchRestore =
+        usesSharedCache && cacheIdentity
+          ? getDispatchRestore(stageRequest, props, cacheIdentity)
+          : null;
+      const keyedRequest = dispatchRestore ? cacheIdentity!.request : stageRequest;
       const serializedInvocation = JSON.stringify({
         ...invocation,
+        ...(dispatchRestore
+          ? {
+              props: cacheIdentity!.props,
+              requestMethod: keyedRequest.method,
+              requestUrl: keyedRequest.url,
+              restoresDispatch: true,
+            }
+          : {}),
         options:
           invocation.expectedResponseStageBuildIdentity === undefined
-            ? options
+            ? invocation.options
             : {
-                ...options,
+                ...invocation.options,
                 cache: RESPONSE_STAGE_WIRE_CACHE[options.cache] satisfies ResponseStageWireCache,
               },
       });
@@ -864,7 +994,12 @@ export default {
         return responseStageUnavailable();
       }
       const entrypointRequest = usesSharedCache
-        ? await createCacheFacingRequest(stageRequest, serializedInvocation)
+        ? await createCacheFacingRequest(
+            stageRequest,
+            serializedInvocation,
+            keyedRequest,
+            dispatchRestore,
+          )
         : stageRequest;
       return validateResponseStageBuildIdentity(await binding.fetch(entrypointRequest));
     };
@@ -893,10 +1028,17 @@ export default {
         (async () => {
           const otherPart = otherPagePartDispatch(stageRequest, props);
           if (!otherPart) return;
+          // A host-free identity differs from its dispatch only in the host,
+          // so the other part's identity is the identity's other part, the
+          // one a request for that part from any host is keyed by.
+          const { cacheIdentity, ...otherOptions } = options;
+          const otherIdentity = cacheIdentity
+            ? otherPagePartDispatch(cacheIdentity.request, cacheIdentity.props)
+            : null;
           const response = await fetchResponseStageEntrypoint(
             otherPart.request,
             otherPart.props,
-            options,
+            otherIdentity ? { ...otherOptions, cacheIdentity: otherIdentity } : otherOptions,
           );
           // Workers Cache stores a response once its body has been read.
           await response.body?.pipeTo(new WritableStream());

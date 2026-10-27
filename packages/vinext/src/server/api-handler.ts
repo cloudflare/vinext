@@ -9,6 +9,7 @@
  */
 import "./server-globals.js";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Stream } from "node:stream";
 import type { NextI18nConfig } from "../config/next-config.js";
 import { sendPagesApiNotModified } from "./http-conditional.js";
 import { decode as decodeQueryString } from "node:querystring";
@@ -20,7 +21,11 @@ import {
   parseQueryString,
   urlQueryToSearchParams,
 } from "../utils/query.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 import { finalizeEdgeApiResponse, isEdgeApiRuntime } from "./edge-api-runtime.js";
 import {
   DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
@@ -106,6 +111,7 @@ async function parseBody(
   sizeLimit: number = MAX_BODY_SIZE,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
+    const { mediaType, decoder } = createPagesBodyDecoder(req.headers["content-type"]);
     const chunks: Buffer[] = [];
     let totalSize = 0;
     let settled = false;
@@ -128,8 +134,7 @@ async function parseBody(
     req.on("end", () => {
       if (settled) return;
       settled = true;
-      const raw = Buffer.concat(chunks).toString("utf-8");
-      const mediaType = getMediaType(req.headers["content-type"]);
+      const raw = decoder.decode(Buffer.concat(chunks));
       if (!raw) {
         resolve(
           isJsonMediaType(mediaType)
@@ -337,6 +342,24 @@ function enhanceApiObjects(
     },
 
     send(this: NextApiResponse, data: unknown) {
+      // Next.js's sendData() ends 204/304 responses before it inspects the
+      // data, so a stream is never piped into them.
+      if (this.statusCode === 204 || this.statusCode === 304) {
+        this.removeHeader("Content-Type");
+        this.removeHeader("Content-Length");
+        this.removeHeader("Transfer-Encoding");
+        this.end();
+        return;
+      }
+
+      if (data instanceof Stream) {
+        if (!this.getHeader("Content-Type")) {
+          this.setHeader("Content-Type", "application/octet-stream");
+        }
+        data.pipe(this);
+        return;
+      }
+
       if (Buffer.isBuffer(data)) {
         // Next.js hashes a Buffer's JSON form but sends its bytes.
         if (sendPagesApiNotModified(req.headers, this, JSON.stringify(data))) return;

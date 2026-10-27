@@ -153,6 +153,19 @@ function serializeInvocation(request: Request, props: unknown): string {
   return JSON.stringify(prepareInvocation(request, props));
 }
 
+// A Request built from the stored URL carries no Host header, and a Pages
+// render reads the host from its request headers, so a dispatch replay keeps
+// the host it was filled on.
+function serializeDispatchInvocation(invocation: StoredInvocation): string {
+  return JSON.stringify({
+    ...invocation,
+    request: {
+      ...invocation.request,
+      headers: [...invocation.request.headers, ["host", new URL(invocation.request.url).host]],
+    },
+  });
+}
+
 function parseInvocation(value: unknown): StoredInvocation {
   if (typeof value !== "string") throw new TypeError("Invalid vinext response-store invocation");
   const invocation = JSON.parse(value) as StoredInvocation;
@@ -348,7 +361,12 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
   );
   // The opaque URL already partitions these selectors. Keep every Vary field
   // present so cache-selection rules agree on the selected representation.
-  return new Request(url, { headers: CACHE_REQUEST_VARY_HEADERS, method: "GET" });
+  return new Request(url, {
+    headers: CACHE_REQUEST_VARY_HEADERS,
+    method: "GET",
+    // A stored redirect is the response; following it would look up its target.
+    redirect: "manual",
+  });
 }
 
 /**
@@ -712,10 +730,11 @@ const handler = {
         );
       }
 
-      // Core supplies a query-free identity only for shared App page dispatches,
-      // whose admission requires a negative searchParams proof. The render
-      // still receives the real request; the key, route replay and RSC seed
-      // use the identity.
+      // Core supplies a host-free identity for shared App Router dispatches
+      // and static Pages pages, query-free for App pages, behind
+      // completed-response admission. The render still receives the real
+      // request; the key and RSC seed use the identity, and route replay
+      // does unless the identity asks to regenerate from the dispatch.
       const identityRequest = options.cacheIdentity?.request ?? stageRequest;
       const identityProps = options.cacheIdentity?.props ?? props;
       const isWarmup = request.headers.get("user-agent") === WARMUP_USER_AGENT;
@@ -723,7 +742,7 @@ const handler = {
       // shared HEAD dispatches as GET and stores the GET entry, so it stores
       // both parts.
       const otherPart =
-        isWarmup || options.cacheIdentity !== undefined
+        isWarmup || options.cacheIdentity?.queryFree
           ? otherPagePart(identityRequest, identityProps)
           : undefined;
       // A warm-up renders the page again when its RSC payload is missing.
@@ -752,6 +771,14 @@ const handler = {
         ...otherPagePartCapture(otherPart),
       };
       const serializedInvocation = JSON.stringify(invocation);
+      // A Pages render can read the request host, so a Pages page regenerates
+      // from the request that filled it, not the identity. An entry keyed by
+      // its own host regenerates from that host too.
+      const revalidatorInvocation = !options.cacheIdentity
+        ? serializeDispatchInvocation(invocation)
+        : options.cacheIdentity.regenerateFromDispatch
+          ? serializeDispatchInvocation(prepareInvocation(stageRequest, props))
+          : serializedInvocation;
       // Data-cache writes replay the render that produced them, real query
       // included, so they keep the full invocation.
       // No client waits on a warm-up either, so it renders the document whole.
@@ -792,7 +819,7 @@ const handler = {
               }
               await responseStore.put(key, stored, {
                 coalesce: true,
-                revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
+                revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
               });
             })
             .catch((error) => {
@@ -835,7 +862,7 @@ const handler = {
         await putOtherPagePart(otherPart, capture, cacheResponse);
         await responseStore.put(key, cacheResponse, {
           coalesce: true,
-          revalidator: routeRevalidator(serializedInvocation, otherPart !== undefined),
+          revalidator: routeRevalidator(revalidatorInvocation, otherPart !== undefined),
         });
       } catch (error) {
         // Warming must confirm persistence; ordinary requests can serve the render.

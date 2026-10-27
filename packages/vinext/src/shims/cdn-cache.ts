@@ -175,12 +175,15 @@ export type CdnCacheAdapter = {
   readonly requiresCompletedResponseAdmission?: boolean;
 
   /**
-   * This adapter's response-stage transport keys shared App page dispatches by
-   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies one.
-   * Core supplies it only when completed-response admission is also required,
-   * because that admission is what makes a query-free identity safe.
+   * This adapter's response-stage transport keys shared dispatches by
+   * `VinextResponseStageDispatchOptions.cacheIdentity` when core supplies
+   * one. Core supplies it only when completed-response admission is also
+   * required, because that admission is what makes a host-free identity, and
+   * a page's query-free one, safe. `"query-free"` also drops the user query
+   * from App page identities; `"host-free"` keeps every dispatch's query, for
+   * a transport whose cache keys the dispatched query itself.
    */
-  readonly responseStageCacheIdentity?: "query-free";
+  readonly responseStageCacheIdentity?: "host-free" | "query-free";
 
   /**
    * Optionally return a foreground page response while completed-response

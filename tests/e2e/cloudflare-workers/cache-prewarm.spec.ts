@@ -676,6 +676,90 @@ test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
     .toBe(false);
 });
 
+// Next.js keys its response cache by pathname, so every host an app serves
+// shares one entry, and Workers Cache leaves the host out of its key:
+// https://developers.cloudflare.com/workers/cache/cache-keys/
+// A preview alias and a Version URL are two hosts of one uploaded version:
+// https://developers.cloudflare.com/workers/configuration/previews/
+// A Version URL is not compared with production traffic: on a deployed Worker
+// it never reached the entries production requests filled, which those docs
+// leave unspecified.
+const previewAliasURL = process.env.VINEXT_E2E_PREVIEW_ALIAS_URL;
+const previewAlias = process.env.VINEXT_E2E_PREVIEW_ALIAS;
+
+test("Workers Cache shares one entry across the hosts of a deployed Worker", async ({
+  request,
+}) => {
+  test.skip(backend !== "workers-cache", "the preview URL host is specific to Workers Cache");
+  test.skip(!previewAliasURL || !previewAlias, "requires a preview alias of a deployed Worker");
+  test.setTimeout(240_000);
+  const baseURL = previewAliasURL!;
+
+  const versionResponse = await request.get(`${baseURL}/api/worker-version`);
+  expect(versionResponse.ok()).toBe(true);
+  const { id } = (await versionResponse.json()) as { id: string | null };
+  expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  const aliasHost = new URL(baseURL).hostname;
+  expect(aliasHost.startsWith(`${previewAlias}-`)).toBe(true);
+  const previewURL = `https://${id!.slice(0, 8)}${aliasHost.slice(previewAlias!.length)}`;
+
+  // Only an entry shared across hosts gives the Version URL a HIT carrying
+  // the render the alias was served. Each data center has its own lower-tier
+  // cache and consults one upper tier on a miss, so the alias is a HIT, its
+  // render stored, before the Version URL first asks for it:
+  // https://developers.cloudflare.com/workers/cache/
+  // A retry asks for new entries, never ones an earlier attempt filled.
+  const attempt = `?attempt=${test.info().retry}`;
+  for (const [pathname, renderOf] of [
+    ["/static-default", (body: string) => /static-default-render-id[^>]*>([^<]+)</.exec(body)?.[1]],
+    [
+      "/host-shared-static",
+      (body: string) => /data-testid="render-id"[^>]*>([^<]+)</.exec(body)?.[1],
+    ],
+    ["/api/host-shared", (body: string) => (JSON.parse(body) as { renderId?: string }).renderId],
+  ] as const) {
+    let filledRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const filled = await request.get(`${baseURL}${pathname}${attempt}`);
+          expect(filled.ok(), pathname).toBe(true);
+          filledRender = renderOf(await filled.text());
+          return filled.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+    expect(filledRender, pathname).toBeTruthy();
+    // The first request answers: a later one could hit an entry the Version
+    // URL filled itself.
+    const other = await request.get(`${previewURL}${pathname}${attempt}`);
+    const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
+    expect({
+      pathname,
+      otherStatus: other.status(),
+      otherCacheStatus: other.headers()["cf-cache-status"],
+      sameRender: otherRender === filledRender,
+    }).toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
+  }
+
+  // A page whose getInitialProps runs renders per request, as in Next.js, so
+  // a CDN policy stores it per host and each host hits its own entry.
+  for (const origin of [baseURL, previewURL]) {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${origin}/host-echo-initial`);
+          expect(response.ok()).toBe(true);
+          expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
+          return response.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+  }
+});
+
 if (backend) {
   testRouteHandlerStoragePolicies();
   testPagesStoragePolicies();

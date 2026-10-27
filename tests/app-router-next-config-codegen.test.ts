@@ -188,11 +188,13 @@ describe("App Router next.config.js features (generateRscEntry)", () => {
     //
     // The production App Router entry loads the SSR environment's "index"
     // module for Pages fallbacks. That bridge must expose the Pages API
-    // dispatcher as well as page rendering.
+    // dispatcher as well as page rendering, and the loaded page's data kind
+    // for a render whose cache entry every host shares.
     const code = generateSsrEntry(true);
 
     expect(code).toContain(`export {
   __ensureInstrumentation,
+  getRuntimePageDataKind,
   handleApiRoute,
   matchApiRoute,
   matchPageRoute,

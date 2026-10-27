@@ -1,10 +1,14 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { Readable, Writable } from "node:stream";
+import { Readable, Writable, Stream } from "node:stream";
 import { sendPagesApiNotModified } from "./http-conditional.js";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -131,14 +135,23 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+  decoder: TextDecoder,
+): Promise<string> {
   if (!request.body) {
     return "";
   }
 
-  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
-    throw new PagesBodyParseError("Request body too large", 413);
-  });
+  return readStreamAsTextWithLimit(
+    request.body,
+    maxBytes,
+    () => {
+      throw new PagesBodyParseError("Request body too large", 413);
+    },
+    decoder,
+  );
 }
 
 /**
@@ -155,6 +168,8 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
+  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+  const { mediaType, decoder } = createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
@@ -162,7 +177,7 @@ export async function parsePagesApiBody(
 
   let rawBody = "";
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -170,7 +185,6 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
     return isJsonMediaType(mediaType)
       ? {}
@@ -389,6 +403,22 @@ class PagesResponseStream extends Writable {
   }
 
   send(data: unknown): void {
+    // Next.js's sendData() ends 204/304 responses before it inspects the data,
+    // so a stream is never piped into them. Fetch also forbids a 205 body.
+    // resolveOnce() strips the headers.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.end();
+      return;
+    }
+
+    if (data instanceof Stream) {
+      if (!this.resHeaders["content-type"]) {
+        this.resHeaders["content-type"] = "application/octet-stream";
+      }
+      data.pipe(this);
+      return;
+    }
+
     if (Buffer.isBuffer(data)) {
       // Next.js hashes a Buffer's JSON form but sends its bytes.
       if (this.sendApiNotModified(JSON.stringify(data))) return;
