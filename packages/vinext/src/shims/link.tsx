@@ -60,6 +60,7 @@ import { interpolateDynamicRouteHref, resolveDynamicRouteHref } from "./internal
 import { markAppRouteDetectedOnPrefetch } from "./internal/app-route-detection.js";
 import {
   canAutoPrefetchFullAppRoute,
+  hasAppRouteInstantConfig,
   resolveAutoAppRoutePrefetch,
   resolveFullAppRoutePrefetch,
 } from "./internal/app-route-prefetch-policy.js";
@@ -507,6 +508,9 @@ function prefetchUrl(
         const prefetchPolicyHref = rewrittenPrefetchHref ?? prefetchHref;
         const interceptionContext = getPrefetchInterceptionContext(fullHref);
         const mountedSlotsHeader = getMountedSlotsHeader();
+        // Like Next.js, a route with an `unstable_instant` config ignores a
+        // full prefetch: it's prefetched as an automatic one.
+        if (mode !== "auto" && hasAppRouteInstantConfig(prefetchPolicyHref)) mode = "auto";
         const autoPrefetch =
           mode === "auto"
             ? resolveAutoAppRoutePrefetch(prefetchPolicyHref, interceptionContext)

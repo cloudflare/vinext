@@ -2549,6 +2549,46 @@ describe("Link prefetch scheduling", () => {
     }
   });
 
+  it("prefetches a full Link to a route with an unstable_instant config as an automatic one", async () => {
+    // Next.js ignores a full prefetch of a route that sets `unstable_instant`
+    // (`SubtreeHasInstant` in the segment cache's scheduler).
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    const observer = stubIntersectionObserver();
+
+    const result = await renderIsolatedLink({
+      href: "/instant-target",
+      nodeEnv: "production",
+      props: { prefetch: true },
+      windowOverrides: {
+        __VINEXT_LINK_PREFETCH_ROUTES__: [
+          {
+            canPrefetchLoadingShell: false,
+            instant: "static",
+            isDynamic: false,
+            patternParts: ["instant-target"],
+          },
+        ],
+      },
+    });
+
+    try {
+      observer.dispatchIntersectingEntry(result.anchor);
+      await waitForFetchCalls(result.fetch, 1);
+      await flushPrefetchTasks();
+
+      expect(result.fetch).toHaveBeenCalledTimes(1);
+      const fetchInit = result.fetch.mock.calls[0]?.[1] as RequestInit | undefined;
+      expect((fetchInit?.headers as Headers | undefined)?.get(VINEXT_RSC_RENDER_MODE_HEADER)).toBe(
+        APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
+      );
+      expect((fetchInit?.headers as Headers | undefined)?.get(NEXT_ROUTER_PREFETCH_HEADER)).toBe(
+        "1",
+      );
+    } finally {
+      result.restoreNodeEnv();
+    }
+  });
+
   it("prefetches a runtime prefetch route's search-param href as its own static shell", async () => {
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     const observer = stubIntersectionObserver();

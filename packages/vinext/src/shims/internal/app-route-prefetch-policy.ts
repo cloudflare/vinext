@@ -243,6 +243,23 @@ export function resolveAutoAppRoutePrefetch(
   };
 }
 
+/**
+ * Whether the href's route sets an `unstable_instant` config. Next.js ignores a
+ * full prefetch of such a route (`SubtreeHasInstant` in the segment cache's
+ * `scheduler.ts`): its instant config decides what's prefetched, so the
+ * prefetch is an automatic one.
+ */
+export function hasAppRouteInstantConfig(href: string): boolean {
+  if (typeof window === "undefined") return false;
+  const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
+  if (!routes) return false;
+  const routeHref = toSameOriginRouteHref(href);
+  if (routeHref === null) return false;
+  return (
+    matchRouteWithTrie(routeHref, routes, linkPrefetchRouteTrieCache)?.route.instant !== undefined
+  );
+}
+
 export function resolveFullAppRoutePrefetch(): AppRoutePrefetchPolicy {
   return {
     cacheForNavigation: true,
