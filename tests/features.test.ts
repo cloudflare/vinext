@@ -2521,6 +2521,22 @@ describe("metadata title templates", () => {
     expect(
       mergeParentMetadataEntries([{ metadata: parent }, { metadata: page }]).openGraph?.title,
     ).toEqual({ absolute: "Page | OG", template: null });
+    // `parent` keeps an empty template as `""`, which wraps nothing.
+    const empty = {
+      title: { template: "", default: "E" },
+      openGraph: { title: { template: "", default: "E OG" } },
+      twitter: { title: { template: "", default: "E TW" } },
+    };
+    const emptyParent = mergeParentMetadataEntries([{ metadata: empty }]);
+    expect(emptyParent.title).toEqual({ absolute: "E", template: "" });
+    expect(emptyParent.openGraph?.title).toEqual({ absolute: "E OG", template: "" });
+    expect(emptyParent.twitter?.title).toEqual({ absolute: "E TW", template: "" });
+    result = mergeMetadata([empty, { title: "C", ...page }]);
+    expect([result.title, result.openGraph?.title, result.twitter?.title]).toEqual([
+      "C",
+      "Page",
+      "Page",
+    ]);
   });
 
   it("uses explicit page markers instead of assuming the last entry is the page", () => {

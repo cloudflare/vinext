@@ -1564,6 +1564,19 @@ describe("app page head resolution", () => {
         metadata: { openGraph: { title: "OG Only" }, twitter: { card: "summary" } },
       }),
     ).toEqual(["OG Only | OG", "OG Only | OG"]);
+    // `/social/cleared`: a layout beside the page that clears them still
+    // hands the page the templates from before it.
+    expect(
+      await resolveSocialTitles(
+        ["social", "cleared"],
+        [
+          [1, social],
+          [2, { metadata: { openGraph: null, twitter: undefined } }],
+        ],
+        titled("Page"),
+      ),
+    ).toEqual(["Page | OG", "Page | TW"]);
+    expect(seenTitles.at(-1)).toEqual([null, undefined]);
   });
 
   it("hands each resolver the title resolved before it as { absolute, template }", async () => {

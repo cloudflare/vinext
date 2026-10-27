@@ -183,6 +183,8 @@ test.describe("Next.js compat: metadata (browser)", () => {
     expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
     // A missing twitter title comes from the resolved openGraph title.
     expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+    // A layout beside the page that clears them still hands it the templates.
+    expect(await socialTitles("/cleared")).toEqual(["Cleared | OG", "Cleared | TW"]);
   });
 
   // Next.js: 'should support opengraph tags'

@@ -129,6 +129,7 @@ describe("Next.js compat: metadata", () => {
     expect(await socialTitles("/extra")).toEqual(["Extra | OG", "TW Default"]);
     expect(await socialTitles("/plain/leaf")).toEqual(["Leaf", "Leaf"]);
     expect(await socialTitles("/og-only")).toEqual(["OG Only | OG", "OG Only | OG"]);
+    expect(await socialTitles("/cleared")).toEqual(["Cleared | OG", "Cleared | TW"]);
   });
 
   // ── Basic metadata tags ──────────────────────────────────────

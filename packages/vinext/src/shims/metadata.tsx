@@ -613,8 +613,9 @@ export function mergeParentMetadataEntries(entries: readonly MetadataMergeEntry[
 const SOCIAL_TITLE_KEYS = ["openGraph", "twitter"] as const;
 type TitleTemplates = Record<"title" | (typeof SOCIAL_TITLE_KEYS)[number], string | null>;
 
+// Next.js's resolved title keeps an empty template as `""`; applying one is a no-op.
 function titleTemplateOf(title: MetadataTitle | undefined): string | null {
-  return (typeof title === "object" && title?.template) || null;
+  return typeof title === "object" && title ? (title.template ?? null) : null;
 }
 
 function mergeEntries(entries: readonly MetadataMergeEntry[], resolvedTitle: boolean): Metadata {

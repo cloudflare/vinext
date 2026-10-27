@@ -713,34 +713,6 @@ function createLayoutInputs<TModule extends AppPageHeadModule>(
 
 type MetadataTitle = Metadata["title"];
 
-/**
- * `resolved`, with the title templates of `stashed`, everything resolved up to
- * the last item that may set them, for the next titles to resolve with:
- * `title`'s, `openGraph.title`'s and `twitter.title`'s.
- */
-function withTitleTemplateOf(resolved: Metadata, stashed: Metadata): Metadata {
-  if (resolved === stashed) return resolved;
-  const withTemplate = (title: MetadataTitle, stashedTitle: MetadataTitle): MetadataTitle => {
-    if (typeof title !== "object" || !title) return title;
-    const template = typeof stashedTitle === "object" ? (stashedTitle?.template ?? null) : null;
-    return { absolute: title.absolute ?? "", template };
-  };
-  const result = { ...resolved, title: withTemplate(resolved.title, stashed.title) };
-  if (resolved.openGraph) {
-    result.openGraph = {
-      ...resolved.openGraph,
-      title: withTemplate(resolved.openGraph.title, stashed.openGraph?.title),
-    };
-  }
-  if (resolved.twitter) {
-    result.twitter = {
-      ...resolved.twitter,
-      title: withTemplate(resolved.twitter.title, stashed.twitter?.title),
-    };
-  }
-  return result;
-}
-
 /** The walk's accumulated metadata, with its resolved titles as the shown strings. */
 function toShownMetadata(accumulated: Metadata): Metadata {
   const shown = (title: MetadataTitle) =>
@@ -1179,10 +1151,15 @@ function prepareAppPageHeadInner<TModule extends AppPageHeadModule>(
       initial: {},
       merge: (resolved, metadata, stashed) => {
         try {
-          return mergeParentMetadataEntries([
-            { metadata: withTitleTemplateOf(resolved, stashed) },
-            { metadata },
-          ]);
+          // `stashed` is everything resolved up to the last item that may set
+          // the title templates. Merged after it as a page entry, `resolved`
+          // keeps its values but hands `metadata` the templates of `stashed`,
+          // even for a value it cleared, such as `openGraph: null`.
+          return mergeParentMetadataEntries(
+            resolved === stashed
+              ? [{ metadata: resolved }, { metadata }]
+              : [{ metadata: stashed }, { isPage: true, metadata: resolved }, { metadata }],
+          );
         } catch (error) {
           throw tagAppPageMetadataError(error);
         }
