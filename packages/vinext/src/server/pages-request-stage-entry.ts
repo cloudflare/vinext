@@ -794,7 +794,7 @@ async function handleRequestImpl(
     const result = await runPagesRequest(request, deps);
     if (result.type === "response") {
       let response = result.response;
-      if (sharedResponseHeaders && sharedOuterPolicyHeaders) {
+      if (sharedResponseHeaders && sharedOuterPolicyHeaders && !result.finalCachePolicy) {
         reconcileCdnResponseHeadersAfterOuterPolicy(response.headers, sharedOuterPolicyHeaders);
       }
       if (probeMode && probeRoute && !responseStageDispatched) {

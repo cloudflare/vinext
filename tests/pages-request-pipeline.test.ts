@@ -11,6 +11,11 @@ import { PRERENDER_REVALIDATE_HEADER } from "../packages/vinext/src/utils/protoc
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
+  DefaultCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
+import { CloudflareCdnCacheAdapter } from "../packages/cloudflare/src/cache/cdn-adapter.runtime.js";
+import {
   CACHEABILITY_REQUEST_STATE,
   type RouteCacheabilityState,
 } from "../packages/vinext/src/shims/cacheability-classification.js";
@@ -574,10 +579,21 @@ describe("middleware", () => {
     expect(result.response.headers.get("x-nextjs-matched-path")).toBeNull();
   });
 
-  it("returns middleware data misses as JSON with the requested matched path", async () => {
+  it("returns middleware data misses as a JSON 404 with the requested matched path", async () => {
+    // Next.js router-server.ts: a middleware app's data miss is `{}` with a 404,
+    // sent with the never-cache policy even under a matching next.config rule.
     const result = await runPagesRequest(
       makeRequest("/unknown"),
       baseDeps({
+        configHeaders: [
+          {
+            source: "/:path*",
+            headers: [
+              { key: "Cache-Control", value: "public, max-age=3600" },
+              { key: "x-config", value: "config" },
+            ],
+          },
+        ],
         isDataReq: true,
         isDataRequest: true,
         hasMiddleware: true,
@@ -589,10 +605,51 @@ describe("middleware", () => {
 
     expect(result.type).toBe("response");
     if (result.type !== "response") return;
-    expect(result.response.status).toBe(200);
+    expect(result.response.status).toBe(404);
     expect(result.response.headers.get("content-type")).toContain("application/json");
     expect(result.response.headers.get("x-nextjs-matched-path")).toBe("/unknown");
+    expect(result.response.headers.get("x-config")).toBe("config");
+    expect(result.response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(await result.response.text()).toBe("{}");
+  });
+
+  it("keeps staged edge cache headers off middleware data misses", async () => {
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    try {
+      const result = await runPagesRequest(
+        makeRequest("/unknown"),
+        baseDeps({
+          configHeaders: [
+            {
+              source: "/:path*",
+              headers: [{ key: "Cloudflare-CDN-Cache-Control", value: "max-age=3600" }],
+            },
+          ],
+          isDataReq: true,
+          isDataRequest: true,
+          hasMiddleware: true,
+          runMiddleware: makeMiddleware({
+            continue: true,
+            responseHeaders: new Headers({ "CDN-Cache-Control": "max-age=3600" }),
+          }),
+          matchPageRoute: vi.fn().mockReturnValue(null),
+          renderPage: makeRenderPage(404, "not found"),
+        }),
+      );
+
+      expect(result.type).toBe("response");
+      if (result.type !== "response") return;
+      expect(result.response.status).toBe(404);
+      expect(result.response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(result.response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+      expect(result.response.headers.get("cdn-cache-control")).toBeNull();
+    } finally {
+      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+    }
   });
 
   it("keeps data misses as JSON 404 when generated wiring provides a no-op middleware", async () => {
