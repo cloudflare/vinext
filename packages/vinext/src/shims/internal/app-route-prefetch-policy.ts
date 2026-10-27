@@ -60,6 +60,12 @@ export type AppRoutePrefetchPolicy = {
   /** Fetch the route tree before the concrete page segment. */
   requiresRouteTreePrefetch?: true;
   shouldPrefetch: boolean;
+  /**
+   * Fetch the Cache Components page's static shell. It's reused by a
+   * navigation only when it holds the whole page; otherwise a navigation
+   * shows it while the page renders.
+   */
+  staticShell?: true;
 };
 
 function toSameOriginRouteHref(href: string): string | null {
@@ -189,13 +195,23 @@ export function resolveAutoAppRoutePrefetch(
     interceptionContext,
     routeUrl.pathname,
   );
-  const cacheForNavigation =
+  const isReusablePage =
     !hasSearchParams &&
     !hasCacheComponentsLearningOnlyDynamicPath &&
     (requiresRouteTreePrefetch ||
       (!route.canPrefetchLoadingShell &&
         route.requiresDynamicNavigationRequest !== true &&
         !rendersDynamically));
+  // Like Next.js, a Cache Components build prefetches a page's static shell,
+  // so the prefetch never renders the page's dynamic holes. An intercepted
+  // page has none: it's never prerendered.
+  const staticShell =
+    isReusablePage &&
+    !requiresRouteTreePrefetch &&
+    interceptionContext === null &&
+    process.env.NODE_ENV === "production" &&
+    String(process.env.__NEXT_CACHE_COMPONENTS) === "true";
+  const cacheForNavigation = isReusablePage && !staticShell;
   return {
     // Vinext does not yet have Next.js's per-segment runtime-prefetch hints.
     // Routes with loading boundaries prefetch a shell first so navigation can
@@ -218,6 +234,7 @@ export function resolveAutoAppRoutePrefetch(
     ...(rendersDynamically ? { rendersDynamically: true } : {}),
     ...(requiresRouteTreePrefetch ? { requiresRouteTreePrefetch: true } : {}),
     shouldPrefetch: true,
+    ...(staticShell ? { staticShell: true } : {}),
   };
 }
 

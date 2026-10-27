@@ -25,6 +25,7 @@ import {
   queueAfterCallback,
   trackAfterPromise,
 } from "./unified-request-context.js";
+import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import { hasBasePath, removeTrailingSlash, stripBasePath } from "../utils/base-path.js";
 import { trustProxy } from "../server/proxy-trust.js";
@@ -1477,6 +1478,12 @@ export async function connection(): Promise<void> {
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
   markDynamicUsage();
+  // Like Next.js's prerender, a shell render leaves what follows
+  // `connection()` to its Suspense fallback.
+  const fallbackShellPromise = createPprFallbackShellSuspensePromise<void>("`connection()`");
+  if (fallbackShellPromise) {
+    await fallbackShellPromise;
+  }
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;

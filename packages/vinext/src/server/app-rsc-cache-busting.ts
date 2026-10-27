@@ -412,6 +412,17 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
 }
 
 /**
+ * Leave the client's router state out of a static-shell prefetch: the shell is
+ * the same whatever page asks for it, so it mustn't split its cache key, as
+ * Next.js keys a prefetched segment by its URL alone.
+ */
+export function omitStaticShellRouterStateHeaders(headers: Headers): void {
+  headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
+}
+
+/**
  * Convert an ordinary loading-boundary prefetch to the shared loading-shell
  * variant. The payload is selected by the three retained mode headers; visible
  * router state is transport context and must not fragment the shared response.

@@ -1531,6 +1531,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           onHeadPrepared: buildOptions?.onHeadPrepared,
         }, displayPathname, scriptNonce);
       },
+      cachePathname,
       cleanPathname,
       displayPathname,
       clearRequestContext() {

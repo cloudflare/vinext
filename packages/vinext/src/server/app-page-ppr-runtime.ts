@@ -2,6 +2,7 @@ import {
   beginPprFallbackShellFinalRender,
   createPprFallbackShellState,
   getPprFallbackShellState,
+  preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
 import { _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
@@ -241,6 +242,11 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
   getState: getPprFallbackShellState,
   run(shell, fn) {
     return runWithPprFallbackShellState(createPprFallbackShellState(shell), fn);
+  },
+  runSinglePass(shell, fn) {
+    const state = createPprFallbackShellState(shell);
+    preparePprFallbackShellFinalRender(state);
+    return runWithPprFallbackShellState(state, fn);
   },
   async tryServe(options, currentRevalidateSeconds, isDraftMode, isForceStatic, isForceDynamic) {
     const decision = classifyPprFallbackShellEligibility(

@@ -484,6 +484,12 @@ Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `c
 
 `useSearchParams()` in a client component doesn't make a page dynamic. Under `dynamic = "force-static"` it returns empty search params in the HTML and the browser URL's after hydration, as in Next.js. Otherwise, in production, a cacheable page's HTML gets the nearest `<Suspense>` fallback and the browser renders the real value after hydration, as in Next.js. With no `<Suspense>` boundary above the call, the HTML request fails with Next.js's `useSearchParams() should be wrapped in a suspense boundary` error, where Next.js fails the build.
 
+## Prefetched static shells
+
+With `cacheComponents`, a production `<Link>` prefetch of a page gets the page's static shell, as in Next.js. That's the page rendered with `cookies()`, `headers()`, `connection()` and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. vinext renders a page's shell on its first prefetch and stores it in the data cache with the page's `cacheLife` and tags, so `revalidatePath()` and `revalidateTag()` refresh it. A navigation shows a shell that has holes at once while the page renders, and uses a shell with none without another request.
+
+A page under a `loading.tsx` boundary, an href with a query string, an intercepted route and the dev server keep the loading-shell prefetch.
+
 ## Query strings
 
 Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.
