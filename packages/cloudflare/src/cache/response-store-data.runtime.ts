@@ -15,6 +15,7 @@ import { cacheForRequest } from "vinext/cache";
 import type { CdnAppPageDocument } from "vinext/shims/cdn-cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
+import { readCacheTimestamp } from "../utils/cache-control-metadata.js";
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
 import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
@@ -54,6 +55,8 @@ const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
 const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
 const DATA_ENTRY_PATH = "__vinext_data";
 const REPLAYABLE_HEADER = "X-Vinext-Response-Store-Replayable";
+/** The Store's internal header for when a response's generation started. */
+const GENERATED_AT_HEADER = "X-Workers-Response-Store-Generated-At";
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
 /** How long past its revalidate a current Store's hit can still be marked fresh: write latency. */
 const STALE_FRESH_HIT_GRACE_MS = 5_000;
@@ -544,14 +547,21 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         : invocation?.replayable
           ? { id: DATA_REVALIDATOR_ID, args: [key, invocation.serialized] }
           : undefined;
+    // Like Next.js, a "use cache" entry is dated from when its generation started.
+    const lastModified = readCacheTimestamp(context, Date.now());
     const response = new Response(
       serialize({
         ...(cacheControl ? { cacheControl } : {}),
-        lastModified: Date.now(),
+        lastModified,
         value,
       }),
       {
         headers: {
+          // The Store ages it from then, and publishes it stale, or expired, if its tags were
+          // invalidated, or purged, while it was generated, including when it regenerates it.
+          ...(lastModified === context?.timestamp
+            ? { [GENERATED_AT_HEADER]: String(lastModified) }
+            : {}),
           "Cache-Control": cachePolicy(revalidate, expire),
           ...(tagHeader ? { "Cache-Tag": tagHeader } : {}),
           "Content-Type": "application/json",

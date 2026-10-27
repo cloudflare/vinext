@@ -207,6 +207,26 @@ test.describe("Pages Router Production Build", () => {
     expect(data).toEqual({ message: "Hello from API!" });
   });
 
+  test("API route pipes a Node stream passed to res.send()", async ({ request }) => {
+    const response = await request.get(`${BASE}/api/send-stream`);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toBe("application/octet-stream");
+    expect(await response.text()).toBe("hello from a stream");
+
+    const typed = await request.get(`${BASE}/api/send-stream?contentType=text/event-stream`);
+    expect(typed.headers()["content-type"]).toBe("text/event-stream");
+    expect(await typed.text()).toBe("hello from a stream");
+
+    for (const status of [204, 205, 304]) {
+      const empty = await request.get(
+        `${BASE}/api/send-stream?status=${status}&contentType=text/plain`,
+      );
+      expect(empty.status()).toBe(status);
+      expect(empty.headers()["content-type"]).toBeUndefined();
+      expect(await empty.text()).toBe("");
+    }
+  });
+
   test("discovers getStaticPaths after request-time instrumentation", async ({ request }) => {
     const { prerenderSecret } = JSON.parse(
       fs.readFileSync("tests/fixtures/pages-basic/dist/server/vinext-server.json", "utf8"),

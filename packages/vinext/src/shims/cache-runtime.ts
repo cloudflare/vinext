@@ -891,6 +891,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         propagate: boolean,
         staleEntry?: CacheHandlerValue,
       ): Promise<TResult> => {
+        // Like Next.js, an entry is dated from when its generation started, so a tag
+        // invalidated while it ran still covers it.
+        const timestamp = Date.now();
         const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext(
           callFn,
           callArgs,
@@ -950,6 +953,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             const cacheContext = {
               fetchCache: true,
               tags: ctx.tags,
+              timestamp,
               ...(cacheFunctionInvocation ? { cacheFunctionInvocation } : {}),
               cacheControl: {
                 revalidate: revalidateSeconds,

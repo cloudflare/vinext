@@ -92,12 +92,19 @@ export type NavigationRuntimeFunctions = {
   notifyLinkNavigationStart?: () => void;
   pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
-  /** The visited (BFCache) response a full prefetch can be fulfilled from. */
+  /**
+   * The visited (BFCache) response a full prefetch can be fulfilled from, and
+   * until when a navigation would still reuse it (null if it wouldn't).
+   */
   readVisitedResponseForFullPrefetch?: (
     rscUrls: readonly string[],
     interceptionContext: string | null,
     mountedSlotsHeader: string | null,
-  ) => { navigatedAt: number; response: CachedRscResponse } | null;
+  ) => {
+    navigatedAt: number;
+    navigationFreshUntil: number | null;
+    response: CachedRscResponse;
+  } | null;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,

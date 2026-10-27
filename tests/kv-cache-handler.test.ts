@@ -919,6 +919,49 @@ describe("KVCacheHandler", () => {
       }
     });
 
+    // Next.js dates a "use cache" entry from when its generation started:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    it("dates an entry from the generation start it is given", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const set = (key: string, tags: string[], timestamp?: unknown, revalidate = 3600) =>
+          handler.set(
+            key,
+            { kind: "FETCH", data: { headers: {}, body: "posts", url: "" }, revalidate },
+            { revalidate, tags, timestamp },
+          );
+
+        // Each generation starts before the revalidation and is stored after it.
+        vi.setSystemTime(1_001_000);
+        await handler.revalidateTag("stale-tag", { expire: 60 });
+        await handler.revalidateTag("expired-tag");
+        vi.setSystemTime(1_002_000);
+        await set("stale", ["stale-tag"], 1_000_000);
+        await set("expired", ["expired-tag"], 1_000_000);
+        await set("aged", [], 1_000_000, 1);
+        // One that started after the revalidation, and writes without a valid start.
+        await set("fresh", ["stale-tag"], 1_001_500);
+        await set("unset", ["stale-tag"]);
+        await set("future", ["stale-tag"], 1_003_000);
+        await set("malformed", ["stale-tag"], Number.NaN);
+
+        const reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("stale")).resolves.toMatchObject({
+          cacheState: "stale",
+          lastModified: 1_000_000,
+        });
+        await expect(reader.get("expired")).resolves.toBeNull();
+        // Its revalidate period counts from the generation start too.
+        await expect(reader.get("aged")).resolves.toMatchObject({ cacheState: "stale" });
+        for (const key of ["fresh", "unset", "future", "malformed"]) {
+          const entry = await reader.get(key);
+          expect(entry?.cacheState, key).toBeUndefined();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("serves stale after the public revalidateTag with a cacheLife profile name", async () => {
       await handler.set(
         "posts",
