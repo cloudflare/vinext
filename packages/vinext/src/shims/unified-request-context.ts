@@ -113,6 +113,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
+    isOnDemandRevalidate: false,
     pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),

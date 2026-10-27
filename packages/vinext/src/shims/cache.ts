@@ -51,6 +51,7 @@ import {
   ACTION_DID_REVALIDATE_DYNAMIC_ONLY,
   ACTION_DID_REVALIDATE_STATIC_AND_DYNAMIC,
   _hasPendingRevalidatedTag,
+  _isOnDemandRevalidate,
   _markPendingRevalidatedTag,
   _queuePendingCdnTagInvalidation,
   _queuePendingRevalidation,
@@ -740,8 +741,9 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     let staleEntry: CacheHandlerValue | undefined;
     // Like Next.js, an unstable_cache nested in another's callback skips the
     // read and reruns, so regenerating the outer entry also refreshes what it
-    // calls. The fresh result is still stored.
-    if (!isDraftMode && !isNestedUnstableCacheCall()) {
+    // calls, and so does an on-demand revalidation (`res.revalidate()`). The
+    // fresh result is still stored.
+    if (!isDraftMode && !isNestedUnstableCacheCall() && !_isOnDemandRevalidate()) {
       // Try to get from cache. Stale entries are usable in normal App Router
       // requests, but foreground-refresh inside revalidation scopes so the
       // regenerated page/route stores fresh data.

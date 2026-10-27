@@ -3,6 +3,7 @@ import { shareIsolatePromise } from "../server/isolate-shared-promise.js";
 import {
   readCacheControlNumberField,
   readCacheControlRevalidateField,
+  readCacheTimestamp,
 } from "../utils/cache-control-metadata.js";
 
 export type CacheHandlerValue = {
@@ -329,7 +330,7 @@ export class MemoryCacheHandler implements CacheHandler {
     }
     if (effectiveRevalidate === 0) return;
 
-    const now = Date.now();
+    const now = readCacheTimestamp(ctx, Date.now());
     const revalidateAt =
       typeof effectiveRevalidate === "number" && effectiveRevalidate > 0
         ? now + effectiveRevalidate * 1000

@@ -44,6 +44,13 @@ export type PendingCdnTagInvalidation = Readonly<{
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
+  /**
+   * The request is an authorized on-demand revalidation (`res.revalidate()`).
+   * Like Next.js's `workStore.isOnDemandRevalidate`, the data caches then skip
+   * their reads but still execute and store fresh results. Set once when the
+   * request context is created; nested scopes inherit it.
+   */
+  isOnDemandRevalidate: boolean;
   pendingCdnTagInvalidations: PendingCdnTagInvalidation[];
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
@@ -65,6 +72,7 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
+  isOnDemandRevalidate: false,
   pendingCdnTagInvalidations: [],
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
@@ -93,6 +101,7 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
+    isOnDemandRevalidate: false,
     pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
@@ -108,6 +117,18 @@ export function _initRequestScopedCacheState(): void {
   const state = getCacheState();
   state.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
   state.requestScopedCacheLife = null;
+}
+
+/**
+ * Whether the current request is an authorized on-demand revalidation, so the
+ * data caches must skip their reads (not their writes). Mirrors Next.js's
+ * `workStore.isOnDemandRevalidate` checks in use-cache-wrapper, patch-fetch
+ * and unstable-cache.
+ *
+ * @internal
+ */
+export function _isOnDemandRevalidate(): boolean {
+  return getCacheState().isOnDemandRevalidate === true;
 }
 
 export function markActionRevalidation(kind: ActionRevalidationKind): void {

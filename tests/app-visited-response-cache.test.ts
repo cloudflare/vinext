@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   MAX_TRAVERSAL_CACHE_TTL,
   VISITED_RESPONSE_CACHE_TTL,
@@ -25,6 +25,10 @@ function createCachedResponse(overrides: Partial<CachedRscResponse> = {}): Cache
     ...overrides,
   };
 }
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("visited response cache freshness", () => {
   it("deletes every cache-busting variant when a visible route response is replaced", () => {
@@ -133,7 +137,7 @@ describe("visited response cache freshness", () => {
         null,
         "slot:modal",
       ),
-    ).toEqual({ navigatedAt: 1_000_000, response: entry.response });
+    ).toEqual({ navigatedAt: 1_000_000, navigationFreshUntil: null, response: entry.response });
     expect(findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc?_rsc=b"], null, null)).toBe(
       null,
     );
@@ -155,8 +159,64 @@ describe("visited response cache freshness", () => {
 
     expect(findVisitedResponseForFullPrefetch(cache, ["/dynamic.rsc"], null, null)).toEqual({
       navigatedAt: 1_000_000,
+      navigationFreshUntil: null,
       response,
     });
+  });
+
+  it("says until when a navigation would still reuse a full prefetch's visited response", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/segment-cache/optimistic-route-cache-keying-regression/optimistic-route-cache-keying-regression.test.ts
+    const now = 1_000_000;
+    const entry = createVisitedResponseCacheEntry({
+      now,
+      mountedSlotsHeader: "slot:modal",
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 180 }),
+    });
+    const cache = new Map([["/photo/1.rsc?_rsc=navigation", entry]]);
+    const navigationFreshUntil = (mountedSlotsHeader: string | null = "slot:modal") =>
+      findVisitedResponseForFullPrefetch(
+        cache,
+        ["/photo/1.rsc?_rsc=prefetch"],
+        null,
+        mountedSlotsHeader,
+      )?.navigationFreshUntil;
+
+    vi.spyOn(Date, "now").mockReturnValue(now + 179_999);
+    expect(navigationFreshUntil()).toBe(now + 180_000);
+    vi.spyOn(Date, "now").mockReturnValue(now + 180_000);
+    expect(navigationFreshUntil()).toBe(null);
+
+    // The navigation needs the slot context it was requested with, even when
+    // the response declares the one asked for.
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    entry.response = { ...entry.response, mountedSlotsHeader: null };
+    expect(navigationFreshUntil(null)).toBe(null);
+    expect(navigationFreshUntil()).toBe(now + 180_000);
+
+    // A history restore revoked its navigation reuse.
+    entry.navigationReuseRevoked = true;
+    expect(navigationFreshUntil()).toBe(null);
+  });
+
+  it("never reports initial hydration's visited response as navigation-fresh", () => {
+    // Ported from Next.js:
+    // test/e2e/app-dir/app-client-cache/client-cache.parallel-routes.test.ts
+    // A visible Link to the page just loaded still prefetches it.
+    const now = 1_000_000;
+    vi.spyOn(Date, "now").mockReturnValue(now);
+    const entry = createVisitedResponseCacheEntry({
+      fromHydration: true,
+      now,
+      params: {},
+      response: createCachedResponse({ dynamicStaleTimeSeconds: 180 }),
+    });
+    const cache = new Map([["/photo/1.rsc", entry]]);
+
+    expect(
+      findVisitedResponseForFullPrefetch(cache, ["/photo/1.rsc"], null, null)?.navigationFreshUntil,
+    ).toBe(null);
   });
 
   it("replays a full prefetch's committed elements and matches the response-declared slots", () => {
