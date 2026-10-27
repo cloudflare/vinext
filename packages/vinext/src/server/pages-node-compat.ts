@@ -365,9 +365,12 @@ class PagesResponseStream extends Writable {
     this.end(JSON.stringify(data));
   }
 
+  private preserveNullishSendHeaders = false;
+
   send(data: unknown): void {
-    // Next.js ends a nullish send without a body.
+    // Next.js returns before its entity-header cleanup for nullish sends.
     if (data === null || data === undefined) {
+      this.preserveNullishSendHeaders = this.resStatusCode === 204 || this.resStatusCode === 304;
       this.end();
       return;
     }
@@ -558,10 +561,17 @@ class PagesResponseStream extends Writable {
     if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
       this.discardBody = true;
       this.bufferedChunks.length = 0;
-      headers.delete("content-length");
-      headers.delete("content-type");
-      headers.delete("transfer-encoding");
-      this.resolveResponse(new Response(null, { status: this.resStatusCode, headers }));
+      if (!this.preserveNullishSendHeaders) {
+        headers.delete("content-length");
+        headers.delete("content-type");
+        headers.delete("transfer-encoding");
+      }
+      const response = new Response(null, { status: this.resStatusCode, headers });
+      if (this.preserveNullishSendHeaders) {
+        // Keep sendData's early-return semantics through middleware/config header merging.
+        (response as Response & { __vinextNullishApiSend?: boolean }).__vinextNullishApiSend = true;
+      }
+      this.resolveResponse(response);
       return;
     }
 
