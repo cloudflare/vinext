@@ -5797,6 +5797,25 @@ describe("app page dispatch", () => {
     expect(buildPageElement).not.toHaveBeenCalled();
   });
 
+  it("renders an on-demand revalidation blocking instead of resuming its fallback shell", async () => {
+    const buildPageElement = createParamTextPageElement();
+    const isrGet = createPprBlogFallbackShellGetter(false);
+    const { options } = createPprBlogDispatchOptions({
+      buildPageElement,
+      isrGet,
+      loadSsrHandler: createFreshBodySsrHandler("fresh"),
+    });
+
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () => dispatchAppPage(options),
+    );
+
+    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
+    expect(buildPageElement).toHaveBeenCalled();
+    await expect(response.text()).resolves.toContain("fresh");
+  });
+
   it("reads a fallback shell with an encoded kept param under its decoded build key", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = vi.fn(async (key: string) =>

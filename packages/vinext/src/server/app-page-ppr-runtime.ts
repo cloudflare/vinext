@@ -4,7 +4,7 @@ import {
   getPprFallbackShellState,
   runWithPprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
-import { _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
+import { _isOnDemandRevalidate, _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
 import { markDynamicUsage } from "vinext/shims/internal/headers-state";
 import { createResumeDataCache, parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
@@ -33,7 +33,8 @@ type PprFallbackShellEligibility =
         | "skip-rsc-request"
         | "skip-non-get"
         | "skip-search-params"
-        | "skip-cache-disabled";
+        | "skip-cache-disabled"
+        | "skip-on-demand-revalidate";
     };
 
 function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute>(
@@ -52,6 +53,9 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
     return { kind: "skip-no-fallback-shells" };
   }
   if (options.isRscRequest) return { kind: "skip-rsc-request" };
+  // Like Next.js, an on-demand revalidation renders the page blocking and
+  // stores it instead of resuming a shell with the values it was built with.
+  if (_isOnDemandRevalidate()) return { kind: "skip-on-demand-revalidate" };
   if (options.request.method !== "GET") return { kind: "skip-non-get" };
   if (!isForceStatic && hasSearchParams(options.searchParams)) {
     return { kind: "skip-search-params" };
