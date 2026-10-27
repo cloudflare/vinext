@@ -407,6 +407,48 @@ test("a static page with no revalidate source is served from the configured cach
     .toBe(true);
 });
 
+// Ported from Next.js revalidateTag(tag, profile) semantics, as in
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+test("revalidateTag with a cacheLife profile serves the stale value while it regenerates", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(150_000);
+
+  const read = async () => {
+    const response = await request.get(`${baseURL}/use-cache-getter-args-tagged`);
+    expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+    const value = /data-testid="getter-args-tagged">([^<]+)</.exec(await response.text())?.[1];
+    expect(value).toMatch(/^getter-args-tagged:/);
+    return value!;
+  };
+  // Wait until the cached value is stored and served.
+  let before = await read();
+  await expect
+    .poll(
+      async () => {
+        const value = await read();
+        const reused = value === before;
+        before = value;
+        return reused;
+      },
+      { intervals: [1_000], timeout: 30_000 },
+    )
+    .toBe(true);
+
+  // The demo route revalidates with the "default" profile, so the next read
+  // still serves the stale value and the backend regenerates it.
+  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: "getter-args-tagged" },
+  });
+  expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  expect(await read()).toBe(before);
+  // KV colos may cache the earlier marker read for up to 60 seconds.
+  await expect.poll(read, { intervals: [1_000], timeout: 75_000 }).not.toBe(before);
+});
+
 test("useSearchParams() inside Suspense keeps the query out of a static page", async ({
   baseURL,
   request,
@@ -638,3 +680,93 @@ if (backend) {
   testRouteHandlerStoragePolicies();
   testPagesStoragePolicies();
 }
+
+const RSC_HEADERS = { accept: "text/x-component", rsc: "1" };
+
+/** The render id a page's document or RSC payload carries. */
+function cachedPageRenderId(body: string): string {
+  const renderId = /data-render-id\W+([0-9a-f]{8}-[0-9a-f-]{27})/.exec(body)?.[1];
+  expect(renderId).toBeTruthy();
+  return renderId!;
+}
+
+/**
+ * Workers Cache renders a page's other part in the background, and stores it
+ * once its body has been read. A request for that part before then would
+ * render and store it itself, so wait once instead of polling.
+ */
+function waitForOtherPagePart(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5_000));
+}
+
+for (const [first, other] of [
+  ["document", "RSC payload"],
+  ["RSC payload", "document"],
+] as const) {
+  test(`Workers Cache stores a page's ${other} when its ${first} misses`, async ({
+    baseURL,
+    request,
+  }) => {
+    test.skip(
+      backend !== "workers-cache" || !baseURL?.startsWith("https://"),
+      "requires a deployed Workers Cache backend",
+    );
+    const path = `${baseURL}/cached/parts-${randomUUID()}`;
+    const read = (part: "document" | "RSC payload") =>
+      part === "document"
+        ? request.get(path, { headers: { accept: "text/html" } })
+        : request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
+
+    const miss = await read(first);
+    expect(miss.ok(), JSON.stringify(miss.headers())).toBe(true);
+    expect(miss.headers()["cf-cache-status"]).toBe("MISS");
+    await miss.dispose();
+
+    await waitForOtherPagePart();
+    const hit = await read(other);
+    expect(hit.ok(), JSON.stringify(hit.headers())).toBe(true);
+    expect(hit.headers()["cf-cache-status"], JSON.stringify(hit.headers())).toBe("HIT");
+    cachedPageRenderId(await hit.text());
+  });
+}
+
+test("Workers Cache refreshes a page's RSC payload when its document regenerates", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(
+    backend !== "workers-cache" || !baseURL?.startsWith("https://"),
+    "requires a deployed Workers Cache backend",
+  );
+  test.setTimeout(120_000);
+  const slug = `parts-${randomUUID()}`;
+  const path = `${baseURL}/cached/${slug}`;
+  const readDocument = () => request.get(path, { headers: { accept: "text/html" } });
+  const readPayload = () => request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
+
+  const documentRenderId = cachedPageRenderId(await (await readDocument()).text());
+  await waitForOtherPagePart();
+  const stored = await readPayload();
+  expect(stored.headers()["cf-cache-status"], JSON.stringify(stored.headers())).toBe("HIT");
+  const storedRenderId = cachedPageRenderId(await stored.text());
+
+  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: `post:${slug}` },
+  });
+  expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  // The revalidation reaches each part's entry on its own, so a document read
+  // straight away can find its payload still fresh.
+  await new Promise((resolve) => setTimeout(resolve, 2_000));
+  // Each read of the stale document refreshes it and fetches its payload.
+  await expect
+    .poll(async () => cachedPageRenderId(await (await readDocument()).text()), {
+      intervals: [1_000],
+      timeout: 60_000,
+    })
+    .not.toBe(documentRenderId);
+
+  await waitForOtherPagePart();
+  const refreshed = await readPayload();
+  expect(refreshed.headers()["cf-cache-status"], JSON.stringify(refreshed.headers())).toBe("HIT");
+  expect(cachedPageRenderId(await refreshed.text())).not.toBe(storedRenderId);
+});

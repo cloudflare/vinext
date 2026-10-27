@@ -444,7 +444,7 @@ describe("next/navigation shim", () => {
   // happen before the rscNavigate dispatch so it cannot race with prefetches
   // kicked off during the transition's renders.
   // Ported from: https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/router-reducer/reducers/refresh-reducer.ts
-  it("router.refresh() clears nav caches before dispatching the RSC re-fetch", async () => {
+  it("router.refresh() clears nav caches before the RSC re-fetch and prefetches links after it", async () => {
     const previousWindow = (globalThis as any).window;
     const calls: string[] = [];
     const win = {
@@ -461,11 +461,16 @@ describe("next/navigation shim", () => {
           rsc: undefined,
         },
         functions: {
-          clearNavigationCaches: () => {
-            calls.push("clear");
+          clearNavigationCaches: (options?: { pingVisibleLinks?: boolean }) => {
+            calls.push(`clear:ping=${options?.pingVisibleLinks ?? true}`);
           },
           navigate: async (_href: string, _depth: number, kind: string) => {
             calls.push(`navigate:${kind}`);
+            await Promise.resolve();
+            calls.push(`navigated:${kind}`);
+          },
+          pingVisibleLinks: () => {
+            calls.push("ping");
           },
         },
       },
@@ -479,12 +484,94 @@ describe("next/navigation shim", () => {
       // refresh() schedules the rscNavigate inside React.startTransition, so
       // the navigate call lands after the synchronous clear but is dispatched
       // in the same tick — yield once to let it flush.
-      await Promise.resolve();
-      await Promise.resolve();
+      await vi.waitFor(() => expect(calls).toContain("ping"));
 
-      expect(calls[0]).toBe("clear");
-      expect(calls).toContain("navigate:refresh");
-      expect(calls.indexOf("clear")).toBeLessThan(calls.indexOf("navigate:refresh"));
+      // The visible links prefetch again only once the refresh has finished,
+      // so its requests go out first.
+      expect(calls).toEqual(["clear:ping=false", "navigate:refresh", "navigated:refresh", "ping"]);
+    } finally {
+      (globalThis as any).window = previousWindow;
+      vi.resetModules();
+    }
+  });
+
+  it("router.refresh() superseded by a navigation prefetches links only after the winner settles", async () => {
+    const previousWindow = (globalThis as any).window;
+    const calls: string[] = [];
+    let trackInFlight: (() => () => void) | undefined;
+    let supersedeRefresh: (() => void) | undefined;
+    let settleWinner: (() => void) | undefined;
+    const gates: Record<string, Promise<void>> = {
+      refresh: new Promise<void>((resolve) => {
+        supersedeRefresh = resolve;
+      }),
+      navigate: new Promise<void>((resolve) => {
+        settleWinner = resolve;
+      }),
+    };
+    // Mirrors the browser entry's navigateRsc: each navigation is tracked until
+    // its settlement, and a superseded one returns early once it is aborted.
+    const navigate = async (_href: string, _depth: number, kind: string) => {
+      const release = trackInFlight!();
+      calls.push(`navigate:${kind}`);
+      try {
+        await gates[kind];
+      } finally {
+        calls.push(`navigated:${kind}`);
+        release();
+      }
+    };
+    const win = {
+      location: { href: "http://localhost/current" },
+      history: {
+        state: null,
+        pushState: () => {},
+        replaceState: () => {},
+      },
+      addEventListener: () => {},
+      [Symbol.for("vinext.navigationRuntime")]: {
+        bootstrap: {
+          routeManifest: null,
+          rsc: undefined,
+        },
+        functions: {
+          clearNavigationCaches: (options?: { pingVisibleLinks?: boolean }) => {
+            calls.push(`clear:ping=${options?.pingVisibleLinks ?? true}`);
+          },
+          navigate,
+          pingVisibleLinks: () => {
+            calls.push("ping");
+          },
+        },
+      },
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const nav = await import("../packages/vinext/src/shims/navigation.js");
+      trackInFlight = nav.trackAppRouterNavigationInFlight;
+      nav.appRouterInstance.refresh();
+      await vi.waitFor(() => expect(calls).toContain("navigate:refresh"));
+
+      // A later navigation supersedes the refresh, which settles first.
+      const winner = navigate("http://localhost/other", 0, "navigate");
+      supersedeRefresh!();
+      await vi.waitFor(() => expect(calls).toContain("navigated:refresh"));
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+      expect(calls).not.toContain("ping");
+
+      settleWinner!();
+      await winner;
+      await vi.waitFor(() => expect(calls).toContain("ping"));
+      expect(calls).toEqual([
+        "clear:ping=false",
+        "navigate:refresh",
+        "navigate:navigate",
+        "navigated:refresh",
+        "navigated:navigate",
+        "ping",
+      ]);
     } finally {
       (globalThis as any).window = previousWindow;
       vi.resetModules();
@@ -1263,6 +1350,95 @@ describe("next/navigation shim", () => {
 
       setterMod.setNavigationContext(null);
     } finally {
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+      if (previousAccessors === undefined) {
+        delete globalRecord[accessorsKey];
+      } else {
+        globalRecord[accessorsKey] = previousAccessors;
+      }
+      if (previousHydration === undefined) {
+        delete globalRecord[hydrationKey];
+      } else {
+        globalRecord[hydrationKey] = previousHydration;
+      }
+    }
+  });
+
+  it("hands every browser module instance the same hydrated search params object", async () => {
+    // Every instance must hydrate with the same object: the browser adopts it
+    // once the URL's query matches, so a per-instance wrapper would hand some
+    // callers a new object after hydration.
+    const React = await import("react");
+    const { renderToStaticMarkup } = await import("react-dom/server");
+    const previousWindow = globalThis.window;
+    const accessorsKey = Symbol.for("vinext.navigation.globalAccessors");
+    const hydrationKey = Symbol.for("vinext.navigation.clientHydrationContext");
+    const globalRecord = globalThis as Record<PropertyKey, unknown>;
+    const previousAccessors = globalRecord[accessorsKey];
+    const previousHydration = globalRecord[hydrationKey];
+
+    let firstMod: typeof import("../packages/vinext/src/shims/navigation.js") | undefined;
+
+    try {
+      delete globalRecord[accessorsKey];
+      delete globalRecord[hydrationKey];
+      (globalThis as any).window = {
+        addEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+        history: {
+          pushState() {},
+          replaceState() {},
+        },
+        location: {
+          href: "http://localhost/shared-search?q=hello",
+          origin: "http://localhost",
+          pathname: "/shared-search",
+          search: "?q=hello",
+        },
+        removeEventListener() {},
+      };
+
+      const firstPath = "../packages/vinext/src/shims/navigation.js?hydration-search-params=first";
+      const secondPath =
+        "../packages/vinext/src/shims/navigation.js?hydration-search-params=second";
+      firstMod = (await import(
+        firstPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+      const secondMod = (await import(
+        secondPath
+      )) as typeof import("../packages/vinext/src/shims/navigation.js");
+
+      firstMod.setNavigationContext({
+        pathname: "/shared-search",
+        searchParams: new URLSearchParams("q=hello"),
+        params: {},
+      });
+
+      const seen: unknown[] = [];
+      function Probe({ mod }: { mod: typeof secondMod }) {
+        seen.push(mod.useSearchParams());
+        return null;
+      }
+      renderToStaticMarkup(
+        React.createElement(
+          React.Fragment,
+          null,
+          React.createElement(Probe, { mod: firstMod }),
+          React.createElement(Probe, { mod: secondMod }),
+        ),
+      );
+
+      expect(seen).toHaveLength(2);
+      expect((seen[0] as URLSearchParams).get("q")).toBe("hello");
+      expect(seen[0]).toBe(seen[1]);
+    } finally {
+      firstMod?.setNavigationContext(null);
       if (previousWindow === undefined) {
         delete (globalThis as any).window;
       } else {
@@ -3536,6 +3712,7 @@ describe("next/headers shim", () => {
     const reqHeaders = new Headers({
       rsc: "1",
       "Next-Router-State-Tree": "tree",
+      "X-Vinext-Mounted-Layouts": "0123456789abcdef",
       "x-nextjs-request-id": "dev-request",
       "x-nextjs-html-request-id": "dev-html-request",
       "x-custom": "test-value",
@@ -3549,6 +3726,7 @@ describe("next/headers shim", () => {
     expect(h.get("x-custom")).toBe("test-value");
     expect(h.get("rsc")).toBeNull();
     expect(h.get("Next-Router-State-Tree")).toBeNull();
+    expect(h.get("X-Vinext-Mounted-Layouts")).toBeNull();
     expect(h.get("x-nextjs-request-id")).toBeNull();
     expect(h.get("x-nextjs-html-request-id")).toBeNull();
     expect(reqHeaders.get("x-nextjs-request-id")).toBe("dev-request");
@@ -3685,10 +3863,9 @@ describe("next/headers shim", () => {
     });
 
     const syncCookies = cookies();
-    expect(() => Reflect.get(syncCookies, "set")).toThrow(
-      /Cookies can only be modified in a Server Action or Route Handler/,
-    );
-    expect(() => Reflect.get(syncCookies, "delete")).toThrow(
+    // The mutating methods throw when called, not when read.
+    expect(typeof Reflect.get(syncCookies, "set")).toBe("function");
+    expect(() => (syncCookies as unknown as { clear(): void }).clear()).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(() => syncCookies.set("session", "mutated")).toThrow(
@@ -3698,11 +3875,9 @@ describe("next/headers shim", () => {
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
     expect(syncCookies.get("session")).toEqual({ name: "session", value: "abc123" });
+    expect(syncCookies.get({ name: "session" })).toEqual({ name: "session", value: "abc123" });
 
     const awaitedCookies = await cookies();
-    expect(() => Reflect.get(awaitedCookies, "set")).toThrow(
-      /Cookies can only be modified in a Server Action or Route Handler/,
-    );
     expect(() => awaitedCookies.set("session", "mutated")).toThrow(
       /Cookies can only be modified in a Server Action or Route Handler/,
     );
@@ -6534,6 +6709,40 @@ describe("next/cache shim", () => {
     });
   });
 
+  // Ported from Next.js: test/e2e/app-dir/cache-components/cache-components.test.ts
+  // ("should fully prerender pages that use `unstable_noStore()`")
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/cache-components/cache-components.test.ts
+  it("unstable_noStore marks the render dynamic only without Cache Components", async () => {
+    const { unstable_noStore } = await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext, getRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { workUnitAsyncStorage } =
+      await import("../packages/vinext/src/shims/internal/work-unit-async-storage.js");
+
+    try {
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "false");
+      await runWithRequestContext(createRequestContext(), async () => {
+        unstable_noStore();
+        expect(getRequestContext().dynamicUsageDetected).toBe(true);
+      });
+
+      vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+      for (const type of ["request", "prerender"] as const) {
+        await runWithRequestContext(createRequestContext(), () =>
+          workUnitAsyncStorage.run(
+            type === "request" ? { type } : { type, renderSignal: new AbortController().signal },
+            async () => {
+              unstable_noStore();
+              expect(getRequestContext().dynamicUsageDetected).toBe(false);
+            },
+          ),
+        );
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("exports cacheLife with built-in profiles", async () => {
     const { cacheLife, cacheLifeProfiles } = await import("../packages/vinext/src/shims/cache.js");
     expect(typeof cacheLife).toBe("function");
@@ -6706,11 +6915,13 @@ describe("next/cache shim", () => {
 
     const waitUntilPromises: Promise<unknown>[] = [];
     const setBodies: string[] = [];
+    const setStaleEntries: unknown[] = [];
+    let staleEntry: CacheHandlerValue | undefined;
     let callCount = 0;
 
     const handler: CacheHandler = {
       async get(): Promise<CacheHandlerValue> {
-        return {
+        return (staleEntry = {
           lastModified: Date.now() - 2_000,
           cacheState: "stale",
           value: {
@@ -6723,11 +6934,12 @@ describe("next/cache shim", () => {
             tags: ["stale-swr"],
             revalidate: 1,
           },
-        };
+        });
       },
-      async set(_key: string, data: IncrementalCacheValue | null) {
+      async set(_key: string, data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) {
         if (data?.kind === "FETCH") {
           setBodies.push(data.data.body);
+          setStaleEntries.push(ctx?.staleEntry);
         }
       },
       async revalidateTag(_tags: string | string[]) {},
@@ -6771,6 +6983,9 @@ describe("next/cache shim", () => {
       await Promise.all(waitUntilPromises);
 
       expect(setBodies).toEqual([JSON.stringify({ v: "fresh-value" })]);
+      // The refresh tells the handler which stale entry it replaces.
+      expect(setStaleEntries).toEqual([staleEntry]);
+      expect(setStaleEntries[0]).toBe(staleEntry);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -6849,9 +7064,11 @@ describe("next/cache shim", () => {
       await import("../packages/vinext/src/shims/unified-request-context.js");
 
     let callCount = 0;
+    let staleEntry: CacheHandlerValue | undefined;
+    const setStaleEntries: unknown[] = [];
     const handler: CacheHandler = {
       async get(): Promise<CacheHandlerValue> {
-        return {
+        return (staleEntry = {
           lastModified: Date.now() - 2_000,
           cacheState: "stale",
           value: {
@@ -6864,9 +7081,11 @@ describe("next/cache shim", () => {
             tags: ["foreground"],
             revalidate: 1,
           },
-        };
+        });
       },
-      async set() {},
+      async set(_key: string, _data: IncrementalCacheValue | null, ctx?: Record<string, unknown>) {
+        setStaleEntries.push(ctx?.staleEntry);
+      },
       async revalidateTag(_tags: string | string[]) {},
     };
 
@@ -6893,6 +7112,8 @@ describe("next/cache shim", () => {
         "fresh-value",
       );
       expect(callCount).toBe(1);
+      expect(setStaleEntries).toHaveLength(1);
+      expect(setStaleEntries[0]).toBe(staleEntry);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -7462,6 +7683,148 @@ describe('"use cache" runtime', () => {
     // Immediate second call — cached
     await cached();
     expect(callCount).toBe(1);
+  });
+
+  it.each([
+    ["background", "stale"],
+    ["foreground", "stale"],
+    ["foreground", "expired"],
+  ] as const)(
+    "a use cache %s regeneration passes the %s entry it replaces",
+    async (unstableCacheRevalidation, cacheState) => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler } =
+        await import("../packages/vinext/src/shims/cache.js");
+      const { createRequestContext, runWithRequestContext } =
+        await import("../packages/vinext/src/shims/unified-request-context.js");
+      const handler = new MemoryCacheHandler();
+      setCacheHandler(handler);
+      try {
+        let callCount = 0;
+        const cached = registerCachedFunction(async () => {
+          callCount++;
+          return { data: callCount };
+        }, `test:stale-entry-${unstableCacheRevalidation}-${cacheState}`);
+        await cached();
+        for (const entry of (handler as any).store.values()) {
+          entry.revalidateAt = Date.now() - 1000;
+          if (cacheState === "expired") entry.expireAt = Date.now() - 1000;
+        }
+
+        const get = vi.spyOn(handler, "get");
+        const set = vi.spyOn(handler, "set");
+        const regenerations: Promise<unknown>[] = [];
+        const result = await runWithRequestContext(
+          createRequestContext({
+            executionContext: { waitUntil: (promise) => regenerations.push(promise) },
+            unstableCacheRevalidation,
+          }),
+          () => cached(),
+        );
+        expect(result).toEqual({ data: unstableCacheRevalidation === "background" ? 1 : 2 });
+        await Promise.all(regenerations);
+
+        const staleEntry = await get.mock.results[0]?.value;
+        expect(staleEntry).toMatchObject({ cacheState });
+        expect(callCount).toBe(2);
+        expect(set).toHaveBeenCalledOnce();
+        expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleEntry);
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+    },
+  );
+
+  it("a use cache root-param regeneration passes the stale entry only to its specific key", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    try {
+      let callCount = 0;
+      const cached = registerCachedFunction(async () => {
+        callCount++;
+        return { lang: await getRootParam("lang"), data: callCount };
+      }, "test:stale-entry-root-params");
+      const run = () => runWithRootParamsScope({ lang: "en" }, () => cached() as Promise<unknown>);
+      await run();
+      expect([...(handler as any).store.keys()]).toHaveLength(2);
+      for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+
+      const get = vi.spyOn(handler, "get");
+      const set = vi.spyOn(handler, "set");
+      const regenerations: Promise<unknown>[] = [];
+      await expect(
+        runWithRequestContext(
+          createRequestContext({
+            executionContext: { waitUntil: (promise) => regenerations.push(promise) },
+            unstableCacheRevalidation: "background",
+          }),
+          run,
+        ),
+      ).resolves.toEqual({ lang: "en", data: 1 });
+      await Promise.all(regenerations);
+
+      // The read went straight to the specific key; the coarse one holds a redirect to it.
+      expect(get).toHaveBeenCalledOnce();
+      const specificKey = get.mock.calls[0]?.[0];
+      const staleEntry = await get.mock.results[0]?.value;
+      expect(staleEntry).toMatchObject({ cacheState: "stale" });
+      const [coarseKey, writtenKey] = set.mock.calls.map(([key]) => key);
+      expect(writtenKey).toBe(specificKey);
+      expect(coarseKey).not.toBe(specificKey);
+      expect(set).toHaveBeenCalledTimes(2);
+      expect(set.mock.calls[0]?.[2]).not.toHaveProperty("staleEntry");
+      expect(set.mock.calls[1]?.[2]?.staleEntry).toBe(staleEntry);
+
+      // A cold isolate doesn't know the root params yet, so it reads the coarse redirect,
+      // and only expired it doesn't follow it: the redirect's write refreshes that entry.
+      const knownRootParams = (globalThis as any)[
+        Symbol.for("vinext.cacheRuntime.knownRootParamsByFunctionId")
+      ] as Map<string, unknown>;
+      knownRootParams.delete("test:stale-entry-root-params");
+      for (const entry of (handler as any).store.values()) {
+        entry.revalidateAt = Date.now() - 1000;
+        entry.expireAt = Date.now() - 1000;
+      }
+      get.mockClear();
+      set.mockClear();
+      await run();
+      expect(get).toHaveBeenCalledOnce();
+      expect(get.mock.calls[0]?.[0]).toBe(coarseKey);
+      const expiredRedirect = await get.mock.results[0]?.value;
+      expect(expiredRedirect).toMatchObject({ cacheState: "expired" });
+      expect(set.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(expiredRedirect);
+      expect(set.mock.calls[1]?.[2]).not.toHaveProperty("staleEntry");
+
+      // A stale redirect it does follow, to a specific entry that's gone: the redirect's
+      // write still refreshes the redirect it read.
+      knownRootParams.delete("test:stale-entry-root-params");
+      (handler as any).store.delete(specificKey);
+      for (const entry of (handler as any).store.values()) entry.revalidateAt = Date.now() - 1000;
+      get.mockClear();
+      set.mockClear();
+      await runWithRequestContext(
+        createRequestContext({ unstableCacheRevalidation: "background" }),
+        run,
+      );
+      expect(get.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      const staleRedirect = await get.mock.results[0]?.value;
+      expect(staleRedirect).toMatchObject({ cacheState: "stale" });
+      expect(set.mock.calls.map(([key]) => key)).toEqual([coarseKey, specificKey]);
+      expect(set.mock.calls[0]?.[2]?.staleEntry).toBe(staleRedirect);
+      expect(set.mock.calls[1]?.[2]).not.toHaveProperty("staleEntry");
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
   });
 
   it("a use cache hit re-registers its client stale time on the request scope", async () => {
@@ -10676,6 +11039,7 @@ describe("double-encoded path handling in middleware", () => {
           "next-router-segment-prefetch": "/dashboard",
           "next-hmr-refresh": "1",
           "x-vinext-rsc-state-fingerprint": "state-a",
+          "x-vinext-mounted-layouts": "0123456789abcdef",
           "x-user-visible": "keep",
         },
       }),
@@ -10687,6 +11051,7 @@ describe("double-encoded path handling in middleware", () => {
     expect(capturedHeaders?.get("next-router-prefetch")).toBeNull();
     expect(capturedHeaders?.get("next-router-segment-prefetch")).toBeNull();
     expect(capturedHeaders?.get("x-vinext-rsc-state-fingerprint")).toBeNull();
+    expect(capturedHeaders?.get("x-vinext-mounted-layouts")).toBeNull();
     expect(capturedHeaders?.get("next-hmr-refresh")).toBeNull();
     expect(capturedHeaders?.get("x-user-visible")).toBe("keep");
   });
@@ -31693,6 +32058,11 @@ describe("cache scope guards for dynamic APIs", () => {
   });
 });
 
+// Stands in for Vite's resolver, which version-stamps node_modules files in dev.
+async function viteResolve(id: string) {
+  return { id: `${id}?v=hash` };
+}
+
 describe("shim alias map .js variants", () => {
   it("every top-level next/* alias has a corresponding .js variant", async () => {
     const plugins = vinext() as Plugin[];
@@ -31729,7 +32099,7 @@ describe("shim alias map .js variants", () => {
     expect(missing, `Missing .js aliases for: ${missing.join(", ")}`).toEqual([]);
   });
 
-  it("resolves next/error to the react-server shim only in the RSC environment", () => {
+  it("resolves next/error to the react-server shim only in the RSC environment", async () => {
     const plugins = vinext() as Plugin[];
     const configPlugin = plugins.find((plugin) => plugin.name === "vinext:config");
     if (!configPlugin?.resolveId || typeof configPlugin.resolveId === "function") {
@@ -31737,8 +32107,12 @@ describe("shim alias map .js variants", () => {
     }
 
     const hook = configPlugin.resolveId as {
-      handler: (this: { environment?: { name?: string } }, id: string) => string | undefined;
+      handler: (
+        this: { environment?: { name?: string }; resolve: typeof viteResolve },
+        id: string,
+      ) => unknown;
     };
+    const resolve = viteResolve;
     // resolveId returns Vite-style ids: forward slashes on every platform.
     const clientShim = toSlash(
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.tsx"),
@@ -31747,11 +32121,15 @@ describe("shim alias map .js variants", () => {
       path.resolve(import.meta.dirname, "../packages/vinext/src/shims/error.react-server.ts"),
     );
 
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error")).toBe(reactServerShim);
-    expect(hook.handler.call({ environment: { name: "ssr" } }, "next/error")).toBe(clientShim);
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "next/error.js")).toBe(
-      reactServerShim,
-    );
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "next/error"),
+    ).resolves.toEqual({ id: `${reactServerShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "ssr" }, resolve }, "next/error"),
+    ).resolves.toEqual({ id: `${clientShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "next/error.js"),
+    ).resolves.toEqual({ id: `${reactServerShim}?v=hash` });
   });
 
   it("resolves the next/image alias target to the RSC entry only in the RSC environment", () => {
@@ -31806,10 +32184,15 @@ describe("shim alias map .js variants", () => {
     expect(resolve).toHaveBeenCalledWith("next/image", "/x.js", { skipSelf: true });
 
     resolve.mockClear();
-    expect(
-      hook.handler.call({ environment: { name: "rsc" }, resolve }, "vinext/shims/image", "/x.js"),
-    ).toBe(toSlash(path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx")));
-    expect(resolve).not.toHaveBeenCalled();
+    const imageShim = toSlash(
+      path.resolve(import.meta.dirname, "../packages/vinext/src/shims/image.tsx"),
+    );
+    await hook.handler.call(
+      { environment: { name: "rsc" }, resolve },
+      "vinext/shims/image",
+      "/x.js",
+    );
+    expect(resolve).toHaveBeenCalledWith(imageShim, "/x.js", { skipSelf: true });
   });
 
   it("keeps the App Router request handler source-resolved in source checkouts", () => {
@@ -31904,10 +32287,10 @@ describe("vinext shim package-subpath resolution", () => {
   type ResolveIdHook = {
     filter: { id: RegExp };
     handler: (
-      this: { environment?: { name?: string } },
+      this: { environment?: { name?: string }; resolve?: typeof viteResolve },
       id: string,
       importer?: string,
-    ) => string | undefined;
+    ) => unknown;
   };
 
   function getResolveIdHook(): ResolveIdHook {
@@ -31919,7 +32302,7 @@ describe("vinext shim package-subpath resolution", () => {
     return configPlugin.resolveId as ResolveIdHook;
   }
 
-  it("strips JavaScript extensions and Vite queries from package subpaths", () => {
+  it("strips JavaScript extensions and Vite queries from package subpaths", async () => {
     const hook = getResolveIdHook();
     // resolveId returns Vite-style ids: forward slashes on every platform.
     const expectedShim = toSlash(
@@ -31937,11 +32320,18 @@ describe("vinext shim package-subpath resolution", () => {
     expect(hook.filter.id.test("\0next/navigation")).toBe(true);
     expect(hook.filter.id.test("\0@vercel/og")).toBe(true);
     expect(hook.handler.call({}, "unrelated-next/navigation")).toBeUndefined();
-    expect(hook.handler.call({}, "vinext/shims/navigation.js?v=123")).toBe(expectedShim);
-    expect(hook.handler.call({}, "\0vinext/shims/navigation.js?v=123")).toBe(expectedShim);
-    expect(hook.handler.call({ environment: { name: "rsc" } }, "\0next/navigation")).toBe(
-      expectedReactServerShim,
-    );
+    // Shim paths are finalized by Vite's resolver, which version-stamps
+    // node_modules files in dev like vinext's runtime and its relative imports.
+    const resolve = viteResolve;
+    await expect(
+      hook.handler.call({ resolve }, "vinext/shims/navigation.js?v=123"),
+    ).resolves.toEqual({ id: `${expectedShim}?v=hash` });
+    await expect(
+      hook.handler.call({ resolve }, "\0vinext/shims/navigation.js?v=123"),
+    ).resolves.toEqual({ id: `${expectedShim}?v=hash` });
+    await expect(
+      hook.handler.call({ environment: { name: "rsc" }, resolve }, "\0next/navigation"),
+    ).resolves.toEqual({ id: `${expectedReactServerShim}?v=hash` });
     expect(
       hook.handler.call({}, "\0@vercel/og", path.join(FIXTURE_DIR, "app/opengraph-image.tsx")),
     ).toBe(expectedOgShim);

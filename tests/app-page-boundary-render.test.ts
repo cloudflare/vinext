@@ -6,6 +6,7 @@ import {
   renderAppPageHttpAccessFallback,
 } from "../packages/vinext/src/server/app-page-boundary-render.js";
 import type { AppElements } from "../packages/vinext/src/server/app-elements.js";
+import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
@@ -34,6 +35,24 @@ function renderElementToStream(element: React.ReactNode | AppElements): Readable
   }
   return createStreamFromMarkup(ReactDOMServer.renderToStaticMarkup(element));
 }
+
+// Streams the route element through Fizz, so Suspense branches resolve late.
+function renderElementToFizzStream(
+  element: React.ReactNode | AppElements,
+): ReadableStream<Uint8Array> {
+  const record = element as Record<string, unknown>;
+  const node = record[record.__route as string] as React.ReactNode;
+  const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+  void ReactDOMServer.renderToReadableStream(node).then((stream) => stream.pipeTo(writable));
+  return readable;
+}
+
+const UNPREPARED_ROUTE_HEAD = {
+  observeSearchParams: false,
+  prepared: null,
+  searchParams: new URLSearchParams(),
+  streamMetadata: false,
+};
 
 function renderWirePayloadToStream(payload: unknown): ReadableStream<Uint8Array> {
   return createStreamFromMarkup(JSON.stringify(payload));
@@ -526,6 +545,1126 @@ describe("app page boundary render helpers", () => {
     expect(html).toContain('content="active slot description"');
     expect(html).toContain('name="theme-color" content="#403403"');
     expect(seenParams).toEqual([{ locale: "en" }, { locale: "en" }]);
+  });
+
+  it("keeps the route's own head when the route's render threw the signal", async () => {
+    // Next.js 16.2.7 answers such a document with an error shell headed by the
+    // not-found metadata, then renders the route's own Flight payload in the
+    // browser, so the visitor ends with the route's head: the page's metadata,
+    // then the slot page's, which Turbopack merges after it.
+    const common = createCommonOptions();
+    const seenSearchParams: unknown[] = [];
+    const pageModule = {
+      default: () => null,
+      async generateMetadata({ searchParams }: { searchParams: Promise<unknown> }) {
+        seenSearchParams.push(await searchParams);
+        return { description: "Post page description", title: "Post page title" };
+      },
+    } satisfies TestModule;
+    const route = {
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound: notFoundModuleWithMetadata,
+      notFoundTreePosition: 2,
+      page: pageModule,
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+      slots: {
+        sidebar: {
+          layoutIndex: 0,
+          name: "sidebar",
+          page: { default: () => null, metadata: { title: "Sidebar page title" } },
+        },
+      },
+    };
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      // A rewrite served /old?ref=feed&_rsc=1 from /posts/missing?ref=rewritten,
+      // so the render read the rewritten query, never the request's.
+      request: new Request("https://example.com/old?ref=feed&_rsc=1"),
+      requestUrl: "https://example.com/old?ref=feed&_rsc=1",
+      route,
+      routeHead: {
+        observeSearchParams: false,
+        prepared: null,
+        searchParams: new URLSearchParams("ref=rewritten"),
+        streamMetadata: false,
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Sidebar page title</title>");
+    expect(html).toContain('content="Post page description"');
+    expect(html).toContain('data-boundary="not-found"');
+    expect(seenSearchParams).toEqual([{ ref: "rewritten" }]);
+
+    // A cache candidate reads the query its own head would, as the route's
+    // render does, and the read keeps the response out of the cache.
+    seenSearchParams.length = 0;
+    const { consumeDynamicUsage, headersContextFromRequest, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const candidateRequest = new Request("https://example.com/posts/missing?ref=feed");
+    const dynamicUsed = await runWithHeadersContext(
+      headersContextFromRequest(candidateRequest),
+      async () => {
+        await renderAppPageHttpAccessFallback<TestModule>({
+          ...common,
+          isCacheCandidate: true,
+          matchedParams: { slug: "missing" },
+          request: candidateRequest,
+          requestUrl: candidateRequest.url,
+          route,
+          routeHead: {
+            observeSearchParams: true,
+            prepared: null,
+            searchParams: new URLSearchParams("ref=feed"),
+            streamMetadata: false,
+          },
+          statusCode: 404,
+        });
+        return consumeDynamicUsage();
+      },
+    );
+    expect(seenSearchParams).toEqual([{ ref: "feed" }]);
+    expect(dynamicUsed).toBe(true);
+  });
+
+  it("counts a metadata read of searchParams as the route's render would", async () => {
+    // The render threw before its head started, so the fallback resolves it,
+    // with the render's observer: a read is dynamic usage, so `dynamic =
+    // "error"` still fails it. A force-static render's empty query isn't.
+    const { consumeDynamicUsage } = await import("../packages/vinext/src/shims/headers.js");
+    const common = createCommonOptions();
+    const renderWith = (observeSearchParams: boolean) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 2,
+          page: {
+            default: () => null,
+            async generateViewport({ searchParams }: { searchParams: Promise<unknown> }) {
+              await searchParams;
+              return {};
+            },
+          },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        routeHead: {
+          ...UNPREPARED_ROUTE_HEAD,
+          observeSearchParams,
+          searchParams: new URLSearchParams("q=1"),
+        },
+        statusCode: 404,
+      });
+
+    consumeDynamicUsage();
+    await (await renderWith(true))?.text();
+    expect(consumeDynamicUsage()).toBe(true);
+
+    await (await renderWith(false))?.text();
+    expect(consumeDynamicUsage()).toBe(false);
+  });
+
+  it("falls back to the convention head when the route's generateMetadata throws the signal", async () => {
+    // Next.js's metadata resolves the not-found convention's metadata when
+    // generateMetadata() itself calls notFound().
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 2,
+        page: {
+          default: () => null,
+          generateMetadata() {
+            throw Object.assign(new Error("NEXT_NOT_FOUND"), {
+              digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+            });
+          },
+        },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      routeHead: UNPREPARED_ROUTE_HEAD,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
+  });
+
+  it("resolves a generateMetadata() signal through the not-found convention whatever the render threw", async () => {
+    // Next.js 16.2.7: a page calling forbidden() whose generateMetadata() calls
+    // notFound() ends with the not-found convention's title, not forbidden's.
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "private" },
+      route: {
+        forbidden: { default: NotFoundBoundary, metadata: { title: "forbidden title" } },
+        forbiddenTreePosition: 2,
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 2,
+        page: {
+          default: () => null,
+          generateMetadata() {
+            throw Object.assign(new Error("NEXT_NOT_FOUND"), {
+              digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+            });
+          },
+        },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      routeHead: UNPREPARED_ROUTE_HEAD,
+      statusCode: 403,
+    });
+
+    expect(response?.status).toBe(403);
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
+  });
+
+  it("settles a signal from generateMetadata() or generateViewport() on its own branch", async () => {
+    // Next.js 16.2.7: a generateViewport() notFound() keeps the route's title,
+    // and a generateMetadata() notFound() keeps the route's theme color.
+    const common = createCommonOptions();
+    const notFoundSignal = () => {
+      throw Object.assign(new Error("NEXT_NOT_FOUND"), {
+        digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      });
+    };
+    const renderWithPage = (page: TestModule) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 2,
+          page,
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+
+    const viewportSignalHtml = await (
+      await renderWithPage({
+        default: () => null,
+        generateMetadata: () => ({ title: "Route title" }),
+        generateViewport: notFoundSignal,
+      })
+    )?.text();
+    expect(viewportSignalHtml).toContain("<title>Route title</title>");
+    expect(viewportSignalHtml).toContain('name="theme-color" content="#111111"');
+
+    const metadataSignalHtml = await (
+      await renderWithPage({
+        default: () => null,
+        generateMetadata: notFoundSignal,
+        viewport: { themeColor: "#00ff00" },
+      })
+    )?.text();
+    expect(metadataSignalHtml).toContain("<title>notfound title</title>");
+    expect(metadataSignalHtml).toContain('name="theme-color" content="#00ff00"');
+  });
+
+  it("streams the route's generated metadata without holding back the document", async () => {
+    // Next.js 16.2.7 flushes the error shell at once (35ms to first byte
+    // against a 3s generateMetadata()), and the route's title arrives later.
+    const common = createCommonOptions();
+    let resolveMetadata!: (metadata: { title: string }) => void;
+    const metadata = new Promise<{ title: string }>((resolve) => {
+      resolveMetadata = resolve;
+    });
+    const rendered = renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderElementToFizzStream,
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 2,
+        page: { default: () => null },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      routeHead: {
+        prepared: {
+          accessError: Promise.resolve(null),
+          metadata,
+          metadataPlacement: "body",
+          viewport: Promise.resolve({ themeColor: "#222222" }),
+        },
+        observeSearchParams: false,
+        searchParams: new URLSearchParams(),
+        streamMetadata: true,
+      },
+      statusCode: 404,
+    });
+
+    const response = await Promise.race([
+      rendered,
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 1000)),
+    ]);
+    expect(response).not.toBe("blocked");
+    resolveMetadata({ title: "Streamed title" });
+    const html = await (response as Response).text();
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html.indexOf("<title>Streamed title</title>")).toBeGreaterThan(
+      html.indexOf('data-boundary="not-found"'),
+    );
+    expect(html).toContain('name="theme-color" content="#222222"');
+  });
+
+  it("streams the convention's head behind the error page, and only an HTML-limited bot waits for it", async () => {
+    // Next.js 16.2.7 streams its error shell's convention metadata behind
+    // Suspense: headers in ~10ms against a 3s not-found generateMetadata(),
+    // while an HTML-limited bot's document waits the full 3s.
+    const common = createCommonOptions();
+    let settleConventionMetadata!: () => void;
+    const conventionMetadataSettled = new Promise<void>((resolve) => {
+      settleConventionMetadata = resolve;
+    });
+    const route = {
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound: {
+        default: NotFoundBoundary,
+        async generateMetadata() {
+          await conventionMetadataSettled;
+          return { title: "Slow notfound title" };
+        },
+      },
+      notFoundTreePosition: 2,
+      page: { default: () => null },
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+    };
+    const routeHead = {
+      prepared: {
+        accessError: Promise.resolve(null),
+        metadata: Promise.resolve({ title: "Route title" }),
+        metadataPlacement: "head" as const,
+        viewport: Promise.resolve({}),
+      },
+      observeSearchParams: false,
+      searchParams: new URLSearchParams(),
+      streamMetadata: true,
+    };
+    const unlessBlocked = <T>(rendered: Promise<T>) =>
+      Promise.race([
+        rendered,
+        new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 200)),
+      ]);
+
+    const browserResponse = await unlessBlocked(
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream: renderElementToFizzStream,
+        route,
+        routeHead,
+        statusCode: 404,
+      }),
+    );
+    expect(browserResponse).not.toBe("blocked");
+    const botRender = renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderElementToFizzStream,
+      route,
+      routeHead,
+      serveStreamingMetadata: false,
+      statusCode: 404,
+    });
+    expect(await unlessBlocked(botRender)).toBe("blocked");
+
+    settleConventionMetadata();
+    const html = await (browserResponse as Response).text();
+    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Route title</title>");
+    expect(await (await botRender)?.text()).toContain("<title>Slow notfound title</title>");
+  });
+
+  it("renders no viewport tags for a failed generateViewport(), as Next.js's Viewport renders null", async () => {
+    // Next.js 16.2.7's Viewport catches a failed branch to null, so neither
+    // its tags nor the defaults (`width=device-width, initial-scale=1`) render.
+    const common = createCommonOptions();
+    const viewportError = () => {
+      throw new Error("viewport boom");
+    };
+    const notFoundSignal = () => {
+      throw Object.assign(new Error("NEXT_NOT_FOUND"), {
+        digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+      });
+    };
+    const route = (page: TestModule, notFound: TestModule = notFoundModuleWithMetadata) => ({
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound,
+      notFoundTreePosition: 2,
+      page,
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+    });
+    const render = (
+      routeOptions: ReturnType<typeof route>,
+      serveStreamingMetadata = true,
+    ): Promise<string | undefined> =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        route: routeOptions,
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        serveStreamingMetadata,
+        statusCode: 404,
+      }).then((response) => response?.text());
+
+    // The route's own head: an ordinary failure, and a signal whose not-found
+    // recovery fails too.
+    for (const html of [
+      await render(route({ default: () => null, generateViewport: viewportError })),
+      await render(
+        route(
+          { default: () => null, generateViewport: notFoundSignal },
+          { default: NotFoundBoundary, generateViewport: viewportError },
+        ),
+      ),
+    ]) {
+      expect(html).toContain('data-boundary="not-found"');
+      expect(html).not.toContain('name="viewport"');
+    }
+
+    // The convention's head, which an HTML-limited bot's error shell renders.
+    const botHtml = await render(
+      route(
+        { default: () => null },
+        {
+          default: NotFoundBoundary,
+          generateViewport: viewportError,
+          metadata: { title: "notfound title" },
+        },
+      ),
+      false,
+    );
+    expect(botHtml).toContain("<title>notfound title</title>");
+    expect(botHtml).not.toContain('name="viewport"');
+  });
+
+  it("holds the error page for the convention's generateViewport(), which Next.js renders outside Suspense", async () => {
+    // Next.js 16.2.7 suspends only its error shell's metadata: the viewport
+    // holds back the shell, so a `dynamic = "error"` failure there fails the
+    // render before any byte is sent.
+    const { headers, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createStaticGenerationHeadersContext } =
+      await import("../packages/vinext/src/server/app-static-generation.js");
+    const common = createCommonOptions();
+    let releaseViewport!: () => void;
+    const viewportGate = new Promise<void>((resolve) => {
+      releaseViewport = resolve;
+    });
+    const route = (notFound: TestModule) => ({
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound,
+      notFoundTreePosition: 2,
+      page: { default: () => null },
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+    });
+    const routeHead = {
+      prepared: {
+        accessError: Promise.resolve(null),
+        metadata: Promise.resolve({ title: "Route title" }),
+        metadataPlacement: "head" as const,
+        viewport: Promise.resolve({ themeColor: "#222222" }),
+      },
+      observeSearchParams: false,
+      searchParams: new URLSearchParams(),
+      streamMetadata: true,
+    };
+
+    const rendered = renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderElementToFizzStream,
+      route: route({
+        default: NotFoundBoundary,
+        async generateViewport() {
+          await viewportGate;
+          return { themeColor: "#333333" };
+        },
+      }),
+      routeHead,
+      statusCode: 404,
+    });
+    const early = await Promise.race([
+      rendered,
+      new Promise<"blocked">((resolve) => setTimeout(() => resolve("blocked"), 200)),
+    ]);
+    expect(early).toBe("blocked");
+    releaseViewport();
+    const html = await (await rendered)?.text();
+    expect(html).toContain("<title>Route title</title>");
+    expect(html).toContain('name="theme-color" content="#222222"');
+
+    const headersContext = createStaticGenerationHeadersContext({
+      dynamicConfig: "error",
+      routeKind: "page",
+    });
+    await runWithHeadersContext(headersContext, async () => {
+      const failure = await renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream: renderElementToFizzStream,
+        route: route({
+          default: NotFoundBoundary,
+          async generateViewport() {
+            await headers();
+            return {};
+          },
+        }),
+        routeHead,
+        statusCode: 404,
+      }).then(
+        () => "rendered",
+        (error: unknown) => error,
+      );
+      expect(headersContext.accessError).toBeDefined();
+      expect(failure).toBe(headersContext.accessError);
+    });
+  });
+
+  it("drops a redirect() or an error from the convention's generateMetadata(), as Next.js's error shell does", async () => {
+    // Next.js 16.2.7 answers 404 with no redirect for a browser and an
+    // HTML-limited bot alike: its error shell's metadata has no outlet.
+    const common = createCommonOptions();
+    const conventionErrors = [
+      Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;/login;307;" }),
+      new Error("convention boom"),
+    ];
+    for (const conventionError of conventionErrors) {
+      for (const serveStreamingMetadata of [true, false]) {
+        const response = await renderAppPageHttpAccessFallback<TestModule>({
+          ...common,
+          matchedParams: { slug: "missing" },
+          route: {
+            layoutTreePositions: [0],
+            layouts: [rootLayoutModule],
+            notFound: {
+              default: NotFoundBoundary,
+              generateMetadata() {
+                throw conventionError;
+              },
+            },
+            notFoundTreePosition: 2,
+            page: { default: () => null },
+            pattern: "/posts/[slug]",
+            routeSegments: ["posts", "[slug]"],
+          },
+          routeHead: {
+            prepared: {
+              accessError: Promise.resolve(null),
+              metadata: Promise.resolve({ title: "Route title" }),
+              metadataPlacement: "head",
+              viewport: Promise.resolve({}),
+            },
+            observeSearchParams: false,
+            searchParams: new URLSearchParams(),
+            streamMetadata: false,
+          },
+          serveStreamingMetadata,
+          statusCode: 404,
+        });
+
+        expect(response?.status).toBe(404);
+        const html = await response?.text();
+        expect(html).toContain('data-boundary="not-found"');
+        if (serveStreamingMetadata) expect(html).toContain("<title>Route title</title>");
+        else expect(html).not.toContain("<title>");
+      }
+    }
+  });
+
+  it('fails the fallback on a `dynamic = "error"` read from the route\'s head, and drops any other error', async () => {
+    // Next.js 16.2.7 fails the build for such a route, though its metadata
+    // tree drops the error. An immediate redirect() or error from the route's
+    // generateMetadata() beside an early notFound() still answers 404 with an
+    // empty title.
+    const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createStaticGenerationHeadersContext } =
+      await import("../packages/vinext/src/server/app-static-generation.js");
+    const common = createCommonOptions();
+    const renderWith = (
+      generateMetadata: TestModule["generateMetadata"],
+      prepared: AppPagePreparedRouteHead | null = null,
+    ) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 2,
+          page: { default: () => null, generateMetadata },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        routeHead: {
+          observeSearchParams: true,
+          prepared,
+          searchParams: new URLSearchParams("q=1"),
+          streamMetadata: false,
+        },
+        statusCode: 404,
+      });
+    const headersContext = createStaticGenerationHeadersContext({
+      dynamicConfig: "error",
+      routeKind: "page",
+    });
+
+    await runWithHeadersContext(headersContext, async () => {
+      await expect(
+        renderWith(async ({ searchParams }: { searchParams: Promise<{ q?: string }> }) => ({
+          title: (await searchParams).q,
+        })),
+      ).rejects.toThrow('Page with `dynamic = "error"`');
+      await expect(
+        renderWith(undefined, {
+          accessError: Promise.resolve(headersContext.accessError ?? null),
+          metadata: Promise.resolve(null),
+          metadataPlacement: "head",
+          viewport: Promise.resolve({}),
+        }),
+      ).rejects.toThrow('Page with `dynamic = "error"`');
+
+      for (const error of [
+        Object.assign(new Error("NEXT_REDIRECT"), { digest: "NEXT_REDIRECT;replace;/login;307;" }),
+        new Error("route metadata boom"),
+      ]) {
+        const response = await renderWith(() => {
+          throw error;
+        });
+        expect(response?.status).toBe(404);
+        const html = await response?.text();
+        expect(html).toContain('data-boundary="not-found"');
+        expect(html).not.toContain("<title>");
+      }
+    });
+  });
+
+  it('fails an RSC fallback on a `dynamic = "error"` read from the not-found head the route\'s head recovers through', async () => {
+    // The route's generateMetadata() signals notFound(), and the not-found
+    // convention's generateMetadata() then reads headers(). An RSC response
+    // resolves no separate convention head, so only the recovery sees it.
+    const { headers, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createStaticGenerationHeadersContext } =
+      await import("../packages/vinext/src/server/app-static-generation.js");
+    const common = createCommonOptions();
+    const headersContext = createStaticGenerationHeadersContext({
+      dynamicConfig: "error",
+      routeKind: "page",
+    });
+
+    await runWithHeadersContext(headersContext, async () => {
+      await expect(
+        renderAppPageHttpAccessFallback<TestModule>({
+          ...common,
+          isRscRequest: true,
+          matchedParams: { slug: "missing" },
+          renderToReadableStream: renderWirePayloadToStream,
+          request: new Request("https://example.com/posts/missing.rsc"),
+          requestUrl: "https://example.com/posts/missing.rsc",
+          route: {
+            layoutTreePositions: [0],
+            layouts: [rootLayoutModule],
+            notFound: {
+              default: NotFoundBoundary,
+              async generateMetadata() {
+                await headers();
+                return { title: "notfound title" };
+              },
+            },
+            notFoundTreePosition: 2,
+            page: {
+              default: () => null,
+              generateMetadata() {
+                throw Object.assign(new Error("NEXT_NOT_FOUND"), {
+                  digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+                });
+              },
+            },
+            pattern: "/posts/[slug]",
+            routeSegments: ["posts", "[slug]"],
+          },
+          routeHead: UNPREPARED_ROUTE_HEAD,
+          statusCode: 404,
+        }),
+      ).rejects.toBe(headersContext.accessError);
+    });
+  });
+
+  it('fails a streamed fallback document on a late `dynamic = "error"` read, rather than finishing its Suspense boundary', async () => {
+    // Inside the streamed metadata's Suspense boundary React would only report
+    // the error and finish the 404. The body errors instead, so the document
+    // never completes and the ISR cache write, which reads it whole, is
+    // skipped.
+    const { headers, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const { createStaticGenerationHeadersContext } =
+      await import("../packages/vinext/src/server/app-static-generation.js");
+    const common = createCommonOptions();
+    const headersContext = createStaticGenerationHeadersContext({
+      dynamicConfig: "error",
+      routeKind: "page",
+    });
+    const route = {
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound: notFoundModuleWithMetadata,
+      notFoundTreePosition: 2,
+      page: { default: () => null },
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+    };
+    const preparedHead = (accessError: Promise<Error | null>): AppPagePreparedRouteHead => ({
+      accessError,
+      metadata: Promise.resolve({ title: "Route title" }),
+      metadataPlacement: "body",
+      viewport: Promise.resolve({}),
+    });
+
+    await runWithHeadersContext(headersContext, async () => {
+      // The route's own streamed head.
+      const lateRouteError = new Promise<Error | null>((resolve) =>
+        setTimeout(() => resolve(headersContext.accessError ?? null), 20),
+      );
+      const routeResponse = await renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream: renderElementToFizzStream,
+        route,
+        routeHead: {
+          observeSearchParams: false,
+          prepared: preparedHead(lateRouteError),
+          searchParams: new URLSearchParams(),
+          streamMetadata: true,
+        },
+        statusCode: 404,
+      });
+      expect(routeResponse?.status).toBe(404);
+      await expect(routeResponse?.text()).rejects.toBe(headersContext.accessError);
+
+      // The convention's head, which streams behind the error page.
+      const conventionResponse = await renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream: renderElementToFizzStream,
+        route: {
+          ...route,
+          notFound: {
+            default: NotFoundBoundary,
+            async generateMetadata() {
+              await headers();
+              return { title: "notfound title" };
+            },
+          },
+        },
+        routeHead: {
+          observeSearchParams: false,
+          prepared: preparedHead(Promise.resolve(null)),
+          searchParams: new URLSearchParams(),
+          streamMetadata: true,
+        },
+        statusCode: 404,
+      });
+      expect(conventionResponse?.status).toBe(404);
+      await expect(conventionResponse?.text()).rejects.toBe(headersContext.accessError);
+    });
+  });
+
+  it("keeps the renderer's Link provenance on a fallback document that streams its head", async () => {
+    // Config-header finalization and ISR read the renderer's own Link value
+    // from the response's Headers, which the late-error wrapper replaces.
+    const { getFrameworkLinkHeader } =
+      await import("../packages/vinext/src/server/app-response-header-provenance.js");
+    const common = createCommonOptions();
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderElementToFizzStream,
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 2,
+        page: { default: () => null },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      routeHead: {
+        observeSearchParams: false,
+        prepared: {
+          accessError: Promise.resolve(null),
+          metadata: Promise.resolve({ title: "Route title" }),
+          metadataPlacement: "body",
+          viewport: Promise.resolve({}),
+        },
+        searchParams: new URLSearchParams(),
+        streamMetadata: true,
+      },
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(getFrameworkLinkHeader(response!.headers)).toContain("</font.woff2>; rel=preload");
+    expect(await response?.text()).toContain("<title>Route title</title>");
+  });
+
+  it("fails an HTML-limited bot's fallback on a `dynamic = \"error\"` read from the route's head", async () => {
+    // The bot gets the convention's head, but Next.js still renders the
+    // route's Flight payload, whose head fails such a render, as it does for
+    // a browser.
+    const { runWithHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createStaticGenerationHeadersContext } =
+      await import("../packages/vinext/src/server/app-static-generation.js");
+    const common = createCommonOptions();
+    const headersContext = createStaticGenerationHeadersContext({
+      dynamicConfig: "error",
+      routeKind: "page",
+    });
+    const renderBot = (prepared: AppPagePreparedRouteHead | null) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: { slug: "missing" },
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 2,
+          page: {
+            default: () => null,
+            async generateMetadata({ searchParams }: { searchParams: Promise<{ q?: string }> }) {
+              return { title: (await searchParams).q };
+            },
+          },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        routeHead: {
+          observeSearchParams: true,
+          prepared,
+          searchParams: new URLSearchParams("q=1"),
+          streamMetadata: false,
+        },
+        serveStreamingMetadata: false,
+        statusCode: 404,
+      });
+
+    await runWithHeadersContext(headersContext, async () => {
+      await expect(renderBot(null)).rejects.toThrow('Page with `dynamic = "error"`');
+      await expect(
+        renderBot({
+          accessError: Promise.resolve(headersContext.accessError ?? null),
+          metadata: Promise.resolve(null),
+          metadataPlacement: "head",
+          viewport: Promise.resolve({}),
+        }),
+      ).rejects.toBe(headersContext.accessError);
+    });
+  });
+
+  it("gives an HTML-limited bot the convention's head, as Next.js's error shell does", async () => {
+    // Next.js 16.2.7 serves such a bot the error shell, headed by the not-found
+    // convention's metadata; the route's head reaches only the Flight payload.
+    const response = await renderBotFallback(false);
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
+  });
+
+  it("stores the route's head when an HTML-limited bot's render may be stored", async () => {
+    // Next.js 16.2.7 stores the same entry whichever user agent triggers the
+    // render or its regeneration: an error shell whose Flight head, the title
+    // visitors see, is the route's own. vinext stores the route's head too.
+    const response = await renderBotFallback(true);
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Route title</title>");
+  });
+
+  it("gives an HTML-limited bot the convention's head once its render turns dynamic", async () => {
+    // A cache candidate that used a dynamic API is never stored, so the bot
+    // gets the error shell's head, as Next.js 16.2.7 serves it on a dynamic 404.
+    const response = await renderBotFallback(true, { dynamic: true });
+
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>notfound title</title>");
+  });
+
+  async function renderBotFallback(isCacheCandidate: boolean, { dynamic = false } = {}) {
+    const { headersContextFromRequest, markDynamicUsage, runWithHeadersContext } =
+      await import("../packages/vinext/src/shims/headers.js");
+    const request = new Request("https://example.com/posts/missing");
+    return runWithHeadersContext(headersContextFromRequest(request), async () => {
+      if (dynamic) markDynamicUsage();
+      return renderBotFallbackInContext(isCacheCandidate);
+    });
+  }
+
+  function renderBotFallbackInContext(isCacheCandidate: boolean) {
+    const common = createCommonOptions();
+    return renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isCacheCandidate,
+      matchedParams: { slug: "missing" },
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 2,
+        page: { default: () => null },
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      routeHead: {
+        prepared: {
+          accessError: Promise.resolve(null),
+          metadata: Promise.resolve({ title: "Route title" }),
+          metadataPlacement: "head",
+          viewport: Promise.resolve({}),
+        },
+        observeSearchParams: false,
+        searchParams: new URLSearchParams(),
+        streamMetadata: false,
+      },
+      serveStreamingMetadata: false,
+      statusCode: 404,
+    });
+  }
+
+  it("keeps the source route's head for a slot intercept whose render threw the signal", async () => {
+    // Next.js's client renders the head of the first leaf on a children-first
+    // walk of its router tree that skips `default` segments. A slot intercept
+    // leaves the source page in `children`; without one, the walk reaches the
+    // intercept's leaf, headed by the intercepting render.
+    const interceptPage = {
+      default: () => null,
+      metadata: { title: "Intercept page title" },
+    } satisfies TestModule;
+    const renderPayload = async (page: TestModule | null) => {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        intercept: {
+          interceptLayouts: [],
+          interceptPage,
+          interceptParams: { id: "1" },
+          interceptSlotKey: "modal",
+        },
+        isRscRequest: true,
+        matchedParams: {},
+        renderToReadableStream: renderWirePayloadToStream,
+        request: new Request("https://example.com/photo/1.rsc"),
+        requestUrl: "https://example.com/photo/1.rsc",
+        route: {
+          ...(page
+            ? {}
+            : {
+                childrenSlot: { id: "children:/", ownerTreePath: "/", state: "unmatched" as const },
+              }),
+          layoutTreePositions: [0],
+          layouts: [{ default: RootLayout, metadata: { title: "Root layout title" } }],
+          notFound: notFoundModuleWithMetadata,
+          notFoundTreePosition: 0,
+          page,
+          pattern: "/",
+          routeSegments: [],
+          slots: { modal: { layoutIndex: 0, name: "modal", page: null } },
+        },
+        routeHead: UNPREPARED_ROUTE_HEAD,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(404);
+      return response?.text();
+    };
+
+    const payload = await renderPayload({ default: () => null });
+    expect(payload).toContain("Root layout title");
+    expect(payload).not.toContain("Intercept page title");
+    expect(payload).not.toContain("notfound title");
+
+    const slotOnlyPayload = await renderPayload(null);
+    expect(slotOnlyPayload).toContain("Intercept page title");
+    expect(slotOnlyPayload).not.toContain("notfound title");
+  });
+
+  it("reuses the head the route's render prepared, so its generateMetadata() runs once", async () => {
+    const common = createCommonOptions();
+    const pageGenerateMetadata = vi.fn(() => ({ title: "Resolved again" }));
+    const conventionGenerateMetadata = vi.fn(() => ({ title: "notfound title" }));
+    const route = {
+      layoutTreePositions: [0],
+      layouts: [rootLayoutModule],
+      notFound: { default: NotFoundBoundary, generateMetadata: conventionGenerateMetadata },
+      notFoundTreePosition: 2,
+      page: { default: () => null, generateMetadata: pageGenerateMetadata },
+      pattern: "/posts/[slug]",
+      routeSegments: ["posts", "[slug]"],
+    };
+    const prepared: AppPagePreparedRouteHead = {
+      accessError: Promise.resolve(null),
+      metadata: Promise.resolve({ title: "Prepared title" }),
+      metadataPlacement: "head",
+      viewport: Promise.resolve({}),
+    };
+    const routeHead = { ...UNPREPARED_ROUTE_HEAD, prepared };
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      route,
+      routeHead,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    const html = await response?.text();
+    expect(html?.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(html).toContain("<title>Prepared title</title>");
+    expect(pageGenerateMetadata).not.toHaveBeenCalled();
+    // Next.js's document error shell still resolves the convention's metadata.
+    expect(conventionGenerateMetadata).toHaveBeenCalledTimes(1);
+
+    // An RSC response is the route's own payload, without an error shell.
+    conventionGenerateMetadata.mockClear();
+    const rscResponse = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      isRscRequest: true,
+      matchedParams: { slug: "missing" },
+      renderToReadableStream: renderWirePayloadToStream,
+      request: new Request("https://example.com/posts/missing.rsc"),
+      requestUrl: "https://example.com/posts/missing.rsc",
+      route,
+      routeHead,
+      statusCode: 404,
+    });
+    expect(await rscResponse?.text()).toContain("Prepared title");
+    expect(pageGenerateMetadata).not.toHaveBeenCalled();
+    expect(conventionGenerateMetadata).not.toHaveBeenCalled();
+  });
+
+  it("resolves an unprepared route head from the whole route under a layout-level fallback", async () => {
+    // A layout's signal renders only the layouts above it, but the route's head
+    // still covers every segment, so a slot below a dynamic segment keeps its
+    // owner's params.
+    const common = createCommonOptions();
+    const seenParams: unknown[] = [];
+    const membersLayout = {
+      default: RootLayout,
+      async generateMetadata({ params }: { params: Promise<{ team?: string }> }) {
+        const resolved = await params;
+        seenParams.push(resolved);
+        return { title: `members of ${resolved.team}` };
+      },
+    } satisfies TestModule;
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      headLayoutModules: [rootLayoutModule],
+      isRscRequest: true,
+      layoutModules: [rootLayoutModule],
+      matchedParams: { team: "acme" },
+      renderToReadableStream: renderWirePayloadToStream,
+      request: new Request("https://example.com/acme/settings.rsc"),
+      requestUrl: "https://example.com/acme/settings.rsc",
+      route: {
+        layoutTreePositions: [0, 1],
+        layouts: [rootLayoutModule, leafLayoutModule],
+        notFound: notFoundModuleWithMetadata,
+        notFoundTreePosition: 0,
+        page: { default: () => null },
+        pattern: "/[team]/settings",
+        routeSegments: ["[team]", "settings"],
+        slots: {
+          members: {
+            layout: membersLayout,
+            layoutIndex: 1,
+            name: "members",
+            page: { default: () => null },
+            routeSegments: [],
+          },
+        },
+      },
+      routeHead: UNPREPARED_ROUTE_HEAD,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(await response?.text()).toContain("members of acme");
+    expect(seenParams).toEqual([{ team: "acme" }]);
+  });
+
+  it("resolves relative metadata URLs against the normalized route pathname", async () => {
+    const common = createCommonOptions();
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      request: new Request("https://example.com/legacy/missing"),
+      requestUrl: "https://example.com/legacy/missing",
+      route: {
+        layoutTreePositions: [0],
+        layouts: [rootLayoutModule],
+        notFound: {
+          default: NotFoundBoundary,
+          generateMetadata: () => ({
+            alternates: { canonical: "./" },
+            metadataBase: new URL("https://example.com"),
+          }),
+        },
+        notFoundTreePosition: 2,
+        pattern: "/posts/[slug]",
+        routeSegments: ["posts", "[slug]"],
+      },
+      // A rewrite served /legacy/missing from /posts/missing.
+      routePathname: "/posts/missing",
+      statusCode: 404,
+    });
+
+    const html = await response?.text();
+    expect(html).toContain('<link rel="canonical" href="https://example.com/posts/missing"/>');
+    expect(html).not.toContain("/legacy/missing");
   });
 
   it("does not inject child route file metadata into layout-level HTTP access fallbacks", async () => {

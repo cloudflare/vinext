@@ -253,6 +253,32 @@ describe("deprecated config warnings", () => {
     }
   });
 
+  it("moves the legacy experimental.cacheComponents over the top-level key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    await expect(
+      resolveNextConfig({ experimental: { cacheComponents: true } as never }),
+    ).resolves.toMatchObject({ cacheComponents: true });
+    await expect(
+      resolveNextConfig({
+        cacheComponents: true,
+        experimental: { cacheComponents: false } as never,
+      }),
+    ).resolves.toMatchObject({ cacheComponents: false });
+    for (const legacy of [undefined, null]) {
+      await expect(
+        resolveNextConfig({
+          cacheComponents: true,
+          experimental: { cacheComponents: legacy } as never,
+        }),
+      ).resolves.toMatchObject({ cacheComponents: true });
+    }
+
+    expect(warn.mock.calls.map(([message]) => message)).toEqual([
+      "`experimental.cacheComponents` has been moved to `cacheComponents`. Please update your next.config.js file accordingly.",
+    ]);
+  });
+
   it("resolves both URL-normalization option names", async () => {
     await expect(resolveNextConfig({ skipProxyUrlNormalize: true })).resolves.toMatchObject({
       skipProxyUrlNormalize: true,
@@ -2311,6 +2337,33 @@ describe("resolveNextConfig gestureTransition", () => {
   });
 });
 
+describe("resolveNextConfig cachedNavigations", () => {
+  it("defaults experimental.cachedNavigations to false", async () => {
+    const resolved = await resolveNextConfig({ cacheComponents: true });
+    expect(resolved.cachedNavigations).toBe(false);
+  });
+
+  it("reads experimental.cachedNavigations alongside cacheComponents", async () => {
+    const resolved = await resolveNextConfig({
+      cacheComponents: true,
+      experimental: { cachedNavigations: true },
+    });
+    expect(resolved.cachedNavigations).toBe(true);
+  });
+
+  it("keeps cachedNavigations off without cacheComponents", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const resolved = await resolveNextConfig({
+        experimental: { cachedNavigations: true },
+      });
+      expect(resolved.cachedNavigations).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe("resolveNextConfig appNavFailHandling", () => {
   it("defaults experimental.appNavFailHandling to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2688,6 +2741,7 @@ describe("detectNextIntlConfig", () => {
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -2697,6 +2751,7 @@ describe("detectNextIntlConfig", () => {
       images: undefined,
       i18n: null,
       mdx: null,
+      nextIntlCatalogLoader: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
@@ -2902,6 +2957,130 @@ describe("resolveNextConfig next-intl auto-detection", () => {
     const config = await resolveNextConfig(rawConfig, tmpDir);
     // Should use the explicit webpack alias, not auto-detected
     expect(config.aliases["next-intl/config"]).toBe(canonical(tmpDir, "custom/intl.ts"));
+  });
+});
+
+// https://github.com/cloudflare/vinext/issues/4303
+describe("resolveNextConfig next-intl catalog loader", () => {
+  const root = path.resolve(import.meta.dirname, "fixtures", "cf-next-intl-example");
+
+  async function importCreateNextIntlPlugin() {
+    const pluginPath = createRequire(path.join(root, "package.json")).resolve("next-intl/plugin");
+    return (await import(pathToFileURL(pluginPath).href)).default;
+  }
+
+  it("keeps the catalog loader rule createNextIntlPlugin adds for experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const config = await resolveNextConfig(
+      createNextIntlPlugin({ experimental: { messages } })({}),
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [path.join(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ accepts several `messages.path` entries and passes them to
+  // webpack as an `include` array (getNextConfig.js in next-intl 4.14.9).
+  it("keeps every catalog directory of an array include", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const include = [path.join(root, "messages"), path.join(root, "shared/messages")];
+    const config = await resolveNextConfig(
+      {
+        webpack: (webpackConfig: any) => {
+          webpackConfig.module.rules.push({
+            test: /\.po$/,
+            include,
+            use: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+            type: "javascript/auto",
+          });
+          return webpackConfig;
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include,
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
+  // With `TURBOPACK` set, next-intl adds no webpack hook, only a Turbopack rule.
+  it("keeps the catalog loader rule when next-intl only configures Turbopack", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const messages = { path: "./messages", format: "json", precompile: true };
+    const previous = process.env.TURBOPACK;
+    process.env.TURBOPACK = "1";
+    let nextConfig;
+    try {
+      nextConfig = createNextIntlPlugin({ experimental: { messages } })({});
+    } finally {
+      if (previous === undefined) delete process.env.TURBOPACK;
+      else process.env.TURBOPACK = previous;
+    }
+    expect(nextConfig.webpack).toBeUndefined();
+    const config = await resolveNextConfig(nextConfig, root);
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages")],
+      test: /\.json$/,
+      options: { messages },
+    });
+  });
+
+  // next-intl 4.12+ lists several catalog paths in the Turbopack condition.
+  it("keeps every catalog directory of a Turbopack rule", async () => {
+    const messages = { path: ["./messages", "./shared/messages"], format: "po" };
+    const config = await resolveNextConfig(
+      {
+        turbopack: {
+          rules: {
+            "*.po": {
+              loaders: [{ loader: "next-intl/extractor/catalogLoader", options: { messages } }],
+              condition: { path: "{./messages,./shared/messages}/**/*" },
+              as: "*.js",
+            },
+          },
+        },
+      },
+      root,
+    );
+    expect(config.nextIntlCatalogLoader).toEqual({
+      include: [canonical(root, "messages"), canonical(root, "shared/messages")],
+      test: /\.po$/,
+      options: { messages },
+    });
+  });
+
+  it("warns when the precompile alias has no catalog loader", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const config = await resolveNextConfig(
+        {
+          turbopack: {
+            resolveAlias: {
+              "use-intl/format-message": "./node_modules/use-intl/dist/format-only.js",
+            },
+          },
+        },
+        root,
+      );
+      expect(config.nextIntlCatalogLoader).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("`experimental.messages.precompile` is enabled"),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("has no catalog loader without experimental.messages", async () => {
+    const createNextIntlPlugin = await importCreateNextIntlPlugin();
+    const config = await resolveNextConfig(createNextIntlPlugin()({}), root);
+    expect(config.nextIntlCatalogLoader).toBeNull();
   });
 });
 

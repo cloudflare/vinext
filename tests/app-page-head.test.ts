@@ -4,6 +4,8 @@ import {
   prepareAppPageHead,
   resolveActiveParallelRouteHeadInputs,
   resolveAppPageHead,
+  resolveInterceptLayoutsBesidePage,
+  type AppPageHeadParallelRoute,
 } from "../packages/vinext/src/server/app-page-head.js";
 import type { AppPageParams } from "../packages/vinext/src/server/app-page-boundary.js";
 import { resolveHttpAccessFallbackMetadata } from "../packages/vinext/src/server/app-page-http-access-fallback-metadata.js";
@@ -679,6 +681,7 @@ describe("app page head resolution", () => {
           routeSegments: ["[member]"],
         },
         ownerTreePosition: 0,
+        slotKey: "sidebar",
       },
     ]);
   });
@@ -700,6 +703,64 @@ describe("app page head resolution", () => {
     });
 
     expect(inputs.map((input) => input.head.pageModule)).toEqual([inner, outerFirst, outerSecond]);
+  });
+
+  it("orders one owner's slots by name, as Turbopack's loader tree does", () => {
+    const alpha = { metadata: { title: "alpha" } };
+    const beta = { metadata: { title: "beta" } };
+
+    // Discovery order (the record's key order) must not decide which slot's
+    // metadata merges last.
+    const inputs = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: [0],
+      params: {},
+      routeSegments: [],
+      slots: {
+        "beta@@beta": { layoutIndex: 0, name: "beta", page: beta },
+        "alpha@@alpha": { layoutIndex: 0, name: "alpha", page: alpha },
+      },
+    });
+
+    expect(inputs.map((input) => input.head.pageModule)).toEqual([alpha, beta]);
+  });
+
+  it("orders slot names by code point, as Turbopack's BTreeMap does", () => {
+    const bmp = { metadata: { title: "bmp" } };
+    const astral = { metadata: { title: "astral" } };
+
+    // @豈 (U+F900) sorts before @𐀀 (U+10000) by UTF-8 bytes, but after it by
+    // UTF-16 code units.
+    const inputs = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: [0],
+      params: {},
+      routeSegments: [],
+      slots: {
+        "\u{10000}@@\u{10000}": { layoutIndex: 0, name: "\u{10000}", page: astral },
+        "\u{F900}@@\u{F900}": { layoutIndex: 0, name: "\u{F900}", page: bmp },
+      },
+    });
+
+    expect(inputs.map((input) => input.head.pageModule)).toEqual([bmp, astral]);
+  });
+
+  it("orders slots by their own directory, not the layout that renders them", () => {
+    const alpha = { metadata: { title: "alpha" } };
+    const zeta = { metadata: { title: "zeta" } };
+
+    // app/@alpha and app/(group)/@zeta with no (group) layout: the root layout
+    // renders both, but the walk finishes (group) under root's `children`
+    // first. Next.js 16.2.7 (Turbopack) titles such a page "alpha".
+    const inputs = resolveActiveParallelRouteHeadInputs({
+      layoutTreePositions: [0],
+      params: {},
+      routeSegments: ["(group)"],
+      slots: {
+        "alpha@@alpha": { layoutIndex: 0, name: "alpha", ownerTreePosition: 0, page: alpha },
+        "zeta@(group)/@zeta": { layoutIndex: 0, name: "zeta", ownerTreePosition: 1, page: zeta },
+      },
+    });
+
+    expect(inputs.map((input) => input.head.pageModule)).toEqual([zeta, alpha]);
   });
 
   it("carries slot-local not-found metadata with owner-scoped params", () => {
@@ -808,6 +869,7 @@ describe("app page head resolution", () => {
         head: {
           layoutModules: [slotLayout, interceptLayout],
           layoutParams: [{ locale: "en" }, { locale: "en", photo: "42" }],
+          layoutsBesidePage: [false, false],
           layoutTreePositions: [0, 2],
           pageModule: interceptPage,
           params: { locale: "en", photo: "42", comment: "7" },
@@ -817,6 +879,7 @@ describe("app page head resolution", () => {
         notFoundModuleRouteSegments: ["[locale]", "@modal"],
         notFoundParams: { locale: "en", photo: "42", comment: "7" },
         ownerTreePosition: 1,
+        slotKey: "modal",
       },
     ]);
   });
@@ -1047,21 +1110,15 @@ describe("app page head resolution", () => {
     expect(titles).toEqual(["Root description", "Root description"]);
   });
 
-  it("keeps primary page title handling independent from active parallel route metadata", async () => {
-    const rootLayout = {
-      metadata: {
-        title: { default: "Root", template: "%s | Root" },
-      },
-    };
+  it("lets an active slot page's title override the primary page's, as Turbopack orders them", async () => {
+    // Turbopack puts `children` before the named slots in the loader tree, so
+    // Next.js merges the slot page's metadata, title included, after the page.
+    // Next.js 16.2.7 probe: page "TEAM PAGE TITLE" + @members/page "TEAM
+    // MEMBERS PAGE TITLE" renders the slot's title with `next build --turbopack`.
     const page = {
       metadata: {
         description: "Primary page",
-        title: { default: "Page", template: "%s | Page" },
-      },
-    };
-    const slotLayout = {
-      metadata: {
-        title: { default: "Slot", template: "%s | Slot" },
+        title: "Page title",
       },
     };
     const slotPage = {
@@ -1074,13 +1131,12 @@ describe("app page head resolution", () => {
     };
 
     const result = await resolveAppPageHead<Record<string, unknown>>({
-      layoutModules: [rootLayout],
+      layoutModules: [{ metadata: { title: "Root" } }],
       layoutTreePositions: [0],
       metadataRoutes: [],
       pageModule: page,
       parallelRoutes: [
         {
-          layoutModules: [slotLayout],
           pageModule: slotPage,
           routeSegments: ["dashboard"],
         },
@@ -1096,13 +1152,1331 @@ describe("app page head resolution", () => {
         description: "Primary page",
         title: "Slot OG title",
       },
-      title: "Page | Root",
+      title: "Slot page title",
       twitter: {
         card: "summary",
         description: "Primary page",
         title: "Slot OG title",
       },
     });
+  });
+
+  it("lets a page's title template wrap a later slot's title, as every item but the last two does", async () => {
+    // Next.js's accumulateMetadata lets every loader-tree item but the last two
+    // set the template, and each slot adds two items (its directory and its
+    // page), so only the last slot's page is among them. Next.js 16.2.7
+    // (Turbopack, `next start`) titles all three shapes below this way.
+    const resolveTitle = async (
+      pageModule: Record<string, unknown>,
+      parallelRoutes: {
+        layoutModules?: Record<string, unknown>[];
+        pageModule: Record<string, unknown>;
+      }[],
+    ) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: [{ metadata: { title: { default: "Root", template: "%s | Root" } } }],
+          layoutTreePositions: [0],
+          metadataRoutes: [],
+          pageModule,
+          parallelRoutes,
+          params: {},
+          routePath: "/",
+          routeSegments: [],
+        })
+      ).metadata?.title;
+    const slotA = { pageModule: { metadata: { title: { default: "A", template: "%s | A" } } } };
+    const slotB = { pageModule: { metadata: { title: "B" } } };
+
+    // [root layout, page, @a, @a page, @b, @b page]: "Y | X" on /ta.
+    expect(await resolveTitle({}, [slotA, slotB])).toBe("B | A");
+    // The same with a layout in @b: "Y | X" on /tb.
+    expect(await resolveTitle({}, [slotA, { ...slotB, layoutModules: [{}] }])).toBe("B | A");
+    // The route's page sets it too when a slot follows: "Y | P" on /tc.
+    expect(
+      await resolveTitle({ metadata: { title: { default: "P", template: "%s | P" } } }, [slotB]),
+    ).toBe("B | P");
+  });
+
+  it("resolves each title with the template of the title before it, as Next.js does", async () => {
+    // Next.js's accumulateMetadata stashes the resolved title's own template
+    // after every loader-tree item but the last two, the page's segment and
+    // the page. So a layout's template skips the page beside it, and a title
+    // without a template clears it. Each case is titled as Next.js 16.2.7
+    // titles it (Turbopack and webpack, `next build`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    const template = (name: string, defaultTitle?: string) => ({
+      metadata: {
+        title: { template: `%s | ${name}`, ...(defaultTitle ? { default: defaultTitle } : {}) },
+      },
+    });
+    const titled = (title: unknown) => ({ metadata: { title } });
+    const resolveTitle = async (
+      routeSegments: string[],
+      layouts: [number, Record<string, unknown>][],
+      pageModule: Record<string, unknown>,
+      parallelRoutes?: {
+        layoutModules?: Record<string, unknown>[];
+        layoutsBesidePage?: boolean[];
+        pageModule: Record<string, unknown>;
+      }[],
+    ) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: layouts.map(([, module]) => module),
+          layoutTreePositions: layouts.map(([position]) => position),
+          metadataRoutes: [],
+          pageModule,
+          parallelRoutes,
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+
+    // A root layout's template and the home page beside it.
+    const acme = template("Acme", "Acme");
+    expect(await resolveTitle([], [[0, acme]], titled("Home"))).toBe("Home");
+    expect(await resolveTitle(["child"], [[0, acme]], titled("Child"))).toBe("Child | Acme");
+    expect(await resolveTitle(["child", "grand"], [[0, acme]], titled("Grand"))).toBe(
+      "Grand | Acme",
+    );
+    expect(await resolveTitle(["notitle"], [[0, acme]], {})).toBe("Acme");
+
+    // `/td` and `/te/child`: a nested layout's template beside its page, and above it.
+    const td = template("TD", "TD");
+    expect(
+      await resolveTitle(
+        ["td"],
+        [
+          [0, {}],
+          [1, td],
+        ],
+        titled("DP"),
+      ),
+    ).toBe("DP");
+    expect(
+      await resolveTitle(
+        ["td", "child"],
+        [
+          [0, {}],
+          [1, td],
+        ],
+        titled("EP"),
+      ),
+    ).toBe("EP | TD");
+
+    // `/tf/mid/leaf`: a plain-string middle layout clears the template.
+    const tf: [number, Record<string, unknown>][] = [
+      [0, {}],
+      [1, template("TF", "TF")],
+      [2, titled("Mid")],
+    ];
+    expect(await resolveTitle(["tf", "mid", "leaf"], tf, titled("Leaf"))).toBe("Leaf");
+    expect(await resolveTitle(["tf", "mid", "notitle"], tf, {})).toBe("Mid | TF");
+
+    // `/tg/child`: `title.absolute` skips the template.
+    expect(
+      await resolveTitle(["tg", "child"], [[1, template("TG", "TG")]], titled({ absolute: "A" })),
+    ).toBe("A");
+
+    // `/th`: a template-only layout without a default.
+    const th = template("TH");
+    expect(await resolveTitle(["th"], [[1, th]], {})).toBeUndefined();
+    expect(await resolveTitle(["th", "child"], [[1, th]], titled("Child"))).toBe("Child | TH");
+
+    // `/ti/nested` and `/tj/extra`: a nested layout's template overrides its
+    // parent's below it, but not beside its own page.
+    const nested: [number, Record<string, unknown>][] = [
+      [1, template("TI", "TI")],
+      [2, template("NESTED", "Nested")],
+    ];
+    expect(await resolveTitle(["ti", "nested"], nested, {})).toBe("Nested | TI");
+    expect(await resolveTitle(["ti", "nested"], nested, titled("Extra"))).toBe("Extra | TI");
+    expect(await resolveTitle(["ti", "nested", "child"], nested, titled("C"))).toBe("C | NESTED");
+    expect(await resolveTitle(["ti", "nested", "child", "deep"], nested, {})).toBe("Nested | TI");
+
+    // `/tk`: the last slot's layout template beside its page.
+    expect(
+      await resolveTitle(["tk"], [[1, template("TK", "TK")]], {}, [
+        {
+          layoutModules: [template("YL", "YL")],
+          layoutsBesidePage: [true],
+          pageModule: titled("Y"),
+        },
+      ]),
+    ).toBe("Y | TK");
+    // `/tl`: an earlier slot's plain-string page clears its layout's template.
+    expect(
+      await resolveTitle(["tl"], [[1, template("TL", "TL")]], {}, [
+        { layoutModules: [template("XL", "XL")], pageModule: titled("X") },
+        { pageModule: titled("Y") },
+      ]),
+    ).toBe("Y");
+  });
+
+  it("treats only an intercepting layout in its page's own directory as beside it", async () => {
+    // Next.js 16.2.7 (Turbopack) soft-navigates `/k` to `k/(.)photo/[id]`,
+    // titled "Photo", under a root `%s | Root` template: "Photo | Root" when
+    // `(.)photo/[id]/layout` is titled "Plain", but "Photo" when
+    // `(.)photo/layout` is titled "Mid". The same holds for `/` to `(.)rp/[id]`.
+    const root = { metadata: { title: { default: "Root", template: "%s | Root" } } };
+    const photo = { metadata: { title: "Photo" } };
+    const leaf = { layout: { metadata: { title: "Plain" } }, segments: ["(.)photo", "[id]"] };
+    const middle = { layout: { metadata: { title: "Mid" } }, segments: ["(.)photo"] };
+    const branchSegments = ["(.)photo", "[id]"];
+    const resolveTitle = async (
+      routeSegments: string[],
+      parallelRoute: AppPageHeadParallelRoute<Record<string, unknown>>,
+    ) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: [root],
+          layoutTreePositions: [0],
+          metadataRoutes: [],
+          pageModule: null,
+          parallelRoutes: [parallelRoute],
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+
+    // A sibling intercept, which replaces `children`.
+    for (const [routeSegments, { layout, segments }, title] of [
+      [["k"], leaf, "Photo | Root"],
+      [["k"], middle, "Photo"],
+      [[], leaf, "Photo | Root"],
+      [[], middle, "Photo"],
+    ] as const) {
+      const layoutsBesidePage = resolveInterceptLayoutsBesidePage([segments], branchSegments);
+      expect(
+        await resolveTitle([...routeSegments], {
+          layoutModules: [layout],
+          layoutsBesidePage,
+          pageModule: photo,
+          routeSegments: [...routeSegments],
+        }),
+      ).toBe(title);
+    }
+
+    // A slot intercept that heads the route.
+    for (const [{ layout, segments }, title] of [
+      [leaf, "Photo | Root"],
+      [middle, "Photo"],
+    ] as const) {
+      const [input] = resolveActiveParallelRouteHeadInputs({
+        interceptBranchSegments: branchSegments,
+        interceptLayoutSegments: [segments],
+        interceptLayouts: [layout],
+        interceptPage: photo,
+        interceptSlotKey: "modal",
+        interceptSourcePageSegments: ["g", "@modal", ...branchSegments],
+        layoutTreePositions: [0],
+        params: {},
+        routeSegments: ["g"],
+        slots: { modal: { layoutIndex: 0 } },
+      });
+      expect(await resolveTitle(["g"], input.head)).toBe(title);
+    }
+  });
+
+  it("counts a slot page's route groups as segments between it and the slot's layouts", async () => {
+    // Next.js 16.2.7 (Turbopack) titles `/s` "Grouped Page | Slot" for
+    // `@slot/layout` with a template and `@slot/(group)/page`, and `/u`
+    // "Deep Page | A" for `@slot/(a)/layout` and `@slot/(a)/(b)/page`: each
+    // route group is a loader-tree segment, though `routeSegments` is `[]`.
+    const root = { metadata: { title: { default: "Root", template: "%s | Root" } } };
+    const slotLayout = { metadata: { title: { default: "Slot", template: "%s | Slot" } } };
+    const groupLayout = { metadata: { title: { default: "A", template: "%s | A" } } };
+    const resolveTitle = async (slot: {
+      configLayouts?: Record<string, unknown>[];
+      configLayoutTreePositions?: number[];
+      page: Record<string, unknown>;
+      pageTreePosition: number;
+    }) => {
+      const parallelRoutes = resolveActiveParallelRouteHeadInputs({
+        layoutTreePositions: [0, 1],
+        params: {},
+        routeSegments: ["s"],
+        slots: { slot: { ...slot, layout: slotLayout, layoutIndex: 1, routeSegments: [] } },
+      }).map((input) => input.head);
+      return (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: [root, {}],
+          layoutTreePositions: [0, 1],
+          metadataRoutes: [],
+          pageModule: {},
+          parallelRoutes,
+          params: {},
+          routePath: "/s",
+          routeSegments: ["s"],
+        })
+      ).metadata?.title;
+    };
+
+    expect(
+      await resolveTitle({ page: { metadata: { title: "Grouped Page" } }, pageTreePosition: 1 }),
+    ).toBe("Grouped Page | Slot");
+    expect(
+      await resolveTitle({
+        configLayouts: [groupLayout],
+        configLayoutTreePositions: [1],
+        page: { metadata: { title: "Deep Page" } },
+        pageTreePosition: 2,
+      }),
+    ).toBe("Deep Page | A");
+    // `/t`: without the group, the slot's layout is beside its page.
+    expect(
+      await resolveTitle({ page: { metadata: { title: "Direct Page" } }, pageTreePosition: 0 }),
+    ).toBe("Direct Page | Root");
+  });
+
+  it("hands a page the template of the title before it, even one it doesn't apply", async () => {
+    // Next.js's `parent` is its ResolvedMetadata, whose title keeps the last
+    // title's own template, even one the page beside it doesn't get.
+    const seenTitles: unknown[] = [];
+    const page = {
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        seenTitles.push((await parent).title);
+        return { title: "Page" };
+      },
+    };
+    const resolveTitle = async (routeSegments: string[], layouts: Record<string, unknown>[]) =>
+      (
+        await resolveAppPageHead<Record<string, unknown>>({
+          layoutModules: layouts,
+          layoutTreePositions: layouts.map((_, index) => index),
+          metadataRoutes: [],
+          pageModule: page,
+          params: {},
+          routePath: `/${routeSegments.join("/")}`,
+          routeSegments,
+        })
+      ).metadata?.title;
+    const site = { metadata: { title: { default: "Site", template: "%s | Site" } } };
+
+    // A plain-string layout beside the page clears the template it hands on,
+    // but the page still gets the one from before that layout.
+    expect(await resolveTitle(["mid"], [site, { metadata: { title: "Mid" } }])).toBe("Page | Site");
+    // Above the page, it clears the template for the page too.
+    expect(await resolveTitle(["mid", "leaf"], [site, { metadata: { title: "Mid" } }])).toBe(
+      "Page",
+    );
+    // A template beside the page reaches it in `parent` without wrapping it.
+    expect(await resolveTitle([], [site])).toBe("Page");
+    expect(seenTitles).toEqual([
+      { absolute: "Mid | Site", template: null },
+      { absolute: "Mid | Site", template: null },
+      { absolute: "Site", template: "%s | Site" },
+    ]);
+  });
+
+  it("resolves openGraph and twitter titles with their own templates, as Next.js does", async () => {
+    // Next.js's accumulateMetadata stashes `titleTemplates.openGraph` and
+    // `.twitter` under the same `i < metadataItems.length - 2` rule as
+    // `title`'s. Each case is titled as Next.js 16.2.7 titles it (Turbopack
+    // and webpack, `next dev`).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    const seenTitles: unknown[] = [];
+    const social = {
+      metadata: {
+        openGraph: { title: { template: "%s | OG", default: "OG Default" } },
+        twitter: { title: { template: "%s | TW", default: "TW Default" } },
+      },
+    };
+    const titled = (title: string) => ({
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        const resolved = await parent;
+        seenTitles.push([resolved.openGraph, resolved.twitter]);
+        return { openGraph: { title }, twitter: { title } };
+      },
+    });
+    const resolveSocialTitles = async (
+      routeSegments: string[],
+      layouts: [number, Record<string, unknown>][],
+      pageModule: Record<string, unknown>,
+    ) => {
+      const { metadata } = await resolveAppPageHead<Record<string, unknown>>({
+        layoutModules: layouts.map(([, module]) => module),
+        layoutTreePositions: layouts.map(([position]) => position),
+        metadataRoutes: [],
+        pageModule,
+        params: {},
+        routePath: `/${routeSegments.join("/")}`,
+        routeSegments,
+      });
+      return [metadata?.openGraph?.title, metadata?.twitter?.title];
+    };
+
+    // `/social`: the layout's templates skip the page beside it.
+    expect(await resolveSocialTitles(["social"], [[1, social]], titled("Beside"))).toEqual([
+      "Beside",
+      "Beside",
+    ]);
+    // `/social/child`: they wrap a deeper page's titles, and `parent` holds
+    // each title as `{ absolute, template }`.
+    expect(await resolveSocialTitles(["social", "child"], [[1, social]], titled("Child"))).toEqual([
+      "Child | OG",
+      "Child | TW",
+    ]);
+    expect(seenTitles.at(-1)).toEqual([
+      { title: { absolute: "OG Default", template: "%s | OG" } },
+      { title: { absolute: "TW Default", template: "%s | TW" } },
+    ]);
+    // `/social/inherit`: a page without them shows the layout's defaults.
+    expect(await resolveSocialTitles(["social", "inherit"], [[1, social]], {})).toEqual([
+      "OG Default",
+      "TW Default",
+    ]);
+    // `/social/extra`: a template beside the page gives way to the one above it.
+    const extra = {
+      metadata: { openGraph: { title: { template: "%s | Extra OG", default: "Extra" } } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "extra"],
+        [
+          [1, social],
+          [2, extra],
+        ],
+        { metadata: { openGraph: { title: "Extra" } } },
+      ),
+    ).toEqual(["Extra | OG", "TW Default"]);
+    // `/social/plain/leaf`: a plain-string title, or a value without a title,
+    // clears the template.
+    const plain = {
+      metadata: { openGraph: { title: "Plain OG" }, twitter: { description: "Plain TW" } },
+    };
+    expect(
+      await resolveSocialTitles(
+        ["social", "plain", "leaf"],
+        [
+          [1, social],
+          [2, plain],
+        ],
+        titled("Leaf"),
+      ),
+    ).toEqual(["Leaf", "Leaf"]);
+    // `/social/og-only`: a missing twitter title comes from openGraph's.
+    expect(
+      await resolveSocialTitles(["social", "og-only"], [[1, social]], {
+        metadata: { openGraph: { title: "OG Only" }, twitter: { card: "summary" } },
+      }),
+    ).toEqual(["OG Only | OG", "OG Only | OG"]);
+    // `/social/cleared`: a layout beside the page that clears them still
+    // hands the page the templates from before it.
+    expect(
+      await resolveSocialTitles(
+        ["social", "cleared"],
+        [
+          [1, social],
+          [2, { metadata: { openGraph: null, twitter: undefined } }],
+        ],
+        titled("Page"),
+      ),
+    ).toEqual(["Page | OG", "Page | TW"]);
+    // Next.js resolves a present `undefined` to `null` too.
+    expect(seenTitles.at(-1)).toStrictEqual([null, null]);
+  });
+
+  it("hands each resolver the title resolved before it as { absolute, template }", async () => {
+    // Next.js passes each resolver its ResolvedMetadata, whose title keeps the
+    // template the next title gets beside the resolved string.
+    const seenTitles: Record<string, unknown> = {};
+    const reader = (source: string, metadata: Record<string, unknown> = {}) => ({
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        seenTitles[source] = (await parent).title;
+        return metadata;
+      },
+    });
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [
+        { metadata: { title: { default: "Root", template: "%s | Root" } } },
+        reader("nested layout"),
+      ],
+      layoutTreePositions: [0, 1],
+      metadataRoutes: [],
+      pageModule: reader("page"),
+      parallelRoutes: [
+        { pageModule: { metadata: { title: { default: "Alpha", template: "%s | Alpha" } } } },
+        { pageModule: reader("second slot") },
+      ],
+      params: {},
+      routePath: "/feed",
+      routeSegments: ["feed"],
+    });
+
+    expect(seenTitles).toEqual({
+      "nested layout": { absolute: "Root", template: "%s | Root" },
+      page: { absolute: "Root", template: "%s | Root" },
+      "second slot": { absolute: "Alpha | Root", template: "%s | Alpha" },
+    });
+    expect(result.metadata?.title).toBe("Alpha | Root");
+  });
+
+  it("hands each slot the metadata resolved before it in the loader tree", async () => {
+    // Next.js calls every generateMetadata() with the metadata merged from
+    // everything before it: the layouts, the page, then each earlier slot.
+    const seenParents: Record<string, unknown>[] = [];
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ metadata: { description: "Root" } }],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: { metadata: { applicationName: "Feed" } },
+      parallelRoutes: [
+        { pageModule: { metadata: { creator: "Alpha", title: "Alpha" } } },
+        {
+          pageModule: {
+            async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+              seenParents.push(await parent);
+              return { publisher: "Beta" };
+            },
+          },
+        },
+      ],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    expect(seenParents).toEqual([
+      expect.objectContaining({
+        applicationName: "Feed",
+        creator: "Alpha",
+        description: "Root",
+        title: { absolute: "Alpha", template: null },
+      }),
+    ]);
+    expect(result.metadata).toMatchObject({ publisher: "Beta" });
+  });
+
+  it("calls a cached slot resolver that reads its parent once that parent settles", async () => {
+    // Next.js starts every generateMetadata() up front except a "use cache"
+    // one that reads `parent`: encoding its arguments waits for the parent,
+    // which another cached resolver may still be computing, so it runs once
+    // that parent settles (resolve-metadata.ts getResult).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const calls: string[] = [];
+    let releaseLayout: (() => void) | undefined;
+    const layoutGate = new Promise<void>((resolve) => {
+      releaseLayout = resolve;
+    });
+    const cached = <T extends object>(fn: T) =>
+      Object.assign(fn, {
+        [Symbol.for("vinext.useCacheFunction")]: true,
+        [Symbol.for("vinext.useCacheAcceptsSecondArgument")]: true,
+      });
+    const seenPageParents: Record<string, unknown>[] = [];
+    const slotLayout = {
+      generateMetadata: cached(async (_props: unknown, parent: Promise<unknown>) => {
+        calls.push("layout");
+        await parent;
+        await layoutGate;
+        return { creator: "Slot layout" };
+      }),
+    };
+    const slotPage = {
+      generateMetadata: cached(
+        async (_props: unknown, parent: Promise<Record<string, unknown>>) => {
+          calls.push("page");
+          seenPageParents.push(await parent);
+          return { title: "Slot page" };
+        },
+      ),
+    };
+
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [{ metadata: { description: "Root" } }],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: { metadata: { applicationName: "Feed" } },
+      parallelRoutes: [{ layoutModules: [slotLayout], layoutParams: [{}], pageModule: slotPage }],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(["layout"]);
+
+    releaseLayout?.();
+    await expect(prepared.metadata).resolves.toMatchObject({
+      creator: "Slot layout",
+      title: "Slot page",
+    });
+    expect(calls).toEqual(["layout", "page"]);
+    expect(seenPageParents).toEqual([
+      expect.objectContaining({ applicationName: "Feed", creator: "Slot layout" }),
+    ]);
+  });
+
+  it("calls a cached slot generateViewport() that reads its parent once that parent settles", async () => {
+    // Next.js's getResult defers a "use cache" generateViewport() that reads
+    // `parent` as it does generateMetadata(): its cache key waits for that
+    // parent, which another cached resolver may still be computing.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (getResult)
+    const calls: string[] = [];
+    let releaseLayout: (() => void) | undefined;
+    const layoutGate = new Promise<void>((resolve) => {
+      releaseLayout = resolve;
+    });
+    const cached = <T extends object>(fn: T) =>
+      Object.assign(fn, {
+        [Symbol.for("vinext.useCacheFunction")]: true,
+        [Symbol.for("vinext.useCacheAcceptsSecondArgument")]: true,
+      });
+    const seenPageParents: Record<string, unknown>[] = [];
+    const slotLayout = {
+      generateViewport: cached(async (_props: unknown, parent: Promise<unknown>) => {
+        calls.push("layout");
+        await parent;
+        await layoutGate;
+        return { themeColor: "#111111" };
+      }),
+    };
+    const interceptPage = {
+      generateViewport: cached(
+        async (_props: unknown, parent: Promise<Record<string, unknown>>) => {
+          calls.push("page");
+          seenPageParents.push(await parent);
+          return { colorScheme: "dark" as const };
+        },
+      ),
+    };
+    const slotLayoutBranch = { layoutModules: [slotLayout], layoutParams: [{}] };
+
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      hiddenParallelRoutes: [
+        {
+          parallelRouteIndex: 0,
+          route: { ...slotLayoutBranch, pageModule: interceptPage },
+          sharedLayoutCount: 1,
+        },
+      ],
+      layoutModules: [{ viewport: { width: 400 } }],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: { metadata: { title: "Feed page" } },
+      parallelRoutes: [slotLayoutBranch],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls).toEqual(["layout"]);
+
+    releaseLayout?.();
+    await expect(prepared.routeErrors).resolves.toBeNull();
+    expect(calls).toEqual(["layout", "page"]);
+    expect(seenPageParents).toEqual([
+      expect.objectContaining({ themeColor: [{ color: "#111111" }], width: 400 }),
+    ]);
+  });
+
+  it("omits the parent for a cached generateViewport() that does not declare it", async () => {
+    const receivedArgCounts: number[] = [];
+    const generateViewport = async function () {
+      receivedArgCounts.push(arguments.length);
+      return { themeColor: "#222222" };
+    };
+    Object.assign(generateViewport, {
+      [Symbol.for("vinext.useCacheFunction")]: true,
+      [Symbol.for("vinext.useCacheAcceptsSecondArgument")]: false,
+    });
+
+    await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: { generateViewport },
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+    expect(receivedArgCounts).toEqual([1]);
+  });
+
+  it("fails with an earlier segment's delayed signal over a later one's immediate one", async () => {
+    // Next.js starts every generateMetadata() and generateViewport() up front,
+    // but accumulateMetadata and accumulateViewport await their results in
+    // loader-tree order, so the earlier segment's signal wins.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/elsewhere;307;",
+    });
+    const delayedNotFound = async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      throw notFoundError;
+    };
+    const immediateRedirect = () => {
+      throw redirectError;
+    };
+    // Either a slot's layout or a hidden intercept after that slot is
+    // delayed, and a later slot's page throws at once.
+    const prepare = (key: "generateMetadata" | "generateViewport", hidden: boolean) =>
+      prepareAppPageHead<Record<string, unknown>>({
+        hiddenParallelRoutes: hidden
+          ? [
+              {
+                parallelRouteIndex: 0,
+                route: { pageModule: { [key]: delayedNotFound } },
+                sharedLayoutCount: 0,
+              },
+            ]
+          : null,
+        layoutModules: [],
+        metadataRoutes: [],
+        pageModule: { metadata: { title: "Feed page" } },
+        parallelRoutes: [
+          hidden
+            ? { pageModule: { metadata: { description: "Feed slot" } } }
+            : { layoutModules: [{ [key]: delayedNotFound }], layoutParams: [{}], pageModule: {} },
+          { pageModule: { [key]: immediateRedirect } },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const fromSlot = prepare(key, false);
+      await expect(fromSlot.routeErrors).rejects.toBe(notFoundError);
+      await expect(key === "generateMetadata" ? fromSlot.metadata : fromSlot.viewport).rejects.toBe(
+        notFoundError,
+      );
+      // A hidden intercept's own error throws in its slot, and the later
+      // slot's is the route's.
+      const fromHidden = prepare(key, true);
+      await expect(fromHidden.hiddenErrors).rejects.toBe(notFoundError);
+      await expect(fromHidden.routeErrors).rejects.toBe(redirectError);
+    }
+  });
+
+  it("starts a hidden slot intercept in its slot's place in the loader tree", async () => {
+    // Next.js's prerenderMetadata and prerenderViewport call every resolver in
+    // loader-tree order, where the intercept takes its slot's place: after the
+    // slot's shared layout, before the next slot.
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const started: string[] = [];
+      const segment = (name: string) => ({
+        [key]() {
+          started.push(name);
+          return {};
+        },
+      });
+      const prepared = prepareAppPageHead<Record<string, unknown>>({
+        hiddenParallelRoutes: [
+          {
+            parallelRouteIndex: 0,
+            route: {
+              layoutModules: [segment("modal layout"), segment("intercept layout")],
+              layoutParams: [{}, {}],
+              pageModule: segment("intercept page"),
+            },
+            sharedLayoutCount: 1,
+          },
+        ],
+        layoutModules: [segment("root layout")],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        pageModule: segment("page"),
+        parallelRoutes: [
+          {
+            layoutModules: [segment("modal layout")],
+            layoutParams: [{}],
+            pageModule: segment("modal page"),
+          },
+          { pageModule: segment("later slot page") },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+      await prepared.routeErrors;
+      expect(started, key).toEqual([
+        "root layout",
+        "page",
+        "modal layout",
+        "intercept layout",
+        "intercept page",
+        "modal page",
+        "later slot page",
+      ]);
+    }
+  });
+
+  it("reads each shown value once, when the walk merges it", async () => {
+    // Next.js's accumulateMetadata merges each item once, so a getter that
+    // only works on its first read still resolves.
+    let reads = 0;
+    const onceOnly = () => ({
+      get description(): string {
+        reads++;
+        if (reads > 1) throw new Error("read twice");
+        return "Once";
+      },
+    });
+    const result = await resolveAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      pageModule: { metadata: { title: "Feed page" } },
+      parallelRoutes: [{ pageModule: { generateMetadata: onceOnly } }],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    expect(result.metadata).toMatchObject({ description: "Once", title: "Feed page" });
+    expect(reads).toBe(1);
+  });
+
+  it("fails with an earlier item's merge error over a later hidden intercept's signal", async () => {
+    // Next.js's accumulateMetadata and accumulateViewport merge each value as
+    // they reach it, so a value that throws while merging, here a getter that
+    // calls notFound(), fails at its own place in the loader tree: before a
+    // later intercept's redirect(), and without waiting for one that hangs.
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/elsewhere;307;",
+    });
+    const throwingValue = {
+      generateMetadata: () => ({
+        get description(): string {
+          throw notFoundError;
+        },
+      }),
+      generateViewport: () => ({
+        themeColor: {
+          get color(): string {
+            throw notFoundError;
+          },
+        },
+      }),
+    };
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      for (const hiddenResult of ["redirect", "pending"] as const) {
+        const prepared = prepareAppPageHead<Record<string, unknown>>({
+          hiddenParallelRoutes: [
+            {
+              parallelRouteIndex: 1,
+              route: {
+                pageModule: {
+                  [key]:
+                    hiddenResult === "redirect"
+                      ? () => {
+                          throw redirectError;
+                        }
+                      : () => new Promise(() => {}),
+                },
+              },
+              sharedLayoutCount: 0,
+            },
+          ],
+          layoutModules: [],
+          metadataRoutes: [],
+          pageModule: { metadata: { title: "Feed page" } },
+          parallelRoutes: [
+            { pageModule: { [key]: throwingValue[key] } },
+            { pageModule: { metadata: { description: "Modal slot" } } },
+          ],
+          params: {},
+          routePath: "/",
+          routeSegments: [],
+        });
+        await expect(prepared.routeErrors, `${key} ${hiddenResult}`).rejects.toBe(notFoundError);
+        await expect(
+          key === "generateMetadata" ? prepared.metadata : prepared.viewport,
+          `${key} ${hiddenResult}`,
+        ).rejects.toBe(notFoundError);
+      }
+    }
+  });
+
+  it("resolves a slot intercept's head once, after everything before it in the loader tree", async () => {
+    // Next.js renders one loader tree, so the modal slot's layout runs once
+    // and the intercepting page's parent holds the layouts, the source page,
+    // every earlier slot, and the slot's layout.
+    const slotLayout = {
+      generateMetadata: vi.fn(async () => ({ creator: "Modal layout" })),
+      generateViewport: vi.fn(() => ({ themeColor: "#000000" })),
+    };
+    const seenInterceptParents: Record<string, unknown>[] = [];
+    const interceptPage = {
+      async generateMetadata(_props: unknown, parent: Promise<Record<string, unknown>>) {
+        seenInterceptParents.push(await parent);
+        return { title: "Intercept" };
+      },
+      generateViewport: vi.fn(() => ({ colorScheme: "dark" as const })),
+    };
+    const slotLayoutBranch = { layoutModules: [slotLayout], layoutParams: [{}] };
+
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      hiddenParallelRoutes: [
+        {
+          parallelRouteIndex: 1,
+          route: { ...slotLayoutBranch, pageModule: interceptPage },
+          sharedLayoutCount: 1,
+        },
+      ],
+      layoutModules: [{ metadata: { description: "Root" } }],
+      layoutTreePositions: [0],
+      metadataRoutes: [],
+      pageModule: { metadata: { applicationName: "Feed", title: "Feed page" } },
+      parallelRoutes: [{ pageModule: { metadata: { keywords: ["alpha"] } } }, slotLayoutBranch],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    await expect(prepared.metadata).resolves.toMatchObject({ title: "Feed page" });
+    await prepared.viewport;
+    await prepared.hiddenErrors;
+    expect(slotLayout.generateMetadata).toHaveBeenCalledTimes(1);
+    expect(slotLayout.generateViewport).toHaveBeenCalledTimes(1);
+    expect(interceptPage.generateViewport).toHaveBeenCalledTimes(1);
+    expect(seenInterceptParents).toEqual([
+      expect.objectContaining({
+        applicationName: "Feed",
+        creator: "Modal layout",
+        description: "Root",
+        keywords: ["alpha"],
+      }),
+    ]);
+  });
+
+  it("leaves a shown slot's own errors to its outlet, and an earlier one to the route's", async () => {
+    // Next.js throws a heading slot intercept's metadata errors in its page's
+    // segment. One its parent rejected with first, such as a layout's, still
+    // reaches the route, as later branches inherit it too.
+    const interceptError = new Error("intercept");
+    const layoutError = new Error("layout");
+    const prepare = (layoutThrows: boolean) =>
+      prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [
+          layoutThrows
+            ? {
+                generateMetadata() {
+                  throw layoutError;
+                },
+              }
+            : { metadata: { title: "Layout" } },
+        ],
+        layoutTreePositions: [0],
+        metadataRoutes: [],
+        outletParallelRouteIndex: 0,
+        parallelRoutes: [
+          {
+            pageModule: {
+              generateMetadata() {
+                throw interceptError;
+              },
+            },
+          },
+          { pageModule: { metadata: { keywords: ["later"] } } },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+    const own = prepare(false);
+    await expect(own.metadata).rejects.toBe(interceptError);
+    await expect(own.hiddenErrors).rejects.toBe(interceptError);
+    await expect(own.routeErrors).resolves.toBeNull();
+
+    const inherited = prepare(true);
+    await expect(inherited.routeErrors).rejects.toBe(layoutError);
+    await expect(inherited.hiddenErrors).resolves.toBeNull();
+  });
+
+  it("fails the route on its viewport error while a shown slot's own metadata is still pending", async () => {
+    // A viewport error is checked against the outlet's viewport only, so it
+    // never waits on the outlet's generateMetadata().
+    const viewportError = new Error("viewport");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      pageModule: {
+        generateViewport() {
+          throw viewportError;
+        },
+      },
+      parallelRoutes: [{ pageModule: { generateMetadata: () => new Promise(() => {}) } }],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      prepared.routeErrors.then(
+        () => null,
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+    ]);
+    expect(outcome).toBe(viewportError);
+  });
+
+  it("leaves a source page's error to the route, not a hidden slot intercept that inherits it", async () => {
+    // Next.js accumulates metadata in loader-tree order, so the source page's
+    // error comes first: it throws once, on the route, never also in the modal.
+    for (const kind of ["generateMetadata", "generateViewport"] as const) {
+      const pageError = new Error(`source page ${kind}`);
+      const prepared = prepareAppPageHead<Record<string, unknown>>({
+        hiddenParallelRoutes: [
+          {
+            parallelRouteIndex: 0,
+            route: {
+              pageModule: {
+                async [kind](_props: unknown, parent: Promise<unknown>) {
+                  await parent;
+                  return {};
+                },
+              },
+            },
+            sharedLayoutCount: 0,
+          },
+        ],
+        layoutModules: [],
+        metadataRoutes: [],
+        pageModule: {
+          [kind]() {
+            throw pageError;
+          },
+        },
+        parallelRoutes: [{ pageModule: { metadata: { description: "Feed slot" } } }],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+      await expect(prepared.routeErrors, kind).rejects.toBe(pageError);
+      await expect(prepared.hiddenErrors, kind).resolves.toBeNull();
+    }
+  });
+
+  it("fails the route on a later slot's error while a shown slot's own metadata is still pending", async () => {
+    // The route checks each resolver's error as it rejects, so an outlet slot
+    // whose generateMetadata() never settles can't hold a later slot's error.
+    const laterError = new Error("later slot");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      parallelRoutes: [
+        { pageModule: { generateMetadata: () => new Promise(() => {}) } },
+        {
+          pageModule: {
+            generateMetadata() {
+              throw laterError;
+            },
+          },
+        },
+      ],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    const timedOut = Symbol("timed out");
+    const outcome = await Promise.race([
+      prepared.routeErrors.then(
+        () => null,
+        (error: unknown) => error,
+      ),
+      new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+    ]);
+    expect(outcome).toBe(laterError);
+  });
+
+  it("never holds the route's errors behind the outlet slot", async () => {
+    // The route's errors never wait on the outlet slot, whose resolvers may
+    // never settle. A later route item's resolver error counts in loader-tree
+    // order until it reads `parent`. What only the outlet slot settling makes
+    // known, a failed merge or an error after reading `parent`, counts after
+    // every error in place, so an in-place error beats an earlier deferred one.
+    const pending = Symbol("pending");
+    const outletError = new Error("outlet slot");
+    const laterError = new Error("later slot");
+    const kinds = [
+      {
+        key: "generateMetadata",
+        middle: { description: "middle" },
+        value: { description: "value" },
+      },
+      {
+        key: "generateViewport",
+        failsToMerge: { themeColor: [null] },
+        middle: { themeColor: "red" },
+        value: { colorScheme: "dark" },
+      },
+    ] as const;
+    const cases = kinds.flatMap((kind) => {
+      const outlets = {
+        pending: () => new Promise(() => {}),
+        rejected() {
+          throw outletError;
+        },
+        resolved: () => kind.value,
+      };
+      const middles: Record<string, Record<string, unknown>> = {
+        absent: {},
+        null: { [kind.key]: () => null },
+        value: { [kind.key]: () => kind.middle },
+        "reads parent": {
+          async [kind.key](_props: unknown, parent: Promise<unknown>) {
+            await parent;
+            return kind.middle;
+          },
+        },
+        ...("failsToMerge" in kind
+          ? { "fails to merge": { [kind.key]: () => kind.failsToMerge } }
+          : {}),
+      };
+      const laters = {
+        throws() {
+          throw laterError;
+        },
+        resolves: () => kind.value,
+        async "reads parent, then throws"(_props: unknown, parent: Promise<unknown>) {
+          await parent;
+          throw laterError;
+        },
+      };
+      return Object.entries(outlets).flatMap(([outlet, outletResolver]) =>
+        Object.entries(middles).flatMap(([middle, middleModule]) =>
+          Object.entries(laters).map(([later, laterResolver]) => {
+            const prepared = prepareAppPageHead<Record<string, unknown>>({
+              layoutModules: [],
+              metadataRoutes: [],
+              outletParallelRouteIndex: 0,
+              parallelRoutes: [
+                { pageModule: { [kind.key]: outletResolver } },
+                { pageModule: middleModule },
+                { pageModule: { [kind.key]: laterResolver } },
+              ],
+              params: {},
+              routePath: "/",
+              routeSegments: [],
+            });
+            const expected =
+              later === "throws"
+                ? laterError
+                : outlet === "pending"
+                  ? pending
+                  : outlet === "rejected"
+                    ? null
+                    : middle === "fails to merge"
+                      ? TypeError
+                      : later === "resolves"
+                        ? null
+                        : laterError;
+            const label = `${kind.key}: ${outlet} outlet, ${middle} middle, later ${later}`;
+            return { expected, label, prepared };
+          }),
+        ),
+      );
+    });
+
+    const timeout = new Promise((resolve) => setTimeout(resolve, 100, pending));
+    const outcomes = await Promise.all(
+      cases.map(({ prepared }) =>
+        Promise.race([
+          prepared.routeErrors.then(
+            () => null,
+            (error: unknown) => error,
+          ),
+          timeout,
+        ]),
+      ),
+    );
+    for (const [index, { expected, label }] of cases.entries()) {
+      if (expected === TypeError) expect(outcomes[index], label).toBeInstanceOf(TypeError);
+      else expect(outcomes[index], label).toBe(expected);
+    }
+  });
+
+  it("settles the route while the outlet slot's generateViewport() is pending after its generateMetadata() failed", async () => {
+    // The route's errors never wait on the outlet branch, so its pending
+    // counterpart can't keep the route's outlet suspended.
+    const outletError = new Error("outlet slot");
+    const prepared = prepareAppPageHead<Record<string, unknown>>({
+      layoutModules: [],
+      metadataRoutes: [],
+      outletParallelRouteIndex: 0,
+      parallelRoutes: [
+        {
+          pageModule: {
+            generateMetadata() {
+              throw outletError;
+            },
+            generateViewport: () => new Promise(() => {}),
+          },
+        },
+      ],
+      params: {},
+      routePath: "/",
+      routeSegments: [],
+    });
+
+    const timedOut = Symbol("timed out");
+    const settle = (errors: Promise<null>) =>
+      Promise.race([
+        errors.then(
+          () => "resolved",
+          (error: unknown) => error,
+        ),
+        new Promise((resolve) => setTimeout(resolve, 200, timedOut)),
+      ]);
+    expect(await settle(prepared.hiddenErrors)).toBe(outletError);
+    expect(await settle(prepared.routeErrors)).toBe("resolved");
+  });
+
+  it("throws the outlet slot's earlier delayed signal over its later immediate one", async () => {
+    // Its own errors, too, are taken in loader-tree order.
+    const notFoundError = Object.assign(new Error("NEXT_NOT_FOUND"), {
+      digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+    });
+    const redirectError = Object.assign(new Error("NEXT_REDIRECT"), {
+      digest: "NEXT_REDIRECT;replace;/elsewhere;307;",
+    });
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const prepared = prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [],
+        metadataRoutes: [],
+        outletParallelRouteIndex: 0,
+        parallelRoutes: [
+          {
+            layoutModules: [
+              {
+                async [key]() {
+                  await new Promise((resolve) => setTimeout(resolve, 20));
+                  throw notFoundError;
+                },
+              },
+            ],
+            layoutParams: [{}],
+            pageModule: {
+              [key]() {
+                throw redirectError;
+              },
+            },
+          },
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+      await expect(prepared.hiddenErrors, key).rejects.toBe(notFoundError);
+      await expect(prepared.routeErrors, key).resolves.toBeNull();
+    }
+  });
+
+  it("fails the route on a later slot's own error even when it is the outlet slot's error", async () => {
+    // Only an error a later slot took from the outlet through `parent` stays
+    // the outlet's. The slot's own, even the same shared error, is the route's.
+    const sharedError = new Error("boom");
+    for (const key of ["generateMetadata", "generateViewport"] as const) {
+      const prepare = (laterReadsParent: boolean) =>
+        prepareAppPageHead<Record<string, unknown>>({
+          layoutModules: [],
+          metadataRoutes: [],
+          outletParallelRouteIndex: 0,
+          parallelRoutes: [
+            {
+              pageModule: {
+                [key]() {
+                  throw sharedError;
+                },
+              },
+            },
+            {
+              pageModule: laterReadsParent
+                ? {
+                    async [key](_props: unknown, parent: Promise<unknown>) {
+                      await parent;
+                      return {};
+                    },
+                  }
+                : {
+                    [key]() {
+                      throw sharedError;
+                    },
+                  },
+            },
+          ],
+          params: {},
+          routePath: "/",
+          routeSegments: [],
+        });
+
+      const own = prepare(false);
+      await expect(own.hiddenErrors, key).rejects.toBe(sharedError);
+      await expect(own.routeErrors, key).rejects.toBe(sharedError);
+
+      const inherited = prepare(true);
+      await expect(inherited.hiddenErrors, key).rejects.toBe(sharedError);
+      await expect(inherited.routeErrors, key).resolves.toBeNull();
+    }
+  });
+
+  it("throws a value that fails to merge as its own item's error, even when a later slot inherits it", async () => {
+    // Every generateViewport() can resolve and merging one still throw, as on
+    // JavaScript's `themeColor: [null]`. Next.js's accumulateViewport merges
+    // each value at its own place in the loader tree, so the failure is that
+    // item's: the route's for its page, the outlet slot's for that slot. A
+    // later slot that awaits `parent` takes the failure from it, which stays
+    // the earlier item's.
+    const laterSlot = {
+      pageModule: {
+        async generateViewport(_props: unknown, parent: Promise<unknown>) {
+          await parent;
+          return {};
+        },
+      },
+    };
+    const prepare = (owner: "page" | "slot", outletParallelRouteIndex: number | null) =>
+      prepareAppPageHead<Record<string, unknown>>({
+        layoutModules: [],
+        metadataRoutes: [],
+        outletParallelRouteIndex,
+        pageModule:
+          owner === "page"
+            ? { generateViewport: () => ({ themeColor: [null] }) }
+            : { metadata: {} },
+        parallelRoutes: [
+          owner === "slot"
+            ? { pageModule: { generateViewport: () => ({ themeColor: [null] }) } }
+            : { pageModule: { metadata: { title: "Slot" } } },
+          laterSlot,
+        ],
+        params: {},
+        routePath: "/",
+        routeSegments: [],
+      });
+
+    for (const [owner, outletParallelRouteIndex, failing] of [
+      ["page", null, "routeErrors"],
+      ["page", 0, "routeErrors"],
+      ["slot", null, "routeErrors"],
+      ["slot", 0, "hiddenErrors"],
+    ] as const) {
+      const label = `${owner} with outlet ${outletParallelRouteIndex}`;
+      const prepared = prepare(owner, outletParallelRouteIndex);
+      const mergeError: unknown = await prepared.viewport.catch((error: unknown) => error);
+      expect(mergeError, label).toBeInstanceOf(TypeError);
+      await expect(prepared[failing], label).rejects.toBe(mergeError);
+      await expect(
+        prepared[failing === "routeErrors" ? "hiddenErrors" : "routeErrors"],
+        label,
+      ).resolves.toBeNull();
+    }
   });
 
   it("uses parallel route slot page title when no primary page module is present", async () => {

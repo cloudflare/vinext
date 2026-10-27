@@ -115,7 +115,7 @@
       "p75Ms": 73786,
       "samples": 5
     },
-    "tests/app-router-rsc-flight-hint.test.ts": {
+    "tests/app-router-rsc-renderer.test.ts": {
       "estimateMs": 6,
       "medianMs": 5,
       "p75Ms": 6,

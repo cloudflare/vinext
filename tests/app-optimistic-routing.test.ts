@@ -1,16 +1,19 @@
 import { describe, expect, it } from "vite-plus/test";
-import { createElement, Suspense } from "react";
+import { createElement, isValidElement, Suspense } from "react";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
+  APP_STREAMING_METADATA_BODY_ID_PREFIX,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
   canCommitOptimisticRouteTemplate,
   createOptimisticRouteElements,
   createOptimisticRouteTemplate,
+  createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  keepOptimisticStreamingMetadata,
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
   resolveOptimisticNavigationPayload,
@@ -1057,5 +1060,140 @@ describe("App Router optimistic routing", () => {
         templates: new Map(),
       }),
     ).toBeNull();
+  });
+});
+
+describe("optimistic route template store", () => {
+  function storedTemplate(routeId: string): OptimisticRouteTemplate {
+    return {
+      elements: {},
+      mountedSlotsHeader: null,
+      omittedBfcacheSegmentIds: [],
+      omittedLayoutIds: [],
+      pageElementIds: [],
+      routeId,
+    };
+  }
+
+  function deferredLearning() {
+    let resolve!: (template: OptimisticRouteTemplate) => void;
+    const learned = new Promise<OptimisticRouteTemplate>((done) => {
+      resolve = done;
+    });
+    return {
+      learnTemplate: async () => {
+        const template = await learned;
+        return { key: template.routeId, template };
+      },
+      resolve,
+    };
+  }
+
+  it("keeps a learned template and its source until cleared", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const template = storedTemplate("route:/posts/[id]");
+
+    await store.learn("source:/posts/1", async () => ({ key: template.routeId, template }));
+
+    expect(store.templates.get(template.routeId)).toBe(template);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
+
+    store.clear();
+
+    expect(store.templates.size).toBe(0);
+    expect(store.hasSource("source:/posts/1")).toBe(false);
+  });
+
+  it("does not let a learning started before a clear repopulate the store", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const learning = deferredLearning();
+
+    const pending = store.learn("source:/posts/1", learning.learnTemplate);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
+
+    store.clear();
+    expect(store.pendingLearning()).toEqual([]);
+    learning.resolve(storedTemplate("route:/posts/[id]"));
+    await pending;
+
+    expect(store.templates.size).toBe(0);
+    expect(store.hasSource("source:/posts/1")).toBe(false);
+  });
+
+  it("keeps a source learned again after a clear while the earlier learning settles", async () => {
+    const store = createOptimisticRouteTemplateStore();
+    const earlier = deferredLearning();
+    const later = deferredLearning();
+    const template = storedTemplate("route:/posts/[id]");
+
+    const earlierPending = store.learn("source:/posts/1", earlier.learnTemplate);
+    store.clear();
+    const laterPending = store.learn("source:/posts/1", later.learnTemplate);
+
+    earlier.resolve(storedTemplate("route:/posts/[id]"));
+    await earlierPending;
+    expect(store.pendingLearning()).toEqual([laterPending]);
+
+    later.resolve(template);
+    await laterPending;
+    expect(store.templates.get(template.routeId)).toBe(template);
+    expect(store.hasSource("source:/posts/1")).toBe(true);
+  });
+});
+
+describe("keepOptimisticStreamingMetadata", () => {
+  const metadataId = `${APP_STREAMING_METADATA_BODY_ID_PREFIX}route:/blog/post-2`;
+
+  it("renders the payload's streamed metadata with the shell's as its fallback", () => {
+    const shellMetadata = createElement("title", null, "Prefetched");
+    const payloadMetadata = createElement("title", null, "Streamed");
+    const payload: AppElements = { [metadataId]: payloadMetadata, "page:/blog/post-2": "page" };
+
+    const kept = keepOptimisticStreamingMetadata(payload, { [metadataId]: shellMetadata }, "7");
+
+    expect(kept).not.toBe(payload);
+    expect(kept["page:/blog/post-2"]).toBe("page");
+    const boundary = kept[metadataId];
+    if (!isValidElement(boundary)) throw new Error("expected a Suspense element");
+    expect(boundary.type).toBe(Suspense);
+    expect(boundary.key).toBe("7");
+    expect(boundary.props).toEqual({ fallback: shellMetadata, children: payloadMetadata });
+  });
+
+  it("pairs a shell learned for other params with the payload's metadata", () => {
+    // A template learned on /blog/post-1 keeps that route's concrete ids when
+    // it is reused for /blog/post-2.
+    const shellMetadata = createElement("title", null, "post-1");
+    const kept = keepOptimisticStreamingMetadata(
+      { [metadataId]: createElement("title", null, "post-2") },
+      { [`${APP_STREAMING_METADATA_BODY_ID_PREFIX}route:/blog/post-1`]: shellMetadata },
+      "8",
+    );
+
+    const boundary = kept[metadataId];
+    if (!isValidElement<{ fallback: unknown }>(boundary)) {
+      throw new Error("expected a Suspense element");
+    }
+    expect(boundary.props.fallback).toBe(shellMetadata);
+  });
+
+  it("remounts the boundary for each navigation", () => {
+    const payload: AppElements = { [metadataId]: createElement("title", null, "Streamed") };
+    const shell: AppElements = { [metadataId]: createElement("title", null, "Prefetched") };
+
+    const first = keepOptimisticStreamingMetadata(payload, shell, "1")[metadataId];
+    const second = keepOptimisticStreamingMetadata(payload, shell, "2")[metadataId];
+
+    if (!isValidElement(first) || !isValidElement(second)) {
+      throw new Error("expected Suspense elements");
+    }
+    expect(first.key).not.toBe(second.key);
+  });
+
+  it("keeps the payload when the shell streamed no metadata", () => {
+    const payload: AppElements = { [metadataId]: createElement("title", null, "Streamed") };
+
+    expect(keepOptimisticStreamingMetadata(payload, {}, "1")).toBe(payload);
+    expect(keepOptimisticStreamingMetadata(payload, { [metadataId]: null }, "1")).toBe(payload);
   });
 });

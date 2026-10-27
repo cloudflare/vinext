@@ -30,6 +30,7 @@ import {
   ACTION_REVALIDATED_HEADER,
   NEXT_ROUTER_STATE_TREE_HEADER,
   RSC_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
 } from "./headers.js";
@@ -283,6 +284,8 @@ export type HandleProgressiveServerActionRequestOptions = {
    * routes fall through. See issue #1340.
    */
   hasPageRoute: boolean;
+  /** The App Router route the form posted to, whose implicit tags the action runs with. */
+  currentRoute?: AppServerActionRoute | null;
   maxActionBodySize: number;
   middlewareHeaders: Headers | null;
   readFormDataWithLimit: ReadFormDataWithLimit;
@@ -690,6 +693,7 @@ async function createActionRedirectTargetRequest(options: {
   // not another action request or a patch against the action route's tree.
   headers.set(RSC_HEADER, "1");
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   stripRscCacheBustingSearchParam(options.url);
   const requestPath = await createRscRequestUrl(
     `${options.url.pathname}${options.url.search}`,
@@ -1348,6 +1352,11 @@ export async function handleProgressiveServerActionRequest(
     let actionThrew = false;
     let actionResult: unknown;
     const rootParamsUsage = createRootParamsUsageController();
+    if (options.currentRoute) {
+      setCurrentFetchSoftTags(
+        buildServerActionPageTags(options.currentRoute, options.cleanPathname),
+      );
+    }
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       actionResult = await runWithRootParamsUsage(
@@ -1707,6 +1716,14 @@ export async function handleServerActionRscRequest<
     let actionThrew = false;
     const actionWasForwarded = Boolean(options.request.headers.get(ACTION_FORWARDED_HEADER));
     const rootParamsUsage = createRootParamsUsageController();
+    // Like Next.js, the action runs with its page's implicit tags, so cache
+    // reads inside it observe path invalidations, including its own
+    // revalidatePath().
+    if (options.currentRouteMatch) {
+      setCurrentFetchSoftTags(
+        buildServerActionPageTags(options.currentRouteMatch.route, options.cleanPathname),
+      );
+    }
     const previousHeadersPhase = options.setHeadersAccessPhase("action");
     try {
       try {

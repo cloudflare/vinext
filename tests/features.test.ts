@@ -811,6 +811,48 @@ describe("ISR cache internals", () => {
     expect(result).toBeNull();
   });
 
+  it("MemoryCacheHandler serves entries of a tag revalidated with a profile stale until it expires, like Next.js", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    try {
+      const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
+      const handler = new MemoryCacheHandler();
+      const value = {
+        kind: "FETCH" as const,
+        data: { headers: {}, body: "test", url: "" },
+        tags: ["mytag"],
+        revalidate: 3600,
+      };
+      await handler.set("tagged", value, { revalidate: 3600, tags: ["mytag"] });
+      await handler.set("soft-tagged", { ...value, tags: [] }, { revalidate: 3600 });
+
+      vi.advanceTimersByTime(1000);
+      await handler.revalidateTag("mytag", { expire: 60 });
+
+      await expect(handler.get("tagged")).resolves.toMatchObject({ cacheState: "stale" });
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+
+      // An entry written after the revalidation is fresh.
+      vi.advanceTimersByTime(1000);
+      await handler.set("fresh", value, { revalidate: 3600, tags: ["mytag"] });
+      const fresh = await handler.get("fresh");
+      expect(fresh?.cacheState).toBeUndefined();
+
+      // Once the profile's expire time passes, every entry written before it
+      // is gone, as in Next.js's areTagsExpired. One written later is kept.
+      vi.advanceTimersByTime(60_000);
+      await handler.set("after-expiry", value, { revalidate: 3600, tags: ["mytag"] });
+      vi.advanceTimersByTime(1);
+      await expect(handler.get("tagged")).resolves.toBeNull();
+      await expect(handler.get("soft-tagged", { softTags: ["mytag"] })).resolves.toBeNull();
+      await expect(handler.get("fresh")).resolves.toBeNull();
+      await expect(handler.get("after-expiry")).resolves.not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("MemoryCacheHandler skips storage when data.revalidate is 0", async () => {
     const { MemoryCacheHandler } = await import("../packages/vinext/src/shims/cache.js");
     const handler = new MemoryCacheHandler();
@@ -2422,6 +2464,81 @@ describe("metadata title templates", () => {
     expect(result).toEqual({});
   });
 
+  it("clears the template after a title without one, as Next.js's resolved title does", async () => {
+    // Next.js stashes the resolved title's own template, which a plain string,
+    // or a title object without a template, resets to null.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-title.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const site = { title: { template: "%s | Site", default: "Site" } };
+    expect(mergeMetadata([site, { title: "Mid" }, { title: "Leaf" }]).title).toBe("Leaf");
+    expect(mergeMetadata([site, { title: { default: "Blog" } }, { title: "Post" }]).title).toBe(
+      "Post",
+    );
+    expect(
+      mergeParentMetadataEntries([{ metadata: site }, { metadata: { title: "Mid" } }]).title,
+    ).toEqual({ absolute: "Mid | Site", template: null });
+  });
+
+  it("gives openGraph and twitter titles their own templates, as Next.js does", async () => {
+    // Next.js keeps a template per title (`titleTemplates.openGraph` and
+    // `.twitter`), each from the last resolved value's own title. Those values
+    // replace the whole object, so one without a title clears its template.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolve-metadata.ts (accumulateMetadata)
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/metadata/resolvers/resolve-opengraph.ts
+    const { mergeParentMetadataEntries } = await import("../packages/vinext/src/shims/metadata.js");
+    const social = {
+      openGraph: { title: { template: "%s | OG", default: "OG" } },
+      twitter: { title: { template: "%s | TW", default: "TW" } },
+    };
+    const page = { openGraph: { title: "Page" }, twitter: { title: "Page" } };
+
+    let result = mergeMetadata([social, page]);
+    expect(result.openGraph?.title).toBe("Page | OG");
+    expect(result.twitter?.title).toBe("Page | TW");
+    // A layout's own default isn't wrapped, and a page without them inherits it.
+    result = mergeMetadata([social, {}]);
+    expect(result.openGraph?.title).toBe("OG");
+    expect(result.twitter?.title).toBe("TW");
+    // A plain-string title, or a value without a title, clears the template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Mid" }, twitter: { description: "Mid" } },
+      page,
+    ]);
+    expect(result.openGraph?.title).toBe("Page");
+    expect(result.twitter?.title).toBe("Page");
+    // A missing twitter title comes from the resolved openGraph title, not
+    // twitter's template.
+    result = mergeMetadata([
+      social,
+      { openGraph: { title: "Page" }, twitter: { card: "summary" } },
+    ]);
+    expect(result.twitter?.title).toBe("Page | OG");
+    // `parent` sees each resolved title as `{ absolute, template }`.
+    const parent = mergeParentMetadataEntries([{ metadata: social }]);
+    expect(parent.openGraph?.title).toEqual({ absolute: "OG", template: "%s | OG" });
+    expect(parent.twitter?.title).toEqual({ absolute: "TW", template: "%s | TW" });
+    expect(
+      mergeParentMetadataEntries([{ metadata: parent }, { metadata: page }]).openGraph?.title,
+    ).toEqual({ absolute: "Page | OG", template: null });
+    // `parent` keeps an empty template as `""`, which wraps nothing.
+    const empty = {
+      title: { template: "", default: "E" },
+      openGraph: { title: { template: "", default: "E OG" } },
+      twitter: { title: { template: "", default: "E TW" } },
+    };
+    const emptyParent = mergeParentMetadataEntries([{ metadata: empty }]);
+    expect(emptyParent.title).toEqual({ absolute: "E", template: "" });
+    expect(emptyParent.openGraph?.title).toEqual({ absolute: "E OG", template: "" });
+    expect(emptyParent.twitter?.title).toEqual({ absolute: "E TW", template: "" });
+    result = mergeMetadata([empty, { title: "C", ...page }]);
+    expect([result.title, result.openGraph?.title, result.twitter?.title]).toEqual([
+      "C",
+      "Page",
+      "Page",
+    ]);
+  });
+
   it("uses explicit page markers instead of assuming the last entry is the page", () => {
     const result = mergeMetadataEntries([
       {
@@ -2432,7 +2549,6 @@ describe("metadata title templates", () => {
         metadata: { description: "Page", title: { default: "Page", template: "%s | Page" } },
       },
       {
-        contributesTitle: false,
         metadata: {
           openGraph: { title: "Slot OG title" },
           title: { default: "Slot", template: "%s | Slot" },
@@ -2442,11 +2558,12 @@ describe("metadata title templates", () => {
 
     // mergeMetadataEntries does raw segment merging only; post-processing is
     // applied separately by postProcessMetadata (called by mergeMetadata and by
-    // resolveAppPageHead after file-based metadata is applied).
+    // resolveAppPageHead after file-based metadata is applied). The page's
+    // template does not wrap the later slot title.
     expect(result).toEqual({
       description: "Page",
       openGraph: { title: "Slot OG title" },
-      title: "Page | Root",
+      title: "Slot | Root",
     });
   });
 });

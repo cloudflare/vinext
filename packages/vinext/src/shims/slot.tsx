@@ -11,7 +11,6 @@ import {
   type AppElementsInterception,
   type AppElementsBfcacheSegmentIdentities,
   type AppElementsSlotBinding,
-  type LayoutFlags,
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import {
@@ -196,12 +195,6 @@ export function stageBfcacheSlotEntryForRender(
   };
 }
 
-function isLayoutFlagsValue(value: unknown): value is LayoutFlags {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const entries = Object.values(value);
-  return entries.length > 0 && entries.every((entry) => entry === "s" || entry === "d");
-}
-
 function isArtifactCompatibilityEnvelopeValue(
   value: unknown,
 ): value is ArtifactCompatibilityEnvelope {
@@ -281,7 +274,6 @@ function isTransportMetadataValue(
   id: string,
   value: AppElementValue | undefined,
 ): value is
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -289,7 +281,6 @@ function isTransportMetadataValue(
   | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
-    isLayoutFlagsValue(value) ||
     isBfcacheSegmentIdentitiesMetadataValue(id, value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
@@ -459,6 +450,68 @@ export function BfcacheSegmentBoundary({
       elements={elements}
       id={id}
       SegmentContext={BfcacheSegmentIdContext}
+      stateKeyMap={identityMap}
+    />
+  );
+}
+
+/**
+ * Retains a layout's children across navigations that change which segment
+ * they render. Each child keeps its own wrappers, so a page and a nested layout
+ * give the layout's children different element shapes, and a retention list
+ * inside the child would remount with them. Next.js keeps this Activity list in
+ * the parent's layout router, above the child's boundaries, so a page left for a
+ * sibling with its own layout keeps its state when navigating back.
+ */
+export function BfcacheChildrenBoundary({
+  children,
+  id,
+}: {
+  children: React.ReactNode;
+  id: string;
+}) {
+  if (!BfcacheIdMapContext || !BfcacheSegmentIdContext || !isCacheComponentsEnabled()) {
+    return <>{children}</>;
+  }
+  return (
+    <BfcacheChildrenActivityBoundary
+      id={id}
+      IdMapContext={BfcacheIdMapContext}
+      SegmentContext={BfcacheSegmentIdContext}
+    >
+      {children}
+    </BfcacheChildrenActivityBoundary>
+  );
+}
+
+function BfcacheChildrenActivityBoundary({
+  children,
+  id,
+  IdMapContext,
+  SegmentContext,
+}: {
+  children: React.ReactNode;
+  id: string;
+  IdMapContext: React.Context<Readonly<Record<string, string>> | null>;
+  SegmentContext: React.Context<string | null>;
+}) {
+  const elements = React.useContext(ElementsContext);
+  const identityMap = React.useContext(BfcacheIdentityMapContext);
+  const bfcacheIdMap = React.useContext(IdMapContext);
+  // The children keep the segment id of the layout that renders them.
+  const segmentId = React.useContext(SegmentContext);
+  const activeStateKey = resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
+  if (segmentId === null || activeStateKey === undefined) {
+    return <>{children}</>;
+  }
+
+  return (
+    <BfcacheActivitySlotBoundary
+      activeStateKey={activeStateKey}
+      content={children}
+      elements={elements}
+      id={segmentId}
+      SegmentContext={SegmentContext}
       stateKeyMap={identityMap}
     />
   );

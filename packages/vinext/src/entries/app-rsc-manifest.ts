@@ -6,6 +6,7 @@ import {
   convertSegmentsToRouteParts,
   type AppRoute,
 } from "../routing/app-router.js";
+import { findSlotPageTreePosition } from "../routing/app-route-graph.js";
 import { createMetadataRouteEntriesSource } from "../server/metadata-route-build-data.js";
 import type { MetadataFileRoute } from "../server/metadata-routes.js";
 
@@ -240,6 +241,15 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       for (const ir of slot.interceptingRoutes) {
         imports.getLazyLoaderVar(ir.pagePath);
         if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
+        for (const forbiddenPath of ir.forbiddenPaths ?? []) {
+          imports.getLazyLoaderVar(forbiddenPath);
+        }
+        for (const unauthorizedPath of ir.unauthorizedPaths ?? []) {
+          imports.getLazyLoaderVar(unauthorizedPath);
+        }
+        for (const errorPath of ir.errorPaths ?? []) {
+          imports.getLazyLoaderVar(errorPath);
+        }
         for (const notFoundPath of ir.notFoundPaths ?? []) {
           imports.getLazyLoaderVar(notFoundPath);
         }
@@ -257,8 +267,15 @@ function registerRouteModules(routes: AppRoute[], imports: ImportAllocator): voi
       // their layout chains into the entry's top-level evaluation.
       imports.getLazyLoaderVar(ir.pagePath);
       if (ir.notFoundPath) imports.getLazyLoaderVar(ir.notFoundPath);
-      if (ir.forbiddenPath) imports.getLazyLoaderVar(ir.forbiddenPath);
-      if (ir.unauthorizedPath) imports.getLazyLoaderVar(ir.unauthorizedPath);
+      for (const forbiddenPath of ir.forbiddenPaths ?? []) {
+        imports.getLazyLoaderVar(forbiddenPath);
+      }
+      for (const unauthorizedPath of ir.unauthorizedPaths ?? []) {
+        imports.getLazyLoaderVar(unauthorizedPath);
+      }
+      for (const errorPath of ir.errorPaths ?? []) {
+        imports.getLazyLoaderVar(errorPath);
+      }
       for (const notFoundPath of ir.notFoundPaths ?? []) {
         imports.getLazyLoaderVar(notFoundPath);
       }
@@ -284,7 +301,7 @@ function lazyLoaderArray(
 }
 
 function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string[] {
-  return routes.map((route, routeIdx) => {
+  return routes.map((route) => {
     // Pre-compute static-sibling segment names for the matched route's
     // dynamic URL levels. The client router uses this to decide if a cached
     // dynamic-route prefetch can be reused when navigating to a static
@@ -329,12 +346,15 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
       notFound: null,
       __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
       notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
-      forbidden: null,
-      __loadForbidden: ${ir.forbiddenPath ? imports.getLazyLoaderVar(ir.forbiddenPath) : "null"},
-      forbiddenTreePosition: ${ir.forbiddenTreePosition ?? "null"},
-      unauthorized: null,
-      __loadUnauthorized: ${ir.unauthorizedPath ? imports.getLazyLoaderVar(ir.unauthorizedPath) : "null"},
-      unauthorizedTreePosition: ${ir.unauthorizedTreePosition ?? "null"},
+      interceptForbiddens: ${moduleArray(ir.forbiddenPaths?.length ?? 0)},
+      __loadInterceptForbiddens: ${lazyLoaderArray(ir.forbiddenPaths ?? [], imports)},
+      interceptForbiddenTreePositions: ${JSON.stringify(ir.forbiddenTreePositions ?? [])},
+      interceptUnauthorizeds: ${moduleArray(ir.unauthorizedPaths?.length ?? 0)},
+      __loadInterceptUnauthorizeds: ${lazyLoaderArray(ir.unauthorizedPaths ?? [], imports)},
+      interceptUnauthorizedTreePositions: ${JSON.stringify(ir.unauthorizedTreePositions ?? [])},
+      interceptErrors: ${moduleArray(ir.errorPaths?.length ?? 0)},
+      __loadInterceptErrors: ${lazyLoaderArray(ir.errorPaths ?? [], imports)},
+      interceptErrorTreePositions: ${JSON.stringify(ir.errorTreePositions ?? [])},
       params: ${JSON.stringify(ir.params)},
     }`,
     );
@@ -361,6 +381,15 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
           notFound: null,
           __loadNotFound: ${ir.notFoundPath ? imports.getLazyLoaderVar(ir.notFoundPath) : "null"},
           notFoundTreePosition: ${ir.notFoundTreePosition ?? "null"},
+          interceptForbiddens: ${moduleArray(ir.forbiddenPaths?.length ?? 0)},
+          __loadInterceptForbiddens: ${lazyLoaderArray(ir.forbiddenPaths ?? [], imports)},
+          interceptForbiddenTreePositions: ${JSON.stringify(ir.forbiddenTreePositions ?? [])},
+          interceptUnauthorizeds: ${moduleArray(ir.unauthorizedPaths?.length ?? 0)},
+          __loadInterceptUnauthorizeds: ${lazyLoaderArray(ir.unauthorizedPaths ?? [], imports)},
+          interceptUnauthorizedTreePositions: ${JSON.stringify(ir.unauthorizedTreePositions ?? [])},
+          interceptErrors: ${moduleArray(ir.errorPaths?.length ?? 0)},
+          __loadInterceptErrors: ${lazyLoaderArray(ir.errorPaths ?? [], imports)},
+          interceptErrorTreePositions: ${JSON.stringify(ir.errorTreePositions ?? [])},
           params: ${JSON.stringify(ir.params)},
         }`,
       );
@@ -377,6 +406,7 @@ function buildRouteEntries(routes: AppRoute[], imports: ImportAllocator): string
         configLayouts: ${moduleArray(slot.configLayoutPaths?.length ?? 0)},
         __loadConfigLayouts: ${lazyLoaderArray(slot.configLayoutPaths ?? [], imports)},
         configLayoutTreePositions: ${JSON.stringify(slot.configLayoutTreePositions ?? [])},
+        pageTreePosition: ${findSlotPageTreePosition(slot) ?? "null"},
         loading: null,
         __loadLoading: ${slot.loadingPath ? imports.getLazyLoaderVar(slot.loadingPath) : "null"},
         loadings: ${moduleArray(slot.loadingPaths?.length ?? 0)},
@@ -413,8 +443,6 @@ ${interceptEntries.join(",\n")}
       ? imports.getLazyLoaderVar(route.routePath)
       : "null";
     return `  {
-    __buildTimeClassifications: __VINEXT_CLASS(${routeIdx}), // evaluated once at module load
-    __buildTimeReasons: __classDebug ? __VINEXT_CLASS_REASONS(${routeIdx}) : null,
     canUseCanonicalLoadingShell: ${appRouteHasMainTreeLoadingBoundary(route)},
     ids: ${JSON.stringify(route.ids ?? null)},
     pattern: ${JSON.stringify(route.pattern)},

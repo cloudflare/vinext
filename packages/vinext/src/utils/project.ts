@@ -272,15 +272,21 @@ export function findViteConfigPath(root: string): string | undefined {
 export function formatMissingCloudflarePluginError(options: {
   isAppRouter: boolean;
   configFile?: string;
+  /** False when configFile is not the root vite.config.* that `vinext init` updates. */
+  initUpdatesConfig?: boolean;
 }): string {
   const cfArg = options.isAppRouter
     ? '{\n      viteEnvironment: { name: "rsc", childEnvironments: ["ssr"] },\n    }'
     : "";
   const configRef = options.configFile ? options.configFile : "your Vite config";
+  const remedy =
+    options.initUpdatesConfig === false
+      ? `Add it to ${configRef}.`
+      : `Run \`vinext init --platform=cloudflare\` to update ${configRef}.`;
   return (
     `[vinext] Missing @cloudflare/vite-plugin in ${configRef}.\n\n` +
     `  Cloudflare Workers builds require the cloudflare() plugin.\n` +
-    `  Run \`vinext init --platform=cloudflare\` to update ${configRef}.\n\n` +
+    `  ${remedy}\n\n` +
     `  Expected plugin shape:\n\n` +
     `    cloudflare(${cfArg})`
   );
@@ -305,8 +311,6 @@ export type ProjectInfo = {
   hasMDX: boolean;
   /** CodeHike is a dependency */
   hasCodeHike: boolean;
-  /** Native Node modules that need stubbing for Workers */
-  nativeModulesToStub: string[];
 };
 
 /** Check whether a wrangler config file exists in the given directory. */
@@ -397,7 +401,6 @@ export function detectProject(root: string): ProjectInfo {
     ...(pkg?.devDependencies as Record<string, unknown> | undefined),
   };
   const hasCodeHike = "codehike" in allDeps;
-  const nativeModulesToStub = detectNativeModules(allDeps);
 
   return {
     root,
@@ -414,7 +417,6 @@ export function detectProject(root: string): ProjectInfo {
     hasTypeModule,
     hasMDX,
     hasCodeHike,
-    nativeModulesToStub,
   };
 }
 
@@ -502,6 +504,15 @@ function detectMDXFromConfig(root: string): boolean {
   return false;
 }
 
+/**
+ * Next.js copies a set legacy `experimental.cacheComponents` over the
+ * top-level key (warnOptionHasBeenMovedOutOfExperimental).
+ */
+function configEnablesCacheComponents(content: string): boolean {
+  if (/\bexperimental\s*:\s*\{[^}]*\bcacheComponents\s*:\s*false\b/.test(content)) return false;
+  return /\bcacheComponents\s*:\s*true\b/.test(content);
+}
+
 function detectCacheComponents(root: string): boolean {
   const configFiles = [
     "next.config.ts",
@@ -514,26 +525,12 @@ function detectCacheComponents(root: string): boolean {
     const configPath = path.join(root, fileName);
     if (!fs.existsSync(configPath)) continue;
     try {
-      if (/\bcacheComponents\s*:\s*true\b/.test(fs.readFileSync(configPath, "utf-8"))) {
-        return true;
-      }
+      if (configEnablesCacheComponents(fs.readFileSync(configPath, "utf-8"))) return true;
     } catch {
       // ignore unreadable config files
     }
   }
   return false;
-}
-
-const NATIVE_MODULES_TO_STUB = [
-  "@resvg/resvg-js",
-  "satori",
-  "lightningcss",
-  "@napi-rs/canvas",
-  "sharp",
-];
-
-function detectNativeModules(allDeps: Record<string, unknown>): string[] {
-  return NATIVE_MODULES_TO_STUB.filter((mod) => mod in allDeps);
 }
 
 type MissingDep = {

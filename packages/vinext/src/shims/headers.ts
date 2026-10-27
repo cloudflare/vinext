@@ -23,7 +23,6 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 import { createPprFallbackShellSuspensePromise } from "./ppr-fallback-shell.js";
-import type { CacheLifeConfig, CacheLifeSink } from "./cache-request-state.js";
 import type { RenderRequestApiKind } from "../server/cache-proof.js";
 import type { ReadonlyRequestCookies } from "@vinext/types/next/upstream/dist/server/web/spec-extension/adapters/request-cookies";
 import type { ResponseCookie } from "@vinext/types/next/upstream/dist/compiled/@edge-runtime/cookies/index";
@@ -156,96 +155,24 @@ function mergeMiddlewareSetCookies(ctx: HeadersContext, rawHeader: string | null
 }
 
 /**
- * Measure dynamic usage in a child async scope without clearing the parent.
- * Concurrent work that already belongs to the request (such as deferred
- * metadata) keeps writing to the parent state and therefore remains visible
- * to the final cache policy.
+ * Run a layout probe without letting its dynamic API usage, fetch tags or
+ * cacheLife reach the request. Next.js has no probe: only the render decides
+ * whether a page is dynamic and how long it is cached.
  */
-export async function runWithIsolatedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean }> {
-  const runInChildState = async (childState: VinextHeadersShimState) => {
-    const result = await fn();
-    return { result, dynamicDetected: childState.dynamicUsageDetected };
-  };
-
+export async function runWithDetachedDynamicUsage<T>(fn: () => T | Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.dynamicUsageDetected = false;
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState);
-      },
-    );
-  }
-
-  const parentState = _getState();
-  const childState: VinextHeadersShimState = {
-    ...parentState,
-    // Share the parent's latch, creating it first on a stale fallback state.
-    renderDynamicLatch: ensureRenderDynamicLatch(parentState),
-    dynamicUsageDetected: false,
-  };
-  return await _als.run(childState, () => runInChildState(childState));
-}
-
-/**
- * Run a pre-render probe without letting its dynamic API usage classify the
- * request. Next.js has no probe: only the render decides whether a page is
- * dynamic, and the render runs the probed layouts and page again. Returns the
- * probe's own usage and cacheLife for a caller whose probe response replaces
- * the render.
- */
-export async function runWithDetachedDynamicUsage<T>(
-  fn: () => T | Promise<T>,
-): Promise<{ result: T; dynamicDetected: boolean; cacheLife: CacheLifeConfig | null }> {
-  const runInChildState = async (
-    childState: VinextHeadersShimState,
-    cacheLifeSink: CacheLifeSink | null,
-  ) => {
-    const result = await fn();
-    return {
-      result,
-      cacheLife: cacheLifeSink?.cacheLife ?? null,
-      // Nested isolated scopes latch without setting this scope's flag.
-      dynamicDetected: childState.dynamicUsageDetected || childState.renderDynamicLatch.dynamic,
-    };
-  };
-
-  if (isInsideUnifiedScope()) {
-    let childState: VinextHeadersShimState | null = null;
-    // Layout probes run in further isolated scopes that reset the slot.
-    const cacheLifeSink: CacheLifeSink = { cacheLife: null };
-    return await runWithUnifiedStateMutation(
-      (context) => {
-        context.cacheLifeSink = cacheLifeSink;
-        context.dynamicUsageDetected = false;
-        context.renderDynamicLatch = createRenderDynamicLatch();
-        context.renderRequestApiUsage = new Set();
-        // cacheForRequest() values would hand the probe's result to the render
-        // without the dynamic API calls that produced it.
-        context.requestCache = new WeakMap();
-        // The render records its own fetches, tags and cacheLife.
-        context.cacheableFetchUrls = new Set();
-        context.currentRequestTags = [];
-        context.dynamicFetchUrls = new Set();
-        context.requestScopedCacheLife = null;
-        context.unstableCacheObservations = new Map();
-        childState = context;
-      },
-      () => {
-        if (!childState) {
-          throw new Error("Dynamic usage scope was not initialized");
-        }
-        return runInChildState(childState, cacheLifeSink);
-      },
-    );
+    return await runWithUnifiedStateMutation((context) => {
+      context.dynamicUsageDetected = false;
+      context.renderDynamicLatch = createRenderDynamicLatch();
+      context.renderRequestApiUsage = new Set();
+      // cacheForRequest() values would hand the probe's result to the render
+      // without the dynamic API calls that produced it.
+      context.requestCache = new WeakMap();
+      // The render records its own fetches, tags and cacheLife.
+      context.currentRequestTags = [];
+      context.dynamicFetchUrls = new Set();
+      context.requestScopedCacheLife = null;
+    }, fn);
   }
 
   const childState: VinextHeadersShimState = {
@@ -254,9 +181,7 @@ export async function runWithDetachedDynamicUsage<T>(
     renderDynamicLatch: createRenderDynamicLatch(),
     renderRequestApiUsage: new Set(),
   };
-  // Outside the unified scope the probe's claims stay on the request's cache
-  // state, so no cacheLife is returned for the probe.
-  return await _als.run(childState, () => runInChildState(childState, null));
+  return await _als.run(childState, fn);
 }
 
 export async function runWithConnectionProbe<T>(
@@ -627,7 +552,7 @@ class ReadonlyHeadersError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyHeadersError();
   }
 }
@@ -642,7 +567,7 @@ class ReadonlyRequestCookiesError extends Error {
     );
   }
 
-  static callable(): never {
+  static callable(this: void): never {
     throw new ReadonlyRequestCookiesError();
   }
 }
@@ -775,10 +700,12 @@ function _wrapMutableCookies(cookies: RequestCookies): RequestCookies {
 }
 
 function _sealCookies(cookies: RequestCookies): RequestCookies {
+  // Like Next.js's RequestCookiesAdapter.seal, the mutating methods throw when
+  // called, not when read.
   return new Proxy(cookies, {
     get(target, prop) {
-      if (prop === "set" || prop === "delete") {
-        throw new ReadonlyRequestCookiesError();
+      if (prop === "set" || prop === "delete" || prop === "clear") {
+        return ReadonlyRequestCookiesError.callable;
       }
 
       const value = Reflect.get(target, prop, target);
@@ -1195,7 +1122,8 @@ class RequestCookies {
       : null;
   }
 
-  get(name: string): ResponseCookie | undefined {
+  get(nameOrOptions: string | { name: string }): ResponseCookie | undefined {
+    const name = typeof nameOrOptions === "string" ? nameOrOptions : nameOrOptions.name;
     if (this._responseCookies) return this._responseCookies.get(name);
     const value = this._cookies.get(name);
     if (value === undefined) return undefined;

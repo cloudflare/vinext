@@ -51,6 +51,7 @@ async function deployCommand(): Promise<void> {
     preview: parsed.preview,
     env: parsed.env,
     config: parsed.config,
+    viteConfig: parsed.viteConfig,
     skipBuild: parsed.skipBuild,
     dryRun: parsed.dryRun,
     verbose: parsed.verbose,
@@ -101,6 +102,7 @@ async function previewsCommand(): Promise<void> {
     root: process.cwd(),
     env: options.mode,
     skipBuild: options.skipBuild,
+    viteConfig: options.viteConfig,
     target: { type: "preview", name: options.name },
   });
 }

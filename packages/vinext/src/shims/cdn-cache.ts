@@ -62,6 +62,13 @@ export type CdnCacheableHeaderInput = {
   tags?: readonly string[];
 };
 
+/** A page's document, rendered from an RSC request's payload. */
+export type CdnAppPageDocument = {
+  html: string;
+  /** The renderer's own `Link` header. */
+  linkHeader?: string;
+};
+
 export type CdnResponsePolicy = {
   /** Whether a provider-specific response header controls shared caching. */
   isHeader(name: string): boolean;
@@ -187,6 +194,15 @@ export type CdnCacheAdapter = {
 
   /** Capture the full-route RSC side stream while admitting a completed HTML response. */
   captureAppPageRscData?(rscData: Promise<ArrayBuffer>): void;
+
+  /**
+   * Store the page's document beside an RSC request's completed response, as
+   * Next.js keeps a page's document and RSC payload in one entry. Returns the
+   * callback admission calls with the document the render rendered from its
+   * payload, or with `null` when the page has no document to store, or
+   * `undefined` when this render's response stores no document.
+   */
+  captureAppPageDocument?(): ((document: CdnAppPageDocument | null) => void) | undefined;
 
   /**
    * Whether this adapter sends the 304 for a Pages render whose If-None-Match

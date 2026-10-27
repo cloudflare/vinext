@@ -26,7 +26,6 @@ import {
 import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
 import {
   FLIGHT_HEADERS,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_RSC_STATE_FINGERPRINT_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { fnv1a64 } from "../packages/vinext/src/utils/hash.js";
@@ -105,7 +104,6 @@ describe("App Router RSC cache-busting", () => {
 
   it("normalizes full prefetch and navigation headers to the warmer shape", async () => {
     const headers = createRscRequestHeaders({
-      clientReuseManifestHeader: '{"entries":[]}',
       deploymentId: "dpl_123",
       nextUrl: "/source",
       prefetchRouterState: { pathAndSearch: "/source", routeId: "route:/source" },
@@ -314,14 +312,6 @@ describe("App Router RSC cache-busting", () => {
     // Ported from Next.js: test/e2e/app-dir/actions/app-action.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/actions/app-action.test.ts
     expect(createServerActionRequestUrl("/server?name=alice#section")).toBe("/server?name=alice");
-  });
-
-  it("attaches client reuse manifests without making them shared cache variants", async () => {
-    const manifestHeader = '{"entries":[]}';
-    const headers = createRscRequestHeaders({ clientReuseManifestHeader: manifestHeader });
-
-    expect(headers.get(VINEXT_CLIENT_REUSE_MANIFEST_HEADER)).toBe(manifestHeader);
-    await expect(createRscRequestUrl("/dashboard", headers)).resolves.toBe("/dashboard?_rsc");
   });
 
   it("changes the hash when a varying header changes", async () => {

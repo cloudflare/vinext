@@ -1444,6 +1444,18 @@ describe("detectProject", () => {
     writeFile(tmpDir, "next.config.ts", "export default { cacheComponents: true };");
     expect(detectProject(tmpDir).hasISR).toBe(true);
   });
+
+  it.each([
+    ["export default { experimental: { cacheComponents: true } };", true],
+    ["export default { cacheComponents: true, experimental: { cacheComponents: false } };", false],
+  ])(
+    "lets a legacy experimental.cacheComponents override the top-level key: %s",
+    (config, expected) => {
+      mkdir(tmpDir, "app");
+      writeFile(tmpDir, "next.config.ts", config);
+      expect(detectProject(tmpDir).hasISR).toBe(expected);
+    },
+  );
 });
 
 describe("route cacheability probe manifest deployment", () => {
@@ -1738,6 +1750,12 @@ describe("formatImageOptimizationHint", () => {
     const message = formatImageOptimizationHint(true);
     expect(message).toContain("cloudflare.config.ts");
     expect(message).not.toContain("Wrangler");
+  });
+
+  it("does not suggest init for a --vite-config file", () => {
+    const message = formatImageOptimizationHint(false, "/project/vite.web.config.ts");
+    expect(message).toContain("imagesOptimizer() in\n  /project/vite.web.config.ts");
+    expect(message).not.toContain("vinext init");
   });
 });
 
@@ -3151,6 +3169,16 @@ describe("formatMissingCloudflarePluginError", () => {
     expect(msg).toContain("/project/vite.config.mts");
   });
 
+  it("does not suggest init when it would not update the config file", () => {
+    const msg = formatMissingCloudflarePluginError({
+      isAppRouter: false,
+      configFile: "/project/vite.web.config.ts",
+      initUpdatesConfig: false,
+    });
+    expect(msg).toContain("Add it to /project/vite.web.config.ts.");
+    expect(msg).not.toContain("vinext init");
+  });
+
   it("uses generic 'your Vite config' when configFile is undefined", () => {
     const msg = formatMissingCloudflarePluginError({ isAppRouter: false });
     expect(msg).toContain("your Vite config");
@@ -3421,37 +3449,6 @@ describe("detectProject — new detection features", () => {
     expect(info.hasCodeHike).toBe(false);
   });
 
-  it("detects native modules to stub", () => {
-    mkdir(tmpDir, "app");
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.10.0" } }),
-    );
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toContain("@resvg/resvg-js");
-    expect(info.nativeModulesToStub).toContain("satori");
-  });
-
-  it("detects native modules listed only in devDependencies", () => {
-    mkdir(tmpDir, "app");
-    writeFile(
-      tmpDir,
-      "package.json",
-      JSON.stringify({ devDependencies: { sharp: "^0.33.0", lightningcss: "^1.0.0" } }),
-    );
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toContain("sharp");
-    expect(info.nativeModulesToStub).toContain("lightningcss");
-  });
-
-  it("nativeModulesToStub is empty when no native deps", () => {
-    mkdir(tmpDir, "app");
-    writeFile(tmpDir, "package.json", JSON.stringify({ dependencies: { react: "^19.0.0" } }));
-    const info = detectProject(tmpDir);
-    expect(info.nativeModulesToStub).toEqual([]);
-  });
-
   it("detects ISR and MDX from a single app/ tree walk", () => {
     // ISR (`export const revalidate`) and a `.mdx` file live in the same tree;
     // detection shares one recursive walk and reports both.
@@ -3509,17 +3506,21 @@ describe("generateAppRouterViteConfig — with project info", () => {
     expect(config).not.toContain('"#"');
   });
 
-  it("includes native module stubs in resolve.alias", () => {
+  // vinext does not stub native modules, so init writes no alias pointing at
+  // a file that does not exist (#4196).
+  it("does not alias native modules", () => {
     mkdir(tmpDir, "app");
     writeFile(
       tmpDir,
       "package.json",
-      JSON.stringify({ dependencies: { "@resvg/resvg-js": "^2.0.0" } }),
+      JSON.stringify({
+        dependencies: { "@resvg/resvg-js": "^2.0.0", satori: "^0.13.2", sharp: "^0.34.0" },
+      }),
     );
     const info = detectProject(tmpDir);
     const config = generateAppRouterViteConfig(info);
-    expect(config).toContain("@resvg/resvg-js");
-    expect(config).toContain("empty-stub.js");
+    expect(config).not.toContain("resolve:");
+    expect(config).not.toContain("empty-stub");
   });
 
   it("still works without info (backward compatible)", () => {
@@ -3532,22 +3533,8 @@ describe("generateAppRouterViteConfig — with project info", () => {
   });
 });
 
-describe("generatePagesRouterViteConfig — with project info", () => {
-  it("does not include tsconfig aliases in generated config (handled by plugin at runtime)", () => {
-    mkdir(tmpDir, "pages");
-    writeFile(
-      tmpDir,
-      "tsconfig.json",
-      JSON.stringify({
-        compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } },
-      }),
-    );
-    const info = detectProject(tmpDir);
-    const config = generatePagesRouterViteConfig(info);
-    expect(config).not.toContain('"@"');
-  });
-
-  it("still works without info (backward compatible)", () => {
+describe("generatePagesRouterViteConfig", () => {
+  it("generates the default config", () => {
     const config = generatePagesRouterViteConfig();
     expect(config).toContain("vinext({");
     expect(config).toContain("cloudflare()");

@@ -56,11 +56,11 @@ type InterceptingRoute = {
   notFoundBranchSegments?: string[];
   /** Tree position relative to the normalized interception branch. */
   notFoundTreePosition?: number | null;
-  /** Nearest forbidden convention inside a sibling interception branch. */
+  /** Nearest forbidden convention inside the interception branch. */
   forbiddenPath?: string | null;
   /** Tree position relative to the normalized interception branch. */
   forbiddenTreePosition?: number | null;
-  /** Nearest unauthorized convention inside a sibling interception branch. */
+  /** Nearest unauthorized convention inside the interception branch. */
   unauthorizedPath?: string | null;
   /** Tree position relative to the normalized interception branch. */
   unauthorizedTreePosition?: number | null;
@@ -68,6 +68,18 @@ type InterceptingRoute = {
   notFoundPaths?: string[];
   /** Tree positions for notFoundPaths in the normalized interception branch. */
   notFoundTreePositions?: number[];
+  /** Every forbidden convention inside the interception branch, outermost first. */
+  forbiddenPaths?: string[];
+  /** Tree positions for forbiddenPaths in the normalized interception branch. */
+  forbiddenTreePositions?: number[];
+  /** Every unauthorized convention inside the interception branch, outermost first. */
+  unauthorizedPaths?: string[];
+  /** Tree positions for unauthorizedPaths in the normalized interception branch. */
+  unauthorizedTreePositions?: number[];
+  /** Every error convention inside the interception branch, outermost first. */
+  errorPaths?: string[];
+  /** Tree positions for errorPaths in the normalized interception branch. */
+  errorTreePositions?: number[];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -1606,6 +1618,19 @@ function findSlotConfigLayoutTreePositions(
   });
 }
 
+/**
+ * The tree position of a slot's active page relative to the slot root, in the
+ * coordinates of configLayoutTreePositions. Route groups count, unlike in
+ * `routeSegments`, since each is its own loader-tree segment.
+ */
+export function findSlotPageTreePosition(
+  slot: Pick<ParallelSlot, "ownerDir" | "pagePath">,
+): number | null {
+  return slot.pagePath
+    ? findSlotConfigLayoutTreePositions(slot.ownerDir, [slot.pagePath])[0]
+    : null;
+}
+
 function findSlotLoadingEntries(
   slotDir: string,
   pagePath: string | null,
@@ -1652,16 +1677,6 @@ function withSlotLoadingEntries<TSlot extends ParallelSlot>(
     loadingTreePositions: loadingEntries.map((entry) => entry.treePosition),
     ...findSlotNotFoundFields(slot.ownerDir, pagePath, matcher),
   };
-}
-
-function findSlotBoundary(
-  slotDir: string,
-  pagePath: string | null,
-  fileName: "forbidden" | "unauthorized",
-  matcher: ValidFileMatcher,
-): { path: string | null; treePosition: number | null } {
-  const nearest = findSlotSegmentFileEntries(slotDir, pagePath, fileName, matcher).at(-1);
-  return { path: nearest?.path ?? null, treePosition: nearest?.treePosition ?? null };
 }
 
 /**
@@ -2917,19 +2932,20 @@ function collectInterceptingPages(
       // Sibling interception branches start one segment above their root.
       const notFoundTreePositionOffset = slotRootDir ? 0 : 1;
       const notFoundFields = findSlotNotFoundFields(slotRootDir ?? interceptRoot, page, matcher);
-      // Only a sibling intercept renders its own forbidden and unauthorized
-      // boundaries. Its branch starts one position below the source segment.
-      const findSiblingBoundary = (fileName: "forbidden" | "unauthorized") => {
-        const boundary = slotRootDir
-          ? null
-          : findSlotBoundary(interceptRoot, page, fileName, matcher);
-        return {
-          path: boundary?.path ?? null,
-          treePosition: boundary?.treePosition == null ? null : boundary.treePosition + 1,
-        };
-      };
-      const forbiddenBoundary = findSiblingBoundary("forbidden");
-      const unauthorizedBoundary = findSiblingBoundary("unauthorized");
+      // Every error, forbidden and unauthorized boundary on the intercept's
+      // branch, on the same positions as its not-found files: a slot
+      // intercept's branch starts at its slot, a sibling's one position below
+      // the source segment. Each catches errors inside its own segment's layout.
+      const findInterceptBoundaries = (fileName: "error" | "forbidden" | "unauthorized") =>
+        findSlotSegmentFileEntries(slotRootDir ?? interceptRoot, page, fileName, matcher).map(
+          (entry) => ({
+            path: entry.path,
+            treePosition: entry.treePosition + notFoundTreePositionOffset,
+          }),
+        );
+      const forbiddenBoundaries = findInterceptBoundaries("forbidden");
+      const unauthorizedBoundaries = findInterceptBoundaries("unauthorized");
+      const errorBoundaries = findInterceptBoundaries("error");
       const slotParentSegments = slotRootDir
         ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
         : [];
@@ -2970,10 +2986,16 @@ function collectInterceptingPages(
         notFoundTreePositions: notFoundFields.notFoundTreePositions?.map(
           (treePosition) => treePosition + notFoundTreePositionOffset,
         ),
-        forbiddenPath: forbiddenBoundary.path,
-        forbiddenTreePosition: forbiddenBoundary.treePosition,
-        unauthorizedPath: unauthorizedBoundary.path,
-        unauthorizedTreePosition: unauthorizedBoundary.treePosition,
+        forbiddenPath: forbiddenBoundaries.at(-1)?.path ?? null,
+        forbiddenTreePosition: forbiddenBoundaries.at(-1)?.treePosition ?? null,
+        forbiddenPaths: forbiddenBoundaries.map((boundary) => boundary.path),
+        forbiddenTreePositions: forbiddenBoundaries.map((boundary) => boundary.treePosition),
+        unauthorizedPath: unauthorizedBoundaries.at(-1)?.path ?? null,
+        unauthorizedTreePosition: unauthorizedBoundaries.at(-1)?.treePosition ?? null,
+        unauthorizedPaths: unauthorizedBoundaries.map((boundary) => boundary.path),
+        unauthorizedTreePositions: unauthorizedBoundaries.map((boundary) => boundary.treePosition),
+        errorPaths: errorBoundaries.map((boundary) => boundary.path),
+        errorTreePositions: errorBoundaries.map((boundary) => boundary.treePosition),
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

@@ -17,6 +17,7 @@ import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/fil
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
 import { isUnknownRecord } from "../utils/record.js";
+import { escapeRegExp } from "../utils/regex.js";
 import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
 import { loadTsconfigResolutionForRoot } from "./tsconfig-paths.js";
 import { loadCommonJsModule, shouldRetryAsCommonJs } from "../utils/commonjs-loader.js";
@@ -266,6 +267,19 @@ export type MdxOptions = {
   remarkPlugins?: unknown[];
   rehypePlugins?: unknown[];
   recmaPlugins?: unknown[];
+};
+
+/**
+ * The webpack/Turbopack rule `createNextIntlPlugin` adds for its
+ * `experimental.messages` catalogs. vinext runs the same loader on the files it matches.
+ */
+export type NextIntlCatalogLoader = {
+  /** Absolute catalog directories (the rule's `include`). */
+  include: string[];
+  /** Catalog file extension test (the rule's `test`). */
+  test: RegExp;
+  /** The loader's `options`. */
+  options: Record<string, unknown>;
 };
 
 export type PrefetchInliningConfig =
@@ -544,6 +558,11 @@ export type ResolvedNextConfig = {
   /** Server globals injected into instrumentation.ts by wrapped webpack configs. */
   instrumentationServerValueInjections: Record<string, unknown>;
   cacheComponents: boolean;
+  /**
+   * `experimental.cachedNavigations`: lets the client cache the static stage of
+   * navigation responses. Requires `cacheComponents`.
+   */
+  cachedNavigations: boolean;
   appNavFailHandling: boolean;
   /**
    * Enables the experimental App Router gesture transition API:
@@ -566,6 +585,8 @@ export type ResolvedNextConfig = {
   i18n: NextI18nConfig | null;
   /** MDX remark/rehype/recma plugins extracted from @next/mdx config */
   mdx: MdxOptions | null;
+  /** next-intl's message catalog loader rule from `createNextIntlPlugin`. */
+  nextIntlCatalogLoader: NextIntlCatalogLoader | null;
   /** Explicit module aliases preserved from wrapped next.config plugins. */
   aliases: Record<string, string>;
   /** Extra allowed origins for dev server access (from allowedDevOrigins). */
@@ -1089,11 +1110,14 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   for (const [propertyPath, warning] of warnings) {
     if (hasConfigProperty(config, propertyPath)) warnConfigOnce(warning);
   }
-  // Next.js drops nullish nested values before warning about the moved key.
-  if (readOptionalRecord(config.experimental)?.skipTrailingSlashRedirect != null) {
-    warnConfigOnce(
-      `\`experimental.skipTrailingSlashRedirect\` has been moved to \`skipTrailingSlashRedirect\`. Please update your ${configFileName} file accordingly.`,
-    );
+  // Next.js drops nullish nested values before warning about a moved key.
+  const experimental = readOptionalRecord(config.experimental);
+  for (const key of ["skipTrailingSlashRedirect", "cacheComponents"] as const) {
+    if (experimental?.[key] != null) {
+      warnConfigOnce(
+        `\`experimental.${key}\` has been moved to \`${key}\`. Please update your ${configFileName} file accordingly.`,
+      );
+    }
   }
 }
 
@@ -1904,6 +1928,7 @@ export async function resolveNextConfig(
       resolveExtensions: null,
       serverResolveExtensions: null,
       cacheComponents: false,
+      cachedNavigations: false,
       appNavFailHandling: false,
       gestureTransition: false,
       prefetchInlining: false,
@@ -1913,6 +1938,7 @@ export async function resolveNextConfig(
       images: undefined,
       i18n: null,
       mdx: null,
+      nextIntlCatalogLoader: null,
       aliases: {},
       allowedDevOrigins: [],
       serverActionsAllowedOrigins: [],
@@ -2099,6 +2125,9 @@ export async function resolveNextConfig(
 
   // Resolve serverActions.allowedOrigins and bodySizeLimit from experimental config
   const experimental = readOptionalRecord(config.experimental);
+  // Next.js copies a set legacy `experimental.cacheComponents` over the
+  // top-level key (warnOptionHasBeenMovedOutOfExperimental).
+  const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -2133,12 +2162,14 @@ export async function resolveNextConfig(
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
   //   cacheComponents, prefetchInlining, varyParams, optimisticRouting, cachedNavigations
-  // vinext does not yet implement varyParams, optimisticRouting, or cachedNavigations,
-  // so we warn when appShells is enabled and explain which co-flags are missing.
+  // vinext does not yet implement varyParams or optimisticRouting, and supports
+  // cachedNavigations only partially (it advertises staleTimes.static on
+  // unclaimed cache hits but has no static-stage client cache), so we warn when
+  // appShells is enabled and explain which co-flags are missing.
   const appShells = experimental?.appShells === true;
   if (appShells) {
     const missingCoFlags: string[] = [];
-    if (!config.cacheComponents) {
+    if (!cacheComponents) {
       missingCoFlags.push("cacheComponents");
     }
     if (!prefetchInlining) {
@@ -2212,7 +2243,7 @@ export async function resolveNextConfig(
 
   // Warn when experimental.cachedNavigations is set without cacheComponents.
   // Next.js throws in this case; vinext warns because the feature is a no-op without it.
-  if (experimental?.cachedNavigations === true && !config.cacheComponents) {
+  if (experimental?.cachedNavigations === true && !cacheComponents) {
     console.warn(
       "[vinext] `experimental.cachedNavigations` requires `cacheComponents: true` to have any effect. " +
         "Set `cacheComponents: true` in your next.config, or remove `experimental.cachedNavigations`.",
@@ -2220,17 +2251,19 @@ export async function resolveNextConfig(
   }
 
   // Warn about unsupported webpack usage. We preserve alias injection,
-  // resolve.extensions, and MDX settings, but other customization is ignored.
+  // resolve.extensions, MDX settings, and next-intl's catalog loader, but other
+  // customization is ignored.
   if (config.webpack !== undefined) {
     if (
       mdx ||
       Object.keys(webpackProbe.aliases).length > 0 ||
       webpackProbe.resolveExtensionsCustomized ||
-      webpackProbe.instrumentationClientRouteManifest !== undefined
+      webpackProbe.instrumentationClientRouteManifest !== undefined ||
+      webpackProbe.nextIntlCatalogLoader !== null
     ) {
       console.warn(
         '[vinext] next.config option "webpack" is only partially supported. ' +
-          "vinext preserves resolve.alias, resolve.extensions, MDX loader settings, and instrumentation-client route manifests, but other webpack customization is ignored",
+          "vinext preserves resolve.alias, resolve.extensions, MDX loader settings, next-intl message catalog loaders, and instrumentation-client route manifests, but other webpack customization is ignored",
       );
     } else {
       console.warn(
@@ -2330,7 +2363,8 @@ export async function resolveNextConfig(
       : [],
     instrumentationClientRouteManifest: webpackProbe.instrumentationClientRouteManifest,
     instrumentationServerValueInjections: webpackProbe.instrumentationServerValueInjections,
-    cacheComponents: config.cacheComponents ?? false,
+    cacheComponents,
+    cachedNavigations: cacheComponents && experimental?.cachedNavigations === true,
     appNavFailHandling: experimental?.appNavFailHandling === true,
     gestureTransition: experimental?.gestureTransition === true,
     prefetchInlining,
@@ -2340,6 +2374,8 @@ export async function resolveNextConfig(
     images,
     i18n,
     mdx,
+    nextIntlCatalogLoader:
+      webpackProbe.nextIntlCatalogLoader ?? extractTurbopackNextIntlCatalogLoader(config, root),
     aliases,
     allowedDevOrigins,
     serverActionsAllowedOrigins,
@@ -2402,6 +2438,17 @@ export async function resolveNextConfig(
   // Auto-detect next-intl (lowest priority — explicit aliases from
   // webpack/turbopack already in `aliases` take precedence)
   detectNextIntlConfig(root, resolved);
+
+  // `precompile: true` aliases use-intl's formatter to one that only formats
+  // precompiled messages; without the catalog loader, placeholders render as-is.
+  if (
+    resolved.aliases["use-intl/format-message"]?.includes("format-only") &&
+    resolved.nextIntlCatalogLoader === null
+  ) {
+    console.warn(
+      "[vinext] next-intl's `experimental.messages.precompile` is enabled, but vinext could not find next-intl's catalog loader in the webpack or Turbopack config. Messages with arguments or rich text will render their raw ICU source; remove `precompile` to format them at runtime",
+    );
+  }
 
   // Parity with Next.js: when `basePath` is configured but `assetPrefix` is
   // not, fall back to using `basePath` as the asset prefix. This ensures the
@@ -2472,6 +2519,49 @@ function extractTurboAliases(config: NextConfig, root: string): Record<string, s
   };
 }
 
+// With `TURBOPACK` set, `createNextIntlPlugin` adds no webpack hook and only
+// registers its catalog loader as a Turbopack rule:
+// `"*.json": { loaders: [catalogLoader], condition: { path: "{a,b}/**/*" } }`.
+function extractTurbopackNextIntlCatalogLoader(
+  config: NextConfig,
+  root: string,
+): NextIntlCatalogLoader | null {
+  const experimental = readOptionalRecord(config.experimental);
+  for (const turbo of [
+    readOptionalRecord(config.turbopack),
+    readOptionalRecord(experimental?.turbo),
+  ]) {
+    const rules = readOptionalRecord(turbo?.rules);
+    for (const [glob, entry] of Object.entries(rules ?? {})) {
+      const extension = /^\*(\.[^*/{}]+)$/.exec(glob)?.[1];
+      if (!extension) continue;
+      for (const rule of Array.isArray(entry) ? entry : [entry]) {
+        if (!isUnknownRecord(rule) || !Array.isArray(rule.loaders)) continue;
+        const loader = rule.loaders.find(
+          (use) => isUnknownRecord(use) && use.loader === NEXT_INTL_CATALOG_LOADER,
+        );
+        if (!isUnknownRecord(loader) || !isUnknownRecord(loader.options)) continue;
+        const condition = readOptionalRecord(rule.condition);
+        // next-intl 4.12+ lists several catalog paths as `{a,b}/**/*`.
+        const dirs =
+          typeof condition?.path === "string"
+            ? /^(?:\{([^{}]+)\}|([^{}]+))\/\*\*\/\*$/.exec(condition.path)
+            : null;
+        const include = (dirs?.[1]?.split(",") ?? (dirs?.[2] ? [dirs[2]] : [])).map((dir) =>
+          path.resolve(root, dir),
+        );
+        if (include.length === 0) continue;
+        return {
+          include,
+          test: new RegExp(`${escapeRegExp(extension)}$`),
+          options: loader.options,
+        };
+      }
+    }
+  }
+  return null;
+}
+
 async function probeWebpackConfig(
   config: NextConfig,
   root: string,
@@ -2479,6 +2569,7 @@ async function probeWebpackConfig(
 ): Promise<{
   aliases: Record<string, string>;
   mdx: MdxOptions | null;
+  nextIntlCatalogLoader: NextIntlCatalogLoader | null;
   resolveExtensions: string[] | null;
   serverResolveExtensions: string[] | null;
   resolveExtensionsCustomized: boolean;
@@ -2489,6 +2580,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlCatalogLoader: null,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
@@ -2515,6 +2607,7 @@ async function probeWebpackConfig(
     return {
       aliases: normalizeAliasEntries(clientProbe.config.resolve?.alias, root),
       mdx: extractMdxOptionsFromRules(clientProbe.rules),
+      nextIntlCatalogLoader: extractNextIntlCatalogLoader(clientProbe.rules),
       resolveExtensions: clientProbe.resolveExtensions,
       serverResolveExtensions: serverProbe.resolveExtensions,
       resolveExtensionsCustomized:
@@ -2531,6 +2624,7 @@ async function probeWebpackConfig(
     return {
       aliases: {},
       mdx: null,
+      nextIntlCatalogLoader: null,
       resolveExtensions: null,
       serverResolveExtensions: null,
       resolveExtensionsCustomized: false,
@@ -2572,6 +2666,41 @@ function extractInstrumentationClientRouteManifest(rules: any[]): string | undef
 
   for (const rule of rules) visit(rule);
   return manifest;
+}
+
+const NEXT_INTL_CATALOG_LOADER = "next-intl/extractor/catalogLoader";
+
+// `createNextIntlPlugin` compiles its `experimental.messages` catalogs (and
+// precompiles them for `precompile: true`, which also aliases use-intl's
+// formatter to one that only reads precompiled messages) with a webpack loader.
+// Keep that rule so vinext can run the loader on the same files.
+function extractNextIntlCatalogLoader(rules: unknown[]): NextIntlCatalogLoader | null {
+  let catalogLoader: NextIntlCatalogLoader | null = null;
+
+  // oxlint-disable-next-line typescript/no-explicit-any
+  const visit = (rule: any): void => {
+    if (!rule || typeof rule !== "object") return;
+    if (Array.isArray(rule)) {
+      for (const child of rule) visit(child);
+      return;
+    }
+    if (Array.isArray(rule.oneOf)) for (const child of rule.oneOf) visit(child);
+    if (Array.isArray(rule.rules)) for (const child of rule.rules) visit(child);
+    if (!(rule.test instanceof RegExp)) return;
+    // next-intl 4.12+ accepts several catalog paths and passes them as an array.
+    const include = typeof rule.include === "string" ? [rule.include] : rule.include;
+    if (!Array.isArray(include) || include.length === 0) return;
+    if (!include.every((dir) => typeof dir === "string")) return;
+    const uses = Array.isArray(rule.use) ? rule.use : rule.use ? [rule.use] : [];
+    for (const use of uses) {
+      if (!isUnknownRecord(use) || use.loader !== NEXT_INTL_CATALOG_LOADER) continue;
+      if (!isUnknownRecord(use.options)) continue;
+      catalogLoader = { include, test: rule.test, options: use.options };
+    }
+  };
+
+  for (const rule of rules) visit(rule);
+  return catalogLoader;
 }
 
 // Preserve generic value-injection rules that wrapped Next.js configs target at

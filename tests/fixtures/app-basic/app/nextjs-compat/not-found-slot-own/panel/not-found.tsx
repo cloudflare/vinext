@@ -1,5 +1,6 @@
-// The route's deepest not-found, so the document's head uses its metadata,
-// even though the not-found above the panel layout is the one that renders.
+// The route's deepest not-found, so Next.js's error shell head uses its
+// metadata, but the browser then renders the route's own head, so users never
+// see this title.
 export const metadata = { title: "Not Found (panel segment)" };
 
 export default function NotFound() {

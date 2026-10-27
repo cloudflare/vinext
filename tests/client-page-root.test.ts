@@ -521,7 +521,6 @@ describe("ClientPageRoot in the browser", () => {
           elements: createElements("route:/", {}),
           interception: null,
           interceptionContext: null,
-          layoutFlags: {},
           layoutIds: [],
           navigationSnapshot: modules.navigation.createClientNavigationRenderSnapshot(
             "http://localhost/",

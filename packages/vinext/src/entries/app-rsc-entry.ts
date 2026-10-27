@@ -101,7 +101,7 @@ const appRscResponseStagePath = resolveEntryPath(
   "../server/app-rsc-response-stage.js",
   import.meta.url,
 );
-const rscStreamHintsPath = resolveEntryPath("../server/rsc-stream-hints.js", import.meta.url);
+const rscRenderStreamPath = resolveEntryPath("../server/rsc-render-stream.js", import.meta.url);
 const appClientReferenceManifestPath = resolveEntryPath(
   "../server/app-client-reference-manifest.js",
   import.meta.url,
@@ -391,6 +391,12 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
             page: null,
             notFound: null,
             notFoundTreePosition: intercept.notFoundTreePosition ?? null,
+            interceptForbiddens: [],
+            interceptForbiddenTreePositions: intercept.forbiddenTreePositions ?? [],
+            interceptUnauthorizeds: [],
+            interceptUnauthorizedTreePositions: intercept.unauthorizedTreePositions ?? [],
+            interceptErrors: [],
+            interceptErrorTreePositions: intercept.errorTreePositions ?? [],
             params: intercept.params,
           })),
         },
@@ -414,10 +420,12 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
       page: null,
       notFound: null,
       notFoundTreePosition: intercept.notFoundTreePosition ?? null,
-      forbidden: null,
-      forbiddenTreePosition: intercept.forbiddenTreePosition ?? null,
-      unauthorized: null,
-      unauthorizedTreePosition: intercept.unauthorizedTreePosition ?? null,
+      interceptForbiddens: [],
+      interceptForbiddenTreePositions: intercept.forbiddenTreePositions ?? [],
+      interceptUnauthorizeds: [],
+      interceptUnauthorizedTreePositions: intercept.unauthorizedTreePositions ?? [],
+      interceptErrors: [],
+      interceptErrorTreePositions: intercept.errorTreePositions ?? [],
       params: intercept.params,
     })),
   }));
@@ -860,7 +868,7 @@ import {
 } from "@vitejs/plugin-rsc/vendor/react-server-dom/server.edge";
 `
     : ""
-}import { createRscPrerenderer, createRscRenderer } from ${JSON.stringify(rscStreamHintsPath)};
+}import { createRscRenderer } from ${JSON.stringify(rscRenderStreamPath)};
 
 // Each render takes a fresh client manifest: in development, its references
 // carry a new cache tag.
@@ -870,9 +878,8 @@ const __withClientReferenceChunks = createClientReferenceChunksManifest(
 const renderToReadableStream = createRscRenderer((model, options) =>
   _renderToReadableStream(model, __withClientReferenceChunks(_createClientManifest()), options),
 );
-const prerenderToReadableStream = createRscPrerenderer(async (model, options) =>
-  _prerender(model, __withClientReferenceChunks(_createClientManifest()), options),
-);
+const prerenderToReadableStream = (model, options) =>
+  _prerender(model, __withClientReferenceChunks(_createClientManifest()), options);
 import { createElement } from "react";
 import { getNavigationContext as _getNavigationContext } from "next/navigation";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
@@ -964,7 +971,7 @@ import {
   AppElementsWire as __AppElementsWire,
 } from ${JSON.stringify(appElementsPath)};
 import {
-  probeAppPageLayoutWithTracking as __probeAppPageLayoutWithTracking,
+  probeAppPageLayout as __probeAppPageLayout,
   resolveAppPageChildSegments as __resolveAppPageChildSegments,
 } from ${JSON.stringify(appPageRouteWiringPath)};
 import { buildPageElements as __buildPageElements } from ${JSON.stringify(appPageElementBuilderPath)};
@@ -1056,16 +1063,6 @@ __initPregeneratedPathsFromGlobals();
 // have a single knob for all cache tracing.
 const __isrDebug = process.env.NEXT_PRIVATE_DEBUG_CACHE
   ? console.debug.bind(console, "[vinext] ISR:")
-  : undefined;
-
-// Classification debug — opt in with VINEXT_DEBUG_CLASSIFICATION=1. Gated on
-// the env var so the hot path pays no overhead unless an operator is actively
-// tracing why a layout was flagged static or dynamic. The reason payload is
-// carried by __VINEXT_CLASS_REASONS and consumed inside probeAppPageLayouts.
-const __classDebug = process.env.VINEXT_DEBUG_CLASSIFICATION
-  ? function(layoutId, reason) {
-      console.debug("[vinext] CLS:", layoutId, reason);
-    }
   : undefined;
 
 function __resolveRouteFetchCacheMode(route) {
@@ -1189,24 +1186,6 @@ ${
 // the user module in; all bookkeeping (initialized flag, shared promise, prerender
 // skip) lives in the typed helper so it can be unit-tested independently.`
     : ""
-}
-
-// Build-time layout classification dispatch. Replaced in renderChunk
-// with a switch statement that returns a pre-computed per-layout
-// Map<layoutIndex, "static" | "dynamic"> for each route. Until the
-// plugin patches this stub, every route falls back to the Layer 3
-// runtime probe, which is the current (slow) behaviour.
-function __VINEXT_CLASS(routeIdx) {
-  return null;
-}
-
-// Build-time layout classification reasons dispatch. Sibling of
-// __VINEXT_CLASS, returning a per-route Map<layoutIndex, ClassificationReason>
-// that feeds the debug channel when VINEXT_DEBUG_CLASSIFICATION is active.
-// Replaced in renderChunk with a real dispatch table; the stub returns
-// null so the hot path never allocates reason maps when debug is off.
-function __VINEXT_CLASS_REASONS(routeIdx) {
-  return null;
 }
 
 const routes = [
@@ -1341,7 +1320,7 @@ function hasInterceptionId(interceptionId) {
   return __routeMatcher.hasInterceptionId(interceptionId);
 }
 
-async function buildPageElements(route, params, routePath, pageRequest, layoutParamAccess, displayPathname = routePath, scriptNonce) {
+async function buildPageElements(route, params, routePath, pageRequest, displayPathname = routePath, scriptNonce) {
   // Hydrate lazy page/route-handler modules before any synchronous read.
   await __ensureRouteLoaded(route);
   return __buildPageElements({
@@ -1356,7 +1335,6 @@ async function buildPageElements(route, params, routePath, pageRequest, layoutPa
     rootForbiddenModule: ${rootForbiddenVar ? rootForbiddenVar : "null"},
     rootUnauthorizedModule: ${rootUnauthorizedVar ? rootUnauthorizedVar : "null"},
     metadataRoutes,
-    layoutParamAccess,
     basePath: __basePath,
     trailingSlash: __trailingSlash,
     htmlLimitedBots: __htmlLimitedBots,
@@ -1470,7 +1448,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
   dispatchMatchedPage({
     bypassInterceptionContextCache,
     cachePathname,
-    clientReuseManifest,
     cleanPathname,
     displayPathname,
     formState,
@@ -1525,7 +1502,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       ensureRouteLoaded: __ensureRouteLoaded,
       clientTraceMetadata: __clientTraceMetadata,
       reactMaxHeadersLength: __reactMaxHeadersLength,
-      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, layoutParamAccess, buildOptions) {
+      buildPageElement(targetRoute, targetParams, targetOpts, targetSearchParams, buildOptions) {
         return buildPageElements(targetRoute, targetParams, cleanPathname, {
           opts: targetOpts,
           searchParams: targetSearchParams,
@@ -1536,12 +1513,14 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observeMetadataSearchParamsAccess: buildOptions?.observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: buildOptions?.observePageSearchParamsAccess === true,
           isForceStatic: buildOptions?.isForceStatic === true,
+          isUncacheableRender: buildOptions?.isUncacheableRender === true,
+          mountedLayouts: buildOptions?.mountedLayouts ?? null,
           serveStreamingMetadata: buildOptions?.serveStreamingMetadata,
           placeStreamedMetadataInHead: buildOptions?.placeStreamedMetadataInHead === true,
           isProduction: process.env.NODE_ENV === "production",
-        }, layoutParamAccess, displayPathname, scriptNonce);
+          onHeadPrepared: buildOptions?.onHeadPrepared,
+        }, displayPathname, scriptNonce);
       },
-      clientReuseManifest,
       cleanPathname,
       displayPathname,
       clearRequestContext() {
@@ -1550,7 +1529,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       createRscOnErrorHandler(pathname, routePath, overrides) {
         return createRscOnErrorHandler(request, pathname, routePath, overrides);
       },
-      debugClassification: __classDebug,
       draftModeSecret: __draftModeSecret,
       dynamicConfig: __segmentConfig.dynamicConfig,
       dynamicStaleTimeSeconds: __segmentConfig.dynamicStaleTimeSeconds,
@@ -1617,10 +1595,9 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       skipStaticParamsValidation,
       staticParamsValidationParams,
       rootParams,
-      probeLayoutAt(li, layoutParamAccess) {
-        return __probeAppPageLayoutWithTracking({
+      probeLayoutAt(li) {
+        return __probeAppPageLayout({
           layoutIndex: li,
-          layoutParamAccess,
           makeThenableParams,
           matchedParams: params,
           route,
@@ -1813,6 +1790,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
         );
       },
       hasPageRoute: __hasPageRoute,
+      currentRoute: routeMatch?.route ?? null,
       maxActionBodySize: __MAX_ACTION_BODY_SIZE,
       middlewareHeaders: middlewareContext.headers,
       readFormDataWithLimit: __readFormDataWithLimit,
@@ -1902,7 +1880,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           observeMetadataSearchParamsAccess: observeMetadataSearchParamsAccess === true,
           observePageSearchParamsAccess: observePageSearchParamsAccess === true,
           isForceStatic: isForceStatic === true,
-        }, undefined, actionCleanPathname, targetScriptNonce ?? scriptNonce);
+        }, actionCleanPathname, targetScriptNonce ?? scriptNonce);
       },
       cleanPathname,
       clearRequestContext() {
@@ -1999,10 +1977,12 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           interceptNotFoundBranchSegments: intercept.interceptNotFoundBranchSegments,
           interceptNotFound: intercept.notFound,
           interceptNotFoundTreePosition: intercept.notFoundTreePosition,
-          interceptForbidden: intercept.forbidden,
-          interceptForbiddenTreePosition: intercept.forbiddenTreePosition,
-          interceptUnauthorized: intercept.unauthorized,
-          interceptUnauthorizedTreePosition: intercept.unauthorizedTreePosition,
+          interceptForbiddens: intercept.interceptForbiddens,
+          interceptForbiddenTreePositions: intercept.interceptForbiddenTreePositions,
+          interceptUnauthorizeds: intercept.interceptUnauthorizeds,
+          interceptUnauthorizedTreePositions: intercept.interceptUnauthorizedTreePositions,
+          interceptErrors: intercept.interceptErrors,
+          interceptErrorTreePositions: intercept.interceptErrorTreePositions,
           interceptNotFounds: intercept.interceptNotFounds,
           interceptNotFoundTreePositions: intercept.interceptNotFoundTreePositions,
           interceptSlotId: intercept.slotId,

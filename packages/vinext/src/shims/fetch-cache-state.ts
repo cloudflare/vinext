@@ -24,12 +24,16 @@ export type FetchDedupeEntry = {
 // multi-environment module instances.
 // ---------------------------------------------------------------------------
 export type FetchCacheState = {
-  cacheableFetchUrls: Set<string>;
   currentRequestTags: string[];
   currentFetchSoftTags: string[];
   currentFetchCacheMode: FetchCacheMode | null;
   currentFetchRevalidate: number | null;
   currentForceDynamicFetchDefault: boolean;
+  /**
+   * Pages Router preview/draft render. App Router draft state is read from the
+   * headers context instead; Pages renders don't have one.
+   */
+  isDraftMode: boolean;
   dynamicFetchUrls: Set<string>;
   refreshStaleFetchesInForeground: boolean;
   isFetchDedupeActive: boolean;
@@ -51,12 +55,12 @@ export const fetchCacheAls = getOrCreateAls<FetchCacheState>("vinext.fetchCache.
 
 function createFetchCacheState(): FetchCacheState {
   return {
-    cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
     currentFetchRevalidate: null,
     currentForceDynamicFetchDefault: false,
+    isDraftMode: false,
     dynamicFetchUrls: new Set<string>(),
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
@@ -135,7 +139,6 @@ export function getCurrentFetchSoftTags(): string[] {
 export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((uCtx) => {
-      uCtx.cacheableFetchUrls = new Set<string>();
       uCtx.currentRequestTags = [];
       uCtx.dynamicFetchUrls = new Set<string>();
     }, fn);
@@ -143,7 +146,6 @@ export function runWithDetachedFetchObservations<T>(fn: () => Promise<T>): Promi
   return fetchCacheAls.run(
     {
       ...getFetchCacheState(),
-      cacheableFetchUrls: new Set<string>(),
       currentRequestTags: [],
       dynamicFetchUrls: new Set<string>(),
     },

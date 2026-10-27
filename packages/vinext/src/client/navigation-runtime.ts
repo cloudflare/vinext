@@ -6,6 +6,7 @@ import {
 } from "../routing/browser-route-manifest.js";
 import { isUnknownRecord } from "../utils/record.js";
 import type { AppRouterScrollIntent } from "vinext/shims/app-router-scroll-state";
+import type { CachedRscResponse } from "vinext/shims/navigation";
 import { NAVIGATION_RUNTIME_SYMBOL_DESCRIPTION } from "./browser-globals.js";
 
 type NavigationRuntimeSnapshot = {
@@ -69,7 +70,7 @@ export type NavigationRuntimeNavigate = (
 ) => Promise<void>;
 
 export type NavigationRuntimeFunctions = {
-  clearNavigationCaches?: () => void;
+  clearNavigationCaches?: (options?: { pingVisibleLinks?: boolean }) => void;
   commitHashNavigation?: (
     href: string,
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
@@ -89,13 +90,14 @@ export type NavigationRuntimeFunctions = {
    * through the runtime to avoid a circular import with shims/navigation.ts.
    */
   notifyLinkNavigationStart?: () => void;
-  /**
-   * Re-prefetch visible links whose prefetch inputs or cache entries changed.
-   * `"cache-invalidation"` marks a ping that follows a whole-cache
-   * invalidation (a revalidating Server Action or `router.refresh()`).
-   */
-  pingVisibleLinks?: (cause?: "cache-invalidation") => void;
+  pingVisibleLinks?: () => void;
   preparePrefetchResponse?: (response: Response) => Promise<unknown>;
+  /** The visited (BFCache) response a full prefetch can be fulfilled from. */
+  readVisitedResponseForFullPrefetch?: (
+    rscUrls: readonly string[],
+    interceptionContext: string | null,
+    mountedSlotsHeader: string | null,
+  ) => { navigatedAt: number; response: CachedRscResponse } | null;
   claimCurrentHistoryTreeSnapshot?: (
     historyUpdateMode: NavigationRuntimeHistoryUpdateMode,
     previousHistoryState: unknown,
@@ -170,6 +172,7 @@ export function isNavigationRuntimeFunctions(value: unknown): value is Navigatio
     isOptionalRuntimeFunction(Reflect.get(value, "notifyLinkNavigationStart")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "pingVisibleLinks")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "preparePrefetchResponse")) &&
+    isOptionalRuntimeFunction(Reflect.get(value, "readVisitedResponseForFullPrefetch")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "claimCurrentHistoryTreeSnapshot")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "commitAppOwnedHistoryStateWrite")) &&
     isOptionalRuntimeFunction(Reflect.get(value, "discardPendingNavigation")) &&

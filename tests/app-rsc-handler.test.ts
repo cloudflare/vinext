@@ -20,16 +20,10 @@ import {
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
-import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
-import {
-  createClientReuseManifest,
-  createClientReusePayloadHash,
-} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -937,7 +931,7 @@ describe("createAppRscHandler", () => {
     });
   });
 
-  it("keeps rewritten and mounted-slot RSC requests contextual", async () => {
+  it("canonicalizes rewritten RSC requests and keeps mounted-slot ones contextual", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
@@ -963,8 +957,10 @@ describe("createAppRscHandler", () => {
     );
 
     const [rewrittenRequest, rewrittenProps] = dispatchResponseStage.mock.calls[0]!;
-    expect(rewrittenRequest.headers.get("next-url")).toBe("/source");
-    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).not.toBe("");
+    // The rewrite target is in the props, so the per-navigation selectors are
+    // canonicalized away and every navigation shares one cache entry.
+    expect(rewrittenRequest.headers.get("next-url")).toBeNull();
+    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).toBe("");
     expect(rewrittenProps).toMatchObject({ matchKind: "resolved" });
 
     dispatchResponseStage.mockClear();
@@ -1168,14 +1164,11 @@ describe("createAppRscHandler", () => {
       );
 
       const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
-      // Rewritten RSC requests stay contextual, so the raw URL reaches dispatch.
+      // Rewritten RSC requests are canonicalized like direct ones, so the
+      // per-navigation hash and the user's `_rsc` pairs leave the identity.
       expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
-      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([
-        hash,
-        "ignored",
-        "encoded",
-      ]);
-      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(`/docs/source?_rsc=${hash}`);
+      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([""]);
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc");
     });
 
     it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
@@ -3116,6 +3109,42 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
+  });
+
+  it("normalizes a contextual RSC request reached through a rewrite before shared dispatch", async () => {
+    const route = createPageRoute();
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+    });
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    const contextualUrl = await createRscRequestUrl("/docs/alias", headers);
+
+    await handler(
+      new Request(new URL(contextualUrl, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props).toMatchObject({ kind: "app-page", matchKind: "resolved" });
+    // Without canonicalization the per-navigation state tree and `_rsc` hash
+    // reach the cache key, so every prefetch and reload misses.
+    expect(request.headers.get("next-router-state-tree")).toBeNull();
+    expect(request.headers.get("next-url")).toBeNull();
   });
 
   it.each([
@@ -7405,6 +7434,68 @@ describe("createAppRscHandler", () => {
     await expect(response.text()).resolves.toBe("staged-page");
   });
 
+  // Next.js also serves JSON at data URLs with trailingSlash enabled:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-trailing-slash/test/index.test.ts
+  describe.each(["", "/docs"])("Pages data canonicalization (basePath=%s)", (basePath) => {
+    it.each([
+      { trailingSlash: false, page: "index" },
+      { trailingSlash: false, page: "legacy-static" },
+      { trailingSlash: false, page: "legacy-data/one" },
+      { trailingSlash: true, page: "index" },
+      { trailingSlash: true, page: "legacy-static" },
+      { trailingSlash: true, page: "legacy-data/one" },
+    ])(
+      "serves $page data without a document redirect (trailingSlash=$trailingSlash)",
+      async ({ trailingSlash, page }) => {
+        const renderPagesFallback = vi.fn(
+          async ({ pagesDataRequest }: { pagesDataRequest?: Request | null }) =>
+            Response.json({ url: pagesDataRequest?.url }),
+        );
+        const handler = createHandler({
+          basePath,
+          trailingSlash,
+          configHeaders: [],
+          matchRequestRoute: () => null,
+          matchRoute: () => null,
+          renderPagesFallback,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${basePath}/_next/data/build-id/${page}.json?q=kept`),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.has("location")).toBe(false);
+        const data = await response.json();
+        expect(new URL(data.url).search).toBe("?q=kept");
+        expect(renderPagesFallback).toHaveBeenCalledTimes(1);
+        expect(renderPagesFallback).toHaveBeenCalledWith(
+          expect.objectContaining({ isDataRequest: true }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      "still canonicalizes documents with a forged data header (trailingSlash=%s)",
+      async (trailingSlash) => {
+        const handler = createHandler({ basePath, trailingSlash, configHeaders: [] });
+        const pathname = `/about${trailingSlash ? "" : "/"}`;
+        const response = await handler(
+          new Request(`https://example.test${basePath}${pathname}?q=kept`, {
+            headers: { "x-nextjs-data": "1" },
+          }),
+          null,
+        );
+
+        expect(response.status).toBe(308);
+        expect(response.headers.get("location")).toBe(
+          `${basePath}/about${trailingSlash ? "/" : ""}?q=kept`,
+        );
+      },
+    );
+  });
+
   it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
     const headers = createRscRequestHeaders();
     const requestPath = await createRscRequestUrl("/about/", headers);
@@ -10174,45 +10265,6 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: true,
-      }),
-    );
-  });
-
-  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
-    const manifest = createClientReuseManifest({
-      entries: [
-        {
-          artifactCompatibility: createArtifactCompatibilityEnvelope(),
-          id: "layout:/",
-          payloadHash: createClientReusePayloadHash("root-layout"),
-          privacy: "public",
-          variantCacheKey: "cp1:root",
-        },
-      ],
-      visibleCommitVersion: 1,
-    });
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-    });
-
-    const response = await handler(
-      new Request("https://example.test/docs/about.rsc", {
-        headers: {
-          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
-        },
-      }),
-      null,
-    );
-
-    expect(response.status).toBe(200);
-    expect(dispatchMatchedPage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        clientReuseManifest: expect.objectContaining({
-          kind: "parsed",
-        }),
         isRscRequest: true,
       }),
     );
