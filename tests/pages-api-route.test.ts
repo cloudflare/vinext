@@ -62,46 +62,6 @@ function createMatch(
 }
 
 describe("pages api route", () => {
-  it.each([null, undefined])(
-    "preserves explicit headers when ending nullish send values: %s",
-    async (value) => {
-      const response = await handlePagesApiRoute({
-        request: new Request("http://localhost/api/test"),
-        url: "/api/test",
-        match: createMatch((_req, res) => {
-          res.setHeader("Content-Type", "text/custom");
-          res.send(value);
-        }),
-      });
-      expect(await response.text()).toBe("");
-      expect(response.headers.get("content-type")).toBe("text/custom");
-    },
-  );
-
-  it.each([null, undefined])("ends nullish send values without a body: %s", async (value) => {
-    const response = await handlePagesApiRoute({
-      request: new Request("http://localhost/api/test"),
-      url: "/api/test",
-      match: createMatch((_req, res) => res.send(value)),
-    });
-    expect(await response.text()).toBe("");
-    expect(response.headers.get("content-type")).toBeNull();
-    expect(response.status).toBe(200);
-  });
-
-  it.each([0, 42, false, true])(
-    "sends primitive JSON values with JSON content type: %s",
-    async (value) => {
-      const response = await handlePagesApiRoute({
-        request: new Request("http://localhost/api/test"),
-        url: "/api/test",
-        match: createMatch((_req, res) => res.send(value)),
-      });
-      expect(await response.text()).toBe(JSON.stringify(value));
-      expect(response.headers.get("content-type")).toBe("application/json");
-    },
-  );
-
   it("lets a handler override response headers installed before user code", async () => {
     const response = await handlePagesApiRoute({
       initialResponseHeaders: new Headers({

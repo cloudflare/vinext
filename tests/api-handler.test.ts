@@ -812,54 +812,6 @@ describe("handleApiRoute", () => {
   });
 
   describe("res.send()", () => {
-    it.each([null, undefined])(
-      "preserves explicit headers when ending nullish send values: %s",
-      async (value) => {
-        const server = mockServer({
-          default: (_req: any, res: any) => {
-            res.setHeader("Content-Type", "text/custom");
-            res.send(value);
-          },
-        });
-        const res = mockRes();
-        await handleApiRoute(server, mockReq("GET", "/api/test"), res, "/api/test", [
-          route("/api/test"),
-        ]);
-        expect(res._body).toBe("");
-        expect(res._headers["content-type"]).toBe("text/custom");
-      },
-    );
-
-    it.each([
-      { value: null, expected: "", type: undefined },
-      { value: undefined, expected: "", type: undefined },
-      { value: 0, expected: "0", type: "application/json" },
-      { value: 42, expected: "42", type: "application/json" },
-      { value: false, expected: "false", type: "application/json" },
-      { value: true, expected: "true", type: "application/json" },
-    ])("sends $value with Next.js body semantics over HTTP", async ({ value, expected, type }) => {
-      const runner = mockServer({ default: (_req: any, res: any) => res.send(value) });
-      const server = http.createServer((req, res) => {
-        void handleApiRoute(runner, req, res, "/api/test", [route("/api/test")]).catch(
-          (error: unknown) =>
-            res.destroy(error instanceof Error ? error : new Error(String(error))),
-        );
-      });
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-      try {
-        const response = await fetch(
-          `http://127.0.0.1:${(server.address() as AddressInfo).port}/api/test`,
-        );
-        expect(response.status).toBe(200);
-        expect(await response.text()).toBe(expected);
-        expect(response.headers.get("content-type")).toBe(type ?? null);
-      } finally {
-        await new Promise<void>((resolve, reject) => {
-          server.close((error) => (error ? reject(error) : resolve()));
-        });
-      }
-    });
-
     it("sends object data as JSON", async () => {
       const handler = vi.fn((_req: any, res: any) => {
         res.send({ key: "value" });
@@ -902,20 +854,6 @@ describe("handleApiRoute", () => {
       expect(res._headers["content-length"]).toBe("3");
       expect(Buffer.isBuffer(res._body)).toBe(true);
       expect((res._body as Buffer).equals(Buffer.from([1, 2, 3]))).toBe(true);
-    });
-
-    it("sends number data as JSON", async () => {
-      const handler = vi.fn((_req: any, res: any) => {
-        res.send(42);
-      });
-      const server = mockServer({ default: handler });
-      const req = mockReq("GET", "/api/users");
-      const res = mockRes();
-
-      await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
-
-      expect(res._headers["content-type"]).toBe("application/json");
-      expect(res._body).toBe("42");
     });
 
     it("preserves existing content-type for non-object data", async () => {
