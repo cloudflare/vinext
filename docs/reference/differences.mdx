@@ -75,10 +75,6 @@ Like Next.js, a client navigation renders only below the layouts the client alre
 
 Like Next.js, vinext doesn't check the regexes in `redirects`, `rewrites`, and `headers` sources, in `has` and `missing` values, or in middleware matchers for catastrophic backtracking. They run as written against request paths, headers, cookies, query values, and hosts, so avoid nested or overlapping repeats such as `(a+)+` in these patterns.
 
-## Pages API body charsets
-
-Like Next.js, Pages API routes decode a parsed request body with the `charset` from its `Content-Type`, UTF-8 by default, and answer `400 Invalid body` for a charset they can't decode. Next.js decodes with iconv-lite, while vinext uses the platform `TextDecoder` to stay dependency-free on Workers, so charset names follow the [WHATWG Encoding Standard](https://encoding.spec.whatwg.org/#names-and-labels). `iso-8859-1` and `latin1` decode as windows-1252, which differs only for bytes `0x80`–`0x9F`, and charsets the standard doesn't define, such as `utf-32` or `utf-7`, get the 400.
-
 ## Compatibility
 
 App Router, Pages Router, RSC, Server Actions, middleware, Route Handlers, static generation, ISR, and the commonly used `next/*` modules are implemented. Cache Components and Partial Prerendering remain incomplete, and build-time image and font optimization do not yet reproduce the full Next.js pipeline.
