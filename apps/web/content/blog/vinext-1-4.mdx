@@ -27,8 +27,10 @@ import {
 To upgrade:
 
 ```sh
-npm install vinext@1.4.0 @vinext/cloudflare@1.3.0
+npm install vinext@1.4.0 @vinext/cloudflare@1.3.0 @cloudflare/workers-response-store@1.1.4
 ```
+
+If you run Workers Response Store as a separate Worker (the default service-binding mode), deploy it as well, because this release fixes how it handles overlapping refreshes. Projects created with `vinext init` have a `deploy:response-store` script for this.
 
 Most of this release is performance work. We profiled Vinext against the Next.js version of the Hacker News app from [solid-server-component-benchmarks](https://github.com/ryansolid/solid-server-component-benchmarks) and Next.js's App Router playground, and kept finding work the server and browser didn't need to do. On the Hacker News story page, 1.4 now spends less time on the server and in the browser than Next.js does:
 
