@@ -162,30 +162,22 @@ export function TooltipRow({
 
 // --- card -----------------------------------------------------------------------
 
-export function Swatch({ color, hollow = false }: { color: string; hollow?: boolean }) {
+function Swatch({ color }: { color: string }) {
   return (
     <span
       aria-hidden
       className="inline-block size-2.5 shrink-0 rounded-full"
-      style={
-        hollow
-          ? { boxShadow: `inset 0 0 0 2px ${color}` }
-          : ({ background: color } satisfies CSSProperties)
-      }
+      style={{ background: color } satisfies CSSProperties}
     />
   );
 }
 
-export function Legend({
-  items,
-}: {
-  items: Array<{ label: string; color: string; hollow?: boolean }>;
-}) {
+export function Legend({ items }: { items: Array<{ label: string; color: string }> }) {
   return (
     <div className="flex flex-wrap gap-x-4 gap-y-1.5 text-xs text-kumo-subtle">
       {items.map((item) => (
         <span key={item.label} className="inline-flex items-center gap-1.5">
-          <Swatch color={item.color} hollow={item.hollow} />
+          <Swatch color={item.color} />
           {item.label}
         </span>
       ))}
@@ -271,7 +263,7 @@ export function BenchCard({
 
 // --- bars -----------------------------------------------------------------------
 
-export const BAR_TRANSITION =
+const BAR_TRANSITION =
   "motion-safe:transition-[width] motion-safe:duration-700 motion-safe:ease-out";
 
 /** One horizontal bar with its value at the tip, growing from a square baseline. */
