@@ -6836,6 +6836,7 @@ export const loadServerActionClient = ${
                 return next();
               }
               const _reqStart = now();
+              const _reqWallStart = Date.now();
               let _compileMs: number | undefined;
               let _renderMs: number | undefined;
 
@@ -6848,17 +6849,18 @@ export const loadServerActionClient = ${
               // True compile time = time the RSC plugin spent loading/transforming
               // modules before our handler code ran, plus any in-handler work before
               // renderToReadableStream. Concretely:
-              //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
+              //   compileMs = (handlerStart - _reqWallStart) + inHandlerCompileMs
               //   renderMs  = renderMs from header, or -1 for RSC-only (soft-nav)
               //               responses where rendering is not measured in the handler.
               //               In that case the middleware computes render time as
               //               totalMs - compileMs.
               //
-              // handlerStart is performance.now() recorded at the very top of
-              // _handleRequest in the generated RSC entry. _reqStart is recorded
-              // here in the Node middleware, one stack frame before the RSC plugin
-              // loads the module. The gap between them is exactly the Vite
-              // compile/transform cost.
+              // handlerStart is the wall-clock time at the very top of the RSC
+              // handler. _reqWallStart is recorded here in the Node middleware,
+              // one stack frame before the RSC plugin loads the module. The gap
+              // between them is exactly the Vite compile/transform cost. Both
+              // are Date.now() values because the handler may run in workerd,
+              // whose performance.now() does not share Node's time origin.
               function _parseTiming(raw: unknown) {
                 const [handlerStart, inHandlerCompileMs, renderMs] = String(raw)
                   .split(",")
@@ -6869,7 +6871,7 @@ export const loadServerActionClient = ${
                   inHandlerCompileMs !== -1
                 ) {
                   _compileMs =
-                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                    Math.max(0, Math.round(handlerStart - _reqWallStart)) + inHandlerCompileMs;
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;
