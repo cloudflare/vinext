@@ -1,5 +1,17 @@
 # @cloudflare/workers-response-store
 
+## 1.1.4
+
+### Bug Fixes
+
+- **Cache:** date "use cache" entries from when their generation started, like Next.js (#4348)
+- **Response Store:** refreshes overtaken by invalidate(), purge() or revalidatePath() land like Next.js, without the R2 head (#4323)
+- **Response Store:** drop concurrent refreshes of a revision another write already replaced (#4307)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.1.3
 
 ### Bug Fixes
