@@ -16,6 +16,8 @@ import type {
 import {
   createIdResolver,
   createLogger,
+  defaultClientConditions,
+  defaultServerConditions,
   esmExternalRequirePlugin,
   isRunnableDevEnvironment,
   transformWithOxc,
@@ -2758,6 +2760,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       // Workers and Nitro need a self-contained server bundle. Their runtime
       // builds intentionally keep package code inside the graph.
       isEnabled: () => !hasCloudflarePlugin && !hasNitroPlugin,
+      isCacheComponents: () => nextConfig?.cacheComponents === true,
     }),
     // Resolve `data:text/css[+module],...` imports into virtual CSS files so
     // Vite's CSS pipeline (LightningCSS, CSS modules) processes them instead
@@ -5897,6 +5900,68 @@ export const loadServerActionClient = ${
             optimizerConditions.filter((condition) => condition !== "browser");
         }
         return null;
+      },
+    },
+    {
+      name: "vinext:next-js-condition",
+      enforce: "post",
+
+      // Runs after every other plugin's environment config, so it extends the
+      // conditions they set and only seeds Vite's defaults when none are set.
+      configEnvironment: {
+        order: "post",
+        handler(name, config, env) {
+          // With Cache Components, Next.js resolves the `next-js` export
+          // condition in its server and browser bundles, so packages can ship
+          // builds that rely on Next.js APIs such as `cacheTag()`. Vite only
+          // seeds its default conditions when none are set, so start from them.
+          if (
+            nextConfig?.cacheComponents &&
+            (name === "rsc" || name === "ssr" || name === "client")
+          ) {
+            const optimizerResolve = config.optimizeDeps?.rolldownOptions?.resolve;
+            const consumer = config.consumer ?? (name === "client" ? "client" : "server");
+            const conditions =
+              config.resolve?.conditions ??
+              (consumer === "client" || env.isSsrTargetWebworker
+                ? defaultClientConditions
+                : defaultServerConditions);
+            const nextConditions = conditions.includes("next-js")
+              ? [...conditions]
+              : [...conditions, "next-js"];
+            config.resolve ??= {};
+            config.resolve.conditions = nextConditions;
+            // The dependency optimizer resolves package-internal imports such as
+            // `#imports` with Rolldown's own conditions, so a pre-bundled package
+            // would otherwise mix its `next-js` entry with generic internals.
+            if (optimizerResolve?.conditionNames) {
+              if (!optimizerResolve.conditionNames.includes("next-js")) {
+                optimizerResolve.conditionNames = [...optimizerResolve.conditionNames, "next-js"];
+              }
+            } else {
+              // Without a list, Rolldown also matches `module`, except on the
+              // `neutral` platform. A list keeps only the platform's condition and
+              // `import`, `require` and `default`, so seed it with `module`. Vite
+              // copies the deprecated `esbuildOptions` conditions and platform here
+              // only while they are unset, so keep them when an app sets them.
+              const platform =
+                config.optimizeDeps?.rolldownOptions?.platform ??
+                config.optimizeDeps?.esbuildOptions?.platform;
+              const conditionNames =
+                config.optimizeDeps?.esbuildOptions?.conditions ??
+                (platform === "neutral" ? [] : ["module"]);
+              config.optimizeDeps ??= {};
+              config.optimizeDeps.rolldownOptions ??= {};
+              config.optimizeDeps.rolldownOptions.resolve ??= {};
+              config.optimizeDeps.rolldownOptions.resolve.conditionNames = conditionNames.includes(
+                "next-js",
+              )
+                ? [...conditionNames]
+                : [...conditionNames, "next-js"];
+            }
+          }
+          return null;
+        },
       },
     },
     {

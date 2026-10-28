@@ -10,7 +10,15 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vite-plus/test";
-import { createBuilder, createLogger, mergeConfig, parseAst, resolveConfig } from "vite";
+import {
+  createBuilder,
+  createLogger,
+  defaultClientConditions,
+  defaultServerConditions,
+  mergeConfig,
+  parseAst,
+  resolveConfig,
+} from "vite";
 import { augmentSsrManifestFromBundle as _augmentSsrManifestFromBundle } from "../packages/vinext/src/build/ssr-manifest.js";
 import {
   EXPORT_ALL_CANDIDATE_FILTER as _EXPORT_ALL_CANDIDATE_FILTER,
@@ -1441,6 +1449,113 @@ describe("optimizeDeps.exclude for vinext", () => {
     expect(auxiliaryWorkerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toContain(
       "browser",
     );
+  }, 15000);
+
+  // tests/next-condition.test.ts, ported from Next.js, covers the dev server
+  // and the Node and Cloudflare Workers builds.
+  it("adds the next-js condition to Next.js environments with Cache Components", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const plugins = vinext();
+    const mainPlugin = plugins.find(
+      (p: any) => p.name === "vinext:config" && typeof p.config === "function",
+    );
+    const serverConditionsPlugin = plugins.find((p: any) => p.name === "vinext:server-conditions");
+    const nextJsPlugin = plugins.find((p: any) => p.name === "vinext:next-js-condition");
+    expect(mainPlugin).toBeDefined();
+    expect(serverConditionsPlugin).toBeDefined();
+    expect(nextJsPlugin).toBeDefined();
+
+    const previousCacheComponents = process.env.VINEXT_TEST_CACHE_COMPONENTS;
+    process.env.VINEXT_TEST_CACHE_COMPONENTS = "true";
+    try {
+      await (mainPlugin as any).config(
+        { root: path.resolve(import.meta.dirname, "fixtures/next-condition"), build: {} },
+        { command: "build" },
+      );
+      // Vite runs vinext's other hooks first; the next-js one is post-ordered.
+      const configEnvironment = (name: string, config: any, isSsrTargetWebworker = false) => {
+        const env = { command: "build", mode: "production", isSsrTargetWebworker };
+        (serverConditionsPlugin as any).configEnvironment(name, config, env);
+        (nextJsPlugin as any).configEnvironment.handler(name, config, env);
+      };
+
+      // Cloudflare Workers environments carry explicit resolver and optimizer conditions.
+      for (const environmentName of ["rsc", "ssr"]) {
+        const workerConfig = {
+          resolve: {
+            conditions: ["workerd", "worker", "module", "browser", "development|production"],
+          },
+          optimizeDeps: {
+            rolldownOptions: {
+              resolve: {
+                conditionNames: ["workerd", "worker", "module", "browser", "development"],
+              },
+            },
+          },
+        };
+        configEnvironment(environmentName, workerConfig);
+        expect(workerConfig.resolve.conditions).toEqual([
+          "workerd",
+          "worker",
+          "module",
+          "development|production",
+          "next-js",
+        ]);
+        expect(workerConfig.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+          "workerd",
+          "worker",
+          "module",
+          "development",
+          "next-js",
+        ]);
+      }
+
+      // Without explicit conditions, extend the defaults Vite would have used.
+      const client: any = {};
+      configEnvironment("client", client);
+      expect(client.resolve.conditions).toEqual([...defaultClientConditions, "next-js"]);
+      const ssr: any = {};
+      configEnvironment("ssr", ssr);
+      expect(ssr.resolve.conditions).toEqual([...defaultServerConditions, "next-js"]);
+      const webworkerSsr: any = {};
+      configEnvironment("ssr", webworkerSsr, true);
+      expect(webworkerSsr.resolve.conditions).toEqual([...defaultClientConditions, "next-js"]);
+      // Rolldown adds its platform's condition to a list, but not the
+      // `module` it matches without one.
+      for (const config of [client, ssr, webworkerSsr]) {
+        expect(config.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+          "module",
+          "next-js",
+        ]);
+      }
+      const neutralSsr: any = { optimizeDeps: { rolldownOptions: { platform: "neutral" } } };
+      configEnvironment("ssr", neutralSsr);
+      expect(neutralSsr.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual(["next-js"]);
+      // Deprecated esbuild optimizer conditions an app set are kept.
+      const esbuildSsr: any = { optimizeDeps: { esbuildOptions: { conditions: ["custom"] } } };
+      configEnvironment("ssr", esbuildSsr);
+      expect(esbuildSsr.optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+        "custom",
+        "next-js",
+      ]);
+
+      // A condition the app already configured is not repeated.
+      const configured = { resolve: { conditions: ["react-server", "next-js"] } };
+      configEnvironment("rsc", configured);
+      expect(configured.resolve.conditions).toEqual(["react-server", "next-js"]);
+      expect((configured as any).optimizeDeps.rolldownOptions.resolve.conditionNames).toEqual([
+        "module",
+        "next-js",
+      ]);
+
+      // Auxiliary Workers do not run Next.js code.
+      const auxiliaryWorker = { resolve: { conditions: ["workerd", "worker", "module"] } };
+      configEnvironment("auxiliary-worker", auxiliaryWorker);
+      expect(auxiliaryWorker.resolve.conditions).toEqual(["workerd", "worker", "module"]);
+    } finally {
+      if (previousCacheComponents === undefined) delete process.env.VINEXT_TEST_CACHE_COMPONENTS;
+      else process.env.VINEXT_TEST_CACHE_COMPONENTS = previousCacheComponents;
+    }
   }, 15000);
 
   it.each([

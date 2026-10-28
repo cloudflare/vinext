@@ -33,6 +33,7 @@ describe("ESM externals", () => {
       getTsconfigExactAliases: () => ({}),
       getBundledPackages: () => new Set(),
       isEnabled: () => enabled,
+      isCacheComponents: () => false,
     });
     const applyToEnvironment = plugin.applyToEnvironment!;
     const environment = (name: string, consumer: "client" | "server") =>
@@ -62,6 +63,7 @@ describe("ESM externals", () => {
       getTsconfigExactAliases: () => ({}),
       getBundledPackages: () => new Set(),
       isEnabled: () => true,
+      isCacheComponents: () => false,
     });
     const context = { environment: { name: "rsc" }, resolve } as any;
 
