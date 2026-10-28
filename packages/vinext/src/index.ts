@@ -275,6 +275,7 @@ import { createPagesNodeExternalsPlugin } from "./plugins/pages-node-externals.j
 import { createCloudflareDevModuleUrlsPlugin } from "./plugins/cloudflare-dev-module-urls.js";
 import { validateMiddlewareModuleExports } from "./plugins/middleware-export-validation.js";
 import { createOptimizeImportsPlugin } from "./plugins/optimize-imports.js";
+import { createDevReexportFollowingPlugin } from "./plugins/dev-reexport-following.js";
 import { createDynamicPreloadMetadataPlugin } from "./plugins/dynamic-preload-metadata.js";
 import { createOgInlineFetchAssetsPlugin, createOgAssetsPlugin } from "./plugins/og-assets.js";
 import { createOgHarfbuzzPlugin } from "./plugins/og-harfbuzz.js";
@@ -8423,6 +8424,10 @@ export const loadServerActionClient = ${
       () => nextConfig,
       () => root,
     ),
+    // Dev-only: follow re-exports through side-effect-free modules in the RSC
+    // environment so unused barrel leaves are not evaluated (Vite dev does not
+    // tree-shake) — see src/plugins/dev-reexport-following.ts
+    createDevReexportFollowingPlugin(),
     // next/dynamic preload metadata:
     // Mirrors Next.js's react-loadable transform by recording which resolved
     // module IDs belong to each dynamic() boundary. The runtime resolves those

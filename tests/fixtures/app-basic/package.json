@@ -8,6 +8,7 @@
     "fake-context-lib": "file:./__test_packages__/fake-context-lib",
     "fake-css-lib": "file:./__test_packages__/fake-css-lib",
     "fake-css-module-lib": "file:./__test_packages__/fake-css-module-lib",
+    "fake-side-effect-free-barrel": "file:./__test_packages__/fake-side-effect-free-barrel",
     "react": "catalog:",
     "react-dom": "catalog:",
     "react-server-dom-webpack": "catalog:",
