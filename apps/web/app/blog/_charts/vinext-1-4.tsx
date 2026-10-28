@@ -177,7 +177,9 @@ export function HackerNewsLighthouseChart() {
       method={
         <>
           {HN_SERVERS} Lighthouse&apos;s default mobile preset simulates a slow 4G connection and a
-          4× slower CPU. Each value is the median of 5 runs, each in a fresh Chromium.
+          4× slower CPU. Each value is the median of 5 runs, each in a fresh Chromium. Simulated
+          paint times move in steps of about 150 ms, one simulated round trip, so a gap that small
+          isn&apos;t a real difference.
         </>
       }
     />
@@ -341,34 +343,36 @@ export function SolidBenchmarkChart() {
       entries={[
         {
           id: "solid-sc",
-          rerun: { score: 95, tbt: 0, fcp: 2252, lcp: 2411 },
+          rerun: { score: 95, tbt: 216, fcp: 1219, lcp: 2233 },
           published: { score: 96, tbt: 19, fcp: 2254, lcp: 2254 },
         },
         {
           id: "solid-spa",
-          rerun: { score: 93, tbt: 21, fcp: 2552, lcp: 2552 },
+          rerun: { score: 91, tbt: 267, fcp: 1213, lcp: 2725 },
           published: { score: 91, tbt: 168, fcp: 2555, lcp: 2555 },
         },
-        { id: "v14", rerun: { score: 89, tbt: 53, fcp: 1955, lcp: 3534 } },
+        { id: "v14", rerun: { score: 91, tbt: 199, fcp: 1223, lcp: 3063 } },
         {
           id: "next",
-          rerun: { score: 87, tbt: 82, fcp: 2256, lcp: 3639 },
+          rerun: { score: 89, tbt: 205, fcp: 1209, lcp: 3211 },
           published: { score: 78, tbt: 355, fcp: 2271, lcp: 3769 },
         },
         {
           id: "qwik",
-          rerun: { score: 82, tbt: 0, fcp: 3603, lcp: 3603 },
+          rerun: { score: 100, tbt: 0, fcp: 674, lcp: 674 },
           published: { score: 82, tbt: 36, fcp: 3611, lcp: 3611 },
         },
       ]}
       method={
         <>
           The rerun uses the benchmark at <code>4176d6d</code> with Next.js 16.4.2, adding a Vinext
-          main build of the identical Next.js app source behind the same front proxy.
-          Lighthouse&apos;s mobile preset ran 15 times per app; values are medians. The Solid
-          entries are the versions with interactive toggles. Lighthouse simulates the network, so
-          paint times are comparable with the published run, but Total Blocking Time scales with the
-          machine, and this one is about 2.3× faster than the one behind the published numbers.
+          main build of the identical Next.js app source behind the same front proxy. It runs
+          Lighthouse&apos;s mobile preset with real throttling (the <code>devtools</code> throttling
+          method) in Chrome for Testing 156, 5 rounds per app with the order alternating each round;
+          values are medians. The Solid entries are the versions with interactive toggles. The
+          published numbers use Lighthouse&apos;s default simulated throttling, which estimates
+          paint times from the order of requests in steps of about 150 ms and doesn&apos;t model
+          streamed HTML, so they differ most on paint times.
         </>
       }
     />

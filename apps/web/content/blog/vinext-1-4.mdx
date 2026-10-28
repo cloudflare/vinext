@@ -69,7 +69,7 @@ On the Hacker News story page, these changes take between a fifth and a quarter 
 
 <HackerNewsBrowserChart />
 
-Lighthouse simulates a slow 4G connection, which is where low-priority scripts help most. First Contentful Paint went from 3.3 s in 1.3 to 2.1 s, 150 ms ahead of Next.js, and the score from 81 to 88:
+Lighthouse simulates a slow 4G connection, which is where low-priority scripts help most. First Contentful Paint went from 3.3 s in 1.3 to 2.1 s, level with Next.js, and the score from 81 to 88:
 
 <HackerNewsLighthouseChart />
 
@@ -101,9 +101,9 @@ Next.js also uses about a fifth less CPU per request. Some of that is the runtim
 
 ## Ryan Carniato's benchmark
 
-Ryan Carniato's [solid-server-component-benchmarks](https://github.com/ryansolid/solid-server-component-benchmarks) compare Solid, Qwik and Next.js on the same Hacker News app. We reran its Lighthouse test with his latest version and added Vinext 1.4, built from the same source as the Next.js app. Solid is still well ahead, and Vinext 1.4 lands just above Next.js.
+Ryan Carniato's [solid-server-component-benchmarks](https://github.com/ryansolid/solid-server-component-benchmarks) compare Solid, Qwik and Next.js on the same Hacker News app. We reran its Lighthouse test with his latest version and added Vinext 1.4, built from the same source as the Next.js app. His setup simulates the network rather than throttling it, and the simulation doesn't model streamed HTML, so we ran it with real throttling.
 
-The hollow markers are his published numbers. Next.js scores higher in our rerun than in his because our machine is faster, which shrinks Total Blocking Time. Paint times are simulated, so those compare directly.
+Qwik comes out on top. It inlines its CSS, so it paints as soon as the first HTML arrives, while every other app waits for a stylesheet first. The rest reach First Contentful Paint within 15 ms of each other. Solid's smaller document puts its Largest Contentful Paint about 800 ms ahead of Vinext, and Vinext's is about 150 ms ahead of Next.js. The hollow markers are his published numbers, from the simulated runs, which ranked Qwik last on paint times.
 
 <SolidBenchmarkChart />
 
