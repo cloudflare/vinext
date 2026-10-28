@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  ByteBars,
-  Highlights,
-  Leaderboard,
-  MetricPanels,
-  ScoreRings,
-  type Metric,
-} from "./benchmark-charts";
+import { ByteBars, Highlights, MetricPanels, ScoreRings, type Metric } from "./benchmark-charts";
 import { formatMs, type Format } from "./primitives";
 
 /**
@@ -325,54 +318,6 @@ export function ContentSitePrefetchChart() {
         <>
           {CONTENT_SITE_SERVERS} Bytes are the uncompressed bodies of the RSC requests the page
           issues for the links it shows, within 4 seconds of loading and without throttling.
-        </>
-      }
-    />
-  );
-}
-
-export function SolidBenchmarkChart() {
-  return (
-    <Leaderboard
-      eyebrow="solid-server-component-benchmarks"
-      title="Ryan Carniato's Hacker News benchmark, rerun with Vinext"
-      labels={{
-        "solid-sc": "Solid server components",
-        "solid-spa": "Solid SPA",
-      }}
-      entries={[
-        {
-          id: "solid-sc",
-          rerun: { score: 95, tbt: 216, fcp: 1219, lcp: 2233 },
-          published: { score: 96, tbt: 19, fcp: 2254, lcp: 2254 },
-        },
-        {
-          id: "solid-spa",
-          rerun: { score: 91, tbt: 267, fcp: 1213, lcp: 2725 },
-          published: { score: 91, tbt: 168, fcp: 2555, lcp: 2555 },
-        },
-        { id: "v14", rerun: { score: 91, tbt: 199, fcp: 1223, lcp: 3063 } },
-        {
-          id: "next",
-          rerun: { score: 89, tbt: 205, fcp: 1209, lcp: 3211 },
-          published: { score: 78, tbt: 355, fcp: 2271, lcp: 3769 },
-        },
-        {
-          id: "qwik",
-          rerun: { score: 100, tbt: 0, fcp: 674, lcp: 674 },
-          published: { score: 82, tbt: 36, fcp: 3611, lcp: 3611 },
-        },
-      ]}
-      method={
-        <>
-          The rerun uses the benchmark at <code>4176d6d</code> with Next.js 16.4.2, adding a Vinext
-          main build of the identical Next.js app source behind the same front proxy. It runs
-          Lighthouse&apos;s mobile preset with real throttling (the <code>devtools</code> throttling
-          method) in Chrome for Testing 156, 5 rounds per app with the order alternating each round;
-          values are medians. The Solid entries are the versions with interactive toggles. The
-          published numbers use Lighthouse&apos;s default simulated throttling, which estimates
-          paint times from the order of requests in steps of about 150 ms and doesn&apos;t model
-          streamed HTML, so they differ most on paint times.
         </>
       }
     />

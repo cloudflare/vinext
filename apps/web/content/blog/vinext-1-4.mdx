@@ -22,7 +22,6 @@ import {
   HackerNewsServerChart,
   HighlightsChart,
   RedactChart,
-  SolidBenchmarkChart,
 } from "../../app/blog/_charts/vinext-1-4";
 
 To upgrade:
@@ -98,14 +97,6 @@ The content site prototype from the prefetching test is a harder benchmark than 
 Next.js paints first, by about half a second. The browser can't paint until it has every stylesheet in the page's head, and Vinext's page links 15 of them, about 44 kB compressed, where Next.js links 4, about 31 kB. Turbopack merges a page's CSS into a few files, while Vite keeps one file per chunk, so a page built from many components pulls in many small stylesheets, and on Lighthouse's simulated slow 4G connection each extra request delays the first paint.
 
 Next.js also uses about a fifth less CPU per request. Some of that is the runtime: on workerd, Vinext still renders with React's edge build rather than the Node build mentioned earlier. Some of it is payload size. Vinext's RSC payload for the about page is 297 kB, against 204 kB for Next.js, and every request has to serialize it and embed it in the HTML. We're looking at more ways to shrink the payload.
-
-## Ryan Carniato's benchmark
-
-Ryan Carniato's [solid-server-component-benchmarks](https://github.com/ryansolid/solid-server-component-benchmarks) compare Solid, Qwik and Next.js on the same Hacker News app. We reran its Lighthouse test with his latest version and added Vinext 1.4, built from the same source as the Next.js app. His setup simulates the network rather than throttling it, and the simulation doesn't model streamed HTML, so we ran it with real throttling.
-
-Qwik comes out on top. It inlines its CSS, so it paints as soon as the first HTML arrives, while every other app waits for a stylesheet first. The rest reach First Contentful Paint within 15 ms of each other. Solid's smaller document puts its Largest Contentful Paint about 800 ms ahead of Vinext, and Vinext's is about 150 ms ahead of Next.js. The hollow markers are his published numbers, from the simulated runs, which ranked Qwik last on paint times.
-
-<SolidBenchmarkChart />
 
 ## Trying TanStack Redact
 

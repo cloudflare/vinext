@@ -19,16 +19,13 @@ import {
  * colour scheme. Text always uses the kumo text tokens; only marks carry series colour.
  */
 
-export type SeriesId = "redact" | "v13" | "v14" | "next" | "solid-sc" | "solid-spa" | "qwik";
+export type SeriesId = "redact" | "v13" | "v14" | "next";
 
 export const SERIES_COLOR: Record<SeriesId, string> = {
   redact: "var(--bench-redact)",
   v13: "var(--bench-v13)",
   v14: "var(--bench-v14)",
   next: "var(--bench-next)",
-  "solid-sc": "var(--bench-other)",
-  "solid-spa": "var(--bench-other)",
-  qwik: "var(--bench-other)",
 };
 
 export type SeriesLabels = Partial<Record<SeriesId, string>>;
@@ -38,9 +35,6 @@ const DEFAULT_LABELS: Record<SeriesId, string> = {
   v13: "Vinext 1.3",
   v14: "Vinext 1.4",
   next: "Next.js",
-  "solid-sc": "Solid server components",
-  "solid-spa": "Solid SPA",
-  qwik: "Qwik",
 };
 
 export function seriesLabel(id: SeriesId, labels?: SeriesLabels): string {
