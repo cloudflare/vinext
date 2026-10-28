@@ -2,6 +2,8 @@
 
 ## 1.1.4
 
+Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
+
 ### Bug Fixes
 
 - **Cache:** date "use cache" entries from when their generation started, like Next.js (#4348)

@@ -2,6 +2,8 @@
 
 ## 1.4.0
 
+Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
+
 ### Features
 
 #### Cloudflare
