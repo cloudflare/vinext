@@ -1,6 +1,6 @@
 ---
-title: "Vinext 1.4: less server work, layouts that run once, and one cache entry per page"
-description: "Lower CPU per request on Workers and Node, layouts that render once per request, faster hydration, and cached pages that store their HTML and RSC payload together and share one entry across hosts."
+title: "Vinext 1.4: less server work, layouts that run once, and HTML and RSC cached in sync"
+description: "Lower CPU per request on Workers and Node, layouts that render once per request, faster hydration, and cached HTML and RSC payloads that are filled and regenerated together and shared across hosts."
 date: "2026-10-28"
 authors:
   - name: James Anderson
@@ -34,7 +34,7 @@ Most of this release is performance work. We profiled Vinext against the Next.js
 
 <HighlightsChart />
 
-The rest of the release brings caching closer to Next.js: a page's HTML and RSC payload now behave as one cache entry, and Cloudflare caches share it across every host an app is served on.
+The rest of the release brings caching closer to Next.js: a page's cached HTML and RSC payload are now filled and regenerated together, and Cloudflare caches share them across every host an app is served on.
 
 ## Less work on the server
 
@@ -80,13 +80,13 @@ Next.js doesn't render a dynamic page just to prefetch it. It prefetches the rou
 
 <ContentSitePrefetchChart />
 
-## One cache entry per page
+## HTML and RSC cached in sync
 
 Next.js stores an App Router page's HTML and its RSC payload in one cache entry. Whichever request misses first, a full page load or a client navigation, fills both, and regenerating the page rewrites both. Vinext stored them under separate keys, so a page first reached by client navigation still missed on its first full load, as [@yoohahn](https://github.com/yoohahn) noticed.
 
-The two keys now behave as one entry on every backend. When an RSC request misses, Vinext renders the page's HTML from the payload it already has, without running your server components again, and stores both. Regenerating either part rewrites the other. Workers Cache can't store a response nobody asked for, so there Vinext fetches the other part in the background, which costs one extra request each time a page misses or refreshes.
+Vinext still stores them separately, but on every backend it now fills and regenerates them together. When an RSC request misses, Vinext renders the page's HTML from the payload it already has, without running your server components again, and stores both. Regenerating either part rewrites the other. Workers Cache can't store a response nobody asked for, so there Vinext fetches the other part in the background, which costs one extra request each time a page misses or refreshes.
 
-That entry is also shared across hosts now. Next.js keys its cache by path, so an app served on several domains shares its cached pages, but Workers Response Store and Workers Cache included the host in their keys, so every domain rendered and stored its own copy. They now share one entry, as the KV cache already did. This is safe because a render that reads the host, such as `headers().get("host")` or `request.nextUrl.hostname`, is dynamic and never stored. Pages Router pages that run `getServerSideProps` or `getInitialProps` are still only stored when a `CDN-Cache-Control` policy opts them in, and then with one entry per host. [Hosts](/docs/caching#hosts) has the details.
+Those entries are also shared across hosts now. Next.js keys its cache by path, so an app served on several domains shares its cached pages, but Workers Response Store and Workers Cache included the host in their keys, so every domain rendered and stored its own copy. Every domain now uses the same copy, as the KV cache already did. This is safe because a render that reads the host, such as `headers().get("host")` or `request.nextUrl.hostname`, is dynamic and never stored. Pages Router pages that run `getServerSideProps` or `getInitialProps` are still only stored when a `CDN-Cache-Control` policy opts them in, and then with one entry per host. [Hosts](/docs/caching#hosts) has the details.
 
 ## Benchmarking a larger app
 
