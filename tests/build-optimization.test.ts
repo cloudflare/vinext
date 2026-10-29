@@ -1114,6 +1114,9 @@ describe("optimizeDeps.exclude for vinext", () => {
       expect(workerEnvConfig.optimizeDeps.include).toContain(
         "vinext > @vitejs/plugin-rsc/react/rsc",
       );
+      // next/image shim deps, discovered mid-startup otherwise.
+      expect(workerEnvConfig.optimizeDeps.include).toContain("vinext > @unpic/react");
+      expect(workerEnvConfig.optimizeDeps.include).toContain("vinext > ipaddr.js");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("already-excluded");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext");
       expect(workerEnvConfig.optimizeDeps.exclude).toContain("vinext/server/fetch-handler");
