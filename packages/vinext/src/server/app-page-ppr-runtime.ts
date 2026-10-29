@@ -103,8 +103,8 @@ async function resolveGeneratedStaticParams<TRoute extends AppPageDispatchRoute>
 }
 
 /**
- * The shell a request resumes: the most specific one derived from params
- * generateStaticParams produced, or the route's own shell, which keeps no
+ * The fallback shell a request resumes: the most specific one derived from
+ * params generateStaticParams produced, or the route's shell that keeps no
  * params. Like Next.js, a path generateStaticParams produced renders blocking
  * and is stored instead. Next.js reads both from its prerender manifest;
  * without a stored shell recording them, vinext asks generateStaticParams, as
