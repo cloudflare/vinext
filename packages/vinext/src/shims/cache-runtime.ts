@@ -713,12 +713,18 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
       // Next.js decides that a private cache requires request-time execution at
       // the cache boundary, before key serialization or any private user code.
-      markDynamicUsage();
       const expression = '"use cache: private"';
       const workUnit = workUnitAsyncStorage.getStore();
       // A runtime prerender renders private caches, as Next.js's does.
       const isPrerenderWorkUnit =
         workUnit?.type === "prerender" || workUnit?.type === "prerender-client";
+      // A shell leaves the cache to a hole each request resumes, so it doesn't
+      // make the shell itself dynamic.
+      const fallbackShellPromise = isPrerenderWorkUnit
+        ? null
+        : createPprFallbackShellRequestDataSuspensePromise<TResult>(expression);
+      if (fallbackShellPromise) return fallbackShellPromise;
+      markDynamicUsage();
       if (isPrerenderWorkUnit) {
         if (isRouteCacheabilityProbe()) {
           recordRouteCacheabilityProbeBailout("private-cache", {
@@ -731,9 +737,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         workUnit.signalPrerenderBailout?.(expression);
         return new Promise<TResult>(() => {});
       }
-      const fallbackShellPromise =
-        createPprFallbackShellRequestDataSuspensePromise<TResult>(expression);
-      if (fallbackShellPromise) return fallbackShellPromise;
       if (isRouteCacheabilityProbe()) {
         recordRouteCacheabilityProbeBailout("private-cache", {
           cacheable: false,

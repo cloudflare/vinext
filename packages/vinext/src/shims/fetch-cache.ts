@@ -54,6 +54,7 @@ import {
 import { getRegisteredCacheContext } from "./internal/cache-context-accessor.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
+  createPprFallbackShellSuspensePromise,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
 } from "./ppr-fallback-shell.js";
@@ -797,6 +798,28 @@ function recordDynamicFetchObservation(input: string | URL | Request): void {
   addDynamicFetchObservation(input);
 }
 
+/**
+ * Like Next.js, an uncached fetch in a Cache Components shell's render, outside
+ * a cache, is a hole each request fills instead of a value the shell keeps. It
+ * isn't made: its response would be one request's.
+ */
+function createUncachedFetchShellHole(): Promise<Response> | null {
+  if (isInsideAnyCacheScope()) return null;
+  return createPprFallbackShellSuspensePromise<Response>("`fetch()`");
+}
+
+/**
+ * Record a fetch that skipped the cache on its own, without an explicit
+ * opt-out. With Cache Components it's still dynamic, as Next.js's prerender
+ * leaves it a hole, so a page isn't stored with one request's response.
+ */
+function recordAutoNoCacheFetch(input: string | URL | Request): void {
+  recordDynamicFetchObservation(input);
+  if (String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && !isInsideAnyCacheScope()) {
+    markDynamicUsage();
+  }
+}
+
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   if (isInsideAnyCacheScope()) return;
   addDynamicFetchObservation(input);
@@ -1316,7 +1339,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // If no caching options at all, just pass through to original fetch
     if (!nextOpts && !cacheDirective) {
-      recordDynamicFetchObservation(input);
+      const shellHole = createUncachedFetchShellHole();
+      if (shellHole) return shellHole;
+      recordAutoNoCacheFetch(input);
       return recordFetchOutcome(await dedupeFetch(input, init), "skip", "auto no cache");
     }
 
@@ -1330,6 +1355,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       cacheDirective === "no-cache" ||
       nextOpts?.revalidate === 0
     ) {
+      const shellHole = createUncachedFetchShellHole();
+      if (shellHole) return shellHole;
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
       markUncachedFetchForPageOutput(input);
@@ -1360,8 +1387,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
+      const shellHole = createUncachedFetchShellHole();
+      if (shellHole) return shellHole;
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      recordAutoNoCacheFetch(input);
       return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
     }
 
@@ -1399,6 +1428,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
             )
           : _getState().currentFetchRevalidate;
         if (routeRevalidate === 0) {
+          const shellHole = createUncachedFetchShellHole();
+          if (shellHole) return shellHole;
           const cleanInit = stripNextFromInit(init, cacheDirective);
           markUncachedFetchForPageOutput(input);
           return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "revalidate: 0");
@@ -1409,8 +1440,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
             : routeRevalidate;
       } else {
         // next: {} with no revalidate or tags — pass through
+        const shellHole = createUncachedFetchShellHole();
+        if (shellHole) return shellHole;
         const cleanInit = stripNextFromInit(init, cacheDirective);
-        recordDynamicFetchObservation(input);
+        recordAutoNoCacheFetch(input);
         return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
       }
     }

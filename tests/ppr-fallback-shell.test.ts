@@ -354,10 +354,18 @@ describe("ppr fallback shell render lifecycle", () => {
 
     await runWithRequestContext(createRequestContext(), async () => {
       setHeadersContext({ headers: new Headers(), cookies: new Map() });
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const privateCache = registerCachedFunction(
+        async () => "private",
+        "test:shell-private",
+        "private",
+      );
       runWithPprFallbackShellState(state, () => {
         void cookies();
         void headers();
         void connection();
+        void privateCache();
       });
       await delay(0);
       expect(state.hasDynamicBoundary).toBe(true);
