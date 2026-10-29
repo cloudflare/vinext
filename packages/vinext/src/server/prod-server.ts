@@ -2846,15 +2846,22 @@ async function createPagesRouterRequestHandler(
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? (request: Request, apiUrl: string) =>
-                handleApi(
+            ? (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+                // Next.js writes the routing response headers to `res` before the
+                // API route runs, so the handler can read and replace them.
+                // A staged Content-Length describes no API body.
+                stagedHeaders.delete("Content-Length");
+                return handleApi(
                   request,
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
-                )
+                  stagedHeaders,
+                );
+              }
             : null,
+        handleApiAppliesStagedHeaders: true,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served
         // after middleware so middleware can intercept or redirect them, and before

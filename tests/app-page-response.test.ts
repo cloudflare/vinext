@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 import {
   buildAppPageHtmlResponse,
   buildAppPageRscResponse,
@@ -23,6 +23,22 @@ function createBody(text: string): ReadableStream {
       controller.close();
     },
   });
+}
+
+/**
+ * Pin both clocks so the wall-clock `handlerStart` in X-Vinext-Timing is
+ * deterministic. Workerd's performance.now() returns Date.now(); Node's counts
+ * from process start.
+ */
+function withClocks<T>(clocks: { dateNow: number; performanceNow: number }, run: () => T): T {
+  const dateNow = vi.spyOn(Date, "now").mockReturnValue(clocks.dateNow);
+  const performanceNow = vi.spyOn(performance, "now").mockReturnValue(clocks.performanceNow);
+  try {
+    return run();
+  } finally {
+    dateNow.mockRestore();
+    performanceNow.mockRestore();
+  }
 }
 
 describe("app page response helpers", () => {
@@ -508,22 +524,26 @@ describe("app page response helpers", () => {
     middlewareHeaders.append("set-cookie", "session=abc; Path=/");
     middlewareHeaders.append("vary", "Next-Router-State-Tree");
 
-    const response = buildAppPageRscResponse(createBody("flight"), {
-      middlewareContext: {
-        headers: middlewareHeaders,
-        status: 202,
-      },
-      params: { slug: "test" },
-      policy: {
-        cacheControl: "s-maxage=60, stale-while-revalidate",
-        cacheState: "MISS",
-      },
-      timing: {
-        compileEnd: 15,
-        handlerStart: 10,
-        responseKind: "rsc",
-      },
-    });
+    // Node clocks: performance.now() counts from process start, so handlerStart
+    // is shifted onto the wall clock (20ms before Date.now()).
+    const response = withClocks({ dateNow: 1_700_000_000_000, performanceNow: 30 }, () =>
+      buildAppPageRscResponse(createBody("flight"), {
+        middlewareContext: {
+          headers: middlewareHeaders,
+          status: 202,
+        },
+        params: { slug: "test" },
+        policy: {
+          cacheControl: "s-maxage=60, stale-while-revalidate",
+          cacheState: "MISS",
+        },
+        timing: {
+          compileEnd: 15,
+          handlerStart: 10,
+          responseKind: "rsc",
+        },
+      }),
+    );
 
     expect(response.status).toBe(202);
     expect(response.headers.get("content-type")).toBe("text/x-component");
@@ -532,7 +552,7 @@ describe("app page response helpers", () => {
     expect(response.headers.get("x-vinext-cache")).toBe("MISS");
     expect(response.headers.get("x-nextjs-cache")).toBe("MISS");
     expect(response.headers.get("vary")).toBe(VINEXT_RSC_VARY_HEADER);
-    expect(response.headers.get("x-vinext-timing")).toBe("10,5,-1");
+    expect(response.headers.get("x-vinext-timing")).toBe("1699999999980,5,-1");
     await expect(response.text()).resolves.toBe("flight");
   });
 
@@ -642,24 +662,30 @@ describe("app page response helpers", () => {
     middlewareHeaders.set("cache-control", "private, max-age=5");
     middlewareHeaders.set("link", "</middleware.css>; rel=preload; as=style");
 
-    const response = buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
-      draftCookie: "__prerender_bypass=token; Path=/",
-      linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
-      middlewareContext: {
-        headers: middlewareHeaders,
-        status: 203,
-      },
-      policy: {
-        cacheControl: "s-maxage=31536000, stale-while-revalidate",
-        cacheState: "STATIC",
-      },
-      timing: {
-        compileEnd: 12,
-        handlerStart: 10,
-        renderEnd: 20,
-        responseKind: "html",
-      },
-    });
+    // Workerd clocks: performance.now() is epoch-based, so handlerStart is
+    // already wall-clock time and passes through unchanged.
+    const response = withClocks(
+      { dateNow: 1_700_000_000_050, performanceNow: 1_700_000_000_050 },
+      () =>
+        buildAppPageHtmlResponse(createBody("<h1>page</h1>"), {
+          draftCookie: "__prerender_bypass=token; Path=/",
+          linkHeader: "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
+          middlewareContext: {
+            headers: middlewareHeaders,
+            status: 203,
+          },
+          policy: {
+            cacheControl: "s-maxage=31536000, stale-while-revalidate",
+            cacheState: "STATIC",
+          },
+          timing: {
+            compileEnd: 1_700_000_000_012,
+            handlerStart: 1_700_000_000_010,
+            renderEnd: 1_700_000_000_020,
+            responseKind: "html",
+          },
+        }),
+    );
 
     expect(response.status).toBe(203);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -672,7 +698,7 @@ describe("app page response helpers", () => {
         "</font.woff2>; rel=preload; as=font; type=font/woff2; crossorigin",
     );
     expect(response.headers.get("x-extra")).toBe("present");
-    expect(response.headers.get("x-vinext-timing")).toBe("10,2,8");
+    expect(response.headers.get("x-vinext-timing")).toBe("1700000000010,2,8");
 
     const setCookies = response.headers.getSetCookie();
     expect(setCookies).toContain("__prerender_bypass=token; Path=/");
