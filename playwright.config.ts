@@ -116,6 +116,7 @@ const projectServers = {
       "app-router-prod/rsc-miss-document.spec.ts",
       "app-router/preload-rejection.spec.ts",
       "app-router/external-rewrite-host-capture.spec.ts",
+      "app-router/tsconfig-exact-path.spec.ts",
     ],
     use: { baseURL: "http://localhost:4198" },
     server: {
