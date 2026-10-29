@@ -354,7 +354,9 @@ let _unstableIoWarned = false;
  *
  * When called inside a "use cache" function, this sets the cache TTL.
  * The "minimum-wins" rule applies: if called multiple times, the shortest
- * duration for each field wins.
+ * duration for each field wins. Like Next.js, only the fields a call sets are
+ * explicit: the others resolve from the default profile and any nested caches
+ * (see `resolveCacheLife` in cache-runtime.ts).
  *
  * When called outside a "use cache" context, this is a validated no-op.
  */
@@ -380,42 +382,23 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
     ) {
       console.warn("[vinext] cacheLife: expire must be >= revalidate");
     }
-    resolvedConfig = { ...cacheLifeProfiles.default, ...profile };
+    resolvedConfig = { ...profile };
   } else {
     return;
   }
 
-  // If we're inside a "use cache" context, push the config
+  // If we're inside a "use cache" context, push the config. The cache scope
+  // propagates its resolved life to its parent scope or the request once it
+  // finishes, like Next.js's `explicitRevalidate`/`explicitExpire`/`explicitStale`.
   try {
     const ctx = getRegisteredCacheContext();
     if (ctx) {
       ctx.lifeConfigs.push(resolvedConfig);
-      // Note: these flags are slightly misnamed — they really mean
-      // "cacheLife() was called and the resolved config includes this field"
-      // rather than "the user explicitly passed this field". Because we merge
-      // user input over the default profile (`{ ...default, ...profile }`),
-      // calling `cacheLife({ expire: 60 })` still resolves a `revalidate`
-      // from the default profile, so `hasExplicitRevalidate` becomes true.
-      // This matches Next.js, which tracks the flag at the work unit store
-      // level (set when `cacheLife()` is called at all), not per-field. The
-      // suppression semantics are correct: calling `cacheLife()` is itself
-      // the explicit choice that opts the outer out of the nested-dynamic
-      // throw, regardless of which fields the user specified.
-      //
-      // The `!== undefined` checks below are therefore effectively
-      // unconditional in normal use: `resolvedConfig` always merges over the
-      // default profile, which has both `revalidate` and `expire` set. They
-      // remain as defensive guards in case `cacheLifeProfiles.default` is
-      // ever overridden to omit a field, or a future refactor lets callers
-      // pass `resolvedConfig` without the default merge. If per-field
-      // suppression is ever desired (e.g. `cacheLife({ expire: 60 })`
-      // suppressing only the expire-side throw), the flags would need to
-      // inspect the *raw user input* rather than `resolvedConfig` — but
-      // that would also diverge from Next.js semantics, so it should be a
-      // deliberate, documented design change rather than an incidental one.
+      // Per field, like Next.js's `hasExplicitRevalidate`/`hasExplicitExpire`:
+      // `cacheLife({ expire: 3600 })` leaves a nested zero `revalidate` in
+      // charge of the entry's revalidate, so it does not suppress that error.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
-      _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
   } catch {
@@ -424,7 +407,9 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
 
   // Outside a "use cache" context (e.g., page component with file-level "use cache"):
   // store as request-scoped so the server can read it after rendering.
-  _setRequestScopedCacheLife(resolvedConfig);
+  _setRequestScopedCacheLife(
+    typeof profile === "string" ? resolvedConfig : { ...cacheLifeProfiles.default, ...profile },
+  );
 }
 
 /**

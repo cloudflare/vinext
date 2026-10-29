@@ -6183,6 +6183,7 @@ describe("next/server shim", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -6370,6 +6371,7 @@ describe("next/server shim", () => {
               {
                 tags: [],
                 lifeConfigs: [],
+                nestedLifeConfigs: [],
                 variant: "default",
                 hasExplicitRevalidate: false,
                 hasExplicitExpire: false,
@@ -8937,6 +8939,90 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  // Ported from Next.js's `cacheLife()` (cache-life.ts) and `collectResult`
+  // (use-cache-wrapper.ts): a call sets only the fields it defines, and those
+  // win over nested caches; other fields take the minimum of the default
+  // profile and the nested caches.
+  describe("cacheLife resolution parity", () => {
+    async function setup() {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const cache = await import("../packages/vinext/src/shims/cache.js");
+      cache.setCacheHandler(new cache.MemoryCacheHandler());
+      const resolveRequestLife = (fn: () => Promise<unknown>) =>
+        cache._runWithCacheState(async () => {
+          await fn();
+          return cache._peekRequestScopedCacheLife();
+        });
+      return { registerCachedFunction, cacheLife: cache.cacheLife, resolveRequestLife };
+    }
+
+    it("does not fill object fields from the default profile across repeated calls", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ stale: 10 });
+        cacheLife({ revalidate: 3600 });
+        return "value";
+      }, "test:life-parity-objects");
+
+      // Filled from `default`, the first call would have pinned revalidate
+      // to 900 under the per-field minimum.
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 10,
+        revalidate: 3600,
+        expire: 4294967294,
+      });
+    });
+
+    it("takes the per-field minimum across profile names and objects", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours"); // { stale: 300, revalidate: 3600, expire: 86400 }
+        cacheLife({ stale: 60, revalidate: 7200 });
+        return "value";
+      }, "test:life-parity-mixed");
+
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 60,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
+
+    it("lets an explicit field win over nested caches and collects the rest", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return "inner";
+      }, "test:life-parity-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 600 });
+        return await inner();
+      }, "test:life-parity-nested-outer");
+
+      // Only the outermost entry reaches the request: the inner's 60s
+      // revalidate stays inside the outer entry, where the explicit 600 wins.
+      const expected = { stale: 300, revalidate: 600, expire: 3600 };
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+      // A warm outer hit replays the same stored life.
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+    });
+
+    it("propagates the cache life of a function that throws", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours");
+        throw new Error("boom");
+      }, "test:life-parity-throws");
+
+      expect(await resolveRequestLife(() => cached().catch(() => {}))).toEqual({
+        stale: 300,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
+  });
+
   it("getCacheContext returns null outside cache function", async () => {
     const { getCacheContext } = await import("../packages/vinext/src/shims/cache-runtime.js");
     expect(getCacheContext()).toBeNull();
@@ -10213,17 +10299,11 @@ describe('"use cache" runtime', () => {
     });
   });
 
-  it("explicit cacheLife on outer suppresses throw but minimum-wins still applies to effective cache life", async () => {
-    // Documents a potentially surprising behavior: when the outer has an
-    // explicit `cacheLife({ revalidate: 60 })` and the inner is dynamic
-    // (`revalidate: 0`), the throw is suppressed (outer made an explicit
-    // choice), but the outer's effective `revalidate` resolves to 0 via
-    // minimum-wins (because the inner's resolved life is pushed into the
-    // outer's `lifeConfigs`). MemoryCacheHandler treats `revalidate: 0` as
-    // not cached, so the outer function executes on every call. This matches
-    // Next.js's `propagateCacheLifeAndTagsToRevalidateStore` semantics —
-    // the outer's explicit cacheLife() opts it out of the throw, but does
-    // not override the inner's minimum-wins contribution.
+  it("explicit cacheLife on outer wins over a dynamic nested cache's revalidate", async () => {
+    // Like Next.js's `collectResult`: the outer's explicit
+    // `cacheLife({ revalidate: 60 })` is its entry's revalidate, whatever the
+    // nested caches resolve, so the outer entry is stored and its second call
+    // is a hit that never reaches the dynamic inner.
     await withPrerenderFlag(async () => {
       const { registerCachedFunction } =
         await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -10250,12 +10330,61 @@ describe('"use cache" runtime', () => {
       const second = await outerCached();
       expect(first).toBe("outer-inner");
       expect(second).toBe("outer-inner");
-      // The outer function must execute twice — minimum-wins resolved its
-      // effective revalidate to 0, so the result was not cached despite the
-      // explicit `cacheLife({ revalidate: 60 })`.
-      expect(outerCalls).toBe(2);
-      // Inner is also dynamic (revalidate: 0) so it re-executes too.
-      expect(innerCalls).toBe(2);
+      expect(outerCalls).toBe(1);
+      expect(innerCalls).toBe(1);
+    });
+  });
+
+  it("an outer cacheLife without revalidate does not suppress the nested zero-revalidate error", async () => {
+    // Next.js's `hasExplicitRevalidate` is per field: `cacheLife({ expire })`
+    // leaves the entry's revalidate to the nested caches.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:per-field-explicit-inner");
+      const outerCached = registerCachedFunction(async () => {
+        cacheLife({ expire: 3600 });
+        return await innerCached();
+      }, "test:per-field-explicit-outer");
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
+  it("a middle cache's explicit cacheLife shields its parent from a dynamic grandchild", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const grandchild = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "grandchild";
+      }, "test:three-level-grandchild");
+      const middle = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 60 });
+        return await grandchild();
+      }, "test:three-level-middle");
+      let outerCalls = 0;
+      const outer = registerCachedFunction(async () => {
+        outerCalls++;
+        return await middle();
+      }, "test:three-level-outer");
+
+      // The middle entry resolves revalidate 60, so the outer resolves 60 too:
+      // no error, and the outer entry is stored.
+      expect(await outer()).toBe("grandchild");
+      expect(await outer()).toBe("grandchild");
+      expect(outerCalls).toBe(1);
     });
   });
 
@@ -32260,6 +32389,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32286,6 +32416,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32309,6 +32440,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32338,6 +32470,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -32368,6 +32501,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -32398,6 +32532,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32419,6 +32554,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32537,6 +32673,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32617,6 +32754,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32667,6 +32805,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32737,6 +32876,7 @@ describe("cache scope guards for dynamic APIs", () => {
           {
             tags: [],
             lifeConfigs: [],
+            nestedLifeConfigs: [],
             variant: "default",
             hasExplicitRevalidate: false,
             hasExplicitExpire: false,
