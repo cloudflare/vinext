@@ -17,6 +17,7 @@ import {
   type BfcacheIdMap,
   type HistoryTraversalIntent,
 } from "./app-history-state.js";
+import type { RouterHistoryWriteLanding } from "vinext/shims/navigation";
 import type { AppRouterState } from "./app-browser-state.js";
 import type { HistoryUpdateMode } from "./app-browser-navigation-controller.js";
 
@@ -38,10 +39,10 @@ type AppBrowserHistoryControllerDeps = {
   readHistoryState: () => unknown;
   /** Reads `window.location.href`. Injected so the controller stays unit-testable. */
   readCurrentHref: () => string;
-  /** Wraps `pushHistoryStateWithoutNotify(state, "", href)`. */
-  pushHistoryState: (state: unknown, href: string) => void;
-  /** Wraps `replaceHistoryStateWithoutNotify(state, "", href)`. */
-  replaceHistoryState: (state: unknown, href?: string) => void;
+  /** Wraps `pushHistoryStateWithoutNotify(state, "", href, land)`. */
+  pushHistoryState: (state: unknown, href: string, land?: RouterHistoryWriteLanding) => void;
+  /** Wraps `replaceHistoryStateWithoutNotify(state, "", href, land)`. */
+  replaceHistoryState: (state: unknown, href?: string, land?: RouterHistoryWriteLanding) => void;
   readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 };
 
@@ -124,8 +125,16 @@ export class AppBrowserHistoryController {
   readonly #treeSnapshotIdPrefix = createDocumentTreeSnapshotIdPrefix();
   readonly #readHistoryState: () => unknown;
   readonly #readCurrentHref: () => string;
-  readonly #pushHistoryState: (state: unknown, href: string) => void;
-  readonly #replaceHistoryState: (state: unknown, href?: string) => void;
+  readonly #pushHistoryState: (
+    state: unknown,
+    href: string,
+    land?: RouterHistoryWriteLanding,
+  ) => void;
+  readonly #replaceHistoryState: (
+    state: unknown,
+    href?: string,
+    land?: RouterHistoryWriteLanding,
+  ) => void;
   readonly #readVisibleNavigationMetadata: () => VisibleNavigationMetadata | null;
 
   // Highest app-owned traversal index we know about (`#next`) versus the index
@@ -137,6 +146,17 @@ export class AppBrowserHistoryController {
   #currentTreeSnapshotId: string | null = null;
   #nextTreeSnapshotId = 0;
   #treeSnapshotIdPendingFreshState: string | null = null;
+  // Entries a raw push copied before their tree was remembered. The next
+  // remembered tree is theirs too, so it is also stored at their indices.
+  readonly #historyIndicesAwaitingTreeSnapshot = new Set<number>();
+  // Whether a committed render (hydration, a navigation once its history write
+  // has landed, or a traversal, snapshot restore or refresh commit) has yet to
+  // remember its tree. Only then does an entry without a live tree await it.
+  #treeSnapshotPending = true;
+  // The entry a raw push made while that render was pending. If it is still
+  // the current entry when the tree is remembered, it claims the tree, like a
+  // raw push made on a settled page.
+  #historyIndexAwaitingTreeClaim: number | null = null;
 
   constructor(deps: AppBrowserHistoryControllerDeps) {
     this.#readHistoryState = deps.readHistoryState;
@@ -234,10 +254,17 @@ export class AppBrowserHistoryController {
     ) {
       this.#restorableClientState.replaceHistoryStateSnapshots(previousState, state);
     }
+    // The snapshot cache evicts the oldest insertion first, so the older
+    // entries awaiting this tree go in before the current one.
+    for (const historyIndex of this.#historyIndicesAwaitingTreeSnapshot) {
+      this.#restorableClientState.rememberHistoryStateSnapshot({ historyIndex, state });
+    }
+    this.#historyIndicesAwaitingTreeSnapshot.clear();
     this.#restorableClientState.rememberHistoryStateSnapshot({
       historyIndex: this.#currentHistoryTraversalIndex,
       state,
     });
+    this.#treeSnapshotPending = false;
     const historyTreeSnapshotId = readHistoryStateTreeSnapshotId(this.#readHistoryState());
     // A refresh, revalidation, or HMR render updates the backing state for the
     // copied tree that was visible when client caches were invalidated. Reuse
@@ -257,6 +284,15 @@ export class AppBrowserHistoryController {
     const previousTreeSnapshotId = this.#currentTreeSnapshotId;
     this.#currentTreeSnapshotId = treeSnapshotId;
     this.#treeSnapshots.set(treeSnapshotId, state);
+    const claimingHistoryIndex = this.#historyIndexAwaitingTreeClaim;
+    this.#historyIndexAwaitingTreeClaim = null;
+    const claimsTree =
+      claimingHistoryIndex !== null &&
+      claimingHistoryIndex === this.#currentHistoryTraversalIndex &&
+      claimingHistoryIndex === readHistoryStateTraversalIndex(this.#readHistoryState());
+    if (claimsTree) {
+      this.#claimTreeSnapshotAtHistoryIndex(claimingHistoryIndex, treeSnapshotId);
+    }
     if (
       previousTreeSnapshotId !== null &&
       previousTreeSnapshotId !== treeSnapshotId &&
@@ -264,7 +300,14 @@ export class AppBrowserHistoryController {
     ) {
       this.#treeSnapshots.delete(previousTreeSnapshotId);
     }
-    if (historyTreeSnapshotId !== treeSnapshotId) {
+    if (claimsTree) {
+      this.#replaceHistoryState(
+        createHistoryStateWithTreeSnapshotClaim(
+          createHistoryStateWithTreeSnapshotId(this.#readHistoryState(), treeSnapshotId),
+          true,
+        ),
+      );
+    } else if (historyTreeSnapshotId !== treeSnapshotId) {
       this.#replaceHistoryState(
         createHistoryStateWithTreeSnapshotId(this.#readHistoryState(), treeSnapshotId),
       );
@@ -289,7 +332,31 @@ export class AppBrowserHistoryController {
   ): void {
     let historyState = this.#readHistoryState();
     const treeSnapshotId = readHistoryStateTreeSnapshotId(historyState);
-    if (treeSnapshotId === null || !this.#treeSnapshots.has(treeSnapshotId)) return;
+    if (treeSnapshotId === null || !this.#treeSnapshots.has(treeSnapshotId)) {
+      // With no live tree to claim (a push from a history wrapper right after
+      // the router's push, from a layout effect before the root remembers the
+      // tree, or from an entry whose tree was released), the pushed entry
+      // still needs its own traversal index. While a render has yet to
+      // remember its tree, both it and the entry it copied need that tree.
+      if (historyUpdateMode === "push") {
+        const previousHistoryIndex = readHistoryStateTraversalIndex(previousHistoryState);
+        if (previousHistoryIndex !== null && this.#treeSnapshotPending) {
+          this.#historyIndicesAwaitingTreeSnapshot.add(previousHistoryIndex);
+        }
+        // Like any push, this drops the forward entries' claims.
+        this.#releaseForwardTreeSnapshotClaims();
+        const historyIndex = this.#nextHistoryTraversalIndex + 1;
+        this.#replaceHistoryState(
+          createHistoryStateWithNavigationMetadata(historyState, {
+            previousNextUrl: readHistoryStatePreviousNextUrl(historyState),
+            traversalIndex: historyIndex,
+          }),
+        );
+        this.commitHistoryTraversalIndex(historyIndex);
+        this.#historyIndexAwaitingTreeClaim = this.#treeSnapshotPending ? historyIndex : null;
+      }
+      return;
+    }
 
     let historyIndex: number | null;
     if (historyUpdateMode === "push") {
@@ -392,9 +459,6 @@ export class AppBrowserHistoryController {
     historyUpdateMode: HistoryUpdateMode,
     scroll: boolean,
   ): void {
-    if (historyUpdateMode === "push") {
-      this.#releaseForwardTreeSnapshotClaims();
-    }
     const navigationHistoryIndex = this.allocateNavigationHistoryTraversalIndex(historyUpdateMode);
     const historyState = this.#readHistoryState();
     const visible = this.#readVisibleNavigationMetadata();
@@ -422,16 +486,103 @@ export class AppBrowserHistoryController {
       true,
     );
 
-    if (historyUpdateMode === "replace") {
-      this.#replaceHistoryState(nextHistoryState, href);
-    } else {
-      this.#pushHistoryState(nextHistoryState, href);
-    }
+    const historyIndex = this.#writeNavigationHistoryState(
+      historyUpdateMode,
+      nextHistoryState,
+      href,
+      navigationHistoryIndex,
+      false,
+    );
     const treeSnapshotId = readHistoryStateTreeSnapshotId(nextHistoryState);
-    if (navigationHistoryIndex !== null && treeSnapshotId !== null) {
-      this.#claimTreeSnapshotAtHistoryIndex(navigationHistoryIndex, treeSnapshotId);
+    if (historyIndex !== null && treeSnapshotId !== null) {
+      this.#claimTreeSnapshotAtHistoryIndex(historyIndex, treeSnapshotId);
     }
-    this.commitHistoryTraversalIndex(navigationHistoryIndex);
+  }
+
+  /**
+   * Writes an app-owned push or replace entry and returns the traversal index
+   * it landed at. A history wrapper installed after boot can make its own
+   * writes before forwarding this one. When those moved the indices, the index
+   * is assigned as the write lands: a push goes after them, and a replace takes
+   * the index of the entry it actually overwrites. The index is committed as
+   * soon as the write succeeds, so a push the wrapper makes after forwarding
+   * goes after it.
+   */
+  #writeNavigationHistoryState(
+    historyUpdateMode: HistoryUpdateMode,
+    state: unknown,
+    href: string,
+    allocatedIndex: number | null,
+    // Set for navigation commits, whose render remembers a tree next.
+    rendersTree: boolean,
+  ): number | null {
+    const allocatedCurrentIndex = this.#currentHistoryTraversalIndex;
+    const allocatedNextIndex = this.#nextHistoryTraversalIndex;
+    const releaseClaims = (overwrittenHistoryState: unknown): void => {
+      if (historyUpdateMode === "push") {
+        this.#releaseForwardTreeSnapshotClaims();
+        return;
+      }
+      if (!rendersTree) return;
+      const overwrittenIndex =
+        readHistoryStateTraversalIndex(overwrittenHistoryState) ??
+        this.#currentHistoryTraversalIndex;
+      if (overwrittenIndex !== null) {
+        this.#releaseTreeSnapshotClaimAtHistoryIndex(overwrittenIndex);
+      }
+    };
+
+    let landedIndex: number | null | undefined;
+    let landingStarted = false;
+    const land: RouterHistoryWriteLanding = (data) => {
+      landingStarted = true;
+      const indicesMoved =
+        this.#currentHistoryTraversalIndex !== allocatedCurrentIndex ||
+        this.#nextHistoryTraversalIndex !== allocatedNextIndex;
+      const index = indicesMoved
+        ? this.allocateNavigationHistoryTraversalIndex(historyUpdateMode)
+        : allocatedIndex;
+      const overwrittenHistoryState = this.#readHistoryState();
+      return {
+        data:
+          index === allocatedIndex
+            ? data
+            : createHistoryStateWithNavigationMetadata(data, {
+                previousNextUrl: readHistoryStatePreviousNextUrl(data),
+                traversalIndex: index,
+              }),
+        // Runs only once the browser accepted the write, so a write that
+        // throws keeps every claim.
+        commit: () => {
+          releaseClaims(overwrittenHistoryState);
+          // A wrapper's push after this write copies this entry, which then
+          // awaits the tree this navigation renders; a push before it does not.
+          if (rendersTree) this.#treeSnapshotPending = true;
+          landedIndex = index;
+          this.commitHistoryTraversalIndex(index);
+        },
+      };
+    };
+
+    const historyStateBeforeWrite = this.#readHistoryState();
+    if (historyUpdateMode === "push") {
+      this.#pushHistoryState(state, href, land);
+    } else {
+      this.#replaceHistoryState(state, href, land);
+    }
+    if (landedIndex !== undefined) return landedIndex;
+    // The browser rejected the forwarded write and a wrapper caught the error
+    // without a retry that landed.
+    if (landingStarted) return null;
+
+    // The write never reached the patched History API method (a wrapper wrote
+    // different data, or called the browser's method itself), so it landed
+    // with the allocated index. Writes the wrapper made before or after
+    // forwarding can share this index.
+    releaseClaims(historyStateBeforeWrite);
+    if (rendersTree) this.#treeSnapshotPending = true;
+    this.commitHistoryTraversalIndex(allocatedIndex);
+    return allocatedIndex;
   }
 
   #createHashOnlyNavigationBaseHistoryState(
@@ -493,23 +644,28 @@ export class AppBrowserHistoryController {
       (currentHref !== targetHref || replacesClaimedOrExternalTree)
     ) {
       options.stageClientParams();
-      const currentHistoryIndex =
-        readHistoryStateTraversalIndex(currentHistoryState) ?? this.#currentHistoryTraversalIndex;
-      if (currentHistoryIndex !== null) {
-        this.#releaseTreeSnapshotClaimAtHistoryIndex(currentHistoryIndex);
-      }
-      this.#replaceHistoryState(historyState, options.href);
+      this.#writeNavigationHistoryState(
+        "replace",
+        historyState,
+        options.href,
+        navigationHistoryIndex,
+        true,
+      );
       wroteHistoryState = true;
-      this.commitHistoryTraversalIndex(navigationHistoryIndex);
     } else if (options.historyUpdateMode === "push" && currentHref !== targetHref) {
       options.stageClientParams();
-      this.#releaseForwardTreeSnapshotClaims();
-      this.#pushHistoryState(historyState, options.href);
+      this.#writeNavigationHistoryState(
+        "push",
+        historyState,
+        options.href,
+        navigationHistoryIndex,
+        true,
+      );
       wroteHistoryState = true;
-      this.commitHistoryTraversalIndex(navigationHistoryIndex);
     }
 
     if (!wroteHistoryState) {
+      this.#treeSnapshotPending = true;
       // Traversal and refresh commits may keep the URL unchanged, but still
       // persist the latest bfcache id map for future history restoration.
       this.syncCurrentHistoryStatePreviousNextUrl(
@@ -644,6 +800,7 @@ export class AppBrowserHistoryController {
         state,
         beforeCommit: () => {
           this.commitTraversalIndexFromHistoryState(options.historyState);
+          this.#treeSnapshotPending = true;
           options.stageClientParams(state.navigationSnapshot.params);
         },
       });
@@ -664,6 +821,7 @@ export class AppBrowserHistoryController {
       state: decision.state,
       beforeCommit: () => {
         this.commitHistoryTraversalIndex(decision.targetHistoryIndex);
+        this.#treeSnapshotPending = true;
         options.stageClientParams(decision.state.navigationSnapshot.params);
       },
     });

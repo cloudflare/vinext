@@ -3,7 +3,12 @@ import { Readable, Writable, Stream } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+  type PagesBodyDecoder,
+} from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
@@ -128,14 +133,31 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+/** The decoded body, or undefined when the request carried no body bytes. */
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+  decoder: PagesBodyDecoder,
+): Promise<string | undefined> {
   if (!request.body) {
-    return "";
+    return undefined;
   }
 
-  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
-    throw new PagesBodyParseError("Request body too large", 413);
-  });
+  let byteLength = 0;
+  const text = await readStreamAsTextWithLimit(
+    request.body,
+    maxBytes,
+    () => {
+      throw new PagesBodyParseError("Request body too large", 413);
+    },
+    {
+      decode(input, options) {
+        byteLength += input?.byteLength ?? 0;
+        return decoder.decode(input, options);
+      },
+    },
+  );
+  return byteLength > 0 ? text : undefined;
 }
 
 /**
@@ -152,14 +174,16 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
+  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+  const { mediaType, decoder } = await createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  let rawBody = "";
+  let rawBody: string | undefined;
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -167,13 +191,14 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
+    // A body that decodes to nothing, such as a lone BOM, stays "" like in
+    // Next.js; only a request without body bytes gets undefined.
     return isJsonMediaType(mediaType)
       ? {}
       : mediaType === "application/x-www-form-urlencoded"
-        ? decodeQueryString(rawBody)
-        : undefined;
+        ? decodeQueryString("")
+        : rawBody;
   }
 
   if (isJsonMediaType(mediaType)) {
