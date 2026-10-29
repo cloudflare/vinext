@@ -1369,11 +1369,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // reused for another through it. This doesn't keep the value out of a
     // stored page (see below). Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
-    // This is an automatic safety bypass, not an explicit opt-out, so it does
-    // NOT mark the page dynamic via markDynamicUsage(), and a static page that
-    // makes this fetch is still stored. Next.js does the same: an `autoNoCache`
-    // fetch doesn't make the page dynamic ("we don't consider autoNoCache to
-    // switch to dynamic for ISR", server/lib/patch-fetch.ts). Outside a
+    // This is an automatic safety bypass, not an explicit opt-out, so without
+    // Cache Components it does NOT mark the page dynamic via markDynamicUsage(),
+    // and a static page that makes this fetch is still stored. Next.js does the
+    // same: an `autoNoCache` fetch doesn't make the page dynamic ("we don't
+    // consider autoNoCache to switch to dynamic for ISR",
+    // server/lib/patch-fetch.ts). With Cache Components it's dynamic outside a
+    // cache scope (see recordAutoNoCacheFetch), as Next.js's prerender leaves
+    // it a hole. Outside a
     // "use cache" or unstable_cache scope, the fetch is still recorded as a
     // dynamic fetch observation, which keeps the layout that made it out of
     // static layout reuse and, except under force-static, marks the client
