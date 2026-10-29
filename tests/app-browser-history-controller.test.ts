@@ -9,6 +9,7 @@ import {
   createSnapshotPathAndSearch,
 } from "../packages/vinext/src/server/app-browser-navigation-controller.js";
 import {
+  createExternalHistoryStatePreservingMetadata,
   createHistoryStateWithNavigationMetadata,
   createHistoryStateWithTreeSnapshotId,
   isExternalHistoryState,
@@ -21,7 +22,10 @@ import {
   normalizeAppElements,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
-import { createClientNavigationRenderSnapshot } from "../packages/vinext/src/shims/navigation.js";
+import {
+  createClientNavigationRenderSnapshot,
+  type RouterHistoryWriteLanding,
+} from "../packages/vinext/src/shims/navigation.js";
 import type { AppRouterState } from "../packages/vinext/src/server/app-browser-state.js";
 
 type HistoryWrite = { state: unknown; href?: string };
@@ -69,17 +73,23 @@ function createHistoryStore(initialState: unknown = null, initialHref = "https:/
     setState: (next: unknown) => {
       state = next;
     },
-    pushHistoryState: (next: unknown, nextHref: string) => {
-      pushed.push({ state: next, href: nextHref });
-      state = next;
+    // Like vinext's patched History API methods, a router write lands through
+    // its landing hook.
+    pushHistoryState: (next: unknown, nextHref: string, land?: RouterHistoryWriteLanding) => {
+      const landing = land?.(next);
+      state = landing ? landing.data : next;
+      pushed.push({ state, href: nextHref });
       href = new URL(nextHref, href).href;
+      landing?.commit();
     },
-    replaceHistoryState: (next: unknown, nextHref?: string) => {
-      replaced.push({ state: next, href: nextHref });
-      state = next;
+    replaceHistoryState: (next: unknown, nextHref?: string, land?: RouterHistoryWriteLanding) => {
+      const landing = land?.(next);
+      state = landing ? landing.data : next;
+      replaced.push({ state, href: nextHref });
       if (nextHref !== undefined) {
         href = new URL(nextHref, href).href;
       }
+      landing?.commit();
     },
   };
 }
@@ -190,6 +200,651 @@ describe("AppBrowserHistoryController traversal index allocation", () => {
     // the highest known app entry (4).
     expect(controller.allocateNavigationHistoryTraversalIndex("replace")).toBeNull();
     expect(controller.allocateNavigationHistoryTraversalIndex("push")).toBe(5);
+  });
+});
+
+describe("AppBrowserHistoryController writes made by history wrappers", () => {
+  type WrapperWrite = "push" | "replace";
+  type Wrapper = {
+    wraps: "push" | "replace";
+    // The router write to wrap; the first one of its kind by default.
+    wrapsHref?: string;
+    before?: WrapperWrite[];
+    after?: WrapperWrite[];
+    throws?: boolean;
+    // The browser rejects the forwarded write after it reaches the landing hook.
+    writeThrows?: boolean;
+    // ...and the wrapper catches that error, then gives up or retries.
+    catchesWriteError?: "gives-up" | "retries";
+    // Forwards a copy of the router's data, so the patched method no longer
+    // recognises the router's write and its landing hook never runs.
+    rewritesData?: boolean;
+  };
+
+  // A history wrapper installed after boot sees router writes with a URL
+  // (#4339) and can make its own writes around the one it forwards. Models
+  // vinext's patched History API methods: a wrapper's write is marked external
+  // and claimed, and the forwarded router write lands through its landing
+  // hook. State-only router writes go straight to the browser's methods.
+  function createControllerWithWrapper(wrapper: Wrapper, maxHistoryStateSnapshots = 50) {
+    const store = createHistoryStore(
+      createHistoryStateWithNavigationMetadata(null, { previousNextUrl: null, traversalIndex: 0 }),
+    );
+    const wrapperEntryStates: unknown[] = [];
+    let wrapped = false;
+    const writeOwnEntry = (write: WrapperWrite) => {
+      const previousHistoryState = store.state;
+      const state = createExternalHistoryStatePreservingMetadata(
+        { own: true },
+        previousHistoryState,
+      );
+      if (write === "push") {
+        store.pushHistoryState(state, `/own-${wrapperEntryStates.length}`);
+      } else {
+        store.replaceHistoryState(state);
+      }
+      controller.claimCurrentHistoryTreeSnapshot(write, previousHistoryState);
+      wrapperEntryStates.push(store.state);
+    };
+    const writeThroughWrapper =
+      (mode: "push" | "replace") =>
+      (state: unknown, href: string | undefined, land?: RouterHistoryWriteLanding) => {
+        const wrap =
+          !wrapped &&
+          mode === wrapper.wraps &&
+          href !== undefined &&
+          (wrapper.wrapsHref === undefined || href === wrapper.wrapsHref);
+        if (wrap) wrapped = true;
+        if (wrap) wrapper.before?.forEach(writeOwnEntry);
+        if (wrap && wrapper.throws) throw new DOMException("blocked", "SecurityError");
+        const forwarded = wrap && wrapper.rewritesData ? { ...(state as object) } : state;
+        const forwardedLand = forwarded === state ? land : undefined;
+        if (wrap && wrapper.writeThrows) {
+          forwardedLand?.(forwarded);
+          if (wrapper.catchesWriteError === undefined) {
+            throw new DOMException("blocked", "SecurityError");
+          }
+          // The patched method re-arms the router write's marker, so a retry
+          // lands it again.
+          if (wrapper.catchesWriteError === "retries") {
+            store.pushHistoryState(forwarded, href ?? store.href, forwardedLand);
+          }
+          return;
+        }
+        if (mode === "push") {
+          store.pushHistoryState(forwarded, href ?? store.href, forwardedLand);
+        } else {
+          store.replaceHistoryState(forwarded, href, forwardedLand);
+        }
+        if (wrap) wrapper.after?.forEach(writeOwnEntry);
+      };
+    const controller: AppBrowserHistoryController = new AppBrowserHistoryController({
+      initialHistoryState: store.state,
+      maxHistoryStateSnapshots,
+      readHistoryState: store.readHistoryState,
+      readCurrentHref: store.readCurrentHref,
+      pushHistoryState: writeThroughWrapper("push"),
+      replaceHistoryState: writeThroughWrapper("replace"),
+      readVisibleNavigationMetadata: () => null,
+    });
+    // The initial page has rendered, so its entry names a live tree.
+    const initialTree = createRouterState({ renderId: 1 });
+    controller.rememberHistoryStateSnapshot(initialTree);
+    const initialEntryState = store.state;
+
+    const navigate = (historyUpdateMode: "push" | "replace", href: string) => {
+      controller.commitNavigationHistory({
+        activeRoutePaths: [],
+        bfcacheIds: {},
+        href,
+        historyUpdateMode,
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+      });
+    };
+    const restoredTree = (
+      historyState: unknown,
+      preferExternalSnapshot = false,
+    ): AppRouterState | null => {
+      let restored: AppRouterState | null = null;
+      controller.restoreHistorySnapshot({
+        historyState,
+        preferExternalSnapshot,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: (candidate) => {
+          restored = candidate.state;
+          candidate.beforeCommit();
+          return true;
+        },
+      });
+      return restored;
+    };
+    return {
+      controller,
+      initialEntryState,
+      initialTree,
+      navigate,
+      restoredTree,
+      store,
+      wrapperEntryStates,
+    };
+  }
+
+  function findRouterEntryState(store: ReturnType<typeof createHistoryStore>, href: string) {
+    const write = [...store.pushed, ...store.replaced].find((entry) => entry.href === href);
+    return write?.state;
+  }
+
+  it("gives a push made after forwarding a router push the next index", () => {
+    const { controller, initialEntryState, navigate, restoredTree, store, wrapperEntryStates } =
+      createControllerWithWrapper({ wraps: "push", after: ["push"] });
+    navigate("push", "/next");
+    const routerEntryState = findRouterEntryState(store, "/next");
+    const nextTree = createRouterState({ renderId: 2 });
+    controller.rememberHistoryStateSnapshot(nextTree);
+    const stampedWrapperEntryState = store.state;
+
+    expect(readHistoryStateTraversalIndex(routerEntryState)).toBe(1);
+    expect(readHistoryStateTraversalIndex(wrapperEntryStates[0])).toBe(2);
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+
+    // A later navigation from the wrapper's entry renders another tree. Back
+    // to the wrapper's entry restores the tree it copied, and Back again to
+    // the router's entry, written before its tree was remembered, restores
+    // that tree too, not a later one.
+    navigate("push", "/third");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 3 }));
+    expect(restoredTree(stampedWrapperEntryState, true)).toBe(nextTree);
+    expect(controller.resolveTraversalIntent(routerEntryState).direction).toBe("back");
+    expect(restoredTree(routerEntryState)).toBe(nextTree);
+    expect(controller.resolveTraversalIntent(initialEntryState).direction).toBe("back");
+  });
+
+  it("puts a router push after a push the wrapper made before forwarding it", () => {
+    const {
+      controller,
+      initialEntryState,
+      initialTree,
+      navigate,
+      restoredTree,
+      store,
+      wrapperEntryStates,
+    } = createControllerWithWrapper({ wraps: "push", before: ["push"] });
+    navigate("push", "/next");
+    const wrapperEntryState = wrapperEntryStates[0];
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+
+    expect(readHistoryStateTraversalIndex(wrapperEntryState)).toBe(1);
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(2);
+    expect(store.href).toBe("https://example.com/next");
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+
+    expect(controller.resolveTraversalIntent(wrapperEntryState).direction).toBe("back");
+    expect(restoredTree(wrapperEntryState)).toBe(initialTree);
+    expect(restoredTree(initialEntryState)).toBe(initialTree);
+  });
+
+  it("keeps indices increasing when the wrapper pushes on both sides of a router push", () => {
+    const { controller, navigate, store, wrapperEntryStates } = createControllerWithWrapper({
+      wraps: "push",
+      before: ["push"],
+      after: ["push"],
+    });
+    navigate("push", "/next");
+
+    expect(wrapperEntryStates.map(readHistoryStateTraversalIndex)).toEqual([1, 3]);
+    expect(readHistoryStateTraversalIndex(findRouterEntryState(store, "/next"))).toBe(2);
+    expect(controller.currentHistoryTraversalIndex).toBe(3);
+  });
+
+  it("keeps a router push's index when the wrapper replaces the outgoing entry first", () => {
+    const { controller, navigate, store } = createControllerWithWrapper({
+      wraps: "push",
+      before: ["replace"],
+    });
+    navigate("push", "/next");
+
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(1);
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+    // A replace on the destination keeps the router entry's own index.
+    navigate("replace", "/next?tab=1");
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(1);
+  });
+
+  it("gives a router replace the index of the wrapper's entry it overwrites", () => {
+    const {
+      controller,
+      initialEntryState,
+      initialTree,
+      navigate,
+      restoredTree,
+      store,
+      wrapperEntryStates,
+    } = createControllerWithWrapper({ wraps: "replace", before: ["push"] });
+    navigate("replace", "/next");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+    // The overwritten wrapper entry's claim on the initial tree is released.
+    expect(restoredTree(wrapperEntryStates[0], true)).toBeNull();
+
+    // The wrapper pushed a copy of the initial entry, which the router replace
+    // then overwrote, so Back leaves /next for the untouched initial entry.
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(1);
+    expect(store.href).toBe("https://example.com/next");
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+    expect(controller.resolveTraversalIntent(initialEntryState).direction).toBe("back");
+    expect(restoredTree(initialEntryState)).toBe(initialTree);
+  });
+
+  it("keeps a wrapper's push when the router push it forwards throws", () => {
+    const { controller, navigate, wrapperEntryStates } = createControllerWithWrapper({
+      wraps: "push",
+      before: ["push"],
+      throws: true,
+    });
+
+    expect(() => navigate("push", "/next")).toThrow("blocked");
+    expect(readHistoryStateTraversalIndex(wrapperEntryStates[0])).toBe(1);
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+    expect(controller.allocateNavigationHistoryTraversalIndex("push")).toBe(2);
+  });
+
+  it("does not give the destination's tree to an outgoing entry whose tree was released", () => {
+    const { controller, initialEntryState, initialTree, navigate, restoredTree, store } =
+      createControllerWithWrapper({ wraps: "push", wrapsHref: "/c", before: ["push"] });
+    navigate("push", "/b");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+    navigate("push", "/a");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 3 }));
+
+    // go(-2) back to the first entry commits its URL without a render, so it
+    // keeps naming its released tree. The wrapper's push before forwarding
+    // the next router push copies it.
+    store.setState(initialEntryState);
+    controller.commitTraversalIndexFromHistoryState(initialEntryState);
+    navigate("push", "/c");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 4 }));
+
+    expect(restoredTree(initialEntryState)).toBe(initialTree);
+  });
+
+  it("commits the allocated index when the wrapper forwards a copy of the router's data", () => {
+    const { controller, navigate, restoredTree, store } = createControllerWithWrapper({
+      wraps: "push",
+      rewritesData: true,
+    });
+    navigate("push", "/next");
+    const routerEntryState = store.state;
+
+    expect(readHistoryStateTraversalIndex(routerEntryState)).toBe(1);
+    expect(controller.currentHistoryTraversalIndex).toBe(1);
+
+    // A layout effect's raw push still leaves the router entry awaiting the
+    // tree this navigation renders.
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, routerEntryState),
+      "/next?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", routerEntryState);
+    const nextTree = createRouterState({ renderId: 2 });
+    controller.rememberHistoryStateSnapshot(nextTree);
+    expect(restoredTree(routerEntryState)).toBe(nextTree);
+  });
+
+  it("keeps a raw entry's claim when the browser rejects the router replace over it", () => {
+    const { controller, initialEntryState, initialTree, navigate, restoredTree, store } =
+      createControllerWithWrapper({ wraps: "replace", writeThrows: true });
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, initialEntryState),
+      "/?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", initialEntryState);
+    const rawEntryState = store.state;
+
+    expect(() => navigate("replace", "/next")).toThrow("blocked");
+    expect(store.state).toBe(rawEntryState);
+
+    // The raw entry stays reachable, so its tree must outlive the next render.
+    navigate("push", "/next");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+    expect(restoredTree(rawEntryState, true)).toBe(initialTree);
+  });
+
+  it("commits nothing when the wrapper catches the browser's rejection of the router push", () => {
+    const { controller, navigate, store, wrapperEntryStates } = createControllerWithWrapper({
+      wraps: "push",
+      before: ["push", "push"],
+      writeThrows: true,
+      catchesWriteError: "gives-up",
+    });
+    navigate("push", "/next");
+
+    expect(store.state).toBe(wrapperEntryStates[1]);
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+  });
+
+  it("commits the retried router push when the wrapper retries after a rejection", () => {
+    const { controller, navigate, store, wrapperEntryStates } = createControllerWithWrapper({
+      wraps: "push",
+      before: ["push"],
+      writeThrows: true,
+      catchesWriteError: "retries",
+    });
+    navigate("push", "/next");
+
+    expect(readHistoryStateTraversalIndex(wrapperEntryStates[0])).toBe(1);
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(2);
+    expect(store.href).toBe("https://example.com/next");
+    expect(controller.currentHistoryTraversalIndex).toBe(2);
+  });
+
+  it("gives each push the wrapper makes after forwarding its own index", () => {
+    const { controller, navigate, restoredTree, wrapperEntryStates } = createControllerWithWrapper({
+      wraps: "push",
+      after: ["push", "push"],
+    });
+    navigate("push", "/next");
+    const nextTree = createRouterState({ renderId: 2 });
+    controller.rememberHistoryStateSnapshot(nextTree);
+    navigate("push", "/third");
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 3 }));
+
+    expect(wrapperEntryStates.map(readHistoryStateTraversalIndex)).toEqual([2, 3]);
+    // The first wrapper entry was never current when the tree was remembered,
+    // so it has no tree id of its own and refetches, as before.
+    expect(readHistoryStateTreeSnapshotId(wrapperEntryStates[0])).toBeNull();
+    expect(restoredTree(wrapperEntryStates[0], true)).toBeNull();
+  });
+
+  it("commits no traversal index when the router push throws", () => {
+    const { controller, navigate } = createControllerWithWrapper({
+      wraps: "push",
+      throws: true,
+    });
+
+    expect(() => navigate("push", "/next")).toThrow("blocked");
+    expect(controller.currentHistoryTraversalIndex).toBe(0);
+    expect(controller.allocateNavigationHistoryTraversalIndex("push")).toBe(1);
+  });
+});
+
+describe("AppBrowserHistoryController raw pushes from entries without a live tree", () => {
+  it("gives a traversal's rendered tree to the entry a layout effect pushes from", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 1 }));
+    const firstEntryState = store.state;
+    const commit = (options: {
+      href: string;
+      historyUpdateMode?: "push";
+      targetHistoryIndex?: number;
+    }) =>
+      controller.commitNavigationHistory({
+        activeRoutePaths: [],
+        bfcacheIds: {},
+        historyUpdateMode: undefined,
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+        ...options,
+      });
+    commit({ href: "/b", historyUpdateMode: "push" });
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+
+    // Back to the first entry, whose tree was released, renders it again. A
+    // layout effect pushes from it before the root remembers the new tree.
+    store.setState(firstEntryState);
+    commit({ href: "/", targetHistoryIndex: 0 });
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, firstEntryState),
+      "/?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", firstEntryState);
+    const traversedTree = createRouterState({ renderId: 3 });
+    controller.rememberHistoryStateSnapshot(traversedTree);
+
+    let restored: AppRouterState | null = null;
+    controller.restoreHistorySnapshot({
+      historyState: firstEntryState,
+      stageClientParams: vi.fn(),
+      approveVisibleRestore: (candidate) => {
+        restored = candidate.state;
+        return true;
+      },
+    });
+    expect(restored).toBe(traversedTree);
+  });
+
+  it("gives a restored snapshot to the entry a layout effect pushes from", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/a" }));
+    const firstEntryState = store.state;
+    controller.commitNavigationHistory({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      href: "/b",
+      historyUpdateMode: "push",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/b" }));
+
+    // Back restores the first entry's snapshot synchronously. A layout effect
+    // pushes from it before the root remembers the restored tree.
+    store.setState(firstEntryState);
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: firstEntryState,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: (candidate) => {
+          candidate.beforeCommit();
+          return true;
+        },
+      }),
+    ).toBe(true);
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, firstEntryState),
+      "/a?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", firstEntryState);
+    const restoredTree = createRouterState({ routeId: "route:/a", renderId: 2 });
+    controller.rememberHistoryStateSnapshot(restoredTree);
+    const pushedEntryState = store.state;
+    controller.commitNavigationHistory({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      href: "/c",
+      historyUpdateMode: "push",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/c" }));
+
+    let restored: AppRouterState | null = null;
+    controller.restoreHistorySnapshot({
+      historyState: pushedEntryState,
+      preferExternalSnapshot: true,
+      stageClientParams: vi.fn(),
+      approveVisibleRestore: (candidate) => {
+        restored = candidate.state;
+        return true;
+      },
+    });
+    expect(restored).toBe(restoredTree);
+  });
+
+  it("refetches an external entry sharing the index of a router entry a raw push copied", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    const navigate = (href: string, routeId: string) => {
+      controller.commitNavigationHistory({
+        activeRoutePaths: [],
+        bfcacheIds: {},
+        href,
+        historyUpdateMode: "push",
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+      });
+      controller.rememberHistoryStateSnapshot(createRouterState({ routeId }));
+    };
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/" }));
+
+    // A layout effect on /a captures the router entry's state and pushes from
+    // it before the root remembers the /a tree.
+    controller.commitNavigationHistory({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      href: "/a",
+      historyUpdateMode: "push",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    const capturedRouterEntryState = store.state;
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, capturedRouterEntryState),
+      "/a?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", capturedRouterEntryState);
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/a" }));
+    navigate("/c", "route:/c");
+
+    // The app replays the captured state, then replaces it with its own, which
+    // leaves an external entry sharing the router entry's index.
+    const visibleState = store.state;
+    store.pushHistoryState(capturedRouterEntryState, "/x");
+    controller.commitAppOwnedHistoryStateWrite("push", visibleState);
+    const replayedState = store.state;
+    store.replaceHistoryState(
+      createExternalHistoryStatePreservingMetadata({ foo: 1 }, replayedState),
+      "/y",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("replace", replayedState);
+    const externalEntryState = store.state;
+    expect(readHistoryStateTraversalIndex(externalEntryState)).toBe(
+      readHistoryStateTraversalIndex(capturedRouterEntryState),
+    );
+    navigate("/d", "route:/d");
+
+    const approveVisibleRestore = vi.fn(() => true);
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: externalEntryState,
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(false);
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
+  });
+
+  it("gives the hydrated tree to the entry a layout effect copies during hydration", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    const initialEntryState = store.state;
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, initialEntryState),
+      "/a?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", initialEntryState);
+    const hydratedTree = createRouterState();
+    controller.rememberHistoryStateSnapshot(hydratedTree);
+    controller.writeHydratedHistoryMetadata({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      previousNextUrl: null,
+    });
+    expect(readHistoryStateTraversalIndex(store.state)).toBe(1);
+
+    // The copied entry keeps the hydrated tree after a later navigation.
+    controller.commitNavigationHistory({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      href: "/b",
+      historyUpdateMode: "push",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ renderId: 2 }));
+    let restored: AppRouterState | null = null;
+    controller.restoreHistorySnapshot({
+      historyState: initialEntryState,
+      stageClientParams: vi.fn(),
+      approveVisibleRestore: (candidate) => {
+        restored = candidate.state;
+        return true;
+      },
+    });
+    expect(restored).toBe(hydratedTree);
+  });
+
+  it("does not give a later navigation's tree to an entry whose tree was released", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    const navigate = (href: string, routeId: string) => {
+      controller.commitNavigationHistory({
+        activeRoutePaths: [],
+        bfcacheIds: {},
+        href,
+        historyUpdateMode: "push",
+        previousNextUrl: null,
+        stageClientParams: vi.fn(),
+      });
+      controller.rememberHistoryStateSnapshot(createRouterState({ routeId }));
+    };
+    const initialTree = createRouterState({ routeId: "route:/a" });
+    controller.rememberHistoryStateSnapshot(initialTree);
+    const firstEntryState = store.state;
+    navigate("/b", "route:/b");
+    navigate("/a", "route:/a");
+
+    // go(-2) back to the first /a entry commits its URL without a render, so
+    // the entry keeps naming its released tree. A raw shallow push follows.
+    store.setState(firstEntryState);
+    controller.commitTraversalIndexFromHistoryState(firstEntryState);
+    store.pushHistoryState(
+      createExternalHistoryStatePreservingMetadata({}, firstEntryState),
+      "/a?f=1",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("push", firstEntryState);
+    const pushedEntryState = store.state;
+    navigate("/c", "route:/c");
+
+    const restore = (historyState: unknown, preferExternalSnapshot: boolean) => {
+      let restored: AppRouterState | null = null;
+      controller.restoreHistorySnapshot({
+        historyState,
+        preferExternalSnapshot,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore: (candidate) => {
+          restored = candidate.state;
+          return true;
+        },
+      });
+      return restored;
+    };
+    expect(restore(firstEntryState, false)).toBe(initialTree);
+    // The pushed entry copied the released tree id and never rendered a tree
+    // of its own, so it refetches rather than restoring another entry's tree.
+    expect(restore(pushedEntryState, true)).toBeNull();
   });
 });
 
@@ -821,6 +1476,55 @@ describe("AppBrowserHistoryController snapshot restore", () => {
         approveVisibleRestore: vi.fn(() => true),
       }),
     ).toBe(false);
+  });
+
+  it("refetches an external entry whose released tree's index another entry reused", () => {
+    const { controller, store } = createController({
+      initialState: createHistoryStateWithNavigationMetadata(null, {
+        previousNextUrl: null,
+        traversalIndex: 0,
+      }),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/" }));
+    const firstEntryState = store.state;
+
+    // An app-owned replay copies the first entry, index and tree id included,
+    // and a raw replace then makes that copy an external entry at index 0.
+    store.pushHistoryState({ ...(firstEntryState as object) }, "/n");
+    controller.commitAppOwnedHistoryStateWrite("push", firstEntryState);
+    const copiedEntryState = store.state;
+    store.replaceHistoryState(
+      createExternalHistoryStatePreservingMetadata({ foo: 1 }, copiedEntryState),
+      "/n2",
+    );
+    controller.claimCurrentHistoryTreeSnapshot("replace", copiedEntryState);
+    const externalEntryState = store.state;
+    expect(readHistoryStateTraversalIndex(externalEntryState)).toBe(0);
+
+    // Back on the first entry, a router replace releases the claim at index 0
+    // and stores another route's tree there.
+    store.setState(firstEntryState);
+    controller.commitTraversalIndexFromHistoryState(firstEntryState);
+    controller.commitNavigationHistory({
+      activeRoutePaths: [],
+      bfcacheIds: {},
+      href: "/d",
+      historyUpdateMode: "replace",
+      previousNextUrl: null,
+      stageClientParams: vi.fn(),
+    });
+    controller.rememberHistoryStateSnapshot(createRouterState({ routeId: "route:/d" }));
+
+    const approveVisibleRestore = vi.fn(() => true);
+    expect(
+      controller.restoreHistorySnapshot({
+        historyState: externalEntryState,
+        preferExternalSnapshot: true,
+        stageClientParams: vi.fn(),
+        approveVisibleRestore,
+      }),
+    ).toBe(false);
+    expect(approveVisibleRestore).not.toHaveBeenCalled();
   });
 
   it("detaches a same-URL app replace from a tree claimed by another entry", () => {

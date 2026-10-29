@@ -19,6 +19,7 @@ import {
   validateServerActionPayload,
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
+  withRequestHeaders,
 } from "../packages/vinext/src/server/request-pipeline.js";
 import {
   applyConfigHeadersToHeaderRecord,
@@ -1481,6 +1482,65 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
 //
 // These tests lock down the helper so it can't be "simplified" back into the
 // broken URL-constructor pattern that drops body/redirect/signal semantics.
+
+describe("withRequestHeaders", () => {
+  it("returns the request itself, body untouched, when no header changed", () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "payload",
+    });
+    const result = withRequestHeaders(original, new Headers(original.headers));
+    expect(result).toBe(original);
+    expect(original.bodyUsed).toBe(false);
+  });
+
+  it("rebuilds a Request look-alike that lacks native state", () => {
+    // Shaped like srvx's NodeRequest (used by Nitro): it passes `instanceof
+    // Request` and forwards to a native Request, but native Request getters
+    // throw on the object itself.
+    const NativeRequest = Request;
+    const inner = new NativeRequest("http://localhost/page", { headers: { accept: "text/html" } });
+    class LookAlikeRequest {
+      static [Symbol.hasInstance](value: unknown) {
+        return value instanceof NativeRequest || Object.hasOwn(Object(value), "lookAlike");
+      }
+      readonly lookAlike = true;
+    }
+    Object.setPrototypeOf(LookAlikeRequest.prototype, NativeRequest.prototype);
+    for (const key of Object.keys(Object.getOwnPropertyDescriptors(NativeRequest.prototype))) {
+      if (key === "constructor") continue;
+      Object.defineProperty(LookAlikeRequest.prototype, key, {
+        get() {
+          const value = (inner as unknown as Record<string, unknown>)[key];
+          return typeof value === "function" ? value.bind(inner) : value;
+        },
+      });
+    }
+    const lookAlike = new LookAlikeRequest() as unknown as Request;
+    expect(lookAlike instanceof NativeRequest).toBe(true);
+
+    const result = withRequestHeaders(lookAlike, new Headers(lookAlike.headers));
+    expect(result).not.toBe(lookAlike);
+    expect(Object.getOwnPropertyDescriptor(NativeRequest.prototype, "url")?.get?.call(result)).toBe(
+      "http://localhost/page",
+    );
+  });
+
+  it("rebuilds the request when a header changed", async () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain", "x-internal": "1" },
+      body: "payload",
+    });
+    const headers = new Headers(original.headers);
+    headers.delete("x-internal");
+    const result = withRequestHeaders(original, headers);
+    expect(result).not.toBe(original);
+    expect(result.headers.has("x-internal")).toBe(false);
+    await expect(result.text()).resolves.toBe("payload");
+  });
+});
 
 describe("cloneRequestWithHeaders", () => {
   it("preserves method", () => {

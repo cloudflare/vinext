@@ -279,6 +279,14 @@ export type PagesPipelineDeps = {
       ) => Promise<Response>)
     | null;
   /**
+   * `handleApi` installs the staged headers on the handler's `res` before user
+   * code runs, as Next.js does, so its response already reflects any header the
+   * handler replaced and only middleware's status is applied here.
+   * Workers leaves this unset: its response stage strips the inherited cookies
+   * so they are not stored, and this merge adds them back.
+   */
+  handleApiAppliesStagedHeaders?: boolean;
+  /**
    * Optional override for proxying external rewrite destinations.
    * When supplied, the pipeline calls this instead of proxyExternalRequest(currentRequest, url).
    * Receives the pipeline's current request (with post-middleware headers applied) and the
@@ -835,7 +843,11 @@ export async function runPagesRequest(
         deps.ctx ?? null,
         headersFromRecord(middlewareHeaders),
       );
-      const merged = mergeHeaders(response, middlewareHeaders, middlewareStatus);
+      const merged = mergeHeaders(
+        response,
+        deps.handleApiAppliesStagedHeaders ? {} : middlewareHeaders,
+        middlewareStatus,
+      );
       // Preserve the streaming marker so the adapter can decide stream-vs-buffer.
       // mergeHeaders may create a new Response object (losing non-standard
       // properties), so copy the marker from the original API response.
