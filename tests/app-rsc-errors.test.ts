@@ -239,8 +239,8 @@ describe("app RSC error primitives", () => {
     });
     const error = new TypeError("useState is not a function or its return value is not iterable");
     onError(error);
-    expect(error.message).toMatch(/^useState\(\) only works in Client Components/);
-    expect(error.stack?.split("\n")[0]).toBe(`TypeError: ${error.message}`);
+    expect(error.message).toMatch(/^useState only works in Client Components/);
+    expect(error.stack?.split("\n")[0]).toBe(error.message);
 
     const frozen = Object.freeze(new TypeError("useState is not a function"));
     expect(() => onError(frozen)).not.toThrow();

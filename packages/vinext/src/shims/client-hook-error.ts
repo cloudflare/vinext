@@ -24,16 +24,17 @@ export function throwClientHookError(hookName: string): never {
 const clientHookPattern =
   /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue|useActionState|useOptimistic|useEffectEvent)\b.*is not a function/;
 
-/** Rewrites that TypeError into the actionable message above. */
+/** Rewrites that TypeError into the actionable message, like Next.js's formatServerError. */
 export function rewriteClientHookError(error: Error): void {
   const match = error.message.match(clientHookPattern);
   if (!match) return;
-  const message = buildClientHookErrorMessage(`${match[1]}()`);
+  // As Next.js's formatServerError words and sets it.
+  const message = buildClientHookErrorMessage(match[1]!);
   try {
     // The stack's first line repeats the message, and console.error prints it.
     if (error.stack) {
       const lines = error.stack.split("\n");
-      lines[0] = `${error.name}: ${message}`;
+      lines[0] = message;
       error.stack = lines.join("\n");
     }
     error.message = message;

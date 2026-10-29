@@ -1378,7 +1378,7 @@ describe("App Router integration", () => {
     const { res, html } = await fetchHtml(baseUrl, "/missing-use-client-react-hook");
     expect(res.status).toBe(500);
     // The error message should be clear and actionable
-    expect(html).toContain("useState()");
+    expect(html).toContain("useState only works in Client Components");
     expect(html).toContain("Client Components");
     expect(html).toContain("use client");
     // Should NOT contain the actual page content (it errored before rendering)
