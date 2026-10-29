@@ -283,6 +283,36 @@ describe("app page request helpers", () => {
     expect(slugGenerateStaticParams.mock.calls).toEqual([[{ params: { locale: "de" } }]]);
   });
 
+  it("calls a generator that throws synchronously once across concurrent lookups sharing a memo", async () => {
+    const localeGenerateStaticParams = vi.fn((): Record<string, unknown>[] => {
+      throw new Error("generator failed");
+    });
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [{ generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [1],
+      page: { generateStaticParams: () => [{ slug: "post" }] },
+      routeSegments: ["[locale]", "blog", "[slug]"],
+    });
+    const memo: GeneratedStaticParamsMemo = new Map();
+
+    const results = await Promise.allSettled([
+      resolveAppPageGeneratedStaticParams({
+        generateStaticParams,
+        memo,
+        params: { locale: "de", slug: "post" },
+      }),
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams,
+        memo,
+        params: { locale: "de" },
+        paramNames: ["locale"],
+      }),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(localeGenerateStaticParams).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores route groups when finding a layout generateStaticParams boundary", async () => {
     const generateStaticParams = vi.fn(() => [{ region: "SE" }]);
     const response = await validateAppPageDynamicParams({

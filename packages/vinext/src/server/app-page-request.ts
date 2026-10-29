@@ -601,9 +601,13 @@ async function generateChainedStaticParams(
     for (const parent of parents) {
       let pendingResult = sourceResults.get(parent.lineage);
       if (!pendingResult) {
-        pendingResult = Promise.resolve(
-          runWithFetchDedupe(() =>
-            source.generateStaticParams({ params: parent.params as AppPageParams }),
+        // A generator that throws synchronously still settles the shared
+        // promise, so concurrent lookups don't call it again.
+        pendingResult = new Promise((resolve) =>
+          resolve(
+            runWithFetchDedupe(() =>
+              source.generateStaticParams({ params: parent.params as AppPageParams }),
+            ),
           ),
         );
         sourceResults.set(parent.lineage, pendingResult);
