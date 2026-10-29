@@ -313,6 +313,81 @@ export function markPprFallbackShellDynamicBoundary(): void {
   markPprFallbackShellDynamicBoundaryForState(state);
 }
 
+/**
+ * A promise that runs `onAwait` the first time something awaits it or chains
+ * from it. Promises it derives are plain ones.
+ */
+class AwaitTrackingPromise<T> extends Promise<T> {
+  static override get [Symbol.species](): PromiseConstructor {
+    return Promise;
+  }
+
+  #onAwait: (() => void) | null = null;
+
+  static track<T>(promise: Promise<T>, onAwait: () => void): Promise<T> {
+    const tracked = new AwaitTrackingPromise<T>((resolve, reject) => {
+      promise.then(resolve, reject);
+    });
+    tracked.#onAwait = onAwait;
+    return tracked;
+  }
+
+  // oxlint-disable-next-line unicorn/no-thenable
+  override then<TResult1 = T, TResult2 = never>(
+    onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+  ): Promise<TResult1 | TResult2> {
+    const onAwait = this.#onAwait;
+    this.#onAwait = null;
+    onAwait?.();
+    return super.then(onfulfilled, onrejected);
+  }
+}
+
+/**
+ * A shell's hole for a call whose promise may go unawaited, like a `fetch()`
+ * fired and forgotten. Like Next.js's untracked hanging promise for a
+ * prerendered `fetch()` (server/lib/patch-fetch.ts), it marks the shell's
+ * dynamic boundary only once the call's promise is awaited, so an ignored call
+ * leaves no hole.
+ */
+export type PprFallbackShellAwaitedHole = {
+  /** The hole's hanging promise. */
+  create<T>(expression: string): Promise<T>;
+  /** The call's promise, which marks the boundary of a hole it creates once awaited. */
+  track<T>(promise: Promise<T>): Promise<T>;
+};
+
+export function createPprFallbackShellAwaitedHole(): PprFallbackShellAwaitedHole | null {
+  const state = getPprFallbackShellState();
+  if (state === null) return null;
+  let isAwaited = false;
+  let isCreated = false;
+  let isMarked = false;
+  const mark = () => {
+    if (isMarked || !isAwaited || !isCreated) return;
+    isMarked = true;
+    markPprFallbackShellDynamicBoundaryForState(state);
+    if (state.phase === "final") {
+      scheduleAbortIfReady(state);
+    }
+  };
+  return {
+    create<T>(expression: string) {
+      isCreated = true;
+      mark();
+      suppressHangingPromiseAbortRejections(state.abortController.signal);
+      return makeHangingPromise<T>(state.abortController.signal, state.routePattern, expression);
+    },
+    track<T>(promise: Promise<T>) {
+      return AwaitTrackingPromise.track(promise, () => {
+        isAwaited = true;
+        mark();
+      });
+    },
+  };
+}
+
 export function createPprFallbackShellSuspensePromise<T>(expression: string): Promise<T> | null {
   const state = getPprFallbackShellState();
   if (state === null) return null;
