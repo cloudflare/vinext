@@ -621,6 +621,40 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
   return attachRequestCfMetadata(cloned, request);
 }
 
+export function haveSameHeaders(first: Headers, second: Headers): boolean {
+  const firstEntries = [...first];
+  const secondEntries = [...second];
+  return (
+    firstEntries.length === secondEntries.length &&
+    firstEntries.every(
+      ([name, value], index) =>
+        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
+    )
+  );
+}
+
+// Node hosts can hand over Request look-alikes, such as srvx's NodeRequest,
+// that pass `instanceof Request` but lack its internal state, so native
+// Request code throws on them. Only the native getter tells them apart.
+function isNativeRequest(request: Request): boolean {
+  try {
+    Reflect.get(Request.prototype, "url", request);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `cloneRequestWithHeaders`, except that a native request whose headers
+ * already match is returned as is, so its body stays where it is.
+ */
+export function withRequestHeaders(request: Request, headers: Headers): Request {
+  return isNativeRequest(request) && haveSameHeaders(headers, request.headers)
+    ? request
+    : cloneRequestWithHeaders(request, headers);
+}
+
 /**
  * Clone a Request while overriding the URL, preserving headers and metadata
  * when possible.

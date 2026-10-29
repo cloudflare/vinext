@@ -21,10 +21,11 @@ import {
 import type { ImageConfig } from "./image-optimization.js";
 import {
   attachRequestCfMetadata,
-  cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
+  haveSameHeaders,
+  withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
@@ -120,18 +121,6 @@ type PagesStageRuntimeDispatch = (
   env: PagesWorkerEnv | undefined,
   ctx: ExecutionContextLike,
 ) => Promise<Response>;
-
-function haveSameHeaders(first: Headers, second: Headers): boolean {
-  const firstEntries = [...first];
-  const secondEntries = [...second];
-  return (
-    firstEntries.length === secondEntries.length &&
-    firstEntries.every(
-      ([name, value], index) =>
-        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
-    )
-  );
-}
 
 function captureOuterResponsePolicyHeaders(
   stagedHeaders: Headers,
@@ -395,7 +384,7 @@ async function handleRequestImpl(
         filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
       }
     }
-    request = cloneRequestWithHeaders(request, filteredHeaders);
+    request = withRequestHeaders(request, filteredHeaders);
 
     const url = new URL(request.url);
     let pathname = url.pathname;
