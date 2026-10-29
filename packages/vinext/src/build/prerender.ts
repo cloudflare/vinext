@@ -1561,6 +1561,38 @@ export async function prerenderApp({
       generatedParams?: Record<string, unknown>[] | null;
     };
     const urlsToRender: UrlToRender[] = [];
+    // A route's generated params grouped by the values each set of kept param
+    // names takes, so a shell looks its rows up instead of scanning them all.
+    const generatedParamsByKeptValues = new WeakMap<
+      readonly Record<string, unknown>[],
+      Map<string, Map<string, Record<string, unknown>[]>>
+    >();
+    const keptValuesKey = (params: Record<string, unknown>, names: readonly string[]): string =>
+      JSON.stringify(names.map((name) => JSON.stringify(params[name]) ?? ""));
+    const generatedParamsKeeping = (
+      routeParamSets: readonly Record<string, unknown>[],
+      keptParamNames: readonly string[],
+      params: Record<string, unknown>,
+    ): Record<string, unknown>[] => {
+      let byNames = generatedParamsByKeptValues.get(routeParamSets);
+      if (!byNames) {
+        byNames = new Map();
+        generatedParamsByKeptValues.set(routeParamSets, byNames);
+      }
+      const namesKey = JSON.stringify(keptParamNames);
+      let byValues = byNames.get(namesKey);
+      if (!byValues) {
+        byValues = new Map();
+        for (const paramSet of routeParamSets) {
+          const key = keptValuesKey(paramSet, keptParamNames);
+          const rows = byValues.get(key);
+          if (rows) rows.push(paramSet);
+          else byValues.set(key, [paramSet]);
+        }
+        byNames.set(namesKey, byValues);
+      }
+      return [...(byValues.get(keptValuesKey(params, keptParamNames)) ?? [])];
+    };
     // A Cache Components route also renders the shells a request for a param
     // it didn't generate resumes. A shell that fails to render is skipped.
     const queueFallbackShells = (
@@ -1595,12 +1627,7 @@ export async function prerenderApp({
           generatedParams:
             route.parallelSlots.length > 0
               ? null
-              : routeParamSets.filter((paramSet) =>
-                  keptParamNames.every(
-                    (name) =>
-                      JSON.stringify(paramSet[name]) === JSON.stringify(fallbackShell.params[name]),
-                  ),
-                ),
+              : generatedParamsKeeping(routeParamSets, keptParamNames, fallbackShell.params),
         });
       }
     };

@@ -2803,6 +2803,31 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     });
   });
 
+  it("records only the generated params that agree with the values a fallback shell keeps", async () => {
+    const { formatAppPprShellState, parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const state = formatAppPprShellState({
+      prelude: true,
+      postponed: { replayNodes: [] },
+      resumeDataCache: null,
+      generated: null,
+    });
+    const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
+      true,
+      state,
+      undefined,
+      (pattern) =>
+        pattern === "layouts:[locale]"
+          ? [{ locale: "en" }, { locale: "fr" }]
+          : [{ slug: "hello" }, { slug: "world" }],
+    );
+
+    expect(parseAppPprShellState(fallbackPostponed ?? undefined)?.generated).toEqual([
+      { locale: "en", slug: "hello" },
+      { locale: "en", slug: "world" },
+    ]);
+  });
+
   it("records no generated params for a route with parallel slots, whose generators the build doesn't enumerate", async () => {
     const { parseAppPprShellState } =
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
