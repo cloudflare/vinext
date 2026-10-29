@@ -386,9 +386,22 @@ async function serializeCacheResult<TResult>(
 /**
  * Resolve collected cacheLife configs into a single effective config.
  * The "minimum-wins" rule: if multiple cacheLife() calls are made,
- * each field takes the smallest value across all calls.
+ * each field takes the smallest value across all calls. A field no config
+ * sets comes from the default profile, as Next.js's "use cache" store starts
+ * from it; a configured profile may leave fields out.
  */
 function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
+  const result = resolveMinimumCacheLife(configs);
+  const defaultProfile = cacheLifeProfiles.default;
+  if (result.stale === undefined && defaultProfile.stale !== undefined) {
+    result.stale = defaultProfile.stale;
+  }
+  result.revalidate ??= defaultProfile.revalidate;
+  result.expire ??= defaultProfile.expire;
+  return result;
+}
+
+function resolveMinimumCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
   if (configs.length === 0) {
     // Default profile
     return { ...cacheLifeProfiles.default };

@@ -127,6 +127,26 @@ describe("cacheLife() with configured profiles", () => {
     });
   });
 
+  it("fills a partial custom profile's stored lifetime from the default profile", async () => {
+    const { MemoryCacheHandler, cacheLife, registerCachedFunction, setCacheHandler } =
+      await importShimsWithProfiles({
+        default: { stale: 20, revalidate: 300, expire: 7200 },
+        blog: { revalidate: 60 },
+      });
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    const set = vi.spyOn(handler, "set");
+
+    await registerCachedFunction(async () => {
+      cacheLife("blog");
+      return "post";
+    }, "test:partial-custom-profile")();
+
+    expect(set.mock.calls[0][2]).toMatchObject({
+      cacheControl: { stale: 20, revalidate: 60, expire: 7200 },
+    });
+  });
+
   it("uses an overridden built-in instead of the built-in values", async () => {
     const { cacheLife, _consumeRequestScopedCacheLife, _runWithCacheState } =
       await importShimsWithProfiles({ hours: { stale: 1, revalidate: 2, expire: 3 } });
