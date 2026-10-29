@@ -105,6 +105,8 @@ type FinalizeAppPageHtmlCacheResponseOptions = {
    */
   status?: number;
   headers?: Record<string, string>;
+  /** Called when the render turns out dynamic, so its document isn't stored. */
+  onDynamicRender?: () => void;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -423,6 +425,7 @@ export function finalizeAppPageHtmlCacheResponse(
         options.consumeDynamicUsage()
       ) {
         options.isrDebug?.("HTML cache write skipped (dynamic usage during render)", htmlKey);
+        options.onDynamicRender?.();
         return;
       }
 

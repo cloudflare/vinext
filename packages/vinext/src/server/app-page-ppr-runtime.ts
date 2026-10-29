@@ -5,7 +5,11 @@ import {
   preparePprFallbackShellFinalRender,
   runWithPprFallbackShellState,
 } from "vinext/shims/ppr-fallback-shell";
-import { _isOnDemandRevalidate, _setResumeDataCacheSeed } from "vinext/shims/cache-request-state";
+import {
+  _getResumeDataCacheSeed,
+  _isOnDemandRevalidate,
+  _setResumeDataCacheSeed,
+} from "vinext/shims/cache-request-state";
 import { markDynamicUsage } from "vinext/shims/internal/headers-state";
 import { createResumeDataCache, parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
@@ -18,13 +22,16 @@ import {
 } from "./app-page-dispatch.js";
 import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
 import { encodePrerenderRouteParams } from "./prerender-route-params.js";
-import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
+import {
+  createAppPprRequestConcreteShell,
+  type AppPagePprFallbackCacheShell,
+} from "./app-ppr-fallback-shell.js";
 import type { AppPagePprShellResume } from "./app-page-stream.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 
 type PprFallbackShellEligibility =
   | {
-      kind: "probe-fallback-shells";
+      kind: "probe-shells";
       fallbackShells: NonNullable<
         DispatchAppPageOptions<AppPageDispatchRoute>["pprFallbackCacheShells"]
       >;
@@ -32,8 +39,8 @@ type PprFallbackShellEligibility =
   | {
       kind:
         | "skip-known-pregenerated-route"
-        | "skip-no-fallback-shells"
-        | "skip-rsc-request"
+        | "skip-fallback-shell-render"
+        | "seed-rsc-request"
         | "skip-non-get"
         | "skip-search-params"
         | "skip-cache-disabled"
@@ -51,18 +58,12 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
     return { kind: "skip-known-pregenerated-route" };
   }
 
-  const fallbackShells = options.pprFallbackCacheShells;
-  if (!fallbackShells || fallbackShells.length === 0) {
-    return { kind: "skip-no-fallback-shells" };
-  }
-  if (options.isRscRequest) return { kind: "skip-rsc-request" };
+  // A shell's own render is a fresh prerender, never a resume of the shell.
+  if (options.pprFallbackShell) return { kind: "skip-fallback-shell-render" };
   // Like Next.js, an on-demand revalidation renders the page blocking and
   // stores it instead of resuming a shell with the values it was built with.
   if (_isOnDemandRevalidate()) return { kind: "skip-on-demand-revalidate" };
   if (options.request.method !== "GET") return { kind: "skip-non-get" };
-  if (!isForceStatic && hasSearchParams(options.searchParams)) {
-    return { kind: "skip-search-params" };
-  }
   if (
     !shouldReadAppPageCache({
       isDraftMode,
@@ -76,8 +77,12 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
   ) {
     return { kind: "skip-cache-disabled" };
   }
+  if (options.isRscRequest) return { kind: "seed-rsc-request" };
+  if (!isForceStatic && hasSearchParams(options.searchParams)) {
+    return { kind: "skip-search-params" };
+  }
 
-  return { kind: "probe-fallback-shells", fallbackShells };
+  return { kind: "probe-shells", fallbackShells: options.pprFallbackCacheShells ?? [] };
 }
 
 /** What generateStaticParams produces for a request, asked apart from its render. */
@@ -135,32 +140,92 @@ async function produceMissingFallbackShells<TRoute extends AppPageDispatchRoute>
 ): Promise<void> {
   // The build prerenders every shell itself.
   if (process.env.VINEXT_PRERENDER === "1") return;
-  const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
-  const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
   for (const fallbackShell of fallbackShells) {
-    const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
-    const key = options.isrFallbackShellHtmlKey(fallbackPathname);
-    (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
-      key,
-      async () => {
-        const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
-        if (cached !== null && cached.isExpired !== true) return;
-        options.isrDebug?.("RENDER (missing fallback shell)", fallbackPathname);
-        await coalesceFallbackShellProduction(key, () =>
-          produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds),
-        );
-      },
-      { routerKind: "App Router", routePath: options.route.pattern, routeType: "render" },
-    );
+    scheduleShellProduction(options, fallbackShell, currentRevalidateSeconds, false);
   }
 }
+
+/** Produce a shell in the background unless it's stored, or regenerate a stale one. */
+function scheduleShellProduction<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  shell: AppPagePprFallbackCacheShell,
+  currentRevalidateSeconds: number | null,
+  isConcrete: boolean,
+  isStaleRegeneration = false,
+): void {
+  const pathname = normalizePregeneratedPathname(shell.pathname);
+  const key = options.isrFallbackShellHtmlKey(pathname);
+  (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
+    key,
+    async () => {
+      const cached = await (options.isrGetFallbackShell ?? options.isrGet)(key);
+      if (
+        cached !== null &&
+        cached.isExpired !== true &&
+        !(isStaleRegeneration && cached.isStale)
+      ) {
+        return;
+      }
+      const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
+      const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
+      options.isrDebug?.(
+        isConcrete ? "RENDER (missing shell)" : "RENDER (missing fallback shell)",
+        pathname,
+      );
+      await coalesceFallbackShellProduction(key, () =>
+        produceAppPprFallbackShell(options, shell, key, currentRevalidateSeconds, isConcrete),
+      );
+    },
+    { routerKind: "App Router", routePath: options.route.pattern, routeType: "render" },
+  );
+}
+
+/**
+ * Like Next.js, an RSC request for a path with its own shell reads the values
+ * the shell was built with, so its payload agrees with the shell's HTML. A
+ * stale shell regenerates after it.
+ */
+async function seedRscRequestFromOwnShell<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  currentRevalidateSeconds: number | null,
+): Promise<void> {
+  const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
+  if (!concreteShell) return;
+  const pathname = normalizePregeneratedPathname(concreteShell.pathname);
+  let cached: ISRCacheEntry | null;
+  try {
+    cached = await (options.isrGetFallbackShell ?? options.isrGet)(
+      options.isrFallbackShellHtmlKey(pathname),
+    );
+  } catch (isrReadError) {
+    options.isrDebug?.("MISS (fallback shell read error)", pathname);
+    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+    return;
+  }
+  if (cached === null || cached.isExpired === true) return;
+  const value = cached.value.value;
+  if (value?.kind !== "APP_PAGE") return;
+  // A shell that read no cached data has none to seed, but still regenerates.
+  if (cached.isStale) {
+    scheduleShellProduction(options, concreteShell, currentRevalidateSeconds, true, true);
+  }
+  const { parseAppPprShellState } = await import("./app-ppr-fallback-shell.js");
+  const resumeDataCache = parseResumeDataCache(
+    parseAppPprShellState(value.postponed)?.resumeDataCache ?? undefined,
+  );
+  if (resumeDataCache !== null) _setResumeDataCacheSeed(resumeDataCache);
+}
+
+/** A concrete shell that isn't stored, or is expired. */
+const SHELL_MISSING = Symbol("vinext.pprShellMissing");
 
 async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShell: AppPagePprFallbackCacheShell,
   currentRevalidateSeconds: number | null,
   isForceStatic: boolean,
-): Promise<Response | AppPagePprShellResume | null> {
+  isConcrete = false,
+): Promise<Response | AppPagePprShellResume | null | typeof SHELL_MISSING> {
   const { serveAppPageFallbackShellCacheEntry } = await import("./app-page-cache.js");
   const {
     parseAppPprShellState,
@@ -174,7 +239,7 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
   const key = options.isrFallbackShellHtmlKey(fallbackPathname);
   const produce = () =>
-    produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds);
+    produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds, isConcrete);
   // The encoded params the shell rendered with, as its segment keys hold them.
   const shellParams =
     encodePrerenderRouteParams(
@@ -199,6 +264,9 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
     console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
     return null;
   }
+  // A request without its path's shell renders the page, and the shell is
+  // produced after it.
+  if (isConcrete && (cached === null || cached.isExpired === true)) return SHELL_MISSING;
   // Like Next.js, a request without a servable shell renders it first, blocking.
   if (cached === null || cached.isExpired === true) {
     options.isrDebug?.(
@@ -294,7 +362,26 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       isForceStatic,
       isForceDynamic,
     );
-    if (decision.kind !== "probe-fallback-shells") return null;
+    if (decision.kind === "seed-rsc-request") {
+      await seedRscRequestFromOwnShell(options, currentRevalidateSeconds);
+      return null;
+    }
+    if (decision.kind !== "probe-shells") return null;
+    // Like Next.js, a path with its own shell resumes it: a path
+    // generateStaticParams produced, a route without fallback params, or a
+    // path rendered once before. Its shell keeps every param.
+    const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
+    if (concreteShell) {
+      const served = await serveFallbackShell(
+        options,
+        concreteShell,
+        currentRevalidateSeconds,
+        isForceStatic,
+        true,
+      );
+      if (served !== SHELL_MISSING) return served;
+    }
+    if (decision.fallbackShells.length === 0) return null;
     let generated: Awaited<ReturnType<typeof resolveGeneratedStaticParams>>;
     try {
       generated = await resolveGeneratedStaticParams(options);
@@ -317,9 +404,43 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       decision.fallbackShells,
       generated,
     );
-    return fallbackShell
-      ? serveFallbackShell(options, fallbackShell, currentRevalidateSeconds, isForceStatic)
-      : null;
+    if (!fallbackShell) return null;
+    const served = await serveFallbackShell(
+      options,
+      fallbackShell,
+      currentRevalidateSeconds,
+      isForceStatic,
+    );
+    return served === SHELL_MISSING ? null : served;
+  },
+  produceConcreteShell(
+    options,
+    currentRevalidateSeconds,
+    isDraftMode,
+    isForceStatic,
+    isForceDynamic,
+  ) {
+    // A shell's own render, the build, which prerenders the path, and a
+    // request that resumed a shell don't.
+    if (
+      options.pprFallbackShell ||
+      process.env.VINEXT_PRERENDER === "1" ||
+      _getResumeDataCacheSeed() !== null
+    ) {
+      return;
+    }
+    const decision = classifyPprFallbackShellEligibility(
+      options,
+      currentRevalidateSeconds,
+      isDraftMode,
+      isForceStatic,
+      isForceDynamic,
+    );
+    if (decision.kind !== "probe-shells") return;
+    const concreteShell = createAppPprRequestConcreteShell(options.route, options.params);
+    if (concreteShell) {
+      scheduleShellProduction(options, concreteShell, currentRevalidateSeconds, true);
+    }
   },
   async produceMissingShells(options, currentRevalidateSeconds) {
     const fallbackShells = options.pprFallbackCacheShells;
