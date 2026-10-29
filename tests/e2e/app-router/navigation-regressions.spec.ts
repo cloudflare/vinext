@@ -365,3 +365,67 @@ test.describe("router.prefetch for hrefs that resolve to a // pathname", () => {
     expect(offOriginRequests).toEqual([]);
   });
 });
+
+// Tag managers loaded after hydration (GTM History Change, GA4 enhanced
+// measurement) wrap history.pushState/replaceState to observe navigations.
+// Next.js writes router history through the live window.history methods, so a
+// wrapper installed after boot still sees every App Router navigation (#4339).
+test.describe("History API wrappers installed after hydration", () => {
+  type HistoryWrapperWindow = Window & {
+    __historyCalls__?: { method: string; url: string | null }[];
+  };
+
+  async function installHistoryWrapper(page: import("@playwright/test").Page) {
+    await page.evaluate(() => {
+      const calls: { method: string; url: string | null }[] = [];
+      (window as HistoryWrapperWindow).__historyCalls__ = calls;
+      for (const method of ["pushState", "replaceState"] as const) {
+        const previous = window.history[method];
+        window.history[method] = function (data, unused, url) {
+          calls.push({ method, url: url == null ? null : String(url) });
+          return previous.call(window.history, data, unused, url);
+        };
+      }
+    });
+  }
+
+  async function readHistoryCalls(page: import("@playwright/test").Page) {
+    // Let post-commit effects run so a trailing history write is not missed.
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50))),
+    );
+    return page.evaluate(() => (window as HistoryWrapperWindow).__historyCalls__ ?? []);
+  }
+
+  test("a Link navigation calls the wrapped pushState", async ({ page }) => {
+    await page.goto(`${BASE}/nav-flash/link-sync`);
+    await waitForAppRouterHydration(page);
+    await installHistoryWrapper(page);
+
+    await page.click("#link-list");
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List");
+    await expect(page).toHaveURL(`${BASE}/nav-flash/list`);
+
+    // Like Next.js, one pushState per navigation and no extra state-only
+    // writes that a GTM History Change trigger would count as page views.
+    expect(await readHistoryCalls(page)).toEqual([
+      { method: "pushState", url: expect.stringMatching(/\/nav-flash\/list$/) },
+    ]);
+  });
+
+  test("router.push and router.replace call the wrapped history methods", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/search-params-key`);
+    await waitForAppRouterHydration(page);
+    await installHistoryWrapper(page);
+
+    await page.click("#push-foo-bar");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/search-params-key?foo=bar`);
+    await page.click("#replace-foo-baz");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/search-params-key?foo=baz`);
+
+    expect(await readHistoryCalls(page)).toEqual([
+      { method: "pushState", url: expect.stringMatching(/\?foo=bar$/) },
+      { method: "replaceState", url: expect.stringMatching(/\?foo=baz$/) },
+    ]);
+  });
+});

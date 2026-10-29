@@ -366,8 +366,9 @@ const historyController = new AppBrowserHistoryController({
   maxHistoryStateSnapshots: MAX_HISTORY_STATE_SNAPSHOTS,
   readHistoryState: () => window.history.state,
   readCurrentHref: () => window.location.href,
-  pushHistoryState: (state, href) => pushHistoryStateWithoutNotify(state, "", href),
-  replaceHistoryState: (state, href) => replaceHistoryStateWithoutNotify(state, "", href),
+  pushHistoryState: (state, href, land) => pushHistoryStateWithoutNotify(state, "", href, land),
+  replaceHistoryState: (state, href, land) =>
+    replaceHistoryStateWithoutNotify(state, "", href, land),
   readVisibleNavigationMetadata: () => {
     if (!hasBrowserRouterState()) return null;
     const routerState = getBrowserRouterState();
