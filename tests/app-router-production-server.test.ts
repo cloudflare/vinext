@@ -1512,7 +1512,7 @@ describe("App Router Production server (startProdServer)", () => {
         expect(errorRes.status).toBe(500);
         const errorHtml = await errorRes.text();
         expect(errorHtml).toContain('<html id="__next_error__"');
-        const errorBootstrap = (errorHtml.match(/<script\b[^>]*>/g) ?? []).find((tag) =>
+        const errorBootstrap = (errorHtml.match(/<script\b[^>]*>/gi) ?? []).find((tag) =>
           tag.includes('id="_R_"'),
         );
         expect(errorBootstrap).toContain('src="https://cdn.example.com/_next/static/');

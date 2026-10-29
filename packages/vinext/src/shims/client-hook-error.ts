@@ -29,11 +29,16 @@ export function rewriteClientHookError(error: Error): void {
   const match = error.message.match(clientHookPattern);
   if (!match) return;
   const message = buildClientHookErrorMessage(`${match[1]}()`);
-  // The stack's first line repeats the message, and console.error prints it.
-  if (error.stack) {
-    const lines = error.stack.split("\n");
-    lines[0] = `${error.name}: ${message}`;
-    error.stack = lines.join("\n");
+  try {
+    // The stack's first line repeats the message, and console.error prints it.
+    if (error.stack) {
+      const lines = error.stack.split("\n");
+      lines[0] = `${error.name}: ${message}`;
+      error.stack = lines.join("\n");
+    }
+    error.message = message;
+  } catch {
+    // Best-effort: a frozen error keeps its message rather than being replaced
+    // by a mutation TypeError.
   }
-  error.message = message;
 }

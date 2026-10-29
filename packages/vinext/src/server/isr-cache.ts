@@ -317,7 +317,11 @@ export function triggerBackgroundRegeneration(
 
   const promise = renderFn()
     .catch(async (err) => {
-      logRequestError(`[vinext] ISR background regeneration failed for ${key}:`, err);
+      const message = `[vinext] ISR background regeneration failed for ${key}:`;
+      // Without a context the failure isn't reported, so VINEXT_QUIET doesn't
+      // silence it.
+      if (errorContext) logRequestError(message, err);
+      else console.error(message, err);
       if (errorContext && (errorContext.shouldReport?.(err) ?? true)) {
         await reportRequestError(
           err,
