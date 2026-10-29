@@ -74,6 +74,7 @@ import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import {
+  createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
@@ -2726,9 +2727,6 @@ export function usePathname(): string {
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
-// Never settles: a shell's query hole, which its aborted prerender leaves.
-const shellSearchParamsHole: Promise<never> = new Promise(() => {});
-
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the current search params as a read-only URLSearchParams.
@@ -2739,7 +2737,7 @@ export function useSearchParams(): ReadonlyURLSearchParams {
     if (shellState !== null && shellState.varyParams === null && !shellState.isRuntimePrefetch) {
       // Like Next.js's prerender, a document shell leaves the query to a hole,
       // so every query string shares it.
-      React.use(shellSearchParamsHole);
+      React.use(createPprFallbackShellSuspensePromiseForState(shellState, "useSearchParams()"));
     }
     const ctx = getNavigationContext();
     if (
