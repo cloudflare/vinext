@@ -169,7 +169,6 @@ type RenderAppPageLifecycleOptionsBase = {
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
-  hasCustomGlobalError?: boolean;
   dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
@@ -1455,7 +1454,6 @@ async function renderAppPageLifecycleImpl(
               : options.peekRequestCacheLife?.(),
           ),
         fontData,
-        hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
@@ -1469,10 +1467,9 @@ async function renderAppPageLifecycleImpl(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        fallbackToErrorDocumentOnShellError:
+        fallbackToErrorDocumentOnShellError: !(
           options.isPrerender === true && options.isSpeculativePrerender === true
-            ? false
-            : undefined,
+        ),
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,

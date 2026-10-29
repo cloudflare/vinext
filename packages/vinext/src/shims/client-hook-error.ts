@@ -17,3 +17,23 @@ export function buildClientHookErrorMessage(hookName: string): string {
 export function throwClientHookError(hookName: string): never {
   throw new Error(buildClientHookErrorMessage(hookName));
 }
+
+// React client-only hooks that are absent from the `react-server` export
+// condition. When called in a Server Component they produce a TypeError like
+// "useState is not a function".
+const clientHookPattern =
+  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue|useActionState|useOptimistic|useEffectEvent)\b.*is not a function/;
+
+/** Rewrites that TypeError into the actionable message above. */
+export function rewriteClientHookError(error: Error): void {
+  const match = error.message.match(clientHookPattern);
+  if (!match) return;
+  const message = buildClientHookErrorMessage(`${match[1]}()`);
+  // The stack's first line repeats the message, and console.error prints it.
+  if (error.stack) {
+    const lines = error.stack.split("\n");
+    lines[0] = `${error.name}: ${message}`;
+    error.stack = lines.join("\n");
+  }
+  error.message = message;
+}

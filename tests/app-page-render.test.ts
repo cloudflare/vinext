@@ -2060,6 +2060,34 @@ describe("app page render lifecycle", () => {
     expect(common.isrSet).not.toHaveBeenCalled();
   });
 
+  it("asks for the error document on a shell error, except in a speculative prerender", async () => {
+    for (const [prerender, expected] of [
+      [{}, true],
+      [{ isPrerender: true }, true],
+      [{ isPrerender: true, isSpeculativePrerender: true }, false],
+    ] as const) {
+      const common = createCommonOptions();
+      let fallbackToErrorDocumentOnShellError: boolean | undefined;
+      const response = await renderAppPageLifecycle({
+        ...common.options,
+        ...prerender,
+        loadSsrHandler: vi.fn(async () => ({
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { fallbackToErrorDocumentOnShellError?: boolean },
+          ) {
+            fallbackToErrorDocumentOnShellError = options?.fallbackToErrorDocumentOnShellError;
+            return createStream(["<html>page</html>"]);
+          },
+        })),
+      });
+      await response.text();
+      expect(fallbackToErrorDocumentOnShellError, JSON.stringify(prerender)).toBe(expected);
+    }
+  });
+
   it("captures late RSC cache metadata during speculative prerender", async () => {
     const common = createCommonOptions();
     let capturedWaitForAllReady: boolean | undefined;

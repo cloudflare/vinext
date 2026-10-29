@@ -48,6 +48,7 @@ import {
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
 import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
 import { isPageNotModified } from "./http-conditional.js";
+import { logRequestError } from "./request-error-log.js";
 
 // ---------------------------------------------------------------------------
 // Bot / crawler detection for Pages Router edge-runtime SSR
@@ -443,7 +444,7 @@ async function reportPagesIsrCacheWriteError(
   cacheKey: string,
   routePattern: string,
 ): Promise<void> {
-  console.error(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
+  logRequestError(`[vinext] Pages ISR cache write failed for ${cacheKey}:`, error);
   try {
     await reportRequestError(
       error,

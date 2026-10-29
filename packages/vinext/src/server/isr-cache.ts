@@ -35,6 +35,7 @@ import {
 import { isInterceptionMatchedUrlPath } from "./normalize-path.js";
 import type { RenderObservation } from "./cache-proof.js";
 import { PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER } from "../utils/protocol-headers.js";
+import { logRequestError } from "./request-error-log.js";
 export { normalizeMountedSlotsHeader };
 
 /**
@@ -316,7 +317,7 @@ export function triggerBackgroundRegeneration(
 
   const promise = renderFn()
     .catch(async (err) => {
-      console.error(`[vinext] ISR background regeneration failed for ${key}:`, err);
+      logRequestError(`[vinext] ISR background regeneration failed for ${key}:`, err);
       if (errorContext && (errorContext.shouldReport?.(err) ?? true)) {
         await reportRequestError(
           err,

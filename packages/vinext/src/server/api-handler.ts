@@ -42,6 +42,7 @@ import {
   type PagesReqResResponse,
 } from "./pages-node-compat.js";
 import { tracePagesApiHandler } from "./pages-execution-tracing.js";
+import { logRequestError } from "./request-error-log.js";
 
 /**
  * Extend the Node.js request with Next.js-style helpers.
@@ -539,7 +540,7 @@ export async function handleApiRoute(
 
     // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
     // when using ModuleRunner — no stack trace fixup is needed here.
-    console.error(e);
+    logRequestError(e);
     await reportRequestError(
       e,
       {

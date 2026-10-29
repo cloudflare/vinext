@@ -1385,12 +1385,14 @@ describe("App Router integration", () => {
     expect(html).not.toContain("Missing use client react hook test");
   });
 
-  it("error boundary catches string thrown in Server Component", async () => {
+  it("answers a string thrown in a Server Component with the error document", async () => {
+    // Like Next.js, the browser renders error.tsx from the error document's
+    // payload, which carries the thrown string in development.
     const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
-    expect(res.status).toBe(200);
-    expect(textContentByTestId(html, "string-error-message")).toBe(
-      "this is a test string thrown in a server component",
-    );
+    expect(res.status).toBe(500);
+    expect(html).toContain('<html id="__next_error__"');
+    expect(html).toContain("this is a test string thrown in a server component");
+    expect(html).not.toContain(`data-testid="string-error-message"`);
   });
 
   it("redirect() from Server Component returns redirect response", async () => {

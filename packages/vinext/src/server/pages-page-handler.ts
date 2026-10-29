@@ -98,6 +98,7 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+import { logRequestError } from "./request-error-log.js";
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
@@ -785,7 +786,7 @@ export function createPagesPageHandler(
       resolveSentResponse = resolve;
     });
     const reportSsrError = async (e: unknown) => {
-      console.error("[vinext] SSR error:", e);
+      logRequestError("[vinext] SSR error:", e);
       await reportRequestError(
         e,
         {

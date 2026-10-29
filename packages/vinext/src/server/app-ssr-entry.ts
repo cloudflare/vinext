@@ -95,6 +95,8 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
+import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
@@ -856,11 +858,17 @@ export async function handleSsr(
               htmlStream = caughtHtmlStream;
             } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
-              options?.waitForAllReady === true ||
-              typeof (error as { digest?: unknown } | null)?.digest === "string"
+              isNavigationSignalError(error) ||
+              isBailoutToCSRError(error) ||
+              isDynamicServerError(error)
             ) {
               throw error;
             } else {
+              // Like Next.js, any other error answers with the error document,
+              // carrying the payload this render already produced. The browser
+              // renders that payload, and the error boundary it carries catches
+              // the error, so no server component runs, or reports, again.
+              // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
               htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
             }
