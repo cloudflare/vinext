@@ -222,6 +222,74 @@ test("regenerates a stale shell from a fresh render", async ({ baseURL }) => {
     .not.toBe(before);
 });
 
+test("resumes one shell for every query string, with the query in its holes", async ({
+  baseURL,
+  page,
+  consoleErrors,
+}) => {
+  const url = new URL("/en/search", baseURL);
+  await readStreamedDocument(url, []);
+  await expect
+    .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), { timeout: 15_000 })
+    .toBe("1");
+
+  const before = await readServerWork(baseURL!);
+  for (const query of ["cats", "dogs"]) {
+    const document = await readStreamedDocument(new URL(`/en/search?q=${query}`, baseURL), [
+      'id="shell-stamp"',
+    ]);
+    // Like Next.js, the shell is sent at once, and the holes that read the
+    // query, on the server and in a client component, stream in.
+    expect(document.headers.get("x-nextjs-postponed")).toBe("1");
+    expect(document.markers['id="shell-stamp"']).toBeLessThan(1_000);
+    expect(document.html).toContain('id="query-loading"');
+    expect(document.html).toContain(`query <!-- -->${query}`);
+    expect(document.html).toContain(`client query <!-- -->${query}`);
+    expect(document.html.match(/<html/g)).toHaveLength(1);
+  }
+  expect((await readServerWork(baseURL!))["shell-probe-ssr"] ?? 0).toBe(
+    before["shell-probe-ssr"] ?? 0,
+  );
+
+  await page.goto("/en/search?q=birds");
+  await expect(page.locator("#query")).toHaveText("query birds");
+  await expect(page.locator("#client-query")).toHaveText("client query birds");
+  await expect(page.locator("#shell-probe[data-hydrated]")).toBeVisible();
+
+  // Like Next.js, a rewrite's query reaches the server holes, while the client
+  // hole reads the browser's URL, as it does once hydrated.
+  const rewritten = await readStreamedDocument(new URL("/en/find/fish", baseURL), []);
+  expect(rewritten.headers.get("x-nextjs-postponed")).toBe("1");
+  expect(rewritten.html).toContain("query <!-- -->fish");
+  expect(rewritten.html).toContain("client query <!-- -->none");
+  await page.goto("/en/find/fish");
+  await expect(page.locator("#query")).toHaveText("query fish");
+  await expect(page.locator("#client-query")).toHaveText("client query none");
+  await expect(page.locator("#shell-probe[data-hydrated]")).toBeVisible();
+  expect(consoleErrors).toEqual([]);
+});
+
+test("hands a resumed client page the browser's query", async ({
+  baseURL,
+  page,
+  consoleErrors,
+}) => {
+  const url = new URL("/en/client-search", baseURL);
+  await readStreamedDocument(url, []);
+  await expect
+    .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), { timeout: 15_000 })
+    .toBe("1");
+
+  // Like Next.js, the page reads the browser's query, so a rewrite's stays
+  // internal.
+  await page.goto("/en/client-search?q=cats");
+  await expect(page.locator("#client-page-query")).toHaveText("client page query cats");
+  await page.goto("/en/client-find/fish");
+  await expect(page.locator("#client-page-query")).toHaveText("client page query none");
+  await expect(page.locator("#shell-probe[data-hydrated]")).toBeVisible();
+  expect(consoleErrors).toEqual([]);
+});
+
 // A path with its own shell: one generateStaticParams produced, a route
 // without fallback params, and a path whose root param wasn't generated. Next.js
 // prerenders these, or renders an unknown one blocking; vinext renders the

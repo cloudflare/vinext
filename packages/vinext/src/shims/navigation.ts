@@ -2693,12 +2693,21 @@ export function usePathname(): string {
 }
 /* oxlint-enable eslint-plugin-react-hooks/rules-of-hooks */
 
+// Never settles: a shell's query hole, which its aborted prerender leaves.
+const shellSearchParamsHole: Promise<never> = new Promise(() => {});
+
 /* oxlint-disable eslint-plugin-react-hooks/rules-of-hooks */
 /**
  * Returns the current search params as a read-only URLSearchParams.
  */
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
+    const shellState = getPprFallbackShellState();
+    if (shellState !== null && shellState.varyParams === null && !shellState.isRuntimePrefetch) {
+      // Like Next.js's prerender, a document shell leaves the query to a hole,
+      // so every query string shares it.
+      React.use(shellSearchParamsHole);
+    }
     const ctx = getNavigationContext();
     if (
       ctx?.isStaticGeneration === true &&

@@ -13,7 +13,7 @@ import {
 import { markDynamicUsage } from "vinext/shims/internal/headers-state";
 import { createResumeDataCache, parseResumeDataCache } from "vinext/shims/resume-data-cache";
 import {
-  hasSearchParams,
+  isQueryFreeManifestDispatch,
   runAppPageStaticGenerationWork,
   shouldReadAppPageCache,
   type AppPageDispatchRoute,
@@ -43,7 +43,6 @@ type PprFallbackShellEligibility =
         | "skip-fallback-shell-render"
         | "seed-rsc-request"
         | "skip-non-get"
-        | "skip-search-params"
         | "skip-cache-disabled"
         | "skip-on-demand-revalidate";
     };
@@ -52,7 +51,6 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
   options: DispatchAppPageOptions<TRoute>,
   currentRevalidateSeconds: number | null,
   isDraftMode: boolean,
-  isForceStatic: boolean,
   isForceDynamic: boolean,
 ): PprFallbackShellEligibility {
   if (options.renderedConcreteUrlPaths?.has(options.cleanPathname) === true) {
@@ -79,10 +77,6 @@ function classifyPprFallbackShellEligibility<TRoute extends AppPageDispatchRoute
     return { kind: "skip-cache-disabled" };
   }
   if (options.isRscRequest) return { kind: "seed-rsc-request" };
-  if (!isForceStatic && hasSearchParams(options.searchParams)) {
-    return { kind: "skip-search-params" };
-  }
-
   return { kind: "probe-shells", fallbackShells: options.pprFallbackCacheShells ?? [] };
 }
 
@@ -355,6 +349,9 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
                 })),
               ),
               linkHeader: typeof linkHeader === "string" ? linkHeader : undefined,
+              browserSearch: isQueryFreeManifestDispatch(options.route.pattern)
+                ? null
+                : new URL(options.request.url).search,
             }
           : null,
       };
@@ -519,7 +516,6 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       options,
       currentRevalidateSeconds,
       isDraftMode,
-      isForceStatic,
       isForceDynamic,
     );
     if (decision.kind === "seed-rsc-request") {
@@ -614,13 +610,7 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
     );
     return served === SHELL_MISSING ? null : served;
   },
-  produceConcreteShell(
-    options,
-    currentRevalidateSeconds,
-    isDraftMode,
-    isForceStatic,
-    isForceDynamic,
-  ) {
+  produceConcreteShell(options, currentRevalidateSeconds, isDraftMode, isForceDynamic) {
     // A shell's own render, the build, which prerenders the path, and a
     // request that resumed a shell don't.
     if (
@@ -634,7 +624,6 @@ export const appPagePprRuntime: AppPagePprRuntime<AppPageDispatchRoute> = {
       options,
       currentRevalidateSeconds,
       isDraftMode,
-      isForceStatic,
       isForceDynamic,
     );
     if (decision.kind !== "probe-shells") return;

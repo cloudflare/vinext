@@ -31,7 +31,10 @@ import {
   setNavigationContext,
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
-import { startCandidateSearchParamsGate } from "./app-ssr-search-params-gate.js";
+import {
+  createBailoutSearchParamsGate,
+  startCandidateSearchParamsGate,
+} from "./app-ssr-search-params-gate.js";
 import { onRenderDynamicLatched } from "vinext/shims/internal/headers-state";
 import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-observation.js";
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
@@ -502,20 +505,25 @@ export async function handleSsr(
         })
       : null;
     const requiredNavigationContext = requireNavigationContext(navContext);
+    // A resumed shell's holes read the query its head told the browser to.
+    const resumedSearch = options?.pprShellResume?.browserSearch;
+    const searchParams =
+      resumedSearch === undefined
+        ? requiredNavigationContext.searchParams
+        : new URLSearchParams(resumedSearch ?? "");
     const ssrNavigationContext = {
       ...requiredNavigationContext,
+      searchParams,
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
-      searchParamsGate: searchParamsGate?.gate,
+      searchParamsGate:
+        resumedSearch === null ? createBailoutSearchParamsGate() : searchParamsGate?.gate,
       // A client page reading this marks the render dynamic, like a server
       // page's searchParams.
-      getClientPageSearchParams: createClientPageSsrSearchParamsSource(
-        requiredNavigationContext.searchParams,
-        {
-          isForceStatic: options?.isForceStatic,
-          isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
-        },
-      ),
+      getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {
+        isForceStatic: options?.isForceStatic,
+        isPprFallbackShell: options?.pprFallbackShellSignal !== undefined,
+      }),
     };
 
     // A render waits for its route's client references, so a cold render

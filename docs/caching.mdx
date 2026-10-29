@@ -494,7 +494,7 @@ A page under a `loading.tsx` boundary, an href with a query string, an intercept
 
 ## Partial prerendering
 
-With `cacheComponents`, vinext serves a production App Router page's document from a stored shell, as Next.js serves its partial prerender. The shell is the page rendered with `cookies()`, `headers()`, `connection()`, uncached `fetch` calls, `"use cache: private"` functions and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. A request sends the stored shell at once, then renders only those holes and streams them into it. The rest of the page doesn't render again, and the browser hydrates the shell as it arrives.
+With `cacheComponents`, vinext serves a production App Router page's document from a stored shell, as Next.js serves its partial prerender. The shell is the page rendered with `cookies()`, `headers()`, `connection()`, `searchParams`, `useSearchParams()`, uncached `fetch` calls, `"use cache: private"` functions and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. A request sends the stored shell at once, then renders only those holes and streams them into it. The rest of the page doesn't render again, and the browser hydrates the shell as it arrives.
 
 A request resumes the most specific shell its path has:
 
@@ -502,6 +502,8 @@ A request resumes the most specific shell its path has:
 - **A fallback shell**, which leaves out params `generateStaticParams` didn't produce for the path: `/blog/[slug]` for a slug that wasn't generated, or `/en/blog/[slug]` under a generated `en` locale. The first request that needs one renders it, blocking, and stores it. A path whose root param wasn't generated has no fallback shell, so it renders in full, as in Next.js.
 
 Like Next.js's prerender manifest, a fallback shell records the params generated under it, so a request decides from the stored shell whether its own path was generated, without calling `generateStaticParams`. A shell produced at runtime calls it once, when it renders. A route with parallel route slots records nothing, so its requests that need a fallback shell call it, as the build doesn't run a slot's `generateStaticParams`.
+
+Every query string shares a path's shell, as in Next.js: `/search?q=a` and `/search?q=b` resume the same shell, and only the holes that read the query render with it.
 
 ## Query strings
 

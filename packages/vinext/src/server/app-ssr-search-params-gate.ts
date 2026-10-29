@@ -68,3 +68,10 @@ export function startCandidateSearchParamsGate(): CandidateSearchParamsGate {
     },
   };
 }
+
+/** A gate already decided `"bailout"`, for a render whose query is unknown. */
+export function createBailoutSearchParamsGate(): SearchParamsGate {
+  const controller = createSearchParamsGate({ onOpen() {} });
+  controller.settle();
+  return controller.gate;
+}
