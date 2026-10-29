@@ -2118,6 +2118,7 @@ describe("App Router Production server (startProdServer)", () => {
         expect(res.status, header).toBe(500);
         expect(res.headers.get("cache-control"), header).toContain("no-store");
         expect(html, header).toContain('<html id="__next_error__"');
+        expect(html, header).toContain('<meta name="robots" content="noindex"/>');
         expect(html, header).not.toContain('id="root-layout"');
         // The payload the browser renders carries the error, by its digest.
         expect(html, header).toContain(reports()[0]!.digest!);

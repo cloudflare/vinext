@@ -1154,7 +1154,10 @@ function createRejectedActionResult(error: unknown): Promise<never> {
  */
 function logRejectedActionResult(error: unknown): void {
   if (process.env.NODE_ENV === "production" || hasDigest(error)) {
-    logRequestError("[vinext] Server action error:", error);
+    // The render reports the result unless it's a thrown string, which isn't
+    // reported, so VINEXT_QUIET doesn't silence it.
+    if (typeof error === "string") console.error("[vinext] Server action error:", error);
+    else logRequestError("[vinext] Server action error:", error);
   }
 }
 

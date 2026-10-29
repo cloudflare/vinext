@@ -1551,6 +1551,29 @@ describe("app server action execution helpers", () => {
     }
   });
 
+  it("logs a production fetch action that throws a string under VINEXT_QUIET, as it isn't reported", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withEnvVar("VINEXT_QUIET", "1", () =>
+        withEnvVar("NODE_ENV", "production", () =>
+          handleServerActionRscRequest(
+            createRscOptions({
+              loadServerAction() {
+                return Promise.resolve(() => {
+                  throw "string failure";
+                });
+              },
+            }),
+          ),
+        ),
+      );
+
+      expect(errorSpy).toHaveBeenCalledWith("[vinext] Server action error:", "string failure");
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("logs a development fetch action failure that already has a digest", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     try {

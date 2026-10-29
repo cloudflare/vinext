@@ -197,7 +197,10 @@ function renderSsrErrorDocumentShell(
     createReactElement(DefaultGlobalError, {
       error: null,
     }),
-  ).replace("<style>", '<style data-vinext-error-shell-style="">');
+  )
+    // Like Next.js's NonIndex, which the error document's 500 status turns on.
+    .replace("<head>", '<head><meta name="robots" content="noindex"/>')
+    .replace("<style>", '<style data-vinext-error-shell-style="">');
   const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce, crossOrigin);
   if (!bootstrapScript) {
     return createUtf8Stream(`<!DOCTYPE html>${html}`);
