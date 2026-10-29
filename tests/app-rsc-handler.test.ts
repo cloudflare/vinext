@@ -5284,9 +5284,14 @@ describe("createAppRscHandler", () => {
   // direct request to it; anything it cannot follow keeps middleware's response.
   describe("an interception source that middleware redirects", () => {
     type RedirectCase = {
-      configRedirects?: { source: string; destination: string; permanent: boolean }[];
+      configRedirects?: TestHandlerOptions["configRedirects"];
       location?: (sourceUrl: URL) => string;
       redirectHeaders?: Record<string, string>;
+      redirectStatus?: number;
+      // Sends the request as an intercepted Server Action POST.
+      serverAction?: boolean;
+      // A query target middleware rewrites the target request to.
+      targetQuery?: string;
       // Middleware's answer for the redirect target `/tips`.
       followed?: "rewrite" | "rewrite-elsewhere" | "rewrite-other-locale" | "next" | "redirect";
       trailingSlash?: boolean;
@@ -5300,6 +5305,9 @@ describe("createAppRscHandler", () => {
         return url.href;
       },
       redirectHeaders = {},
+      redirectStatus = 307,
+      serverAction = false,
+      targetQuery,
       followed = "rewrite",
       trailingSlash = false,
     }: RedirectCase) {
@@ -5331,11 +5339,13 @@ describe("createAppRscHandler", () => {
         return null;
       };
       const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handleServerActionRequest = vi.fn(async () => new Response("action"));
       const middlewarePaths: string[] = [];
       const handler = createHandler({
         configHeaders: [],
         configRedirects,
         dispatchMatchedPage,
+        handleServerActionRequest,
         matchInterceptRoute: (_pathname, sourcePathname) => {
           const match = sourcePathname ? routeFor(sourcePathname) : null;
           return match?.route === tipsRoute || match?.route === otherRoute
@@ -5352,9 +5362,14 @@ describe("createAppRscHandler", () => {
               url.pathname = rewritePathname;
               return new Response(null, { headers: { "x-middleware-rewrite": url.href } });
             };
+            if (targetQuery !== undefined && pathname === "/ja/tips/a") {
+              const url = new URL(request.url);
+              url.search = targetQuery;
+              return new Response(null, { headers: { "x-middleware-rewrite": url.href } });
+            }
             if (pathname === "/ja/tips" || pathname === "/ja/tips/") {
               return new Response(null, {
-                status: 307,
+                status: redirectStatus,
                 headers: { location: location(new URL(request.url)), ...redirectHeaders },
               });
             }
@@ -5383,11 +5398,22 @@ describe("createAppRscHandler", () => {
         trailingSlash ? "/docs/ja/tips/a/?view=1" : "/docs/ja/tips/a?view=1",
         headers,
       );
+      if (serverAction) {
+        headers.set("content-type", "text/plain");
+        headers.set("next-action", "interception-action");
+      }
+      // Server Action POSTs carry no `_rsc` cache-busting param.
       const response = await handler(
-        new Request(`https://example.test${rscUrl}`, { headers }),
+        serverAction
+          ? new Request("https://example.test/docs/ja/tips/a?view=1", {
+              body: "[]",
+              headers,
+              method: "POST",
+            })
+          : new Request(`https://example.test${rscUrl}`, { headers }),
         null,
       );
-      return { dispatchMatchedPage, middlewarePaths, response };
+      return { dispatchMatchedPage, handleServerActionRequest, middlewarePaths, response };
     }
 
     it("intercepts when the redirect target rewrites back to the same source", async () => {
@@ -5463,6 +5489,50 @@ describe("createAppRscHandler", () => {
       expect(response.status).toBe(404);
       expect(response.headers.get("location")).toBeNull();
       expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    // The followed request carries the query target middleware resolved, so a
+    // config redirect conditioned on it applies, as for a direct request.
+    it("applies a config redirect conditioned on the target's resolved query", async () => {
+      const { dispatchMatchedPage, middlewarePaths, response } = await requestFromRedirectedSource({
+        configRedirects: [
+          {
+            source: "/tips",
+            has: [{ type: "query", key: "mode", value: "private" }],
+            destination: "/en/tips",
+            permanent: false,
+          },
+        ],
+        targetQuery: "?mode=private",
+      });
+
+      expect(response.status).toBe(404);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    // A 303 (or a 301/302 of a POST) turns the redirected request into a
+    // bodyless GET, which method-sensitive middleware may answer differently.
+    it("returns a 303 redirect of an intercepted Server Action", async () => {
+      const { handleServerActionRequest, middlewarePaths, response } =
+        await requestFromRedirectedSource({ redirectStatus: 303, serverAction: true });
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("/docs/tips?view=1");
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("follows a 307 redirect of an intercepted Server Action", async () => {
+      const { handleServerActionRequest, middlewarePaths, response } =
+        await requestFromRedirectedSource({ serverAction: true });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("action");
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips", "/tips"]);
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/ja/tips" }),
+      );
     });
 
     // As for a direct request, a config redirect wins before middleware runs.

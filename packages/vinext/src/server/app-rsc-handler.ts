@@ -267,8 +267,14 @@ function resolveSourceMiddlewareRedirect(
   response: Response,
   sourceUrl: URL,
   basePath: string,
+  method: string,
 ): string | null {
   if (!SOURCE_MIDDLEWARE_REDIRECT_STATUSES.has(response.status)) return null;
+  // Only 307 and 308 keep a non-GET method and body; other statuses turn the
+  // redirected request into a bodyless GET, which this pass does not rebuild.
+  if (method !== "GET" && method !== "HEAD" && response.status !== 307 && response.status !== 308) {
+    return null;
+  }
   // Following the redirect drops its response, so a cookie it sets would be lost.
   if (response.headers.has("set-cookie")) return null;
   const location = response.headers.get("location");
@@ -2065,6 +2071,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               sourceMiddlewareResult.response,
               sourceRun.sourceUrl,
               resolvedPathnameHasBasePath ? options.basePath : "",
+              userlandRequest.method,
             );
         if (redirectedSourcePathname === null) {
           options.clearRequestContext();
@@ -2078,7 +2085,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           !configMatchers?.matchRedirect(
             matchPathname(redirectedSourcePathname),
             options.configRedirects,
-            preMiddlewareRequestContext,
+            // The request the followed run carries: the target's headers and
+            // resolved query after its middleware, as `runSourceMiddleware` builds.
+            requestContextForResolvedUrl(
+              buildPostMwRequestContext(userlandRequest),
+              resolvedUrl,
+              url,
+            ),
             currentBasePathState(),
             dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
           )
