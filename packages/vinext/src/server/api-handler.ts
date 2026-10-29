@@ -20,7 +20,11 @@ import {
   parseQueryString,
   urlQueryToSearchParams,
 } from "../utils/query.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+} from "./pages-media-type.js";
 import { finalizeEdgeApiResponse, isEdgeApiRuntime } from "./edge-api-runtime.js";
 import {
   DEFAULT_PAGES_API_BODY_SIZE_LIMIT,
@@ -105,6 +109,10 @@ async function parseBody(
   req: IncomingMessage,
   sizeLimit: number = MAX_BODY_SIZE,
 ): Promise<unknown> {
+  const { mediaType, decoder } = await createPagesBodyDecoder(req.headers["content-type"]);
+  // A client that disconnected while the decoder loaded has already emitted
+  // its error/close events, which the listeners below would never see.
+  if (req.destroyed) throw req.errored ?? new Error("Request aborted");
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let totalSize = 0;
@@ -128,15 +136,19 @@ async function parseBody(
     req.on("end", () => {
       if (settled) return;
       settled = true;
-      const raw = Buffer.concat(chunks).toString("utf-8");
-      const mediaType = getMediaType(req.headers["content-type"]);
+      const body = Buffer.concat(chunks);
+      const raw = decoder.decode(body);
       if (!raw) {
+        // A body that decodes to nothing, such as a lone BOM, stays "" like
+        // in Next.js; only a request without body bytes gets undefined.
         resolve(
           isJsonMediaType(mediaType)
             ? {}
             : mediaType === "application/x-www-form-urlencoded"
               ? decodeQueryString(raw)
-              : undefined,
+              : body.length > 0
+                ? raw
+                : undefined,
         );
         return;
       }

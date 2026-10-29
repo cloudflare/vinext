@@ -17,7 +17,10 @@ type PagesNodeExternalsOptions = {
   getRoot: () => string;
   getPagesDir: () => string | null;
   getAliases: () => Readonly<Record<string, string>>;
+  // Trailing `/*` tsconfig patterns, keyed by prefix.
   getTsconfigAliases: () => Readonly<Record<string, string>>;
+  // tsconfig keys without `*`, which match only the exact specifier.
+  getTsconfigExactAliases: () => Readonly<Record<string, string>>;
   getBundledPackages: () => ReadonlySet<string>;
   isEnabled: () => boolean;
 };
@@ -240,7 +243,8 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
 
         if (
           matchesAlias(id, options.getAliases()) ||
-          matchesAlias(id, options.getTsconfigAliases())
+          matchesAlias(id, options.getTsconfigAliases()) ||
+          Object.hasOwn(options.getTsconfigExactAliases(), id)
         ) {
           const aliased = await this.resolve(id, importer, { skipSelf: true });
           if (aliased && !aliased.external) {
