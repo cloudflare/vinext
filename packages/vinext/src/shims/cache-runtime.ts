@@ -1350,6 +1350,18 @@ async function runCachedFunctionWithContext<
     // then `notFound()` keeps its lifetime.
     effectiveLife = resolveCacheLife(ctx);
     propagateCacheLife(parentCtx, effectiveLife);
+    // Propagate the eager error to the parent if this inner cache resolved
+    // dynamic, alongside the life it explains. `??=` keeps the first dynamic
+    // child as the cause, matching Next.js: see `dynamicNestedCacheError ??=`
+    // in packages/next/src/server/use-cache/use-cache-wrapper.ts.
+    if (
+      parentCtx &&
+      eagerError &&
+      (effectiveLife.revalidate === 0 ||
+        (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
+    ) {
+      parentCtx.dynamicNestedCacheError ??= eagerError;
+    }
   }
 
   if (ctx.invalidDynamicUsageError) {
@@ -1376,19 +1388,6 @@ async function runCachedFunctionWithContext<
         parentCtx.readRootParamNames?.add(name);
       }
     }
-  }
-
-  // Propagate the eager error to the parent if this inner cache resolved
-  // dynamic. `??=` keeps the first dynamic child as the cause, matching
-  // Next.js: see `dynamicNestedCacheError ??=` in
-  // packages/next/src/server/use-cache/use-cache-wrapper.ts.
-  if (
-    parentCtx &&
-    eagerError &&
-    (effectiveLife.revalidate === 0 ||
-      (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
-  ) {
-    parentCtx.dynamicNestedCacheError ??= eagerError;
   }
 
   // If a nested inner cache propagated a dynamic life into this context,

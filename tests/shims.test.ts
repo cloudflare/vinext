@@ -10358,6 +10358,29 @@ describe('"use cache" runtime', () => {
     });
   });
 
+  it("a caught error from a dynamic nested cache still raises the nested-cache error", async () => {
+    // Like Next.js, whose `collectResult` propagates an errored entry's
+    // metadata, the outer still sees the inner's zero revalidate.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        throw new Error("inner failed");
+      }, "test:caught-dynamic-inner");
+      const outerCached = registerCachedFunction(
+        async () => await innerCached().catch(() => "fallback"),
+        "test:caught-dynamic-outer",
+      );
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
   it("a middle cache's explicit cacheLife shields its parent from a dynamic grandchild", async () => {
     await withPrerenderFlag(async () => {
       const { registerCachedFunction } =
