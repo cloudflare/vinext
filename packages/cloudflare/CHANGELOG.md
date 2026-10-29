@@ -1,5 +1,38 @@
 # @vinext/cloudflare
 
+## 1.3.0
+
+Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
+
+### Features
+
+#### Cloudflare
+
+- share one Response Store App Router entry across hosts (#3897)
+- store both parts of a page whenever Workers Cache renders one (#4333)
+- store both parts of a page whenever Response Store stores or regenerates one (#4332)
+- store the page's document when an RSC request misses its Response Store entry (#4331)
+- add --vite-config to deploy (#4215)
+
+### Bug Fixes
+
+#### Cloudflare
+
+- share one Workers Cache entry across hosts (#3924)
+- share one Response Store static Pages entry across hosts (#3898)
+- don't purge the edge copy of a page's other part on Response Store (#4342)
+
+#### Misc
+
+- **Cache:** date "use cache" entries from when their generation started, like Next.js (#4348)
+- **Response Store:** refreshes overtaken by invalidate(), purge() or revalidatePath() land like Next.js, without the R2 head (#4323)
+- **Response Store:** drop concurrent refreshes of a revision another write already replaced (#4307)
+
+### Contributors
+
+- @Gourav224
+- @james-elicx
+
 ## 1.2.1
 
 ### Bug Fixes
