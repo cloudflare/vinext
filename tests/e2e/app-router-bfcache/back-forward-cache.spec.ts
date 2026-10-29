@@ -578,4 +578,82 @@ test.describe("BFCache Activity effects", () => {
     await expectEffects(page, switchChat("b", "a"), chatOpen("a"));
     await expect(effectCount(page, "chat:a")).toHaveText("Count: 2");
   });
+
+  // chat/ has no layout, yet Next.js keeps a list for its level too: /chat/a and
+  // /chat/b are one "chat" entry in the effects layout's list, so leaving for
+  // two more routes evicts neither.
+  test("counts a segment without a layout as one entry in its parent's list", async ({ page }) => {
+    const searchOpen = ["shell#1", "search#1", "search-query:1#1"];
+    await gotoChatA(page);
+    await incrementEffect(page, "chat:a", 2);
+    await clickEffectsLink(page, "/chat/b", "Chat b");
+    await expectEffects(page, switchChat("a", "b", 1), chatOpen("b"));
+    await incrementEffect(page, "chat:b", 3);
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      [
+        ...chatKeys("b").map((key) => `cleanup ${key}`),
+        "mount search#1",
+        "setup search#1",
+        "setup search-query:1#1",
+      ],
+      searchOpen,
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await clickEffectsLink(page, "/chat/b", "Chat b");
+    await expectEffects(page, setupEffects(chatKeys("b"), false), chatOpen("b"));
+    await expect(effectCount(page, "chat:b")).toHaveText("Count: 3");
+
+    await clickEffectsLink(page, "/chat/a", "Chat a");
+    await expectEffects(page, switchChat("b", "a"), chatOpen("a"));
+    await expect(effectCount(page, "chat:a")).toHaveText("Count: 2");
+    await expectHiddenEffectState(page, "search", "Count: 0");
+  });
+
+  test("keeps a layout-less segment's page and child segments in one parent entry", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/chat`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "lobby#1"], true), ["shell#1", "lobby#1"]);
+    await incrementEffect(page, "lobby", 2);
+
+    await clickEffectsLink(page, "/chat/a", "Chat a");
+    await expectEffects(
+      page,
+      ["cleanup lobby#1", ...setupEffects(chatKeys("a"), true)],
+      chatOpen("a"),
+    );
+    await expectHiddenEffectState(page, "lobby", "Count: 2");
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      [
+        ...chatKeys("a").map((key) => `cleanup ${key}`),
+        "mount search#1",
+        "setup search#1",
+        "setup search-query:1#1",
+      ],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await clickEffectsLink(page, "/chat", "Chat lobby");
+    await expectEffects(page, ["setup lobby#1"], ["shell#1", "lobby#1"]);
+    await expect(effectCount(page, "lobby")).toHaveText("Count: 2");
+
+    await clickEffectsLink(page, "/chat/a", "Chat a");
+    await expectEffects(
+      page,
+      ["cleanup lobby#1", ...setupEffects(chatKeys("a"), false)],
+      chatOpen("a"),
+    );
+    await expectHiddenEffectState(page, "lobby", "Count: 2");
+  });
 });

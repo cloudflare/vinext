@@ -11,6 +11,9 @@ export default function EffectsLayout({ children }: { children: React.ReactNode 
           <li>
             <Link href={base}>Home</Link>
           </li>
+          <li>
+            <Link href={`${base}/chat`}>Chat lobby</Link>
+          </li>
           {["a", "b", "c", "d", "e"].map((id) => (
             <li key={id}>
               <Link href={`${base}/chat/${id}`}>Chat {id}</Link>

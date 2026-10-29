@@ -466,9 +466,13 @@ export function BfcacheSegmentBoundary({
 export function BfcacheChildrenBoundary({
   children,
   id,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  /** The child element whose identity keys the entries. */
+  id?: string;
+  /** A fixed key, for a segment level with no element of its own. */
+  stateKey?: string;
 }) {
   if (!BfcacheIdMapContext || !BfcacheSegmentIdContext || !isCacheComponentsEnabled()) {
     return <>{children}</>;
@@ -478,6 +482,7 @@ export function BfcacheChildrenBoundary({
       id={id}
       IdMapContext={BfcacheIdMapContext}
       SegmentContext={BfcacheSegmentIdContext}
+      stateKey={stateKey}
     >
       {children}
     </BfcacheChildrenActivityBoundary>
@@ -489,18 +494,22 @@ function BfcacheChildrenActivityBoundary({
   id,
   IdMapContext,
   SegmentContext,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  id: string | undefined;
   IdMapContext: React.Context<Readonly<Record<string, string>> | null>;
   SegmentContext: React.Context<string | null>;
+  stateKey: string | undefined;
 }) {
   const elements = React.useContext(ElementsContext);
   const identityMap = React.useContext(BfcacheIdentityMapContext);
   const bfcacheIdMap = React.useContext(IdMapContext);
   // The children keep the segment id of the layout that renders them.
   const segmentId = React.useContext(SegmentContext);
-  const activeStateKey = resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
+  const activeStateKey =
+    stateKey ??
+    (id === undefined ? undefined : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap));
   if (segmentId === null || activeStateKey === undefined) {
     return <>{children}</>;
   }
