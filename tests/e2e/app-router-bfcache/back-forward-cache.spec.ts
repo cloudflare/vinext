@@ -254,4 +254,26 @@ test.describe("Next.js compat: back/forward cache", () => {
     await expect(page.locator("h3:visible").first()).toHaveText("Sibling layout child");
     await expect(nestedCounter(page, "sibling-child")).toHaveText("Count: 3");
   });
+
+  // https://github.com/cloudflare/vinext/issues/4387
+  test("keys a server template by its child segment across a revalidating action", async ({
+    page,
+  }) => {
+    const route = "/nextjs-compat/back-forward-cache/template-seed";
+    await page.goto(`${route}/x`);
+    await waitForAppRouterHydration(page);
+    await clickNestedUntilCount(page, "template-seed", 2);
+
+    await page.locator(`a[href="${route}/y"]:visible`).first().click();
+    await expect(page.locator("#template-seed-section:visible").first()).toHaveText("Section y");
+    await expect(nestedCounter(page, "template-seed")).toHaveText("Count: 0");
+    await clickNestedUntilCount(page, "template-seed", 1);
+
+    const renderId = page.locator("#template-seed-render-id:visible").first();
+    const previousRenderId = await renderId.textContent();
+    expect(previousRenderId).toBeTruthy();
+    await page.locator("#template-seed-revalidate:visible").first().click();
+    await expect(renderId).not.toHaveText(previousRenderId!);
+    await expect(nestedCounter(page, "template-seed")).toHaveText("Count: 1");
+  });
 });
