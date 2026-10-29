@@ -52,6 +52,7 @@ import {
   deferUntilStreamConsumed,
   renderAppPageHtmlStream,
   renderAppPageHtmlStreamWithRecovery,
+  type AppPagePprShellResume,
   type AppPageSsrHandler,
 } from "./app-page-stream.js";
 import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
@@ -220,6 +221,10 @@ type RenderAppPageLifecycleOptionsBase = {
   pprFallbackShellSignal?: AbortSignal;
   pprFallbackShellReactSignal?: AbortSignal;
   abortPprFallbackShell?: () => void;
+  /** Whether the fallback shell's payload left holes. */
+  isPprFallbackShellPartial?: () => boolean;
+  /** A stored shell this render resumes. */
+  pprShellResume?: AppPagePprShellResume;
   rootParams?: RootParams;
   peekRenderObservationState?: () => AppPageRenderObservationState;
   expireSeconds?: number;
@@ -1467,6 +1472,8 @@ async function renderAppPageLifecycleImpl(
         reactMaxHeadersLength: options.reactMaxHeadersLength,
         rootParams: options.rootParams,
         pprFallbackShellSignal: options.pprFallbackShellSignal,
+        isPprFallbackShellPartial: options.isPprFallbackShellPartial,
+        pprShellResume: options.pprShellResume,
         preloadRoutePattern: options.routePattern,
         formState: options.formState ?? null,
         rscStream: rscForResponse,
@@ -1569,22 +1576,24 @@ async function renderAppPageLifecycleImpl(
   if (options.isPrerender === true && options.pprFallbackShellSignal) {
     // The shell's cache entries are all settled once its body ends.
     const resumeDataCache = _getResumeDataCacheCollector();
-    const { appendAppPprFallbackShellResumeDataCache } =
-      await import("./app-ppr-fallback-shell.js");
-    htmlStream = appendAppPprFallbackShellResumeDataCache(htmlStream, () =>
-      resumeDataCache && !isResumeDataCacheEmpty(resumeDataCache)
-        ? stringifyResumeDataCache(resumeDataCache)
-        : null,
-    );
+    const { appendAppPprFallbackShellState } = await import("./app-ppr-fallback-shell.js");
+    const prelude = htmlRender.pprShellPrelude;
+    htmlStream = appendAppPprFallbackShellState(htmlStream, () => ({
+      prelude: prelude !== undefined,
+      postponed: prelude?.postponed ?? null,
+      resumeDataCache:
+        resumeDataCache && !isResumeDataCacheEmpty(resumeDataCache)
+          ? stringifyResumeDataCache(resumeDataCache)
+          : null,
+    }));
   }
 
   // Combine React's preload `Link` header (captured via onHeaders during SSR)
-  // with the font preload `Link` header, capped to `reactMaxHeadersLength`.
-  const linkHeader = buildAppPageLinkHeader(
-    htmlRender.linkHeader,
-    fontLinkHeader,
-    options.reactMaxHeadersLength,
-  );
+  // with the font preload `Link` header, capped to `reactMaxHeadersLength`. A
+  // resumed shell sends the header its render sent.
+  const linkHeader =
+    options.pprShellResume?.linkHeader ??
+    buildAppPageLinkHeader(htmlRender.linkHeader, fontLinkHeader, options.reactMaxHeadersLength);
 
   if (options.isPrerender === true) {
     await htmlRender.metadataReady;

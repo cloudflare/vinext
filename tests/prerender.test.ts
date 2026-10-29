@@ -2648,7 +2648,7 @@ describe("routeStaticParamSets", () => {
 describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => {
   async function prerenderDynamicRootParamRoute(
     cacheComponents: boolean,
-    fallbackShellResumeDataCache?: string,
+    fallbackShellState?: string,
     previousFallbackPostponed?: string,
     staticParamsFor: (pattern: string | null) => unknown = () => [{ locale: "en", slug: "hello" }],
   ) {
@@ -2697,8 +2697,8 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
           ) +
           runtimeRscDoneScript() +
           "</body></html>" +
-          (isFallbackShell && fallbackShellResumeDataCache !== undefined
-            ? `<!--vinext-ppr-resume-data-cache:${fallbackShellResumeDataCache}-->`
+          (isFallbackShell && fallbackShellState !== undefined
+            ? `<!--vinext-ppr-shell-state:${fallbackShellState}-->`
             : ""),
       );
     });
@@ -2775,18 +2775,21 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     },
   );
 
-  it("writes a fallback shell's resume data cache beside it, out of the served HTML", async () => {
-    const resumeDataCache = JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} });
-    const { fallbackHtml, fallbackPostponed } = await prerenderDynamicRootParamRoute(
-      true,
-      resumeDataCache,
-    );
+  it("writes a fallback shell's state beside it, out of the served HTML", async () => {
+    const { formatAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const state = formatAppPprShellState({
+      prelude: true,
+      postponed: { replayNodes: [] },
+      resumeDataCache: JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} }),
+    });
+    const { fallbackHtml, fallbackPostponed } = await prerenderDynamicRootParamRoute(true, state);
 
-    expect(fallbackHtml).not.toContain("vinext-ppr-resume-data-cache");
-    expect(fallbackPostponed).toBe(resumeDataCache);
+    expect(fallbackHtml).not.toContain("vinext-ppr-shell-state");
+    expect(fallbackPostponed).toBe(state);
   });
 
-  it("removes an earlier build's resume data cache when the shell no longer has one", async () => {
+  it("removes an earlier build's state when the shell no longer has one", async () => {
     const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
       true,
       undefined,

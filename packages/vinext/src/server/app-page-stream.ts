@@ -39,10 +39,25 @@ export type AppSsrRenderResult = {
    */
   caughtShellError?: unknown;
   /**
+   * A PPR fallback shell's document is a prelude, with React's postponed
+   * state for its holes, null when only its payload has them.
+   */
+  pprShellPrelude?: { postponed: unknown };
+  /**
    * Preload `Link` header value emitted by React during SSR (via `onHeaders`),
    * already capped to `reactMaxHeadersLength`. Empty/undefined when React
    * emitted no preload headers (or emission was disabled with `0`).
    */
+  linkHeader?: string;
+};
+
+/** A stored PPR shell a request resumes. */
+export type AppPagePprShellResume = {
+  /** The shell's document up to its holes, for this request. */
+  prelude: string;
+  /** React's postponed state, or null when only the payload has holes. */
+  postponed: unknown;
+  /** The `Link` header the shell's render sent. */
   linkHeader?: string;
 };
 
@@ -149,6 +164,10 @@ export type AppPageSsrHandler = {
       capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
       /** Abort signal for a build-time PPR fallback-shell static render. */
       pprFallbackShellSignal?: AbortSignal;
+      /** Whether the fallback shell's payload left holes. */
+      isPprFallbackShellPartial?: () => boolean;
+      /** A stored shell this render resumes. */
+      pprShellResume?: AppPagePprShellResume;
       /** Aborts a streaming render whose document is given up. */
       signal?: AbortSignal;
       /** Route whose client references load before the render; null for none. */
@@ -212,6 +231,10 @@ type RenderAppPageHtmlStreamOptions = {
   capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
   /** Abort signal for a build-time PPR fallback-shell static render. */
   pprFallbackShellSignal?: AbortSignal;
+  /** Whether the fallback shell's payload left holes. */
+  isPprFallbackShellPartial?: () => boolean;
+  /** A stored shell this render resumes. */
+  pprShellResume?: AppPagePprShellResume;
   /**
    * Route whose client references load before the render, or null for a
    * render without a route. Undefined loads every client reference.
@@ -259,6 +282,7 @@ type AppPageHtmlStreamRecoveryResult = {
   shellErrorRecovered: boolean;
   /** React-emitted preload `Link` header (already capped). */
   linkHeader?: string;
+  pprShellPrelude?: { postponed: unknown };
 };
 
 type RenderAppPageHtmlStreamWithRecoveryOptions<TSpecialError> = {
@@ -335,6 +359,8 @@ export async function renderAppPageHtmlStream(
     sideStream: options.sideStream,
     capturedRscDataRef: options.capturedRscDataRef,
     pprFallbackShellSignal: options.pprFallbackShellSignal,
+    isPprFallbackShellPartial: options.isPprFallbackShellPartial,
+    pprShellResume: options.pprShellResume,
     preloadRoutePattern: options.preloadRoutePattern,
     waitForAllReady: options.waitForAllReady,
     isStaticGeneration: options.isStaticGeneration,
@@ -428,6 +454,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       linkHeader,
       shellErrorRecovered,
       caughtShellError,
+      pprShellPrelude,
     } = normalizeAppSsrRenderResult(rawResult);
     options.onShellRendered?.();
     const caughtSpecialError =
@@ -453,6 +480,7 @@ export async function renderAppPageHtmlStreamWithRecovery<TSpecialError>(
       capturedRscData,
       shellErrorRecovered: shellErrorRecovered === true,
       linkHeader,
+      ...(pprShellPrelude ? { pprShellPrelude } : {}),
     };
   } catch (error) {
     const specialError = options.resolveSpecialError(error);

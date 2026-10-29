@@ -16,8 +16,10 @@ import { createFromReadableStream } from "@vitejs/plugin-rsc/ssr";
 import {
   renderToReadableStream,
   renderToStaticMarkup,
+  resume,
   type RenderToReadableStreamOptions,
 } from "react-dom/server";
+import type { PostponedState } from "react-dom/static";
 import clientReferences, { routeClientReferences } from "virtual:vite-rsc/client-references";
 import type { NavigationContext } from "vinext/shims/navigation-server";
 import {
@@ -63,7 +65,7 @@ import {
   waitAtLeastOneReactRenderTask,
   type InitialNavigationCacheMetadata,
 } from "./app-ssr-stream.js";
-import type { AppSsrRenderResult } from "./app-page-stream.js";
+import type { AppPagePprShellResume, AppSsrRenderResult } from "./app-page-stream.js";
 import { deferUntilStreamConsumed } from "./defer-until-stream-consumed.js";
 import { createSsrErrorMetaRenderer } from "./app-ssr-error-meta.js";
 import { createInitialDevServerErrorScript } from "./dev-initial-server-error.js";
@@ -164,6 +166,27 @@ function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
     start(controller) {
       controller.enqueue(encoder.encode(html));
       controller.close();
+    },
+  });
+}
+
+/** `stream`, after `html`. */
+function prependUtf8(html: string, stream: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const reader = stream.getReader();
+  let sentHtml = false;
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (!sentHtml) {
+        sentHtml = true;
+        controller.enqueue(new TextEncoder().encode(html));
+        return;
+      }
+      const { done, value } = await reader.read();
+      if (done) controller.close();
+      else controller.enqueue(value);
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
     },
   });
 }
@@ -393,6 +416,16 @@ export async function handleSsr(
     /** Out-parameter: filled with accumulated raw RSC bytes when sideStream is consumed. */
     capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
     pprFallbackShellSignal?: AbortSignal;
+    /**
+     * Whether the fallback shell's payload left holes, so that its document is
+     * a prelude even where React completed its HTML.
+     */
+    isPprFallbackShellPartial?: () => boolean;
+    /**
+     * A stored shell this render resumes: its prelude is sent first, then the
+     * HTML of its holes, the payload and the document's end.
+     */
+    pprShellResume?: AppPagePprShellResume;
     /** Aborts a streaming render whose document is given up. */
     signal?: AbortSignal;
     /**
@@ -724,33 +757,34 @@ export async function handleSsr(
             : undefined,
           maxHeadersLength: captureHeaders ? maxHeadersLength : undefined,
           signal: options?.signal,
-          onError(error: unknown) {
-            if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
-              return undefined;
-            }
-            if (isAppRenderAbortError(error) || htmlCancellation.isReason(error)) {
-              return undefined;
-            }
-
-            errorMetaRenderer.capture(error);
-
-            const instrumentationDigest = options?.onSsrError?.(error);
-            if (typeof instrumentationDigest === "string") {
-              return instrumentationDigest;
-            }
-
-            const existingDigest = getNextErrorDigest(error);
-            if (existingDigest !== null) return existingDigest;
-
-            if (process.env.NODE_ENV === "production" && error) {
-              const message = getErrorMessage(error);
-              const stack = error instanceof Error ? (error.stack ?? "") : "";
-              return ssrErrorDigest(message + stack);
-            }
-
-            return undefined;
-          },
+          onError: handleRenderError,
         };
+        function handleRenderError(error: unknown): string | undefined {
+          if (pprFallbackShellSignal && isPprFallbackShellAbortError(error)) {
+            return undefined;
+          }
+          if (isAppRenderAbortError(error) || htmlCancellation.isReason(error)) {
+            return undefined;
+          }
+
+          errorMetaRenderer.capture(error);
+
+          const instrumentationDigest = options?.onSsrError?.(error);
+          if (typeof instrumentationDigest === "string") {
+            return instrumentationDigest;
+          }
+
+          const existingDigest = getNextErrorDigest(error);
+          if (existingDigest !== null) return existingDigest;
+
+          if (process.env.NODE_ENV === "production" && error) {
+            const message = getErrorMessage(error);
+            const stack = error instanceof Error ? (error.stack ?? "") : "";
+            return ssrErrorDigest(message + stack);
+          }
+
+          return undefined;
+        }
 
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
@@ -789,6 +823,9 @@ export async function handleSsr(
           caughtBoundaries = boundaries;
           return withCaughtNotFoundBoundaries(boundaries, ssrRoot);
         };
+        // React's postponed state for a fallback shell's prelude.
+        let pprPostponed: PostponedState | null = null;
+        const pprShellResume = options?.pprShellResume;
         if (pprFallbackShellSignal) {
           const prerender = await loadStaticPrerender();
           const prerenderFallbackShell = async (
@@ -807,7 +844,9 @@ export async function handleSsr(
             // suspends to the nearest one; with no loading.js above it, the
             // shell is empty.
             setTimeout(() => htmlAbortController.abort(), 0);
-            return (await pendingHtml).prelude;
+            const result = await pendingHtml;
+            pprPostponed = result.postponed;
+            return result.prelude;
           };
           try {
             htmlStream = await prerenderFallbackShell(ssrRoot);
@@ -817,6 +856,26 @@ export async function handleSsr(
             // A slot's not-found boundary that throws replaces the 404.
             htmlStream = await prerenderFallbackShell(caughtRoot);
             caughtShellError = error;
+          }
+        } else if (pprShellResume) {
+          // Like Next.js, only the shell's holes render: React replays the
+          // tree to them from the shell's postponed state. A shell whose
+          // holes are all in its payload has no HTML left to render.
+          if (pprShellResume.postponed === null) {
+            htmlStream = createUtf8Stream("");
+          } else {
+            const resumedHtmlStream = await runWithStreamedClientReferences(
+              streamedReferences,
+              () =>
+                resume(ssrRoot, pprShellResume.postponed as PostponedState, {
+                  nonce: options?.scriptNonce,
+                  onError: handleRenderError,
+                  signal: options?.signal,
+                }),
+            );
+            renderComplete = resumedHtmlStream.allReady;
+            if (options?.waitForAllReady === true) await resumedHtmlStream.allReady;
+            htmlStream = resumedHtmlStream;
           }
         } else {
           let streamingHtmlStream: Awaited<ReturnType<typeof renderToReadableStream>> | undefined;
@@ -895,7 +954,13 @@ export async function handleSsr(
           }
           return traceMetaHTML;
         };
-        let didInjectHeadHTML = false;
+        // A fallback shell whose payload or HTML left holes is a prelude. It
+        // keeps no payload and no end, which a request resuming it sends.
+        const isPprShellPrelude =
+          pprFallbackShellSignal !== undefined &&
+          (pprPostponed !== null || options?.isPprFallbackShellPartial?.() === true);
+        // A resumed shell's prelude already holds the head.
+        let didInjectHeadHTML = pprShellResume !== undefined;
         let headHidQuery = false;
         let didSendRenderedSearch = false;
         // A render that turns dynamic after the head hid its query won't be
@@ -968,26 +1033,36 @@ export async function handleSsr(
         // not re-invoke us, and any beforeInteractive Script that renders
         // later (inside a Suspense boundary further down the tree) falls back
         // to its inline location, matching the documented guarantee that
-        // ordering applies to scripts rendered in the initial shell.
+        // ordering applies to scripts rendered in the initial shell. A resume,
+        // whose prelude already sent the head, calls this before each batch
+        // for the scripts its holes registered since.
         const getBeforeInteractiveHeadHTML = (): string =>
-          renderBeforeInteractiveInlineScripts(beforeInteractiveInlineScripts);
+          renderBeforeInteractiveInlineScripts(
+            pprShellResume
+              ? beforeInteractiveInlineScripts.splice(0)
+              : beforeInteractiveInlineScripts,
+          );
 
         if (shouldDelayInitialHtmlPull) {
           await waitAtLeastOneReactRenderTask();
         }
 
-        const finalStream = deferUntilStreamConsumed(
-          htmlStream.pipeThrough(
-            createTickBufferedTransform(
-              rscEmbed,
-              getInsertedHTML,
-              getBeforeInteractiveHeadHTML,
-              inlineCssManifest,
-              inlineCssFontStyles,
-              inlineCssFontStyleFallbackHTML,
-              options?.scriptNonce,
-            ),
+        const transformedStream = htmlStream.pipeThrough(
+          createTickBufferedTransform(
+            rscEmbed,
+            getInsertedHTML,
+            getBeforeInteractiveHeadHTML,
+            inlineCssManifest,
+            inlineCssFontStyles,
+            inlineCssFontStyleFallbackHTML,
+            options?.scriptNonce,
+            isPprShellPrelude ? "prelude" : pprShellResume ? "resume" : "document",
           ),
+        );
+        const finalStream = deferUntilStreamConsumed(
+          pprShellResume
+            ? prependUtf8(pprShellResume.prelude, transformedStream)
+            : transformedStream,
           cleanup,
           undefined,
           htmlCancellation.record,
@@ -1008,6 +1083,7 @@ export async function handleSsr(
           capturedRscData: options?.capturedRscDataRef?.value ?? null,
           shellErrorRecovered,
           ...(caughtShellError === undefined ? {} : { caughtShellError }),
+          ...(isPprShellPrelude ? { pprShellPrelude: { postponed: pprPostponed } } : {}),
           linkHeader: reactLinkHeader,
         };
       } catch (error) {

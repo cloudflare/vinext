@@ -492,6 +492,12 @@ As with Next.js's `varyParams`, a shell records which params its render read, `?
 
 A page under a `loading.tsx` boundary, an href with a query string, an intercepted route and the dev server keep the loading-shell prefetch.
 
+## Partial prerendering
+
+With `cacheComponents`, vinext serves a production App Router page's document from a stored shell, as Next.js serves its partial prerender. The shell is the page rendered with `cookies()`, `headers()`, `connection()` and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. A request sends the stored shell at once, then renders only those holes and streams them into it. The rest of the page doesn't render again, and the browser hydrates the shell as it arrives.
+
+A path that `generateStaticParams` didn't produce resumes a fallback shell, which leaves out the params it didn't produce for the path: `/blog/[slug]` for a slug that wasn't generated, or `/en/blog/[slug]` under a generated `en` locale. The first request that needs one renders it, blocking, and stores it. A path whose root param wasn't generated has no fallback shell, so it renders in full, as in Next.js.
+
 ## Query strings
 
 Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.

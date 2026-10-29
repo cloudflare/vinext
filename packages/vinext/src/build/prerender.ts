@@ -78,7 +78,7 @@ import {
   createAppPprFallbackShells,
   hasAppPprFallbackShellPrelude,
   markAppPprDynamicFallbackShellHtml,
-  splitAppPprFallbackShellResumeDataCache,
+  splitAppPprFallbackShellState,
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
@@ -2073,9 +2073,7 @@ export async function prerenderApp({
             error: "RSC handler returned no prerender HTML",
           };
         }
-        const fallbackShell = isFallback
-          ? splitAppPprFallbackShellResumeDataCache(htmlRender.html)
-          : null;
+        const fallbackShell = isFallback ? splitAppPprFallbackShellState(htmlRender.html) : null;
         const html = fallbackShell
           ? markAppPprDynamicFallbackShellHtml(fallbackShell.html)
           : htmlRender.html;
@@ -2091,8 +2089,13 @@ export async function prerenderApp({
         // response that never went through createRscEmbedTransform.
         // A special error's document embeds its boundary's payload, not the
         // page's, so the page's comes from an RSC request, as on a runtime miss.
-        let rscData = htmlRender.isSpecialError ? null : extractRscPayloadFromPrerenderedHtml(html);
-        if (rscData === null) {
+        // A fallback shell is only ever resumed from its document, so it has
+        // no payload artifact.
+        let rscData =
+          htmlRender.isSpecialError || fallbackShell
+            ? null
+            : extractRscPayloadFromPrerenderedHtml(html);
+        if (rscData === null && !fallbackShell) {
           const rscHeaders = new Headers({ Accept: "text/x-component", RSC: "1" });
           if (prerenderRouteParamsHeader !== null) {
             rscHeaders.set(VINEXT_PRERENDER_ROUTE_PARAMS_HEADER, prerenderRouteParamsHeader);
@@ -2140,9 +2143,11 @@ export async function prerenderApp({
           basePath: mode === "export" ? config.basePath : "",
         });
         const rscFullPath = path.join(outDir, rscOutputPath);
-        fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
-        fs.writeFileSync(rscFullPath, rscData);
-        outputFiles.push(rscOutputPath);
+        if (rscData !== null) {
+          fs.mkdirSync(path.dirname(rscFullPath), { recursive: true });
+          fs.writeFileSync(rscFullPath, rscData);
+          outputFiles.push(rscOutputPath);
+        }
 
         // A request resumes the shell from this private artifact, seeded as
         // the shell entry's `postponed` value. An empty shell renders blocking.
@@ -2150,8 +2155,8 @@ export async function prerenderApp({
         // a shell as resumable.
         const postponedFullPath = path.join(outDir, getPostponedOutputPath(urlPath));
         fs.rmSync(postponedFullPath, { force: true });
-        if (fallbackShell?.resumeDataCache && hasAppPprFallbackShellPrelude(fallbackShell.html)) {
-          fs.writeFileSync(postponedFullPath, fallbackShell.resumeDataCache, "utf-8");
+        if (fallbackShell?.state && hasAppPprFallbackShellPrelude(fallbackShell.html)) {
+          fs.writeFileSync(postponedFullPath, fallbackShell.state, "utf-8");
         }
 
         const renderedCacheControl = resolveRenderedCacheControl(

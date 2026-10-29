@@ -1,13 +1,16 @@
 import { describe, expect, it } from "vite-plus/test";
 import {
-  appendAppPprFallbackShellResumeDataCache,
+  appendAppPprFallbackShellState,
   createAppPprFallbackShells,
   createAppPprRequestFallbackShells,
   hasAppPprFallbackShellPrelude,
   isAppPprDynamicFallbackShellHtml,
   markAppPprDynamicFallbackShellHtml,
+  parseAppPprShellState,
+  replaceAppPprShellFallbackParamKeys,
   rewriteAppPprFallbackShellHtmlNavigation,
-  splitAppPprFallbackShellResumeDataCache,
+  splitAppPprFallbackShellState,
+  type AppPprShellState,
 } from "../packages/vinext/src/server/app-ppr-fallback-shell.js";
 
 describe("createAppPprRequestFallbackShells", () => {
@@ -247,8 +250,8 @@ describe("dynamic fallback shell marker", () => {
   });
 });
 
-describe("fallback shell resume data cache transport", () => {
-  async function readAppended(html: string, resumeDataCache: string | null): Promise<string> {
+describe("fallback shell state transport", () => {
+  async function readAppended(html: string, state: AppPprShellState): Promise<string> {
     const encoder = new TextEncoder();
     const source = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -256,44 +259,54 @@ describe("fallback shell resume data cache transport", () => {
         controller.close();
       },
     });
-    return new Response(
-      appendAppPprFallbackShellResumeDataCache(source, () => resumeDataCache),
-    ).text();
+    return new Response(appendAppPprFallbackShellState(source, () => state)).text();
   }
 
-  it("round-trips the resume data cache out of the shell HTML", async () => {
+  it("round-trips a prelude's postponed state and resume data cache out of the shell HTML", async () => {
     const resumeDataCache = JSON.stringify({ cache: { key: { body: "--></script>" } }, fetch: {} });
-    const html = "<!DOCTYPE html><html><body>shell</body></html>";
-    const transported = await readAppended(html, resumeDataCache);
+    const postponed = { replayNodes: [["Activity", '["slug|%5Bslug%5D|d"]', [], null]] };
+    const html = "<!DOCTYPE html><html><head></head><body>shell";
+    const transported = await readAppended(html, { prelude: true, postponed, resumeDataCache });
 
     expect(transported).not.toContain("--></script>");
-    const split = splitAppPprFallbackShellResumeDataCache(transported);
+    const split = splitAppPprFallbackShellState(transported);
     expect(split.html).toBe(html);
-    expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
+    const state = parseAppPprShellState(split.state ?? undefined);
+    expect(state?.prelude).toBe(true);
+    expect(state?.postponed).toEqual(postponed);
+    expect(JSON.parse(state?.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
   });
 
-  it("round-trips a resume data cache that holds the trailer's own start", async () => {
+  it("round-trips a state that holds the trailer's own start", async () => {
     const resumeDataCache = JSON.stringify({
-      cache: { key: { tags: ["<!--vinext-ppr-resume-data-cache:"] } },
+      cache: { key: { tags: ["<!--vinext-ppr-shell-state:"] } },
       fetch: {},
     });
     const html = "<!DOCTYPE html><html><body>shell</body></html>";
-    const split = splitAppPprFallbackShellResumeDataCache(
-      await readAppended(html, resumeDataCache),
+    const split = splitAppPprFallbackShellState(
+      await readAppended(html, { prelude: false, postponed: null, resumeDataCache }),
     );
 
     expect(split.html).toBe(html);
-    expect(JSON.parse(split.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
+    const state = parseAppPprShellState(split.state ?? undefined);
+    expect(state).toMatchObject({ prelude: false, postponed: null });
+    expect(JSON.parse(state?.resumeDataCache ?? "null")).toEqual(JSON.parse(resumeDataCache));
   });
 
-  it("leaves a shell without a resume data cache unchanged", async () => {
+  it("carries a state without a resume data cache", async () => {
     const html = "<!DOCTYPE html><html><body>shell</body></html>";
+    const split = splitAppPprFallbackShellState(
+      await readAppended(html, { prelude: true, postponed: null, resumeDataCache: null }),
+    );
 
-    await expect(readAppended(html, null)).resolves.toBe(html);
-    expect(splitAppPprFallbackShellResumeDataCache(html)).toEqual({
-      html,
+    expect(split.html).toBe(html);
+    expect(parseAppPprShellState(split.state ?? undefined)).toEqual({
+      prelude: true,
+      postponed: null,
       resumeDataCache: null,
     });
+    expect(splitAppPprFallbackShellState(html)).toEqual({ html, state: null });
+    expect(parseAppPprShellState('{"cache":{},"fetch":{}}')).toBeNull();
   });
 
   it("only treats a shell with a document prelude as resumable", () => {
@@ -301,5 +314,37 @@ describe("fallback shell resume data cache transport", () => {
       true,
     );
     expect(hasAppPprFallbackShellPrelude("")).toBe(false);
+  });
+});
+
+describe("replaceAppPprShellFallbackParamKeys", () => {
+  it("rewrites the shell's placeholder segment keys to the request's values", () => {
+    const key = JSON.stringify([
+      "page",
+      "page:/:locale/blog/:slug",
+      JSON.stringify(["locale|en|d", "blog", "slug|%5Bslug%5D|d"]),
+    ]);
+    const postponed = { replayNodes: [["Activity", key, [], null]], idPrefix: "" };
+
+    const replaced = replaceAppPprShellFallbackParamKeys(postponed, [
+      { name: "slug", shellValue: "%5Bslug%5D", requestValue: "caf%C3%A9" },
+    ]) as typeof postponed;
+
+    expect(JSON.parse(JSON.parse(replaced.replayNodes[0][1] as string)[2])).toEqual([
+      "locale|en|d",
+      "blog",
+      "slug|caf%C3%A9|d",
+    ]);
+    expect(postponed.replayNodes[0][1]).toBe(key);
+  });
+
+  it("joins catch-all values and leaves other params' keys alone", () => {
+    const key = JSON.stringify(["xslug|%5B...rest%5D|d", "rest|%5B...rest%5D|c"]);
+
+    expect(
+      replaceAppPprShellFallbackParamKeys({ key }, [
+        { name: "rest", shellValue: ["%5B...rest%5D"], requestValue: ["a", "b%2Fc"] },
+      ]),
+    ).toEqual({ key: JSON.stringify(["xslug|%5B...rest%5D|d", "rest|a/b%2Fc|c"]) });
   });
 });

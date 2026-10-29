@@ -71,6 +71,13 @@ Under `dynamicParams = false`, Next.js checks a request against the params its b
 
 Like Next.js, a client navigation renders only below the layouts the client already holds, so a shared layout's server code doesn't run again. vinext does this only for renders it never stores: every render in development, and in production draft-mode requests and routes with `runtime = "edge"`, `dynamic = "force-dynamic"`, `revalidate = 0`, or a dynamic segment without `generateStaticParams`. A route that reads `cookies()` or `headers()` without route config renders every layout on each navigation in production, because vinext learns that it's dynamic only while rendering it, where Next.js knows from its build. In development the same route skips the held layouts. To skip them in production too, export `dynamic = "force-dynamic"` from the route's `layout.tsx`.
 
+## Partial prerendering
+
+With `cacheComponents`, vinext resumes stored shells as Next.js does (see [Partial prerendering](/docs/caching#partial-prerendering)), with these differences:
+
+- Next.js prerenders a route's shells at build, including one for each path `generateStaticParams` produced and one for a route without fallback params. vinext renders a fallback shell on the first request that needs it, and renders other paths in full.
+- A request with a query string renders the page in full. Next.js resumes the shell, with reads of `searchParams` left to its holes.
+
 ## Routing config
 
 Like Next.js, vinext doesn't check the regexes in `redirects`, `rewrites`, and `headers` sources, in `has` and `missing` values, or in middleware matchers for catastrophic backtracking. They run as written against request paths, headers, cookies, query values, and hosts, so avoid nested or overlapping repeats such as `(a+)+` in these patterns.

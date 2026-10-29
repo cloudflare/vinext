@@ -831,6 +831,12 @@ function indexOfAsciiBytes(bytes: Uint8Array, pattern: Uint8Array, from: number)
  *    happen before resource hints to be useful, so the safer behaviour is
  *    to no-op and let the user-rendered Script (in its source-order
  *    position) ship as-is.
+ *
+ * `mode` is "prelude" for a PPR shell's stored prelude, which keeps neither
+ * the payload nor the document's end, and "resume" for the HTML that resumes
+ * it, whose head the prelude already sent. A resume reads
+ * `injectAfterHeadOpenHTML` before each batch instead, so it should return
+ * only what it hasn't returned before.
  */
 export function createTickBufferedTransform(
   rscEmbed: RscEmbedTransform,
@@ -840,12 +846,14 @@ export function createTickBufferedTransform(
   inlineCssPrependCss = "",
   inlineCssPrependFallbackHTML = "",
   inlineCssScriptNonce?: string,
+  mode: "document" | "prelude" | "resume" = "document",
 ): TransformStream<Uint8Array, Uint8Array> {
   const decoder = new TextDecoder();
   const encoder = new TextEncoder();
   const insertsPerFlush = typeof injectHTML === "function";
-  let injected = false;
-  let preHeadInjected = false;
+  const isPrelude = mode === "prelude";
+  let injected = mode === "resume";
+  let preHeadInjected = mode === "resume";
   let suffixStripped = false;
   let buffered: string[] = [];
   // Fizz's bytes for `buffered`, kept so text the transform leaves unchanged
@@ -987,6 +995,13 @@ export function createTickBufferedTransform(
     }
     if (!split.complete) return;
 
+    if (mode === "resume") {
+      // The prelude sent the head, so a beforeInteractive Script a resumed
+      // hole renders goes ahead of the batch that renders it.
+      const insertion = readPreHeadInsertion();
+      if (insertion) controller.enqueue(encoder.encode(insertion));
+    }
+
     if (injected && insertsPerFlush) {
       // Emit newly collected server-inserted HTML before the next Fizz HTML
       // batch so CSS-in-JS styles precede the elements they style.
@@ -1066,7 +1081,7 @@ export function createTickBufferedTransform(
         try {
           flushBuffered(controller);
 
-          const rscScripts = rscEmbed.flush();
+          const rscScripts = isPrelude ? null : rscEmbed.flush();
           if (rscScripts) {
             controller.enqueue(rscScripts);
           }
@@ -1098,6 +1113,8 @@ export function createTickBufferedTransform(
       } else if (insertsPerFlush) {
         emitInsertion(controller);
       }
+
+      if (isPrelude) return;
 
       controller.enqueue(await rscEmbed.finalize());
 
