@@ -54,7 +54,8 @@ import {
 import { getRegisteredCacheContext } from "./internal/cache-context-accessor.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
-  createPprFallbackShellSuspensePromise,
+  createPprFallbackShellAwaitedHole,
+  type PprFallbackShellAwaitedHole,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
 } from "./ppr-fallback-shell.js";
@@ -803,9 +804,11 @@ function recordDynamicFetchObservation(input: string | URL | Request): void {
  * a cache, is a hole each request fills instead of a value the shell keeps. It
  * isn't made: its response would be one request's.
  */
-function createUncachedFetchShellHole(): Promise<Response> | null {
-  if (isInsideAnyCacheScope()) return null;
-  return createPprFallbackShellSuspensePromise<Response>("`fetch()`");
+function createUncachedFetchShellHole(
+  awaitedHole: PprFallbackShellAwaitedHole | null,
+): Promise<Response> | null {
+  if (awaitedHole === null || isInsideAnyCacheScope()) return null;
+  return awaitedHole.create<Response>("`fetch()`");
 }
 
 /**
@@ -1275,8 +1278,9 @@ function dedupeFetch(
 function createPatchedFetch(): typeof globalThis.fetch {
   const patchedFetch = async function patchedFetch(
     input: string | URL | Request,
-    init?: RequestInit,
-    span?: FrameworkSpan,
+    init: RequestInit | undefined,
+    span: FrameworkSpan | undefined,
+    awaitedHole: PprFallbackShellAwaitedHole | null,
   ): Promise<Response> {
     // Draft mode skips the fetch cache entirely, before segment fetchCache
     // config or tag handling: the cache key doesn't cover draft state, so a
@@ -1339,7 +1343,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // If no caching options at all, just pass through to original fetch
     if (!nextOpts && !cacheDirective) {
-      const shellHole = createUncachedFetchShellHole();
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
       if (shellHole) return shellHole;
       recordAutoNoCacheFetch(input);
       return recordFetchOutcome(await dedupeFetch(input, init), "skip", "auto no cache");
@@ -1355,7 +1359,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       cacheDirective === "no-cache" ||
       nextOpts?.revalidate === 0
     ) {
-      const shellHole = createUncachedFetchShellHole();
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
       if (shellHole) return shellHole;
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
@@ -1390,7 +1394,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
       nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
-      const shellHole = createUncachedFetchShellHole();
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
       if (shellHole) return shellHole;
       const cleanInit = stripNextFromInit(init, cacheDirective);
       recordAutoNoCacheFetch(input);
@@ -1431,7 +1435,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
             )
           : _getState().currentFetchRevalidate;
         if (routeRevalidate === 0) {
-          const shellHole = createUncachedFetchShellHole();
+          const shellHole = createUncachedFetchShellHole(awaitedHole);
           if (shellHole) return shellHole;
           const cleanInit = stripNextFromInit(init, cacheDirective);
           markUncachedFetchForPageOutput(input);
@@ -1443,7 +1447,7 @@ function createPatchedFetch(): typeof globalThis.fetch {
             : routeRevalidate;
       } else {
         // next: {} with no revalidate or tags — pass through
-        const shellHole = createUncachedFetchShellHole();
+        const shellHole = createUncachedFetchShellHole(awaitedHole);
         if (shellHole) return shellHole;
         const cleanInit = stripNextFromInit(init, cacheDirective);
         recordAutoNoCacheFetch(input);
@@ -1695,7 +1699,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     if ((init?.next as InternalNextFetchOptions | undefined)?.internal === true) {
       return originalFetch(input, init);
     }
-    return traceAppFetch(input, init, (span) => patchedFetch(input, init, span));
+    // A fetch left to a shell's hole only makes one once it's awaited.
+    const awaitedHole = createPprFallbackShellAwaitedHole();
+    const response = traceAppFetch(input, init, (span) =>
+      patchedFetch(input, init, span, awaitedHole),
+    );
+    return awaitedHole ? awaitedHole.track(response) : response;
   }) as typeof globalThis.fetch;
 }
 

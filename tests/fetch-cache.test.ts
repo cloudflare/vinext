@@ -1370,6 +1370,29 @@ describe("fetch cache shim", () => {
     },
   );
 
+  // Like Next.js's untracked hanging promise, a fetch nobody awaits leaves no hole.
+  it("leaves no hole for an uncached fetch in a shell's render that nothing awaits", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/feed",
+    });
+
+    const response = runWithPprFallbackShellState(state, () =>
+      fetch("https://api.example.com/shell-ignored"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(state.hasDynamicBoundary).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Awaiting it later makes the hole.
+    void response.then(() => {});
+    expect(state.hasDynamicBoundary).toBe(true);
+    state.abortController.abort();
+  });
+
   it.each([
     ["without cache options", undefined],
     ["with cache: no-store", { cache: "no-store" }],
