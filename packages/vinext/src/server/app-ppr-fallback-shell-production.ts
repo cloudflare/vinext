@@ -4,17 +4,22 @@ import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.j
 import { buildAppPageCacheTags } from "./app-page-cache.js";
 import {
   renderAppPageFallbackShell,
+  runAppPageStaticGenerationWork,
   type AppPageDispatchRoute,
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
 import {
+  formatAppPprShellState,
   hasAppPprFallbackShellPrelude,
   markAppPprDynamicFallbackShellHtml,
+  parseAppPprShellState,
   splitAppPprFallbackShellState,
   type AppPagePprFallbackCacheShell,
 } from "./app-ppr-fallback-shell.js";
+import type { GeneratedStaticParamsMemo } from "./app-page-request.js";
 import { isrCacheControl, type ISRCacheEntry } from "./isr-cache.js";
 import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
+import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import {
   readPrerenderCacheLifeHeader,
   readPrerenderCacheTagsHeader,
@@ -25,11 +30,48 @@ import {
 const DEFAULT_EXPIRE_SECONDS = 31_536_000;
 
 /**
+ * The generated params a fallback shell records, as the build does from the
+ * params it prerendered: those that agree with the params the shell keeps.
+ * Null when they can't be known, so requests ask generateStaticParams.
+ */
+async function resolveFallbackShellGeneratedParams<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  fallbackShell: AppPagePprFallbackCacheShell,
+  memo?: GeneratedStaticParamsMemo,
+): Promise<Record<string, unknown>[] | null> {
+  const { resolveAppPageGeneratedStaticParamsFor } = await import("./app-page-request.js");
+  const keptParamNames = options.route.params.filter(
+    (name) => !fallbackShell.fallbackParamNames.includes(name),
+  );
+  // The encoded values a request's params hold.
+  const shellParams =
+    encodePrerenderRouteParams(
+      options.route.pattern,
+      fallbackShell.params,
+      fallbackShell.fallbackParamNames,
+    )?.params ?? {};
+  const keptParams = Object.fromEntries(keptParamNames.map((name) => [name, shellParams[name]]));
+  try {
+    return await runAppPageStaticGenerationWork(options, () =>
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams: options.generateStaticParams,
+        params: keptParams,
+        paramNames: keptParamNames,
+        memo,
+      }),
+    );
+  } catch (paramsError) {
+    console.error("[vinext] ISR fallback shell params error:", paramsError);
+    return null;
+  }
+}
+
+/**
  * Render a fallback shell a request needs, and store the entry the build would
  * have seeded for it. Returns the entry for the request to use, or null when
- * the shell can't be prerendered, as the build would skip it.
+ * the shell fails to render.
  *
- * A path's own shell is produced after its page rendered dynamically. One
+ * A path's own shell is produced after its page rendered dynamically. A shell
  * that can't be prerendered is stored empty, as its route renders blocking,
  * so later requests don't produce it again.
  */
@@ -39,38 +81,66 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   key: string,
   routeRevalidateSeconds: number | null,
   isConcrete = false,
+  // generateStaticParams results the request already has.
+  memo?: GeneratedStaticParamsMemo,
 ): Promise<ISRCacheEntry | null> {
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
+  // A path's own shell keeps every param, so it records no generated params.
+  const generated = isConcrete
+    ? null
+    : await resolveFallbackShellGeneratedParams(options, fallbackShell, memo);
   const response = await renderAppPageFallbackShell(options, fallbackShell);
   const cacheControlHeader = response.headers.get("cache-control") ?? "";
   const isDynamic = cacheControlHeader.includes("no-store");
-  if (!response.ok || (isDynamic && !isConcrete)) {
+  if (!response.ok) {
     await response.body?.cancel();
-    options.isrDebug?.("SKIP (dynamic fallback shell render)", fallbackPathname);
+    options.isrDebug?.("SKIP (failed fallback shell render)", fallbackPathname);
     return null;
   }
 
   let value: CachedAppPageValue;
   if (isDynamic) {
+    // A shell that can't be prerendered is stored empty: its route renders
+    // blocking, and later requests neither produce it again nor, with its
+    // generated params, ask generateStaticParams.
     await response.body?.cancel();
     value = {
       kind: "APP_PAGE",
       html: markAppPprDynamicFallbackShellHtml(""),
       rscData: undefined,
       headers: undefined,
-      postponed: undefined,
+      postponed:
+        generated === null
+          ? undefined
+          : formatAppPprShellState({
+              prelude: false,
+              postponed: null,
+              resumeDataCache: null,
+              generated,
+            }),
       status: undefined,
     };
   } else {
     const shell = splitAppPprFallbackShellState(await response.text());
     const linkHeader = response.headers.get("link");
+    // An empty shell renders blocking, so it keeps nothing to resume from.
+    const state = hasAppPprFallbackShellPrelude(shell.html)
+      ? parseAppPprShellState(shell.state ?? undefined)
+      : null;
     value = {
       kind: "APP_PAGE",
       html: markAppPprDynamicFallbackShellHtml(shell.html),
       rscData: undefined,
       headers: linkHeader ? { link: linkHeader } : undefined,
-      // An empty shell renders blocking, so it keeps nothing to resume from.
-      postponed: shell.state && hasAppPprFallbackShellPrelude(shell.html) ? shell.state : undefined,
+      postponed:
+        state === null && generated === null
+          ? undefined
+          : formatAppPprShellState({
+              prelude: state?.prelude ?? false,
+              postponed: state?.postponed ?? null,
+              resumeDataCache: state?.resumeDataCache ?? null,
+              generated,
+            }),
       status: undefined,
     };
   }
@@ -108,7 +178,11 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     await write;
   }
   options.isrDebug?.(
-    isDynamic ? "STORE (empty shell)" : "STORE (fallback shell)",
+    isDynamic
+      ? isConcrete
+        ? "STORE (empty shell)"
+        : "STORE (empty fallback shell)"
+      : "STORE (fallback shell)",
     fallbackPathname,
   );
 
@@ -116,4 +190,45 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
     value: { lastModified: Date.now(), value, cacheControl },
     isStale: false,
   };
+}
+
+/**
+ * Store that a fallback shell's kept params weren't generated, unless
+ * generateStaticParams now produces them. Its requests render blocking, as
+ * Next.js renders a path its prerender manifest has no shell for, and decide
+ * so from this entry instead of asking generateStaticParams.
+ */
+export async function storeAppPprUngeneratedFallbackShell<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+  fallbackShell: AppPagePprFallbackCacheShell,
+  key: string,
+  routeRevalidateSeconds: number | null,
+  memo?: GeneratedStaticParamsMemo,
+): Promise<void> {
+  if (!options.isrSetFallbackShell) return;
+  const generated = await resolveFallbackShellGeneratedParams(options, fallbackShell, memo);
+  if (generated === null || generated.length > 0) return;
+  const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
+  const value: CachedAppPageValue = {
+    kind: "APP_PAGE",
+    html: markAppPprDynamicFallbackShellHtml(""),
+    rscData: undefined,
+    headers: undefined,
+    postponed: formatAppPprShellState({
+      prelude: false,
+      postponed: null,
+      resumeDataCache: null,
+      generated,
+    }),
+    status: undefined,
+  };
+  const revalidate =
+    routeRevalidateSeconds === null || routeRevalidateSeconds === Infinity
+      ? false
+      : routeRevalidateSeconds;
+  await options.isrSetFallbackShell(key, value, {
+    cacheControl: isrCacheControl(revalidate),
+    tags: buildAppPageCacheTags(fallbackPathname, []),
+  });
+  options.isrDebug?.("STORE (ungenerated fallback shell)", fallbackPathname);
 }
