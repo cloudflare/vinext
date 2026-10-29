@@ -6619,6 +6619,54 @@ describe("app page dispatch", () => {
     },
   );
 
+  it("doesn't store a fallback shell when generateStaticParams fails while producing it", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const jobs: (() => Promise<void>)[] = [];
+    const isrSetFallbackShell = vi.fn<NonNullable<DispatchOptions["isrSetFallbackShell"]>>(
+      async () => {},
+    );
+    const { options } = createPprBlogDispatchOptions({
+      cleanPathname: "/en/blog/hello",
+      generateStaticParams: createChainedBlogStaticParams(
+        async (): Promise<Record<string, unknown>[]> => {
+          throw new Error("generator unavailable");
+        },
+      ),
+      // The route's shell records the path as generated, so the request
+      // produces the missing `en` shell, which asks the generators.
+      isrGet: vi.fn(async (key: string) =>
+        key === "shell:/[locale]/blog/[slug]"
+          ? buildRecordedFallbackShellEntry(markAppPprDynamicFallbackShellHtml(""), [
+              { locale: "en", slug: "hello" },
+            ])
+          : null,
+      ),
+      loadSsrHandler: createFreshBodySsrHandler("page"),
+      params: { locale: "en", slug: "hello" },
+      pprFallbackCacheShells: [localeShell("en"), routeShell],
+      request: new Request("https://example.test/en/blog/hello"),
+    });
+
+    try {
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage({
+          ...options,
+          isrSetFallbackShell,
+          scheduleFallbackShellRegeneration(_key, job) {
+            jobs.push(job);
+          },
+        }),
+      );
+      await expect(response.text()).resolves.toContain("page");
+      await Promise.all(jobs.map((job) => job()));
+
+      // A later request produces it once the generators recover.
+      expect(isrSetFallbackShell.mock.calls.map(([key]) => key)).toEqual([]);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
   it("serves a path's own shell before its fallback shell", async () => {
     const buildPageElement = createParamTextPageElement();
     const isrGet = vi.fn(async (key: string) =>
