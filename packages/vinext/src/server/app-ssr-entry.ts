@@ -170,25 +170,35 @@ function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   });
 }
 
-function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string): string {
+function buildBootstrapModuleScript(
+  bootstrapModuleUrl?: string,
+  nonce?: string,
+  crossOrigin?: string,
+): string {
   if (!bootstrapModuleUrl) return "";
+  // As React's bootstrapModules emits it.
+  const crossOriginAttribute =
+    crossOrigin === undefined
+      ? ""
+      : ` crossorigin="${crossOrigin === "use-credentials" ? "use-credentials" : ""}"`;
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async="" fetchPriority="low"></script>'
+    `"${crossOriginAttribute} id="_R_" async="" fetchPriority="low"></script>`
   );
 }
 
 function renderSsrErrorDocumentShell(
   bootstrapModuleUrl?: string,
   nonce?: string,
+  crossOrigin?: string,
 ): ReadableStream<Uint8Array> {
   const html = renderToStaticMarkup(
     createReactElement(DefaultGlobalError, {
       error: null,
     }),
   ).replace("<style>", '<style data-vinext-error-shell-style="">');
-  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce);
+  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce, crossOrigin);
   if (!bootstrapScript) {
     return createUtf8Stream(`<!DOCTYPE html>${html}`);
   }
@@ -870,7 +880,11 @@ export async function handleSsr(
               // the error, so no server component runs, or reports, again.
               // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
-              htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
+              htmlStream = renderSsrErrorDocumentShell(
+                bootstrapModuleUrl,
+                options?.scriptNonce,
+                assetCrossOrigin,
+              );
             }
           }
         }
