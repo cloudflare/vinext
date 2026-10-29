@@ -1037,7 +1037,7 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual(capturedAppState);
       expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(8);
       expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
-      // Every write through the patched methods, app-owned or not, lets a
+      // Every write made outside a router write, app-owned or not, lets a
       // committing navigation write its URL first.
       expect(flushCommittingNavigationUrl).toHaveBeenCalledTimes(10);
       expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
@@ -1053,6 +1053,581 @@ describe("next/navigation shim", () => {
         "replace",
         capturedAppState,
       );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("sends router writes with a URL through history wrappers installed after boot", async () => {
+    // Next.js writes router history through the live window.history methods
+    // and its own patch forwards `__NA` writes, so a wrapper installed after
+    // hydration (GTM, GA4) sees every navigation (#4339).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L60-L100
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L331-L370
+    const externalHistoryStateKey = "__vinext_externalHistoryState";
+    const previousWindow = (globalThis as any).window;
+    const historyTraversalIndexKey = "__vinext_historyIndex";
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: { [historyTraversalIndexKey]: 4 } as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const flushCommittingNavigationUrl = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl,
+      });
+      const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      // Shaped like delayed-scroll-restoration-polyfill: its pushState wrapper
+      // first stamps the current entry through the replaceState it saved. The
+      // test wrappers also make their own writes once, before and after
+      // forwarding, which must not be mistaken for the router's write.
+      const calls: string[] = [];
+      const savedPushState = win.history.pushState.bind(win.history);
+      const savedReplaceState = win.history.replaceState.bind(win.history);
+      let wrapperPushed = false;
+      let wrapperReplaced = false;
+      win.history.pushState = function (data, unused, url) {
+        calls.push(`pushState ${String(url)}`);
+        savedReplaceState({ ...(win.history.state as object), stamp: 1 }, "");
+        if (wrapperPushed) {
+          savedPushState(data, unused, url);
+          return;
+        }
+        wrapperPushed = true;
+        savedPushState({ own: true }, "", "/before");
+        expect(win.history.state).toEqual({
+          [externalHistoryStateKey]: true,
+          [historyTraversalIndexKey]: 4,
+          own: true,
+        });
+        savedPushState(data, unused, url);
+        expect(win.history.state).toEqual({ landed: true });
+        savedPushState(null, "", "/extra");
+      };
+      win.history.replaceState = function (data, unused, url) {
+        calls.push(`replaceState ${String(url)}`);
+        savedReplaceState(data, unused, url);
+        if (wrapperReplaced) return;
+        wrapperReplaced = true;
+        savedReplaceState(null, "", "/extra-replace");
+      };
+
+      // The landing hook runs as the router's write lands: after the
+      // wrapper's write before forwarding it, and committing before the
+      // wrapper's write after it.
+      const landingEvents: string[] = [];
+      const land = vi.fn((data: unknown) => {
+        landingEvents.push(
+          `land after ${claimCurrentHistoryTreeSnapshot.mock.calls.length} claims`,
+        );
+        expect(data).toBeNull();
+        return {
+          data: { landed: true },
+          commit: () => {
+            landingEvents.push(`commit at ${win.location.href}`);
+          },
+        };
+      });
+      // Not app-owned data, so a router write that lost its marker would take
+      // the external path and claim the tree snapshot.
+      pushHistoryStateWithoutNotify(null, "", "/b", land);
+      expect(landingEvents).toEqual(["land after 1 claims", "commit at http://localhost/b"]);
+      expect(win.location.href).toBe("http://localhost/extra");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(2);
+      replaceHistoryStateWithoutNotify(null, "", "/c");
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
+      // State-only bookkeeping (scroll position, tree snapshot, metadata) is
+      // kept off the wrapper; Next.js passes the URL on every router write.
+      replaceHistoryStateWithoutNotify({ [historyTraversalIndexKey]: 5, scroll: 1 }, "");
+
+      expect(calls).toEqual(["pushState /b", "replaceState /c"]);
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [historyTraversalIndexKey]: 5, scroll: 1 });
+      // The wrapper's own writes must not publish the committing navigation
+      // early or turn the router's writes into external ones.
+      expect(flushCommittingNavigationUrl).not.toHaveBeenCalled();
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  const sameUrl = (url: string | URL | null | undefined) => url;
+  it.each([
+    ["the same data", (data: unknown) => data, sameUrl],
+    ["a copy of the data", (data: unknown) => ({ ...(data as object) }), sameUrl],
+    [
+      "an absolute URL",
+      (data: unknown) => data,
+      (url: string | URL | null | undefined) => new URL(String(url), "http://localhost/a"),
+    ],
+  ])(
+    "lands a router write that a history wrapper retries with %s after the browser rejects it",
+    async (_name, retryData, retryUrl) => {
+      const previousWindow = (globalThis as any).window;
+      let rejectNextPush = true;
+      const win = {
+        location: {
+          pathname: "/a",
+          search: "",
+          hash: "",
+          href: "http://localhost/a",
+          origin: "http://localhost",
+        },
+        history: {
+          state: null as unknown,
+          pushState(data: unknown, _unused: string, url?: string | URL | null) {
+            if (rejectNextPush) {
+              rejectNextPush = false;
+              throw new DOMException("blocked", "SecurityError");
+            }
+            this.state = data;
+            if (url) win.location.href = new URL(url, win.location.href).href;
+          },
+          replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+            this.state = data;
+            if (url) win.location.href = new URL(url, win.location.href).href;
+          },
+        },
+        addEventListener: vi.fn(),
+      };
+      (globalThis as any).window = win;
+
+      try {
+        vi.resetModules();
+        const { registerNavigationRuntimeFunctions } =
+          await import("../packages/vinext/src/client/navigation-runtime.js");
+        const claimCurrentHistoryTreeSnapshot = vi.fn();
+        const commitAppOwnedHistoryStateWrite = vi.fn();
+        registerNavigationRuntimeFunctions({
+          claimCurrentHistoryTreeSnapshot,
+          commitAppOwnedHistoryStateWrite,
+          flushCommittingNavigationUrl: vi.fn(),
+        });
+        const { pushHistoryStateWithoutNotify } =
+          await import("../packages/vinext/src/shims/navigation.js");
+
+        const savedPushState = win.history.pushState.bind(win.history);
+        win.history.pushState = function (data, unused, url) {
+          try {
+            savedPushState(data, unused, url);
+          } catch {
+            savedPushState(retryData(data), unused, retryUrl(url));
+          }
+        };
+
+        const commit = vi.fn();
+        const land = vi.fn(() => ({ data: { landed: true }, commit }));
+        pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+        expect(land).toHaveBeenCalledTimes(2);
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(win.history.state).toEqual({ landed: true });
+        expect(win.location.href).toBe("http://localhost/b");
+        expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+        expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) {
+          delete (globalThis as any).window;
+        } else {
+          (globalThis as any).window = previousWindow;
+        }
+      }
+    },
+  );
+
+  it("commits a router write that a wrapper installed before boot lands and then throws from", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          throw new Error("wrapper failed after writing");
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 1, landed: true }, commit }));
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1, landed: true });
+      expect(win.location.href).toBe("http://localhost/b");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("drops a retry of a router write that a wrapper installed before boot landed before throwing", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushedHrefs: string[] = [];
+    let throwAfterNextPush = true;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          pushedHrefs.push(win.location.href);
+          if (throwAfterNextPush) {
+            throwAfterNextPush = false;
+            throw new Error("wrapper failed after writing");
+          }
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot retries.
+          savedPushState(data, unused, url);
+        }
+      };
+
+      const commit = vi.fn();
+      let nextIndex = 1;
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: nextIndex }, commit }));
+      commit.mockImplementation(() => {
+        nextIndex += 1;
+      });
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(pushedHrefs).toEqual(["http://localhost/b"]);
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1 });
+      expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+      expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("lands a rejected router write once when stacked wrappers each retry it", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushedHrefs: string[] = [];
+    let throwAfterNextPush = true;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          if (throwAfterNextPush) {
+            throwAfterNextPush = false;
+            throw new DOMException("blocked", "SecurityError");
+          }
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          pushedHrefs.push(win.location.href);
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      // An inner wrapper retries, then rethrows; an outer wrapper retries too.
+      const innerPushState = (data: unknown, unused: string, url?: string | URL | null) => {
+        try {
+          savedPushState(data, unused, url);
+        } catch (error) {
+          savedPushState(data, unused, url);
+          throw error;
+        }
+      };
+      win.history.pushState = function (data, unused, url) {
+        try {
+          innerPushState(data, unused, url);
+        } catch {
+          innerPushState(data, unused, url);
+        }
+      };
+
+      const commit = vi.fn();
+      let nextIndex = 1;
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: nextIndex }, commit }));
+      commit.mockImplementation(() => {
+        nextIndex += 1;
+      });
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      // Each entry the retry leaves behind has its own committed index.
+      expect(pushedHrefs).toEqual(["http://localhost/b"]);
+      expect(land).toHaveBeenCalledTimes(2);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1 });
+      expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+      expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("does not commit a router write that a wrapper installed before boot fails before pushing", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(_data: unknown, _unused: string, _url?: string | URL | null): void {
+          // Stamps the outgoing entry, then fails before pushing.
+          this.state = { __vinext_historyIndex: 0, stamped: true };
+          throw new Error("wrapper failed before pushing");
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 1, landed: true }, commit }));
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
+      expect(win.location.href).toBe("http://localhost/a");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("does not commit a same-URL router replace that a wrapper installed before boot fails after stamping the entry", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+        replaceState(_data: unknown, _unused: string, _url?: string | URL | null): void {
+          // Stamps the current entry, then fails before replacing it.
+          this.state = { __vinext_historyIndex: 0, __vinext_externalHistoryState: true };
+          throw new Error("wrapper failed before replacing");
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedReplaceState = win.history.replaceState.bind(win.history);
+      win.history.replaceState = function (data, unused, url) {
+        try {
+          savedReplaceState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 0 }, commit }));
+      replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/a", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
