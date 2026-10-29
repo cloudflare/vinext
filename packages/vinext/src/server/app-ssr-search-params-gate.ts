@@ -75,3 +75,21 @@ export function createBailoutSearchParamsGate(): SearchParamsGate {
   controller.settle();
   return controller.gate;
 }
+
+/**
+ * The query and gate SSR's `useSearchParams()` reads. A resumed shell's holes
+ * read the browser's query (`resumedSearch`), or bail out to the browser when a
+ * Workers Cache dispatch dropped it (null); other renders read the request's.
+ */
+export function resolveSsrSearchParams(
+  requestSearchParams: URLSearchParams,
+  resumedSearch: string | null | undefined,
+  candidateGate: SearchParamsGate | undefined,
+): { searchParams: URLSearchParams; gate: SearchParamsGate | undefined } {
+  if (resumedSearch === undefined)
+    return { searchParams: requestSearchParams, gate: candidateGate };
+  if (resumedSearch === null) {
+    return { searchParams: new URLSearchParams(), gate: createBailoutSearchParamsGate() };
+  }
+  return { searchParams: new URLSearchParams(resumedSearch), gate: candidateGate };
+}

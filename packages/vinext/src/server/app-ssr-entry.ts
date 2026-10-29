@@ -32,7 +32,7 @@ import {
 } from "vinext/shims/navigation-server";
 import { runWithNavigationContext } from "vinext/shims/navigation-state";
 import {
-  createBailoutSearchParamsGate,
+  resolveSsrSearchParams,
   startCandidateSearchParamsGate,
 } from "./app-ssr-search-params-gate.js";
 import { onRenderDynamicLatched } from "vinext/shims/internal/headers-state";
@@ -506,18 +506,17 @@ export async function handleSsr(
       : null;
     const requiredNavigationContext = requireNavigationContext(navContext);
     // A resumed shell's holes read the query its head told the browser to.
-    const resumedSearch = options?.pprShellResume?.browserSearch;
-    const searchParams =
-      resumedSearch === undefined
-        ? requiredNavigationContext.searchParams
-        : new URLSearchParams(resumedSearch ?? "");
+    const { searchParams, gate } = resolveSsrSearchParams(
+      requiredNavigationContext.searchParams,
+      options?.pprShellResume?.browserSearch,
+      searchParamsGate?.gate,
+    );
     const ssrNavigationContext = {
       ...requiredNavigationContext,
       searchParams,
       isStaticGeneration: options?.isStaticGeneration,
       isForceStatic: options?.isForceStatic,
-      searchParamsGate:
-        resumedSearch === null ? createBailoutSearchParamsGate() : searchParamsGate?.gate,
+      searchParamsGate: gate,
       // A client page reading this marks the render dynamic, like a server
       // page's searchParams.
       getClientPageSearchParams: createClientPageSsrSearchParamsSource(searchParams, {

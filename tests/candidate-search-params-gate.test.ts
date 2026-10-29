@@ -1,7 +1,10 @@
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { afterEach, describe, expect, it } from "vite-plus/test";
-import { startCandidateSearchParamsGate } from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
+import {
+  resolveSsrSearchParams,
+  startCandidateSearchParamsGate,
+} from "../packages/vinext/src/server/app-ssr-search-params-gate.js";
 import {
   consumeDynamicUsage,
   headersContextFromRequest,
@@ -226,6 +229,46 @@ describe("candidate render useSearchParams() gate", () => {
       await expect(flight.getReader().read()).rejects.toBe(failure);
       expect(gate.decision).toBe("real");
       expect(consumeDynamicUsage()).toBe(true);
+    });
+  });
+});
+
+describe("resumed shell useSearchParams() query", () => {
+  it("reads the request's query and gate outside a resume, and the browser's query in one", () => {
+    const requestSearchParams = new URLSearchParams(QUERY);
+    const { gate } = startCandidateSearchParamsGate();
+
+    expect(resolveSsrSearchParams(requestSearchParams, undefined, gate)).toEqual({
+      searchParams: requestSearchParams,
+      gate,
+    });
+    const resumed = resolveSsrSearchParams(requestSearchParams, "q=dogs", gate);
+    expect(resumed.searchParams.toString()).toBe("q=dogs");
+    expect(resumed.gate).toBe(gate);
+  });
+
+  it("bails out to the browser when a dispatch dropped the query", async () => {
+    const { searchParams, gate } = resolveSsrSearchParams(
+      new URLSearchParams(QUERY),
+      null,
+      undefined,
+    );
+
+    expect(gate?.decision).toBe("bailout");
+    await inRequest(async () => {
+      setNavigationContext({
+        pathname: "/search",
+        searchParams,
+        params: {},
+        searchParamsGate: gate,
+      });
+      const stream = await renderToReadableStream(wrapped(), { onError: () => {} });
+      await stream.allReady;
+      const html = await readHtml(stream);
+
+      expect(html).toContain("fallback:search");
+      expect(html).not.toContain("value:");
+      expect(consumeDynamicUsage()).toBe(false);
     });
   });
 });
