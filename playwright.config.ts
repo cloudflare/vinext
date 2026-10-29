@@ -166,6 +166,20 @@ const projectServers = {
     use: { baseURL: "http://localhost:4183" },
     server: appRouterBfcacheServer,
   },
+  // The same BFCache specs against a production build, where Links prefetch
+  // and the client runs minified React.
+  "app-router-bfcache-prod": {
+    testDir: "./tests/e2e/app-router-bfcache",
+    use: { baseURL: "http://localhost:4238" },
+    server: {
+      command:
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4238",
+      cwd: "./tests/fixtures/app-bfcache",
+      port: 4238,
+      reuseExistingServer: !process.env.CI,
+      timeout: 120_000,
+    },
+  },
   "catch-error": {
     testDir: "./tests/e2e/catch-error",
     use: { baseURL: "http://localhost:4185" },
