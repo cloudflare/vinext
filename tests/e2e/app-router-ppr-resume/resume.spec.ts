@@ -161,10 +161,13 @@ test("hydrates a resumed fallback shell", async ({ baseURL, context, page, conso
 
 test("leaves an uncached fetch to a hole each request fills", async ({ baseURL }) => {
   const url = new URL("/en/feed", baseURL);
-  // The page renders dynamically, so its shell is produced after it.
+  // The page renders dynamically, so its shell is produced after it. Each
+  // request is read to its end, so none fetches after the counters are read.
   await readStreamedDocument(url, []);
   await expect
-    .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), { timeout: 15_000 })
+    .poll(async () => (await readStreamedDocument(url, [])).headers.get("x-nextjs-postponed"), {
+      timeout: 15_000,
+    })
     .toBe("1");
 
   const before = await readServerWork(baseURL!);
