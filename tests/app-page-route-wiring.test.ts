@@ -928,6 +928,66 @@ describe("app page route wiring helpers", () => {
     expect(childrenBoundaryId("layout:/blog")).toBe("page:/blog");
   });
 
+  it("keeps a retention list at each segment level without a layout under cacheComponents", () => {
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    try {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id: "a" },
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 3],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["(marketing)", "chat", "[id]"],
+          slots: {},
+          templateTreePositions: [2],
+          templates: [{ default: GroupTemplate }],
+        },
+        routePath: "/chat/a",
+        rootNotFoundModule: null,
+      });
+
+      const spine: string[] = [];
+      findElement(elements["route:/chat/a"], (element) => {
+        const typeName = getElementTypeName(element.type);
+        if (typeName === "BfcacheChildrenBoundary") {
+          spine.push(`list ${String(element.props.stateKey ?? element.props.id)}`);
+        } else if (typeName === "Slot") {
+          spine.push(String(element.props.id));
+        }
+        return false;
+      });
+      const segmentKey = (path: string[]) => JSON.stringify(["segment", JSON.stringify(path)]);
+      // Next.js keeps an Activity list at every segment level, implicit layouts
+      // included. Levels above the child element key by the child segment, and
+      // each list sits outside the next level's template.
+      expect(spine).toEqual([
+        "layout:/",
+        `list ${segmentKey(["(marketing)"])}`,
+        `list ${segmentKey(["(marketing)", "chat"])}`,
+        "list layout:/(marketing)/chat/[id]",
+        "template:/(marketing)/chat",
+        "layout:/(marketing)/chat/[id]",
+        "list page:/chat/a",
+        "page:/chat/a",
+      ]);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
+  });
+
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {
     lastGroupTemplateProps = null;
     const elements = buildAppPageElements({
