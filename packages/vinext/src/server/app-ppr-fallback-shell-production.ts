@@ -32,13 +32,14 @@ const DEFAULT_EXPIRE_SECONDS = 31_536_000;
 /**
  * The generated params a fallback shell records, as the build does from the
  * params it prerendered: those that agree with the params the shell keeps.
- * Null when they can't be known, so requests ask generateStaticParams.
+ * Null when they can't be known, so requests ask generateStaticParams, and
+ * undefined when a generator failed, so nothing is stored with them.
  */
 async function resolveFallbackShellGeneratedParams<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
   fallbackShell: AppPagePprFallbackCacheShell,
   memo?: GeneratedStaticParamsMemo,
-): Promise<Record<string, unknown>[] | null> {
+): Promise<Record<string, unknown>[] | null | undefined> {
   const { resolveAppPageGeneratedStaticParamsFor } = await import("./app-page-request.js");
   const keptParamNames = options.route.params.filter(
     (name) => !fallbackShell.fallbackParamNames.includes(name),
@@ -62,7 +63,7 @@ async function resolveFallbackShellGeneratedParams<TRoute extends AppPageDispatc
     );
   } catch (paramsError) {
     console.error("[vinext] ISR fallback shell params error:", paramsError);
-    return null;
+    return undefined;
   }
 }
 
@@ -89,6 +90,12 @@ export async function produceAppPprFallbackShell<TRoute extends AppPageDispatchR
   const generated = isConcrete
     ? null
     : await resolveFallbackShellGeneratedParams(options, fallbackShell, memo);
+  // Stored, the shell would keep an incomplete record until it's stale, so a
+  // later request produces it once the generators recover.
+  if (generated === undefined) {
+    options.isrDebug?.("SKIP (fallback shell params error)", fallbackPathname);
+    return null;
+  }
   const response = await renderAppPageFallbackShell(options, fallbackShell);
   const cacheControlHeader = response.headers.get("cache-control") ?? "";
   const isDynamic = cacheControlHeader.includes("no-store");
@@ -207,7 +214,7 @@ export async function storeAppPprUngeneratedFallbackShell<TRoute extends AppPage
 ): Promise<void> {
   if (!options.isrSetFallbackShell) return;
   const generated = await resolveFallbackShellGeneratedParams(options, fallbackShell, memo);
-  if (generated === null || generated.length > 0) return;
+  if (!generated || generated.length > 0) return;
   const fallbackPathname = normalizePregeneratedPathname(fallbackShell.pathname);
   const value: CachedAppPageValue = {
     kind: "APP_PAGE",

@@ -103,10 +103,19 @@ async function handleStaticParamsEndpoint(
       }),
     );
     if (result === null) return jsonNullResponse();
-    return jsonResponse(result);
+    return jsonResponse(result, 200, keepUndefinedParams);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
   }
+}
+
+// JSON drops a property whose value is undefined, but a param set that names a
+// param, even as undefined, still provides it: an optional catch-all left out
+// as `{ path: undefined }` is generated, as Next.js reads it
+// (build/static-paths/app.ts hadAllParamsGenerated). The build validates a null
+// param as Next.js does an undefined one.
+function keepUndefinedParams(key: string, value: unknown): unknown {
+  return key !== "" && value === undefined ? null : value;
 }
 
 async function handlePagesStaticPathsEndpoint(
@@ -142,8 +151,12 @@ function isEnabled(options: HandleAppPrerenderEndpointOptions): boolean {
   return options.isPrerenderEnabled?.() ?? false;
 }
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
+function jsonResponse(
+  body: unknown,
+  status = 200,
+  replacer?: (key: string, value: unknown) => unknown,
+): Response {
+  return new Response(JSON.stringify(body, replacer), {
     headers: JSON_HEADERS,
     status,
   });

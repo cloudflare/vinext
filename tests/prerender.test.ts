@@ -2828,6 +2828,73 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     ]);
   });
 
+  // A param set that names an optional catch-all as undefined generates the
+  // path without it (build/static-paths/app.ts hadAllParamsGenerated), though
+  // JSON drops the property on its way from the static params endpoint.
+  it("records an optional catch-all generated as undefined", async () => {
+    const { parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const root = tmpDir("vinext-prerender-ppr-optional-catch-all-");
+    const appDir = path.join(root, "app");
+    const outDir = path.join(root, "out");
+    fs.mkdirSync(path.join(appDir, "shop", "[[...path]]"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "shop", "[[...path]]", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+    const renderedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        void handleAppPrerenderEndpoint(new Request(url), {
+          isPrerenderEnabled: () => true,
+          pathname: url.pathname,
+          staticParamsMap: {
+            "/shop/:path*": createAppPrerenderStaticParamsResolver([
+              () => [{ path: undefined }, { path: ["a"] }],
+            ]),
+          },
+        }).then(async (response) => {
+          res.statusCode = response?.status ?? 404;
+          res.end(await response?.text());
+        });
+        return;
+      }
+      renderedPaths.push(url.pathname);
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<!DOCTYPE html><html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ cacheComponents: true }),
+        _prodServer: { server, port },
+      });
+
+      expect(renderedPaths).toEqual(expect.arrayContaining(["/shop", "/shop/a"]));
+      const postponed = path.join(outDir, "shop", "[[...path]].postponed");
+      expect(parseAppPprShellState(fs.readFileSync(postponed, "utf8"))?.generated).toEqual([
+        { path: [] },
+        { path: ["a"] },
+      ]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("records no generated params for a route with parallel slots, whose generators the build doesn't enumerate", async () => {
     const { parseAppPprShellState } =
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
