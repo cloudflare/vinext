@@ -267,6 +267,17 @@ const nextConfig = {
         headers: [{ key: "Cache-Control", value: "no-store" }],
       },
 
+      // Used by Playwright: tests/e2e/pages-api-config-headers.ts. The API
+      // handler reads, extends and replaces these before they reach the response.
+      {
+        source: "/api/config-headers",
+        headers: [
+          { key: "Link", value: '</sitemap.xml>; rel="sitemap"' },
+          { key: "x-config-override", value: "config" },
+          { key: "x-config-untouched", value: "config" },
+          { key: "Set-Cookie", value: "config-cookie=1; Path=/" },
+        ],
+      },
       {
         source: "/api/(.*)",
         headers: [
