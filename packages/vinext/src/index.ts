@@ -121,6 +121,7 @@ import {
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
+import { serializeCacheLifeProfiles } from "./utils/cache-life-profiles.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -3160,6 +3161,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
+        // Next.js defines `process.env.__NEXT_CACHE_LIFE` for every bundle;
+        // the cacheLife() shim reads its profiles from this define.
+        defines["process.env.__VINEXT_CACHE_LIFE_PROFILES"] = JSON.stringify(
+          serializeCacheLifeProfiles(nextConfig.cacheLife),
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),

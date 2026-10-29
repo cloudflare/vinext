@@ -7461,12 +7461,11 @@ describe("next/cache shim", () => {
     expect(() => cacheLife({ stale: 60, revalidate: 300, expire: 3600 })).not.toThrow();
   });
 
-  it("cacheLife warns on unknown profile", async () => {
+  it("cacheLife throws on unknown profile", async () => {
     const { cacheLife } = await import("../packages/vinext/src/shims/cache.js");
-    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    cacheLife("nonexistent-profile");
-    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("unknown profile"));
-    consoleWarn.mockRestore();
+    expect(() => cacheLife("nonexistent-profile")).toThrow(
+      'Unknown `cacheLife()` profile "nonexistent-profile" is not configured in next.config.js',
+    );
   });
 
   it("cacheLife warns when expire < revalidate", async () => {

@@ -349,8 +349,10 @@ let _unstableIoWarned = false;
 /**
  * Set the cache lifetime for a "use cache" function.
  *
- * Accepts either a built-in profile name (e.g., "hours", "days") or a custom
- * configuration object. In Next.js, this only works inside "use cache" functions.
+ * Accepts either a profile name (a built-in like "hours", or one configured
+ * in next.config `cacheLife`) or a custom configuration object; an unknown
+ * profile name throws, like Next.js. In Next.js, this only works inside
+ * "use cache" functions.
  *
  * When called inside a "use cache" function, this sets the cache TTL.
  * The "minimum-wins" rule applies: if called multiple times, the shortest
@@ -362,15 +364,27 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
   let resolvedConfig: CacheLifeConfig;
 
   if (typeof profile === "string") {
-    // Validate the profile name exists
-    if (!cacheLifeProfiles[profile]) {
-      console.warn(
-        `[vinext] cacheLife: unknown profile "${profile}". ` +
-          `Available profiles: ${Object.keys(cacheLifeProfiles).join(", ")}`,
+    // Ported from Next.js: packages/next/src/server/use-cache/cache-life.ts
+    const configuredProfile = Object.hasOwn(cacheLifeProfiles, profile)
+      ? cacheLifeProfiles[profile]
+      : undefined;
+    if (configuredProfile === undefined) {
+      if (Object.hasOwn(cacheLifeProfiles, profile.trim())) {
+        throw new Error(
+          `Unknown \`cacheLife()\` profile "${profile}" is not configured in next.config.js\n` +
+            `Did you mean "${profile.trim()}" without the spaces?`,
+        );
+      }
+      throw new Error(
+        `Unknown \`cacheLife()\` profile "${profile}" is not configured in next.config.js\n` +
+          "module.exports = {\n" +
+          "  cacheLife: {\n" +
+          `    "${profile}": ...\n` +
+          "  }\n" +
+          "}",
       );
-      return;
     }
-    resolvedConfig = { ...cacheLifeProfiles[profile] };
+    resolvedConfig = { ...configuredProfile };
   } else if (typeof profile === "object" && profile !== null) {
     // Validate the config shape
     if (
