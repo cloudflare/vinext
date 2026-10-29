@@ -255,6 +255,42 @@ function isValidInterceptionSourceContext(context: string): boolean {
   }
 }
 
+const SOURCE_MIDDLEWARE_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * The source context a source middleware redirect names, when it is one the
+ * interception source pass may follow: a same-origin redirect that keeps the
+ * basePath, sets no cookie, and names a pathname the client could send as its
+ * context. Anything else is returned as middleware's response.
+ */
+function resolveSourceMiddlewareRedirect(
+  response: Response,
+  sourceUrl: URL,
+  basePath: string,
+): string | null {
+  if (!SOURCE_MIDDLEWARE_REDIRECT_STATUSES.has(response.status)) return null;
+  // Following the redirect drops its response, so a cookie it sets would be lost.
+  if (response.headers.has("set-cookie")) return null;
+  const location = response.headers.get("location");
+  if (location === null) return null;
+  let redirectUrl: URL;
+  try {
+    redirectUrl = new URL(location, sourceUrl);
+  } catch {
+    return null;
+  }
+  // The query the redirect names is not followed: the target is authorized with
+  // the claimed source's query, which is also the one the source renders with.
+  if (redirectUrl.origin !== sourceUrl.origin) return null;
+  let pathname = redirectUrl.pathname;
+  if (basePath) {
+    if (pathname === basePath) pathname = "/";
+    else if (pathname.startsWith(`${basePath}/`)) pathname = pathname.slice(basePath.length);
+    else return null;
+  }
+  return isValidInterceptionSourceContext(pathname) ? pathname : null;
+}
+
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
     (condition) =>
@@ -1885,117 +1921,186 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // Raw pathname the source's config rewrites match, like `paramsPathname`
     // for the target's beforeFiles rewrites.
     let sourceRulesPathname = sourceRequestPathname;
+    // The source selected before following a source middleware redirect. The
+    // redirect target must resolve back to exactly this route and params.
+    let redirectedSourceMatch: AppRscRouteMatch<TRoute> | null = null;
     if (runMiddleware) {
-      const sourceUrl = new URL(userlandRequest.url);
-      sourceUrl.search = new URL(resolvedUrl, url).search;
-      // Source middleware must see the URL a direct request to the source
-      // carries: the raw, still-encoded context, under the basePath the
-      // target's rewrites resolved to. Concatenate basePath rather
-      // than using `addBasePathToPathname`, which leaves a context that already
-      // starts with basePath unprefixed, so middleware would miss that segment.
-      const sourceUrlPathname =
-        resolvedPathnameHasBasePath && options.basePath
-          ? sourceRequestPathname === "/"
-            ? options.basePath
-            : options.basePath + sourceRequestPathname
-          : sourceRequestPathname;
-      sourceUrl.pathname = sourceUrlPathname;
-      if (sourceUrl.pathname !== sourceUrlPathname) {
+      const sourceSearch = new URL(resolvedUrl, url).search;
+      // Runs middleware for a source pathname as a direct request to it would.
+      // Returns null when the pathname cannot be carried by a request URL.
+      const runSourceMiddleware = async (requestPathname: string, decodedPathname: string) => {
+        const sourceUrl = new URL(userlandRequest.url);
+        sourceUrl.search = sourceSearch;
+        // Source middleware must see the URL a direct request to the source
+        // carries: the raw, still-encoded context, under the basePath the
+        // target's rewrites resolved to. Concatenate basePath rather
+        // than using `addBasePathToPathname`, which leaves a context that already
+        // starts with basePath unprefixed, so middleware would miss that segment.
+        const sourceUrlPathname =
+          resolvedPathnameHasBasePath && options.basePath
+            ? requestPathname === "/"
+              ? options.basePath
+              : options.basePath + requestPathname
+            : requestPathname;
+        sourceUrl.pathname = sourceUrlPathname;
+        if (sourceUrl.pathname !== sourceUrlPathname) return null;
+        // Clone before rebuilding the URL so runtimes that transfer Request bodies
+        // cannot disturb the original Server Action branch. Release the temporary
+        // clone when reconstruction leaves it readable.
+        const sourceRequest = userlandRequest.body ? userlandRequest.clone() : userlandRequest;
+        const sourceMiddlewareRequest = cloneRequestWithUrl(sourceRequest, sourceUrl.href);
+        // Hybrid dev attaches the target route's middleware result so the RSC
+        // entry does not execute it twice. This is a distinct source route and
+        // must run middleware itself rather than replaying the target's decision.
+        sourceMiddlewareRequest.headers.delete(VINEXT_MW_CTX_HEADER);
+        // Strip Flight headers on this owned branch before applyAppMiddleware so
+        // it does not need another body tee solely to hide transport metadata.
+        for (const header of FLIGHT_HEADERS) sourceMiddlewareRequest.headers.delete(header);
+        const targetHeadersContext = getHeadersContext();
+        const targetRequestHeaders = targetHeadersContext
+          ? new Headers(targetHeadersContext.headers)
+          : null;
+        targetRequestHeaders?.delete(VINEXT_MW_CTX_HEADER);
+        for (const header of FLIGHT_HEADERS) targetRequestHeaders?.delete(header);
+        // Chain source authorization from the request identity already established
+        // by target middleware, while keeping transport-only headers hidden.
+        if (targetRequestHeaders) {
+          const sourceHeaderNames = Array.from(sourceMiddlewareRequest.headers.keys());
+          for (const header of sourceHeaderNames) {
+            sourceMiddlewareRequest.headers.delete(header);
+          }
+          for (const [name, value] of targetRequestHeaders) {
+            sourceMiddlewareRequest.headers.append(name, value);
+          }
+        }
+        const sourceMiddlewareContext: AppRscMiddlewareContext = {
+          headers: null,
+          requestHeaders: null,
+          status: null,
+        };
+        const sourceHeadersContext = headersContextFromRequest(sourceMiddlewareRequest, {
+          draftModeSecret: options.draftModeSecret,
+        });
+        // Keep source authorization in a child request context. In particular,
+        // NextResponse.next({ request: { headers } }) mutates the live headers
+        // context; allowing those overrides to escape would make the target render
+        // observe headers from a different route.
+        let sourceMiddlewareResult: ApplyAppMiddlewareResult;
+        try {
+          sourceMiddlewareResult = await runWithHeadersContext(sourceHeadersContext, () =>
+            runMiddleware({
+              cleanPathname: decodedPathname,
+              // Deliberately not the request's `middlewareContext`. This run decides
+              // whether the source route may render; it does not contribute headers
+              // or status to the target's response, which belongs to another route.
+              context: sourceMiddlewareContext,
+              externalRewriteRequest: normalizedUserlandRequest,
+              hadBasePath: resolvedPathnameHasBasePath,
+              isDataRequest: isMiddlewareDataRequest,
+              request: sourceMiddlewareRequest,
+              validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
+            }),
+          );
+        } finally {
+          // Release every temporary branch owned by source authorization. Some
+          // runtimes transfer sourceRequest into sourceMiddlewareRequest; the
+          // body-state checks make the cleanup safe in both transfer and tee cases.
+          if (
+            sourceMiddlewareRequest.body &&
+            !sourceMiddlewareRequest.bodyUsed &&
+            !sourceMiddlewareRequest.body.locked
+          ) {
+            // Cancellation marks this throwaway branch as released immediately,
+            // but its promise may not settle until another tee branch finishes.
+            // Do not delay Server Action dispatch on a streaming request body.
+            void sourceMiddlewareRequest.body.cancel().catch(() => {});
+          }
+          if (
+            sourceRequest !== userlandRequest &&
+            sourceRequest.body &&
+            !sourceRequest.bodyUsed &&
+            !sourceRequest.body.locked
+          ) {
+            void sourceRequest.body.cancel().catch(() => {});
+          }
+        }
+        if (!dispatchResponseStage && sourceMiddlewareResult.pathnameEligible) {
+          markRouteCacheabilityDynamic(
+            sourceMiddlewareResult.matched
+              ? "middleware matched this request"
+              : "middleware is eligible for this pathname",
+          );
+        }
+        return {
+          result: sourceMiddlewareResult,
+          sourceHeadersContext,
+          sourceUrl,
+          targetHeadersContext,
+          targetRequestHeaders,
+        };
+      };
+      let sourceRun = await runSourceMiddleware(
+        sourceRequestPathname,
+        decodedSourceRequestPathname,
+      );
+      if (sourceRun === null) {
         options.clearRequestContext();
         setInterceptionResponseUncacheable(true);
         return badRequestResponse();
       }
-      // Clone before rebuilding the URL so runtimes that transfer Request bodies
-      // cannot disturb the original Server Action branch. Release the temporary
-      // clone when reconstruction leaves it readable.
-      const sourceRequest = userlandRequest.body ? userlandRequest.clone() : userlandRequest;
-      const sourceMiddlewareRequest = cloneRequestWithUrl(sourceRequest, sourceUrl.href);
-      // Hybrid dev attaches the target route's middleware result so the RSC
-      // entry does not execute it twice. This is a distinct source route and
-      // must run middleware itself rather than replaying the target's decision.
-      sourceMiddlewareRequest.headers.delete(VINEXT_MW_CTX_HEADER);
-      // Strip Flight headers on this owned branch before applyAppMiddleware so
-      // it does not need another body tee solely to hide transport metadata.
-      for (const header of FLIGHT_HEADERS) sourceMiddlewareRequest.headers.delete(header);
-      const targetHeadersContext = getHeadersContext();
-      const targetRequestHeaders = targetHeadersContext
-        ? new Headers(targetHeadersContext.headers)
-        : null;
-      targetRequestHeaders?.delete(VINEXT_MW_CTX_HEADER);
-      for (const header of FLIGHT_HEADERS) targetRequestHeaders?.delete(header);
-      // Chain source authorization from the request identity already established
-      // by target middleware, while keeping transport-only headers hidden.
-      if (targetRequestHeaders) {
-        const sourceHeaderNames = Array.from(sourceMiddlewareRequest.headers.keys());
-        for (const header of sourceHeaderNames) {
-          sourceMiddlewareRequest.headers.delete(header);
-        }
-        for (const [name, value] of targetRequestHeaders) {
-          sourceMiddlewareRequest.headers.append(name, value);
-        }
-      }
-      const sourceMiddlewareContext: AppRscMiddlewareContext = {
-        headers: null,
-        requestHeaders: null,
-        status: null,
-      };
-      const sourceHeadersContext = headersContextFromRequest(sourceMiddlewareRequest, {
-        draftModeSecret: options.draftModeSecret,
-      });
-      // Keep source authorization in a child request context. In particular,
-      // NextResponse.next({ request: { headers } }) mutates the live headers
-      // context; allowing those overrides to escape would make the target render
-      // observe headers from a different route.
-      let sourceMiddlewareResult: ApplyAppMiddlewareResult;
-      try {
-        sourceMiddlewareResult = await runWithHeadersContext(sourceHeadersContext, () =>
-          runMiddleware({
-            cleanPathname: decodedSourceRequestPathname,
-            // Deliberately not the request's `middlewareContext`. This run decides
-            // whether the source route may render; it does not contribute headers
-            // or status to the target's response, which belongs to another route.
-            context: sourceMiddlewareContext,
-            externalRewriteRequest: normalizedUserlandRequest,
-            hadBasePath: resolvedPathnameHasBasePath,
-            isDataRequest: isMiddlewareDataRequest,
-            request: sourceMiddlewareRequest,
-            validateExternalRewriteRequest: () => validateClaimedOutsideBasePathRsc(true),
-          }),
-        );
-      } finally {
-        // Release every temporary branch owned by source authorization. Some
-        // runtimes transfer sourceRequest into sourceMiddlewareRequest; the
-        // body-state checks make the cleanup safe in both transfer and tee cases.
-        if (
-          sourceMiddlewareRequest.body &&
-          !sourceMiddlewareRequest.bodyUsed &&
-          !sourceMiddlewareRequest.body.locked
-        ) {
-          // Cancellation marks this throwaway branch as released immediately,
-          // but its promise may not settle until another tee branch finishes.
-          // Do not delay Server Action dispatch on a streaming request body.
-          void sourceMiddlewareRequest.body.cancel().catch(() => {});
-        }
-        if (
-          sourceRequest !== userlandRequest &&
-          sourceRequest.body &&
-          !sourceRequest.bodyUsed &&
-          !sourceRequest.body.locked
-        ) {
-          void sourceRequest.body.cancel().catch(() => {});
-        }
-      }
-      if (!dispatchResponseStage && sourceMiddlewareResult.pathnameEligible) {
-        markRouteCacheabilityDynamic(
-          sourceMiddlewareResult.matched
-            ? "middleware matched this request"
-            : "middleware is eligible for this pathname",
-        );
-      }
+      let sourceMiddlewareResult = sourceRun.result;
       if (sourceMiddlewareResult.kind === "response") {
-        options.clearRequestContext();
-        return sourceMiddlewareResult.response;
+        // The client names its source by the matched route pathname when the
+        // public URL does not match the source pattern, as Next.js does with
+        // `Next-Url`. Middleware that serves a default locale unprefixed
+        // redirects that internal spelling to the public URL the user is on.
+        // Next.js never runs middleware for the source, so the redirect never
+        // reaches it. Follow one such redirect and authorize its target as a
+        // direct request to it: it must reach this same source route and
+        // params, and it must not need a further redirect.
+        // An external rewrite's 3xx is the upstream's answer, not middleware's.
+        const redirectedSourcePathname = sourceMiddlewareResult.externalRewrite
+          ? null
+          : resolveSourceMiddlewareRedirect(
+              sourceMiddlewareResult.response,
+              sourceRun.sourceUrl,
+              resolvedPathnameHasBasePath ? options.basePath : "",
+            );
+        if (redirectedSourcePathname === null) {
+          options.clearRequestContext();
+          return sourceMiddlewareResult.response;
+        }
+        void sourceMiddlewareResult.response.body?.cancel().catch(() => {});
+        const followedSourceRun =
+          (options.skipTrailingSlashRedirect ||
+            normalizeTrailingSlashPathname(redirectedSourcePathname, options.trailingSlash) ===
+              null) &&
+          !configMatchers?.matchRedirect(
+            matchPathname(redirectedSourcePathname),
+            options.configRedirects,
+            preMiddlewareRequestContext,
+            currentBasePathState(),
+            dispatchResponseStage ? undefined : markConditionalRedirectCacheability,
+          )
+            ? await runSourceMiddleware(
+                redirectedSourcePathname,
+                decodeInterceptionSourcePathname(redirectedSourcePathname),
+              )
+            : null;
+        if (followedSourceRun === null || followedSourceRun.result.kind === "response") {
+          if (followedSourceRun?.result.kind === "response") {
+            void followedSourceRun.result.response.body?.cancel().catch(() => {});
+          }
+          options.clearRequestContext();
+          return notFoundResponse();
+        }
+        redirectedSourceMatch = interceptionSourceMatch;
+        sourceRulesPathname = redirectedSourcePathname;
+        sourceRun = followedSourceRun;
+        sourceMiddlewareResult = followedSourceRun.result;
       }
+      const { sourceHeadersContext, sourceUrl, targetHeadersContext, targetRequestHeaders } =
+        sourceRun;
       // The source and target share one render context. Existing target headers
       // and all cookies are identity-bearing and may not be replaced/deleted by
       // source middleware. Pure header additions are safe to retain and are
@@ -2083,6 +2188,18 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         options.clearRequestContext();
         return notFoundResponse();
       }
+    }
+    if (
+      redirectedSourceMatch !== null &&
+      !(
+        adoptRewrittenInterceptionSource(sourceRulesPathname) &&
+        interceptionSourceMatch !== null &&
+        interceptionSourceMatch.route === redirectedSourceMatch.route &&
+        haveSamePageParams(interceptionSourceMatch.params, redirectedSourceMatch.params)
+      )
+    ) {
+      options.clearRequestContext();
+      return notFoundResponse();
     }
   }
   if (interceptionSourceMatch !== null) {
