@@ -19,13 +19,12 @@ function getState(): EffectLogState {
   return window.__bfcacheEffects;
 }
 
+// Only call this from an effect, so discarded renders never count as mounts.
 export function recordMount(name: string): number {
-  // Server renders don't mount anything; hydration records the real mount.
-  if (typeof window === "undefined") return 0;
   const state = getState();
   const instance = (state.mounts[name] ?? 0) + 1;
   state.mounts[name] = instance;
-  state.log.push(`init ${name}#${instance}`);
+  state.log.push(`mount ${name}#${instance}`);
   return instance;
 }
 

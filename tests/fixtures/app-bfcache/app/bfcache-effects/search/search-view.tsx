@@ -8,7 +8,8 @@ export function SearchView({ q }: { q: string }) {
   const instance = useEffectProbe("search");
   const [count, setCount] = useState(0);
   // Only this effect depends on the query, so only it re-runs when q changes.
-  useEffect(() => openConnection(`search-query:${q}#${instance}`), [q, instance]);
+  // It runs after useEffectProbe's effect, which has numbered the instance.
+  useEffect(() => openConnection(`search-query:${q}#${instance.current}`), [q, instance]);
 
   return (
     <div>

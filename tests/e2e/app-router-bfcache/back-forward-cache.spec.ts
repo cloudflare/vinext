@@ -257,9 +257,9 @@ test.describe("Next.js compat: back/forward cache", () => {
   });
 });
 
-// The bfcache-effects routes log every probe's mount (`init`), effect setup and
-// effect cleanup to `window.__bfcacheEffects`, numbering mounts per probe name
-// so a remount shows up as `#2`. Every expected sequence below was recorded
+// The bfcache-effects routes log every probe's mount, effect setup and effect
+// cleanup to `window.__bfcacheEffects`, numbering mounts per probe name so a
+// remount shows up as `#2`. Every expected sequence below was recorded
 // from real Next.js 16.2.7 (Turbopack and webpack, dev and prod) on a copy of
 // this fixture: hidden Activity entries keep their state and DOM, but their
 // effects are cleaned up until the entry is shown again.
@@ -320,26 +320,24 @@ function chatOpen(id: string, instance = 1): string[] {
   return ["shell#1", ...chatKeys(id, instance)];
 }
 
-// Switching rooms commits in one pass: a newly mounted room initialises while
-// rendering, then the hidden room's effects clean up before the shown room's
-// effects set up. A restored room skips the `init` events.
+// Effects that set up, recording a mount first when the probe is new.
+function setupEffects(keys: string[], mounted: boolean): string[] {
+  return keys.flatMap((key) => (mounted ? [`mount ${key}`, `setup ${key}`] : [`setup ${key}`]));
+}
+
+// Switching rooms commits in one pass: the hidden room's effects clean up, then
+// the shown room's effects set up. A restored room logs no `mount` events.
 function switchChat(from: string, to: string, mountedInstance?: number): string[] {
-  const shown = chatKeys(to, mountedInstance);
   return [
-    ...(mountedInstance === undefined ? [] : shown.map((key) => `init ${key}`)),
     ...chatKeys(from).map((key) => `cleanup ${key}`),
-    ...shown.map((key) => `setup ${key}`),
+    ...setupEffects(chatKeys(to, mountedInstance), mountedInstance !== undefined),
   ];
 }
 
 async function gotoChatA(page: Page) {
   await page.goto(`${EFFECTS_ROUTE}/chat/a`);
   await waitForAppRouterHydration(page);
-  await expectEffects(
-    page,
-    ["shell#1", ...chatKeys("a")].flatMap((key) => [`init ${key}`, `setup ${key}`]),
-    chatOpen("a"),
-  );
+  await expectEffects(page, setupEffects(["shell#1", ...chatKeys("a")], true), chatOpen("a"));
 }
 
 test.describe("BFCache Activity effects", () => {
@@ -407,7 +405,7 @@ test.describe("BFCache Activity effects", () => {
     await incrementEffect(page, "room-layout:a", 1);
 
     await clickEffectsLink(page, "/chat/a/info", "Info a");
-    await expectEffects(page, ["init info:a#1", "cleanup chat:a#1", "setup info:a#1"], infoOpen);
+    await expectEffects(page, ["cleanup chat:a#1", "mount info:a#1", "setup info:a#1"], infoOpen);
     await expectHiddenEffectState(page, "chat:a", "Count: 2");
     await incrementEffect(page, "info:a", 3);
 
@@ -430,9 +428,9 @@ test.describe("BFCache Activity effects", () => {
     await expectEffects(
       page,
       [
-        "init shell#1",
+        "mount shell#1",
         "setup shell#1",
-        "init search#1",
+        "mount search#1",
         "setup search#1",
         "setup search-query:1#1",
       ],
@@ -464,12 +462,7 @@ test.describe("BFCache Activity effects", () => {
     await clickEffectsLink(page, "/chat/a", "Chat a");
     await expectEffects(
       page,
-      [
-        ...chatKeys("a").map((key) => `init ${key}`),
-        "cleanup search#1",
-        "cleanup search-query:1#1",
-        ...chatKeys("a").map((key) => `setup ${key}`),
-      ],
+      ["cleanup search#1", "cleanup search-query:1#1", ...setupEffects(chatKeys("a"), true)],
       chatOpen("a"),
     );
     await expectHiddenEffectState(page, "search", "Count: 2");
@@ -495,6 +488,7 @@ test.describe("BFCache Activity effects", () => {
     await expectEffects(page, switchChat("a", "b", 1), chatOpen("b"));
 
     await clickEffectsLink(page, "/chat/a?from=search", "Chat a");
+    await expect(page).toHaveURL(/\/bfcache-effects\/chat\/a\?from=search$/);
     await expectEffects(page, switchChat("b", "a"), chatOpen("a"));
     await expect(effectCount(page, "chat:a")).toHaveText("Count: 2");
   });

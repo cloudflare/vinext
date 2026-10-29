@@ -1,14 +1,19 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { openConnection, recordMount } from "./effect-log";
 
 // Models a component that opens a live connection on mount (a chat stream,
 // a subscription) and keeps local state the user has built up.
-export function useEffectProbe(name: string): number {
-  // The lazy initialiser runs once per mount, so it doubles as a mount counter.
-  const [instance] = useState(() => recordMount(name));
-  useEffect(() => openConnection(`${name}#${instance}`), [name, instance]);
+export function useEffectProbe(name: string): RefObject<number | null> {
+  // Numbered on the first committed setup. Refs survive while an Activity
+  // entry is hidden, so showing it again reuses the number; a remount doesn't.
+  const instance = useRef<number | null>(null);
+  useEffect(() => {
+    instance.current ??= recordMount(name);
+    return openConnection(`${name}#${instance.current}`);
+  }, [name]);
   return instance;
 }
 
