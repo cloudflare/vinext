@@ -1370,6 +1370,34 @@ describe("fetch cache shim", () => {
     },
   );
 
+  it.each([
+    ["without cache options", undefined],
+    ["with cache: no-store", { cache: "no-store" }],
+    ["with an Authorization header", { headers: { authorization: "Bearer token" } }],
+  ] as const)(
+    "makes an uncached fetch %s inside unstable_cache in a shell's render",
+    async (label, init) => {
+      const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+      const { createPprFallbackShellState, runWithPprFallbackShellState } =
+        await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+      const state = createPprFallbackShellState({
+        fallbackParamNames: [],
+        routePattern: "/feed",
+      });
+      const cached = unstable_cache(
+        async () =>
+          (await fetch("https://api.example.com/shell-cached", init as RequestInit | undefined))
+            .status,
+        ["shell-scope", label],
+      );
+
+      // A cache keeps the fetch's value, so it isn't a hole.
+      await expect(runWithPprFallbackShellState(state, () => cached())).resolves.toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(consumeDynamicUsage()).toBe(false);
+    },
+  );
+
   it("marks an auto no-cache fetch dynamic with Cache Components", async () => {
     vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
     try {
