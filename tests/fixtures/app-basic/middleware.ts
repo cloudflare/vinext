@@ -360,6 +360,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (pathname === "/encoded-parity/sibling/guarded") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
@@ -622,6 +627,7 @@ export const config = {
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
     "/encoded-parity/rewrite-any/:path*",
+    "/encoded-parity/sibling/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",

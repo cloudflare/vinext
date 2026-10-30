@@ -2187,6 +2187,10 @@ describe("App Router entry templates", () => {
         expect(
           code.match(/^const __routeMatcher = __createAppRscRouteMatcher\(\w+, (.+)\);$/m)?.[1],
         ).toBe(expected);
+        // The matcher answers another spelling of a page only once its
+        // prerender is recorded, so each stage loads the records itself.
+        expect(code).toContain('import "virtual:vinext-pregenerated-concrete-paths";');
+        expect(code).toMatch(/^__initPregeneratedPathsFromGlobals\(\);$/m);
       }
     } finally {
       fs.rmSync(tmpDir, { force: true, recursive: true });

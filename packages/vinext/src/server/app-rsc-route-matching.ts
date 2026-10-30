@@ -8,6 +8,7 @@ import {
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
 import { decodeMatchedParams, decodeRouteSegment, splitPathSegments } from "../routing/utils.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
+import { getRenderedConcreteUrlPathsForRoute } from "./pregenerated-concrete-paths.js";
 
 /**
  * Sentinel slot key used for sibling-style interception entries.
@@ -182,6 +183,23 @@ function createRouteParams(): AppRscRouteParams {
   return Object.create(null);
 }
 
+/**
+ * Whether each encoded raw segment is exactly the spelling the URL parser, as
+ * a browser runs it, gives its decoded form: `caf%C3%A9` for `café`, but `q&a`
+ * for `q&a`. `%61dmin`, `caf%c3%a9`, `%63af%C3%A9` and `q%26a` are other
+ * spellings of a page, which middleware never compared as its pathname.
+ */
+function isCanonicalPathEncoding(
+  rawParts: readonly string[],
+  decodedParts: readonly string[],
+): boolean {
+  return rawParts.every(
+    (rawPart, index) =>
+      !rawPart.includes("%") ||
+      rawPart === new URL(`/${decodedParts[index]}`, "http://n").pathname.slice(1),
+  );
+}
+
 function appRscPathnameParts(pathname: string): string[] {
   const pathOnly = pathname.split("?")[0];
   const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
@@ -264,14 +282,31 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
     // matches nothing or a Route Handler keeps that outcome, as in Next.js.
     // Draft mode and server actions skip that cache, so the handler renders
     // their `matchRawRequestRoute` instead.
+    //
+    // The build list only says a page may be prerendered: segment config can't
+    // tell a page that reads cookies() or searchParams, which has no cached
+    // response. So another spelling of a page (`/%61dmin`), which middleware
+    // never compared as `/admin`, renders the raw match unless the build
+    // recorded the decoded pathname's prerender. The exact spelling a browser
+    // sends for the page (`/caf%C3%A9`) is that page's own pathname, so it
+    // renders the page without one.
     if (
       decodedPathnameRoutes.size > 0 &&
       result.route.patternParts.some((part) => part.startsWith(":")) &&
       !isAppRouteHandlerRoute(result.route) &&
       rawParts.some((part) => part.includes("%"))
     ) {
-      const route = decodedPathnameRoutes.get(rawParts.map(decodeRouteSegment).join("/"));
-      if (route && route !== result.route) return { route, params: createRouteParams() };
+      const decodedParts = rawParts.map(decodeRouteSegment);
+      const decodedPathname = decodedParts.join("/");
+      const route = decodedPathnameRoutes.get(decodedPathname);
+      if (
+        route &&
+        route !== result.route &&
+        (isCanonicalPathEncoding(rawParts, decodedParts) ||
+          getRenderedConcreteUrlPathsForRoute(route.pattern)?.has(`/${decodedPathname}`) === true)
+      ) {
+        return { route, params: createRouteParams() };
+      }
     }
     return result;
   }
