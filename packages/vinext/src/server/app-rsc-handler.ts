@@ -2199,23 +2199,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       return createMissingServerActionResponse(options, actionId);
     }
     const sourceConfigHeaders = new Headers();
-    const sourceConfigUrl = new URL(request.url);
-    sourceConfigUrl.pathname = hadBasePath
-      ? addBasePathToPathname(requestCleanPathname, options.basePath)
-      : requestCleanPathname;
-    await applyAppRscConfigHeaders(
-      sourceConfigHeaders,
-      cloneRequestWithUrl(request, sourceConfigUrl.toString()),
-      {
-        basePath: options.basePath,
-        configHeaders: options.configHeaders,
-        i18nConfig: options.i18nConfig,
-        restoreLocaleRootTrailingSlash,
-        middlewareHeaders: middlewareContext.headers,
-        recordCacheability: dispatchResponseStage === undefined,
-        requestContext: preMiddlewareRequestContext,
-      },
-    );
+    await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
+      basePath: options.basePath,
+      configHeaders: options.configHeaders,
+      i18nConfig: options.i18nConfig,
+      restoreLocaleRootTrailingSlash,
+      middlewareHeaders: middlewareContext.headers,
+      recordCacheability: dispatchResponseStage === undefined,
+      requestContext: preMiddlewareRequestContext,
+    });
     return options.handleServerActionRequest({
       actionId,
       cleanPathname,

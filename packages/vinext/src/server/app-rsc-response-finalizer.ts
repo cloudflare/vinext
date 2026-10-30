@@ -9,7 +9,7 @@ import {
   isNonCacheableCacheControl,
   NO_STORE_CACHE_CONTROL,
 } from "./cache-control.js";
-import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
+import { stripRscSuffix, VINEXT_RSC_VARY_HEADER } from "./app-rsc-cache-busting.js";
 import { mergeVaryHeader } from "./middleware-response-headers.js";
 import { hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
@@ -79,7 +79,9 @@ export async function applyAppRscConfigHeaders(
   const url = new URL(request.url);
   let pathname = url.pathname;
   const hadBasePath = !options.basePath || hasBasePath(pathname, options.basePath);
-  pathname = stripBasePath(pathname, options.basePath);
+  // `/about.rsc` is the Flight payload of `/about`: match the page pathname,
+  // like the handler's `headerMatchPathname`.
+  pathname = stripRscSuffix(stripBasePath(pathname, options.basePath));
   const matchPathname = options.i18nConfig
     ? normalizeDefaultLocalePathname(pathname, options.i18nConfig, {
         hostname: url.hostname,

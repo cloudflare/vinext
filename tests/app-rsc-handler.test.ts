@@ -4306,6 +4306,62 @@ describe("createAppRscHandler", () => {
     expect(sourceConfigHeader).toBe("applied");
   });
 
+  // Server Action source headers match the pathname the rest of the request
+  // matches: basePath and one `.rsc` suffix stripped from the raw URL. A
+  // request outside basePath reaches an action only through a middleware
+  // rewrite into basePath.
+  it.each([
+    { path: "/docs/about.rsc.rsc", expected: { "x-match": "/about.rsc" } },
+    { path: "/docs/docs/about", expected: { "x-match": "/docs/about" } },
+    {
+      path: "/docs.rsc",
+      rewrite: "/docs/about",
+      expected: { "x-match": "/docs outside basePath" },
+    },
+  ])(
+    "matches Server Action source config headers for $path",
+    async ({ path, rewrite, expected }) => {
+      let sourceConfigHeaders: Record<string, string> | undefined;
+      const handler = createHandler({
+        configHeaders: [
+          { source: "/about", headers: [{ key: "x-match", value: "/about" }] },
+          { source: "/about.rsc", headers: [{ key: "x-match", value: "/about.rsc" }] },
+          { source: "/docs/about", headers: [{ key: "x-match", value: "/docs/about" }] },
+          { source: "/", headers: [{ key: "x-match", value: "/" }] },
+          {
+            source: "/docs",
+            basePath: false,
+            headers: [{ key: "x-match", value: "/docs outside basePath" }],
+          },
+        ],
+        handleServerActionRequest: async (options) => {
+          sourceConfigHeaders = Object.fromEntries(options.sourceConfigHeaders ?? []);
+          return new Response("action");
+        },
+        matchRoute: (pathname) => ({ params: {}, route: createPageRoute({ pattern: pathname }) }),
+        middlewareModule: rewrite
+          ? {
+              async default() {
+                return new Response(null, {
+                  headers: { "x-middleware-rewrite": `https://example.test${rewrite}` },
+                });
+              },
+            }
+          : null,
+      });
+
+      await handler(
+        new Request(`https://example.test${path}`, {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(sourceConfigHeaders).toEqual(expected);
+    },
+  );
+
   // Next.js stages next.config headers before middleware, whose own Set-Cookie
   // replaces a config one.
   it.each([
