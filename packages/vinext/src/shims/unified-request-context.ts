@@ -63,6 +63,14 @@ export type UnifiedRequestContext = {
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
   afterContext: AfterRequestContext;
+
+  // ── headers.ts ────────────────────────────────────────────────────
+  /**
+   * Draft-mode state of the headers context this request last cleared. The
+   * render can outlive its headers context (cleared once the response body
+   * closes), and so do after() callbacks; cache bypasses keep reading this.
+   */
+  draftModeAtHeadersClear: boolean;
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
@@ -147,6 +155,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestSignal: null,
     requestCache: new WeakMap(),
+    draftModeAtHeadersClear: false,
     afterContext: {
       callbacks: [],
       responseClosed: false,

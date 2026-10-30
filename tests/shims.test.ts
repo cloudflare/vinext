@@ -8236,6 +8236,44 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("keeps bypassing the shared cache once a draft request's headers context is cleared", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let draftContent = true;
+    const cached = registerCachedFunction(
+      async () => (draftContent ? "DRAFT" : "PUBLIC"),
+      "test:draft-bypass-cleared-context",
+    );
+    const headersContext = (draftModeEnabled: boolean) =>
+      createRequestContext({
+        headersContext: { headers: new Headers(), cookies: new Map(), draftModeEnabled },
+      });
+
+    try {
+      // A render, or an after() callback, still running once the response
+      // body has closed and cleared the headers context.
+      await runWithRequestContext(headersContext(true), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("DRAFT");
+      });
+
+      draftContent = false;
+      await runWithRequestContext(headersContext(false), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("PUBLIC");
+      });
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("scopes shared cache entries by build ID", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
