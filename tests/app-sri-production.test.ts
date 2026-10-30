@@ -49,18 +49,35 @@ describe("App Router production experimental.sri", () => {
     expect(scripts.length).toBeGreaterThan(1);
     expect(scripts.some((tag) => tag.includes('id="_R_"'))).toBe(true);
 
-    // Every script tag, and every link that carries a hash, names the hash of
-    // the bytes the server sends for that URL.
-    const links = (html.match(/<link\b[^>]*>/g) ?? []).filter((tag) => tag.includes("integrity="));
-    for (const tag of [...scripts, ...links]) {
+    // Every script tag and modulepreload link names the hash of the bytes the
+    // server sends for that URL, except client component chunks, which
+    // Next.js does not hash either.
+    const modulepreloads = html.match(/<link\b[^>]*\brel="modulepreload"[^>]*>/g) ?? [];
+    const { appRouteManifest, appClientReferenceChunks } = JSON.parse(
+      fs.readFileSync(
+        path.join(fixtureDir, "dist", "client", "vinext-client-entry-manifest.json"),
+        "utf8",
+      ),
+    );
+    expect(modulepreloads.some((tag) => tag.includes(`/${appRouteManifest}"`))).toBe(true);
+    const clientReferenceUrls = new Set<string>(
+      appClientReferenceChunks.modules.map((module: { file: string }) => `/${module.file}`),
+    );
+    let clientReferenceChunks = 0;
+    for (const tag of [...scripts, ...modulepreloads]) {
       const url = tag.match(/\b(?:src|href)="([^"]+)"/)![1]!;
       const integrity = tag.match(/\bintegrity="([^"]+)"/)?.[1];
       const asset = await fetch(new URL(url, baseUrl));
       expect(asset.status).toBe(200);
-      const digest = createHash("sha256")
-        .update(Buffer.from(await asset.arrayBuffer()))
-        .digest("base64");
+      const body = Buffer.from(await asset.arrayBuffer());
+      if (clientReferenceUrls.has(url)) {
+        clientReferenceChunks++;
+        expect(integrity, tag).toBeUndefined();
+        continue;
+      }
+      const digest = createHash("sha256").update(body).digest("base64");
       expect(integrity, tag).toBe(`sha256-${digest}`);
     }
+    expect(clientReferenceChunks).toBeGreaterThan(0);
   });
 });
