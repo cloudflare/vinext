@@ -70,6 +70,8 @@ test.describe("image optimization endpoint behind middleware", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(image.headers()["x-mw-image-endpoint"]).toBe("true");
+    // Not the revalidating public-file default.
+    expect(image.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
     expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
   });
 

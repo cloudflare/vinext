@@ -36,6 +36,7 @@ import {
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
   isImageOptimizationPath,
+  IMAGE_CACHE_CONTROL,
   IMAGE_CONTENT_SECURITY_POLICY,
   IMAGE_RESPONSE_CACHE_STATE,
   INVALID_IMAGE_SOURCE_MESSAGE,
@@ -2012,8 +2013,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
-    // Serve the original image with CSP and security headers
+    // Serve the original image with CSP and security headers, and the image
+    // endpoint's own Cache-Control, as on Workers, rather than the revalidating
+    // public-file default.
     const imageSecurityHeaders: Record<string, string> = {
+      "Cache-Control": IMAGE_CACHE_CONTROL,
       "Content-Security-Policy":
         imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
       "X-Content-Type-Options": "nosniff",
@@ -2931,7 +2935,10 @@ async function createPagesRouterRequestHandler(
                 contentTypeForPath(sourcePath),
                 pagesImageConfig?.dangerouslyAllowSVG,
               );
+            // The image endpoint's own Cache-Control, as on Workers, rather
+            // than the revalidating public-file default.
             const imageSecurityHeaders: Record<string, string> = {
+              "Cache-Control": IMAGE_CACHE_CONTROL,
               "Content-Security-Policy":
                 pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
               "X-Content-Type-Options": "nosniff",

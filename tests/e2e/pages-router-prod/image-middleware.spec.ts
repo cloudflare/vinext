@@ -56,6 +56,8 @@ test.describe("image optimization source behind middleware", () => {
       expect(image.headers()["content-security-policy"], source).toBe(
         "script-src 'none'; frame-src 'none'; sandbox;",
       );
+      // Not the revalidating public-file default.
+      expect(image.headers()["cache-control"], source).toBe("public, max-age=31536000, immutable");
       expect(Buffer.from(await image.body()).equals(heartPng), source).toBe(true);
     }
   });
