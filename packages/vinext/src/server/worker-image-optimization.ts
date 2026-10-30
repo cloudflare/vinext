@@ -134,8 +134,8 @@ export function fetchSignalledPublicFile(
 
 /**
  * Serve the App Router image endpoint once the request handler admitted it
- * through middleware and rewrites. Middleware's response headers are sent with
- * the image, as Next.js does.
+ * through middleware and rewrites. Config and middleware response headers are
+ * sent with the image, as Next.js does.
  */
 export async function serveWorkerImageOptimization(
   request: Request,

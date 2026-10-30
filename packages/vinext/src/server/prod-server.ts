@@ -1955,7 +1955,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Image optimization passthrough (Node.js prod server has no Images binding;
   // serves the original file with cache headers and security headers). Runs
   // only after the RSC handler admitted the endpoint through middleware and
-  // rewrites, whose response headers Next.js also sends with the image.
+  // rewrites. Next.js also sends config and middleware headers with the image.
   const serveImageOptimization = async (
     req: IncomingMessage,
     res: ServerResponse,

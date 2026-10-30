@@ -73,6 +73,22 @@ test.describe("image optimization endpoint behind middleware", () => {
     expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
   });
 
+  // Verified against Next.js 16.2.7 `next start`: next.config headers() go on
+  // the image and on the 400 for a source it cannot serve, below middleware's
+  // headers and, on the image, below its own Content-Security-Policy.
+  test("sends next.config headers with the image", async ({ request }) => {
+    for (const [source, status, csp] of [
+      ["/heart.png", 200, "script-src 'none'; frame-src 'none'; sandbox;"],
+      ["/missing.png", 400, "config-csp"],
+    ] as const) {
+      const image = await request.get(imagePath("/_next/image", source));
+      expect(image.status(), source).toBe(status);
+      expect(image.headers()["x-e2e-header"], source).toBe("vinext-e2e");
+      expect(image.headers()["x-mw-image-endpoint"], source).toBe("true");
+      expect(image.headers()["content-security-policy"], source).toBe(csp);
+    }
+  });
+
   test("serves the image query middleware or config rewrites to", async ({ request }) => {
     const direct = await request.get("/heart.png");
     const heartPng = Buffer.from(await direct.body());

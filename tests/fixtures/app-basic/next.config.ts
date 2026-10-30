@@ -450,6 +450,14 @@ const nextConfig: NextConfig = {
         source: "/config-cookie-response",
         headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
       },
+      // Used by E2E: app-router-prod/image-middleware.spec.ts
+      {
+        source: "/_next/image",
+        headers: [
+          { key: "Content-Security-Policy", value: "config-csp" },
+          { key: "X-Mw-Image-Endpoint", value: "config" },
+        ],
+      },
       // Used by Vitest: app-router.test.ts
       {
         source: "/api/(.*)",
