@@ -516,6 +516,55 @@ test.describe("App Router ISR", () => {
     expect(await takeCalls()).toBe(1);
   });
 
+  test("a rewritten dynamic metadata route shares the ISR entry of its destination", async ({
+    request,
+  }) => {
+    // A fresh slug per attempt keeps every entry new, so each single request
+    // below shows which entry answered it.
+    const slug = `café-${crypto.randomUUID()}`;
+    const encoded = encodeURIComponent(slug);
+    const doubleEncoded = encodeURIComponent(encoded);
+
+    // Sent first, the double-encoded spelling renders the once-decoded slug
+    // and stores it. Like Next.js, it keeps an entry of its own: the rewrite
+    // renders the decoded slug and must not be answered from it.
+    const doubleEncodedPath = `/metadata-rewrite-key/${doubleEncoded}/opengraph-image`;
+    const doubleEncodedMiss = await request.get(`${baseUrl()}${doubleEncodedPath}`);
+    expect(await doubleEncodedMiss.text()).toBe(`card ${encoded}`);
+
+    const rewritten = await request.get(`${baseUrl()}/metadata-rewrite-card/${encoded}`);
+    expect(rewritten.status()).toBe(200);
+    expect(await rewritten.text()).toBe(`card ${slug}`);
+
+    // The destination's own URL reads the entry the rewrite stored.
+    const direct = await request.get(
+      `${baseUrl()}/metadata-rewrite-key/${encoded}/opengraph-image`,
+    );
+    expect(direct.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await direct.text()).toBe(`card ${slug}`);
+
+    const doubleEncodedHit = await request.get(`${baseUrl()}${doubleEncodedPath}`);
+    expect(doubleEncodedHit.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await doubleEncodedHit.text()).toBe(`card ${encoded}`);
+  });
+
+  test("a rewritten generated metadata image renders and stores its decoded id", async ({
+    request,
+  }) => {
+    const slug = `café-${crypto.randomUUID()}`;
+    const encoded = encodeURIComponent(slug);
+
+    // The rewrite substitutes the captured id verbatim. Like Next.js, the
+    // route renders the decoded id and shares the destination's entry.
+    const rewritten = await request.get(`${baseUrl()}/metadata-rewrite-icon/${encoded}/%73mall`);
+    expect(rewritten.status()).toBe(200);
+    expect(await rewritten.text()).toBe(`icon ${slug} small`);
+
+    const direct = await request.get(`${baseUrl()}/metadata-rewrite-key/${encoded}/icon/small`);
+    expect(direct.headers()["x-vinext-cache"]).toBe("HIT");
+    expect(await direct.text()).toBe(`icon ${slug} small`);
+  });
+
   test("dynamicParams=false runs nested generateStaticParams only for matching parents", async ({
     request,
   }) => {

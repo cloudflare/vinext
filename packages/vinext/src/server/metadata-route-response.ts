@@ -68,7 +68,7 @@ import {
 import { completeAppRouteHandlerResponse } from "./app-route-handler-execution.js";
 import { buildAppRouteMissIsrCacheControl } from "./isr-decision.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
-import { decodeMatchedParams } from "../routing/utils.js";
+import { decodeMatchedParams, normalizePathnameForRouteMatch } from "../routing/utils.js";
 
 type AppPageParams = Record<string, string | string[]>;
 type MetadataRouteFunction = (props: Record<string, unknown>) => unknown;
@@ -100,6 +100,11 @@ type MetadataRouteRequestOptions = {
   isrRouteKey?: (pathname: string) => string;
   isrSet?: MetadataRouteCacheSetter;
   makeThenableParams: MetadataRouteMakeThenableParams;
+  /**
+   * The pathname params are read from. A direct request passes its raw path
+   * here and its decoded path as `cleanPathname`; a rewrite passes its
+   * destination, still percent-encoded, as both.
+   */
   routePathname?: string;
   scheduleBackgroundRegeneration?: MetadataRouteBackgroundRegenerator;
 };
@@ -919,8 +924,20 @@ async function writeMetadataRouteMiss(
 }
 
 export async function handleMetadataRouteRequest(
-  options: MetadataRouteRequestOptions,
+  requestOptions: MetadataRouteRequestOptions,
 ): Promise<Response | null> {
+  // Serve a rewrite like a direct request to its destination: match, key and
+  // tag the decoded pathname, and read params from the encoded one, so an
+  // entry only holds the params its key spells. Next.js keys the resolved
+  // pathname: a rewrite shares the destination's entry, and a double-encoded
+  // spelling of it keeps its own.
+  const options =
+    requestOptions.routePathname === requestOptions.cleanPathname
+      ? {
+          ...requestOptions,
+          cleanPathname: normalizePathnameForRouteMatch(requestOptions.cleanPathname),
+        }
+      : requestOptions;
   // `cleanPathname` is invariant across the loop, so its split is computed
   // lazily and memoized: only dynamic (`patternParts`) routes need it, and the
   // common case of zero dynamic metadata routes never splits at all.
