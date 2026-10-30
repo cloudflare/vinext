@@ -2090,6 +2090,7 @@ export default class CustomDocument extends Document {
     expect(res.status).toBe(308);
     expect(res.headers.get("location")).toBe("/api/append-header?a=1");
     expect(res.headers.getSetCookie()).toEqual([]);
+    expect(res.headers.get("x-custom-middleware")).toBeNull();
 
     const followed = await fetch(`${baseUrl}/api/append-header/`);
     expect(followed.status).toBe(200);
@@ -8133,6 +8134,7 @@ describe("Production server middleware (Pages Router)", () => {
     expect(res.status).toBe(308);
     expect(res.headers.get("location")).toBe("/api/append-header?a=1");
     expect(res.headers.getSetCookie()).toEqual([]);
+    expect(res.headers.get("x-custom-middleware")).toBeNull();
 
     const followed = await fetch(`${prodUrl}/api/append-header/`);
     expect(followed.status).toBe(200);

@@ -129,7 +129,11 @@ type ResolvePublicFileRouteOptions = {
   request: Request;
 };
 
-const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
+// The sources of Next.js's two internal trailingSlash: true redirects
+// (lib/load-custom-routes): a slashed path whose last segment ends in `.\w+`
+// loses its slash, and an unslashed path whose last segment has no dot gains one.
+const SLASHED_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/]+\.\w+\/$/;
+const UNSLASHED_NON_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/.]+$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
@@ -167,22 +171,16 @@ export function normalizeTrailingSlashPathname(
 ): string | null {
   if (pathname === "/") return null;
 
-  const hasTrailing = pathname.endsWith("/");
-
   if (trailingSlash) {
-    // Next.js emits two internal redirect rules for trailingSlash:true:
-    // file-looking paths lose a trailing slash, non-file paths gain one, and
-    // /.well-known stays untouched for RFC-defined discovery URLs.
+    // /.well-known stays untouched for RFC-defined discovery URLs. Paths that
+    // match neither rule, such as `/foo.a-b/` or `/foo.`, are left as they are.
     if (isWellKnownPathname(pathname)) return null;
-    if (FILE_LIKE_PATHNAME_RE.test(pathname)) {
-      const normalized = removeTrailingSlash(pathname);
-      return normalized === pathname ? null : normalized;
-    }
-    if (!hasTrailing && !pathname.endsWith(".rsc")) return `${pathname}/`;
+    if (SLASHED_FILE_PATHNAME_RE.test(pathname)) return pathname.slice(0, -1);
+    if (UNSLASHED_NON_FILE_PATHNAME_RE.test(pathname)) return `${pathname}/`;
     return null;
   }
 
-  if (hasTrailing) return removeTrailingSlash(pathname);
+  if (pathname.endsWith("/")) return removeTrailingSlash(pathname);
   return null;
 }
 

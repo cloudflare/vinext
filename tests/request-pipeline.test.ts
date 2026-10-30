@@ -784,6 +784,21 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/catch-all/hello.world", "", true, "")).toBeNull();
   });
 
+  // Next.js's file rule needs a `.\w+` ending and its non-file rule needs a
+  // last segment without a dot; paths matching neither keep their spelling.
+  it("matches Next.js's file and non-file rules exactly when trailingSlash is true", () => {
+    expect(normalizeTrailingSlash("/api/v1.2.3/", "", true, "")!.headers.get("Location")).toBe(
+      "/api/v1.2.3",
+    );
+    expect(normalizeTrailingSlash("/x/a.b/c", "", true, "")!.headers.get("Location")).toBe(
+      "/x/a.b/c/",
+    );
+    expect(normalizeTrailingSlash("/api/foo.a-b/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo.", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo./", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/x/foo.\u20ac/", "", true, "")).toBeNull();
+  });
+
   it("does not redirect .well-known paths when trailingSlash is true", () => {
     expect(normalizeTrailingSlash("/.well-known/acme-challenge", "", true, "")).toBeNull();
     expect(normalizeTrailingSlash("/.well-known/acme-challenge/", "", true, "")).toBeNull();
