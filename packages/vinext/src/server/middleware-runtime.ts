@@ -530,13 +530,14 @@ async function executeMiddlewareModule(
     if (encoded !== null) slashedMatchPathnames.push(encoded);
     if (decoded !== null && decoded !== encoded) slashedMatchPathnames.push(decoded);
   }
-  if (
-    encodedPathMatches ||
-    decodedPathMatches ||
-    slashedMatchPathnames.some((candidate) =>
-      matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, localeContext),
-    )
-  ) {
+  // A request the as-requested test rejects is routed whatever its headers,
+  // so only that test decides pathname eligibility.
+  const requestedPathMatches = hasTerminalSlash
+    ? slashedMatchPathnames.some((candidate) =>
+        matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, localeContext),
+      )
+    : encodedPathMatches || decodedPathMatches;
+  if (requestedPathMatches) {
     options.onPathMatch?.();
   }
 

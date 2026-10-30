@@ -1946,6 +1946,11 @@ describe("prerender path manifest", () => {
     expect(matchesMiddlewareWarmPath("/admin", "/admin/", null)).toBe(false);
     expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, true)).toBe(true);
     expect(matchesMiddlewareWarmPath("/admin", "/admin/(.*)", null, true)).toBe(true);
+    // Only the requested spelling counts, and file-like paths stay unslashed.
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, true)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt", null, true)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt/", null, true)).toBe(false);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {

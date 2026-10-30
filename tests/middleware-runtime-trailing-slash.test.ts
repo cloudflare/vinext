@@ -290,19 +290,27 @@ describe("executeMiddleware normalizes trailing slashes for matcher evaluation",
   );
 
   it("does not run middleware when only the slash-stripped pathname matches", async () => {
-    const run = (pathname: string) =>
-      executeMiddleware({
+    const run = async (pathname: string) => {
+      let pathnameEligible = false;
+      const result = await executeMiddleware({
         isProxy: false,
         module: {
           config: { matcher: ["/r1/((?!.*\\/$).*)"] },
           middleware: () => new Response("unauthorized", { status: 401 }),
         },
+        onPathMatch() {
+          pathnameEligible = true;
+        },
         request: new Request(`http://localhost${pathname}`),
         skipTrailingSlashRedirect: true,
       });
+      return { pathnameEligible, result };
+    };
 
-    expect(await run("/r1/x/")).toEqual({ continue: true });
-    expect((await run("/r1/x")).response?.status).toBe(401);
+    expect(await run("/r1/x/")).toEqual({ pathnameEligible: false, result: { continue: true } });
+    const unslashed = await run("/r1/x");
+    expect(unslashed.pathnameEligible).toBe(true);
+    expect(unslashed.result.response?.status).toBe(401);
   });
 
   it("applies has conditions to the as-requested matcher test", async () => {

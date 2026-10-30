@@ -1267,7 +1267,12 @@ export function matchesMiddlewareWarmPath(
   i18n: ResolvedNextConfig["i18n"],
   trailingSlash = false,
 ): boolean {
-  const encodedPathname = new URL(pathname, "https://vinext.invalid").pathname;
+  // Runtime middleware gates on the pathname as requested, so test the warm
+  // request's own spelling, terminal slash included.
+  const encodedPathname = normalizePathTrailingSlash(
+    new URL(pathname, "https://vinext.invalid").pathname,
+    trailingSlash,
+  );
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
   const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
@@ -1280,21 +1285,12 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  // Runtime middleware also tests the warm request's own terminal slash, so a
-  // source that keeps one ("/admin/") can end that request.
-  const requestPathnames =
-    trailingSlash && !encodedPathname.endsWith("/")
-      ? [encodedPathname, `${encodedPathname}/`]
-      : [encodedPathname];
-  const matchPathnames: string[] = [];
-  for (const requestPathname of requestPathnames) {
-    matchPathnames.push(requestPathname);
-    try {
-      const decodedPathname = decodeURIComponent(requestPathname);
-      if (decodedPathname !== requestPathname) matchPathnames.push(decodedPathname);
-    } catch {
-      // Match runtime middleware behavior: malformed encoding is non-fatal.
-    }
+  const matchPathnames = [encodedPathname];
+  try {
+    const decodedPathname = decodeURIComponent(encodedPathname);
+    if (decodedPathname !== encodedPathname) matchPathnames.push(decodedPathname);
+  } catch {
+    // Match runtime middleware behavior: malformed encoding is non-fatal.
   }
   return matchPathnames.some((matchPathname) =>
     localeContexts.some((localeContext) =>
