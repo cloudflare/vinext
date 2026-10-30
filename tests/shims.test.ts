@@ -29813,15 +29813,23 @@ describe("image optimization URL generation", () => {
       vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[25,60,90]");
       vi.resetModules();
       const parsed = await import("../packages/vinext/src/shims/image.js");
-      const qualityOf = (quality: number | `${number}`) =>
+      const qualityOf = (quality: unknown) =>
         new URL(
-          parsed.getImageProps({ src: "/img.png", alt: "", width: 64, height: 64, quality }).props
-            .src,
+          parsed.getImageProps({
+            src: "/img.png",
+            alt: "",
+            width: 64,
+            height: 64,
+            quality: quality as number,
+          }).props.src,
           "http://localhost",
         ).searchParams.get("q");
       expect(qualityOf(Infinity)).toBe("60");
       expect(qualityOf("1e2")).toBe("60");
       expect(qualityOf("90")).toBe("90");
+      // Only real strings are parsed, as in Next.js.
+      expect(qualityOf(new String("90"))).toBe("60");
+      expect(qualityOf(90n)).toBe("60");
     } finally {
       vi.unstubAllEnvs();
       vi.resetModules();

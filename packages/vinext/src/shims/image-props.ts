@@ -247,10 +247,10 @@ const __imageEndpoint = `${process.env.__NEXT_ROUTER_BASEPATH ?? ""}/_next/image
  * finite numbers and digit-only strings pass, anything else becomes NaN, which
  * the default loader treats as 75.
  */
-export function parseImageQuality(quality: number | string | undefined): number | undefined {
+export function parseImageQuality(quality: unknown): number | undefined {
   if (quality === undefined) return undefined;
   if (typeof quality === "number") return Number.isFinite(quality) ? quality : NaN;
-  if (/^[0-9]+$/.test(quality)) return parseInt(quality, 10);
+  if (typeof quality === "string" && /^[0-9]+$/.test(quality)) return parseInt(quality, 10);
   return NaN;
 }
 
