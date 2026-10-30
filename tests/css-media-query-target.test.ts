@@ -18,6 +18,7 @@ import { build } from "vite-plus";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { resolveConfig } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -101,4 +102,34 @@ describe("CSS media-query syntax preservation in production build", () => {
       await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
     }
   }, 60_000);
+
+  it("does not append the pinned cssTarget when the app sets its own", async () => {
+    const tmpDir = await makeFixture();
+    // Firefox 121 / Safari 15.6 are newer than the pin (firefox114 / safari15).
+    // Before the fix, Vite concatenated both lists and esbuild kept the older
+    // version of each browser, so an app could never raise the target.
+    const userTarget = ["chrome111", "edge111", "firefox121", "safari15.6"];
+    try {
+      const config = await resolveConfig(
+        {
+          root: tmpDir,
+          configFile: false,
+          plugins: [vinext({ disableAppRouter: true })],
+          logLevel: "silent",
+          build: { cssTarget: userTarget },
+        },
+        "build",
+      );
+
+      const targets = [
+        config.build.cssTarget,
+        ...Object.values(config.environments).map((env) => env.build.cssTarget),
+      ];
+      for (const target of targets) {
+        expect(target).toEqual(userTarget);
+      }
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30_000);
 });
