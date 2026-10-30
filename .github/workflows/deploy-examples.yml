@@ -475,6 +475,114 @@ jobs:
           WORKER_NAME: prewarm-${{ matrix.example.project }}-${{ github.run_id }}-${{ github.run_attempt }}
         run: vp exec wrangler delete "$WORKER_NAME" --config ${{ matrix.example.wrangler_config }} --force
 
+  fallback-shell-e2e:
+    # Cache Components fallback shells must work on a --warm-cache deploy with
+    # no prerender, so the runtime produces every shell.
+    if: github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]'
+    name: Fallback shells on ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        backend: [kv, response-store]
+    env:
+      VINEXT_CACHE_BACKEND: ${{ matrix.backend }}
+      VINEXT_KV_APP_PREFIX: pr-${{ github.event.pull_request.number }}-fallback-shell-${{ github.run_id }}-${{ github.run_attempt }}
+      WORKER_NAME: pr-${{ github.event.pull_request.number }}-fallback-shell-${{ matrix.backend }}-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+
+      - name: Build vinext plugin
+        run: vp run build
+
+      # Edge purges share an account-wide rate limit with every other PR's
+      # deployed E2E, and these specs never check eviction, so the Store skips them.
+      - name: Deploy a Response Store service
+        if: matrix.backend == 'response-store'
+        working-directory: examples/response-store-demo
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config wrangler.response-store.jsonc --name "$WORKER_NAME-rs" --var WORKERS_RESPONSE_STORE_E2E_EDGE_PURGE_MODE:disabled
+
+      - name: Bind the Response Store service
+        if: matrix.backend == 'response-store'
+        working-directory: examples/app-router-playground
+        run: |
+          # Node reads the value from process.env.
+          # shellcheck disable=SC2016
+          node -e '
+            const fs = require("node:fs");
+            const path = "wrangler.response-store.jsonc";
+            const service = `${process.env.WORKER_NAME}-rs`;
+            const config = fs.readFileSync(path, "utf8").replace(
+              `"service": "response-store-demo-response-store"`,
+              `"service": "${service}"`,
+            );
+            if (!config.includes(service)) throw new Error("Could not bind the Response Store service");
+            fs.writeFileSync(path, config);
+          '
+
+      - name: Build app-router-playground
+        working-directory: examples/app-router-playground
+        run: vp build
+
+      # Cache warming stages its version behind a deployed one. The first
+      # deployment is the same build, so a request it still serves behaves the same.
+      - name: Bootstrap the Worker
+        working-directory: examples/app-router-playground
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: node "$GITHUB_WORKSPACE/.github/scripts/wrangler-deploy.mjs" --config dist/server/wrangler.json --name "$WORKER_NAME"
+
+      - name: Deploy with cache warming and no prerender
+        working-directory: examples/app-router-playground
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: vp exec vinext-cloudflare deploy --skip-build --warm-cache --config dist/server/wrangler.json --name "$WORKER_NAME"
+
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: ./.github/actions/playwright-cache
+        with:
+          browser: chromium
+          mode: cache
+          restore-keys: |
+            playwright-chromium-${{ runner.os }}-
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: vp exec playwright install chromium
+
+      - name: Test fallback shells
+        env:
+          PLAYWRIGHT_PROJECT: cloudflare-workers
+          VINEXT_E2E_FALLBACK_SHELL_BACKEND: ${{ matrix.backend }}
+          VINEXT_E2E_BASE_URL: https://${{ env.WORKER_NAME }}.vinext.workers.dev
+        run: vp exec playwright test tests/e2e/cloudflare-workers/fallback-shell.spec.ts
+
+      - name: Delete Workers
+        if: always()
+        continue-on-error: true
+        working-directory: examples/app-router-playground
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          BACKEND: ${{ matrix.backend }}
+        run: |
+          set +e
+          vp exec wrangler delete "$WORKER_NAME" --force
+          if [[ "$BACKEND" == "response-store" ]]; then
+            vp exec wrangler delete "$WORKER_NAME-rs" --force
+          fi
+
   smoke-test:
     name: Smoke Test Deployments
     runs-on: ubuntu-latest

@@ -42,10 +42,8 @@ import { isUnknownRecord } from "../utils/record.js";
 import { navigationRuntimeRscBootstrapExpression } from "../server/app-ssr-stream.js";
 import { createRscRequestUrl } from "../server/app-rsc-cache-busting.js";
 import {
-  NEXT_CACHE_TAGS_HEADER,
   VINEXT_CACHE_HEADER,
   VINEXT_METADATA_ROUTE_CACHE_HEADER,
-  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -84,6 +82,11 @@ import {
 } from "../server/app-ppr-fallback-shell.js";
 import { enterPrerenderPhase } from "./prerender-phase.js";
 import { buildAppRouteCacheValue } from "../server/app-route-handler-response.js";
+import {
+  readPrerenderCacheLifeHeader,
+  readPrerenderCacheTagsHeader,
+  resolveRenderedCacheControl,
+} from "../server/prerender-cache-life-header.js";
 export { readPrerenderSecret } from "./server-manifest.js";
 
 function getErrorMessageWithStack(err: Error): string {
@@ -2302,60 +2305,6 @@ export async function prerenderApp({
   }
 }
 
-/** Cache life recovered from a prerendered response; `stale` seeds the ISR entry. */
-type PrerenderCacheLife = { expire?: number; revalidate?: number; stale?: number };
-
-function resolveRenderedCacheControl(
-  requestCacheLife: PrerenderCacheLife,
-  cacheControl: string,
-  fallbackExpireSeconds: number,
-): { expire: number; revalidate?: number } {
-  const sMaxage = parseCacheControlSeconds(cacheControl, "s-maxage");
-  const staleWhileRevalidate = parseCacheControlSeconds(cacheControl, "stale-while-revalidate");
-  const revalidate =
-    requestCacheLife.revalidate ?? (staleWhileRevalidate === undefined ? undefined : sMaxage);
-  return {
-    expire:
-      requestCacheLife.expire ??
-      resolveRenderedExpireSeconds({
-        fallbackExpireSeconds,
-        sMaxage,
-        staleWhileRevalidate,
-      }),
-    ...(revalidate === undefined ? {} : { revalidate }),
-  };
-}
-
-function readPrerenderCacheLifeHeader(headers: Headers): PrerenderCacheLife | null {
-  const value = headers.get(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
-  if (!value) return null;
-
-  try {
-    const parsed = JSON.parse(value) as {
-      expire?: unknown;
-      revalidate?: unknown;
-      stale?: unknown;
-    };
-    const cacheLife: PrerenderCacheLife = {};
-    if (typeof parsed.revalidate === "number" && Number.isFinite(parsed.revalidate)) {
-      cacheLife.revalidate = parsed.revalidate;
-    }
-    if (typeof parsed.expire === "number" && Number.isFinite(parsed.expire)) {
-      cacheLife.expire = parsed.expire;
-    }
-    if (typeof parsed.stale === "number" && Number.isFinite(parsed.stale) && parsed.stale >= 0) {
-      cacheLife.stale = parsed.stale;
-    }
-    return cacheLife.revalidate === undefined &&
-      cacheLife.expire === undefined &&
-      cacheLife.stale === undefined
-      ? null
-      : cacheLife;
-  } catch {
-    return null;
-  }
-}
-
 /** Reads the special-error marker: the page's stored headers, or null. */
 function readPrerenderSpecialErrorHeader(headers: Headers): { location: string | null } | null {
   const value = headers.get(VINEXT_PRERENDER_SPECIAL_ERROR_HEADER);
@@ -2368,40 +2317,6 @@ function readPrerenderSpecialErrorHeader(headers: Headers): { location: string |
   } catch {
     return null;
   }
-}
-
-function readPrerenderCacheTagsHeader(headers: Headers): string[] {
-  const value = headers.get(NEXT_CACHE_TAGS_HEADER);
-  if (!value) return [];
-  return [...new Set(value.split(",").filter(Boolean))];
-}
-
-function resolveRenderedExpireSeconds(options: {
-  fallbackExpireSeconds: number;
-  sMaxage?: number;
-  staleWhileRevalidate?: number;
-}): number {
-  const { fallbackExpireSeconds, sMaxage, staleWhileRevalidate } = options;
-  if (sMaxage === undefined || staleWhileRevalidate === undefined) {
-    return fallbackExpireSeconds;
-  }
-
-  return sMaxage + staleWhileRevalidate;
-}
-
-function parseCacheControlSeconds(cacheControl: string, directive: string): number | undefined {
-  for (const part of cacheControl.split(",")) {
-    const [rawName, rawValue] = part.trim().split("=", 2);
-    if (rawName.trim().toLowerCase() !== directive) continue;
-    if (rawValue === undefined) return undefined;
-
-    const value = Number(rawValue.trim());
-    if (!Number.isFinite(value) || value < 0) return undefined;
-
-    return value;
-  }
-
-  return undefined;
 }
 
 // ─── Build index ──────────────────────────────────────────────────────────────

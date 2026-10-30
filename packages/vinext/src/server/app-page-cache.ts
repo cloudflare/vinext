@@ -151,14 +151,13 @@ type ReadAppPageCacheResponseOptions = {
   scheduleBackgroundRegeneration: AppPageBackgroundRegenerator;
 };
 
-type ReadAppPageFallbackShellCacheResponseOptions = {
+type ServeAppPageFallbackShellCacheEntryOptions = {
+  cached: ISRCacheEntry;
   clearRequestContext: () => void;
   expireSeconds?: number;
   fallbackPathname: string;
   isEdgeRuntime?: boolean;
   isrDebug?: AppPageDebugLogger;
-  isrGet: AppPageCacheGetter;
-  isrFallbackShellHtmlKey: (pathname: string) => string;
   middlewareHeaders?: Headers | null;
   middlewareStatus?: number | null;
   revalidateSeconds: number;
@@ -169,6 +168,8 @@ type ReadAppPageFallbackShellCacheResponseOptions = {
    */
   resumeDynamicShell: (postponed: string | undefined, hasPrelude: boolean) => boolean;
   rewriteHtml: (html: string) => string;
+  /** Regenerate the stale shell in the background. */
+  scheduleRegeneration: () => void;
 };
 
 function recordAppPageCacheOutcome(
@@ -840,59 +841,56 @@ export async function readAppPageCacheResponse(
   return null;
 }
 
-export async function readAppPageFallbackShellCacheResponse(
-  options: ReadAppPageFallbackShellCacheResponseOptions,
+/**
+ * Serve or resume a fallback shell the caller read or rendered. A missing or
+ * expired shell is rendered before this, so `cached` can be served.
+ */
+export async function serveAppPageFallbackShellCacheEntry(
+  options: ServeAppPageFallbackShellCacheEntryOptions,
 ): Promise<Response | null> {
-  const isrKey = options.isrFallbackShellHtmlKey(options.fallbackPathname);
-
-  try {
-    const cached = await options.isrGet(isrKey);
-    const cachedValue = getCachedAppPageValue(cached);
-    if (!cachedValue) {
-      options.isrDebug?.("MISS (fallback shell)", options.fallbackPathname);
-      return null;
-    }
-    if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
-      // Like any App Page read, a hard-expired shell is a miss. Shells are not
-      // regenerated, so its build-time values must not be replayed.
-      if (cached?.isExpired) {
-        options.isrDebug?.("MISS (expired dynamic fallback shell)", options.fallbackPathname);
-        return null;
-      }
-      const isResumed = options.resumeDynamicShell(
-        cachedValue.postponed,
-        hasAppPprFallbackShellPrelude(cachedValue.html),
-      );
-      options.isrDebug?.(
-        isResumed
-          ? "RESUME (dynamic fallback shell)"
-          : "MISS (dynamic fallback shell without resume data cache)",
-        options.fallbackPathname,
-      );
-      return null;
-    }
-
-    return await serveAppPageCachedHtml(
-      {
-        cached,
-        cachedValue,
-        clearRequestContext: options.clearRequestContext,
-        emptyDebugMessage: "MISS (empty fallback shell)",
-        expireSeconds: options.expireSeconds,
-        isEdgeRuntime: options.isEdgeRuntime,
-        isrDebug: options.isrDebug,
-        middlewareHeaders: options.middlewareHeaders,
-        middlewareStatus: options.middlewareStatus,
-        pathname: options.fallbackPathname,
-        revalidateSeconds: options.revalidateSeconds,
-        scheduleRegeneration() {},
-        stateDebugLabel: "fallback shell",
-      },
-      (value) => ({ ...value, html: options.rewriteHtml(value.html) }),
-    );
-  } catch (isrReadError) {
-    options.isrDebug?.("MISS (fallback shell read error)", options.fallbackPathname);
-    console.error("[vinext] ISR fallback shell cache read error:", isrReadError);
+  const { cached } = options;
+  const cachedValue = getCachedAppPageValue(cached);
+  if (!cachedValue) {
+    options.isrDebug?.("MISS (fallback shell)", options.fallbackPathname);
     return null;
   }
+  if (isAppPprDynamicFallbackShellHtml(cachedValue.html)) {
+    // Like any App Page read, a hard-expired shell is a miss, so its old values
+    // are never replayed.
+    if (cached.isExpired) {
+      options.isrDebug?.("MISS (expired dynamic fallback shell)", options.fallbackPathname);
+      return null;
+    }
+    if (cached.isStale) options.scheduleRegeneration();
+    const isResumed = options.resumeDynamicShell(
+      cachedValue.postponed,
+      hasAppPprFallbackShellPrelude(cachedValue.html),
+    );
+    options.isrDebug?.(
+      isResumed
+        ? "RESUME (dynamic fallback shell)"
+        : "MISS (dynamic fallback shell without resume data cache)",
+      options.fallbackPathname,
+    );
+    return null;
+  }
+
+  return await serveAppPageCachedHtml(
+    {
+      cached,
+      cachedValue,
+      clearRequestContext: options.clearRequestContext,
+      emptyDebugMessage: "MISS (empty fallback shell)",
+      expireSeconds: options.expireSeconds,
+      isEdgeRuntime: options.isEdgeRuntime,
+      isrDebug: options.isrDebug,
+      middlewareHeaders: options.middlewareHeaders,
+      middlewareStatus: options.middlewareStatus,
+      pathname: options.fallbackPathname,
+      revalidateSeconds: options.revalidateSeconds,
+      scheduleRegeneration: options.scheduleRegeneration,
+      stateDebugLabel: "fallback shell",
+    },
+    (value) => ({ ...value, html: options.rewriteHtml(value.html) }),
+  );
 }
