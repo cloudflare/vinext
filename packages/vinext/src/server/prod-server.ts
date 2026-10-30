@@ -1254,6 +1254,16 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
   }
 }
 
+/**
+ * Node's parser keeps a `#fragment` sent on the request line in `req.url`.
+ * Next.js rebuilds request URLs from pathname + search, so neither routing,
+ * middleware nor handlers observe one; drop it before anything reads the URL.
+ */
+function stripNodeRequestUrlFragment(req: IncomingMessage): void {
+  const hashIndex = req.url?.indexOf("#") ?? -1;
+  if (hashIndex !== -1) req.url = req.url?.slice(0, hashIndex);
+}
+
 // `resolveHost`, `trustedHosts`, and `trustProxy` are now imported from
 // `./proxy-trust.js` so the same trust policy applies in api-handler.ts
 // (the dev edge API bridge) and any future server code path that needs
@@ -2256,6 +2266,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {
@@ -2475,6 +2486,7 @@ async function createPagesRouterRequestHandler(
   const staticCache = await StaticFileCache.create(clientDir);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {

@@ -25,6 +25,7 @@ import {
   filterInternalHeaders,
   guardProtocolRelativeUrl,
   haveSameHeaders,
+  stripRequestUrlFragment,
   withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
@@ -258,6 +259,8 @@ function handleRequest(
   defaultHostRuntime: "node" | "worker",
   assets: VinextAssetFetcher | undefined,
 ): Promise<Response> {
+  // Multi-stage Node adapters can keep a `#fragment` sent on the request line.
+  request = stripRequestUrlFragment(request);
   const url = new URL(request.url);
   const trace = async () => {
     await pagesEntry.__ensureInstrumentation?.(platformCtx);

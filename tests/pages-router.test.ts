@@ -8672,6 +8672,25 @@ describe("Production server middleware (Pages Router)", () => {
     expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
   });
 
+  // Node's parser keeps a `#fragment` sent on the request line; Next.js drops
+  // it before middleware runs.
+  it("drops a request-line fragment before middleware in production", async () => {
+    const http = await import("node:http");
+    const { hostname, port } = new URL(prodUrl);
+    const body = await new Promise<string>((resolve, reject) => {
+      // A URL string would drop the fragment; `path` sends it as is.
+      http
+        .get({ hostname, port, path: "/mw-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({ url: `${prodUrl}/mw-request-url?q=1`, hash: "" });
+  });
+
   it("middleware rewrite to a dynamic route merges original query with route params in production", async () => {
     const res = await fetch(`${prodUrl}/mw-rewrite-dynamic-query?hello=world`);
     expect(res.status).toBe(200);
