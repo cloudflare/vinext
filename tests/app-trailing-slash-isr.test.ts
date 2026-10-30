@@ -69,6 +69,16 @@ describe("App Router trailing-slash ISR with generated static params", () => {
     expect(await nested.text()).toBe("blocked by middleware");
   });
 
+  // Next.js matches /guarded/.rsc whole: the slash before the suffix is not a
+  // terminal slash, and the compiled matcher permits the suffix, so middleware
+  // runs.
+  it("runs middleware for a .rsc payload URL that a slash-ending matcher accepts", async () => {
+    const response = await fetch(`${baseUrl}/guarded/.rsc`);
+
+    expect(response.status).toBe(403);
+    expect(await response.text()).toBe("blocked by middleware");
+  });
+
   // Next.js's trailingSlash: true redirect has no /api exception.
   it("redirects an unslashed route handler request to its slashed spelling", async () => {
     const response = await fetch(`${baseUrl}/api/revalidate?lang=en`, { redirect: "manual" });

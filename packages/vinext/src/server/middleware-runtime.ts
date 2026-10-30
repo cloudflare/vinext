@@ -107,6 +107,12 @@ type ExecuteMiddlewareOptions = {
    * second tee whose preserved side would never be consumed.
    */
   requestBodyAlreadyIsolated?: boolean;
+  /**
+   * App Router removed a `.rsc` transport suffix from the request pathname.
+   * Next.js matches `/admin/.rsc` whole, with the suffix permitted by its
+   * compiled matcher, so the slash before the suffix is not a terminal slash.
+   */
+  rscSuffix?: boolean;
   request: Request;
   /**
    * The user's `trailingSlash` config. Plumbed into the NextRequest's NextURL
@@ -537,7 +543,7 @@ async function executeMiddlewareModule(
         matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, localeContext),
       )
     : encodedPathMatches || decodedPathMatches;
-  if (requestedPathMatches) {
+  if (requestedPathMatches || (options.rscSuffix && (encodedPathMatches || decodedPathMatches))) {
     options.onPathMatch?.();
   }
 
@@ -568,10 +574,13 @@ async function executeMiddlewareModule(
         matchesMiddleware(candidate, matcher, options.request, options.i18nConfig, localeContext),
       )
     : strippedMatches;
-  if (!requestedMatches) {
+  if (options.rscSuffix) {
+    // Run middleware when either spelling matches. A `.rsc` payload that
+    // vinext serves must never skip middleware its page spelling would run.
+    if (!requestedMatches && !strippedMatches) return { continue: true };
+  } else if (!requestedMatches) {
     return { continue: true };
-  }
-  if (!strippedMatches) {
+  } else if (!strippedMatches) {
     return { continue: false, response: new Response(null, { status: 200 }) };
   }
 
