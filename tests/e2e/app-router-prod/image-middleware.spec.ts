@@ -75,17 +75,19 @@ test.describe("image optimization endpoint behind middleware", () => {
 
   // Verified against Next.js 16.2.7 `next start`: next.config headers() go on
   // the image and on the 400 for a source it cannot serve, below middleware's
-  // headers and, on the image, below its own Content-Security-Policy.
+  // headers and, on the image, below its own Content-Security-Policy and
+  // Content-Type.
   test("sends next.config headers with the image", async ({ request }) => {
-    for (const [source, status, csp] of [
-      ["/heart.png", 200, "script-src 'none'; frame-src 'none'; sandbox;"],
-      ["/missing.png", 400, "config-csp"],
+    for (const [source, status, csp, contentType] of [
+      ["/heart.png", 200, "script-src 'none'; frame-src 'none'; sandbox;", "image/png"],
+      ["/missing.png", 400, "config-csp", "text/x-config-image"],
     ] as const) {
       const image = await request.get(imagePath("/_next/image", source));
       expect(image.status(), source).toBe(status);
       expect(image.headers()["x-e2e-header"], source).toBe("vinext-e2e");
       expect(image.headers()["x-mw-image-endpoint"], source).toBe("true");
       expect(image.headers()["content-security-policy"], source).toBe(csp);
+      expect(image.headers()["content-type"], source).toBe(contentType);
     }
   });
 

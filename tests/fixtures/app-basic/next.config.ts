@@ -455,6 +455,7 @@ const nextConfig: NextConfig = {
         source: "/_next/image",
         headers: [
           { key: "Content-Security-Policy", value: "config-csp" },
+          { key: "Content-Type", value: "text/x-config-image" },
           { key: "X-Mw-Image-Endpoint", value: "config" },
         ],
       },

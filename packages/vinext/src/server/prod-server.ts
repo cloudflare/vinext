@@ -439,6 +439,9 @@ const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
+// Signal headers an App Router image endpoint 400 keeps but its image replaces.
+const IMAGE_ERROR_SIGNAL_HEADERS = ["content-type", "content-encoding"] as const;
+
 function omitHeadersCaseInsensitive(
   headersRecord: Record<string, string | string[]>,
   targets: ReadonlySet<string>,
@@ -1962,19 +1965,29 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     request: Request,
     signal: ImageOptimizationSignal,
   ): Promise<void> => {
-    const stagedHeaders = omitHeadersCaseInsensitive(
-      mergeResponseHeaders({}, new Response(null, { headers: signal.middlewareHeaders })),
-      OMIT_STATIC_RESPONSE_HEADERS,
+    const signalHeaders = mergeResponseHeaders(
+      {},
+      new Response(null, { headers: signal.middlewareHeaders }),
     );
+    const stagedHeaders = omitHeadersCaseInsensitive(signalHeaders, OMIT_STATIC_RESPONSE_HEADERS);
     for (const [name, value] of Object.entries(stagedHeaders)) {
       res.setHeader(name, value);
     }
+    // Next.js sets config and middleware headers before the image handler, so
+    // only an image replaces their Content-Type and Content-Encoding.
+    const sendBadRequest = (body: string) => {
+      for (const name of IMAGE_ERROR_SIGNAL_HEADERS) {
+        const value = signalHeaders[name];
+        if (value !== undefined) res.setHeader(name, value);
+      }
+      res.writeHead(400);
+      res.end(body);
+    };
     // The query middleware and rewrites selected, which the handler validated.
     const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
     const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
     if (!params) {
-      res.writeHead(400);
-      res.end("Bad Request");
+      sendBadRequest("Bad Request");
       return;
     }
     // Block SVG and other unsafe content types by checking the file extension
@@ -1982,8 +1995,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // could carry an image extension. SVG is only allowed when
     // dangerouslyAllowSVG is enabled in next.config.js.
     const sendUnsafeContentType = () => {
-      res.writeHead(400);
-      res.end("The requested resource is not an allowed image type");
+      sendBadRequest("The requested resource is not an allowed image type");
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
@@ -2057,8 +2069,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await serveSource(sourcePath)) return;
       }
     }
-    res.writeHead(400);
-    res.end(INVALID_IMAGE_SOURCE_MESSAGE);
+    sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
   };
 
   // Files the client build emits outside `_next/static`, for example a

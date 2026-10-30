@@ -164,5 +164,22 @@ export async function serveWorkerImageOptimization(
   });
   const cookies = signal.middlewareHeaders.getSetCookie();
   if (cookies.length > 0) middlewareHeaders["set-cookie"] = cookies;
-  return mergeHeaders(response, middlewareHeaders);
+  const merged = mergeHeaders(response, middlewareHeaders);
+  if (response.status < 400) return merged;
+  // Next.js sets config and middleware headers before the image handler, so
+  // only an image replaces their Content-Type and Content-Encoding.
+  const errorHeaders = new Headers(merged.headers);
+  let replaced = false;
+  for (const name of ["content-type", "content-encoding"]) {
+    const value = signal.middlewareHeaders.get(name);
+    if (value === null) continue;
+    errorHeaders.set(name, value);
+    replaced = true;
+  }
+  if (!replaced) return merged;
+  return new Response(merged.body, {
+    headers: errorHeaders,
+    status: merged.status,
+    statusText: merged.statusText,
+  });
 }

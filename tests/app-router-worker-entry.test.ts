@@ -1012,6 +1012,8 @@ export default {
       const denied = await get("/protected/private.png");
       expect(denied.status).toBe(400);
       expect(denied.headers.get("x-mw")).toBe("1");
+      // Only an image replaces the Content-Type middleware or config set.
+      expect(denied.headers.get("content-type")).toBe("text/plain");
       await expect(denied.text()).resolves.toBe("The requested resource isn't a valid image.");
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {
