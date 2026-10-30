@@ -926,12 +926,28 @@ export async function handleMetadataRouteRequest(
   // common case of zero dynamic metadata routes never splits at all.
   let urlParts: string[] | undefined;
   const getUrlParts = () => (urlParts ??= options.cleanPathname.split("/").filter(Boolean));
+  // Next.js selects a metadata route by the pathname as sent, like any App
+  // route, so `/%70ortal/sitemap.xml` is not `/portal/sitemap.xml`. The
+  // decoded `cleanPathname` still supplies the match, cache key and tags.
+  const routePathname = options.routePathname ?? options.cleanPathname;
+  let routeUrlParts: string[] | undefined;
+  const getRouteUrlParts = () => (routeUrlParts ??= routePathname.split("/").filter(Boolean));
+  // The shared cache entry under `cleanPathname` belongs to the first route
+  // the decoded pathname names. Once the raw pathname skips that route, a later
+  // one renders without reading or writing the entry.
+  let cacheOptions = options;
+  const skipDecodedOwner = () => {
+    cacheOptions = { ...options, isrGet: undefined, isrRouteKey: undefined, isrSet: undefined };
+  };
 
   for (const route of options.metadataRoutes) {
     const functions = getMetadataRouteFunctions(route);
     if (route.type === "sitemap" && route.isDynamic) {
       if (functions.generateSitemaps) {
-        if (isGeneratedSitemapPath(route, options.cleanPathname)) {
+        if (!isGeneratedSitemapPath(route, options.cleanPathname)) continue;
+        if (!isGeneratedSitemapPath(route, routePathname)) {
+          skipDecodedOwner();
+        } else {
           beginMetadataRouteCacheability(route);
           const render = async (): Promise<RenderedMetadataRoute | null> => {
             setCurrentFetchSoftTags(buildMetadataRouteTags(route, options.cleanPathname, []));
@@ -940,10 +956,14 @@ export async function handleMetadataRouteRequest(
               ? captureRenderedMetadataRoute(response, route, options.cleanPathname)
               : null;
           };
-          const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+          const cached = await readMatchedPrerenderedMetadataRouteResponse(
+            cacheOptions,
+            route,
+            render,
+          );
           if (cached.response) return cached.response;
           const response = await renderMetadataRouteMiss(
-            options,
+            cacheOptions,
             route,
             render,
             cached.cachedEntry,
@@ -958,13 +978,15 @@ export async function handleMetadataRouteRequest(
     }
 
     const match = matchMetadataRoute(route, options.cleanPathname, functions, getUrlParts);
-    if (!match) {
+    if (!match) continue;
+    if (!matchMetadataRoute(route, routePathname, functions, getRouteUrlParts)) {
+      skipDecodedOwner();
       continue;
     }
     beginMetadataRouteCacheability(route);
 
     const rawParams = route.patternParts
-      ? metadataRouteRawParams(route, match, options.routePathname ?? options.cleanPathname)
+      ? metadataRouteRawParams(route, match, routePathname)
       : Object.create(null);
     if (route.patternParts) {
       const runtimeParams = { ...rawParams };
@@ -979,7 +1001,7 @@ export async function handleMetadataRouteRequest(
         : serveStaticMetadataRoute(route);
       return captureRenderedMetadataRoute(response, route, options.cleanPathname);
     };
-    const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
+    const cached = await readMatchedPrerenderedMetadataRouteResponse(cacheOptions, route, render);
     if (cached.response) return cached.response;
 
     // A deployment stores only the params it allows, so a cached response
@@ -1002,7 +1024,7 @@ export async function handleMetadataRouteRequest(
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
-    return renderMetadataRouteMiss(options, route, render, cached.cachedEntry);
+    return renderMetadataRouteMiss(cacheOptions, route, render, cached.cachedEntry);
   }
 
   return null;

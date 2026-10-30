@@ -142,6 +142,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
     return NextResponse.rewrite(target);
   }
+  if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
+    return NextResponse.rewrite(target);
+  }
 
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
@@ -656,6 +661,7 @@ export const config = {
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
+    "/encoded-parity/rewrite-any/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
