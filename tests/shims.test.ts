@@ -8190,6 +8190,105 @@ describe('"use cache" runtime', () => {
     expect(outerCalls).toBe(2);
   });
 
+  // Ported from Next.js: getRenderResumeDataCache() and getPrerenderResumeDataCache()
+  // return null inside a cache scope (server/app-render/work-unit-async-storage.external.ts).
+  it("keeps nested caches out of the resume data cache", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { getRootParam, runWithRootParamsScope } =
+      await import("../packages/vinext/src/shims/root-params.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { _setResumeDataCacheCollector, _setResumeDataCacheSeed } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+    const { createResumeDataCache } =
+      await import("../packages/vinext/src/shims/resume-data-cache.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let outerCalls = 0;
+    const inner = registerCachedFunction(
+      async () => ({ countryCode: await getRootParam("countryCode") }),
+      "test:rdc-nested-inner",
+    );
+    const outer = registerCachedFunction(async () => {
+      outerCalls++;
+      return { ...(await inner()), outerCalls };
+    }, "test:rdc-nested-outer");
+    const invoke = <T>(
+      fn: () => Promise<T>,
+      countryCode: string,
+      rdc: {
+        collector?: ReturnType<typeof createResumeDataCache>;
+        seed?: ReturnType<typeof createResumeDataCache>;
+      },
+    ) =>
+      runWithRequestContext(createRequestContext(), () =>
+        runWithRootParamsScope({ countryCode }, () => {
+          _setResumeDataCacheCollector(rdc.collector ?? null);
+          _setResumeDataCacheSeed(rdc.seed ?? null);
+          return fn();
+        }),
+      );
+
+    // Only the outermost cache is collected.
+    const collector = createResumeDataCache();
+    await expect(invoke(outer, "us", { collector })).resolves.toEqual({
+      countryCode: "us",
+      outerCalls: 1,
+    });
+    expect([...collector.cache.keys()]).toEqual([expect.stringContaining("test:rdc-nested-outer")]);
+
+    // A seeded entry for the inner cache is not replayed inside the outer one.
+    const innerSeed = createResumeDataCache();
+    await invoke(inner, "us", { collector: innerSeed });
+    expect(innerSeed.cache.size).toBe(1);
+    setCacheHandler(new MemoryCacheHandler());
+    await expect(invoke(outer, "gb", { seed: innerSeed })).resolves.toEqual({
+      countryCode: "gb",
+      outerCalls: 2,
+    });
+  });
+
+  it("leaves a cache hit without a lifetime out of the resume data cache", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    const { _setResumeDataCacheCollector } =
+      await import("../packages/vinext/src/shims/cache-request-state.js");
+    const { createResumeDataCache } =
+      await import("../packages/vinext/src/shims/resume-data-cache.js");
+    // A custom handler that enforces its own lifetime and returns none.
+    class LifetimelessHandler extends MemoryCacheHandler {
+      override async get(...args: Parameters<InstanceType<typeof MemoryCacheHandler>["get"]>) {
+        const entry = await super.get(...args);
+        return entry ? { ...entry, cacheControl: undefined } : entry;
+      }
+    }
+    setCacheHandler(new LifetimelessHandler());
+
+    const cached = registerCachedFunction(async () => "value", "test:rdc-lifetimeless");
+    const collect = async () => {
+      const collector = createResumeDataCache();
+      await runWithRequestContext(createRequestContext(), async () => {
+        _setResumeDataCacheCollector(collector);
+        await cached();
+      });
+      return collector.cache.size;
+    };
+
+    try {
+      await expect(collect()).resolves.toBe(1);
+      await expect(collect()).resolves.toBe(0);
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/use-cache/use-cache.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache/use-cache.test.ts
   it("bypasses the shared cache in draft mode", async () => {

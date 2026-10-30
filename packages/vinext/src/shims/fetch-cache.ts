@@ -51,6 +51,14 @@ import {
   _setRequestScopedCacheLife,
 } from "./cache-request-state.js";
 import { getRequestExecutionContext } from "./request-context.js";
+import {
+  trackPprFallbackShellCacheTask,
+  waitForPprFallbackShellCacheInput,
+} from "./ppr-fallback-shell.js";
+import {
+  collectFetchResumeDataCacheEntry,
+  readFetchResumeDataCacheEntry,
+} from "./resume-data-cache.js";
 import { isInsideUnifiedScope, runWithUnifiedStateMutation } from "./unified-request-context.js";
 
 export {
@@ -853,9 +861,9 @@ async function writeFetchCacheResponse(
   tags: string[],
   revalidateSeconds: number,
   options?: { cloneForReturn?: boolean; staleEntry?: CacheHandlerValue },
-): Promise<void> {
+): Promise<CachedFetchValue | null> {
   const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds, options);
-  if (!cacheValue) return;
+  if (!cacheValue) return null;
 
   await handler.set(cacheKey, cacheValue, {
     fetchCache: true,
@@ -864,6 +872,7 @@ async function writeFetchCacheResponse(
     // The stale entry this write refreshes, so a handler can tell a refresh from a write.
     ...(options?.staleEntry ? { staleEntry: options.staleEntry } : {}),
   });
+  return cacheValue;
 }
 
 async function lowerFetchCacheRevalidateIfNeeded(
@@ -1396,195 +1405,233 @@ function createPatchedFetch(): typeof globalThis.fetch {
         ? `fetchCache = ${fetchCacheMode}`
         : `revalidate: ${nextOpts?.revalidate === false || cacheDirective === "force-cache" ? 0xfffffffe : revalidateSeconds}`;
 
-    if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
-      // Upstream mutates the active prerender store when an explicit fetch
-      // lifetime is shorter. Later metadata-only fetches inherit that live
-      // minimum rather than the route's original segment-config seed.
-      lowerCurrentFetchRevalidate(nextOpts.revalidate);
-      // Only this explicit lifetime shortens the page's. A fetch without a
-      // numeric `next.revalidate` (force-cache, `revalidate: false`, tags only
-      // or a fetchCache default) stores its entry for a year or the route's
-      // revalidate, but leaves a `revalidate = false` page indefinite: Next.js
-      // lowers the prerender store only when the fetch's own revalidate is
-      // shorter (server/lib/patch-fetch.ts).
-      recordFiniteFetchRevalidate(nextOpts.revalidate);
-    }
-    const reqTags = _getState().currentRequestTags;
-    if (tags.length > 0) {
-      for (const tag of tags) {
-        if (!reqTags.includes(tag)) {
-          reqTags.push(tag);
+    // A fallback shell being rendered waits for this cache entry, as it does
+    // for a cache function, so the entry is in the shell's resume data cache.
+    return trackPprFallbackShellCacheTask(async () => {
+      if (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0) {
+        // Upstream mutates the active prerender store when an explicit fetch
+        // lifetime is shorter. Later metadata-only fetches inherit that live
+        // minimum rather than the route's original segment-config seed.
+        lowerCurrentFetchRevalidate(nextOpts.revalidate);
+        // Only this explicit lifetime shortens the page's. A fetch without a
+        // numeric `next.revalidate` (force-cache, `revalidate: false`, tags only
+        // or a fetchCache default) stores its entry for a year or the route's
+        // revalidate, but leaves a `revalidate = false` page indefinite: Next.js
+        // lowers the prerender store only when the fetch's own revalidate is
+        // shorter (server/lib/patch-fetch.ts).
+        recordFiniteFetchRevalidate(nextOpts.revalidate);
+      }
+      const reqTags = _getState().currentRequestTags;
+      if (tags.length > 0) {
+        for (const tag of tags) {
+          if (!reqTags.includes(tag)) {
+            reqTags.push(tag);
+          }
         }
       }
-    }
 
-    const softTags = _getState().currentFetchSoftTags;
-    let fetchInit: RequestInit | undefined;
-    ({ input, init: fetchInit } = snapshotFetchRequest(
-      input,
-      stripNextFromInit(init, cacheDirective),
-    ));
-    const initBody = fetchInit.body;
-    if (initBody !== undefined && initBody !== null && !isKeyableInitBody(initBody)) {
-      // Any other body (an async iterable, or an object the runtime converts
-      // to a string) is built into a Request as fetch itself would, and that
-      // Request's bytes are keyed and it is sent.
-      input = new Request(input, fetchInit);
-      builtBodyRequests.add(input);
-      fetchInit = {};
-    }
-    let cacheKey: string;
-    try {
-      cacheKey = await buildFetchCacheKey(input, fetchInit);
-      // Cache-key generation may consume and stash request bodies on fetchInit;
-      // normalize again so the real fetch receives the restored body.
-      fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-    } catch (err) {
-      if (
-        err instanceof BodyTooLargeForCacheKeyError ||
-        err instanceof SkipCacheKeyGenerationError
-      ) {
+      const softTags = _getState().currentFetchSoftTags;
+      let fetchInit: RequestInit | undefined;
+      ({ input, init: fetchInit } = snapshotFetchRequest(
+        input,
+        stripNextFromInit(init, cacheDirective),
+      ));
+      const initBody = fetchInit.body;
+      if (initBody !== undefined && initBody !== null && !isKeyableInitBody(initBody)) {
+        // Any other body (an async iterable, or an object the runtime converts
+        // to a string) is built into a Request as fetch itself would, and that
+        // Request's bytes are keyed and it is sent.
+        input = new Request(input, fetchInit);
+        builtBodyRequests.add(input);
+        fetchInit = {};
+      }
+      let cacheKey: string;
+      try {
+        // A body that waits on fallback params never resolves, so its key
+        // doesn't hold the shell open, as a cache function's arguments don't.
+        cacheKey = await waitForPprFallbackShellCacheInput(buildFetchCacheKey(input, fetchInit));
+        // Cache-key generation may consume and stash request bodies on fetchInit;
+        // normalize again so the real fetch receives the restored body.
         fetchInit = stripNextFromInit(fetchInit, cacheDirective);
-        // The developer opted into caching but we couldn't build a cache key
-        // (body too large / unserializable). That is an internal vinext
-        // limitation, not an explicit uncached-fetch decision, so additionally
-        // record the dynamic fetch observation (outside a cache scope) without
-        // marking the page dynamic. A static page that makes this fetch is
-        // still stored.
-        recordDynamicFetchObservation(input);
-        return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
+      } catch (err) {
+        if (
+          err instanceof BodyTooLargeForCacheKeyError ||
+          err instanceof SkipCacheKeyGenerationError
+        ) {
+          fetchInit = stripNextFromInit(fetchInit, cacheDirective);
+          // The developer opted into caching but we couldn't build a cache key
+          // (body too large / unserializable). That is an internal vinext
+          // limitation, not an explicit uncached-fetch decision, so additionally
+          // record the dynamic fetch observation (outside a cache scope) without
+          // marking the page dynamic. A static page that makes this fetch is
+          // still stored.
+          recordDynamicFetchObservation(input);
+          return recordFetchOutcome(await dedupeFetch(input, fetchInit), "miss", cacheReason);
+        }
+        throw err;
       }
-      throw err;
-    }
-    const handler = getDataCacheHandler();
-    let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
+      const handler = getDataCacheHandler();
+      let mustBypassPendingRevalidation = _hasPendingRevalidatedTag([...tags, ...softTags]);
 
-    // A stale entry this fetch refreshes, kept for the miss path below if the
-    // refresh fails.
-    let staleEntry: CacheHandlerValue | undefined;
-
-    // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
-    // skips the read but still fetches and stores the fresh response.
-    try {
-      let cached =
-        mustBypassPendingRevalidation || _isOnDemandRevalidate()
-          ? null
-          : await handler.get(cacheKey, {
-              kind: "FETCH",
-              tags,
-              softTags,
-              revalidate: revalidateSeconds,
-            });
-      if (
-        cached?.value?.kind === "FETCH" &&
-        _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
-      ) {
-        mustBypassPendingRevalidation = true;
-        cached = null;
-      }
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
-        await lowerFetchCacheRevalidateIfNeeded(
-          handler,
-          cacheKey,
-          cached.value,
-          tags,
-          revalidateSeconds,
-        );
-        const cachedData = cached.value.data;
-        return recordFetchOutcome(buildCachedFetchResponse(cachedData, input), "hit", cacheReason);
+      // A resumed fallback shell reads the response it was built with first,
+      // whatever its age, unless this request revalidated one of its tags.
+      const resumeEntry = mustBypassPendingRevalidation
+        ? undefined
+        : readFetchResumeDataCacheEntry(cacheKey);
+      if (resumeEntry) {
+        collectFetchResumeDataCacheEntry(cacheKey, resumeEntry);
+        return recordFetchOutcome(buildCachedFetchResponse(resumeEntry, input), "hit", cacheReason);
       }
 
-      // Stale entry — we could do stale-while-revalidate here, but for fetch()
-      // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
-      // However, if we have a stale entry, return it and trigger background refetch.
-      if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
-        staleEntry = cached;
-        if (shouldRefreshStaleFetchInForeground()) {
-          const freshResponse = await dedupeFetch(input, fetchInit);
-          await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
-            staleEntry: cached,
-          });
-          return recordFetchOutcome(freshResponse, "miss", cacheReason);
+      // A stale entry this fetch refreshes, kept for the miss path below if the
+      // refresh fails.
+      let staleEntry: CacheHandlerValue | undefined;
+
+      // Try cache first. Like Next.js's patch-fetch, an on-demand revalidation
+      // skips the read but still fetches and stores the fresh response.
+      try {
+        let cached =
+          mustBypassPendingRevalidation || _isOnDemandRevalidate()
+            ? null
+            : await handler.get(cacheKey, {
+                kind: "FETCH",
+                tags,
+                softTags,
+                revalidate: revalidateSeconds,
+              });
+        if (
+          cached?.value?.kind === "FETCH" &&
+          _hasPendingRevalidatedTag([...(cached.value.tags ?? []), ...tags, ...softTags])
+        ) {
+          mustBypassPendingRevalidation = true;
+          cached = null;
+        }
+        // Like Next.js, an entry past its `expire` is a miss.
+        if (cached?.cacheState === "expired") cached = null;
+        if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
+          await lowerFetchCacheRevalidateIfNeeded(
+            handler,
+            cacheKey,
+            cached.value,
+            tags,
+            revalidateSeconds,
+          );
+          const cachedData = cached.value.data;
+          collectFetchResumeDataCacheEntry(cacheKey, cachedData);
+          return recordFetchOutcome(
+            buildCachedFetchResponse(cachedData, input),
+            "hit",
+            cacheReason,
+          );
         }
 
-        const staleData = cached.value.data;
+        // Stale entry — we could do stale-while-revalidate here, but for fetch()
+        // the simpler approach is to just re-fetch (the page-level ISR handles SWR).
+        // However, if we have a stale entry, return it and trigger background refetch.
+        if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState === "stale") {
+          staleEntry = cached;
+          if (shouldRefreshStaleFetchInForeground()) {
+            const freshResponse = await dedupeFetch(input, fetchInit);
+            const freshValue = await writeFetchCacheResponse(
+              handler,
+              cacheKey,
+              freshResponse,
+              tags,
+              revalidateSeconds,
+              { staleEntry: cached },
+            );
+            if (freshValue) collectFetchResumeDataCacheEntry(cacheKey, freshValue.data);
+            return recordFetchOutcome(freshResponse, "miss", cacheReason);
+          }
 
-        // Background refetch — deduped so only one in-flight refetch runs
-        // per cache key, preventing thundering herd on popular endpoints.
-        if (!pendingRefetches.has(cacheKey)) {
-          const refetchPromise = originalFetch(input, fetchInit)
-            .then(async (freshResp) => {
-              await writeFetchCacheResponse(handler, cacheKey, freshResp, tags, revalidateSeconds, {
-                cloneForReturn: false,
-                staleEntry: cached,
+          const staleData = cached.value.data;
+          collectFetchResumeDataCacheEntry(cacheKey, staleData);
+
+          // Background refetch — deduped so only one in-flight refetch runs
+          // per cache key, preventing thundering herd on popular endpoints.
+          if (!pendingRefetches.has(cacheKey)) {
+            const refetchPromise = originalFetch(input, fetchInit)
+              .then(async (freshResp) => {
+                await writeFetchCacheResponse(
+                  handler,
+                  cacheKey,
+                  freshResp,
+                  tags,
+                  revalidateSeconds,
+                  {
+                    cloneForReturn: false,
+                    staleEntry: cached,
+                  },
+                );
+              })
+              .catch((err) => {
+                const url =
+                  typeof input === "string"
+                    ? input
+                    : input instanceof URL
+                      ? input.toString()
+                      : input.url;
+                console.error(
+                  `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
+                  err,
+                );
+              })
+              .finally(() => {
+                // Only clear if we still own the slot — the timeout may have
+                // already replaced it with a newer refetch promise.
+                if (pendingRefetches.get(cacheKey) === refetchPromise) {
+                  pendingRefetches.delete(cacheKey);
+                }
+                clearTimeout(timeoutId);
               });
-            })
-            .catch((err) => {
-              const url =
-                typeof input === "string"
-                  ? input
-                  : input instanceof URL
-                    ? input.toString()
-                    : input.url;
-              console.error(
-                `[vinext] fetch cache background revalidation failed for ${url} (key=${cacheKey.slice(0, 12)}...):`,
-                err,
-              );
-            })
-            .finally(() => {
-              // Only clear if we still own the slot — the timeout may have
-              // already replaced it with a newer refetch promise.
+
+            pendingRefetches.set(cacheKey, refetchPromise);
+
+            // Safety net: if the upstream fetch hangs forever, force-clean the
+            // dedup entry so future stale hits can retry instead of being
+            // permanently suppressed.
+            const timeoutId = setTimeout(() => {
               if (pendingRefetches.get(cacheKey) === refetchPromise) {
                 pendingRefetches.delete(cacheKey);
               }
-              clearTimeout(timeoutId);
-            });
+            }, DEDUP_TIMEOUT_MS);
 
-          pendingRefetches.set(cacheKey, refetchPromise);
+            getRequestExecutionContext()?.waitUntil(refetchPromise);
+          }
 
-          // Safety net: if the upstream fetch hangs forever, force-clean the
-          // dedup entry so future stale hits can retry instead of being
-          // permanently suppressed.
-          const timeoutId = setTimeout(() => {
-            if (pendingRefetches.get(cacheKey) === refetchPromise) {
-              pendingRefetches.delete(cacheKey);
-            }
-          }, DEDUP_TIMEOUT_MS);
-
-          getRequestExecutionContext()?.waitUntil(refetchPromise);
+          // Return stale data immediately
+          return recordFetchOutcome(buildCachedFetchResponse(staleData, input), "hit", cacheReason);
         }
-
-        // Return stale data immediately
-        return recordFetchOutcome(buildCachedFetchResponse(staleData, input), "hit", cacheReason);
+      } catch (cacheErr) {
+        // Cache read failed — fall through to network
+        console.error("[vinext] fetch cache read error:", cacheErr);
       }
-    } catch (cacheErr) {
-      // Cache read failed — fall through to network
-      console.error("[vinext] fetch cache read error:", cacheErr);
-    }
 
-    // Cache miss — fetch from network
-    const response = await (mustBypassPendingRevalidation
-      ? originalFetch(input, fetchInit)
-      : dedupeFetch(input, fetchInit));
+      // Cache miss — fetch from network
+      const response = await (mustBypassPendingRevalidation
+        ? originalFetch(input, fetchInit)
+        : dedupeFetch(input, fetchInit));
 
-    const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
-    if (cacheValue) {
-      const write = handler
-        .set(cacheKey, cacheValue, {
-          fetchCache: true,
-          tags,
-          revalidate: revalidateSeconds,
-          ...(staleEntry ? { staleEntry } : {}),
-        })
-        .catch((err) => {
-          console.error("[vinext] fetch cache write error:", err);
-        });
-      // Next.js keeps the request alive for its pending fetch cache writes, so
-      // an on-demand revalidation's fresh response is stored.
-      getRequestExecutionContext()?.waitUntil(write);
-    }
+      const cacheValue = await buildFetchCacheValue(response, tags, revalidateSeconds);
+      if (cacheValue) {
+        collectFetchResumeDataCacheEntry(cacheKey, cacheValue.data);
+        const write = handler
+          .set(cacheKey, cacheValue, {
+            fetchCache: true,
+            tags,
+            revalidate: revalidateSeconds,
+            ...(staleEntry ? { staleEntry } : {}),
+          })
+          .catch((err) => {
+            console.error("[vinext] fetch cache write error:", err);
+          });
+        // Next.js keeps the request alive for its pending fetch cache writes, so
+        // an on-demand revalidation's fresh response is stored.
+        getRequestExecutionContext()?.waitUntil(write);
+      }
 
-    return recordFetchOutcome(response, "miss", cacheReason);
+      return recordFetchOutcome(response, "miss", cacheReason);
+    }, "default");
   };
 
   return ((input: string | URL | Request, init?: RequestInit) => {

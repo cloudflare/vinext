@@ -5,7 +5,10 @@ import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
 import {
   _captureRequestScopedCacheLifeAccessors,
   _isOnDemandRevalidate,
+  _setResumeDataCacheCollector,
+  _setResumeDataCacheSeed,
 } from "vinext/shims/cache-request-state";
+import { createResumeDataCache } from "vinext/shims/resume-data-cache";
 import type { RootParams } from "vinext/shims/root-params";
 import type { PprFallbackShellState } from "vinext/shims/ppr-fallback-shell";
 import {
@@ -1395,6 +1398,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
 
   const fallbackShellState = options.pprRuntime?.getState() ?? null;
   if (fallbackShellState && process.env.VINEXT_PRERENDER === "1" && !options.isRscRequest) {
+    // The shell's resume data cache: every cache entry its renders read or wrote.
+    const resumeDataCache = createResumeDataCache();
+    _setResumeDataCacheCollector(resumeDataCache);
+    // Its entries replay at any age, so a stale fetch refreshes first, like Next.js.
+    setRefreshStaleFetchesInForeground(true);
     const warmupBuildResult = await buildCurrentPageElement();
     if (warmupBuildResult.response) {
       return warmupBuildResult.response;
@@ -1406,6 +1414,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       state: fallbackShellState,
     });
     discardAppPageRenderState();
+    // Like Next.js, the final render reads what the warmup collected instead of
+    // running it again.
+    _setResumeDataCacheSeed(resumeDataCache);
   }
 
   const navigationParams = resolveAppPageNavigationParams(
