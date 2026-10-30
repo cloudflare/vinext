@@ -34,6 +34,17 @@ export function addBasePathToPathname(pathname: string, basePath: string | undef
 }
 
 /**
+ * Re-add a basePath that `stripBasePath` removed. Unlike
+ * `addBasePathToPathname`, this always prepends it: a stripped route whose
+ * first segment equals the basePath (basePath "/docs", route "/docs/a") still
+ * starts with the basePath and must not be mistaken for the original URL.
+ */
+export function restoreBasePath(pathname: string, basePath: string | undefined): string {
+  if (!basePath) return pathname;
+  return pathname === "/" ? basePath : `${basePath}${pathname}`;
+}
+
+/**
  * Remove trailing slashes from a pathname while preserving the root "/".
  * Collapses any number of trailing slashes ("/a//" → "/a"). Used by the
  * trailing-slash redirect path and route pattern normalization.

@@ -1670,6 +1670,17 @@ describe("API routes", () => {
     expect(result.defaultContentType).toBe("application/octet-stream");
   });
 
+  it("re-adds the basePath to an API URL whose first segment equals it", async () => {
+    // basePath "/api" and pages/api/users: `/api/api/users` was stripped once.
+    const handleApi = vi.fn(async (request: Request) => Response.json({ url: request.url }));
+    const result = await runPagesRequest(
+      makeRequest("/api/users"),
+      baseDeps({ basePath: "/api", hadBasePath: true, handleApi }),
+    );
+    expect(result.type).toBe("response");
+    expect(handleApi.mock.calls[0][0].url).toBe("http://localhost/api/api/users");
+  });
+
   it("passes staged middleware and config response headers to API dispatch", async () => {
     const handleApi = vi.fn(
       async (_request: Request, _apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
@@ -2942,10 +2953,18 @@ describe("wrapMiddlewareWithBasePath", () => {
     expect(middlewareRequest.geo?.country).toBe("AU");
   });
 
-  it("does not double-add an already-present basePath (addBasePathToPathname is idempotent)", async () => {
+  it("re-adds the basePath to a stripped pathname whose first segment equals it", async () => {
+    // `/root/root/dashboard` was stripped once to `/root/dashboard`.
     const runMiddleware = makeMiddleware({ continue: true });
     const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
     await wrapped(makeRequest("/root/dashboard"), null, { isDataRequest: false });
-    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/dashboard");
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root/root/dashboard");
+  });
+
+  it("re-adds the basePath to the stripped root as the bare basePath", async () => {
+    const runMiddleware = makeMiddleware({ continue: true });
+    const wrapped = wrapMiddlewareWithBasePath(runMiddleware, "/root", true);
+    await wrapped(makeRequest("/"), null, { isDataRequest: false });
+    expect(runMiddleware.mock.calls[0][0].url).toBe("http://localhost/root");
   });
 });

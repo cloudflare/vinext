@@ -120,7 +120,7 @@ import {
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
-import { hasBasePath, stripBasePath } from "./utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "./utils/base-path.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -7097,16 +7097,23 @@ export const loadServerActionClient = ${
               // NOTE: When basePath is set, we also set Vite's `base` config to
               // `basePath + "/"`. Vite's connect middleware stack strips the base
               // prefix from req.url before passing it to our middleware, so the
-              // URL will already lack the basePath prefix. We still attempt to
-              // strip it (for robustness) but don't reject paths that don't start
-              // with basePath — Vite has already done the filtering.
+              // URL will usually already lack the basePath prefix. Strip it here
+              // only when Vite has not (the pre-Vite public-file hook), and don't
+              // reject paths that don't start with basePath — Vite has already
+              // done the filtering.
               const bp = nextConfig?.basePath ?? "";
               const viteBase = server.config.base;
               const viteBasePath =
                 viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
               const routingBasePath = bp || viteBasePath;
+              // Every URL below loses the basePath at most once: a route like
+              // /docs/a under basePath /docs still starts with the basePath once
+              // stripped. Middleware gets that basePath back, so record whether
+              // it was there.
+              const viteStrippedBasePath = originalRequestUrl !== originalEncodedUrl;
+              let originalUrlHadBasePath = false;
               if (routingBasePath) {
-                if (hasBasePath(pathname, routingBasePath)) {
+                if (!viteStrippedBasePath && hasBasePath(pathname, routingBasePath)) {
                   const stripped = stripBasePath(pathname, routingBasePath);
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   url = stripped + qs;
@@ -7114,6 +7121,7 @@ export const loadServerActionClient = ${
                 }
                 const middlewarePathname = middlewareUrl.split("?")[0];
                 if (hasBasePath(middlewarePathname, routingBasePath)) {
+                  originalUrlHadBasePath = true;
                   const middlewareQs = middlewareUrl.includes("?")
                     ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
                     : "";
@@ -7127,7 +7135,7 @@ export const loadServerActionClient = ${
                   routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
                 }
               }
-              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
+              let configMatchPathname = middlewareUrl.split("?")[0];
 
               if (nextConfig && !nextConfig.skipTrailingSlashRedirect) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -7356,7 +7364,14 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
+                      const middlewareRequestUrl = new URL(middlewareUrl, mwOrigin);
+                      if (originalUrlHadBasePath) {
+                        middlewareRequestUrl.pathname = restoreBasePath(
+                          middlewareRequestUrl.pathname,
+                          bp,
+                        );
+                      }
+                      const middlewareRequest = new Request(middlewareRequestUrl, {
                         method: req.method,
                         headers: nodeRequestHeaders,
                         signal: webRequest.signal,
@@ -7672,6 +7687,9 @@ export const loadServerActionClient = ${
                     allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                     skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
+                    requestPathname: originalUrlHadBasePath
+                      ? restoreBasePath(routeUrl.split("?")[0], bp)
+                      : routeUrl.split("?")[0],
                   },
                 );
                 if (handled) return;

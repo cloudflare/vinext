@@ -34,7 +34,6 @@ import { resolveRequestProtocol, resolveRequestHost } from "./proxy-trust.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
 import { NextRequest } from "vinext/shims/server";
 import { signalFromNodeResponse } from "./node-response-signal.js";
-import { hasBasePath } from "../utils/base-path.js";
 import {
   attachPagesPreviewApi,
   attachPagesRequestCookies,
@@ -198,7 +197,7 @@ function createEdgeApiRequest(
   res: ServerResponse,
   url: string,
   params: Record<string, string | string[]>,
-  nextConfig?: { basePath?: string },
+  requestPathname: string | undefined,
 ): Request {
   const headers = new Headers();
   for (const [name, value] of Object.entries(req.headers)) {
@@ -223,14 +222,11 @@ function createEdgeApiRequest(
   const host = resolveRequestHost(req, "localhost");
   // Keep this in sync with pages-api-route.ts: preserve the visible incoming
   // pathname while replacing only the resolved query and dynamic params.
-  // Dev runs after Vite has stripped its configured basePath, so reconstruct
-  // it here; prod/Workers do this earlier in pages-request-pipeline.ts using
-  // the adapter's hadBasePath state before calling pages-api-route.ts.
+  // Vite has stripped its configured basePath from req.url, so the dev server
+  // passes the pathname with that basePath restored, as prod/Workers do in
+  // pages-request-pipeline.ts from the adapter's hadBasePath state.
   const requestUrl = new URL(req.url ?? url, `${proto}://${host}`);
-  const basePath = nextConfig?.basePath;
-  if (basePath && !hasBasePath(requestUrl.pathname, basePath)) {
-    requestUrl.pathname = `${basePath}${requestUrl.pathname}`;
-  }
+  if (requestPathname !== undefined) requestUrl.pathname = requestPathname;
   const query = mergeRouteParamsIntoQuery(parseQueryString(url), params);
   requestUrl.search = urlQueryToSearchParams(query).toString();
   // Match prod/Next.js: edge API handlers observe client disconnects, and an
@@ -441,6 +437,8 @@ export async function handleApiRoute(
     allowedRevalidateHeaderKeys?: readonly string[];
     trailingSlash?: boolean;
     skipTrailingSlashRedirect?: boolean;
+    /** Edge API request pathname, with any basePath the dev server stripped restored. */
+    requestPathname?: string;
   },
 ): Promise<boolean> {
   const match = matchRoute(url, apiRoutes);
@@ -456,7 +454,7 @@ export async function handleApiRoute(
       // edge API handlers, so handlers can use `req.nextUrl.searchParams`,
       // `req.cookies`, etc. (Cf. NextRequestHint in next/src/server/web/adapter.ts.)
       const nextRequest = new NextRequest(
-        createEdgeApiRequest(req, res, url, params, nextConfig),
+        createEdgeApiRequest(req, res, url, params, nextConfig?.requestPathname),
         nextConfig
           ? {
               nextConfig: {
