@@ -36,13 +36,13 @@ import {
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
   isImageOptimizationPath,
-  IMAGE_CACHE_CONTROL,
   IMAGE_CONTENT_SECURITY_POLICY,
   IMAGE_RESPONSE_CACHE_STATE,
   INVALID_IMAGE_SOURCE_MESSAGE,
   parseImageParams,
   isImageSourceBodyStatus,
   isSafeImageContentType,
+  MUTABLE_IMAGE_SOURCE_CACHE_CONTROL,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -754,6 +754,19 @@ function staticCacheLookupPath(pathname: string): string | null {
   // Block .vite/ access, also encoded (e.g. /%2Evite/manifest.json)
   if (lookupPath.startsWith("/.vite/") || lookupPath === "/.vite") return null;
   return lookupPath;
+}
+
+/**
+ * Give a Node image passthrough Next.js's image Cache-Control instead of the
+ * public-file default: a hashed build asset keeps its immutable default, and
+ * any other source is revalidated after the default `images.minimumCacheTTL`.
+ */
+function withImageSourceCacheControl(
+  headers: Record<string, string>,
+  sourcePath: string,
+): Record<string, string> {
+  if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
+  return { ...headers, "Cache-Control": MUTABLE_IMAGE_SOURCE_CACHE_CONTROL };
 }
 
 /** Pathnames the Pages Router serves from routes rather than the client directory. */
@@ -2013,11 +2026,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
-    // Serve the original image with CSP and security headers, and the image
-    // endpoint's own Cache-Control, as on Workers, rather than the revalidating
-    // public-file default.
+    // Serve the original image with CSP and security headers
     const imageSecurityHeaders: Record<string, string> = {
-      "Cache-Control": IMAGE_CACHE_CONTROL,
       "Content-Security-Policy":
         imageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
       "X-Content-Type-Options": "nosniff",
@@ -2032,7 +2042,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        imageSecurityHeaders,
+        withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2935,10 +2945,7 @@ async function createPagesRouterRequestHandler(
                 contentTypeForPath(sourcePath),
                 pagesImageConfig?.dangerouslyAllowSVG,
               );
-            // The image endpoint's own Cache-Control, as on Workers, rather
-            // than the revalidating public-file default.
             const imageSecurityHeaders: Record<string, string> = {
-              "Cache-Control": IMAGE_CACHE_CONTROL,
               "Content-Security-Policy":
                 pagesImageConfig?.contentSecurityPolicy ?? IMAGE_CONTENT_SECURITY_POLICY,
               "X-Content-Type-Options": "nosniff",
@@ -2953,7 +2960,7 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                imageSecurityHeaders,
+                withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );

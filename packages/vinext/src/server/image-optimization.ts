@@ -359,6 +359,12 @@ export function negotiateImageFormat(acceptHeader: string | null): string {
 export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
 /**
+ * Next.js's Cache-Control for an image whose source can change at its URL
+ * (anything but a hashed build asset), at the default `images.minimumCacheTTL`.
+ */
+export const MUTABLE_IMAGE_SOURCE_CACHE_CONTROL = "public, max-age=14400, must-revalidate";
+
+/**
  * Content-Security-Policy for image optimization responses.
  * Blocks script execution and framing to prevent XSS via SVG or other
  * active content that might be served through the image endpoint.
