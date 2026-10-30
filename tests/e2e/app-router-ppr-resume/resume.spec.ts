@@ -159,6 +159,32 @@ test("hydrates a resumed fallback shell", async ({ baseURL, context, page, conso
   expect(consoleErrors).toEqual([]);
 });
 
+test("leaves an uncached fetch to a hole each request fills", async ({ baseURL }) => {
+  const url = new URL("/en/feed", baseURL);
+  // The page renders dynamically, so its shell is produced after it. Each
+  // request is read to its end, so none fetches after the counters are read.
+  await readStreamedDocument(url, []);
+  await expect
+    .poll(async () => (await readStreamedDocument(url, [])).headers.get("x-nextjs-postponed"), {
+      timeout: 15_000,
+    })
+    .toBe("1");
+
+  const before = await readServerWork(baseURL!);
+  const stamps = new Set<string>();
+  for (let request = 0; request < 2; request++) {
+    const document = await readStreamedDocument(url, ['id="shell-stamp"', '<p id="latest">']);
+    expect(document.headers.get("x-nextjs-postponed")).toBe("1");
+    stamps.add(/<p id="latest">([^<]*)<\/p>/.exec(document.html)![1]);
+  }
+  const after = await readServerWork(baseURL!);
+
+  // Like Next.js, the shell keeps no fetch response: each request makes its own.
+  expect(stamps.size).toBe(2);
+  expect((after.stamp ?? 0) - (before.stamp ?? 0)).toBe(2);
+  expect(after["shell-probe-ssr"] ?? 0).toBe(before["shell-probe-ssr"] ?? 0);
+});
+
 test("regenerates a stale shell from a fresh render", async ({ baseURL }) => {
   const url = new URL("/en/regenerated", baseURL);
   const pageStamp = (document: StreamedDocument) =>

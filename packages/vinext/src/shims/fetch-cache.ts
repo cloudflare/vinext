@@ -54,6 +54,8 @@ import {
 import { getRegisteredCacheContext } from "./internal/cache-context-accessor.js";
 import { getRequestExecutionContext } from "./request-context.js";
 import {
+  createPprFallbackShellAwaitedHole,
+  type PprFallbackShellAwaitedHole,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
 } from "./ppr-fallback-shell.js";
@@ -797,6 +799,30 @@ function recordDynamicFetchObservation(input: string | URL | Request): void {
   addDynamicFetchObservation(input);
 }
 
+/**
+ * Like Next.js, an uncached fetch in a Cache Components shell's render, outside
+ * a cache, is a hole each request fills instead of a value the shell keeps. It
+ * isn't made: its response would be one request's.
+ */
+function createUncachedFetchShellHole(
+  awaitedHole: PprFallbackShellAwaitedHole | null,
+): Promise<Response> | null {
+  if (awaitedHole === null || isInsideAnyCacheScope()) return null;
+  return awaitedHole.create<Response>("`fetch()`");
+}
+
+/**
+ * Record a fetch that skipped the cache on its own, without an explicit
+ * opt-out. With Cache Components it's still dynamic, as Next.js's prerender
+ * leaves it a hole, so a page isn't stored with one request's response.
+ */
+function recordAutoNoCacheFetch(input: string | URL | Request): void {
+  recordDynamicFetchObservation(input);
+  if (String(process.env.__NEXT_CACHE_COMPONENTS) === "true" && !isInsideAnyCacheScope()) {
+    markDynamicUsage();
+  }
+}
+
 function markUncachedFetchForPageOutput(input: string | URL | Request): void {
   if (isInsideAnyCacheScope()) return;
   addDynamicFetchObservation(input);
@@ -1252,8 +1278,9 @@ function dedupeFetch(
 function createPatchedFetch(): typeof globalThis.fetch {
   const patchedFetch = async function patchedFetch(
     input: string | URL | Request,
-    init?: RequestInit,
-    span?: FrameworkSpan,
+    init: RequestInit | undefined,
+    span: FrameworkSpan | undefined,
+    awaitedHole: PprFallbackShellAwaitedHole | null,
   ): Promise<Response> {
     // Draft mode skips the fetch cache entirely, before segment fetchCache
     // config or tag handling: the cache key doesn't cover draft state, so a
@@ -1316,7 +1343,9 @@ function createPatchedFetch(): typeof globalThis.fetch {
 
     // If no caching options at all, just pass through to original fetch
     if (!nextOpts && !cacheDirective) {
-      recordDynamicFetchObservation(input);
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
+      if (shellHole) return shellHole;
+      recordAutoNoCacheFetch(input);
       return recordFetchOutcome(await dedupeFetch(input, init), "skip", "auto no cache");
     }
 
@@ -1330,6 +1359,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
       cacheDirective === "no-cache" ||
       nextOpts?.revalidate === 0
     ) {
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
+      if (shellHole) return shellHole;
       // Strip the `next` property before passing to real fetch
       const cleanInit = stripNextFromInit(init, cacheDirective);
       markUncachedFetchForPageOutput(input);
@@ -1342,11 +1373,14 @@ function createPatchedFetch(): typeof globalThis.fetch {
     // reused for another through it. This doesn't keep the value out of a
     // stored page (see below). Developers who understand the implications can still force
     // caching by using `cache: 'force-cache'` or `next: { revalidate: N }`.
-    // This is an automatic safety bypass, not an explicit opt-out, so it does
-    // NOT mark the page dynamic via markDynamicUsage(), and a static page that
-    // makes this fetch is still stored. Next.js does the same: an `autoNoCache`
-    // fetch doesn't make the page dynamic ("we don't consider autoNoCache to
-    // switch to dynamic for ISR", server/lib/patch-fetch.ts). Outside a
+    // This is an automatic safety bypass, not an explicit opt-out, so without
+    // Cache Components it does NOT mark the page dynamic via markDynamicUsage(),
+    // and a static page that makes this fetch is still stored. Next.js does the
+    // same: an `autoNoCache` fetch doesn't make the page dynamic ("we don't
+    // consider autoNoCache to switch to dynamic for ISR",
+    // server/lib/patch-fetch.ts). With Cache Components it's dynamic outside a
+    // cache scope (see recordAutoNoCacheFetch), as Next.js's prerender leaves
+    // it a hole. Outside a
     // "use cache" or unstable_cache scope, the fetch is still recorded as a
     // dynamic fetch observation, which keeps the layout that made it out of
     // static layout reuse and, except under force-static, marks the client
@@ -1360,8 +1394,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
       nextOpts?.revalidate === false ||
       (typeof nextOpts?.revalidate === "number" && nextOpts.revalidate > 0);
     if (!hasExplicitCacheOpt && hasAuthHeaders(input, init)) {
+      const shellHole = createUncachedFetchShellHole(awaitedHole);
+      if (shellHole) return shellHole;
       const cleanInit = stripNextFromInit(init, cacheDirective);
-      recordDynamicFetchObservation(input);
+      recordAutoNoCacheFetch(input);
       return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
     }
 
@@ -1399,6 +1435,8 @@ function createPatchedFetch(): typeof globalThis.fetch {
             )
           : _getState().currentFetchRevalidate;
         if (routeRevalidate === 0) {
+          const shellHole = createUncachedFetchShellHole(awaitedHole);
+          if (shellHole) return shellHole;
           const cleanInit = stripNextFromInit(init, cacheDirective);
           markUncachedFetchForPageOutput(input);
           return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "revalidate: 0");
@@ -1409,8 +1447,10 @@ function createPatchedFetch(): typeof globalThis.fetch {
             : routeRevalidate;
       } else {
         // next: {} with no revalidate or tags — pass through
+        const shellHole = createUncachedFetchShellHole(awaitedHole);
+        if (shellHole) return shellHole;
         const cleanInit = stripNextFromInit(init, cacheDirective);
-        recordDynamicFetchObservation(input);
+        recordAutoNoCacheFetch(input);
         return recordFetchOutcome(await dedupeFetch(input, cleanInit), "skip", "auto no cache");
       }
     }
@@ -1659,7 +1699,12 @@ function createPatchedFetch(): typeof globalThis.fetch {
     if ((init?.next as InternalNextFetchOptions | undefined)?.internal === true) {
       return originalFetch(input, init);
     }
-    return traceAppFetch(input, init, (span) => patchedFetch(input, init, span));
+    // A fetch left to a shell's hole only makes one once it's awaited.
+    const awaitedHole = createPprFallbackShellAwaitedHole();
+    const response = traceAppFetch(input, init, (span) =>
+      patchedFetch(input, init, span, awaitedHole),
+    );
+    return awaitedHole ? awaitedHole.track(response) : response;
   }) as typeof globalThis.fetch;
 }
 

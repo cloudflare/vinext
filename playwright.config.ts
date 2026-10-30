@@ -173,7 +173,7 @@ const projectServers = {
     use: { baseURL: "http://127.0.0.1:4205" },
     server: {
       command:
-        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && node ../../../packages/vinext/dist/cli.js start --port 4205 --hostname 127.0.0.1",
+        "npx vp run vinext#build && node ../../../packages/vinext/dist/cli.js build && PORT=4205 node ../../../packages/vinext/dist/cli.js start --port 4205 --hostname 127.0.0.1",
       cwd: "./tests/fixtures/app-ppr-resume",
       port: 4205,
       reuseExistingServer: false,

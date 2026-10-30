@@ -1336,6 +1336,105 @@ describe("fetch cache shim", () => {
     expect(JSON.parse(Buffer.from(entry.body, "base64").toString()).count).toBe(2);
   });
 
+  it.each([
+    ["without cache options", undefined],
+    ["with cache: no-store", { cache: "no-store" }],
+    ["with cache: no-cache", { cache: "no-cache" }],
+    ["with revalidate: 0", { next: { revalidate: 0 } }],
+    ["with empty next options", { next: {} }],
+    ["with an Authorization header", { headers: { authorization: "Bearer token" } }],
+  ] as const)(
+    "leaves an uncached fetch %s in a shell's render to a hole, without making it",
+    async (_label, init) => {
+      const { createPprFallbackShellState, runWithPprFallbackShellState } =
+        await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+      const state = createPprFallbackShellState({
+        fallbackParamNames: [],
+        routePattern: "/feed",
+      });
+
+      let settled = false;
+      void runWithPprFallbackShellState(state, () =>
+        fetch("https://api.example.com/shell-uncached", init as RequestInit | undefined),
+      ).finally(() => {
+        settled = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(settled).toBe(false);
+      expect(state.hasDynamicBoundary).toBe(true);
+      expect(fetchMock).not.toHaveBeenCalled();
+      // The hole keeps the shell storable.
+      expect(consumeDynamicUsage()).toBe(false);
+      state.abortController.abort();
+    },
+  );
+
+  // Like Next.js's untracked hanging promise, a fetch nobody awaits leaves no hole.
+  it("leaves no hole for an uncached fetch in a shell's render that nothing awaits", async () => {
+    const { createPprFallbackShellState, runWithPprFallbackShellState } =
+      await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      routePattern: "/feed",
+    });
+
+    const response = runWithPprFallbackShellState(state, () =>
+      fetch("https://api.example.com/shell-ignored"),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(state.hasDynamicBoundary).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    // Awaiting it later makes the hole.
+    void response.then(() => {});
+    expect(state.hasDynamicBoundary).toBe(true);
+    state.abortController.abort();
+  });
+
+  it.each([
+    ["without cache options", undefined],
+    ["with cache: no-store", { cache: "no-store" }],
+    ["with an Authorization header", { headers: { authorization: "Bearer token" } }],
+  ] as const)(
+    "makes an uncached fetch %s inside unstable_cache in a shell's render",
+    async (label, init) => {
+      const { unstable_cache } = await import("../packages/vinext/src/shims/cache.js");
+      const { createPprFallbackShellState, runWithPprFallbackShellState } =
+        await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
+      const state = createPprFallbackShellState({
+        fallbackParamNames: [],
+        routePattern: "/feed",
+      });
+      const cached = unstable_cache(
+        async () =>
+          (await fetch("https://api.example.com/shell-cached", init as RequestInit | undefined))
+            .status,
+        ["shell-scope", label],
+      );
+
+      // A cache keeps the fetch's value, so it isn't a hole.
+      await expect(runWithPprFallbackShellState(state, () => cached())).resolves.toBe(200);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(consumeDynamicUsage()).toBe(false);
+    },
+  );
+
+  it("marks an auto no-cache fetch dynamic with Cache Components", async () => {
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    try {
+      await fetch("https://api.example.com/cache-components-auto");
+      expect(consumeDynamicUsage()).toBe(true);
+      await fetch("https://api.example.com/cache-components-cached", {
+        next: { revalidate: 60 },
+      });
+      expect(consumeDynamicUsage()).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("holds a fallback shell open while a cacheable fetch is pending", async () => {
     const { createPprFallbackShellState, runWithPprFallbackShellState } =
       await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
