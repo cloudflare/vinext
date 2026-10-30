@@ -152,7 +152,7 @@ export function resolveHardNavigationTargetFromRscResponse(
     pathname += "/";
   }
 
-  let hardNavigationTarget = pathname + parsed.search;
+  let hardNavigationTarget = toPathAbsolutePathname(pathname) + parsed.search;
   if (origUrl.hash) hardNavigationTarget += origUrl.hash;
   return hardNavigationTarget;
 }
@@ -453,16 +453,23 @@ export function parseRscRequestPath(href: string): URL {
 }
 
 /**
+ * A pathname as the start of a path-absolute reference. One that begins with
+ * "//" would serialize as a protocol-relative URL naming another host, so it
+ * keeps a "/." prefix, as the WHATWG URL serializer does. URL resolution drops
+ * the dot segment, so the reference still targets the same pathname on the
+ * origin it is resolved against.
+ */
+export function toPathAbsolutePathname(pathname: string): string {
+  return pathname.startsWith("//") ? `/.${pathname}` : pathname;
+}
+
+/**
  * Serialize the path-absolute reference callers fetch against the app origin.
- * A pathname that begins with "//" would serialize as a protocol-relative URL
- * and send the request to another host, so it keeps a "/." prefix, as the
- * WHATWG URL serializer does. URL resolution drops the dot segment, so the
- * request still targets the same pathname on the app origin, as Next.js's
- * full-URL fetch does.
+ * A "//" pathname keeps its "/." prefix so the request still targets the same
+ * pathname on the app origin, as Next.js's full-URL fetch does.
  */
 export function formatRscRequestPath(url: URL): string {
-  const pathname = url.pathname.startsWith("//") ? `/.${url.pathname}` : url.pathname;
-  return `${pathname}${url.search}`;
+  return `${toPathAbsolutePathname(url.pathname)}${url.search}`;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {

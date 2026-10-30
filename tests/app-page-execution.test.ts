@@ -772,6 +772,10 @@ describe("app page execution helpers", () => {
     ["./subpage", "/docs/subpage"],
     ["?tab=1", "/docs/page?tab=1"],
     ["#section", "/docs/page#section"],
+    // A same-origin path whose resolved pathname begins with "//" must not be
+    // sent as a protocol-relative URL naming another host.
+    ["/.//other.test/out", "/.//other.test/out"],
+    ["/x/..//other.test/out?a=1#f", "/.//other.test/out?a=1#f"],
   ])(
     "resolves a relative RSC redirect target %s against the request path",
     async (location, url) => {

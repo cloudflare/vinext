@@ -2,6 +2,7 @@ import {
   applyRscCompatibilityIdHeader,
   applyRscDeploymentIdHeader,
   createRscRedirectLocation,
+  toPathAbsolutePathname,
   VINEXT_RSC_CONTENT_TYPE,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_RSC_REDIRECT_HEADER, VINEXT_RSC_REDIRECT_TYPE_HEADER } from "./headers.js";
@@ -506,9 +507,11 @@ function toHeaderSafeUrlReference(location: string): string {
  * header-safe, so a protocol-relative or scheme-relative target still resolves
  * against the page each client fetched. A relative target resolves against the
  * request's path to a path-only form, which the client resolves against its
- * own origin. Resolving against two placeholder origins tells these apart the
- * way the URL parser does, never depends on the request's origin, and cannot
- * mistake an absolute target naming one placeholder for a relative one.
+ * own origin; a resolved pathname that begins with "//" keeps a "/." prefix
+ * so that form stays a path rather than naming another host. Resolving
+ * against two placeholder origins tells these apart the way the URL parser
+ * does, never depends on the request's origin, and cannot mistake an absolute
+ * target naming one placeholder for a relative one.
  */
 function resolveRedirectTargets(
   location: string,
@@ -522,7 +525,8 @@ function resolveRedirectTargets(
       return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
     }
     const { pathname, search, hash } = first.resolved;
-    return { digestUrl: `${pathname}${search}${hash}`, headerUrl: `${pathname}${search}${hash}` };
+    const target = `${toPathAbsolutePathname(pathname)}${search}${hash}`;
+    return { digestUrl: target, headerUrl: target };
   } catch {
     return { digestUrl: location, headerUrl: toHeaderSafeUrlReference(location) };
   }
