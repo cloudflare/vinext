@@ -102,3 +102,79 @@ test("hydrates a resumed fallback shell", async ({ baseURL, context, page, conso
   await expect(page.locator("#shell-probe")).toHaveText("shell clicks: 1");
   expect(consoleErrors).toEqual([]);
 });
+
+test("regenerates a stale shell from a fresh render", async ({ baseURL }) => {
+  const url = new URL("/en/regenerated", baseURL);
+  const pageStamp = (document: StreamedDocument) =>
+    /<p id="page-stamp">([^<]*)<\/p>/.exec(document.html)?.[1];
+  const initial = await readServerWork(baseURL!);
+  await readStreamedDocument(url, []);
+  // The first render produces the shell after it, without waiting for another
+  // request, though its cookie read comes in a boundary after the shell. Each
+  // renders the shell probe.
+  await expect
+    .poll(
+      async () =>
+        ((await readServerWork(baseURL!))["shell-probe-ssr"] ?? 0) -
+        (initial["shell-probe-ssr"] ?? 0),
+      { timeout: 15_000 },
+    )
+    .toBeGreaterThanOrEqual(2);
+  await expect
+    .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), { timeout: 15_000 })
+    .toBe("1");
+  const before = pageStamp(await readStreamedDocument(url, []));
+
+  await fetch(new URL("/api/revalidate", baseURL), { method: "POST" });
+
+  // The stale shell is sent while it regenerates. Like Next.js, the new shell
+  // is rendered afresh, not resumed from the stale one.
+  await expect
+    .poll(
+      async () => {
+        const document = await readStreamedDocument(url, []);
+        expect(document.headers.get("x-nextjs-postponed")).toBe("1");
+        expect(document.html.match(/<html/g)).toHaveLength(1);
+        expect(document.html.match(/id="page-stamp"/g)).toHaveLength(1);
+        return pageStamp(document);
+      },
+      { timeout: 15_000 },
+    )
+    .not.toBe(before);
+});
+
+// A path with its own shell: one generateStaticParams produced, a route
+// without fallback params, and a path whose root param wasn't generated. Next.js
+// prerenders these, or renders an unknown one blocking; vinext renders the
+// first request and produces the shell after it.
+for (const path of ["/en/about", "/en/blog/known", "/fr/about", "/fr/blog/new"]) {
+  test(`resumes ${path} from its own shell`, async ({ baseURL, context, page, consoleErrors }) => {
+    const url = new URL(path, baseURL);
+    await readStreamedDocument(url, []);
+    // The shell is produced in the background after the first render.
+    await expect
+      .poll(async () => (await fetch(url)).headers.get("x-nextjs-postponed"), {
+        timeout: 15_000,
+      })
+      .toBe("1");
+
+    const before = await readServerWork(baseURL!);
+    const document = await readStreamedDocument(url, ['id="shell-stamp"', '<p id="greeting">']);
+    const after = await readServerWork(baseURL!);
+
+    expect(document.headers.get("x-nextjs-postponed")).toBe("1");
+    expect(
+      document.markers['<p id="greeting">'] - document.markers['id="shell-stamp"'],
+    ).toBeGreaterThan(1_000);
+    expect(after["shell-probe-ssr"] ?? 0).toBe(before["shell-probe-ssr"] ?? 0);
+    expect((after.greeting ?? 0) - (before.greeting ?? 0)).toBe(1);
+
+    await context.addCookies([{ name: "name", value: "ada", url: baseURL! }]);
+    await page.goto(path);
+    await expect(page.locator("#greeting")).toHaveText("hello ada");
+    await expect(page.locator("#shell-probe[data-hydrated]")).toBeVisible();
+    await page.locator("#shell-probe").click();
+    await expect(page.locator("#shell-probe")).toHaveText("shell clicks: 1");
+    expect(consoleErrors).toEqual([]);
+  });
+}

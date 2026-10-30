@@ -496,7 +496,10 @@ A page under a `loading.tsx` boundary, an href with a query string, an intercept
 
 With `cacheComponents`, vinext serves a production App Router page's document from a stored shell, as Next.js serves its partial prerender. The shell is the page rendered with `cookies()`, `headers()`, `connection()` and short-lived `"use cache"` functions left at their `<Suspense>` fallbacks. A request sends the stored shell at once, then renders only those holes and streams them into it. The rest of the page doesn't render again, and the browser hydrates the shell as it arrives.
 
-A path that `generateStaticParams` didn't produce resumes a fallback shell, which leaves out the params it didn't produce for the path: `/blog/[slug]` for a slug that wasn't generated, or `/en/blog/[slug]` under a generated `en` locale. The first request that needs one renders it, blocking, and stores it. A path whose root param wasn't generated has no fallback shell, so it renders in full, as in Next.js.
+A request resumes the most specific shell its path has:
+
+- **The path's own shell**, which keeps every param. A path's first request renders the page in full. When that render is dynamic and returns a 200, the path's shell is produced in the background after it, for later requests to resume. A navigation's RSC request reads the cached values the shell was built with, so its payload matches the document. A stale shell is still sent while a fresh one renders in the background.
+- **A fallback shell**, which leaves out params `generateStaticParams` didn't produce for the path: `/blog/[slug]` for a slug that wasn't generated, or `/en/blog/[slug]` under a generated `en` locale. The first request that needs one renders it, blocking, and stores it. A path whose root param wasn't generated has no fallback shell, so it renders in full, as in Next.js.
 
 ## Query strings
 

@@ -251,6 +251,11 @@ type RenderAppPageLifecycleOptionsBase = {
   mountedSlotsHeader?: string | null;
   renderedPathAndSearch?: string | null;
   renderMode?: AppRscRenderMode;
+  /**
+   * Called when the page's render is dynamic: from its start, or, for a
+   * document that might have been stored, once it has rendered whole.
+   */
+  onDynamicRender?: () => void;
   waitUntil?: (promise: Promise<void>) => void;
 };
 
@@ -985,6 +990,8 @@ async function renderAppPageLifecycleImpl(
             expireSeconds,
             revalidateSeconds,
           });
+    // The page's own policy, as middleware may replace the response's header.
+    if (rscResponsePolicy.cacheControl === NEVER_CACHE_CONTROL) options.onDynamicRender?.();
     if (shouldBypassRscCache) {
       options.isrDebug?.(
         isPartialPayload
@@ -1265,6 +1272,8 @@ async function renderAppPageLifecycleImpl(
         revalidateSeconds,
       }),
       linkHeader: write.linkHeader,
+      // A special error's document isn't the page's.
+      onDynamicRender: write.status === undefined ? options.onDynamicRender : undefined,
       status: write.status,
       waitUntil(cachePromise) {
         options.waitUntil?.(cachePromise);
@@ -1682,6 +1691,7 @@ async function renderAppPageLifecycleImpl(
     return response;
   }
 
+  if (htmlResponsePolicy.cacheControl === NEVER_CACHE_CONTROL) options.onDynamicRender?.();
   if (shouldWriteHtmlCache) {
     const isrResponse = buildAppPageHtmlResponse(safeHtmlStream, {
       cacheTags: options.isPrerender === true ? options.getPageTags() : undefined,

@@ -313,6 +313,48 @@ export function createAppPprRequestFallbackShells(
   return createAppPprFallbackShells(route, decodedParams);
 }
 
+/**
+ * The shell of a request's own path, which keeps every param, as Next.js
+ * prerenders one for a path generateStaticParams produced, a route without
+ * fallback params, and a path it renders blocking. Null when a value equals
+ * its param's placeholder, as the path would share the entry of a fallback
+ * shell leaving the param out. A root param is never left out.
+ */
+export function createAppPprRequestConcreteShell(
+  route: AppPprFallbackShellRoute,
+  requestParams: Record<string, string | string[]>,
+): AppPprFallbackShell | null {
+  const rootParamNames = routeRootParamNames(route);
+  const segments: string[] = [];
+  const params: Record<string, string | string[]> = Object.create(null);
+  for (const part of route.pattern.split("/").filter(Boolean)) {
+    if (!part.startsWith(":")) {
+      segments.push(part);
+      continue;
+    }
+    const isCatchAll = part.endsWith("+") || part.endsWith("*");
+    const paramName = isCatchAll ? part.slice(1, -1) : part.slice(1);
+    const requestValue = requestParams[paramName];
+    if (requestValue === undefined || (Array.isArray(requestValue) && requestValue.length === 0)) {
+      // An optional catch-all without a value leaves its segment out.
+      if (part.endsWith("*")) continue;
+      return null;
+    }
+    const value = Array.isArray(requestValue)
+      ? requestValue.map(decodeParamValue)
+      : decodeParamValue(requestValue);
+    if (
+      !rootParamNames.has(paramName) &&
+      isSameParamValue(value, placeholderForParam(part, paramName))
+    ) {
+      return null;
+    }
+    pushParamValue(segments, value);
+    params[paramName] = value;
+  }
+  return { fallbackParamNames: [], pathname: "/" + segments.join("/"), params };
+}
+
 function decodeParamValue(value: string): string {
   try {
     return decodeURIComponent(value);

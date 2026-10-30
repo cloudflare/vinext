@@ -328,6 +328,17 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     isForceStatic: boolean,
     isForceDynamic: boolean,
   ): Promise<Response | AppPagePprShellResume | null>;
+  /**
+   * After a page rendered dynamically, produce in the background the shell of
+   * its path that later requests resume.
+   */
+  produceConcreteShell(
+    options: DispatchAppPageOptions<TRoute>,
+    currentRevalidateSeconds: number | null,
+    isDraftMode: boolean,
+    isForceStatic: boolean,
+    isForceDynamic: boolean,
+  ): void;
   /** Produce the missing shells of a generated path rendered for the cache. */
   produceMissingShells(
     options: DispatchAppPageOptions<TRoute>,
@@ -1786,6 +1797,20 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // it answers, so `await res.revalidate()` resolves once the entry is stored.
   const onDemandCacheWrites: Promise<void>[] | null = isOnDemandRevalidate ? [] : null;
 
+  // Like Next.js, which prerenders a path's shell, a page that rendered
+  // dynamically gets one for later requests to resume. A response middleware
+  // gave another status isn't the page's.
+  const produceConcreteShell =
+    options.pprRuntime && !pprShellResume && (options.middlewareContext.status ?? 200) === 200
+      ? () =>
+          options.pprRuntime!.produceConcreteShell(
+            options,
+            currentRevalidateSeconds,
+            isDraftMode,
+            isForceStatic,
+            isForceDynamic,
+          )
+      : undefined;
   const lifecycleOptions: Parameters<typeof renderAppPageLifecycle>[0] = {
     basePath: options.basePath,
     bypassInterceptionContextCache: options.bypassInterceptionContextCache,
@@ -1898,6 +1923,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,
+    onDynamicRender: produceConcreteShell,
     waitUntil(cachePromise) {
       onDemandCacheWrites?.push(cachePromise);
       getRequestExecutionContext()?.waitUntil(cachePromise);

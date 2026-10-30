@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import {
   appendAppPprFallbackShellState,
   createAppPprFallbackShells,
+  createAppPprRequestConcreteShell,
   createAppPprRequestFallbackShells,
   hasAppPprFallbackShellPrelude,
   isAppPprDynamicFallbackShellHtml,
@@ -346,5 +347,63 @@ describe("replaceAppPprShellFallbackParamKeys", () => {
         { name: "rest", shellValue: ["%5B...rest%5D"], requestValue: ["a", "b%2Fc"] },
       ]),
     ).toEqual({ key: JSON.stringify(["xslug|%5B...rest%5D|d", "rest|a/b%2Fc|c"]) });
+  });
+});
+
+describe("createAppPprRequestConcreteShell", () => {
+  const route = {
+    params: ["locale", "slug"],
+    pattern: "/:locale/blog/:slug",
+    rootParamNames: ["locale"],
+  };
+
+  it("keeps every decoded param at the request's own path", () => {
+    expect(createAppPprRequestConcreteShell(route, { locale: "en", slug: "caf%C3%A9" })).toEqual({
+      fallbackParamNames: [],
+      pathname: "/en/blog/caf%C3%A9",
+      params: { locale: "en", slug: "café" },
+    });
+  });
+
+  it("keeps a route without params", () => {
+    expect(createAppPprRequestConcreteShell({ params: [], pattern: "/about" }, {})).toEqual({
+      fallbackParamNames: [],
+      pathname: "/about",
+      params: {},
+    });
+  });
+
+  it("leaves out an optional catch-all without a value", () => {
+    expect(
+      createAppPprRequestConcreteShell({ params: ["rest"], pattern: "/docs/:rest*" }, {}),
+    ).toMatchObject({ pathname: "/docs", params: {} });
+    expect(
+      createAppPprRequestConcreteShell(
+        { params: ["rest"], pattern: "/docs/:rest*" },
+        { rest: ["a", "b"] },
+      ),
+    ).toMatchObject({ pathname: "/docs/a/b", params: { rest: ["a", "b"] } });
+  });
+
+  it("has no shell for a value equal to its param's placeholder", () => {
+    expect(
+      createAppPprRequestConcreteShell(route, { locale: "en", slug: "%5Bslug%5D" }),
+    ).toBeNull();
+    expect(
+      createAppPprRequestConcreteShell(
+        { params: ["rest"], pattern: "/docs/:rest+" },
+        { rest: ["[...rest]"] },
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps a root param whose value equals its placeholder, as no fallback shell leaves it out", () => {
+    expect(
+      createAppPprRequestConcreteShell(route, { locale: "%5Blocale%5D", slug: "post" }),
+    ).toEqual({
+      fallbackParamNames: [],
+      pathname: "/%5Blocale%5D/blog/post",
+      params: { locale: "[locale]", slug: "post" },
+    });
   });
 });
