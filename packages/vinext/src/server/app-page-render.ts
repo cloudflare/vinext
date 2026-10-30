@@ -617,9 +617,10 @@ async function renderAppPageLifecycleImpl(
   // Request dynamic state is consumptive, but both cache finalization and the
   // streamed client completion marker need the final answer. Keep the first
   // positive observation for this render so whichever branch drains first
-  // cannot hide it from the other.
+  // cannot hide it from the other. A negative answer is never kept: the
+  // client's branch can end before the render does, as when the client
+  // disconnects, and the capture's render may still turn dynamic after that.
   let dynamicUsageObserved = false;
-  let dynamicUsageFinalized = false;
   const isCacheCandidateHtmlRender =
     options.isCacheCandidate === true && options.isPrerender !== true && !options.isRscRequest;
   // HTML renders that decide whether the page is static also read the
@@ -651,13 +652,6 @@ async function renderAppPageLifecycleImpl(
     (readsRenderDynamicLatch && isRenderDynamicLatched());
   const consumeRenderDynamicUsage = (): boolean => {
     if (!dynamicUsageObserved) dynamicUsageObserved = readDynamicUsage();
-    return dynamicUsageObserved;
-  };
-  const finalizeRenderDynamicUsage = (): boolean => {
-    if (!dynamicUsageFinalized) {
-      consumeRenderDynamicUsage();
-      dynamicUsageFinalized = true;
-    }
     return dynamicUsageObserved;
   };
   const artifactCompatibility = createAppPageArtifactCompatibility(
@@ -1047,7 +1041,7 @@ async function renderAppPageLifecycleImpl(
       rscResponse.body
         ? new Response(
             appendRscCompletionMetadata(rscResponse.body, () => {
-              if (!finalizeRenderDynamicUsage()) return undefined;
+              if (!consumeRenderDynamicUsage()) return undefined;
               const completedServerStaleTimeSeconds = resolveClientStaleTimeSeconds(
                 options.peekRequestCacheLife?.(),
               );
@@ -1087,7 +1081,7 @@ async function renderAppPageLifecycleImpl(
       bypassInterceptionContextCache: options.bypassInterceptionContextCache,
       captureAdmittedDocument,
       cleanPathname: options.cleanPathname,
-      consumeDynamicUsage: finalizeRenderDynamicUsage,
+      consumeDynamicUsage: consumeRenderDynamicUsage,
       consumeRenderObservationState,
       createHtmlRenderObservation(input) {
         return createAppPageRenderObservation({

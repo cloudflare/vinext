@@ -3,7 +3,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createBuilder } from "vite";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
@@ -100,6 +100,24 @@ async function rawHttpRequest(
       });
     });
     request.on("error", reject);
+    request.end();
+  });
+}
+
+// Sends a request and closes the connection as soon as the response headers
+// arrive, as a browser does when a navigation is abandoned mid-render.
+async function abandonAfterResponseHeaders(
+  url: URL,
+  headers: Record<string, string>,
+): Promise<http.IncomingHttpHeaders> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { headers }, (response) => {
+      request.destroy();
+      resolve(response.headers);
+    });
+    request.on("error", (error) => {
+      if (!request.destroyed) reject(error);
+    });
     request.end();
   });
 }
@@ -1691,6 +1709,31 @@ describe("App Router Production server (startProdServer)", () => {
     const res = await fetch(`${baseUrl}/about.rsc`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
+  });
+
+  it("does not cache an RSC render whose client disconnected before it read cookies", async () => {
+    const session = `user-${randomUUID()}`;
+    const abandoned = await abandonAfterResponseHeaders(
+      new URL("/late-cookie-read?_rsc", baseUrl),
+      {
+        RSC: "1",
+        Cookie: `session=${session}`,
+      },
+    );
+    expect(abandoned["content-type"]).toContain("text/x-component");
+
+    // The page reads cookies 300 ms into the render, which keeps running
+    // after the client has gone. Give it time to finish before checking
+    // whether its payload was stored.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const anonymous = await fetch(`${baseUrl}/late-cookie-read.rsc`);
+    expect(anonymous.status).toBe(200);
+    const body = await anonymous.text();
+    expect(anonymous.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(anonymous.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(body).not.toContain(session);
+    expect(body).toContain("guest");
   });
 
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
