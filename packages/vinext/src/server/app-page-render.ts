@@ -342,7 +342,10 @@ function applyRequestCacheLife(options: {
  * static, draft mode, `force-dynamic`, `revalidate = 0`, or a dynamic API read
  * before the response left the render. Responses that leave the render before
  * its response policy, such as error boundaries and special errors, get the
- * same header as the normal render.
+ * same header as the normal render. One not yet known dynamic is never stored,
+ * and its body can still reach a dynamic API after its headers leave, so it
+ * takes the normal render's pending no-store policy (see
+ * resolvePendingEarlyResponseCacheControl for the responses that don't).
  */
 export function applyIneligibleRouteCachePolicy(
   response: Response,
@@ -353,6 +356,7 @@ export function applyIneligibleRouteCachePolicy(
     | "isDynamicError"
     | "isForceDynamic"
     | "isForceStatic"
+    | "isPrerender"
     | "isProduction"
     | "isProgressiveActionRender"
     | "isRscRequest"
@@ -364,8 +368,10 @@ export function applyIneligibleRouteCachePolicy(
   >,
   requestCacheLife: AppPageRequestCacheLife | null = null,
 ): Response {
-  const cacheControl = resolveEarlyResponseCacheControl(options);
   const isRscRedirect = options.isRscRequest && response.headers.has(VINEXT_RSC_REDIRECT_HEADER);
+  const cacheControl =
+    resolveEarlyResponseCacheControl(options) ??
+    (isRscRedirect ? null : resolvePendingEarlyResponseCacheControl(response, options));
   if (!cacheControl) {
     // A layout's redirect answers once the layouts above it rendered, so a
     // static RSC redirect carries their cacheLife stale bound like a
@@ -434,6 +440,28 @@ function resolveEarlyResponseCacheControl(
     options.revalidateSeconds === 0 ||
     (!ignoresDynamicUsage && (options.peekDynamicUsage?.() ?? peekDynamicUsage()));
   return isKnownDynamic ? uncacheable : null;
+}
+
+/**
+ * The normal render sends its pending policy until the stream proves it
+ * static, but nothing checks an early response again. One with a body stays
+ * out of shared caches unless it already carries a policy, such as
+ * middleware's. A force-static or dynamic = "error" render can't read the
+ * request, and dev and the build's prerender, which reads `no-store` as a
+ * dynamic render, send no pending policy either.
+ */
+function resolvePendingEarlyResponseCacheControl(
+  response: Response,
+  options: Parameters<typeof applyIneligibleRouteCachePolicy>[1],
+): string | null {
+  return options.isProduction &&
+    options.isPrerender !== true &&
+    !options.isForceStatic &&
+    !options.isDynamicError &&
+    response.body !== null &&
+    !response.headers.has("cache-control")
+    ? NO_STORE_CACHE_CONTROL
+    : null;
 }
 
 function resolveAppPageCacheWriteRevalidateSeconds(options: {
