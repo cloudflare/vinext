@@ -3009,6 +3009,14 @@ describe("prefetch cache eviction", () => {
 
     expect(hasSearchAgnosticPrefetchShellForRoute(secondRscUrl, null, null)).toBe(true);
     expect(hasPrefetchCacheEntryForNavigation(secondRscUrl, null, null)).toBe(false);
+    // The URL's own shell isn't another query's: a repeat prefetch asks for it again.
+    expect(
+      hasSearchAgnosticPrefetchShellForRoute(
+        "/search-params/target-page?searchParam=a_PPR&_rsc=repeat",
+        null,
+        null,
+      ),
+    ).toBe(false);
   });
 
   it("retains a zero-stale search-agnostic shell without making it navigation-reusable", async () => {
@@ -3674,14 +3682,18 @@ describe("static-shell prefetch", () => {
     }
 
     function mockShellFetch(
-      shell: { renderedPathAndSearch?: string; varyParams: readonly string[] } | null = null,
+      shell: {
+        renderedPathAndSearch?: string;
+        staticShell?: "complete";
+        varyParams: readonly string[];
+      } | null = null,
     ) {
       const fetch = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) => {
         const url = new URL(toRscUrlString(input), "http://localhost");
         const [, , category, item] = url.pathname.split("/");
         const headers = new Headers({
           "content-type": "text/x-component",
-          "X-Vinext-Static-Shell": "partial",
+          "X-Vinext-Static-Shell": shell?.staticShell ?? "partial",
           "X-Vinext-Params": encodeURIComponent(JSON.stringify({ category, item })),
           "X-Vinext-Rendered-Path-And-Search": encodeURIComponent(
             shell?.renderedPathAndSearch ??
@@ -3733,6 +3745,55 @@ describe("static-shell prefetch", () => {
 
       await prefetch("/shop/clothing/shirt", fetch, 2);
       expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("reuses a complete shell as the page of a URL with another query string", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch({ staticShell: "complete", varyParams: ["category"] });
+
+      await prefetch("/shop/electronics/phone", fetch, 1);
+      await prefetch("/shop/electronics/phone?q=1", fetch, 1);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(findEntry("/shop/electronics/phone?q=1")?.cacheForNavigation).toBe(true);
+
+      const consumed = consumePrefetchResponse("/shop/electronics/phone?q=1");
+      expect(consumed?.staticShell).toBe("complete");
+      expect(consumed?.renderedPathAndSearch).toBe("/shop/electronics/phone?q=1");
+      expect(new TextDecoder().decode(consumed!.buffer)).toBe("0:electronics");
+      // The shell it was reused from stays cached for its own URL.
+      expect(findEntry("/shop/electronics/phone")?.cacheForNavigation).toBe(true);
+
+      // Its tree keeps the segment values of its own path.
+      await prefetch("/shop/electronics/tablet", fetch, 2);
+      expect(fetch).toHaveBeenCalledTimes(2);
+    });
+
+    it("hands a superseded pending prefetch's invalidation subscribers to the reused shell", async () => {
+      setUpShopRoute();
+      const fetch = mockShellFetch();
+      await prefetch("/shop/electronics/phone", fetch, 1);
+
+      // The URL's own prefetch is still in flight when a navigation reuses
+      // another URL's shell for it.
+      const rscUrl = "/shop/electronics/tablet?_rsc=pending";
+      const onInvalidate = vi.fn();
+      prefetchRscResponse(rscUrl, new Promise<Response>(() => {}), null, null, { onInvalidate });
+      const { seedStaticShellPrefetchFromVaryingShell } =
+        await import("../packages/vinext/src/shims/navigation.js");
+      const { createVaryingStaticShellResolver } =
+        await import("../packages/vinext/src/shims/internal/app-static-shell-vary-params.js");
+      expect(
+        seedStaticShellPrefetchFromVaryingShell(
+          rscUrl,
+          null,
+          null,
+          createVaryingStaticShellResolver("/shop/electronics/tablet"),
+        ),
+      ).toBe(true);
+      expect(findEntry("/shop/electronics/tablet")?.outcome).toBe("cache-seeded");
+
+      invalidatePrefetchCache();
+      expect(onInvalidate).toHaveBeenCalledTimes(1);
     });
 
     it("compares search strings only when the shell read them", async () => {

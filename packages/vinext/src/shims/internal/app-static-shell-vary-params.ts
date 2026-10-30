@@ -106,6 +106,16 @@ export function createVaryingStaticShellResolver(
     }
     const sourceParams = parseParamsHeader(source.paramsHeader);
     if (sourceParams === null || !isSameParams(sourceParams, resolvedSource.params)) return null;
+    // A complete shell is the page a navigation commits, and its tree keeps
+    // the segment values of the path it rendered (`LayoutSegmentProvider`), so
+    // only a URL with the same path, and another query string, reuses it.
+    if (
+      source.staticShell === "complete" &&
+      new URL(source.renderedPathAndSearch, "https://vinext.local").pathname !==
+        stripBasePath(targetPathname, __basePath)
+    ) {
+      return null;
+    }
 
     for (const name of source.varyParams) {
       if (name === "?") {

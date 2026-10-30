@@ -825,10 +825,11 @@ export function peekStaticShellPrefetchForNavigation(
 }
 
 /**
- * Seed a static-shell prefetch of `rscUrl` from a settled, fresh partial shell
+ * Seed a static-shell prefetch of `rscUrl` from a settled, fresh shell
  * prefetched for another URL, when `resolveSnapshot` returns that shell for
  * this URL. Like Next.js's segment cache, a shell is reused for any params its
- * render didn't read (`varyParams`), so the prefetch needs no request.
+ * render didn't read (`varyParams`), so the prefetch needs no request. A
+ * complete shell is the whole page, so a navigation consumes it.
  */
 export function seedStaticShellPrefetchFromVaryingShell(
   rscUrl: string,
@@ -844,7 +845,7 @@ export function seedStaticShellPrefetchFromVaryingShell(
   for (const [sourceCacheKey, source] of cache) {
     if (
       source.prefetchKind !== "static-shell" ||
-      source.snapshot?.staticShell !== "partial" ||
+      (source.snapshot?.staticShell !== "partial" && source.snapshot?.staticShell !== "complete") ||
       source.snapshot.varyParams === undefined ||
       source.pending !== undefined
     ) {
@@ -861,12 +862,14 @@ export function seedStaticShellPrefetchFromVaryingShell(
     if (snapshot === null) continue;
 
     const existing = cache.get(cacheKey);
+    // The URL's own pending prefetch it supersedes hands over its subscribers.
+    const supersededCallbacks = existing?.onInvalidateCallbacks;
     if (existing) {
       deletePrefetchCacheEntry(cache, getPrefetchedUrls(), cacheKey, existing, false);
     }
     const size = snapshot.buffer.byteLength;
     const entry: PrefetchCacheEntry = {
-      cacheForNavigation: false,
+      cacheForNavigation: snapshot.staticShell === "complete",
       cacheKeys: new Set([cacheKey]),
       expiresAt,
       mountedSlotsHeader: resolvePrefetchCacheEntryMountedSlotsHeader(source),
@@ -877,6 +880,9 @@ export function seedStaticShellPrefetchFromVaryingShell(
       snapshot: { ...snapshot, url: rscUrl },
       timestamp: source.timestamp,
     };
+    for (const callback of supersededCallbacks ?? []) {
+      addPrefetchInvalidationCallback(entry, callback);
+    }
     addPrefetchInvalidationCallback(entry, onInvalidate);
     cache.set(cacheKey, entry);
     adjustPrefetchCacheByteSize(cache, size);
@@ -895,6 +901,7 @@ export function hasSearchAgnosticPrefetchShellForRoute(
 ): boolean {
   const normalizedTargetPathname = normalizeRscCacheLookupPathname(rscUrl);
   if (normalizedTargetPathname === null) return false;
+  const normalizedTarget = normalizeRscCacheLookupUrl(rscUrl);
 
   const cache = getPrefetchCache();
   for (const [cacheKey, entry] of cache) {
@@ -903,6 +910,9 @@ export function hasSearchAgnosticPrefetchShellForRoute(
     const source = parsePrefetchCacheKey(cacheKey);
     if (source.interceptionContext !== interceptionContext) continue;
     if (normalizeRscCacheLookupPathname(source.rscUrl) !== normalizedTargetPathname) continue;
+    // The URL's own prefetch: a repeat one (on hover, say) asks for it again,
+    // so it dedupes against it rather than fetching a loading shell.
+    if (normalizeRscCacheLookupUrl(source.rscUrl) === normalizedTarget) continue;
     if (!isPrefetchCacheEntryCompatibleWithMountedSlots(entry, mountedSlotsHeader)) continue;
 
     if (entry.pending !== undefined) return true;
