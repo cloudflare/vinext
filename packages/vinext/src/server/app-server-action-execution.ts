@@ -22,7 +22,7 @@ import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
-import { SERVER_ACTION_CACHE_CONTROL } from "./cache-control.js";
+import { applyCdnResponseHeaders, SERVER_ACTION_CACHE_CONTROL } from "./cache-control.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -1777,6 +1777,9 @@ export async function handleServerActionRscRequest<
       applyEdgeRuntimeHeader(redirectHeaders, options.isEdgeRuntime);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.sourceConfigHeaders ?? null);
       mergeActionRedirectSourceHeaders(redirectHeaders, options.middlewareHeaders);
+      // As in Next.js, the action's policy replaces the source path's, and
+      // only a streamed target's own policy replaces it in turn.
+      applyCdnResponseHeaders(redirectHeaders, { cacheControl: SERVER_ACTION_CACHE_CONTROL });
       applyRscCompatibilityIdHeader(redirectHeaders);
       // Prefix basePath onto the redirect target. The client-side handler in
       // app-browser-entry reads ACTION_REDIRECT_HEADER and calls

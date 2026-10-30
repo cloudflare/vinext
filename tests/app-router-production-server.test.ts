@@ -1814,6 +1814,12 @@ describe("App Router Production server (startProdServer)", () => {
       });
     };
 
+    // The middleware and next.config policies the cases below must not keep.
+    const middlewarePage = await fetch(`${baseUrl}/action-cache-control?middleware-cache-control`);
+    expect(middlewarePage.headers.get("cache-control")).toBe("public, max-age=60");
+    const configPage = await fetch(`${baseUrl}/action-cache-control/config-policy`);
+    expect(configPage.headers.get("cache-control")).toBe("public, s-maxage=300");
+
     const cases: Array<[string, Promise<Response>, number]> = [
       ["fetch action", fetchAction("/action-cache-control", actionId("setTheme")), 200],
       ["failed fetch action", fetchAction("/action-cache-control", actionId("failAction")), 500],
@@ -1830,6 +1836,7 @@ describe("App Router Production server (startProdServer)", () => {
         200,
       ],
       ["form action", submitForm("/action-cache-control", actionId("setTheme")), 200],
+      ["failed form action", submitForm("/action-cache-control", actionId("failAction")), 500],
       [
         "form action on a config policy path",
         submitForm("/action-cache-control/config-policy", actionId("setTheme")),
