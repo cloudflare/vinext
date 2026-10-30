@@ -614,7 +614,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   return new Response(null, {
     status: 307,
     headers: {
-      Location: `${url.pathname}${url.search}`,
+      Location: formatRscRequestPath(url),
     },
   });
 }
