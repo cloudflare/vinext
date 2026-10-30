@@ -93,6 +93,9 @@ export async function withResponseStageCacheability(
   if (options.probeMode && options.forceDynamic && !options.policyHeaders?.length && state) {
     state.patternDynamicReason = 'dynamic = "force-dynamic"';
   }
+  if (options.cache === "shared" && !options.policyHeaders?.length && state) {
+    state.dropsStaticCandidateQuery = true;
+  }
   const renderedResponse = await render(context);
   const rendered = stripsRequestScopedHeaders
     ? withoutRequestScopedHeaders(renderedResponse)

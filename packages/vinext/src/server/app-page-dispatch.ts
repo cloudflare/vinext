@@ -129,6 +129,7 @@ import {
 import {
   cacheabilityManifestPageState,
   type CacheabilityManifest,
+  type CacheabilityManifestRouteState,
   type CacheabilityRepresentation,
 } from "./cacheability-manifest.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -336,7 +337,6 @@ export type AppPagePprRuntime<TRoute extends AppPageDispatchRoute> = {
     options: DispatchAppPageOptions<TRoute>,
     currentRevalidateSeconds: number | null,
     isDraftMode: boolean,
-    isForceStatic: boolean,
     isForceDynamic: boolean,
   ): void;
   /** Produce the missing shells of a generated path rendered for the cache. */
@@ -755,17 +755,38 @@ function toInterceptOptions(
  * and every path keeps candidate mode, as on core.
  */
 function hasNoManifestAdmissionState(routePattern: string): boolean {
-  const admission = readRouteCacheabilityState()?.admission;
+  return readManifestAdmissionState(routePattern) === null;
+}
+
+/**
+ * Whether the Workers Cache request stage dropped the query from this
+ * dispatch, as it does for a path its deploy manifest gives the
+ * `static-candidate` state unless a next.config cache policy applies.
+ */
+export function isQueryFreeManifestDispatch(routePattern: string): boolean {
   return (
-    admission?.policy === "manifest" &&
-    admission.representation !== undefined &&
-    admission.routePathname !== undefined &&
-    cacheabilityManifestPageState(
-      admission.manifest as CacheabilityManifest,
-      { kind: "app-page", pattern: routePattern },
-      admission.representation as CacheabilityRepresentation,
-      admission.routePathname,
-    ) === null
+    readRouteCacheabilityState()?.dropsStaticCandidateQuery === true &&
+    readManifestAdmissionState(routePattern) === "static-candidate"
+  );
+}
+
+/** The deploy manifest's state for the request's path, or `undefined` without one. */
+function readManifestAdmissionState(
+  routePattern: string,
+): CacheabilityManifestRouteState | null | undefined {
+  const admission = readRouteCacheabilityState()?.admission;
+  if (
+    admission?.policy !== "manifest" ||
+    admission.representation === undefined ||
+    admission.routePathname === undefined
+  ) {
+    return undefined;
+  }
+  return cacheabilityManifestPageState(
+    admission.manifest as CacheabilityManifest,
+    { kind: "app-page", pattern: routePattern },
+    admission.representation as CacheabilityRepresentation,
+    admission.routePathname,
   );
 }
 
@@ -1807,7 +1828,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             options,
             currentRevalidateSeconds,
             isDraftMode,
-            isForceStatic,
             isForceDynamic,
           )
       : undefined;

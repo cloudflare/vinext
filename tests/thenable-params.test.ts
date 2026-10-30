@@ -438,6 +438,53 @@ describe("makeThenableParams", () => {
 
     state.abortController.abort();
   });
+
+  it("leaves a document shell's search params to a hole, like Next.js", async () => {
+    const observedKeys: string[][] = [];
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern: "/search" });
+    let settled = false;
+
+    runWithPprFallbackShellState(state, () => {
+      const searchParams = makeThenableParams(
+        {},
+        { observeParamAccess: (keys) => observedKeys.push([...keys]) },
+        { isSearchParams: true },
+      );
+      expect(state.hasDynamicBoundary).toBe(false);
+      void searchParams.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      expect(state.hasDynamicBoundary).toBe(true);
+      let thrown: unknown;
+      try {
+        Reflect.get(searchParams, "q");
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(Promise);
+    });
+
+    await delay(5);
+    expect(settled).toBe(false);
+    // A hole, not a dynamic read of the shell.
+    expect(observedKeys).toEqual([]);
+    state.abortController.abort();
+  });
+
+  it("renders a runtime prefetch's search params", async () => {
+    const state = createPprFallbackShellState({
+      fallbackParamNames: [],
+      isRuntimePrefetch: true,
+      routePattern: "/search",
+    });
+
+    const searchParams = runWithPprFallbackShellState(state, () =>
+      makeThenableParams({ q: "1" }, undefined, { isSearchParams: true }),
+    );
+
+    await expect(searchParams).resolves.toEqual({ q: "1" });
+  });
 });
 
 describe("vary params", () => {

@@ -186,6 +186,16 @@ function createThenableParams<T extends Record<string, unknown>>(
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
       ? fallbackShellState.fallbackParamNames
       : null;
+  // Like Next.js's prerender, a document shell leaves its search params to
+  // holes, so every query string shares it. A static shell prefetch records
+  // their reads as vary params instead, and a runtime prefetch renders them.
+  const isShellSearchParams =
+    options?.isSearchParams === true &&
+    fallbackShellState !== null &&
+    fallbackShellState.varyParams === null &&
+    !fallbackShellState.isRuntimePrefetch;
+  // Its reads are holes, not dynamic reads of the shell.
+  if (isShellSearchParams) observer = undefined;
   let fallbackShellPromise: Promise<T> | null = null;
   let fallbackShellPromiseController: AbortController | null = null;
 
@@ -200,7 +210,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
     // Promise creation stays lazy so the dynamic-boundary side effects only
     // fire on the first continuation or fallback-key access.
-    if (!fallbackParamNames || !fallbackShellState) return null;
+    if ((!fallbackParamNames && !isShellSearchParams) || !fallbackShellState) return null;
     // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
     // on the warmup->final transition. Re-derive the hanging promise whenever
     // the live controller has changed so suspension always tracks the
@@ -216,7 +226,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     fallbackShellPromiseController = fallbackShellState.abortController;
     fallbackShellPromise = createPprFallbackShellSuspensePromiseForState<T>(
       fallbackShellState,
-      "`params`",
+      isShellSearchParams ? "`searchParams`" : "`params`",
     );
     return fallbackShellPromise;
   }
@@ -226,7 +236,10 @@ function createThenableParams<T extends Record<string, unknown>>(
   );
 
   function isFallbackParam(prop: PropertyKey): boolean {
-    return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
+    if (typeof prop !== "string") return false;
+    return isShellSearchParams
+      ? !isWellKnownProperty(prop)
+      : (fallbackParamNames?.has(prop) ?? false);
   }
 
   const handler: ProxyHandler<Promise<T>> = {
@@ -270,6 +283,10 @@ function createThenableParams<T extends Record<string, unknown>>(
         recordVaryRead(prop);
       }
 
+      if (isShellSearchParams && isFallbackParam(prop)) {
+        const p = getFallbackShellPromise();
+        if (p) throw p;
+      }
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
         if (isFallbackParam(prop)) {
           const p = getFallbackShellPromise();

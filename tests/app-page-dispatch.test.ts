@@ -32,6 +32,7 @@ import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
 import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
+import type { AppPagePprShellResume } from "../packages/vinext/src/server/app-page-stream.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
 import type { CachedAppPageValue } from "../packages/vinext/src/shims/cache.js";
 import {
@@ -6771,6 +6772,105 @@ describe("app page dispatch", () => {
     expect(isrSetFallbackShell.mock.calls[0]![1].html).not.toContain("stale");
   });
 
+  // A Workers Cache dispatch of a static-candidate path dropped the query, so
+  // a resumed shell can't SSR it, and leaves it to the browser.
+  it("resumes a shell with the browser's query unless a Workers Cache dispatch dropped it", async () => {
+    const manifestFor = (route: object) =>
+      parseCacheabilityManifest(
+        JSON.stringify({
+          buildId: "build-a",
+          routes: {
+            [cacheabilityManifestRouteKey("app-page", "/:locale/blog/:slug")]: {
+              kind: "app-page",
+              pattern: "/:locale/blog/:slug",
+              ...route,
+            },
+          },
+          version: 1,
+        }),
+        "build-a",
+      );
+    const staticCandidate: RouteCacheabilityState["admission"] = {
+      manifest: manifestFor({
+        state: "runtime-check",
+        staticPaths: { html: ["/en/blog/hello"] },
+      }),
+      policy: "manifest",
+      representation: "html",
+      routePathname: "/en/blog/hello",
+    };
+    const cases: [RouteCacheabilityState["admission"], boolean, string | null][] = [
+      [
+        { policy: "runtime", representation: "html", routePathname: "/en/blog/hello" },
+        true,
+        "?q=cats",
+      ],
+      [staticCandidate, true, null],
+      // A next.config cache policy, or a single-stage render, keeps the query.
+      [staticCandidate, false, "?q=cats"],
+      [
+        {
+          manifest: manifestFor({ allowUnknown: true, state: "runtime-check" }),
+          policy: "manifest",
+          representation: "html",
+          routePathname: "/en/blog/hello",
+        },
+        true,
+        "?q=cats",
+      ],
+    ];
+    for (const [admission, dropsStaticCandidateQuery, browserSearch] of cases) {
+      const resumes: (AppPagePprShellResume | undefined)[] = [];
+      const context: ExecutionContextLike = { waitUntil() {} };
+      const state: RouteCacheabilityState = {
+        admission,
+        captureDeadlineAt: Date.now() + 10_000,
+        dropsStaticCandidateQuery,
+        mode: "admit",
+      };
+      Reflect.set(context, CACHEABILITY_REQUEST_STATE, state);
+      const { options } = createPprBlogDispatchOptions({
+        buildPageElement: createParamTextPageElement(),
+        cleanPathname: "/en/blog/hello",
+        isrGet: vi.fn(async (key: string) =>
+          key === "shell:/en/blog/hello"
+            ? buildISRCacheEntry({
+                ...buildCachedAppPageValue(
+                  markAppPprDynamicFallbackShellHtml(
+                    "<!DOCTYPE html><html><head></head><body>shell",
+                  ),
+                ),
+                postponed: formatAppPprShellState({
+                  prelude: true,
+                  postponed: {},
+                  resumeDataCache: null,
+                  generated: null,
+                }),
+              })
+            : null,
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rsc, _navigation, _fonts, ssrOptions) {
+            resumes.push(ssrOptions?.pprShellResume);
+            return createStream(["</body></html>"]);
+          },
+        }),
+        params: { locale: "en", slug: "hello" },
+        request: new Request("https://example.test/en/blog/hello?q=cats"),
+        searchParams: new URLSearchParams("q=cats"),
+      });
+
+      const response = await runWithExecutionContext(context, () =>
+        runWithRequestContext(createRequestContext(), () => dispatchAppPage(options)),
+      );
+      await response.text();
+      expect(
+        resumes.map((resume) => resume?.browserSearch),
+        `${JSON.stringify(admission)} drops: ${dropsStaticCandidateQuery}`,
+      ).toEqual([browserSearch]);
+    }
+  });
+
   it("regenerates a stale shell an RSC request reads, though it has no resume data cache", async () => {
     const scheduledKeys: string[] = [];
     const { options } = createPprBlogDispatchOptions({
@@ -7340,25 +7440,29 @@ describe("app page dispatch", () => {
     await expect(response.text()).resolves.toContain("fresh render");
   });
 
-  it("does not serve fallback shell HTML for an unknown child param when the request has search params", async () => {
+  it("serves fallback shell HTML for an unknown child param when the request has search params", async () => {
     const buildPageElement = createParamTextPageElement("fresh");
     const isrGet = createPprBlogFallbackShellGetter(false);
     const { options } = createPprBlogDispatchOptions({
       buildPageElement,
       isrGet,
-      loadSsrHandler: createFreshBodySsrHandler("fresh render"),
       request: new Request("https://example.test/en/blog/new-post?preview=1"),
       searchParams: new URLSearchParams("preview=1"),
     });
 
     const response = await dispatchAppPage(options);
 
-    expect(isrGet.mock.calls.map(([key]) => key)).toEqual(["html:/en/blog/new-post"]);
-    expect(isrGet).not.toHaveBeenCalledWith("shell:/en/blog/[slug]");
-    // The query-bearing render is a cache candidate, so its MISS is final.
-    expect(response.headers.get("x-vinext-cache")).toBe("MISS");
-    await expect(response.text()).resolves.toContain("fresh render");
-    expect(buildPageElement).toHaveBeenCalled();
+    // Like Next.js, every query string shares the shell, which leaves the
+    // query to its holes.
+    expect(isrGet.mock.calls.map(([key]) => key)).toEqual([
+      "html:/en/blog/new-post",
+      "shell:/en/blog/new-post",
+      "shell:/en/blog/[slug]",
+      "shell:/en/blog/new-post",
+    ]);
+    expect(response.headers.get("x-vinext-cache")).toBe("HIT");
+    await expect(response.text()).resolves.toContain("Locale: en");
+    expect(buildPageElement).not.toHaveBeenCalled();
   });
 
   it("shares a stale shell's regeneration with a request that finds the shell missing", async () => {

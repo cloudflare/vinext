@@ -74,6 +74,7 @@ import { isExternalUrl } from "../utils/external-url.js";
 import { ReadonlyURLSearchParams } from "./readonly-url-search-params.js";
 import { assertSafeNavigationUrl } from "./url-safety.js";
 import {
+  createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
   markPprFallbackShellDynamicBoundary,
 } from "./ppr-fallback-shell.js";
@@ -2732,6 +2733,12 @@ export function usePathname(): string {
  */
 export function useSearchParams(): ReadonlyURLSearchParams {
   if (isServer) {
+    const shellState = getPprFallbackShellState();
+    if (shellState !== null && shellState.varyParams === null && !shellState.isRuntimePrefetch) {
+      // Like Next.js's prerender, a document shell leaves the query to a hole,
+      // so every query string shares it.
+      React.use(createPprFallbackShellSuspensePromiseForState(shellState, "useSearchParams()"));
+    }
     const ctx = getNavigationContext();
     if (
       ctx?.isStaticGeneration === true &&

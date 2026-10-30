@@ -2147,6 +2147,8 @@ describe("next/navigation shim", () => {
     const { createPprFallbackShellState, runWithPprFallbackShellState } =
       await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
     const navigation = await import("../packages/vinext/src/shims/navigation.js");
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
 
     const readHooks: Array<() => unknown> = [
       () => navigation.usePathname(),
@@ -2162,7 +2164,16 @@ describe("next/navigation shim", () => {
         routePattern: "/blog/:slug",
       });
 
-      runWithPprFallbackShellState(state, readHook);
+      function Probe() {
+        readHook();
+        return null;
+      }
+      // useSearchParams() suspends: the shell leaves the query to a hole.
+      runWithPprFallbackShellState(state, () =>
+        renderToString(
+          React.createElement(React.Suspense, { fallback: null }, React.createElement(Probe)),
+        ),
+      );
 
       expect(state.hasDynamicBoundary).toBe(true);
     }
@@ -30803,6 +30814,8 @@ describe("next/navigation enhancements", () => {
   });
 
   it("useSearchParams preserves fallback-shell tracking during static generation", async () => {
+    const React = await import("react");
+    const { renderToString } = await import("react-dom/server");
     const { createPprFallbackShellState, runWithPprFallbackShellState } =
       await import("../packages/vinext/src/shims/ppr-fallback-shell.js");
     const { setNavigationContext, useSearchParams } =
@@ -30820,7 +30833,19 @@ describe("next/navigation enhancements", () => {
         isStaticGeneration: true,
       });
 
-      expect(() => runWithPprFallbackShellState(state, useSearchParams)).not.toThrow();
+      function Probe() {
+        useSearchParams();
+        return React.createElement("p", null, "rendered");
+      }
+      // A hole in the shell, not a client-rendering bailout.
+      const html = runWithPprFallbackShellState(state, () =>
+        renderToString(
+          React.createElement(React.Suspense, { fallback: "hole" }, React.createElement(Probe)),
+        ),
+      );
+
+      expect(html).toContain("hole");
+      expect(html).not.toContain("rendered");
       expect(state.hasDynamicBoundary).toBe(true);
     } finally {
       setNavigationContext(null);

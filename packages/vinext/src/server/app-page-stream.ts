@@ -59,6 +59,15 @@ export type AppPagePprShellResume = {
   postponed: unknown;
   /** The `Link` header the shell's render sent. */
   linkHeader?: string;
+  /**
+   * The query of the browser's URL, before any rewrite. The shell's head has
+   * the browser read the query from its own URL, so, like Next.js, the holes'
+   * `useSearchParams()` reads that query too. It's null when a Workers Cache
+   * dispatch dropped the query, which the deploy manifest's static
+   * classification allows, so the holes leave it to the browser, as the path's
+   * static render does.
+   */
+  browserSearch: string | null;
 };
 
 export function isAppSsrRenderResult(value: unknown): value is AppSsrRenderResult {

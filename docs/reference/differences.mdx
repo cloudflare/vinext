@@ -76,7 +76,8 @@ Like Next.js, a client navigation renders only below the layouts the client alre
 With `cacheComponents`, vinext resumes stored shells as Next.js does (see [Partial prerendering](/docs/caching#partial-prerendering)), with these differences:
 
 - Next.js prerenders a route's shells at build. vinext renders a path in full on its first request and, when that render is dynamic, produces the path's own shell after it, and renders a fallback shell on the first request that needs it.
-- A request with a query string renders the page in full, unless the route is `force-static`. Next.js resumes the shell, with reads of `searchParams` left to its holes.
+- A client page that reads its `searchParams` prop is a hole of its shell, which a request fills with the browser's query. Next.js renders that page in the browser instead, and serves the route as a static page when nothing else in it is dynamic.
+- On a Workers Cache deployment, a path the deploy manifest certifies as static is dispatched without its query, unless a `next.config` header sets its cache policy, so a resumed shell's `useSearchParams()` holes render in the browser, as the path's static render does.
 
 ## Routing config
 

@@ -435,6 +435,37 @@ describe("response-stage cacheability", () => {
     await expect(response.text()).resolves.toBe("static");
   });
 
+  it.each([
+    { policyHeaders: null, drops: true },
+    // A next.config cache policy keeps the full dispatch URL.
+    {
+      policyHeaders: [["Cache-Control", "public, s-maxage=60"]] as [string, string][],
+      drops: undefined,
+    },
+  ])(
+    "marks whether a static-candidate dispatch dropped its query (policy: $policyHeaders)",
+    async ({ policyHeaders, drops }) => {
+      let dropsQuery: boolean | undefined;
+      await withResponseStageCacheability(
+        {
+          buildId: "build-a",
+          cache: "shared",
+          context: baseContext(),
+          policyHeaders,
+          rawManifest: null,
+          registerCacheAdapters: registerAdapter,
+          request: new Request("https://example.com/page", { headers: { Accept: "text/html" } }),
+          resolvedRoutePathname: "/page",
+        },
+        async (context) => {
+          dropsQuery = contextState(context)!.dropsStaticCandidateQuery;
+          return new Response("page");
+        },
+      );
+      expect(dropsQuery).toBe(drops);
+    },
+  );
+
   it("applies safe config policy before final admission without overriding late vetoes", async () => {
     const response = await withResponseStageCacheability(
       {
