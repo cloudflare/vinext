@@ -50,4 +50,12 @@ describe("App Router trailing-slash ISR with generated static params", () => {
     expect(html).toMatch(/id="generated-at">[^<]{10,}/);
     expect(html).toContain('id="lang">en');
   });
+
+  // Next.js's trailingSlash: true redirect has no /api exception.
+  it("redirects an unslashed route handler request to its slashed spelling", async () => {
+    const response = await fetch(`${baseUrl}/api/revalidate?lang=en`, { redirect: "manual" });
+
+    expect(response.status).toBe(308);
+    expect(response.headers.get("location")).toBe("/api/revalidate/?lang=en");
+  });
 });
