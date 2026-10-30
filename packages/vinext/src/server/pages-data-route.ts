@@ -21,7 +21,7 @@
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
-import { cloneRequestWithUrl } from "./request-pipeline.js";
+import { cloneRequestWithUrl, hasUrlParserDotSegment } from "./request-pipeline.js";
 
 const NEXT_DATA_PREFIX = "/_next/data/";
 const NEXT_DATA_SUFFIX = ".json";
@@ -82,8 +82,16 @@ export function encodeUrlParserIgnoredCharacters(pathname: string): string {
  * `/_next/data/<buildId>/en.json`            → `/en`
  * `/_next/data/<wrong-id>/about.json`        → null
  * `/_next/data/<buildId>/about`              → null  (missing .json suffix)
+ * `/_next/data/<buildId>/blog/...json`       → null  (strips to a dot segment)
+ *
+ * `decoded` marks a percent-decoded copy of a pathname whose raw form already
+ * parsed: a `%2e` left in it was `%252e` on the wire, an ordinary character.
  */
-export function parseNextDataPathname(pathname: string, buildId: string): NextDataMatch | null {
+export function parseNextDataPathname(
+  pathname: string,
+  buildId: string,
+  decoded = false,
+): NextDataMatch | null {
   if (!buildId) return null;
   if (!isNextDataPathname(pathname)) return null;
 
@@ -91,7 +99,13 @@ export function parseNextDataPathname(pathname: string, buildId: string): NextDa
   // `/_next/data/<buildId>.json` (no trailing slash) is not a valid data req.
   if (!pathname.startsWith(expectedPrefix)) return null;
 
-  return pageFromNextDataRest(pathname.slice(expectedPrefix.length, -NEXT_DATA_SUFFIX.length));
+  const rest = pathname.slice(expectedPrefix.length, -NEXT_DATA_SUFFIX.length);
+  // The URL was canonicalized with `.json` attached, so removing it can leave
+  // a dot segment (`blog/...json` -> `blog/..`). The page URL built from it
+  // would resolve to another page than the one config rules and middleware
+  // matchers see. No page's data URL strips to one.
+  if (!decoded && hasUrlParserDotSegment(rest)) return null;
+  return pageFromNextDataRest(rest);
 }
 
 /**
@@ -108,6 +122,7 @@ export function nextDataMiddlewareMatchPathname(pathname: string): string | null
   const buildIdEnd = pathname.indexOf("/", NEXT_DATA_PREFIX.length);
   if (buildIdEnd <= NEXT_DATA_PREFIX.length) return null;
   const rest = pathname.slice(buildIdEnd + 1, -NEXT_DATA_SUFFIX.length);
+  if (hasUrlParserDotSegment(rest)) return null;
   return pageFromNextDataRest(rest)?.pagePathname ?? null;
 }
 

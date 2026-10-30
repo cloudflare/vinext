@@ -47,6 +47,17 @@ export function canonicalizeRequestUrlPathname(url: string): string {
 }
 
 /**
+ * Whether the pathname has a segment the URL parser resolves as `.` or `..`,
+ * literally or percent-encoded. Such a pathname changes when it becomes a URL.
+ */
+export function hasUrlParserDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => {
+    const decodedDots = segment.replaceAll(/%2e/gi, ".");
+    return decodedDots === "." || decodedDots === "..";
+  });
+}
+
+/**
  * Shared request pipeline utilities.
  *
  * Extracted from generated entries and server hot paths to keep codegen focused
