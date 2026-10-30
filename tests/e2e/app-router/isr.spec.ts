@@ -565,6 +565,21 @@ test.describe("App Router ISR", () => {
     expect(await direct.text()).toBe(`icon ${slug} small`);
   });
 
+  test("a dynamic-segment metadata route without generateStaticParams is never stored", async ({
+    request,
+  }) => {
+    // Next.js builds app/blog/[slug]/opengraph-image as a dynamic (ƒ) Route
+    // Handler and renders it on every request.
+    const path = "/blog/never-stored/opengraph-image";
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const response = await request.get(`${baseUrl()}${path}`);
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toBe("og:never-stored");
+      expect(response.headers()["x-vinext-cache"]).not.toBe("HIT");
+      expect(response.headers()["cache-control"]).toContain("no-store");
+    }
+  });
+
   test("dynamicParams=false runs nested generateStaticParams only for matching parents", async ({
     request,
   }) => {

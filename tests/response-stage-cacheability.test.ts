@@ -697,7 +697,9 @@ describe("response-stage metadata route admission", () => {
       servedUrl: "/[locale]/event/[city]/[eventId]/opengraph-image",
       patternParts: [":locale", "event", ":city", ":eventId", "opengraph-image"],
       contentType: "image/png",
-      module: { default: response },
+      // Next.js stores a metadata route under a dynamic segment only when
+      // it generates its params.
+      module: { default: response, generateStaticParams: () => [] },
     };
   }
 
