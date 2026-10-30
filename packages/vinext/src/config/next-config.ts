@@ -1371,9 +1371,30 @@ function resolveImageLocalPatterns(
         "See more info here: https://nextjs.org/docs/messages/invalid-images-config",
     );
   }
-  const patterns = localPatterns.map((pattern: { pathname?: string; search?: string }) => ({
-    ...pattern,
-  }));
+  // Next.js rejects anything else with its config schema (fatal for
+  // `images`). A malformed entry must not become `{}`, which matches every
+  // local URL.
+  if (localPatterns.length > 25) {
+    throw new Error("Specified images.localPatterns can have at most 25 entries.");
+  }
+  const patterns = localPatterns.map((pattern: unknown, index) => {
+    if (
+      typeof pattern !== "object" ||
+      pattern === null ||
+      Array.isArray(pattern) ||
+      Object.entries(pattern).some(
+        ([key, value]) =>
+          (key !== "pathname" && key !== "search") ||
+          (value !== undefined && typeof value !== "string"),
+      )
+    ) {
+      throw new Error(
+        `Specified images.localPatterns[${index}] should be an object with optional string ` +
+          "`pathname` and `search` fields.",
+      );
+    }
+    return { ...(pattern as { pathname?: string; search?: string }) };
+  });
   if (
     !patterns.some(
       (pattern) => pattern.pathname === "/_next/static/media/**" && pattern.search === "",

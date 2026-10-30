@@ -1272,6 +1272,21 @@ describe("resolveNextConfig image patterns", () => {
       ),
     ).rejects.toThrow("Specified images.localPatterns should be an Array received object.");
   });
+
+  it("rejects malformed local pattern entries instead of allowing every source", async () => {
+    for (const entry of [null, "/photos/**", { pathname: 1 }, { pathname: "/a", host: "x" }]) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: [entry] as never } }, "/tmp/project"),
+        JSON.stringify(entry),
+      ).rejects.toThrow("Specified images.localPatterns[0] should be an object");
+    }
+    await expect(
+      resolveNextConfig(
+        { images: { localPatterns: Array.from({ length: 26 }, () => ({ pathname: "/a" })) } },
+        "/tmp/project",
+      ),
+    ).rejects.toThrow("at most 25 entries");
+  });
 });
 
 describe("resolveNextConfig alias extraction", () => {
