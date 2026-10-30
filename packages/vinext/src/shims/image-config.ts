@@ -23,9 +23,9 @@ export type RemotePattern = {
 };
 
 // Cache compiled glob regexes — bounded by the number of distinct configured
-// remotePatterns. Key uses \0 as a separator; \0 cannot appear in a valid glob
-// or separator character, so there are no collisions. Compiled regexes are
-// flagless, so sharing via .test() is safe.
+// remotePatterns and localPatterns. Key uses \0 as a separator; \0 cannot
+// appear in a valid glob or separator character, so there are no collisions.
+// Compiled regexes are flagless, so sharing via .test() is safe.
 const globRegexCache = new Map<string, RegExp>();
 
 /**
@@ -123,6 +123,31 @@ export function hasRemoteMatch(
     domains.some((domain) => url.hostname === domain) ||
     remotePatterns.some((p) => matchRemotePattern(p, url))
   );
+}
+
+export type LocalPattern = {
+  pathname?: string;
+  search?: string;
+};
+
+/**
+ * Check whether a local URL matches a single local pattern.
+ * Follows the same semantics as Next.js's matchLocalPattern().
+ */
+export function matchLocalPattern(pattern: LocalPattern, url: URL): boolean {
+  if (pattern.search !== undefined && pattern.search !== url.search) {
+    return false;
+  }
+  return globToRegex(pattern.pathname ?? "**", "/").test(url.pathname);
+}
+
+/**
+ * Check whether a local URL matches any configured local pattern. Like
+ * Next.js's hasLocalMatch(), an unset list allows every local URL.
+ */
+export function hasLocalMatch(localPatterns: LocalPattern[] | undefined, url: URL): boolean {
+  if (!localPatterns) return true;
+  return localPatterns.some((p) => matchLocalPattern(p, url));
 }
 
 // ─── Private IP detection ───────────────────────────────────────────────

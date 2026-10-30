@@ -17,6 +17,7 @@
  * as-is (no transformation) with security headers applied.
  */
 
+import { hasLocalMatch, type LocalPattern } from "vinext/shims/image-config";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
 
@@ -65,6 +66,12 @@ export type ImageConfig = {
    * value). When set, only the listed qualities are accepted.
    */
   qualities?: number[];
+  /**
+   * Local sources the endpoint may serve, resolved like Next.js: an app list
+   * gains the static-import pattern, and an unset list becomes
+   * DEFAULT_LOCAL_PATTERNS when checked.
+   */
+  localPatterns?: LocalPattern[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
   dangerouslyAllowSVG?: boolean;
   /**
@@ -95,6 +102,8 @@ const DEV_BLUR_QUALITY = 70;
 
 export type ParseImageParamsOptions = {
   isDev?: boolean;
+  /** `images.localPatterns`; DEFAULT_LOCAL_PATTERNS when unset. */
+  localPatterns?: LocalPattern[];
 };
 
 export function resolveDevImageRedirect(
@@ -260,6 +269,12 @@ export function invalidImageSourceResponse(): Response {
 const RECURSIVE_IMAGE_URL_RE = /\/_(?:next|vinext)\/image(?:$|\/)/;
 
 /**
+ * Next.js applies this when `images.localPatterns` is unset: every local path,
+ * but no query string.
+ */
+export const DEFAULT_LOCAL_PATTERNS: LocalPattern[] = [{ pathname: "**", search: "" }];
+
+/**
  * Parse and validate image optimization query parameters.
  * Returns null if the request is malformed.
  *
@@ -332,6 +347,15 @@ export function parseImageParams(
     // itself the image endpoint would recurse. Next.js rejects it the same way
     // (`"url" parameter cannot be recursive` in validateParams).
     if (RECURSIVE_IMAGE_URL_RE.test(decodeURIComponent(resolved.pathname))) {
+      return null;
+    }
+    // Next.js then requires a match in `images.localPatterns` (`"url"
+    // parameter is not allowed`). Dev skips it: Vite serves statically
+    // imported images from their source paths, which no pattern names.
+    if (
+      !options.isDev &&
+      !hasLocalMatch(options.localPatterns ?? DEFAULT_LOCAL_PATTERNS, resolved)
+    ) {
       return null;
     }
   } catch {
@@ -476,7 +500,9 @@ export async function handleImageOptimization(
   imageConfig?: ImageConfig,
 ): Promise<Response> {
   const url = new URL(request.url);
-  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities);
+  const params = parseImageParams(url, allowedWidths, imageConfig?.qualities, {
+    localPatterns: imageConfig?.localPatterns,
+  });
 
   if (!params) {
     return badRequestResponse();

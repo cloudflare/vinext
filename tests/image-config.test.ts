@@ -9,6 +9,8 @@ import { describe, it, expect } from "vite-plus/test";
 import {
   matchRemotePattern,
   hasRemoteMatch,
+  hasLocalMatch,
+  matchLocalPattern,
   isPrivateIp,
   type RemotePattern,
 } from "../packages/vinext/src/shims/image-config.js";
@@ -264,6 +266,46 @@ describe("matchRemotePattern glob edge cases", () => {
 // ─── isPrivateIp ─────────────────────────────────────────────────────────
 // Ported from Next.js: packages/next/src/server/is-private-ip.test.ts
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/is-private-ip.test.ts
+
+// ─── matchLocalPattern / hasLocalMatch ──────────────────────────────────
+// Mirrors Next.js shared/lib/match-local-pattern.ts, which the image endpoint
+// resolves `url` against with `new URL(url, "http://n")`.
+
+describe("matchLocalPattern", () => {
+  const local = (pathAndQuery: string) => new URL(pathAndQuery, "http://n");
+
+  it("matches pathname globs", () => {
+    expect(matchLocalPattern({ pathname: "/photos/**" }, local("/photos/a/b.png"))).toBe(true);
+    expect(matchLocalPattern({ pathname: "/photos/*" }, local("/photos/a.png"))).toBe(true);
+    expect(matchLocalPattern({ pathname: "/photos/*" }, local("/photos/a/b.png"))).toBe(false);
+    expect(matchLocalPattern({ pathname: "/photos/**" }, local("/downloads/a.png"))).toBe(false);
+  });
+
+  it("defaults pathname to ** and leaves search unchecked when unset", () => {
+    expect(matchLocalPattern({}, local("/any/path.png?v=2"))).toBe(true);
+  });
+
+  it("compares search exactly when set", () => {
+    expect(matchLocalPattern({ search: "" }, local("/a.png"))).toBe(true);
+    expect(matchLocalPattern({ search: "" }, local("/a.png?"))).toBe(true);
+    expect(matchLocalPattern({ search: "" }, local("/a.png?v=2"))).toBe(false);
+    expect(matchLocalPattern({ search: "?v=2" }, local("/a.png?v=2"))).toBe(true);
+    expect(matchLocalPattern({ search: "?v=2" }, local("/a.png?v=3"))).toBe(false);
+  });
+});
+
+describe("hasLocalMatch", () => {
+  it("allows every local URL when no list is set", () => {
+    expect(hasLocalMatch(undefined, new URL("http://n/a.png?v=2"))).toBe(true);
+  });
+
+  it("requires a match in a configured list", () => {
+    const patterns = [{ pathname: "/photos/**", search: "" }];
+    expect(hasLocalMatch(patterns, new URL("http://n/photos/team.png"))).toBe(true);
+    expect(hasLocalMatch(patterns, new URL("http://n/downloads/poster.png"))).toBe(false);
+    expect(hasLocalMatch([], new URL("http://n/photos/team.png"))).toBe(false);
+  });
+});
 
 describe("isPrivateIp", () => {
   it("classifies non-canonical IPv4 literals and hostnames correctly", () => {

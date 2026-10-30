@@ -56,6 +56,12 @@ On Cloudflare Workers, middleware does not run for the `/_next/static` build out
 
 On Nitro, middleware runs for `public/` files on presets where Nitro's own server serves them, but not on hosts that serve the static output first. See [Nitro middleware and static files](/docs/deploying/other-platforms#middleware-and-static-files).
 
+## Images
+
+Only the production image endpoint enforces `images.localPatterns`. The dev server serves any local source, because Vite serves statically imported images from their source paths, which no pattern names.
+
+`images.localPatterns` and `images.remotePatterns` globs support only `*`, which matches within one path segment, and `**`, which matches across segments wherever it appears. Next.js matches them with picomatch, which also accepts braces, `?` and character classes, and treats `**` inside a segment like `*`.
+
 ## Caching
 
 These differences apply to builds without `cacheComponents`, which follow their own caching rules.

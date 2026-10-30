@@ -1971,7 +1971,9 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     }
     // The query middleware and rewrites selected, which the handler validated.
     const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
-    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
+    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities, {
+      localPatterns: imageConfig?.localPatterns,
+    });
     if (!params) {
       res.writeHead(400);
       res.end("Bad Request");
@@ -2455,6 +2457,7 @@ async function createPagesRouterRequestHandler(
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
         dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         qualities: vinextConfig.images.qualities,
+        localPatterns: vinextConfig.images.localPatterns,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
       }
@@ -2889,6 +2892,7 @@ async function createPagesRouterRequestHandler(
               parsedUrl,
               allowedImageWidths,
               pagesImageConfig?.qualities,
+              { localPatterns: pagesImageConfig?.localPatterns },
             );
             if (!params) {
               res.writeHead(400);

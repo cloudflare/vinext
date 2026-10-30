@@ -16,6 +16,18 @@ const nextConfig = {
   experimental: {
     allowedRevalidateHeaderKeys: ["x-revalidate-token"],
   },
+  // Used by E2E: pages-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo.svg", search: "?.png" },
+    ],
+  },
   async redirects() {
     return [
       {
