@@ -4,9 +4,9 @@ import { resolveSrvxMiddlewareOrigin } from "../packages/vinext/src/server/srvx-
 
 // srvx builds request.url from the client's Host header and exposes the Node
 // request it wraps as `request.runtime.node`.
-function srvxRequest(url: string, headers: Record<string, string> = {}) {
+function srvxRequest(url: string, headers: Record<string, string> = {}, encrypted = false) {
   return Object.assign(new Request(url, { headers }), {
-    runtime: { node: { req: { socket: { localPort: 3000 } } } },
+    runtime: { node: { req: { socket: { encrypted, localPort: 3000 } } } },
   });
 }
 
@@ -20,9 +20,17 @@ describe("resolveSrvxMiddlewareOrigin", () => {
     expect(resolveSrvxMiddlewareOrigin(srvxRequest("http://upstream.example/admin"))).toBe(
       "http://localhost:3000",
     );
-    expect(resolveSrvxMiddlewareOrigin(srvxRequest("https://upstream.example/admin"))).toBe(
-      "https://localhost:3000",
-    );
+    expect(
+      resolveSrvxMiddlewareOrigin(srvxRequest("https://upstream.example/admin", {}, true)),
+    ).toBe("https://localhost:3000");
+  });
+
+  // srvx sets the request URL's protocol from a raw `X-Forwarded-Proto`.
+  it("ignores X-Forwarded-Proto when the proxy is not trusted", () => {
+    const request = srvxRequest("https://upstream.example/admin", {
+      "x-forwarded-proto": "https",
+    });
+    expect(resolveSrvxMiddlewareOrigin(request)).toBe("http://localhost:3000");
   });
 
   it("uses X-Forwarded-Host only when it is trusted", () => {
