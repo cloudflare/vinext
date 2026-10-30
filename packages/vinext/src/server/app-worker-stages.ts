@@ -1,4 +1,7 @@
-import { keepOnlyValidatedRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
+import {
+  keepOnlyValidatedRscCacheBustingSearchParam,
+  stripRscSuffix,
+} from "./app-rsc-cache-busting.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-vary.js";
 import {
   cacheabilityManifestPageState,
@@ -6,7 +9,7 @@ import {
   cacheabilityRoutePathname,
   type CacheabilityManifest,
 } from "./cacheability-manifest.js";
-import type { AppRscRenderMode } from "./app-rsc-render-mode.js";
+import { APP_RSC_RENDER_MODE_NAVIGATION, type AppRscRenderMode } from "./app-rsc-render-mode.js";
 import {
   VINEXT_CACHE_IDENTITY_ORIGIN,
   withCacheIdentityOrigin,
@@ -194,6 +197,46 @@ export function createSharedAppPageCacheIdentity(
   }
   return {
     ...sharedAppCacheIdentity(queryFree.url, { headers, method: request.method }, queryFree.props),
+    queryFree: true,
+  };
+}
+
+/**
+ * Build the query-free cache identity of a shared Route Handler or metadata
+ * route dispatch. Next.js keys a route handler by its pathname: the query and
+ * the RSC selectors pick no representation of a handler's response, and a
+ * handler that reads the request's URL or headers is dynamic, so admission
+ * refuses its response. Keeping them in the identity would only let a client
+ * store one entry per query or selector value. The method, path and route
+ * props stay; the selector headers, the props derived from them and the
+ * `.rsc` suffix, which the handler's request never carries, leave.
+ */
+export function createSharedAppRouteCacheIdentity(
+  request: Request,
+  props: AppMatchedWorkerResponseStageProps | AppMetadataWorkerResponseStageProps,
+): SharedAppCacheIdentity {
+  const url = new URL(request.url);
+  url.pathname = stripRscSuffix(url.pathname);
+  url.search = "";
+  const headers = new Headers(request.headers);
+  for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
+  const searchIndex = props.resolvedUrl.indexOf("?");
+  return {
+    ...sharedAppCacheIdentity(
+      url.toString(),
+      { headers, method: request.method },
+      {
+        ...props,
+        ...(props.kind === "app-metadata"
+          ? {}
+          : { interceptionContext: null, interceptionId: null }),
+        isRscRequest: false,
+        mountedSlotsHeader: null,
+        renderMode: APP_RSC_RENDER_MODE_NAVIGATION,
+        resolvedUrl:
+          searchIndex === -1 ? props.resolvedUrl : props.resolvedUrl.slice(0, searchIndex),
+      },
+    ),
     queryFree: true,
   };
 }

@@ -105,7 +105,11 @@ export type VinextResponseStageDispatchOptions = {
    * dispatched request still carries the real query for the render itself. A
    * page identity keeps the query when a `next.config` public cache policy
    * applies (cached per full URL, as Next.js CDN caching is), and for
-   * interception and mounted-slot dispatches.
+   * interception and mounted-slot dispatches. A Route Handler or metadata
+   * route identity keeps only the method, path (without `.rsc`) and route
+   * props, as Next.js keys a route handler by its pathname: the RSC selectors
+   * pick no representation of its response, and admission refuses a handler
+   * that read the request's URL or headers.
    */
   cacheIdentity?: {
     props: unknown;

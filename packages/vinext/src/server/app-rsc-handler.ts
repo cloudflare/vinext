@@ -172,6 +172,7 @@ import {
   APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
   createSharedAppCacheIdentity,
   createSharedAppPageCacheIdentity,
+  createSharedAppRouteCacheIdentity,
   createSharedHybridPagesCacheIdentity,
   isStaticCandidateAppPageDispatch,
   prepareSharedAppPageDispatch,
@@ -1445,6 +1446,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
           // the render read of the query, so a page keeps the query in its
           // identity, as Next.js CDN caching does. Interception and mounted-slot
           // payloads stay contextual, as the RSC canonicalization above does.
+          // A Route Handler or metadata route has no such representations,
+          // so its identity keeps only the method, path and route props, as
+          // Next.js keys a route handler by its pathname.
           // A host-free identity keeps the query of every dispatch.
           const cacheIdentity =
             cache !== "shared" ||
@@ -1452,15 +1456,19 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
             stageProps.kind === "hybrid-pages" ||
             !adapterUsesSharedCacheIdentity()
               ? undefined
-              : stageProps.kind === "app-page" &&
-                  adapterSharedCacheIdentity() === "query-free" &&
-                  responseStagePolicy === null &&
-                  stageProps.matchKind !== "interception" &&
-                  stageProps.interceptionContext === null &&
-                  stageProps.interceptionId === null &&
-                  stageProps.mountedSlotsHeader === null
-                ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
-                : createSharedAppCacheIdentity(dispatchRequest, stageProps);
+              : adapterSharedCacheIdentity() !== "query-free" || responseStagePolicy !== null
+                ? createSharedAppCacheIdentity(dispatchRequest, stageProps)
+                : stageProps.kind === "app-page" &&
+                    stageProps.matchKind !== "interception" &&
+                    stageProps.interceptionContext === null &&
+                    stageProps.interceptionId === null &&
+                    stageProps.mountedSlotsHeader === null
+                  ? createSharedAppPageCacheIdentity(dispatchRequest, stageProps)
+                  : stageProps.kind === "app-metadata" ||
+                      (stageProps.kind === "app-route-handler" &&
+                        stageProps.matchKind !== "interception")
+                    ? createSharedAppRouteCacheIdentity(dispatchRequest, stageProps)
+                    : createSharedAppCacheIdentity(dispatchRequest, stageProps);
           let response = await dispatchResponseStage(
             dispatchRequest,
             stageProps,
