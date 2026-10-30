@@ -5,6 +5,7 @@
  * attacks via next/image. Covers hostname globs, pathname globs, protocol,
  * port, and search matching — mirroring Next.js's matchRemotePattern semantics.
  */
+import { createRequire } from "node:module";
 import { describe, it, expect } from "vite-plus/test";
 import {
   matchRemotePattern,
@@ -291,6 +292,44 @@ describe("matchLocalPattern", () => {
     expect(matchLocalPattern({ search: "" }, local("/a.png?v=2"))).toBe(false);
     expect(matchLocalPattern({ search: "?v=2" }, local("/a.png?v=2"))).toBe(true);
     expect(matchLocalPattern({ search: "?v=2" }, local("/a.png?v=3"))).toBe(false);
+  });
+});
+
+// Next.js compiles local pathnames with picomatch (`makeRe(pathname, { dot:
+// true })`). Each case is checked against Next.js's compiled picomatch.
+describe("matchLocalPattern pathname parity with Next.js picomatch", () => {
+  it("agrees on typical * and ** patterns", () => {
+    const picomatch = createRequire(import.meta.url)("next/dist/compiled/picomatch") as {
+      makeRe(pattern: string, options: { dot: boolean }): RegExp;
+    };
+    const cases: Array<[string, string, boolean]> = [
+      ["**", "/a/b.png", true],
+      ["/**", "/a.png", true],
+      ["/photos/**", "/photos", true],
+      ["/photos/**", "/photos/a/b.png", true],
+      ["/photos/**", "/photosx/a.png", false],
+      ["/photos/**/hero.png", "/photos/hero.png", true],
+      ["/photos/**/hero.png", "/photos/a/b/hero.png", true],
+      ["/photos/**/hero.png", "/photos/xhero.png", false],
+      ["**/hero.png", "/a/hero.png", true],
+      ["/photos/*", "/photos/a.png", true],
+      ["/photos/*", "/photos/", false],
+      ["/photos/*", "/photos/a/b.png", false],
+      ["/foo/*.png", "/foo/.png", true],
+      ["/foo/*.png", "/foo/a.png", true],
+      ["/foo/*.png", "/foo/a/b.png", false],
+      ["/photos/**.png", "/photos/a.png", true],
+      ["/photos/**.png", "/photos/a/b.png", false],
+      ["/a/x*y/b", "/a/xzy/b", true],
+      ["/_next/static/media/**", "/_next/static/media/hero.0a1b2c3d.png", true],
+    ];
+    for (const [pattern, pathname, expected] of cases) {
+      const url = new URL(pathname, "http://n");
+      expect(picomatch.makeRe(pattern, { dot: true }).test(url.pathname), "Next.js").toBe(expected);
+      expect(matchLocalPattern({ pathname: pattern }, url), `${pattern} ${pathname}`).toBe(
+        expected,
+      );
+    }
   });
 });
 

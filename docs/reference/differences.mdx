@@ -60,7 +60,7 @@ On Nitro, middleware runs for `public/` files on presets where Nitro's own serve
 
 Only the production image endpoint enforces `images.localPatterns`. The dev server serves any local source, because Vite serves statically imported images from their source paths, which no pattern names.
 
-`images.localPatterns` and `images.remotePatterns` globs support only `*`, which matches within one path segment, and `**`, which matches across segments wherever it appears. Next.js matches them with picomatch, which also accepts braces, `?` and character classes, and treats `**` inside a segment like `*`.
+`images.localPatterns` and `images.remotePatterns` globs support only `*` and `**`. Next.js matches them with picomatch, which also accepts braces, `?` and character classes. In `remotePatterns` pathnames, `**` matches across segments wherever it appears, where picomatch treats a `**` inside a segment like `*`. In `localPatterns`, a few picomatch edge cases allow less: `/**/a` doesn't match `/a` in Next.js, and `/*/**` doesn't match `/a`, while vinext matches both.
 
 ## Caching
 

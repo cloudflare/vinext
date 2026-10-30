@@ -1271,13 +1271,31 @@ describe("resolveNextConfig image patterns", () => {
         "/tmp/project",
       ),
     ).rejects.toThrow("Specified images.localPatterns should be an Array received object.");
+    for (const [value, type] of [
+      [null, "null"],
+      [false, "boolean"],
+      ["", "string"],
+    ] as const) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: value as never } }, "/tmp/project"),
+      ).rejects.toThrow(`Specified images.localPatterns should be an Array received ${type}.`);
+    }
   });
 
   it("rejects malformed local pattern entries instead of allowing every source", async () => {
-    for (const entry of [null, "/photos/**", { pathname: 1 }, { pathname: "/a", host: "x" }]) {
+    // A sparse hole serializes to `null` in the runtime config.
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    for (const localPatterns of [
+      [null],
+      ["/photos/**"],
+      [{ pathname: 1 }],
+      [{ pathname: "/a", host: "x" }],
+      sparse,
+    ]) {
       await expect(
-        resolveNextConfig({ images: { localPatterns: [entry] as never } }, "/tmp/project"),
-        JSON.stringify(entry),
+        resolveNextConfig({ images: { localPatterns: localPatterns as never } }, "/tmp/project"),
+        JSON.stringify(localPatterns),
       ).rejects.toThrow("Specified images.localPatterns[0] should be an object");
     }
     await expect(

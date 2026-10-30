@@ -23,9 +23,9 @@ export type RemotePattern = {
 };
 
 // Cache compiled glob regexes — bounded by the number of distinct configured
-// remotePatterns and localPatterns. Key uses \0 as a separator; \0 cannot
-// appear in a valid glob or separator character, so there are no collisions.
-// Compiled regexes are flagless, so sharing via .test() is safe.
+// remotePatterns. Key uses \0 as a separator; \0 cannot appear in a valid glob
+// or separator character, so there are no collisions. Compiled regexes are
+// flagless, so sharing via .test() is safe.
 const globRegexCache = new Map<string, RegExp>();
 
 /**
@@ -130,6 +130,45 @@ export type LocalPattern = {
   search?: string;
 };
 
+const localPathnameRegexCache = new Map<string, RegExp>();
+
+/**
+ * Convert a local pathname glob to a RegExp, reading `*` and `**` like Next.js's
+ * picomatch (`makeRe(pathname, { dot: true })`) does for typical patterns:
+ *   - a `**` segment matches zero or more whole segments;
+ *   - any other `*` run matches characters within one segment, and at least
+ *     one when it is the whole last segment.
+ * Other picomatch syntax (braces, `?`, classes) is matched literally.
+ */
+function localPathnameGlobToRegex(pattern: string): RegExp {
+  const cached = localPathnameRegexCache.get(pattern);
+  if (cached !== undefined) return cached;
+  const segments = pattern.split("/");
+  let regexStr = "^";
+  for (let i = 0; i < segments.length; i++) {
+    const segment = segments[i];
+    const isLast = i === segments.length - 1;
+    if (segment === "**") {
+      if (i > 0) regexStr += "(?:/.*)?";
+      else regexStr += isLast ? ".*" : "(?:.*/)?";
+      continue;
+    }
+    // A leading `**` already ends with the separator.
+    if (i > 0 && !(i === 1 && segments[0] === "**")) regexStr += "/";
+    regexStr +=
+      segment === "*" && isLast
+        ? "[^/]+"
+        : segment
+            .split(/\*+/)
+            .map((literal) => literal.replace(/[.+?^${}()|[\]\\]/g, "\\$&"))
+            .join("[^/]*");
+  }
+  regexStr += "$";
+  const re = new RegExp(regexStr);
+  localPathnameRegexCache.set(pattern, re);
+  return re;
+}
+
 /**
  * Check whether a local URL matches a single local pattern.
  * Follows the same semantics as Next.js's matchLocalPattern().
@@ -138,7 +177,7 @@ export function matchLocalPattern(pattern: LocalPattern, url: URL): boolean {
   if (pattern.search !== undefined && pattern.search !== url.search) {
     return false;
   }
-  return globToRegex(pattern.pathname ?? "**", "/").test(url.pathname);
+  return localPathnameGlobToRegex(pattern.pathname ?? "**").test(url.pathname);
 }
 
 /**

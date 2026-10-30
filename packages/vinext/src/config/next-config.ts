@@ -1364,10 +1364,10 @@ async function resolveBuildId(
 function resolveImageLocalPatterns(
   localPatterns: unknown,
 ): Array<{ pathname?: string; search?: string }> | undefined {
-  if (!localPatterns) return undefined;
+  if (localPatterns === undefined) return undefined;
   if (!Array.isArray(localPatterns)) {
     throw new Error(
-      `Specified images.localPatterns should be an Array received ${typeof localPatterns}.\n` +
+      `Specified images.localPatterns should be an Array received ${localPatterns === null ? "null" : typeof localPatterns}.\n` +
         "See more info here: https://nextjs.org/docs/messages/invalid-images-config",
     );
   }
@@ -1377,7 +1377,8 @@ function resolveImageLocalPatterns(
   if (localPatterns.length > 25) {
     throw new Error("Specified images.localPatterns can have at most 25 entries.");
   }
-  const patterns = localPatterns.map((pattern: unknown, index) => {
+  // Array.from visits sparse holes, which map would skip.
+  const patterns = Array.from(localPatterns, (pattern: unknown, index) => {
     if (
       typeof pattern !== "object" ||
       pattern === null ||
