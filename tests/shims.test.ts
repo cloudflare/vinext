@@ -9038,6 +9038,35 @@ describe('"use cache" runtime', () => {
       expect(calls).toBe(2);
     });
 
+    it("keeps the outer lifetime when nested caches live longer", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("max"); // { stale: 300, revalidate: 2592000, expire: 31536000 }
+        return "inner";
+      }, "test:life-parity-longer-inner");
+      const explicitOuter = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return await inner();
+      }, "test:life-parity-longer-explicit-outer");
+      const defaultOuter = registerCachedFunction(
+        async () => await inner(),
+        "test:life-parity-longer-default-outer",
+      );
+
+      expect(await resolveRequestLife(() => explicitOuter())).toEqual({
+        stale: 300,
+        revalidate: 60,
+        expire: 3600,
+      });
+      // Without cacheLife(), the default profile still caps what the nested
+      // cache can contribute: only fields shorter than the default lower it.
+      expect(await resolveRequestLife(() => defaultOuter())).toEqual({
+        stale: 300,
+        revalidate: 900,
+        expire: 31536000,
+      });
+    });
+
     it("propagates the cache life of a function that throws", async () => {
       const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
       const cached = registerCachedFunction(async () => {
