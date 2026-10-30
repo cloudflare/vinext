@@ -329,7 +329,22 @@ function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | un
 
 function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}"${createIntegrityAttribute(bootstrapModuleUrl)} crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`;
+  const urls = [bootstrapModuleUrl];
+  // With experimental.sri, the error shell also preloads the chunks the
+  // replaced React render preinitialised, with their hashes: a module's
+  // imports do not inherit its integrity check.
+  if (pagesClientAssets.integrity) {
+    urls.push(...(pagesClientAssets.appBootstrapPreinitModules ?? []));
+    if (pagesClientAssets.appRouteManifestModule) {
+      urls.push(pagesClientAssets.appRouteManifestModule);
+    }
+  }
+  return urls
+    .map(
+      (url) =>
+        `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(url)}"${createIntegrityAttribute(url)} crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`,
+    )
+    .join("");
 }
 
 function buildHeadInjectionHtml(
