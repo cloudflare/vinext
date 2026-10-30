@@ -668,10 +668,14 @@ export function isVinextStreamedApiResponse(response: Response): boolean {
 }
 
 export function createPagesReqRes(options: CreatePagesReqResOptions): CreatePagesReqResResult {
-  const headersObj: Record<string, string> = {};
+  const headersObj: Record<string, string | string[]> = {};
   for (const [key, value] of options.request.headers) {
     headersObj[key.toLowerCase()] = value;
   }
+  // Iteration yields each Set-Cookie separately. Like Next.js's
+  // toNodeOutgoingHttpHeaders, keep several of them as an array.
+  const setCookies = options.request.headers.getSetCookie();
+  if (setCookies.length > 1) headersObj["set-cookie"] = setCookies;
 
   // Next.js Pages API routes receive Node IncomingMessage/ServerResponse
   // objects. The Workers/prod adapter starts from a Fetch Request, so expose a
