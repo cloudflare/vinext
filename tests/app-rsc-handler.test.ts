@@ -7656,9 +7656,6 @@ describe("createAppRscHandler", () => {
   });
 
   it("allows independent Next.js blur width and quality exceptions in pure App Router dev", async () => {
-    // The blur quality exception (q=70) is only observable when `qualities` is
-    // configured — with an unset allowlist any quality 1-100 is permitted, so
-    // pin it to [75] to exercise the dev-only exception itself.
     const handler = createHandler({ imageConfig: { qualities: [75] } });
     for (const query of ["url=%2Fimg.jpg&w=8&q=75", "url=%2Fimg.jpg&w=640&q=70"]) {
       const response = await handler(
@@ -7680,15 +7677,20 @@ describe("createAppRscHandler", () => {
     }
   });
 
-  it("allows any quality 1-100 in production when images.qualities is unset", async () => {
-    // Matches Next.js: an unset `qualities` is not restricted to a single value,
-    // so q=70 (and any 1-100) is a normal quality even in production.
+  it("allows only the Next.js 16 default quality in production when images.qualities is unset", async () => {
+    // Matches Next.js 16: an unset `qualities` defaults to [75], so q=70 is a
+    // normal (rejected) quality in production, not a dev blur exception.
     const handler = createHandler({ isDev: false });
-    const response = await handler(
+    const rejected = await handler(
       new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=70"),
       null,
     );
-    expect(response.status).toBe(302);
+    expect(rejected.status).toBe(400);
+    const allowed = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(allowed.status).toBe(302);
   });
 
   it("wraps dispatch responses with request-scoped finalization", async () => {

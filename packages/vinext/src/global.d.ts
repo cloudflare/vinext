@@ -462,6 +462,12 @@ declare global {
       __VINEXT_IMAGE_SIZES?: string;
 
       /**
+       * JSON-encoded array of allowed image qualities from
+       * `next.config.js` → `images.qualities` (Next.js 16 default `[75]`).
+       */
+      __VINEXT_IMAGE_QUALITIES?: string;
+
+      /**
        * `"true"` or `"false"` — whether SVG sources are allowed through the
        * image optimizer (`next.config.js` → `images.dangerouslyAllowSVG`).
        */

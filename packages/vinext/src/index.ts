@@ -60,6 +60,7 @@ import { handleApiRoute } from "./server/api-handler.js";
 import { signalFromNodeResponse } from "./server/node-response-signal.js";
 import {
   DEFAULT_DEVICE_SIZES,
+  DEFAULT_IMAGE_QUALITIES,
   DEFAULT_IMAGE_SIZES,
   isImageOptimizationPath,
   resolveDevImageRedirect,
@@ -3179,11 +3180,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
-          // Emit the configured qualities allowlist, or `null` when unset so the
-          // runtime permits any quality 1-100 (matches Next.js: an unset
-          // `images.qualities` is not restricted to a single value).
+          // The default loader rounds the `quality` prop to the closest entry,
+          // like Next.js, so the URLs it emits are ones the endpoint accepts.
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
-            JSON.stringify(nextConfig.images?.qualities ?? null),
+            JSON.stringify(nextConfig.images?.qualities ?? DEFAULT_IMAGE_QUALITIES),
           );
         }
         // Expose dangerouslyAllowSVG flag for the image shim's auto-skip logic.

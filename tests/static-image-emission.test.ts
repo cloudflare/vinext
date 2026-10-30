@@ -400,7 +400,8 @@ async function assertStaticImageProductionParity(
     expect(new URL(src, "http://vinext.test").searchParams.get("dpl")).toBe(
       options.deploymentId ?? null,
     );
-    expect(src).toContain("q=85");
+    // `quality={85}` rounds to the default `images.qualities` entry, as in Next.js 16.
+    expect(src).toContain("q=75");
     expect(src).not.toContain("data%3Aimage");
     // Next.js serves the image endpoint under basePath, the path next/image emits.
     expect(new URL(src, "http://vinext.test").pathname).toBe(
