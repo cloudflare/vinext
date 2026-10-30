@@ -515,9 +515,9 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("location")).toMatch(/_rsc=.+/);
   });
 
-  it("accepts legacy FNV cache-busting params during rolling upgrades", async () => {
+  it("accepts the FNV cache-busting param that clients without Web Crypto send", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-    const legacyHash = fnv1a64("0,0,0,0,0,slot:modal:/");
+    const legacyHash = fnv1a64("0,0,0,0,0,0,slot:modal:/,0");
     const request = new Request(`https://example.com/photos/42.rsc?_rsc=${legacyHash}`, {
       headers,
     });
@@ -527,16 +527,87 @@ describe("App Router RSC cache-busting", () => {
     ).resolves.toBeNull();
   });
 
-  it("accepts previous SHA cache-busting params after adding a varying header", async () => {
+  it("redirects hashes computed without a position of the current layout", async () => {
     const headers = createRscRequestHeaders({ mountedSlotsHeader: "slot:modal:/" });
-    const previousHash = await sha256CacheBustingHash("0,0,0,0,0,slot:modal:/");
-    const request = new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
-      headers,
-    });
+    const currentHash = await computeRscCacheBustingSearchParam(headers);
+    for (const previousInput of ["0,0,0,0,0,slot:modal:/", "0,0,0,0,0,0,slot:modal:/"]) {
+      for (const previousHash of [
+        await sha256CacheBustingHash(previousInput),
+        fnv1a64(previousInput),
+      ]) {
+        const response = await resolveInvalidRscCacheBustingRequest({
+          isRscRequest: true,
+          request: new Request(`https://example.com/photos/42.rsc?_rsc=${previousHash}`, {
+            headers,
+          }),
+        });
 
-    await expect(
-      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
-    ).resolves.toBeNull();
+        expect(response?.status).toBe(307);
+        expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
+      }
+    }
+  });
+
+  it("escapes commas so header values cannot move between positions", async () => {
+    const headers = createRscRequestHeaders({ nextUrl: "/a,b\\c" });
+    await expect(computeRscCacheBustingSearchParam(headers)).resolves.toBe(
+      await sha256CacheBustingHash("0,0,0,/a\\,b\\\\c,0,0,0,0"),
+    );
+
+    // Without escaping, these headers would serialize as the ones above.
+    const shifted = new Headers({
+      RSC: "1",
+      "Next-Url": "/a",
+      "X-Vinext-Interception-Context": "b\\c",
+    });
+    shifted.set(VINEXT_RSC_STATE_FINGERPRINT_HEADER, "0");
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request: new Request(
+        `https://example.com${await createRscRequestUrl("/photos/42", headers)}`,
+        { headers: shifted },
+      ),
+    });
+    expect(response?.status).toBe(307);
+  });
+
+  it("does not accept the same values under a layout with fewer positions", async () => {
+    const intercepted = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      mountedSlotsHeader: "slot:modal:/feed",
+      routerState: { pathAndSearch: "/feed", routeId: "route:/feed" },
+    });
+    const fingerprint = intercepted.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER)!;
+    const loadingShell = createCanonicalLoadingShellRscRequestHeaders();
+    const cases = [
+      {
+        source: intercepted,
+        forged: new Headers({
+          RSC: "1",
+          "Next-Url": "0,/feed,0,slot:modal:/feed",
+          "X-Vinext-Mounted-Slots": fingerprint,
+        }),
+      },
+      {
+        source: loadingShell,
+        forged: new Headers({
+          RSC: "1",
+          "Next-Router-Prefetch": "1",
+          "Next-Router-Segment-Prefetch": "1",
+          [VINEXT_RSC_STATE_FINGERPRINT_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+        }),
+      },
+    ];
+    for (const { source, forged } of cases) {
+      const response = await resolveInvalidRscCacheBustingRequest({
+        isRscRequest: true,
+        request: new Request(
+          `https://example.com${await createRscRequestUrl("/photos/42", source)}`,
+          { headers: forged },
+        ),
+      });
+      expect(response?.status).toBe(307);
+    }
   });
 
   it("canonicalizes interception id requests whose hash omits the id", async () => {
@@ -560,15 +631,17 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("Location")).toBe(`/photos/42.rsc?_rsc=${currentHash}`);
   });
 
-  it("accepts the prior bare navigation query after adding the state fingerprint", async () => {
+  it("redirects a bare query that omits the state fingerprint", async () => {
     const headers = createRscRequestHeaders({
       routerState: { pathAndSearch: "/current", routeId: "route:/current" },
     });
     const request = new Request("https://example.com/photos/42?_rsc", { headers });
 
-    await expect(
-      resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request }),
-    ).resolves.toBeNull();
+    const response = await resolveInvalidRscCacheBustingRequest({ isRscRequest: true, request });
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe(
+      `/photos/42?_rsc=${await computeRscCacheBustingSearchParam(headers)}`,
+    );
   });
 
   it("ignores non-RSC and mutating requests", async () => {

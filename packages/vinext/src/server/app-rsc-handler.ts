@@ -1049,9 +1049,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   if (interceptionIdHeader !== null) {
     // Canonicalize selector-bearing URLs before any cacheable redirect can
-    // depend on the selector. During rollout, a pre-selector `_rsc` hash can
-    // otherwise give two graph-owned IDs the same request URL while producing
-    // different redirect locations.
+    // depend on the selector. A `_rsc` hash that does not cover the selector
+    // would otherwise give two graph-owned IDs the same request URL while
+    // producing different redirect locations.
     const selectorCacheBustingRedirect = await resolveInvalidRscCacheBustingRequest({
       isRscRequest,
       request,

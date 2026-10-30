@@ -12,6 +12,13 @@ import {
   setPagesClientAssets,
 } from "../packages/vinext/src/server/pages-client-assets.js";
 import {
+  createCanonicalLoadingShellRscRequestHeaders,
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
+import { APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL } from "../packages/vinext/src/server/app-rsc-render-mode.js";
+import { VINEXT_RSC_STATE_FINGERPRINT_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
   APP_FIXTURE_DIR,
   createIsolatedFixture,
   EXTERNAL_REWRITE_HEADER_CASES,
@@ -1000,6 +1007,53 @@ describe("App Router Production server (startProdServer)", () => {
 
     const interceptCss = await fetchStylesheetText(baseUrl, getFlightStylesheetHrefs(payload));
     expect(interceptCss).toContain("scroll-padding-top:20px");
+  });
+
+  it("only accepts an _rsc value for the headers it was computed from", async () => {
+    const interceptHeaders = createRscRequestHeaders({
+      interceptionContext: "/feed",
+      mountedSlotsHeader: "slot:modal:/feed",
+      routerState: { pathAndSearch: "/feed", routeId: "route:/feed" },
+    });
+    const fingerprint = interceptHeaders.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER)!;
+    const interceptUrl = await createRscRequestUrl("/photos/43", interceptHeaders);
+    const intercepted = await fetch(`${baseUrl}${interceptUrl}`, {
+      headers: interceptHeaders,
+      redirect: "manual",
+    });
+    expect(intercepted.status).toBe(200);
+    expect(await intercepted.text()).toContain("photo-modal");
+
+    // The same values moved into other headers select the stand-alone page.
+    // Its payload must not be served under the intercepted request's URL.
+    const shifted = await fetch(`${baseUrl}${interceptUrl}`, {
+      headers: {
+        Accept: "text/x-component",
+        RSC: "1",
+        "Next-Url": "0,/feed,0,slot:modal:/feed",
+        "X-Vinext-Mounted-Slots": fingerprint,
+      },
+      redirect: "manual",
+    });
+    expect(shifted.status).toBe(307);
+    await shifted.body?.cancel();
+
+    const loadingShellUrl = await createRscRequestUrl(
+      "/photos/43",
+      createCanonicalLoadingShellRscRequestHeaders(),
+    );
+    const fullPrefetch = await fetch(`${baseUrl}${loadingShellUrl}`, {
+      headers: {
+        Accept: "text/x-component",
+        RSC: "1",
+        "Next-Router-Prefetch": "1",
+        "Next-Router-Segment-Prefetch": "1",
+        [VINEXT_RSC_STATE_FINGERPRINT_HEADER]: APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+      },
+      redirect: "manual",
+    });
+    expect(fullPrefetch.status).toBe(307);
+    await fullPrefetch.body?.cancel();
   });
 
   it("does not reuse cached HTML across requests with different CSP nonces", async () => {
