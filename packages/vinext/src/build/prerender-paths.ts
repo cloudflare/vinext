@@ -1265,6 +1265,7 @@ export function matchesMiddlewareWarmPath(
   pathname: string,
   matcher: MatcherConfig | undefined,
   i18n: ResolvedNextConfig["i18n"],
+  trailingSlash = false,
 ): boolean {
   const encodedPathname = new URL(pathname, "https://vinext.invalid").pathname;
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
@@ -1279,12 +1280,21 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const matchPathnames = [encodedPathname];
-  try {
-    const decodedPathname = decodeURIComponent(encodedPathname);
-    if (decodedPathname !== encodedPathname) matchPathnames.push(decodedPathname);
-  } catch {
-    // Match runtime middleware behavior: malformed encoding is non-fatal.
+  // Runtime middleware also tests the warm request's own terminal slash, so a
+  // source that keeps one ("/admin/") can end that request.
+  const requestPathnames =
+    trailingSlash && !encodedPathname.endsWith("/")
+      ? [encodedPathname, `${encodedPathname}/`]
+      : [encodedPathname];
+  const matchPathnames: string[] = [];
+  for (const requestPathname of requestPathnames) {
+    matchPathnames.push(requestPathname);
+    try {
+      const decodedPathname = decodeURIComponent(requestPathname);
+      if (decodedPathname !== requestPathname) matchPathnames.push(decodedPathname);
+    } catch {
+      // Match runtime middleware behavior: malformed encoding is non-fatal.
+    }
   }
   return matchPathnames.some((matchPathname) =>
     localeContexts.some((localeContext) =>
@@ -1496,7 +1506,8 @@ export async function discoverPrerenderPathManifest(
     : undefined;
   const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
   const middlewareMayRouteWarmPath = (pathname: string): boolean =>
-    middlewarePath !== null && matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n);
+    middlewarePath !== null &&
+    matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n, config.trailingSlash);
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
