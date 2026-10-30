@@ -21,6 +21,7 @@ import { resolveServerActionRequestState, type AppRouterState } from "./app-brow
 import { AppElementsWire, type AppElements, type AppWireElements } from "./app-elements.js";
 import {
   createServerActionRequestUrl,
+  toPathAbsolutePathname,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
 } from "./app-rsc-cache-busting.js";
 import { throwOnServerActionNotFound } from "./server-action-not-found.js";
@@ -131,7 +132,8 @@ class ServerActionRedirectError extends Error {
   constructor(target: ActionRedirectTarget) {
     super("NEXT_REDIRECT");
     const redirectUrl = new URL(target.href, window.location.href);
-    const redirectHref = redirectUrl.pathname + redirectUrl.search + redirectUrl.hash;
+    const redirectHref =
+      toPathAbsolutePathname(redirectUrl.pathname) + redirectUrl.search + redirectUrl.hash;
     const redirectType = target.type === "push" ? "push" : "replace";
     this.digest = `NEXT_REDIRECT;${redirectType};${redirectHref};${target.status};`;
   }
