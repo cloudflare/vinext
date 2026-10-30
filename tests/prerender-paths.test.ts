@@ -1942,6 +1942,10 @@ describe("prerender path manifest", () => {
         i18n,
       ),
     ).toBe(false);
+    // A trailingSlash warm request reaches middleware as /admin/.
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, true)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/(.*)", null, true)).toBe(true);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {

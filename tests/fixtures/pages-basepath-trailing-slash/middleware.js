@@ -1,7 +1,9 @@
 import { NextResponse } from "next/server";
 
 // The matcher is written without the basePath; Next.js prefixes it, so it
-// gates only /docs/private/* and /docs/mw-rewrite/*.
+// gates only /docs/private/* and /docs/mw-rewrite/*. "/slashed-guard/" keeps
+// its terminal slash, so /docs/slashed-guard/ matches only as requested and
+// gets an empty response without running middleware, as in Next.js.
 export function middleware(request) {
   const { pathname } = request.nextUrl;
   // A rewrite destination resolves only under the basePath, so these
@@ -22,5 +24,5 @@ export function middleware(request) {
 }
 
 export const config = {
-  matcher: ["/private/:path*", "/mw-rewrite/:path*"],
+  matcher: ["/private/:path*", "/mw-rewrite/:path*", "/slashed-guard/"],
 };

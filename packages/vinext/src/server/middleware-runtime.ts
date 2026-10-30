@@ -456,24 +456,25 @@ async function executeMiddlewareModule(
     candidate !== null && options.isDataRequest && !isStaleDataRequest
       ? (nextDataMiddlewareMatchPathname(candidate) ?? candidate)
       : candidate;
-  const encodedMatchPathname = toPageMatcherPathname(
-    prepareMatcherPathname(encodedRequestPathname),
-  );
-  let decodedMatchPathname = encodedMatchPathname;
-  try {
-    if (encodedMatchPathname !== null) {
-      decodedMatchPathname = decodeURIComponent(encodedMatchPathname);
-    } else if (!options.i18nConfig) {
-      // Without i18n, Next.js can discover an encoded basePath on the decoded
-      // matcher attempt. With i18n, default-locale insertion has already made
-      // that path ineligible for the compiled basePath-prefixed matcher.
-      decodedMatchPathname = toPageMatcherPathname(
-        prepareMatcherPathname(decodeURIComponent(encodedRequestPathname)),
-      );
+  const toMatchPathnames = (candidate: string) => {
+    const encoded = toPageMatcherPathname(prepareMatcherPathname(candidate));
+    let decoded = encoded;
+    try {
+      if (encoded !== null) {
+        decoded = decodeURIComponent(encoded);
+      } else if (!options.i18nConfig) {
+        // Without i18n, Next.js can discover an encoded basePath on the decoded
+        // matcher attempt. With i18n, default-locale insertion has already made
+        // that path ineligible for the compiled basePath-prefixed matcher.
+        decoded = toPageMatcherPathname(prepareMatcherPathname(decodeURIComponent(candidate)));
+      }
+    } catch {
+      // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
     }
-  } catch {
-    // Match Next.js: malformed encoding is non-fatal for matcher eligibility.
-  }
+    return { decoded, encoded };
+  };
+  const { decoded: decodedMatchPathname, encoded: encodedMatchPathname } =
+    toMatchPathnames(encodedRequestPathname);
 
   let localeContext: MiddlewareLocaleMatchContext | undefined;
   if (isStaleDataRequest) {
@@ -513,7 +514,29 @@ async function executeMiddlewareModule(
     decodedMatchPathname !== null &&
     decodedMatchPathname !== encodedMatchPathname &&
     matchesMiddlewarePathname(decodedMatchPathname, matcher, options.i18nConfig, localeContext);
-  if (encodedPathMatches || decodedPathMatches) {
+  // Next.js's router server first tests the pathname as requested, terminal
+  // slash included, and hands a match to the render server, whose test above
+  // strips the slash. Middleware runs only when both tests accept the request.
+  // A source that keeps a terminal slash ("/admin/", "/admin/(.*)") matches
+  // /admin/ only in the first test, and the render server then ends the
+  // request with an empty 200 instead of routing it.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/next-server.ts
+  const slashedRequestPathname = normalizePath(requestPathname);
+  const hasTerminalSlash = slashedRequestPathname !== encodedRequestPathname;
+  const slashedMatchPathnames: string[] = [];
+  if (hasTerminalSlash) {
+    const { decoded, encoded } = toMatchPathnames(slashedRequestPathname);
+    if (encoded !== null) slashedMatchPathnames.push(encoded);
+    if (decoded !== null && decoded !== encoded) slashedMatchPathnames.push(decoded);
+  }
+  if (
+    encodedPathMatches ||
+    decodedPathMatches ||
+    slashedMatchPathnames.some((candidate) =>
+      matchesMiddlewarePathname(candidate, matcher, options.i18nConfig, localeContext),
+    )
+  ) {
     options.onPathMatch?.();
   }
 
@@ -538,8 +561,17 @@ async function executeMiddlewareModule(
       localeContext,
     );
 
-  if (!encodedMatches && !decodedMatches) {
+  const strippedMatches = encodedMatches || decodedMatches;
+  const requestedMatches = hasTerminalSlash
+    ? slashedMatchPathnames.some((candidate) =>
+        matchesMiddleware(candidate, matcher, options.request, options.i18nConfig, localeContext),
+      )
+    : strippedMatches;
+  if (!requestedMatches) {
     return { continue: true };
+  }
+  if (!strippedMatches) {
+    return { continue: false, response: new Response(null, { status: 200 }) };
   }
 
   options.onMatch?.();
