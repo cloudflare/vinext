@@ -2651,6 +2651,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     fallbackShellState?: string,
     previousFallbackPostponed?: string,
     staticParamsFor: (pattern: string | null) => unknown = () => [{ locale: "en", slug: "hello" }],
+    withRoutes?: (routes: AppRoute[]) => void,
   ) {
     const root = tmpDir("vinext-prerender-ppr-shell-");
     const outDir = path.join(root, "out");
@@ -2709,6 +2710,7 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
       const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
       const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
       const routes = await appRouter(appDir);
+      withRoutes?.(routes);
       const config = await resolveNextConfig({ cacheComponents });
 
       const result = await prerenderApp({
@@ -2754,7 +2756,8 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
     });
     expect(renderedPaths).toEqual(expect.arrayContaining(["/en/blog/hello", "/en/blog/[slug]"]));
     expect(fallbackHtml).toContain("<!--vinext-ppr-dynamic-fallback-shell-->");
-    expect(fallbackPostponed).toBeNull();
+    // Without a state to resume from, the shell keeps only its generated params.
+    expect(fallbackPostponed).not.toContain("replayNodes");
   });
 
   it.each([
@@ -2763,40 +2766,167 @@ describe("prerenderApp — cacheComponents PPR fallback-shell artifacts", () => 
   ])(
     "keeps the layout's root params in the fallback shells of a page with %s",
     async (_label, pageStaticParams) => {
-      const { fallbackHtml, renderedPaths } = await prerenderDynamicRootParamRoute(
-        true,
-        undefined,
-        undefined,
-        (pattern) => (pattern === "layouts:[locale]" ? [{ locale: "en" }] : pageStaticParams),
-      );
+      const { parseAppPprShellState } =
+        await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+      const { fallbackHtml, fallbackPostponed, renderedPaths } =
+        await prerenderDynamicRootParamRoute(true, undefined, undefined, (pattern) =>
+          pattern === "layouts:[locale]" ? [{ locale: "en" }] : pageStaticParams,
+        );
 
       expect(renderedPaths).toContain("/en/blog/[slug]");
       expect(fallbackHtml).toContain("<!--vinext-ppr-dynamic-fallback-shell-->");
+      // The shell records the layout's params, so a request under `en` uses it.
+      expect(parseAppPprShellState(fallbackPostponed ?? undefined)?.generated).toEqual([
+        { locale: "en" },
+      ]);
     },
   );
 
-  it("writes a fallback shell's state beside it, out of the served HTML", async () => {
-    const { formatAppPprShellState } =
+  it("writes a fallback shell's state beside it, out of the served HTML, with its generated params", async () => {
+    const { formatAppPprShellState, parseAppPprShellState } =
       await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const resumeDataCache = JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} });
     const state = formatAppPprShellState({
       prelude: true,
       postponed: { replayNodes: [] },
-      resumeDataCache: JSON.stringify({ cache: { key: { body: "e30=" } }, fetch: {} }),
+      resumeDataCache,
+      generated: null,
     });
     const { fallbackHtml, fallbackPostponed } = await prerenderDynamicRootParamRoute(true, state);
 
     expect(fallbackHtml).not.toContain("vinext-ppr-shell-state");
-    expect(fallbackPostponed).toBe(state);
+    expect(parseAppPprShellState(fallbackPostponed ?? undefined)).toEqual({
+      prelude: true,
+      postponed: { replayNodes: [] },
+      resumeDataCache,
+      generated: [{ locale: "en", slug: "hello" }],
+    });
   });
 
-  it("removes an earlier build's state when the shell no longer has one", async () => {
+  it("records only the generated params that agree with the values a fallback shell keeps", async () => {
+    const { formatAppPprShellState, parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const state = formatAppPprShellState({
+      prelude: true,
+      postponed: { replayNodes: [] },
+      resumeDataCache: null,
+      generated: null,
+    });
+    const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
+      true,
+      state,
+      undefined,
+      (pattern) =>
+        pattern === "layouts:[locale]"
+          ? [{ locale: "en" }, { locale: "fr" }]
+          : [{ slug: "hello" }, { slug: "world" }],
+    );
+
+    expect(parseAppPprShellState(fallbackPostponed ?? undefined)?.generated).toEqual([
+      { locale: "en", slug: "hello" },
+      { locale: "en", slug: "world" },
+    ]);
+  });
+
+  // A param set that names an optional catch-all as undefined generates the
+  // path without it (build/static-paths/app.ts hadAllParamsGenerated), though
+  // JSON drops the property on its way from the static params endpoint.
+  it("records an optional catch-all generated as undefined", async () => {
+    const { parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const root = tmpDir("vinext-prerender-ppr-optional-catch-all-");
+    const appDir = path.join(root, "app");
+    const outDir = path.join(root, "out");
+    fs.mkdirSync(path.join(appDir, "shop", "[[...path]]"), { recursive: true });
+    fs.writeFileSync(
+      path.join(appDir, "shop", "[[...path]]", "page.tsx"),
+      "export default function Page() { return null; }\n",
+    );
+    const renderedPaths: string[] = [];
+    const server = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://127.0.0.1");
+      if (url.pathname === "/__vinext/prerender/static-params") {
+        void handleAppPrerenderEndpoint(new Request(url), {
+          isPrerenderEnabled: () => true,
+          pathname: url.pathname,
+          staticParamsMap: {
+            "/shop/:path*": createAppPrerenderStaticParamsResolver([
+              () => [{ path: undefined }, { path: ["a"] }],
+            ]),
+          },
+        }).then(async (response) => {
+          res.statusCode = response?.status ?? 404;
+          res.end(await response?.text());
+        });
+        return;
+      }
+      renderedPaths.push(url.pathname);
+      res.setHeader("content-type", "text/html");
+      res.end(
+        "<!DOCTYPE html><html><body>" +
+          runtimeRscChunkScript(`0:["$","div",null,{}]\n`) +
+          runtimeRscDoneScript() +
+          "</body></html>",
+      );
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes: await appRouter(appDir),
+        outDir,
+        config: await resolveNextConfig({ cacheComponents: true }),
+        _prodServer: { server, port },
+      });
+
+      expect(renderedPaths).toEqual(expect.arrayContaining(["/shop", "/shop/a"]));
+      const postponed = path.join(outDir, "shop", "[[...path]].postponed");
+      expect(parseAppPprShellState(fs.readFileSync(postponed, "utf8"))?.generated).toEqual([
+        { path: [] },
+        { path: ["a"] },
+      ]);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("records no generated params for a route with parallel slots, whose generators the build doesn't enumerate", async () => {
+    const { parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
+    const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
+      true,
+      undefined,
+      undefined,
+      undefined,
+      (routes) => {
+        const route = routes.find((candidate) => candidate.pattern === "/:locale/blog/:slug")!;
+        route.parallelSlots = [{ name: "modal" } as AppRoute["parallelSlots"][number]];
+      },
+    );
+
+    expect(parseAppPprShellState(fallbackPostponed ?? undefined)?.generated).toBeNull();
+  });
+
+  it("replaces an earlier build's state, keeping only the generated params when the shell has none", async () => {
+    const { parseAppPprShellState } =
+      await import("../packages/vinext/src/server/app-ppr-fallback-shell.js");
     const { fallbackPostponed } = await prerenderDynamicRootParamRoute(
       true,
       undefined,
       JSON.stringify({ cache: { stale: { body: "e30=" } }, fetch: {} }),
     );
 
-    expect(fallbackPostponed).toBeNull();
+    expect(parseAppPprShellState(fallbackPostponed ?? undefined)).toEqual({
+      prelude: false,
+      postponed: null,
+      resumeDataCache: null,
+      generated: [{ locale: "en", slug: "hello" }],
+    });
   });
 
   it("does not queue fallback-shell artifacts when cacheComponents is disabled", async () => {

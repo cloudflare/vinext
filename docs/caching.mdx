@@ -501,6 +501,8 @@ A request resumes the most specific shell its path has:
 - **The path's own shell**, which keeps every param. A path's first request renders the page in full. When that render is dynamic and returns a 200, the path's shell is produced in the background after it, for later requests to resume. A navigation's RSC request reads the cached values the shell was built with, so its payload matches the document. A stale shell is still sent while a fresh one renders in the background.
 - **A fallback shell**, which leaves out params `generateStaticParams` didn't produce for the path: `/blog/[slug]` for a slug that wasn't generated, or `/en/blog/[slug]` under a generated `en` locale. The first request that needs one renders it, blocking, and stores it. A path whose root param wasn't generated has no fallback shell, so it renders in full, as in Next.js.
 
+Like Next.js's prerender manifest, a fallback shell records the params generated under it, so a request decides from the stored shell whether its own path was generated, without calling `generateStaticParams`. A shell produced at runtime calls it once, when it renders. A route with parallel route slots records nothing, so its requests that need a fallback shell call it, as the build doesn't run a slot's `generateStaticParams`.
+
 ## Query strings
 
 Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.

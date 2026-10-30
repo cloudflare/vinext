@@ -1588,6 +1588,8 @@ async function renderAppPageLifecycleImpl(
         resumeDataCache && !isResumeDataCacheEmpty(resumeDataCache)
           ? stringifyResumeDataCache(resumeDataCache)
           : null,
+      // The build and shell production record the generated params themselves.
+      generated: null,
     }));
   }
 

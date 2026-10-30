@@ -85,6 +85,62 @@ test("resumes a fallback shell instead of rendering it again", async ({ baseURL 
   // Neither request rendered the shell again; both rendered their greeting.
   expect(after["shell-probe-ssr"] ?? 0).toBe(before["shell-probe-ssr"] ?? 0);
   expect((after.greeting ?? 0) - (before.greeting ?? 0)).toBe(2);
+  // Like Next.js, which reads its prerender manifest, neither asked
+  // generateStaticParams whether its path was generated: the stored shell
+  // records it.
+  expectNoStaticParamsCalls(before, after);
+});
+
+function expectNoStaticParamsCalls(before: ServerWork, after: ServerWork): void {
+  expect(after["gsp-locale"] ?? 0).toBe(before["gsp-locale"] ?? 0);
+  expect(after["gsp-slug"] ?? 0).toBe(before["gsp-slug"] ?? 0);
+}
+
+test("renders a generated path blocking without asking generateStaticParams", async ({
+  baseURL,
+}) => {
+  // The stored `en` shell records the slugs generated under it.
+  await readStreamedDocument(new URL("/en/blog/warm-generated", baseURL), []);
+
+  const before = await readServerWork(baseURL!);
+  const document = await readStreamedDocument(new URL("/en/blog/known", baseURL), []);
+  const after = await readServerWork(baseURL!);
+
+  expect(document.html).toContain('<p id="slug">known</p>');
+  expectNoStaticParamsCalls(before, after);
+});
+
+test("renders a path whose root param wasn't generated blocking without asking generateStaticParams", async ({
+  baseURL,
+}) => {
+  let path = 0;
+  // The first such path records that `fr` wasn't generated, after it renders.
+  await expect
+    .poll(
+      async () => {
+        const before = await readServerWork(baseURL!);
+        const document = await readStreamedDocument(
+          new URL(`/fr/blog/ungenerated-${path++}`, baseURL),
+          [],
+        );
+        expect(document.headers.get("x-nextjs-postponed")).toBeNull();
+        const after = await readServerWork(baseURL!);
+        return (after["gsp-locale"] ?? 0) - (before["gsp-locale"] ?? 0);
+      },
+      { timeout: 15_000 },
+    )
+    .toBe(0);
+
+  const before = await readServerWork(baseURL!);
+  for (const slug of ["a", "b"]) {
+    const document = await readStreamedDocument(new URL(`/fr/blog/later-${slug}`, baseURL), [
+      '<p id="greeting">',
+    ]);
+    // Like Next.js, each new path renders blocking.
+    expect(document.headers.get("x-nextjs-postponed")).toBeNull();
+    expect(document.html).toContain(`<p id="slug">later-${slug}</p>`);
+  }
+  expectNoStaticParamsCalls(before, await readServerWork(baseURL!));
 });
 
 test("hydrates a resumed fallback shell", async ({ baseURL, context, page, consoleErrors }) => {

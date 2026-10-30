@@ -5,8 +5,12 @@ import {
   resolveAppPageActionRerenderTarget,
   resolveAppPageIntercept,
   resolveAppPageInterceptionRerenderTarget,
+  isAppPageParamsGenerated,
   resolveAppPageGenerateStaticParamsSources,
+  resolveAppPageGeneratedStaticParams,
+  resolveAppPageGeneratedStaticParamsFor,
   validateAppPageDynamicParams,
+  type GeneratedStaticParamsMemo,
 } from "../packages/vinext/src/server/app-page-request.js";
 import { cookies, headersContextFromRequest } from "../packages/vinext/src/shims/headers.js";
 import {
@@ -174,6 +178,139 @@ describe("app page request helpers", () => {
     expect(response).toBeNull();
     expect(categoryGenerateStaticParams).toHaveBeenCalledWith({ params: {} });
     expect(itemGenerateStaticParams).toHaveBeenCalledWith({ params: { category: "docs" } });
+  });
+
+  it("resolves the generated params agreeing with a fallback shell's kept params", async () => {
+    const localeGenerateStaticParams = vi.fn(() => [{ locale: "en" }, { locale: "de" }]);
+    const slugGenerateStaticParams = vi.fn(({ params }: { params: Record<string, unknown> }) => [
+      { slug: `${String(params.locale)}-post` },
+    ]);
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [{ generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[locale]", "blog", "[slug]"],
+    });
+
+    await expect(
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams,
+        params: { locale: "de" },
+        paramNames: ["locale"],
+      }),
+    ).resolves.toEqual([{ locale: "de", slug: "de-post" }]);
+    // Only the kept locale's slugs are generated.
+    expect(slugGenerateStaticParams).toHaveBeenCalledTimes(1);
+    await expect(
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams,
+        params: { locale: "fr" },
+        paramNames: ["locale"],
+      }),
+    ).resolves.toEqual([]);
+    // A plain generator isn't known to be the route's whole chain.
+    await expect(
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams: () => [{ locale: "en", slug: "a" }],
+        params: {},
+        paramNames: [],
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it("matches a request leaving an optional catch-all out only against an empty generated value", async () => {
+    const routeParamNames = { optionalCatchAllParamNames: ["path"], paramNames: ["path"] };
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      page: { generateStaticParams: () => [{ path: ["generated"] }] },
+      routeSegments: ["shop", "[[...path]]"],
+    });
+
+    await expect(
+      resolveAppPageGeneratedStaticParams({ generateStaticParams, params: {}, routeParamNames }),
+    ).resolves.toMatchObject({ isGenerated: false });
+    // A generator outside the route's chain, as a parallel route's is.
+    await expect(
+      resolveAppPageGeneratedStaticParams({
+        generateStaticParams: () => [{ path: ["generated"] }],
+        params: {},
+        routeParamNames,
+      }),
+    ).resolves.toMatchObject({ isGenerated: false });
+    expect(isAppPageParamsGenerated({}, [{ path: ["generated"] }], routeParamNames)).toBe(false);
+    expect(isAppPageParamsGenerated({}, [{ path: [] }], routeParamNames)).toBe(true);
+    expect(
+      isAppPageParamsGenerated({ path: ["generated"] }, [{ path: ["generated"] }], routeParamNames),
+    ).toBe(true);
+  });
+
+  it("calls each generator once per parent across concurrent lookups sharing a memo", async () => {
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+    const localeGenerateStaticParams = vi.fn(async () => {
+      await settle();
+      return [{ locale: "en" }, { locale: "de" }];
+    });
+    const slugGenerateStaticParams = vi.fn(
+      async ({ params }: { params: Record<string, unknown> }) => {
+        await settle();
+        return [{ slug: `${String(params.locale)}-post` }];
+      },
+    );
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [{ generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [1],
+      page: { generateStaticParams: slugGenerateStaticParams },
+      routeSegments: ["[locale]", "blog", "[slug]"],
+    });
+    const memo: GeneratedStaticParamsMemo = new Map();
+
+    const [request, shell] = await Promise.all([
+      resolveAppPageGeneratedStaticParams({
+        generateStaticParams,
+        memo,
+        params: { locale: "de", slug: "de-post" },
+      }),
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams,
+        memo,
+        params: { locale: "de" },
+        paramNames: ["locale"],
+      }),
+    ]);
+
+    expect(request?.isGenerated).toBe(true);
+    expect(shell).toEqual([{ locale: "de", slug: "de-post" }]);
+    expect(localeGenerateStaticParams).toHaveBeenCalledTimes(1);
+    expect(slugGenerateStaticParams.mock.calls).toEqual([[{ params: { locale: "de" } }]]);
+  });
+
+  it("calls a generator that throws synchronously once across concurrent lookups sharing a memo", async () => {
+    const localeGenerateStaticParams = vi.fn((): Record<string, unknown>[] => {
+      throw new Error("generator failed");
+    });
+    const generateStaticParams = resolveAppPageGenerateStaticParamsSources({
+      layouts: [{ generateStaticParams: localeGenerateStaticParams }],
+      layoutTreePositions: [1],
+      page: { generateStaticParams: () => [{ slug: "post" }] },
+      routeSegments: ["[locale]", "blog", "[slug]"],
+    });
+    const memo: GeneratedStaticParamsMemo = new Map();
+
+    const results = await Promise.allSettled([
+      resolveAppPageGeneratedStaticParams({
+        generateStaticParams,
+        memo,
+        params: { locale: "de", slug: "post" },
+      }),
+      resolveAppPageGeneratedStaticParamsFor({
+        generateStaticParams,
+        memo,
+        params: { locale: "de" },
+        paramNames: ["locale"],
+      }),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
+    expect(localeGenerateStaticParams).toHaveBeenCalledTimes(1);
   });
 
   it("ignores route groups when finding a layout generateStaticParams boundary", async () => {

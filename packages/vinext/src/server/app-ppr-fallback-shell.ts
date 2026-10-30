@@ -99,6 +99,13 @@ export type AppPprShellState = {
   /** React's postponed state for the prelude, or null when only the payload has holes. */
   postponed: unknown;
   resumeDataCache: string | null;
+  /**
+   * For a shell with fallback params, the generateStaticParams results that
+   * agree with the params it keeps. Like Next.js's prerender manifest, a
+   * request decides from these whether its path was generated, without
+   * calling generateStaticParams. Null when unknown.
+   */
+  generated: Record<string, unknown>[] | null;
 };
 
 // `<` and `>` occur only inside JSON strings, where `\u003c` and `\u003e` are
@@ -113,7 +120,17 @@ function escapeJsonForHtmlComment(json: string): string {
  */
 export function formatAppPprShellState(state: AppPprShellState): string {
   const header = escapeJsonForHtmlComment(
-    JSON.stringify({ prelude: state.prelude, postponed: state.postponed }),
+    JSON.stringify({
+      prelude: state.prelude,
+      postponed: state.postponed,
+      // JSON drops an undefined value, which leaves an optional catch-all out
+      // like null does.
+      generated: state.generated?.map((params) =>
+        Object.fromEntries(
+          Object.entries(params).map(([name, value]) => [name, value === undefined ? null : value]),
+        ),
+      ),
+    }),
   );
   return (
     `${header.length}:${header}` +
@@ -125,7 +142,7 @@ export function parseAppPprShellState(value: string | undefined): AppPprShellSta
   const match = value === undefined ? null : /^(\d+):/.exec(value);
   if (!value || !match) return null;
   const headerEnd = match[0].length + Number(match[1]);
-  let header: { prelude?: unknown; postponed?: unknown };
+  let header: { prelude?: unknown; postponed?: unknown; generated?: unknown };
   try {
     header = JSON.parse(value.slice(match[0].length, headerEnd)) as typeof header;
   } catch {
@@ -135,6 +152,9 @@ export function parseAppPprShellState(value: string | undefined): AppPprShellSta
     prelude: header.prelude === true,
     postponed: header.postponed ?? null,
     resumeDataCache: value.length > headerEnd ? value.slice(headerEnd) : null,
+    generated: Array.isArray(header.generated)
+      ? (header.generated as Record<string, unknown>[])
+      : null,
   };
 }
 
