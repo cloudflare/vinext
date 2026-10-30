@@ -2001,6 +2001,12 @@ describe("App Router Production server (startProdServer)", () => {
       const location = redirectRes.headers.get("location");
       expect(location).toBeTruthy();
       expect(new URL(location!, redirectBaseUrl).pathname).toBe("/result");
+      // As in Next.js, the redirect carries the route's config headers while
+      // an unmatched route keeps its never-cache policy.
+      expect(redirectRes.headers.get("x-config-header")).toBe("1");
+      expect(redirectRes.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
 
       // RSC navigations encode the redirect in the flight body (200), not a
       // 307 status line — mirrors the dev-server RSC test and pins the built
@@ -2079,6 +2085,55 @@ describe("App Router Production server (startProdServer)", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  // Next.js stages next.config headers on the response before a page, Route
+  // Handler, Server Action or Pages API route runs, so the redirects they
+  // return carry them. Only redirects routing answers itself (redirects()
+  // rules, trailing slash) go out without.
+  it("applies config headers to redirects that application code returns (production)", async () => {
+    const html = await (await fetch(`${baseUrl}/nextjs-compat/action-progressive`)).text();
+    const actionField = html.match(/name="(\$ACTION_ID_[^"]+)"/)?.[1];
+    if (!actionField) throw new Error("action-progressive did not render its action");
+    const form = new FormData();
+    form.append(actionField, "");
+    form.append("name", "vinext");
+
+    const get = (pathname: string) => fetch(`${baseUrl}${pathname}`, { redirect: "manual" });
+    const cases: Array<[string, () => Promise<Response>, number, string | null]> = [
+      ["redirect() in a page", () => get("/redirect-test"), 307, "1"],
+      ["permanentRedirect() in a page", () => get("/permanent-redirect-test"), 308, "1"],
+      [
+        "Route Handler NextResponse.redirect()",
+        () => get("/nextjs-compat/api/redirect-response"),
+        307,
+        "1",
+      ],
+      ["Route Handler Response.redirect()", () => get("/response-redirect-test"), 302, "1"],
+      [
+        "Server Action form redirect",
+        () =>
+          fetch(`${baseUrl}/nextjs-compat/action-progressive`, {
+            method: "POST",
+            headers: { Origin: baseUrl },
+            body: form,
+            redirect: "manual",
+          }),
+        303,
+        "1",
+      ],
+      ["Pages API redirect", () => get("/api/pages-redirect"), 302, "1"],
+      ["redirects() rule", () => get("/old-about"), 308, null],
+    ];
+    for (const [label, request, status, header] of cases) {
+      const res = await request();
+      await res.body?.cancel();
+      expect({
+        label,
+        status: res.status,
+        header: res.headers.get("x-redirect-config-header"),
+      }).toEqual({ label, status, header });
+    }
   });
 
   it("answers a config redirect with its statusCode (production)", async () => {

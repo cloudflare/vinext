@@ -33,6 +33,7 @@ import {
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
 import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware.js";
+import { markLocaleRedirect } from "../packages/vinext/src/server/pages-i18n.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 import {
@@ -9476,6 +9477,72 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe("/login");
     expect(response.headers.get("x-test-header")).toBe("applied");
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
+  });
+
+  it("applies config headers to redirects that application code returns", async () => {
+    // Next.js stages config headers before a page, Route Handler or Pages
+    // route runs, so the redirects those return carry them.
+    const routeHandlerRoute = createPageRoute({
+      __loadPage: undefined,
+      __loadRouteHandler() {},
+      page: null,
+      routeHandler: { GET: () => new Response("route") },
+    });
+    const pagesOnly = { matchRequestRoute: () => null, matchRoute: () => null };
+    const cases: Array<[string, ReturnType<typeof createHandler>, number, string | null]> = [
+      [
+        "page redirect",
+        createHandler({
+          dispatchMatchedPage: async () =>
+            new Response(null, { status: 307, headers: { Location: "/docs/login" } }),
+        }),
+        307,
+        "applied",
+      ],
+      [
+        "Route Handler Response.redirect()",
+        createHandler({
+          dispatchMatchedRouteHandler: async () =>
+            Response.redirect("https://example.test/docs/login", 308),
+          matchRoute: (pathname) =>
+            pathname === "/about" ? { params: {}, route: routeHandlerRoute } : null,
+        }),
+        308,
+        "applied",
+      ],
+      [
+        "Pages route redirect",
+        createHandler({
+          ...pagesOnly,
+          renderPagesFallback: async () =>
+            new Response(null, { status: 307, headers: { Location: "/docs/login" } }),
+        }),
+        307,
+        "applied",
+      ],
+      // Next.js answers the locale-detection redirect before staging them.
+      [
+        "Pages locale redirect",
+        createHandler({
+          ...pagesOnly,
+          renderPagesFallback: async () =>
+            markLocaleRedirect(
+              new Response(null, { status: 307, headers: { Location: "/docs/fr/about" } }),
+            ),
+        }),
+        307,
+        null,
+      ],
+    ];
+
+    for (const [label, handler, status, header] of cases) {
+      const response = await handler(new Request("https://example.test/docs/about"), null);
+      expect({
+        label,
+        status: response.status,
+        header: response.headers.get("x-test-header"),
+      }).toEqual({ label, status, header });
+    }
   });
 
   it("propagates middleware rewrite query parameters to App pages", async () => {
