@@ -62,6 +62,35 @@ describe("Nitro public files plugin", () => {
     expect(assets.isAssetRequest(new Request("http://localhost/hello.txt"))).toBe(false);
   });
 
+  it("doesn't fetch an asset that h3 would resolve to another file", async () => {
+    const { assets, received } = setup();
+
+    // h3 decodes these and resolves them again, the first two to /hello.txt,
+    // or fails the request.
+    for (const path of [
+      "/_next/static/..%5C..%5Chello.txt",
+      "/_next/static/.%09./.%09./hello.txt",
+      "/_next/static/%E0%A4%A",
+    ]) {
+      const response = await assets.fetch(new Request(`http://localhost${path}`));
+      expect(response.status, path).toBe(404);
+    }
+    expect(received).toHaveLength(0);
+
+    // h3 decodes these to the same file.
+    for (const path of [
+      "/a%20b.txt",
+      "/a%23b.txt",
+      "/hell%6F.txt",
+      "/%5Bid%5D.png",
+      "/%C3%A9.png",
+    ]) {
+      const response = await assets.fetch(new Request(`http://localhost${path}`));
+      expect(await response.text(), path).toBe("nitro");
+    }
+    expect(received).toHaveLength(5);
+  });
+
   it("answers 500 when vinext fails on a public file request", async () => {
     const captured: unknown[] = [];
     const error = new Error("render failed");
