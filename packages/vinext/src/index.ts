@@ -383,6 +383,10 @@ import {
   commonJsEsmFacadeOptimizeDepsPlugin,
   stripEsmCommonJsExportFacade,
 } from "./plugins/commonjs-esm-facade.js";
+import {
+  commentOutDisplacedHashbang,
+  commonJsHashbangOptimizeDepsPlugin,
+} from "./plugins/commonjs-hashbang.js";
 import { COMMONJS_SYNTAX_CODE_FILTER } from "./plugins/commonjs-syntax.js";
 import {
   createRequireConditionResolutionPlugin,
@@ -2511,8 +2515,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         if (typeof transformed !== "object" || typeof transformed?.code !== "string") {
           return transformed;
         }
-        const stripped = stripEsmCommonJsExportFacade(transformed.code);
-        return stripped === undefined ? transformed : { ...transformed, code: stripped };
+        // Before the facade check, which has to parse the output.
+        const output = commentOutDisplacedHashbang(code, transformed.code) ?? transformed.code;
+        const stripped = stripEsmCommonJsExportFacade(output) ?? output;
+        return stripped === transformed.code ? transformed : { ...transformed, code: stripped };
       });
     };
     // Modules without any syntax vite-plugin-commonjs could rewrite never
@@ -4163,9 +4169,14 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             ...depOptimizeNodeEnvOptions.rolldownOptions,
             // vite-plugin-commonjs's pre-bundle plugin runs in this optimizer.
             // The alias plugin would inline excluded shims into App Router deps.
+            // The facade check parses the code, so the hashbang goes first.
             plugins: hasAppDir
-              ? [commonJsEsmFacadeOptimizeDepsPlugin]
-              : [depOptimizeAliasPlugin, commonJsEsmFacadeOptimizeDepsPlugin],
+              ? [commonJsHashbangOptimizeDepsPlugin, commonJsEsmFacadeOptimizeDepsPlugin]
+              : [
+                  depOptimizeAliasPlugin,
+                  commonJsHashbangOptimizeDepsPlugin,
+                  commonJsEsmFacadeOptimizeDepsPlugin,
+                ],
           },
         };
         pagesOptimizeEntries = !hasAppDir
