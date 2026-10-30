@@ -456,6 +456,9 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
+/** React packages Nitro must trace rather than inline (see the Nitro setup hook). */
+const NITRO_TRACED_REACT_PACKAGES = ["react", "react-dom"];
+
 // vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
 // next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
 // crawls vinext's own server modules, so without these the optimizer discovers
@@ -8659,11 +8662,21 @@ export const loadServerActionClient = ${
             () => scanPublicFiles(root, nitroPublicDir),
           );
 
-          if (resolvedServerExternalPackages.length > 0) {
-            nitro.options.traceDeps = [
-              ...new Set([...(nitro.options.traceDeps ?? []), ...resolvedServerExternalPackages]),
-            ];
-          }
+          // React stays external in the server environment output. A bundled
+          // CommonJS dependency (styled-jsx resolved from Next's graph, for
+          // example) reaches it through a runtime `createRequire(...)("react")`
+          // call that Nitro cannot see. If Nitro inlined React for the ESM
+          // imports, that call would load a second copy from node_modules (or
+          // fail once the output is moved). Tracing React keeps every import
+          // form on the one copy in the server output. Nitro only applies
+          // traceDeps to Node-based presets, so Worker presets are unaffected.
+          nitro.options.traceDeps = [
+            ...new Set([
+              ...(nitro.options.traceDeps ?? []),
+              ...NITRO_TRACED_REACT_PACKAGES,
+              ...resolvedServerExternalPackages,
+            ]),
+          ];
         },
       },
     } as Plugin & {
