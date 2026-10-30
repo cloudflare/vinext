@@ -21,6 +21,7 @@ import {
   parseServerActionRevalidationHeader,
   readInvalidServerActionResponseError,
   resolveServerActionOperationLane,
+  resolveServerActionRedirectState,
   shouldClearClientNavigationCachesForServerActionResult,
   shouldSyncServerActionHttpFallbackHead,
   shouldScheduleRefreshForDiscardedServerAction,
@@ -1497,6 +1498,41 @@ describe("app browser entry navigation scheduling", () => {
     expect(snapshot.navigationId).toBe(42);
     expect(snapshot.path).toBe("/a?tab=1");
     expect(snapshot.routerState).toBe(routerState);
+  });
+
+  it("renders an action redirect from a refresh that committed while the action ran", () => {
+    const started = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/items", {}),
+      routeId: "route:/items",
+    });
+    const action = createServerActionInitiationSnapshot({
+      href: "https://example.com/items",
+      navigationId: 3,
+      routerState: started,
+    });
+    // Another action's revalidation refreshed /items before this redirect arrived.
+    const refreshed = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/items", {}),
+      routeId: "route:/items",
+    });
+    const elsewhere = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot("https://example.com/other", {}),
+      routeId: "route:/other",
+    });
+    const otherSearch = createState({
+      navigationSnapshot: createClientNavigationRenderSnapshot(
+        "https://example.com/items?tab=2",
+        {},
+      ),
+      routeId: "route:/items",
+    });
+
+    expect(resolveServerActionRedirectState(action, refreshed, 3)).toBe(refreshed);
+    // A navigation that started after the action still wins.
+    expect(resolveServerActionRedirectState(action, refreshed, 4)).toBeNull();
+    // The page moved on to another pathname, or another search, since the action started.
+    expect(resolveServerActionRedirectState(action, elsewhere, 3)).toBeNull();
+    expect(resolveServerActionRedirectState(action, otherSearch, 3)).toBeNull();
   });
 
   it("keeps client navigation caches for no-root server action results", () => {

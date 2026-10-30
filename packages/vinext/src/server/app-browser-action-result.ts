@@ -170,6 +170,27 @@ export function shouldScheduleRefreshForDiscardedServerAction(
   return revalidation !== "none";
 }
 
+/**
+ * A refresh (for example another action's revalidation of this page) can commit
+ * while an action runs. Its redirect may then render from the current router
+ * state, as long as the rendered snapshot still has the pathname and search the
+ * action started on and the action's navigation id is still the active one.
+ * Otherwise the starting state stands and the usual supersession checks apply.
+ */
+export function resolveServerActionRedirectState<
+  TRouterState extends { navigationSnapshot: { pathname: string; search: string } },
+>(
+  action: ServerActionInitiationSnapshot<TRouterState>,
+  currentState: TRouterState,
+  activeNavigationId: number,
+): TRouterState | null {
+  if (action.navigationId !== activeNavigationId) return null;
+  const started = action.routerState.navigationSnapshot;
+  const current = currentState.navigationSnapshot;
+  if (started.pathname !== current.pathname || started.search !== current.search) return null;
+  return currentState;
+}
+
 export function createServerActionInitiationSnapshot<TRouterState>(options: {
   href: string;
   navigationId: number;

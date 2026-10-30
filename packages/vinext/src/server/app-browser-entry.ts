@@ -107,6 +107,7 @@ import {
   createDiscardedServerActionRefreshScheduler,
   createServerActionInitiationSnapshot,
   resolveServerActionOperationLane,
+  resolveServerActionRedirectState,
   type ServerActionRevalidationKind,
   type AppBrowserServerActionResult,
 } from "./app-browser-action-result.js";
@@ -1949,6 +1950,21 @@ function registerServerActionCallback(): void {
             if (browserNavigationController.isCurrentNavigation(actionInitiation.navigationId)) {
               getNavigationRuntime()?.functions.notifyLinkNavigationStart?.();
             }
+            // A refresh (another action's revalidation of this page, say) can
+            // commit while the action runs. A redirect rendered from the
+            // action's starting state would then be rejected as superseded by
+            // that commit, so render it from the current state while the page
+            // still shows the URL the action started on. The navigation id
+            // stays the action's, so the existing commit checks against newer
+            // navigation ids are unchanged.
+            const redirectState =
+              (hasBrowserRouterState()
+                ? resolveServerActionRedirectState(
+                    actionInitiation,
+                    getBrowserRouterState(),
+                    browserNavigationController.getActiveNavigationId(),
+                  )
+                : null) ?? actionInitiation.routerState;
             const hashIdx = target.href.indexOf("#");
             const hash = hashIdx !== -1 ? target.href.slice(hashIdx) : "";
             const actionScrollIntent = beginAppRouterScrollIntent(hash || null);
@@ -1956,10 +1972,10 @@ function registerServerActionCallback(): void {
             void renderNavigationPayload({
               actionType: target.type === "push" ? "navigate" : "replace",
               historyUpdateMode: target.type === "push" ? "push" : "replace",
-              navigationInitiationState: actionInitiation.routerState,
+              navigationInitiationState: redirectState,
               navigationSnapshot: createClientNavigationRenderSnapshot(
                 target.href,
-                actionInitiation.routerState.navigationSnapshot.params,
+                redirectState.navigationSnapshot.params,
                 target.renderedPathAndSearch,
               ),
               navId: actionInitiation.navigationId,
