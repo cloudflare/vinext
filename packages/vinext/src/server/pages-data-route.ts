@@ -19,7 +19,7 @@
  */
 
 import { NEXTJS_DEPLOYMENT_ID_HEADER } from "./headers.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { MIDDLEWARE_SKIP_HEADER } from "../utils/protocol-headers.js";
 import { cloneRequestWithUrl } from "./request-pipeline.js";
 
@@ -281,9 +281,7 @@ export function normalizePagesDataRequest(
   }
   const pagePathname = normalizeNextDataPagePathname(dataMatch.pagePathname, trailingSlash);
   const normalizedUrl = new URL(reqUrl);
-  normalizedUrl.pathname = hadBasePath
-    ? addBasePathToPathname(pagePathname, basePath)
-    : pagePathname;
+  normalizedUrl.pathname = hadBasePath ? restoreBasePath(pagePathname, basePath) : pagePathname;
   return {
     isDataReq: true,
     request: cloneRequestWithUrl(request, normalizedUrl.href),
