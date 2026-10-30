@@ -41,6 +41,8 @@ export type ApplyAppMiddlewareOptions = {
   middlewareRequest?: Request;
   module: MiddlewareModule;
   request: Request;
+  /** Forwarded to `executeMiddleware`. */
+  rscSuffix?: boolean;
   validateExternalRewriteRequest?: () => Promise<Response | null>;
   /**
    * Forwarded to `executeMiddleware` so the NextRequest exposes a NextURL with
@@ -381,6 +383,7 @@ export async function applyAppMiddleware(
         },
         requestBodyAlreadyIsolated: true,
         request: middlewareRequest,
+        rscSuffix: options.rscSuffix,
         skipTrailingSlashRedirect: options.skipTrailingSlashRedirect,
         trailingSlash: options.trailingSlash,
       });
