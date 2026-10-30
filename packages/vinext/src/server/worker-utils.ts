@@ -138,8 +138,11 @@ export function mergeStaticFileHeaders(
   const merged = mergeHeaders(response, extraHeaders, statusOverride);
   for (const [name, value] of Object.entries(extraHeaders)) {
     if (name.toLowerCase() !== "cache-control") continue;
+    const cacheControl = (Array.isArray(value) ? value.join(", ") : value).trim();
+    // Like Next.js, an empty value leaves the default in place.
+    if (!cacheControl) continue;
     // mergeHeaders built a new, mutable Response, since extraHeaders is non-empty.
-    merged.headers.set(name, Array.isArray(value) ? value.join(", ") : value);
+    merged.headers.set(name, cacheControl);
   }
   return merged;
 }

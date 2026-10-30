@@ -1864,11 +1864,18 @@ describe("serveFilesystemRoute", () => {
 
   // Next.js's static file server sets a Cache-Control only when none is
   // present, while its image optimizer sets its own after middleware's.
-  for (const [pathname, served, expected] of [
-    ["/file.txt", "public, max-age=0, must-revalidate", "private, no-store"],
-    ["/_next/image?url=%2Ffoo.png&w=828&q=75", "public, max-age=60, must-revalidate", null],
+  // An empty value leaves the file's default in place.
+  for (const [pathname, middlewareValue, served, expected] of [
+    ["/file.txt", "private, no-store", "public, max-age=0, must-revalidate", "private, no-store"],
+    ["/file.txt", "", "public, max-age=0, must-revalidate", null],
+    [
+      "/_next/image?url=%2Ffoo.png&w=828&q=75",
+      "private, no-store",
+      "public, max-age=60, must-revalidate",
+      null,
+    ],
   ] as const) {
-    it(`merges middleware's Cache-Control into ${pathname} like Next.js`, async () => {
+    it(`merges middleware's Cache-Control "${middlewareValue}" into ${pathname} like Next.js`, async () => {
       for (const status of [200, 304]) {
         const result = await runPagesRequest(
           makeRequest(pathname),
@@ -1881,7 +1888,7 @@ describe("serveFilesystemRoute", () => {
                 }),
             ),
             runMiddleware: makeMiddleware({
-              responseHeaders: [["cache-control", "private, no-store"]],
+              responseHeaders: [["cache-control", middlewareValue]],
             }),
           }),
         );
