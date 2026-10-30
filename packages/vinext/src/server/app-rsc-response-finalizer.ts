@@ -150,6 +150,9 @@ export async function finalizeAppRscResponse(
     // completed and the render has proved reusable. Capture before config
     // headers run so any later private/no-store override still vetoes.
     captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
+    // A static-file signal carries only a Cache-Control that middleware or
+    // config headers set; otherwise the file layer supplies the default.
+    if (isStaticFileSignal(response)) response.headers.delete("Cache-Control");
   }
 
   if (configHeadersAlreadyApplied.has(response)) {
