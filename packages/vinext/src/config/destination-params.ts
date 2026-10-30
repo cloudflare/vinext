@@ -34,7 +34,8 @@ const _compiledDestinationParamCache = new Map<string, RegExp>();
  * `%XX` escapes a raw path capture already carries. A decoded `has` capture
  * carrying `#`, `/`, `?`, `@` or `:` then makes the host invalid instead of
  * moving the proxy to another host. Next.js substitutes the hostname verbatim
- * and can be retargeted this way; vinext is stricter.
+ * and can be retargeted this way; vinext is stricter. Params in a rewrite's
+ * path follow substituteRewritePath.
  *
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
  * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/server-route-utils.ts
@@ -62,15 +63,88 @@ export function substituteDestinationParams(
   const authorityEnd = getAbsoluteUrlAuthorityEnd(
     beforeQuery.replace(paramRe, (token) => "x".repeat(token.length)),
   );
-  const path = `${replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam)}${replaceParams(
+  const [path, pathHash] = substituteRewritePath(
     beforeQuery.slice(authorityEnd),
-    (value) => value,
-  )}`;
+    paramRe,
+    params,
+    authorityEnd > 0,
+  );
   const query =
     queryIndex === -1
       ? ""
       : `?${replaceParams(beforeHash.slice(queryIndex + 1), encodeRewriteQueryParamValue)}`;
-  return `${path}${query}${replaceParams(hash, (value) => value)}`;
+  return `${replaceParams(beforeQuery.slice(0, authorityEnd), encodeAuthorityParam)}${path}${query}${
+    pathHash ?? replaceParams(hash, (value) => value)
+  }`;
+}
+
+/**
+ * Substitute params into a rewrite destination's path, returning the path and,
+ * when a param carried a `#`, the hash it starts.
+ *
+ * Next.js inserts path params verbatim, splits the result at the first `#`
+ * and escapes a `?` when it formats the URL. A decoded `has` capture can end
+ * the path with `#`, but neither `?` nor `#` can displace the destination's
+ * own query.
+ *
+ * An absolute destination is proxied with the URL parser, which removes tab
+ * and newlines, trims trailing control characters and spaces, and resolves
+ * `.`/`..` segments against the destination's literal path. Next.js sends a
+ * param's control characters and spaces percent-encoded, as vinext does, and
+ * its dot segments as written. A parsed URL cannot carry a `..` segment, so a
+ * dot segment that a param is in or next to is escaped once more (`.` as
+ * `%252E`, `%2e` as `%252e`) and stays inside the destination's path. The
+ * destination's own dot segments still resolve.
+ *
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/prepare-destination.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/router/utils/format-url.ts
+ */
+function substituteRewritePath(
+  template: string,
+  paramRe: RegExp,
+  params: Record<string, string>,
+  absolute: boolean,
+): [path: string, hash: string | undefined] {
+  const encodeParam = absolute ? encodeAbsoluteUrlPathParam : encodePathQueryDelimiter;
+  // Where each substituted param starts and ends, empty ones included.
+  const paramRanges: [start: number, end: number][] = [];
+  let substituted = "";
+  let templateIndex = 0;
+  for (const match of template.matchAll(paramRe)) {
+    substituted += template.slice(templateIndex, match.index);
+    const value = encodeParam(params[match[1]]);
+    paramRanges.push([substituted.length, substituted.length + value.length]);
+    substituted += value;
+    templateIndex = match.index + match[0].length;
+  }
+  substituted += template.slice(templateIndex);
+
+  // The template's path holds no `#`; the destination's hash is split off first.
+  const [path, hash] = substituted.split("#", 2);
+  const pathHash = hash === undefined ? undefined : hash ? `#${hash}` : "";
+  if (!absolute) return [path, pathHash];
+
+  const escapedPath = path.replace(DOT_SEGMENT_RE, (segment: string, offset: number) =>
+    paramRanges.some(([start, end]) => start <= offset + segment.length && end >= offset)
+      ? segment.replace(/\.|%(?=2e)/gi, (char) => (char === "." ? "%252E" : "%25"))
+      : segment,
+  );
+  return [escapedPath, pathHash];
+}
+
+// A `.` or `..` path segment, also spelled with `%2e`, as the URL parser
+// resolves it; it reads `\` as `/`.
+const DOT_SEGMENT_RE = /(?<=^|[/\\])(?:\.|%2e){1,2}(?=[/\\]|$)/gi;
+
+function encodePathQueryDelimiter(value: string): string {
+  return value.replaceAll("?", "%3F");
+}
+
+// oxlint-disable-next-line no-control-regex -- the URL parser removes or trims C0 controls and spaces
+const ABSOLUTE_URL_PATH_PARAM_UNSAFE_RE = /[?\u0000- ]/g;
+
+function encodeAbsoluteUrlPathParam(value: string): string {
+  return value.replace(ABSOLUTE_URL_PATH_PARAM_UNSAFE_RE, encodeURIComponent);
 }
 
 // End of the `scheme://authority` prefix of an absolute URL. Like the URL
