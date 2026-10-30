@@ -48,6 +48,16 @@ test.describe("image optimization endpoint behind middleware", () => {
     });
   }
 
+  // Next.js compares the raw pathname with `/_next/image`, so an encoded
+  // spelling is not the endpoint and is a 404.
+  test("does not serve the endpoint through an encoded pathname", async ({ request }) => {
+    for (const endpoint of ["/_next/%69mage", "/_vinext/%69mage"]) {
+      const image = await request.get(imagePath(endpoint, "/image-endpoint-guarded.png"));
+      expect(image.status(), endpoint).toBe(404);
+      expect(image.headers()["content-type"] ?? "", endpoint).not.toContain("image/");
+    }
+  });
+
   test("fetches the source without the caller's cookies", async ({ request }) => {
     const privatePng = await readPrivatePng(request);
     const image = await request.get(imagePath("/_next/image", "/members only/private.png"), {
