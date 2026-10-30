@@ -9008,6 +9008,36 @@ describe('"use cache" runtime', () => {
       expect(await resolveRequestLife(() => outer())).toEqual(expected);
     });
 
+    it("a second zero-lifetime cacheLife() keeps a fallback result out of the cache", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      let upstreamUp = false;
+      let calls = 0;
+      const models = registerCachedFunction(async () => {
+        calls++;
+        cacheLife("hours");
+        if (!upstreamUp) {
+          cacheLife({ stale: 0, revalidate: 0, expire: 1 });
+          return "fallback";
+        }
+        return "models";
+      }, "test:life-parity-fallback");
+
+      // The fallback resolves the zero lifetime, so it is neither stored nor
+      // left to give the page a cacheable lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual({
+        stale: 0,
+        revalidate: 0,
+        expire: 1,
+      });
+      upstreamUp = true;
+      const hours = { stale: 300, revalidate: 3600, expire: 86400 };
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+      // The real result is stored with the profile's lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+    });
+
     it("propagates the cache life of a function that throws", async () => {
       const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
       const cached = registerCachedFunction(async () => {
