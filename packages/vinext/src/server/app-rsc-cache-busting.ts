@@ -73,10 +73,13 @@ function encodeBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-// Escaping the separator keeps the values apart, so the hash input names
-// exactly one set of header values.
+// Escaping the separator keeps the values apart, and escaping a literal "0"
+// keeps it apart from an absent header, so the hash input names exactly one
+// set of header values.
 function serializeHeaderValue(value: string | null): string {
-  return value === null ? "0" : value.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
+  if (value === null) return "0";
+  if (value === "0") return "\\0";
+  return value.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
 }
 
 function normalizeCompatibilityId(value: string | null | undefined): string | null {

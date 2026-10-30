@@ -571,6 +571,33 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.status).toBe(307);
   });
 
+  it("keeps a literal 0 header value apart from an absent header", async () => {
+    const prefetch = new Headers({
+      RSC: "1",
+      "Next-Router-Prefetch": "1",
+      "Next-Router-State-Tree": encodeURIComponent(
+        JSON.stringify({ pathAndSearch: "/", routeId: "route:/" }),
+      ),
+    });
+    await expect(computeRscCacheBustingSearchParam(prefetch)).resolves.toBe(
+      await sha256CacheBustingHash(`1,0,${prefetch.get("Next-Router-State-Tree")},0,0,0,0,0`),
+    );
+
+    const withNextUrl = new Headers(prefetch);
+    withNextUrl.set("Next-Url", "0");
+    await expect(computeRscCacheBustingSearchParam(withNextUrl)).resolves.toBe(
+      await sha256CacheBustingHash(`1,0,${prefetch.get("Next-Router-State-Tree")},\\0,0,0,0,0`),
+    );
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request: new Request(
+        `https://example.com${await createRscRequestUrl("/photos/42", prefetch)}`,
+        { headers: withNextUrl },
+      ),
+    });
+    expect(response?.status).toBe(307);
+  });
+
   it("does not accept the same values under a layout with fewer positions", async () => {
     const intercepted = createRscRequestHeaders({
       interceptionContext: "/feed",
