@@ -1782,6 +1782,85 @@ describe("App Router Production server (startProdServer)", () => {
     expect(payload).toContain(session);
   });
 
+  it("sends Next.js's never-cache policy on every Server Action response", async () => {
+    const actionCacheControl = "no-cache, no-store, max-age=0, must-revalidate";
+    const html = await (await fetch(`${baseUrl}/action-cache-control`)).text();
+    const actionIds = [...html.matchAll(/name="\$ACTION_ID_([^"]+)"/g)].map((match) => match[1]);
+    const actionId = (name: string): string => {
+      const id = actionIds.find((candidate) => candidate.endsWith(`#${name}`));
+      if (!id) throw new Error(`action-cache-control did not render ${name}`);
+      return id;
+    };
+    const fetchAction = (pathname: string, id: string) =>
+      fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: {
+          Accept: "text/x-component",
+          "Content-Type": "text/plain;charset=UTF-8",
+          "Next-Action": id,
+          Origin: baseUrl,
+        },
+        body: "[]",
+        redirect: "manual",
+      });
+    const submitForm = (pathname: string, id: string) => {
+      const form = new FormData();
+      form.append(`$ACTION_ID_${id}`, "");
+      return fetch(`${baseUrl}${pathname}`, {
+        method: "POST",
+        headers: { Origin: baseUrl },
+        body: form,
+        redirect: "manual",
+      });
+    };
+
+    const cases: Array<[string, Promise<Response>, number]> = [
+      ["fetch action", fetchAction("/action-cache-control", actionId("setTheme")), 200],
+      ["failed fetch action", fetchAction("/action-cache-control", actionId("failAction")), 500],
+      ["unknown action", fetchAction("/action-cache-control", "0000#missing"), 404],
+      // A next.config rule or middleware policy for the page doesn't replace it.
+      [
+        "fetch action on a config policy path",
+        fetchAction("/action-cache-control/config-policy", actionId("setTheme")),
+        200,
+      ],
+      [
+        "fetch action under a middleware policy",
+        fetchAction("/action-cache-control?middleware-cache-control", actionId("setTheme")),
+        200,
+      ],
+      ["form action", submitForm("/action-cache-control", actionId("setTheme")), 200],
+      [
+        "form action on a config policy path",
+        submitForm("/action-cache-control/config-policy", actionId("setTheme")),
+        200,
+      ],
+      [
+        "form action redirect",
+        submitForm("/action-cache-control", actionId("redirectToConfigPolicy")),
+        303,
+      ],
+    ];
+    for (const [label, pending, status] of cases) {
+      const res = await pending;
+      await res.body?.cancel();
+      expect({ label, status: res.status, cacheControl: res.headers.get("cache-control") }).toEqual(
+        { label, status, cacheControl: actionCacheControl },
+      );
+    }
+
+    // A fetch action's redirect streams its target's render, which keeps the
+    // target's policy, as in Next.js.
+    const redirected = await fetchAction(
+      "/action-cache-control",
+      actionId("redirectToConfigPolicy"),
+    );
+    expect(redirected.status).toBe(303);
+    expect(redirected.headers.get("x-action-redirect")).toBe("/action-cache-control/config-policy");
+    expect(redirected.headers.get("cache-control")).toBe("public, s-maxage=300");
+    expect(await redirected.text()).toContain("action-cache-control-config-policy");
+  });
+
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },

@@ -151,6 +151,15 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  if (
+    pathname.startsWith("/action-cache-control") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    const response = NextResponse.next();
+    response.headers.set("Cache-Control", "public, max-age=60");
+    return response;
+  }
+
   // next.config.ts adds config headers to /external-headers/* and proxies its
   // before-files, after-files and fallback paths to the local upstream.
   // Middleware proxies /external-headers/middleware/* there itself.
@@ -643,6 +652,7 @@ export const config = {
     "/nextjs-compat/dynamic/:path*",
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
+    "/action-cache-control/:path*",
     "/metadata-icons-stream/:path*",
     "/config-link-preload",
     "/use-client-page-pathname/:path*",

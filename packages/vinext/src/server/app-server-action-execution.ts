@@ -22,6 +22,7 @@ import { createRootParamsUsageController, runWithRootParamsUsage } from "vinext/
 import { isExternalUrl } from "../utils/external-url.js";
 import { splitPathSegments } from "../routing/utils.js";
 import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { SERVER_ACTION_CACHE_CONTROL } from "./cache-control.js";
 import {
   ACTION_FORWARDED_HEADER,
   ACTION_REDIRECT_HEADER,
@@ -1429,7 +1430,7 @@ export async function handleProgressiveServerActionRequest(
         options.clearRequestContext();
         const headers = new Headers();
         mergeMiddlewareResponseHeaders(headers, options.middlewareHeaders);
-        headers.set("Cache-Control", "no-cache, no-store, max-age=0, must-revalidate");
+        headers.set("Cache-Control", SERVER_ACTION_CACHE_CONTROL);
         for (const cookie of actionPendingCookies) headers.append("Set-Cookie", cookie);
         if (actionDraftCookie) headers.append("Set-Cookie", actionDraftCookie);
         return internalServerErrorResponse(

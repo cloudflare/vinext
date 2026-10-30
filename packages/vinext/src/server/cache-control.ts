@@ -9,6 +9,9 @@ export { isNonCacheableCacheControl } from "vinext/shims/cdn-cache";
 
 export const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
 
+/** The policy Next.js sends on every Server Action response. */
+export const SERVER_ACTION_CACHE_CONTROL = "no-cache, no-store, max-age=0, must-revalidate";
+
 export const BROWSER_REVALIDATE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 
 export const STATIC_CACHE_CONTROL = "s-maxage=31536000, stale-while-revalidate";
