@@ -93,6 +93,12 @@ export function middleware(request: NextRequest) {
     return NextResponse.redirect(new URL("/about", request.url));
   }
 
+  // Redirected at request time only; the build prerenders the page itself.
+  // Coverage: tests/prerender.test.ts
+  if (url.pathname === "/prerender-middleware-redirect") {
+    return NextResponse.redirect(new URL("/about", request.url));
+  }
+
   // next.config.mjs adds config headers to /external-headers/* and proxies its
   // before-files, after-files and fallback paths to the local upstream.
   // Middleware proxies /external-headers/middleware/* there itself.

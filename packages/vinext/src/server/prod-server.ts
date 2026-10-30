@@ -2180,6 +2180,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       });
       const recorded: { marker?: PrerenderSpecialErrorMarker } = {};
       if (purpose === "prerender") {
+        ctx.isBuildPrerender = true;
         ctx.recordPrerenderSpecialError = (marker) => {
           recorded.marker = marker;
         };
@@ -2711,8 +2712,11 @@ async function createPagesRouterRequestHandler(
       const middlewareCtx = createNodeExecutionContext(undefined, {
         middlewareOrigin: resolveNodeMiddlewareOrigin(req, webRequest.url, host, port),
       });
+      // The prerender server renders filesystem paths for the build. Like
+      // Next.js static generation, that runs no middleware; middleware decides
+      // at request time which URL serves the prerendered page.
       const runNodeMiddleware: PagesPipelineDeps["runMiddleware"] =
-        typeof runMiddleware === "function"
+        typeof runMiddleware === "function" && purpose !== "prerender"
           ? (request, _ctx, opts) => runMiddleware(request, middlewareCtx, opts)
           : null;
 

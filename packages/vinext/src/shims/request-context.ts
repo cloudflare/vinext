@@ -68,6 +68,12 @@ export type ExecutionContextLike = {
   isInternalPagesRevalidation?: boolean;
   /** Marks a build-secret-authorized Worker request that may run prerender discovery hooks. */
   isPrerenderPathDiscovery?: boolean;
+  /**
+   * Installed only by the prerender server: this request renders a filesystem
+   * path for the build. Like Next.js static generation, it runs no middleware;
+   * middleware decides at request time which URL serves the prerendered page.
+   */
+  isBuildPrerender?: boolean;
   /** Marks an adapter-invoked regeneration of an entry stored for this build. */
   isStoredEntryRegeneration?: boolean;
   /**

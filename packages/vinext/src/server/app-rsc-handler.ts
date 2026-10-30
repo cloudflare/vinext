@@ -1214,11 +1214,14 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return resolveInvalidRscCacheBustingRequest({ isRscRequest, request });
   };
 
-  const runMiddleware = isOnDemandRevalidateRequest(
-    request.headers.get(PRERENDER_REVALIDATE_HEADER),
-  )
-    ? undefined
-    : options.runMiddleware;
+  // Next.js skips middleware for authenticated on-demand revalidation and for
+  // static generation, which renders filesystem paths before any request-time
+  // routing: middleware only decides which URL serves the prerendered page.
+  const runMiddleware =
+    isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER)) ||
+    getRequestExecutionContext()?.isBuildPrerender === true
+      ? undefined
+      : options.runMiddleware;
   // Branch the exact downstream body owner before creating URL aliases. URL
   // reconstruction shares a stream; cloning an alias would lock the body still
   // referenced by `request` and break the subsequent action/route-handler read.

@@ -339,9 +339,8 @@ const RSC_RUNTIME_DONE_SCRIPT = `${RSC_RUNTIME_BOOTSTRAP_EXPRESSION}.done=true`;
  * inline bootstrap chunk scripts emitted by createRscEmbedTransform.
  *
  * Returns null when the HTML contains no chunk scripts at all — the caller
- * should fall back to a second handler invocation. This is reachable when
- * middleware short-circuits the App Router pipeline with a custom 200 HTML
- * response that never went through createRscEmbedTransform.
+ * should fall back to a second handler invocation. This is reachable for a
+ * 200 HTML response that never went through createRscEmbedTransform.
  *
  * Throws on partial or malformed embeds (chunks present but no done marker,
  * tampered chunk JSON, etc.) — those are real vinext-internal regressions.
@@ -382,8 +381,8 @@ export function extractRscPayloadFromPrerenderedHtml(html: string): Uint8Array |
     }
   }
 
-  // No chunks AND no done marker → middleware/early-return path. Caller falls
-  // back to a second invocation with `RSC: 1`.
+  // No chunks AND no done marker → the response never went through the embed
+  // transform. Caller falls back to a second invocation with `RSC: 1`.
   if (chunks.length === 0 && !sawDone) {
     return null;
   }
@@ -1182,7 +1181,7 @@ export async function prerenderPages({
           }
           const contentType = response.headers.get("content-type");
           // getStaticProps terminal responses carry the framework's MISS marker.
-          // A middleware/config/_app early response must not become a snapshot.
+          // A config/_app early response must not become a snapshot.
           const isStaticPropsResponse =
             mode === "default" &&
             hasStaticProps &&
@@ -2059,9 +2058,8 @@ export async function prerenderApp({
         // same bytes.
         //
         // Falls back to a second invocation with `RSC: 1` when the HTML has
-        // no chunk scripts at all — covers cases where middleware
-        // short-circuits the App Router pipeline with a custom 200 HTML
-        // response that never went through createRscEmbedTransform.
+        // no chunk scripts at all — covers a 200 HTML response that never
+        // went through createRscEmbedTransform.
         // A special error's document embeds its boundary's payload, not the
         // page's, so the page's comes from an RSC request, as on a runtime miss.
         let rscData = htmlRender.isSpecialError ? null : extractRscPayloadFromPrerenderedHtml(html);

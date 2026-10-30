@@ -11425,6 +11425,32 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  it("skips middleware for a build prerender render and still runs it for a request", async () => {
+    // Next.js prerenders filesystem paths without running middleware, which
+    // only decides at request time which URL serves the page.
+    const middleware = vi.fn(
+      () => new Response(null, { status: 307, headers: { Location: "/about" } }),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      middlewareModule: { default: middleware },
+    });
+    const request = () => new Request("https://example.test/docs/about");
+
+    const prerender = await runWithExecutionContext(
+      { isBuildPrerender: true, waitUntil() {} },
+      () => handler(request(), null),
+    );
+    expect(prerender.status).toBe(200);
+    expect(prerender.headers.get("x-from-dispatch")).toBe("page");
+    expect(middleware).not.toHaveBeenCalled();
+
+    const live = await handler(request(), null);
+    expect(live.status).toBe(307);
+    expect(live.headers.get("location")).toBe("/about");
+    expect(middleware).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the soft redirect protocol for URL-recognized Pages data requests", async () => {
     const handler = createHandler({
       configHeaders: [],

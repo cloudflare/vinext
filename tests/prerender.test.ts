@@ -295,10 +295,10 @@ describe("extractRscPayloadFromPrerenderedHtml", () => {
     );
   });
 
-  it("returns null when no chunk scripts and no done marker are present (middleware short-circuit)", () => {
-    // Middleware that returns a custom 200 HTML body bypasses the App Router
-    // pipeline entirely — no chunks, no done marker. The driver detects this
-    // null and falls back to a second invocation with `RSC: 1`.
+  it("returns null when no chunk scripts and no done marker are present (chunkless HTML)", () => {
+    // A 200 HTML body that never went through the App Router pipeline has
+    // no chunks and no done marker. The driver detects this null and falls
+    // back to a second invocation with `RSC: 1`.
     expect(extractRscPayloadFromPrerenderedHtml("<html><body>legacy</body></html>")).toBeNull();
   });
 
@@ -595,11 +595,11 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("falls back to a second RSC: 1 invocation when middleware short-circuits with custom HTML", async () => {
-    // Middleware that returns a 200 HTML body bypasses the App Router
-    // pipeline — the response contains no embed chunks. The driver must
-    // recover by issuing a second invocation with `RSC: 1` and use whatever
-    // that returns as the .rsc file.
+  it("falls back to a second RSC: 1 invocation when the HTML response has no embedded RSC chunks", async () => {
+    // A 200 HTML response that never went through the App Router pipeline
+    // (the fake server here answers with plain HTML) contains no embed
+    // chunks. The driver must recover by issuing a second invocation with
+    // `RSC: 1` and use whatever that returns as the .rsc file.
     const root = tmpDir("vinext-prerender-rsc-fallback-");
     const outDir = path.join(root, "out");
     const appDir = path.join(root, "app");
@@ -610,7 +610,7 @@ describe("prerenderApp — RSC extraction", () => {
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
 
-    const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
+    const plainHtml = "<html><body>plain html without rsc chunks</body></html>";
     const fallbackRscPayload = '0:["$","div",null,{"children":"from fallback"}]\n';
     let pageRequestCount = 0;
     let rscRequestCount = 0;
@@ -630,11 +630,11 @@ describe("prerenderApp — RSC extraction", () => {
         return;
       }
 
-      // Page request: middleware short-circuits with plain HTML and no
-      // RSC embed chunks — exercising the fallback path.
+      // Page request: plain HTML with no RSC embed chunks, exercising the
+      // fallback path.
       pageRequestCount++;
       res.setHeader("content-type", "text/html");
-      res.end(middlewareHtml);
+      res.end(plainHtml);
     });
 
     const port = await listen(server);
@@ -659,8 +659,8 @@ describe("prerenderApp — RSC extraction", () => {
         status: "rendered",
       });
 
-      // HTML on disk is the middleware response.
-      expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8")).toBe(middlewareHtml);
+      // HTML on disk is the page response as served.
+      expect(fs.readFileSync(path.join(outDir, "index.html"), "utf-8")).toBe(plainHtml);
       // .rsc on disk is the fallback RSC: 1 response.
       expect(fs.readFileSync(path.join(outDir, "index.rsc"), "utf-8")).toBe(fallbackRscPayload);
 
@@ -681,7 +681,7 @@ describe("prerenderApp — RSC extraction", () => {
     fs.mkdirSync(appDir, { recursive: true });
     fs.writeFileSync(pagePath, "export default function Page() { return null; }\n");
 
-    const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
+    const plainHtml = "<html><body>plain html without rsc chunks</body></html>";
     const fallbackRscPayload = '0:["$","div",null,{"children":"from fallback"}]\n';
     const seenSpeculativeHeaders: Array<string | string[] | undefined> = [];
     const server = createServer((req, res) => {
@@ -701,7 +701,7 @@ describe("prerenderApp — RSC extraction", () => {
       }
 
       res.setHeader("content-type", "text/html");
-      res.end(middlewareHtml);
+      res.end(plainHtml);
     });
 
     const port = await listen(server);
@@ -733,7 +733,7 @@ describe("prerenderApp — RSC extraction", () => {
     }
   });
 
-  it("errors without writing .rsc when the middleware short-circuit fallback RSC request fails", async () => {
+  it("errors without writing .rsc when the fallback RSC request for chunkless HTML fails", async () => {
     const root = tmpDir("vinext-prerender-rsc-fallback-failure-");
     const outDir = path.join(root, "out");
     const appDir = path.join(root, "app");
@@ -744,7 +744,7 @@ describe("prerenderApp — RSC extraction", () => {
       "export const dynamic = 'force-static';\nexport default function Page() { return null; }\n",
     );
 
-    const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
+    const plainHtml = "<html><body>plain html without rsc chunks</body></html>";
     let pageRequestCount = 0;
     let rscRequestCount = 0;
     const server = createServer((req, res) => {
@@ -765,7 +765,7 @@ describe("prerenderApp — RSC extraction", () => {
 
       pageRequestCount++;
       res.setHeader("content-type", "text/html");
-      res.end(middlewareHtml);
+      res.end(plainHtml);
     });
 
     const port = await listen(server);
@@ -862,7 +862,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
   const pagePayload = '0:["$","p",null,{"children":"page with digest"}]\n';
 
   // The marker carries the redirect's own location, as runtime ISR stores it,
-  // not the response's, which middleware may have replaced.
+  // not the response's, which a later stage may have rewritten.
   it.each([
     { status: 404, location: undefined },
     { status: 403, location: undefined },
@@ -882,7 +882,7 @@ describe("prerenderApp — special errors that escape the shell", () => {
         VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
         JSON.stringify(location ? { location } : {}),
       );
-      res.setHeader("location", "/middleware-location");
+      res.setHeader("location", "/response-location");
       res.end(location ? "" : boundaryDocument);
     });
 
@@ -1061,6 +1061,23 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     expect(r).toMatchObject({ route: "/about", status: "rendered", revalidate: false });
     if (r?.status === "rendered") {
       expect(r.outputFiles).toContain("about.html");
+    }
+  });
+
+  it("renders a static page that middleware redirects at request time", () => {
+    // Next.js prerenders filesystem paths without running middleware; the
+    // redirect only applies to requests. Coverage for pages-basic/middleware.ts.
+    const r = findRoute(results, "/prerender-middleware-redirect");
+    expect(r).toMatchObject({
+      route: "/prerender-middleware-redirect",
+      status: "rendered",
+      revalidate: false,
+    });
+    if (r?.status === "rendered") {
+      expect(r.outputFiles).toContain("prerender-middleware-redirect.html");
+      expect(
+        fs.readFileSync(path.join(outDir, "prerender-middleware-redirect.html"), "utf-8"),
+      ).toContain("Prerender Middleware Redirect");
     }
   });
 
@@ -1412,6 +1429,24 @@ describe("prerenderApp — default mode (app-basic)", () => {
   });
 
   // ── Static routes with explicit config ────────────────────────────────────
+
+  it("renders a static page that middleware redirects at request time", () => {
+    // Next.js prerenders filesystem paths without running middleware; the
+    // redirect only applies to requests. Coverage for app-basic/middleware.ts.
+    const r = findRoute(results, "/prerender-middleware-redirect");
+    expect(r).toMatchObject({
+      route: "/prerender-middleware-redirect",
+      status: "rendered",
+      revalidate: false,
+    });
+    if (r?.status === "rendered") {
+      expect(r.outputFiles).toContain("prerender-middleware-redirect.html");
+      expect(r.outputFiles).toContain("prerender-middleware-redirect.rsc");
+      expect(
+        fs.readFileSync(path.join(outDir, "prerender-middleware-redirect.html"), "utf-8"),
+      ).toContain("Prerender Middleware Redirect");
+    }
+  });
 
   it("renders force-static page", () => {
     const r = findRoute(results, "/static-test");

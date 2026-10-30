@@ -34,6 +34,12 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return response;
   }
 
+  // Redirected at request time only; the build prerenders the page itself.
+  // Coverage: tests/prerender.test.ts
+  if (pathname === "/prerender-middleware-redirect") {
+    return NextResponse.redirect(new URL("/about", request.url));
+  }
+
   if (pathname === "/internal-header-secret.txt") {
     return new Response("blocked by middleware", {
       status: 403,
@@ -595,6 +601,7 @@ export const config = {
   matcher: [
     "/about",
     "/api/request-signal",
+    "/prerender-middleware-redirect",
     "/exists-but-not-routed",
     "/pages-data-rewrite-source",
     "/middleware-redirect",
