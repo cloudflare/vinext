@@ -35,7 +35,7 @@ export type PagesRequestQuery = Record<string, string | string[]>;
 export type PagesReqResRequest = Readable & {
   method: string;
   url: string;
-  headers: Record<string, string>;
+  headers: Record<string, string | string[] | undefined>;
   query: PagesRequestQuery;
   body: unknown;
   cookies: Record<string, string>;
