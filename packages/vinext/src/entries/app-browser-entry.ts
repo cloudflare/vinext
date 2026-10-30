@@ -28,10 +28,11 @@ export function generateBrowserEntry(
   },
   locales: readonly string[] = [],
   classifier?: AppRouteDynamicRenderClassifier,
+  instantConfigReader?: AppRouteInstantConfigReader,
 ): string {
   const entryPath = resolveRuntimeEntryModule("app-browser-entry");
   const reactInstanceBootstrapPath = resolveClientRuntimeModule("react-instance-bootstrap");
-  const prefetchRoutes = toLinkPrefetchRoutes(routes, classifier);
+  const prefetchRoutes = toLinkPrefetchRoutes(routes, classifier, instantConfigReader);
   // Route handlers only feed hybrid App/Pages ownership. An App-only client
   // learns a handler URL from its non-Flight response (a prefetch miss, then a
   // document navigation), like Next.js, so it gets none (issue #3624).
@@ -93,6 +94,15 @@ function splitPatternParts(pattern: string): string[] {
 type AppRouteIntercept = AppRoute["siblingIntercepts"][number];
 
 /** Reads, at build time, which App pages Next.js renders on every request. */
+/** Reads `unstable_instant` configs, as `AppRouteDynamicRenderClassifier` reads segment configs. */
+export type AppRouteInstantConfigReader = {
+  route(route: AppRoute): "runtime" | "static" | null;
+  intercept(
+    intercept: AppRouteIntercept,
+    layoutPaths: readonly string[],
+  ): "runtime" | "static" | null;
+};
+
 export type AppRouteDynamicRenderClassifier = {
   route(route: AppRoute): boolean;
   /**
@@ -154,11 +164,13 @@ export function toLinkPrefetchRoute(
 /**
  * Project App routes together so sibling-intercept loading is applied to its
  * target route. `classifier` reads each route's segment config, and each
- * intercepting page's, which applies to its target route.
+ * intercepting page's, which applies to its target route. `instantConfigReader`
+ * reads their `unstable_instant` configs the same way.
  */
 export function toLinkPrefetchRoutes(
   routes: readonly AppRoute[],
   classifier?: AppRouteDynamicRenderClassifier,
+  instantConfigReader?: AppRouteInstantConfigReader,
 ): VinextLinkPrefetchRoute[] {
   const siblingInterceptLoadingTargets: string[][] = [];
   for (const route of routes) {
@@ -168,7 +180,10 @@ export function toLinkPrefetchRoutes(
       }
     }
   }
-  const intercepts = classifier ? collectClassifiedIntercepts(routes, classifier) : [];
+  const intercepts =
+    classifier || instantConfigReader
+      ? collectClassifiedIntercepts(routes, classifier, instantConfigReader)
+      : [];
 
   return routes.filter(isLinkPrefetchRoute).map((route) => {
     const prefetchRoute = toLinkPrefetchRoute(
@@ -178,14 +193,16 @@ export function toLinkPrefetchRoutes(
       ),
       classifier?.route(route) ?? false,
     );
+    const instant = instantConfigReader?.route(route) ?? null;
+    const classifiedRoute = instant !== null ? { ...prefetchRoute, instant } : prefetchRoute;
     const routeIntercepts = intercepts
       .filter(({ targetPatternParts }) =>
         interceptTargetMayMatchRoute(targetPatternParts, route.patternParts),
       )
       .map(({ intercept }) => intercept);
     return routeIntercepts.length > 0
-      ? { ...prefetchRoute, intercepts: routeIntercepts }
-      : prefetchRoute;
+      ? { ...classifiedRoute, intercepts: routeIntercepts }
+      : classifiedRoute;
   });
 }
 
@@ -223,7 +240,8 @@ function interceptTargetMayMatchRoute(
  */
 function collectClassifiedIntercepts(
   routes: readonly AppRoute[],
-  classifier: AppRouteDynamicRenderClassifier,
+  classifier: AppRouteDynamicRenderClassifier | undefined,
+  instantConfigReader: AppRouteInstantConfigReader | undefined,
 ): { intercept: VinextLinkPrefetchIntercept; targetPatternParts: string[] }[] {
   const sources = new Map<
     string,
@@ -250,15 +268,18 @@ function collectClassifiedIntercepts(
     for (const intercept of route.siblingIntercepts) add(intercept, route.layouts, route);
   }
   return [...sources.values()].map(({ intercept, layoutPaths, route }) => {
+    const allLayoutPaths = [...layoutPaths, ...intercept.layoutPaths];
     const rendersDynamically =
-      classifier.intercept(intercept, [...layoutPaths, ...intercept.layoutPaths]) ||
-      classifier.route(route);
+      classifier !== undefined &&
+      (classifier.intercept(intercept, allLayoutPaths) || classifier.route(route));
+    const instant = instantConfigReader?.intercept(intercept, allLayoutPaths) ?? null;
     const targetPatternParts = splitPatternParts(intercept.targetPattern);
     return {
       intercept: {
         sourcePatternParts: splitPatternParts(intercept.sourceMatchPattern),
         targetPatternParts,
         ...(rendersDynamically ? { rendersDynamically: true } : {}),
+        ...(instant !== null ? { instant } : {}),
       },
       targetPatternParts,
     };

@@ -72,6 +72,8 @@ import { PREGENERATED_CONCRETE_PATHS_MODULE } from "./server/pregenerated-concre
 import {
   isAppInterceptRenderedDynamically,
   isAppPageRouteRenderedDynamically,
+  readAppInterceptInstantConfig,
+  readAppPageRouteInstantConfig,
 } from "./build/app-page-static-eligibility.js";
 import { rewriteOutputRootExternals } from "./build/output-root-externals.js";
 
@@ -5506,8 +5508,12 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // dynamically (see `rendersDynamically`).
             const classifyDynamicRoutes =
               this.environment.config.command === "build" && !nextConfig?.cacheComponents;
+            // `unstable_instant` needs Cache Components.
+            const classifyInstantRoutes =
+              this.environment.config.command === "build" && nextConfig?.cacheComponents === true;
             const readMdxEsm =
-              classifyDynamicRoutes && pageExtensionsIncludeMdx(nextConfig?.pageExtensions ?? [])
+              (classifyDynamicRoutes || classifyInstantRoutes) &&
+              pageExtensionsIncludeMdx(nextConfig?.pageExtensions ?? [])
                 ? await loadMdxEsmReader(root)
                 : null;
             return generateBrowserEntry(
@@ -5520,6 +5526,13 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     route: (route) => isAppPageRouteRenderedDynamically(route, readMdxEsm),
                     intercept: (intercept, layoutPaths) =>
                       isAppInterceptRenderedDynamically(intercept, layoutPaths, readMdxEsm),
+                  }
+                : undefined,
+              classifyInstantRoutes
+                ? {
+                    route: (route) => readAppPageRouteInstantConfig(route, readMdxEsm),
+                    intercept: (intercept, layoutPaths) =>
+                      readAppInterceptInstantConfig(intercept, layoutPaths, readMdxEsm),
                   }
                 : undefined,
             );
