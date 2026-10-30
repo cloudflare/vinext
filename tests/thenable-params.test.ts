@@ -439,3 +439,51 @@ describe("makeThenableParams", () => {
     state.abortController.abort();
   });
 });
+
+describe("vary params", () => {
+  function recordVaryParams(routePattern: string, read: () => unknown): Promise<string[]> {
+    const varyParams = new Set<string>();
+    const state = createPprFallbackShellState({ fallbackParamNames: [], routePattern, varyParams });
+    return Promise.resolve(runWithPprFallbackShellState(state, read)).then(() => [...varyParams]);
+  }
+
+  // Like Next.js's `createVaryingParams`, a render varies on the params it reads.
+  it("records the params a render reads, synchronously or awaited", async () => {
+    await expect(
+      recordVaryParams("/shop/:category/:item", () => {
+        const params = makeThenableParams({ category: "a", item: "b" });
+        return params.category;
+      }),
+    ).resolves.toEqual(["category"]);
+    await expect(
+      recordVaryParams("/shop/:category/:item", async () => {
+        const params = await makeThenableParams({ category: "a", item: "b" });
+        return "item" in params;
+      }),
+    ).resolves.toEqual(["item"]);
+    await expect(
+      recordVaryParams("/shop/:category/:item", async () => {
+        await makeThenableParams({ category: "a", item: "b" });
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("records every param, and an absent optional catch-all, when a render enumerates them", async () => {
+    await expect(
+      recordVaryParams("/docs/:section/:slug*", async () => {
+        Object.keys(await makeThenableParams({ section: "a" }));
+      }),
+    ).resolves.toEqual(["section", "slug"]);
+  });
+
+  it("records search params as `?`", async () => {
+    await expect(
+      recordVaryParams("/search", async () => {
+        const searchParams = await makeThenableParams({ q: "1" }, undefined, {
+          isSearchParams: true,
+        });
+        return Reflect.get(searchParams, "missing");
+      }),
+    ).resolves.toEqual(["?"]);
+  });
+});

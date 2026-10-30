@@ -1,6 +1,7 @@
 import {
   createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
+  recordPprFallbackShellVaryParams,
   type PprFallbackShellState,
 } from "./ppr-fallback-shell.js";
 import {
@@ -26,12 +27,17 @@ export type ThenableParamsObserver = Readonly<{
   observeThenRead?: () => void;
 }>;
 
+/** Whether the thenable holds search params, whose reads vary on `?`. */
+export type ThenableParamsOptions = Readonly<{ isSearchParams?: boolean }>;
+
 const paramsState = new WeakMap<
   object,
   {
     plain: Record<string, unknown>;
     observer: ThenableParamsObserver | undefined;
     fallbackShellState: PprFallbackShellState | null;
+    options: ThenableParamsOptions | undefined;
+    varyShellState: PprFallbackShellState | null;
   }
 >();
 
@@ -53,7 +59,13 @@ export function restoreThenableParams<T extends Record<string, unknown>>(
   original: unknown,
 ): ThenableParams<T> {
   const state = getParamsState(original);
-  return createThenableParams(decoded, state?.observer, state?.fallbackShellState ?? null);
+  return createThenableParams(
+    decoded,
+    state?.observer,
+    state?.fallbackShellState ?? null,
+    state?.options,
+    state?.varyShellState ?? null,
+  );
 }
 
 function observeParamKeys(
@@ -99,16 +111,76 @@ function createThenableParamsProxy<T extends Record<string, unknown>>(
 export function makeThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer?: ThenableParamsObserver,
+  options?: ThenableParamsOptions,
 ): ThenableParams<T> {
-  return createThenableParams(obj, observer, getPprFallbackShellState());
+  const shellState = getPprFallbackShellState();
+  return createThenableParams(obj, observer, shellState, options, shellState);
+}
+
+/** The optional catch-all params of a route pattern, such as `slug` in `/:slug*`. */
+function getOptionalCatchAllParamNames(routePattern: string): string[] {
+  return routePattern
+    .split("/")
+    .filter((part) => part.startsWith(":") && part.endsWith("*"))
+    .map((part) => part.slice(1, -1));
+}
+
+/**
+ * The values `then` resolves to while a shell records its vary params: reading
+ * a key records it, and enumerating the keys records them all, the route's
+ * optional catch-alls included, since which keys are present varies too. Like
+ * Next.js's `createVaryingParams`.
+ */
+function createVaryingParams<T extends Record<string, unknown>>(
+  plain: T,
+  recordRead: (key: string) => void,
+  recordEnumeration: () => void,
+): T {
+  return new Proxy(plain, {
+    get(target, prop, receiver) {
+      if (typeof prop === "string") recordRead(prop);
+      return Reflect.get(target, prop, receiver);
+    },
+    getOwnPropertyDescriptor(target, prop) {
+      if (typeof prop === "string") recordRead(prop);
+      return Reflect.getOwnPropertyDescriptor(target, prop);
+    },
+    has(target, prop) {
+      if (typeof prop === "string") recordRead(prop);
+      return Reflect.has(target, prop);
+    },
+    ownKeys(target) {
+      recordEnumeration();
+      return Reflect.ownKeys(target);
+    },
+  });
 }
 
 function createThenableParams<T extends Record<string, unknown>>(
   obj: T,
   observer: ThenableParamsObserver | undefined,
   fallbackShellState: PprFallbackShellState | null,
+  options: ThenableParamsOptions | undefined,
+  varyShellState: PprFallbackShellState | null,
 ): ThenableParams<T> {
   const plain = { ...obj };
+  // A shell that records its vary params records each read: search params as
+  // `?`, as Next.js's `createVaryingSearchParams` does.
+  const varyShell = varyShellState?.varyParams ? varyShellState : null;
+  // A well-known key reads the promise, unless the resolved values hold it.
+  const recordVaryRead = (key: string) => {
+    if (varyShell === null || (isWellKnownProperty(key) && !hasParamProperty(plain, key))) return;
+    recordPprFallbackShellVaryParams(varyShell, [options?.isSearchParams ? "?" : key]);
+  };
+  const recordVaryEnumeration = () => {
+    if (varyShell === null) return;
+    recordPprFallbackShellVaryParams(
+      varyShell,
+      options?.isSearchParams
+        ? ["?"]
+        : [...Object.keys(plain), ...getOptionalCatchAllParamNames(varyShell.routePattern)],
+    );
+  };
   const fallbackParamNames =
     fallbackShellState &&
     Object.keys(plain).some((key) => fallbackShellState.fallbackParamNames.has(key))
@@ -149,7 +221,9 @@ function createThenableParams<T extends Record<string, unknown>>(
     return fallbackShellPromise;
   }
 
-  const promise = Promise.resolve(plain);
+  const promise = Promise.resolve(
+    varyShell === null ? plain : createVaryingParams(plain, recordVaryRead, recordVaryEnumeration),
+  );
 
   function isFallbackParam(prop: PropertyKey): boolean {
     return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
@@ -193,6 +267,7 @@ function createThenableParams<T extends Record<string, unknown>>(
 
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
+        recordVaryRead(prop);
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
@@ -213,6 +288,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     getOwnPropertyDescriptor(target, prop) {
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
+        recordVaryRead(prop);
       }
 
       if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
@@ -240,6 +316,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     has(target, prop) {
       if (typeof prop === "string" && !isWellKnownProperty(prop)) {
         observeParamKeys(observer, [prop]);
+        recordVaryRead(prop);
       }
 
       return (
@@ -248,6 +325,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     },
     ownKeys() {
       observeReadableParamKeys(observer, plain);
+      recordVaryEnumeration();
       return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
     },
     set(target, prop, value) {
@@ -264,6 +342,8 @@ function createThenableParams<T extends Record<string, unknown>>(
     plain,
     observer,
     fallbackShellState: fallbackParamNames ? fallbackShellState : null,
+    options,
+    varyShellState: varyShell,
   });
   return params;
 }

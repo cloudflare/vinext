@@ -29,6 +29,7 @@ import {
 import { createPprFallbackShellSuspensePromise } from "../packages/vinext/src/shims/ppr-fallback-shell.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { getRootParam } from "../packages/vinext/src/shims/root-params.js";
+import { makeThenableParams } from "../packages/vinext/src/shims/thenable-params.js";
 import type { AppPageMiddlewareContext } from "../packages/vinext/src/server/app-page-response.js";
 import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app-page-head.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
@@ -1513,6 +1514,32 @@ describe("app page dispatch", () => {
       );
       expect(cached.headers.get("x-next-cache-tags")).toBeNull();
       expect(cached.headers.get("x-vinext-prerender-cache-life")).toBeNull();
+    });
+
+    // Like Next.js's `varyParams`, the client reuses the shell for another URL
+    // of the route with the same values for the params it read.
+    it("sends the params the shell read, also from a stored shell", async () => {
+      const { options } = createStaticShellOptions({
+        async buildPageElement() {
+          const params = makeThenableParams({ id: "1", lang: "en", tab: "a" });
+          return React.createElement("main", null, params.id, getRootParam("lang"));
+        },
+        cleanPathname: "/en/posts/1/a",
+        route: createRoute({
+          pattern: "/:lang/posts/:id/:tab",
+          routeSegments: ["[lang]", "posts", "[id]", "[tab]"],
+        }),
+      });
+
+      const response = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(response.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
+      await response.arrayBuffer();
+      const cached = await runWithRequestContext(createRequestContext(), () =>
+        dispatchAppPage(options),
+      );
+      expect(cached.headers.get("x-vinext-vary-params")).toBe('["id","lang"]');
     });
 
     it("leaves what follows io() a hole", async () => {

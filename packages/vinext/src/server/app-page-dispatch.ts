@@ -96,6 +96,7 @@ import {
   APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
   APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
   APP_RSC_RENDER_MODE_NAVIGATION,
+  VINEXT_VARY_PARAMS_HEADER,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
@@ -451,6 +452,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     fallbackParamNames: readonly string[];
     isRuntimePrefetch?: boolean;
     routePattern: string;
+    varyParams?: Set<string>;
   };
   pprRuntime?: AppPagePprRuntime<TRoute>;
   /**
@@ -908,10 +910,12 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
   if (!options.withRequest) throw new Error("[vinext] A static shell needs its own request.");
   const route = options.route;
   const pathname = options.cleanPathname;
+  const varyParams = new Set<string>();
   const pprFallbackShell = {
     fallbackParamNames: [],
     ...(isRuntimePrefetch ? { isRuntimePrefetch: true } : {}),
     routePattern: route.pattern,
+    varyParams,
   };
   const requestOptions = options.withRequest({
     actionError: undefined,
@@ -975,8 +979,10 @@ export async function renderAppPageStaticShell<TRoute extends AppPageDispatchRou
             const response = await dispatchAppPageInner(shellOptions);
             const body = response.body ? await response.arrayBuffer() : null;
             isPartial = pprRuntime.getState()?.hasDynamicBoundary === true;
+            const headers = new Headers(response.headers);
+            headers.set(VINEXT_VARY_PARAMS_HEADER, JSON.stringify([...varyParams].sort()));
             return new Response(body, {
-              headers: response.headers,
+              headers,
               status: response.status,
               statusText: response.statusText,
             });
