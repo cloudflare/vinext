@@ -77,7 +77,7 @@ describe("Nitro public files plugin", () => {
     }
     expect(received).toHaveLength(0);
 
-    // h3 decodes these to the same file.
+    // h3 resolves these to the file they name, so they are still fetched.
     for (const path of [
       "/a%20b.txt",
       "/a%23b.txt",
