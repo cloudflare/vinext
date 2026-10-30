@@ -6,6 +6,7 @@ import {
   sealRequestHeaders,
   type NextURL,
 } from "vinext/shims/server";
+import { throwIfInsideCacheScope } from "vinext/shims/internal/headers-state";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import { addBasePathToPathname } from "../utils/base-path.js";
@@ -126,7 +127,7 @@ type DomainLocaleNextUrlDynamicAccess =
   | "nextUrl.domainLocale";
 
 type AppRouteDynamicRequestAccess = RequestDynamicAccess | NextUrlDynamicAccess;
-type AppRouteRequestMode = "auto" | "force-static" | "error";
+type AppRouteRequestMode = "auto" | "force-dynamic" | "force-static" | "error";
 
 type TrackedAppRouteRequestOptions = {
   basePath?: string;
@@ -318,7 +319,17 @@ export function createTrackedAppRouteRequest(
   const requestMode = options.requestMode ?? "auto";
   const nextConfig = buildNextConfig(options);
 
-  const markDynamicAccess = (access: AppRouteDynamicRequestAccess): void => {
+  const markDynamicAccess = (
+    access: AppRouteDynamicRequestAccess,
+    trackedByNext: boolean,
+  ): void => {
+    // A cached function's key does not cover the request it closes over, so
+    // the reads Next.js's trackDynamic() tracks are rejected inside
+    // unstable_cache() and "use cache" like cookies()/headers() are. Next.js
+    // hands `force-dynamic` handlers the unproxied request, so that mode
+    // never rejects them. Ported from
+    // packages/next/src/server/route-modules/app-route/module.ts.
+    if (trackedByNext && requestMode !== "force-dynamic") throwIfInsideCacheScope(access);
     didAccessDynamicRequest = true;
     options.onDynamicAccess?.(access);
   };
@@ -367,7 +378,10 @@ export function createTrackedAppRouteRequest(
     const nextUrlHandler: ProxyHandler<NextURL> = {
       get(target, prop): unknown {
         if (isNextDynamicNextUrlProperty(prop) || isHostDerivedNextUrlProperty(prop)) {
-          markDynamicAccess(`nextUrl.${String(prop)}` as NextUrlDynamicAccess);
+          markDynamicAccess(
+            `nextUrl.${String(prop)}` as NextUrlDynamicAccess,
+            isNextDynamicNextUrlProperty(prop),
+          );
           return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
         }
         if (prop === "clone") return () => wrapNextUrl(target.clone());
@@ -492,7 +506,7 @@ export function createTrackedAppRouteRequest(
     const accessCf = <T>(read: () => T, forceStaticValue: T): T => {
       if (requestMode === "force-static") return forceStaticValue;
       if (requestMode === "error") return throwStaticGenerationError("request.cf");
-      markDynamicAccess("request.cf");
+      markDynamicAccess("request.cf", false);
       return read();
     };
     const controlledCfGetter = (): unknown =>
@@ -665,17 +679,21 @@ export function createTrackedAppRouteRequest(
             return proxiedNextUrl;
           case "headers":
           case "cookies":
-          case "ip":
-          case "geo":
           case "url":
           case "body":
           case "blob":
-          case "bytes":
           case "json":
           case "text":
           case "arrayBuffer":
           case "formData":
-            markDynamicAccess(`request.${String(prop)}` as RequestDynamicAccess);
+            markDynamicAccess(`request.${String(prop)}` as RequestDynamicAccess, true);
+            return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
+          // Next.js's proxyNextRequest() does not track these (ip/geo are
+          // vinext-only), so reading them inside a cached function stays allowed.
+          case "ip":
+          case "geo":
+          case "bytes":
+            markDynamicAccess(`request.${String(prop)}` as RequestDynamicAccess, false);
             return bindMethodIfNeeded(Reflect.get(target, prop, target), target);
           case "clone":
             return cloneTrackedRequest;
