@@ -59,6 +59,18 @@ export function contentTypeForPath(filePath: string): string {
 }
 
 /**
+ * Default `Cache-Control` for a file in the client build directory. Hashed
+ * build assets never change at their URL. Every other file (`public/`) must be
+ * revalidated on each reuse, as Next.js's `send` serves it with `max-age=0`:
+ * middleware may admit it per request, so a shared cache must not reuse it
+ * without asking the origin. A `Cache-Control` set by middleware or config
+ * headers replaces this default.
+ */
+export function staticFileCacheControl(isHashed: boolean): string {
+  return isHashed ? "public, max-age=31536000, immutable" : "public, max-age=0";
+}
+
+/**
  * Files below this size are buffered in memory at startup for zero-syscall
  * serving via res.end(buffer). Above this, files stream via createReadStream.
  * 64KB covers virtually all precompressed assets (a 200KB JS bundle compresses
@@ -166,9 +178,7 @@ export class StaticFileCache {
 
       const ext = path.extname(relativePath);
       const contentType = contentTypeForPath(relativePath);
-      const cacheControl = isHashed
-        ? "public, max-age=31536000, immutable"
-        : "public, max-age=3600";
+      const cacheControl = staticFileCacheControl(isHashed);
       const etag =
         (isHashed && etagFromFilenameHash(relativePath, ext)) ||
         `W/"${fileInfo.size}-${Math.floor(fileInfo.mtimeMs / 1000)}"`;
