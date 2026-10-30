@@ -3522,9 +3522,11 @@ describe("app page dispatch", () => {
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     // The response renders the static /feed source, so the dynamic target's
-    // classification doesn't make it never-cache. It is a mounted-slot
-    // variant that is never stored, so it stays out of shared caches.
-    expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    // classification doesn't decide its policy. The source can still read
+    // the request as the response streams, so it is never cached.
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",
@@ -4122,15 +4124,19 @@ describe("app page dispatch", () => {
           });
 
           await expect(response.text()).resolves.toBe("/feed");
-          expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+          expect(response.headers.get("cache-control")).toBe(
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+          );
         });
       }
     }
 
-    it("keeps a static source's payload out of shared caches unless middleware sets a policy", async () => {
+    it("never caches a static source's payload unless middleware sets a policy", async () => {
       const response = await dispatchIntercept({});
       await expect(response.text()).resolves.toBe("/feed");
-      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
 
       const middlewareCacheControl = "public, max-age=5";
       const withMiddlewarePolicy = await dispatchIntercept({
@@ -6074,7 +6080,7 @@ describe("app page dispatch", () => {
       });
     }
 
-    it("keeps a static generated-param miss out of shared caches", async () => {
+    it("never caches a static generated-param miss", async () => {
       const dispatch = async (
         overrides: CreateDispatchOptionsOverrides = {},
         middlewareHeaders?: Headers,
@@ -6097,7 +6103,7 @@ describe("app page dispatch", () => {
       // Its layouts can still read the request after the headers leave.
       const response = await dispatch();
       expect(response.status).toBe(404);
-      expect(response.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
 
       // Middleware's own cache policy still wins.
       const middlewareCacheControl = "public, max-age=5";
@@ -6137,10 +6143,10 @@ describe("app page dispatch", () => {
       }
 
       // A static page's response isn't known dynamic, but it is never stored,
-      // so it takes the pending no-store policy.
+      // so it is never cached either.
       const staticResponse = await dispatch({});
       expect(staticResponse.status).toBe(500);
-      expect(staticResponse.headers.get("cache-control")).toBe("no-store, must-revalidate");
+      expect(staticResponse.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
 
       // The build's prerender reads no-store as a dynamic render, so it gets
       // no pending policy.

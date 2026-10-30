@@ -1736,31 +1736,34 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toContain("guest");
   });
 
-  // The layout reads cookies behind Suspense 300 ms into the render, usually
-  // after these documents' headers have been sent. A slow shell can see the
-  // read first and send the never-cache header instead.
-  it("keeps a generated-param miss's not-found document out of shared caches", async () => {
+  // The layout reads cookies behind Suspense 300 ms into the render, after
+  // these documents' headers have been sent.
+  it("never caches a generated-param miss's not-found document", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/handbook/${randomUUID()}`, {
       headers: { Cookie: `session=${session}` },
     });
     expect(res.status).toBe(404);
-    expect(res.headers.get("cache-control")).toMatch(/\bno-store\b/);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(await res.text()).toContain(session);
   });
 
-  it("keeps an error boundary's document out of shared caches", async () => {
+  it("never caches an error boundary's document", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/throws`, {
       headers: { Cookie: `session=${session}` },
     });
-    expect(res.headers.get("cache-control")).toMatch(/\bno-store\b/);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     const html = await res.text();
     expect(html).toContain("late-cookie-layout-error");
     expect(html).toContain(session);
   });
 
-  it("keeps an intercepted navigation's RSC payload out of shared caches", async () => {
+  it("never caches an intercepted navigation's RSC payload", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/photo/1.rsc`, {
       headers: {
@@ -1771,7 +1774,9 @@ describe("App Router Production server (startProdServer)", () => {
       },
     });
     expect(res.status).toBe(200);
-    expect(res.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     const payload = await res.text();
     expect(payload).toContain("late-cookie-layout-photo-modal");
     expect(payload).toContain(session);

@@ -91,7 +91,6 @@ import {
   APP_RSC_RENDER_MODE_NAVIGATION,
   type AppRscRenderMode,
 } from "./app-rsc-render-mode.js";
-import { NO_STORE_CACHE_CONTROL } from "./cache-control.js";
 import { shouldServeStreamingMetadata } from "./streaming-metadata.js";
 import { createAppPageRscErrorTracker, type AppPageSsrHandler } from "./app-page-stream.js";
 import {
@@ -1326,17 +1325,19 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // cacheability and dynamic config, not the matched target's. A source
       // that can't be static, a render known dynamic before it starts, or a
       // draft-mode request is never cacheable, like the source's own render.
-      // In production, any other source that can read the request renders a
-      // mounted-slot variant that is never stored and can still reach a
-      // dynamic API as it streams, so it is no-store like the RSC builder's
-      // uncacheable variants. Middleware's policy still wins, merged after, as
-      // in the RSC builder.
+      // In production, so is any other source that can read the request: this
+      // response is never stored and can still reach a dynamic API as it
+      // streams. Middleware's policy still wins, merged after, as in the RSC
+      // builder.
       const isSourceStaticEligible =
         options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
+      if (
+        !isSourceStaticEligible ||
+        isDraftMode ||
+        isInterceptSourceKnownDynamic ||
+        (options.isProduction && !isInterceptSourceRequestIndependent)
+      ) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
-      } else if (options.isProduction && !isInterceptSourceRequestIndependent) {
-        interceptHeaders.set("Cache-Control", NO_STORE_CACHE_CONTROL);
       }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);
       applyRscCompatibilityIdHeader(interceptHeaders);
