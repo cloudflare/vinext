@@ -23,6 +23,7 @@ import {
   isDraftModeRequest,
   runWithHeadersContext,
 } from "vinext/shims/headers";
+import { resolveDevStaticFileSignal } from "./dev-static-file-signal.js";
 import {
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
@@ -3281,7 +3282,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     await options.ensureInstrumentation?.(isExecutionContextLike(ctx) ? ctx : null);
 
     const traceUrl = new URL(rawRequest.url);
-    return traceFrameworkRequest({
+    const response = await traceFrameworkRequest({
       callback: () =>
         handleAppRscRequestLifecycle(
           rawRequest,
@@ -3298,6 +3299,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       method: rawRequest.method,
       target: traceUrl.pathname + traceUrl.search,
     });
+    return options.isDev ? resolveDevStaticFileSignal(response, rawRequest) : response;
   };
 
   return appRscHandler;

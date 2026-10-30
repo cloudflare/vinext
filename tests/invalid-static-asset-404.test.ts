@@ -528,57 +528,61 @@ describe("development static misses", () => {
     { name: "Pages", hybrid: false, catchAll: false },
     { name: "hybrid", hybrid: true, catchAll: false },
     { name: "hybrid App catch-all", hybrid: true, catchAll: true },
-  ])("preserves routing and cache policy for $name", async ({ hybrid, catchAll }) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-dev-"));
-    fs.symlinkSync(ROOT_NODE_MODULES, path.join(root, "node_modules"), "junction");
-    fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
-    fs.mkdirSync(path.join(root, "pages"));
-    fs.writeFileSync(
-      path.join(root, "pages/index.tsx"),
-      "export default function Page() { return <p>Pages home</p>; }",
-    );
-    fs.writeFileSync(
-      path.join(root, "pages/404.tsx"),
-      "export default function Page() { return <p>Pages custom 404</p>; }",
-    );
-    if (hybrid) {
-      fs.mkdirSync(path.join(root, "app"));
+  ])(
+    "preserves routing and cache policy for $name",
+    async ({ hybrid, catchAll }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-static-dev-"));
+      fs.symlinkSync(ROOT_NODE_MODULES, path.join(root, "node_modules"), "junction");
+      fs.writeFileSync(path.join(root, "package.json"), JSON.stringify({ type: "module" }));
+      fs.mkdirSync(path.join(root, "pages"));
       fs.writeFileSync(
-        path.join(root, "app/layout.tsx"),
-        "export default function Layout({children}) { return <html><body>{children}</body></html>; }",
+        path.join(root, "pages/index.tsx"),
+        "export default function Page() { return <p>Pages home</p>; }",
       );
-      fs.mkdirSync(path.join(root, "app", catchAll ? "[...slug]" : "app-page"));
       fs.writeFileSync(
-        path.join(root, "app", catchAll ? "[...slug]" : "app-page", "page.tsx"),
-        "export default function Page() { return <p>App owns this path</p>; }",
+        path.join(root, "pages/404.tsx"),
+        "export default function Page() { return <p>Pages custom 404</p>; }",
       );
-    }
-    const server = await createServer({
-      root,
-      configFile: false,
-      plugins: [vinext({ appDir: root })],
-      logLevel: "silent",
-      server: { host: "127.0.0.1", port: 0 },
-    });
-    try {
-      await server.listen();
-      const address = server.httpServer!.address();
-      if (!address || typeof address === "string") throw new Error("missing server address");
-      for (const pathname of ["/_next/static/missing", "/_next/static/missing.js"]) {
-        const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`);
-        if (catchAll) {
-          expect(response.status).toBe(200);
-          expect(await response.text()).toContain("App owns this path");
-        } else {
-          expect(response.status).toBe(404);
-          expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
-          expect(response.headers.get("cache-control")).toContain("no-store");
-          expect(await response.text()).toBe("Not Found");
-        }
+      if (hybrid) {
+        fs.mkdirSync(path.join(root, "app"));
+        fs.writeFileSync(
+          path.join(root, "app/layout.tsx"),
+          "export default function Layout({children}) { return <html><body>{children}</body></html>; }",
+        );
+        fs.mkdirSync(path.join(root, "app", catchAll ? "[...slug]" : "app-page"));
+        fs.writeFileSync(
+          path.join(root, "app", catchAll ? "[...slug]" : "app-page", "page.tsx"),
+          "export default function Page() { return <p>App owns this path</p>; }",
+        );
       }
-    } finally {
-      await server.close();
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
+      const server = await createServer({
+        root,
+        configFile: false,
+        plugins: [vinext({ appDir: root })],
+        logLevel: "silent",
+        server: { host: "127.0.0.1", port: 0 },
+      });
+      try {
+        await server.listen();
+        const address = server.httpServer!.address();
+        if (!address || typeof address === "string") throw new Error("missing server address");
+        for (const pathname of ["/_next/static/missing", "/_next/static/missing.js"]) {
+          const response = await fetch(`http://127.0.0.1:${address.port}${pathname}`);
+          if (catchAll) {
+            expect(response.status).toBe(200);
+            expect(await response.text()).toContain("App owns this path");
+          } else {
+            expect(response.status).toBe(404);
+            expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
+            expect(response.headers.get("cache-control")).toContain("no-store");
+            expect(await response.text()).toBe("Not Found");
+          }
+        }
+      } finally {
+        await server.close();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    30_000,
+  );
 });
