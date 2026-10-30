@@ -243,6 +243,18 @@ const __imageEndpoint = `${process.env.__NEXT_ROUTER_BASEPATH ?? ""}/_next/image
 }`;
 
 /**
+ * Parse a `quality` prop like Next.js's `getInt` (shared/lib/get-img-props.ts):
+ * finite numbers and digit-only strings pass, anything else becomes NaN, which
+ * the default loader treats as 75.
+ */
+export function parseImageQuality(quality: number | string | undefined): number | undefined {
+  if (quality === undefined) return undefined;
+  if (typeof quality === "number") return Number.isFinite(quality) ? quality : NaN;
+  if (/^[0-9]+$/.test(quality)) return parseInt(quality, 10);
+  return NaN;
+}
+
+/**
  * Round a `quality` prop to the closest entry of `images.qualities`, as the
  * Next.js default loader does (shared/lib/find-closest-quality.ts), so the
  * URL is one the optimization endpoint accepts.
@@ -410,7 +422,7 @@ export function getImageProps(props: ImageProps): { props: ImgProps } {
   }
 
   // Resolve src through custom loader if provided
-  const imgQuality = typeof _quality === "string" ? Number(_quality) : (_quality ?? 75);
+  const imgQuality = parseImageQuality(_quality) ?? 75;
   const resolvedSrc = blockedInProd
     ? ""
     : loader

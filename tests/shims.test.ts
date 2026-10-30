@@ -29807,6 +29807,21 @@ describe("image optimization URL generation", () => {
       vi.resetModules();
       const unsorted = await import("../packages/vinext/src/shims/image.js");
       expect(unsorted.imageOptimizationUrl("/img.png", 640, 75)).toContain("q=60");
+
+      // Next.js parses the prop with getInt first: non-finite numbers and
+      // non-digit strings become NaN, which rounds from the default 75.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[25,60,90]");
+      vi.resetModules();
+      const parsed = await import("../packages/vinext/src/shims/image.js");
+      const qualityOf = (quality: number | `${number}`) =>
+        new URL(
+          parsed.getImageProps({ src: "/img.png", alt: "", width: 64, height: 64, quality }).props
+            .src,
+          "http://localhost",
+        ).searchParams.get("q");
+      expect(qualityOf(Infinity)).toBe("60");
+      expect(qualityOf("1e2")).toBe("60");
+      expect(qualityOf("90")).toBe("90");
     } finally {
       vi.unstubAllEnvs();
       vi.resetModules();
