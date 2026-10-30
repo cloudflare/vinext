@@ -2270,6 +2270,38 @@ describe("resolveNextConfig crossOrigin", () => {
   });
 });
 
+describe("resolveNextConfig experimental.sri", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("defaults sriAlgorithm to undefined, also for sri without an algorithm", async () => {
+    expect((await resolveNextConfig({})).sriAlgorithm).toBeUndefined();
+    expect((await resolveNextConfig({ experimental: { sri: {} } })).sriAlgorithm).toBeUndefined();
+  });
+
+  it("reads experimental.sri.algorithm from next.config", async () => {
+    for (const algorithm of ["sha256", "sha384", "sha512"] as const) {
+      const resolved = await resolveNextConfig({ experimental: { sri: { algorithm } } });
+      expect(resolved.sriAlgorithm).toBe(algorithm);
+    }
+  });
+
+  it("warns about unsupported experimental.sri.algorithm values", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const resolved = await resolveNextConfig({
+      experimental: { sri: { algorithm: "md5" as "sha256" } },
+    });
+
+    expect(resolved.sriAlgorithm).toBeUndefined();
+    expect(warn).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("Invalid next.config options detected"),
+    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"experimental.sri.algorithm"'));
+  });
+});
+
 describe("resolveNextConfig scrollRestoration", () => {
   it("defaults scrollRestoration to false", async () => {
     const resolved = await resolveNextConfig({});
@@ -2778,6 +2810,7 @@ describe("detectNextIntlConfig", () => {
       removeConsole: false,
       disableOptimizedLoading: false,
       crossOrigin: undefined,
+      sriAlgorithm: undefined,
       reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},

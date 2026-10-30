@@ -168,12 +168,21 @@ function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   });
 }
 
+/**
+ * `integrity` attribute for a bootstrap chunk URL when `experimental.sri`
+ * recorded a hash for it at build time.
+ */
+function createIntegrityAttribute(url: string): string {
+  const integrity = pagesClientAssets.integrity?.[url];
+  return integrity ? ` integrity="${escapeHtmlAttr(integrity)}"` : "";
+}
+
 function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async="" fetchPriority="low"></script>'
+    `"${createIntegrityAttribute(bootstrapModuleUrl)} id="_R_" async="" fetchPriority="low"></script>`
   );
 }
 
@@ -320,7 +329,7 @@ function extractBootstrapModuleUrl(bootstrapScriptContent?: string): string | un
 
 function buildModulePreloadHtml(bootstrapModuleUrl?: string, nonce?: string): string {
   if (!bootstrapModuleUrl) return "";
-  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}" crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`;
+  return `<link rel="modulepreload"${createNonceAttribute(nonce)} href="${escapeHtmlAttr(bootstrapModuleUrl)}"${createIntegrityAttribute(bootstrapModuleUrl)} crossorigin="${pagesClientAssets.crossOrigin ?? ""}" fetchPriority="low" />\n`;
 }
 
 function buildHeadInjectionHtml(
@@ -552,12 +561,15 @@ export async function handleSsr(
           // document's own content. Next.js loads these chunks with classic
           // async scripts, which they fetch at low priority, and React
           // already preloads the bootstrap module at low priority.
+          // `integrity` is the experimental.sri hash recorded at build time,
+          // or undefined when the option is off.
           for (const moduleUrl of pagesClientAssets.appBootstrapPreinitModules ?? []) {
             // React forwards fetchPriority; its types leave it out.
             preinitModule(moduleUrl, {
               as: "script",
               crossOrigin: assetCrossOrigin,
               fetchPriority: "low",
+              integrity: pagesClientAssets.integrity?.[moduleUrl],
               nonce: options?.scriptNonce,
             } as PreinitModuleOptions);
           }
@@ -571,6 +583,7 @@ export async function handleSsr(
               as: "script",
               crossOrigin: assetCrossOrigin,
               fetchPriority: "low",
+              integrity: pagesClientAssets.integrity?.[pagesClientAssets.appRouteManifestModule],
               nonce: options?.scriptNonce,
             } as PreloadModuleOptions);
           }
@@ -710,7 +723,13 @@ export async function handleSsr(
           //    `<script type="module" src=…>` tag, so nonce-based CSP
           //    (`script-src 'nonce-…' 'strict-dynamic'`) keeps working.
           bootstrapModules: bootstrapModuleUrl
-            ? [{ src: bootstrapModuleUrl, crossOrigin: assetCrossOrigin }]
+            ? [
+                {
+                  src: bootstrapModuleUrl,
+                  crossOrigin: assetCrossOrigin,
+                  integrity: pagesClientAssets.integrity?.[bootstrapModuleUrl],
+                },
+              ]
             : undefined,
           formState: options?.formState ?? null,
           nonce: options?.scriptNonce,
