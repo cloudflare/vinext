@@ -1291,6 +1291,8 @@ describe("resolveNextConfig image patterns", () => {
       ["/photos/**"],
       [{ pathname: 1 }],
       [{ pathname: "/a", host: "x" }],
+      [new URL("https://example.com/photos/**")],
+      [new Date()],
       sparse,
     ]) {
       await expect(

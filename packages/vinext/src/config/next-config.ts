@@ -1382,7 +1382,10 @@ function resolveImageLocalPatterns(
     if (
       typeof pattern !== "object" ||
       pattern === null ||
-      Array.isArray(pattern) ||
+      // Plain objects only: a class instance such as a URL has no own
+      // entries and would spread to `{}`.
+      (Object.getPrototypeOf(pattern) !== Object.prototype &&
+        Object.getPrototypeOf(pattern) !== null) ||
       Object.entries(pattern).some(
         ([key, value]) =>
           (key !== "pathname" && key !== "search") ||
