@@ -15,8 +15,10 @@ import {
   APP_FIXTURE_DIR,
   createIsolatedFixture,
   EXTERNAL_REWRITE_HEADER_CASES,
+  EXTERNAL_REWRITE_PATHS,
   expectRepeatedSlashRedirects,
   requestExternalRewriteHeaders,
+  requestExternalRewriteWithConnectionTokens,
   testCacheDir,
 } from "./helpers.js";
 
@@ -529,6 +531,19 @@ describe("App Router Production server (startProdServer)", () => {
         cacheControl: "public, max-age=60",
         upstreamHeader: "1",
         ...expected,
+      });
+    },
+  );
+
+  // Next.js forwards the fields a client names in Connection, so the client
+  // can neither drop middleware's request headers nor fail the proxy.
+  it.each(EXTERNAL_REWRITE_PATHS)(
+    "keeps request headers the client names in Connection for %s",
+    async (requestPath) => {
+      expect(await requestExternalRewriteWithConnectionTokens(baseUrl, requestPath)).toEqual({
+        status: 200,
+        middlewareRequestHeader: "1",
+        clientNominatedHeader: "1",
       });
     },
   );

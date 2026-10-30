@@ -269,18 +269,15 @@ const REQUEST_HOP_BY_HOP_HEADERS = new Set([
   "upgrade",
 ]);
 
+/**
+ * Strip the fixed request hop-by-hop list. Fields the client nominates in
+ * `Connection` are forwarded, like Next.js: the headers here already include
+ * middleware's request overrides, so honouring the client's list would let it
+ * drop headers middleware set.
+ */
 function stripHopByHopRequestHeaders(headers: Headers): void {
-  const connectionTokens = (headers.get("connection") || "")
-    .split(",")
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean);
-
   for (const header of REQUEST_HOP_BY_HOP_HEADERS) {
     headers.delete(header);
-  }
-
-  for (const token of connectionTokens) {
-    headers.delete(token);
   }
 }
 

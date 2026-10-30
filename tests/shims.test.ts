@@ -16664,7 +16664,7 @@ describe("proxyExternalRequest", () => {
     const request = new Request("http://localhost:3000/proxy", {
       method: "DELETE",
       headers: {
-        connection: "keep-alive, x-custom-hop",
+        connection: "keep-alive, x-custom-hop, not a header",
         "keep-alive": "timeout=5",
         te: "trailers",
         trailers: "x-trailer",
@@ -16692,7 +16692,9 @@ describe("proxyExternalRequest", () => {
       expect(capturedHeaders!.get("trailers")).toBeNull();
       expect(capturedHeaders!.get("transfer-encoding")).toBeNull();
       expect(capturedHeaders!.get("upgrade")).toBeNull();
-      expect(capturedHeaders!.get("x-custom-hop")).toBeNull();
+      // Like Next.js, fields nominated in Connection are forwarded, and an
+      // invalid token does not fail the request.
+      expect(capturedHeaders!.get("x-custom-hop")).toBe("secret");
       // Request credentials that are not connection-scoped should still forward.
       expect(capturedHeaders!.get("proxy-authorization")).toBe("Basic cHJveHk=");
       expect(capturedHeaders!.get("x-custom-header")).toBe("keep-me");
