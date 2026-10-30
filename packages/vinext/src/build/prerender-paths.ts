@@ -49,6 +49,10 @@ import { isExternalUrl, matchHeaders, matchesRewriteSource } from "../config/con
 import { pagesRouteHasPriorityOverAppRoute } from "../server/hybrid-route-priority.js";
 import { resolveAppPageDynamicConfig } from "../server/app-segment-config.js";
 import {
+  normalizeNextDataPagePathname,
+  shouldAddTrailingSlashToPagesDataPath,
+} from "../server/pages-data-route.js";
+import {
   extractLocaleFromUrl,
   normalizeDefaultLocalePathname,
   shouldRestoreLocaleRootTrailingSlash,
@@ -1265,14 +1269,18 @@ export function matchesMiddlewareWarmPath(
   pathname: string,
   matcher: MatcherConfig | undefined,
   i18n: ResolvedNextConfig["i18n"],
-  trailingSlash = false,
+  spellings: { pagesDataTrailingSlash?: boolean; trailingSlash?: boolean } = {},
 ): boolean {
-  // Runtime middleware gates on the pathname as requested, so test the warm
-  // request's own spelling, terminal slash included.
-  const encodedPathname = normalizePathTrailingSlash(
-    new URL(pathname, "https://vinext.invalid").pathname,
-    trailingSlash,
-  );
+  const encodedPathname = new URL(pathname, "https://vinext.invalid").pathname;
+  // Runtime middleware gates on the pathname as requested. The HTML warm
+  // request carries the configured terminal slash, while a Pages data request
+  // normalized for middleware is slashed even for a file-like page.
+  const requestPathnames = new Set([
+    normalizePathTrailingSlash(encodedPathname, spellings.trailingSlash ?? false),
+  ]);
+  if (spellings.pagesDataTrailingSlash) {
+    requestPathnames.add(normalizeNextDataPagePathname(encodedPathname, true));
+  }
   const firstSegment = encodedPathname.split("/", 3)[1]?.toLowerCase();
   const localeContexts: Array<MiddlewareLocaleMatchContext | undefined> = i18n
     ? i18n.locales.some((locale) => locale.toLowerCase() === firstSegment)
@@ -1285,12 +1293,15 @@ export function matchesMiddlewareWarmPath(
           (defaultLocale) => ({ defaultLocale, kind: "defaulted" as const }),
         )
     : [undefined];
-  const matchPathnames = [encodedPathname];
-  try {
-    const decodedPathname = decodeURIComponent(encodedPathname);
-    if (decodedPathname !== encodedPathname) matchPathnames.push(decodedPathname);
-  } catch {
-    // Match runtime middleware behavior: malformed encoding is non-fatal.
+  const matchPathnames: string[] = [];
+  for (const requestPathname of requestPathnames) {
+    matchPathnames.push(requestPathname);
+    try {
+      const decodedPathname = decodeURIComponent(requestPathname);
+      if (decodedPathname !== requestPathname) matchPathnames.push(decodedPathname);
+    } catch {
+      // Match runtime middleware behavior: malformed encoding is non-fatal.
+    }
   }
   return matchPathnames.some((matchPathname) =>
     localeContexts.some((localeContext) =>
@@ -1501,9 +1512,25 @@ export async function discoverPrerenderPathManifest(
     ? extractMiddlewareMatcherConfig(middlewarePath)
     : undefined;
   const configuredMatcher = middlewareMatcher as MatcherConfig | undefined;
+  const middlewareWarmPathSpellings = {
+    // Route metadata is shared by a Pages page and its data target.
+    pagesDataTrailingSlash:
+      pagesDir !== null &&
+      shouldAddTrailingSlashToPagesDataPath(
+        true,
+        config.trailingSlash,
+        config.skipProxyUrlNormalize,
+      ),
+    trailingSlash: config.trailingSlash,
+  };
   const middlewareMayRouteWarmPath = (pathname: string): boolean =>
     middlewarePath !== null &&
-    matchesMiddlewareWarmPath(pathname, configuredMatcher, config.i18n, config.trailingSlash);
+    matchesMiddlewareWarmPath(
+      pathname,
+      configuredMatcher,
+      config.i18n,
+      middlewareWarmPathSpellings,
+    );
   const routedWarmPaths = [...paths, ...discoveredRouteHandlerPaths];
   const routeMayResolveWarmPathSet = new Set(
     hasStagedRequestRouting
