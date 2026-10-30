@@ -13,6 +13,7 @@ import {
   createOptimisticRouteTemplateStore,
   getOptimisticPrefetchSourceKey,
   getOptimisticRouteTemplateKey,
+  createShellMetadataKeeper,
   keepOptimisticStreamingMetadata,
   matchOptimisticRouteManifestRoute,
   resolveOptimisticNavigationParamsForHref,
@@ -1143,6 +1144,11 @@ describe("optimistic route template store", () => {
 
 describe("keepOptimisticStreamingMetadata", () => {
   const metadataId = `${APP_STREAMING_METADATA_BODY_ID_PREFIX}route:/blog/post-2`;
+  const shellMetadataOf = (boundary: unknown): unknown => {
+    if (!isValidElement<{ fallback: unknown }>(boundary)) return undefined;
+    const fallback = boundary.props.fallback;
+    return isValidElement<{ children: unknown }>(fallback) ? fallback.props.children : undefined;
+  };
 
   it("renders the payload's streamed metadata with the shell's as its fallback", () => {
     const shellMetadata = createElement("title", null, "Prefetched");
@@ -1157,7 +1163,27 @@ describe("keepOptimisticStreamingMetadata", () => {
     if (!isValidElement(boundary)) throw new Error("expected a Suspense element");
     expect(boundary.type).toBe(Suspense);
     expect(boundary.key).toBe("7");
-    expect(boundary.props).toEqual({ fallback: shellMetadata, children: payloadMetadata });
+    expect(boundary.props).toMatchObject({ children: payloadMetadata });
+    expect(shellMetadataOf(boundary)).toBe(shellMetadata);
+  });
+
+  it("shows nothing in place of a shell's metadata that is still streaming", () => {
+    const kept = keepOptimisticStreamingMetadata(
+      { [metadataId]: createElement("title", null, "Streamed") },
+      { [metadataId]: createElement("title", null, "Prefetched") },
+      "7",
+    );
+
+    const boundary = kept[metadataId];
+    if (!isValidElement<{ fallback: unknown }>(boundary)) {
+      throw new Error("expected a Suspense element");
+    }
+    const fallback = boundary.props.fallback;
+    if (!isValidElement<{ fallback: unknown }>(fallback)) {
+      throw new Error("expected a Suspense fallback");
+    }
+    expect(fallback.type).toBe(Suspense);
+    expect(fallback.props.fallback).toBeNull();
   });
 
   it("pairs a shell learned for other params with the payload's metadata", () => {
@@ -1170,11 +1196,7 @@ describe("keepOptimisticStreamingMetadata", () => {
       "8",
     );
 
-    const boundary = kept[metadataId];
-    if (!isValidElement<{ fallback: unknown }>(boundary)) {
-      throw new Error("expected a Suspense element");
-    }
-    expect(boundary.props.fallback).toBe(shellMetadata);
+    expect(shellMetadataOf(kept[metadataId])).toBe(shellMetadata);
   });
 
   it("remounts the boundary for each navigation", () => {
@@ -1188,6 +1210,27 @@ describe("keepOptimisticStreamingMetadata", () => {
       throw new Error("expected Suspense elements");
     }
     expect(first.key).not.toBe(second.key);
+  });
+
+  it("keeps a static shell's metadata once it decodes, after the page's payload was handed over", async () => {
+    const shellMetadata = createElement("title", null, "Prefetched");
+    let resolveShell!: (elements: AppElements) => void;
+    const keeper = createShellMetadataKeeper("3");
+    keeper.trackShell(new Promise<AppElements>((resolve) => (resolveShell = resolve)));
+    let resolvePayload!: (elements: AppElements) => void;
+    const kept = keeper.keep(new Promise<AppElements>((resolve) => (resolvePayload = resolve)));
+
+    resolveShell({ [metadataId]: shellMetadata });
+    await Promise.resolve();
+    resolvePayload({ [metadataId]: createElement("title", null, "Streamed") });
+
+    expect(shellMetadataOf((await kept)[metadataId])).toBe(shellMetadata);
+  });
+
+  it("hands the page's payload over as is without a shell", () => {
+    const payload = Promise.resolve<AppElements>({});
+
+    expect(createShellMetadataKeeper("1").keep(payload)).toBe(payload);
   });
 
   it("keeps the payload when the shell streamed no metadata", () => {

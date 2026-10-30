@@ -815,7 +815,9 @@ async function renderAppPageLifecycleImpl(
     });
   const rscCapture = pprFallbackShellRsc
     ? {
-        ssrStream: createBufferedRscStream(false),
+        // A static shell's RSC response ends with its prelude. Its unfinished
+        // parts stay pending for the client, as in a Next.js prefetch.
+        ssrStream: createBufferedRscStream(options.isRscRequest),
         ...(shouldCaptureRscForCacheMetadata ? { sideStream: createBufferedRscStream(true) } : {}),
       }
     : teeAppPageRscStreamForCapture(rscStream, shouldCaptureRscForCacheMetadata);

@@ -63,6 +63,7 @@ import { isDraftModeEnabled, markDynamicUsage } from "./headers.js";
 import { getFallbackParamsSnapshot, restoreThenableParams } from "./thenable-params.js";
 import {
   createPprFallbackShellSuspensePromise,
+  createPprFallbackShellSuspensePromiseForState,
   getPprFallbackShellState,
   trackPprFallbackShellCacheTask,
   waitForPprFallbackShellCacheInput,
@@ -108,6 +109,14 @@ export function replayCachedFunction(fn: object, args: CacheFlightArguments): Pr
 
 /** Threshold below which expire is considered "dynamic" (5 minutes in seconds). */
 const DYNAMIC_EXPIRE = 300;
+
+/** A cache result a shell render leaves out, as a dynamic hole. */
+const OMITTED_FROM_SHELL: unique symbol = Symbol("vinext.omittedFromShell");
+type ShellResult<T> = T | typeof OMITTED_FROM_SHELL;
+
+function isShortLivedCacheLife(life: { revalidate?: number | false; expire?: number }): boolean {
+  return life.revalidate === 0 || (life.expire !== undefined && life.expire < DYNAMIC_EXPIRE);
+}
 
 /**
  * Used purely as `cause` for the nested-dynamic cache error: its captured stack
@@ -194,6 +203,13 @@ export type CacheContext = {
    * storing request-specific output under a shared cache key.
    */
   invalidDynamicUsageError?: unknown;
+  /**
+   * Like Next.js's cache store `revalidate`: the shortest revalidate of a fetch
+   * with an explicit `next.revalidate`, or of a nested cache, in this scope.
+   * It lowers the cache's revalidate unless `cacheLife()` set one, never the
+   * request's directly, and is what a later implicit fetch in the scope gets.
+   */
+  fetchRevalidate?: number;
 };
 
 // Store on globalThis via Symbol so headers.ts can detect "use cache" scope
@@ -433,6 +449,27 @@ function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
   }
 
   return result;
+}
+
+/**
+ * Lowers a cache scope's store revalidate, as Next.js's
+ * `propagateCacheLifeAndTagsToRevalidateStore` does for a nested cache.
+ */
+function lowerScopeFetchRevalidate(ctx: CacheContext, revalidate: number | undefined): void {
+  if (revalidate === undefined) return;
+  ctx.fetchRevalidate = Math.min(ctx.fetchRevalidate ?? Infinity, revalidate);
+}
+
+/**
+ * Like Next.js's `collectedRevalidate`, an explicit `cacheLife()` revalidate
+ * wins; otherwise a fetch in the scope with a shorter `next.revalidate` lowers
+ * the cache's.
+ */
+function lowerToFetchRevalidate(life: CacheLifeConfig, ctx: CacheContext): CacheLifeConfig {
+  if (ctx.fetchRevalidate === undefined || ctx.hasExplicitRevalidate) return life;
+  const revalidate = life.revalidate ?? cacheLifeProfiles.default.revalidate;
+  if (revalidate !== undefined && revalidate <= ctx.fetchRevalidate) return life;
+  return { ...life, revalidate: ctx.fetchRevalidate };
 }
 
 // ---------------------------------------------------------------------------
@@ -687,7 +724,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       }
     }
 
-    return trackPprFallbackShellCacheTask(async (): Promise<TResult> => {
+    // Like Next.js's final prerender, a shell leaves a short-lived outermost
+    // cache out: it's not worth a static shell, so its lifetime and tags don't
+    // count toward the shell's either. The value is still stored for requests.
+    const shellState = cacheContextStorage.getStore() ? null : getPprFallbackShellState();
+    const omitFromShell = (life: { revalidate?: number | false; expire?: number } | undefined) =>
+      shellState?.phase === "final" && life !== undefined && isShortLivedCacheLife(life);
+
+    const task = trackPprFallbackShellCacheTask(async (): Promise<ShellResult<TResult>> => {
       const codec = await getRscModule();
       const clientReferences = codec.createClientTemporaryReferenceSet();
       const serverReferences = codec.createTemporaryReferenceSet();
@@ -813,7 +857,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         // a concrete route's entry or become an unguarded persisted replay.
         // Keep decoded values plus lazy framework suspension for execution;
         // concrete params still follow the normal cache path below.
-        return (await executeWithContext(callFn, callArgs, cacheVariant, rsc)).result;
+        const execution = await executeWithContext(
+          callFn,
+          callArgs,
+          cacheVariant,
+          rsc,
+          omitFromShell,
+        );
+        return execution.isOmittedFromShell ? OMITTED_FROM_SHELL : execution.result;
       }
 
       // "use cache: private" uses per-request in-memory cache
@@ -870,6 +921,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       // reads it, so a hit has no enclosing cache to key by root params.
       const resumeEntry = readUseCacheResumeDataCacheEntry(coarseCacheKey);
       if (resumeEntry && !_hasPendingRevalidatedTag([...resumeEntry.tags, ...softTags])) {
+        if (omitFromShell(resumeEntry.cacheControl)) return OMITTED_FROM_SHELL;
         try {
           const result = await rsc.createFromReadableStream<TResult>(
             uint8ToStream(base64ToUint8(resumeEntry.body)),
@@ -927,7 +979,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
       const generate = async (
         propagate: boolean,
         staleEntry?: CacheHandlerValue,
-      ): Promise<TResult> => {
+      ): Promise<ShellResult<TResult>> => {
         // Like Next.js, an entry is dated from when its generation started, so a tag
         // invalidated while it ran still covers it.
         const timestamp = Date.now();
@@ -937,13 +989,14 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           cacheVariant,
           (value) => serializeCacheResult(value, rsc),
         );
+        const isOmittedFromShell = propagate && omitFromShell(effectiveLife);
 
         const rootParamNames =
           ctx.readRootParamNames && ctx.readRootParamNames.size > 0
             ? addKnownRootParamNames(id, ctx.readRootParamNames)
             : knownRootParamsByFunctionId.get(id);
 
-        if (propagate) {
+        if (propagate && !isOmittedFromShell) {
           recordRequestScopedCacheLife(effectiveLife);
           // Bubble the cache scope's tags up to the surrounding request so the
           // enclosing page / route-handler ISR entry is tagged for on-demand
@@ -1060,6 +1113,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
           }
         }
 
+        if (isOmittedFromShell) return OMITTED_FROM_SHELL;
         return collectedResult ? collectedResult.result : result;
       };
 
@@ -1070,6 +1124,7 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
         isServableCacheState(existing.cacheState) &&
         !_hasPendingRevalidatedTag([...(existing.value.tags ?? []), ...softTags])
       ) {
+        if (omitFromShell(existing.cacheControl)) return OMITTED_FROM_SHELL;
         try {
           propagateRootParamNamesToParent(knownRootParamsByFunctionId.get(id));
           // Surface the cached entry's tags to the surrounding request so the
@@ -1104,6 +1159,12 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
 
       return generate(true, existing?.cacheState ? existing : undefined);
     }, cacheVariant);
+    if (shellState === null) return task as Promise<TResult>;
+    return task.then((result) =>
+      result === OMITTED_FROM_SHELL
+        ? createPprFallbackShellSuspensePromiseForState<TResult>(shellState, 'dynamic "use cache"')
+        : result,
+    );
   };
 
   const cachedFn = memoizeInCacheScope((...args: TArgs) => invoke(args));
@@ -1195,7 +1256,10 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     stale: cacheControl.stale,
   };
   const parentCtx = cacheContextStorage.getStore();
-  parentCtx?.lifeConfigs.push(life);
+  if (parentCtx) {
+    parentCtx.lifeConfigs.push(life);
+    lowerScopeFetchRevalidate(parentCtx, life.revalidate);
+  }
 
   // A warm nested HIT must preserve the same dynamic-cache validation as the
   // MISS that produced it. The persisted cache-control fields already contain
@@ -1215,11 +1279,21 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }
-  _setRequestScopedCacheLife(life);
+  recordRequestScopedCacheLife(life);
 }
 
 function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
-  _setRequestScopedCacheLife(cacheLife);
+  if (countsTowardRequestScopedCacheLife()) _setRequestScopedCacheLife(cacheLife);
+}
+
+/**
+ * Whether a cache's life counts toward the request's directly. In a shell
+ * render, only an outermost cache's does, as only Next.js's outermost cache
+ * updates the prerender's: a nested cache's reaches it through its parent's,
+ * which the shell may leave out.
+ */
+function countsTowardRequestScopedCacheLife(): boolean {
+  return cacheContextStorage.getStore() === undefined || getPprFallbackShellState() === null;
 }
 
 /**
@@ -1262,24 +1336,26 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   args: any[],
   variant: string,
   rsc: RscModule,
+  omitFromShell?: (life: CacheLifeConfig) => boolean,
 ): Promise<{
+  isOmittedFromShell: boolean;
   result: Awaited<ReturnType<T>>;
   cacheable: boolean;
   serialized?: SerializedCacheResult["cacheEntry"];
 }> {
-  const {
-    result,
-    ctx: _ctx,
-    effectiveLife,
-    collectedResult,
-  } = await runCachedFunctionWithContext<T, SerializedCacheResult<Awaited<ReturnType<T>>> | null>(
-    fn,
-    args,
-    variant,
-    (value) => serializeCacheResult(value, rsc),
-  );
-  recordRequestScopedCacheLife(effectiveLife);
+  const { result, ctx, effectiveLife, collectedResult } = await runCachedFunctionWithContext<
+    T,
+    SerializedCacheResult<Awaited<ReturnType<T>>> | null
+  >(fn, args, variant, (value) => serializeCacheResult(value, rsc));
+  const isOmittedFromShell = omitFromShell?.(effectiveLife) === true;
+  if (!isOmittedFromShell) {
+    recordRequestScopedCacheLife(effectiveLife);
+    // As on the shared MISS path, the scope's tags, its fetches' included,
+    // reach the request.
+    propagateCacheTagsToRequest(ctx.tags);
+  }
   return {
+    isOmittedFromShell,
     result: collectedResult ? collectedResult.result : result,
     cacheable: collectedResult?.cacheEntry !== null,
     serialized: collectedResult?.cacheEntry,
@@ -1420,7 +1496,7 @@ async function runCachedFunctionWithContext<
   // innerB()])`), because `await cacheContextStorage.run(ctx, () =>
   // fn(...args))` only resolves after `fn`'s returned promise settles —
   // and that promise itself awaits all nested inner calls.
-  const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
+  const effectiveLife = lowerToFetchRevalidate(resolveCacheLife(ctx.lifeConfigs), ctx);
 
   // Propagate the inner's resolved cache life into the parent's lifeConfigs so
   // the outer's minimum-wins computation includes the inner's values. This
@@ -1435,6 +1511,7 @@ async function runCachedFunctionWithContext<
   // suppress the throw — see the longer comment below.)
   if (parentCtx) {
     parentCtx.lifeConfigs.push(effectiveLife);
+    lowerScopeFetchRevalidate(parentCtx, effectiveLife.revalidate);
     // Bubble this inner cache's tags into the parent cache scope so the
     // outer entry (and ultimately the request) is invalidated when a tag
     // declared by a nested `"use cache"` is revalidated. Matches Next.js's

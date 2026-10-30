@@ -445,6 +445,7 @@ function prefetchUrl(
             {
               APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL,
               APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL,
+              APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL,
             },
             headersModule,
           ],
@@ -534,11 +535,13 @@ function prefetchUrl(
           // its first, loading-shell request is not.
           prefetchKind: mode === "full" || mode === "full-after-shell" ? "full" : "auto",
           renderMode: isOptimisticRouteShellPrefetch
-            ? hasSearchAgnosticShell
-              ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
-              : isAutomaticSearchParamShell
-                ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
-                : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+            ? autoPrefetch.staticShell === true
+              ? APP_RSC_RENDER_MODE_PREFETCH_STATIC_SHELL
+              : hasSearchAgnosticShell
+                ? APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
+                : isAutomaticSearchParamShell
+                  ? APP_RSC_RENDER_MODE_PREFETCH_DYNAMIC_SHELL
+                  : APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL
             : undefined,
         });
         if (mountedSlotsHeader) {
@@ -808,10 +811,17 @@ function prefetchUrl(
                 : PREFETCH_CACHE_TTL,
             dynamicStaleTime: autoPrefetch.dynamicStaleTime,
             optimisticRouteShell: isOptimisticRouteShellPrefetch,
-            prefetchKind: isOptimisticRouteShellPrefetch ? "loading-shell" : "navigation",
-            prepareSnapshot: autoPrefetch.cacheForNavigation
-              ? prepareNavigationPrefetchSnapshot
-              : undefined,
+            prefetchKind:
+              autoPrefetch.staticShell === true
+                ? "static-shell"
+                : isOptimisticRouteShellPrefetch
+                  ? "loading-shell"
+                  : "navigation",
+            // A static shell that turns out to be the whole page is reused too.
+            prepareSnapshot:
+              autoPrefetch.cacheForNavigation || autoPrefetch.staticShell === true
+                ? prepareNavigationPrefetchSnapshot
+                : undefined,
             searchAgnosticShell: isAutomaticSearchParamShell && !hasSearchAgnosticShell,
           },
         );

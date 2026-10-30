@@ -51,6 +51,7 @@ let disableNavigationResponsePrefetchCacheReuse: Navigation["disableNavigationRe
 let hasPrefetchCacheEntryForNavigation: Navigation["hasPrefetchCacheEntryForNavigation"];
 let hasSearchAgnosticPrefetchShellForRoute: Navigation["hasSearchAgnosticPrefetchShellForRoute"];
 let peekPrefetchResponseForNavigation: Navigation["peekPrefetchResponseForNavigation"];
+let peekStaticShellPrefetchForNavigation: Navigation["peekStaticShellPrefetchForNavigation"];
 let appRouterInstance: Navigation["appRouterInstance"];
 let consumePrefetchResponseForNavigation: Navigation["consumePrefetchResponseForNavigation"];
 let seedPrefetchResponseSnapshot: Navigation["seedPrefetchResponseSnapshot"];
@@ -93,6 +94,7 @@ beforeEach(async () => {
   hasPrefetchCacheEntryForNavigation = nav.hasPrefetchCacheEntryForNavigation;
   hasSearchAgnosticPrefetchShellForRoute = nav.hasSearchAgnosticPrefetchShellForRoute;
   peekPrefetchResponseForNavigation = nav.peekPrefetchResponseForNavigation;
+  peekStaticShellPrefetchForNavigation = nav.peekStaticShellPrefetchForNavigation;
   appRouterInstance = nav.appRouterInstance;
   consumePrefetchResponseForNavigation = nav.consumePrefetchResponseForNavigation;
   seedPrefetchResponseSnapshot = nav.seedPrefetchResponseSnapshot;
@@ -3423,5 +3425,118 @@ describe("prefetch cache eviction", () => {
     expect(cache.has("/expired-small-1.rsc")).toBe(true);
     expect(cache.has("/new.rsc")).toBe(true);
     expect(getPrefetchedUrls().size).toBe(3);
+  });
+});
+
+// Next.js prefetches a Cache Components page's static shell: a partial one is
+// shown by the navigation while the page renders, a complete one is the page.
+// Ported from Next.js: test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/segment-cache/basic/segment-cache-basic.test.ts
+describe("static-shell prefetch", () => {
+  function useCacheComponentsProduction(): void {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("__NEXT_CACHE_COMPONENTS", "true");
+    (globalThis as any).window.__VINEXT_LINK_PREFETCH_ROUTES__ = [
+      { canPrefetchLoadingShell: false, isDynamic: false, patternParts: ["test"] },
+    ];
+  }
+
+  async function prefetchStaticShell(
+    shell: "partial" | "complete" | "runtime" | null,
+  ): Promise<string> {
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => {
+      const headers = new Headers({ "content-type": "text/x-component" });
+      if (shell !== null) headers.set("X-Vinext-Static-Shell", shell);
+      return new Response("0:shell", { headers });
+    });
+    (globalThis as any).fetch = fetch;
+    (globalThis as any).window[Symbol.for("vinext.navigationRuntime")] = {
+      bootstrap: { routeManifest: null, rsc: undefined },
+      functions: {
+        getPrefetchRouterState: () => ({ pathAndSearch: "/current", routeId: "route:/current" }),
+        navigate: vi.fn(),
+      },
+    };
+    appRouterInstance.prefetch("/test");
+    await waitForPrefetchSetup(() => fetch.mock.calls.length === 1);
+    const headers = fetch.mock.calls[0]?.[1]?.headers as Headers | undefined;
+    expect(headers?.get("X-Vinext-Rsc-Render-Mode")).toBe("prefetch-static-shell");
+    // The shell is the same from any page, so the router state stays out of
+    // its request and cache key.
+    expect(headers?.get("Next-Router-State-Tree")).toBeNull();
+    expect(headers?.get("X-Vinext-Rsc-State-Fingerprint")).toBeNull();
+    const rscUrl = toRscUrlString(fetch.mock.calls[0]![0]);
+    const cacheKey = AppElementsWire.encodeCacheKey(rscUrl, null);
+    await waitForPrefetchSetup(() => getPrefetchCache().get(cacheKey)?.outcome === "cache-seeded");
+    return rscUrl;
+  }
+
+  it("prefetches a Cache Components page's static shell in production", async () => {
+    useCacheComponentsProduction();
+    const { resolveAutoAppRoutePrefetch } =
+      await import("../packages/vinext/src/shims/internal/app-route-prefetch-policy.js");
+
+    expect(resolveAutoAppRoutePrefetch("/test")).toMatchObject({
+      cacheForNavigation: false,
+      dynamicStaleTime: "ignore",
+      staticShell: true,
+    });
+    // An intercepted page is never prerendered, so it has no static shell.
+    expect(resolveAutoAppRoutePrefetch("/test", "/feed").staticShell).toBeUndefined();
+    vi.stubEnv("NODE_ENV", "development");
+    expect(resolveAutoAppRoutePrefetch("/test").staticShell).toBeUndefined();
+  });
+
+  it("keeps a partial shell for navigations to show, never to consume", async () => {
+    useCacheComponentsProduction();
+    const rscUrl = await prefetchStaticShell("partial");
+
+    expect(hasPrefetchCacheEntryForNavigation(rscUrl)).toBe(false);
+    const shell = peekStaticShellPrefetchForNavigation(rscUrl);
+    expect(shell?.staticShell).toBe("partial");
+    // It stays cached for the next navigation.
+    expect(peekStaticShellPrefetchForNavigation(rscUrl)).toBe(shell);
+
+    // Its stream never ends, so the shell's holes suspend instead of failing.
+    const reader = restoreRscResponse(shell!).body!.getReader();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("0:shell");
+    const next = await Promise.race([
+      reader.read().then(() => "read"),
+      new Promise((resolve) => setTimeout(() => resolve("open"), 20)),
+    ]);
+    expect(next).toBe("open");
+    void reader.cancel();
+  });
+
+  it("lets a navigation consume a complete shell", async () => {
+    useCacheComponentsProduction();
+    const rscUrl = await prefetchStaticShell("complete");
+
+    expect(peekStaticShellPrefetchForNavigation(rscUrl)).toBeNull();
+    const consumed = consumePrefetchResponse(rscUrl, null, null);
+    expect(consumed?.staticShell).toBe("complete");
+    await expect(restoreRscResponse(consumed!).text()).resolves.toBe("0:shell");
+  });
+
+  // A runtime prefetch is the page rendered for the request, kept for the
+  // dynamic stale time like a navigation's own payload.
+  it("lets a navigation consume a runtime prefetch", async () => {
+    useCacheComponentsProduction();
+    const rscUrl = await prefetchStaticShell("runtime");
+    const entry = getPrefetchCache().get(AppElementsWire.encodeCacheKey(rscUrl, null));
+
+    expect(entry?.cacheForNavigation).toBe(true);
+    expect(peekStaticShellPrefetchForNavigation(rscUrl)).toBeNull();
+    expect(consumePrefetchResponse(rscUrl, null, null)?.staticShell).toBe("runtime");
+  });
+
+  it("treats a prefetch the server answered without a shell as a loading shell", async () => {
+    useCacheComponentsProduction();
+    const rscUrl = await prefetchStaticShell(null);
+    const entry = getPrefetchCache().get(AppElementsWire.encodeCacheKey(rscUrl, null));
+
+    expect(entry?.prefetchKind).toBe("loading-shell");
+    expect(entry?.cacheForNavigation).toBe(false);
+    expect(peekStaticShellPrefetchForNavigation(rscUrl)).toBeNull();
   });
 });

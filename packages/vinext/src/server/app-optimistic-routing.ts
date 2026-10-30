@@ -448,13 +448,50 @@ export function keepOptimisticStreamingMetadata(
   if (id === null || optimisticId === null) return elements;
   const optimisticMetadata = optimisticElements[optimisticId];
   if (optimisticMetadata == null) return elements;
+  // A static shell's metadata may itself still be streaming. It then shows
+  // nothing rather than suspend this fallback and hold the commit after all.
+  const fallback = createElement(Suspense, { fallback: null }, optimisticMetadata as ReactNode);
   return {
     ...elements,
-    [id]: createElement(
-      Suspense,
-      { fallback: optimisticMetadata as ReactNode, key: navigationKey },
-      elements[id] as ReactNode,
-    ),
+    [id]: createElement(Suspense, { fallback, key: navigationKey }, elements[id] as ReactNode),
+  };
+}
+
+/**
+ * Keeps the shell a navigation committed, optimistic or static, so its streamed
+ * metadata stays up while the page's own streams. A static shell decodes on its
+ * own: it's read once the page's payload decodes, and never awaited.
+ */
+export function createShellMetadataKeeper(navigationKey: string): {
+  keep(payload: Promise<AppElements> | AppElements): Promise<AppElements> | AppElements;
+  setShell(elements: AppElements): void;
+  trackShell(payload: Promise<AppElements>): void;
+} {
+  let shellElements: AppElements | null = null;
+  let isShellDecoding = false;
+  const keepShellMetadata = (elements: AppElements): AppElements =>
+    shellElements === null
+      ? elements
+      : keepOptimisticStreamingMetadata(elements, shellElements, navigationKey);
+  return {
+    keep(payload) {
+      if (shellElements === null && !isShellDecoding) return payload;
+      return payload instanceof Promise
+        ? payload.then(keepShellMetadata)
+        : keepShellMetadata(payload);
+    },
+    setShell(elements) {
+      shellElements = elements;
+    },
+    trackShell(payload) {
+      isShellDecoding = true;
+      void payload.then(
+        (elements) => {
+          shellElements = elements;
+        },
+        () => {},
+      );
+    },
   };
 }
 

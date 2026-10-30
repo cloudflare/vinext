@@ -28,6 +28,10 @@ import { sha256Hex } from "../utils/hash.js";
 import { isInsideUnifiedScope, getRequestContext } from "./unified-request-context.js";
 import { workUnitAsyncStorage } from "./internal/work-unit-async-storage.js";
 import { makeHangingPromise } from "./internal/make-hanging-promise.js";
+import {
+  createPprFallbackShellSuspensePromise,
+  getPprFallbackShellState,
+} from "./ppr-fallback-shell.js";
 import { isInsideWorkStoreScope } from "./internal/work-store-scope.js";
 import { encodeCacheTag, encodeCacheTags } from "../utils/encode-cache-tag.js";
 import {
@@ -299,17 +303,23 @@ export function io(): Promise<void> {
   if (workUnitStore) {
     switch (workUnitStore.type) {
       case "request":
-        return _resolvedIOPromise;
+        // Like Next.js's prerender, a shell render leaves what follows
+        // `io()` to its Suspense fallback, as it does for `connection()`.
+        return createPprFallbackShellSuspensePromise<void>("`io()`") ?? _resolvedIOPromise;
       case "prerender":
       case "prerender-client":
       case "prerender-runtime":
         // Prevent execution past the IO boundary during prerendering.
         // The hanging promise suspends React's render indefinitely until
-        // the prerender is aborted or completed.
-        return makeHangingPromise(
-          workUnitStore.renderSignal,
-          /* route */ workUnitStore.route ?? "unknown",
-          "`io()`",
+        // the prerender is aborted or completed. A shell render's lets the
+        // shell settle and abort around it.
+        return (
+          createPprFallbackShellSuspensePromise<void>("`io()`") ??
+          makeHangingPromise(
+            workUnitStore.renderSignal,
+            /* route */ workUnitStore.route ?? "unknown",
+            "`io()`",
+          )
         );
       case "cache":
       case "private-cache":
@@ -415,7 +425,9 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
       // deliberate, documented design change rather than an incidental one.
       if (resolvedConfig.revalidate !== undefined) ctx.hasExplicitRevalidate = true;
       if (resolvedConfig.expire !== undefined) ctx.hasExplicitExpire = true;
-      _setRequestScopedCacheLife(resolvedConfig);
+      // A shell render counts the cache's life once it settles, since the
+      // shell may leave the cache out.
+      if (getPprFallbackShellState() === null) _setRequestScopedCacheLife(resolvedConfig);
       return;
     }
   } catch {
