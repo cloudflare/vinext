@@ -545,7 +545,7 @@ async function executeMiddlewareModule(
   options.onMatch?.();
 
   // Middleware sees, and its redirects and rewrites are resolved against, the
-  // server's own origin. The Node server supplies it because its request URL
+  // server's own origin. Node servers supply it because their request URL
   // carries the client's Host header, which must not decide whether a rewrite
   // to another host is external (Next.js uses its configured hostname here).
   const middlewareUrl = withOrigin(

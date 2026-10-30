@@ -1476,6 +1476,7 @@ const PAGES_REQUEST_STAGE_ENTRY = resolveRuntimeEntryModule("pages-request-stage
 const PAGES_RESPONSE_STAGE_ENTRY = resolveRuntimeEntryModule("pages-response-stage-entry");
 const NITRO_PUBLIC_FILES_ENTRY = resolveRuntimeEntryModule("nitro-public-files");
 const NITRO_PUBLIC_FILES_PLUGIN = resolveRuntimeEntryModule("nitro-public-files-plugin");
+const SRVX_MIDDLEWARE_ORIGIN_ENTRY = resolveRuntimeEntryModule("srvx-middleware-origin");
 const WORKER_ROUTER_ENTRIES = new Set([
   resolveRuntimeEntryModule("app-router-entry"),
   resolveRuntimeEntryModule("pages-router-entry"),
@@ -5247,8 +5248,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               ? "vinext/server/app-router-entry"
               : "vinext/server/pages-router-entry";
             if (!hasAppDir && hasNitroPlugin) {
+              // Nitro's Node presets build request.url from the client's Host
+              // header, so middleware gets the server's own origin.
               return [
                 `import pagesWorker from ${JSON.stringify(entry)};`,
+                `import { resolveSrvxMiddlewareOrigin } from ${JSON.stringify(SRVX_MIDDLEWARE_ORIGIN_ENTRY)};`,
                 ...(nitroPublicFiles
                   ? [
                       `import { withNitroPagesPublicFiles } from ${JSON.stringify(NITRO_PUBLIC_FILES_ENTRY)};`,
@@ -5256,7 +5260,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                     ]
                   : ["const worker = pagesWorker;"]),
                 "export default { fetch(request, env, ctx) {",
-                `  return worker.fetch(request, env, { ...ctx, hostRuntime: ${JSON.stringify(nitroHostRuntime)} });`,
+                "  return worker.fetch(request, env, {",
+                "    ...ctx,",
+                `    hostRuntime: ${JSON.stringify(nitroHostRuntime)},`,
+                "    middlewareOrigin: resolveSrvxMiddlewareOrigin(request),",
+                "  });",
                 "} };",
               ].join("\n");
             }

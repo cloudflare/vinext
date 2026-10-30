@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { getWithHost, startRewriteUpstream } from "../helpers";
 
 // tests/fixtures/pages-router-nitro built with `vite build` and served by
 // Nitro's Node server.
@@ -53,5 +54,34 @@ test.describe("Pages Router on Nitro (node server)", () => {
     expect(response.status()).toBe(200);
     expect(response.headers()["content-type"]).toBe("image/png");
     expect((await response.body()).subarray(1, 4).toString()).toBe("PNG");
+  });
+
+  // Next.js decides whether a proxy rewrite is external against its own
+  // hostname and port. Nitro's Node server builds the request URL from the
+  // Host header, which must not make a rewrite to the host it names internal
+  // and serve the target path without proxy's check for it.
+  test("a Host header cannot turn an external proxy rewrite into an internal one", async ({
+    baseURL,
+  }) => {
+    const upstream = await startRewriteUpstream();
+    try {
+      const attack = await getWithHost(baseURL!, "/legacy/blocked.txt", upstream.host, {
+        "x-legacy-origin": `http://${upstream.host}`,
+      });
+      expect({ status: attack.status, body: attack.body }).toEqual({
+        status: 200,
+        body: "external upstream",
+      });
+      expect(upstream.hits).toEqual(["/blocked.txt"]);
+    } finally {
+      await upstream.close();
+    }
+
+    // Proxy's `new URL(path, request.url)` rewrites stay internal for any Host.
+    const rewritten = await getWithHost(baseURL!, "/rewrite-to-hello", "public.example");
+    expect({ status: rewritten.status, body: rewritten.body }).toEqual({
+      status: 200,
+      body: "Hello from public/\n",
+    });
   });
 });
