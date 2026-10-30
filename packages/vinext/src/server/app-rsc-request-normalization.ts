@@ -164,7 +164,8 @@ export type NormalizedRscRequest = {
  *   6. RSC detection: `.rsc` suffix or Next-style `RSC: 1`. The internal
  *      `_rsc` cache-busting query is validated separately so full-route Flight
  *      responses do not share the canonical HTML URL in caches that ignore Vary.
- *   7. cleanPathname — pathname with `.rsc` suffix stripped
+ *   7. cleanPathname — pathname with `.rsc` suffix stripped; 404 when that leaves a
+ *      trailing `.` / `..` segment (`/a/...rsc`), which step 4 never resolved
  *   8. Sanitize X-Vinext-Interception-Context — strip null bytes (header injection)
  *   9. Normalize x-vinext-mounted-slots — dedup and sort for canonical cache keys
  *   10. Read semantic render mode for refresh/action payload rendering
@@ -228,6 +229,13 @@ export function normalizeRscRequest(
   const isRscRequest = pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1";
   const cleanPathname = stripRscSuffix(pathname);
   const requestCleanPathname = stripRscSuffix(requestPathname);
+  // Removing the suffix can expose a dot segment that step 4 never saw
+  // (`/dashboard/...rsc` -> `/dashboard/..`). The router would bind it as a
+  // param value while any URL rebuilt from it (the middleware request)
+  // resolves it to the parent, so it must not reach routing.
+  if (cleanPathname !== pathname && /\/\.{1,2}$/.test(cleanPathname)) {
+    return notFoundResponse();
+  }
 
   // Step 8: Validate and sanitize X-Vinext-Interception-Context.
   //
