@@ -17,7 +17,9 @@ import {
   type DispatchAppPageOptions,
 } from "./app-page-dispatch.js";
 import { normalizePregeneratedPathname } from "./pregenerated-concrete-paths.js";
+import { encodePrerenderRouteParams } from "./prerender-route-params.js";
 import type { AppPagePprFallbackCacheShell } from "./app-ppr-fallback-shell.js";
+import type { AppPagePprShellResume } from "./app-page-stream.js";
 import type { ISRCacheEntry } from "./isr-cache.js";
 
 type PprFallbackShellEligibility =
@@ -158,9 +160,14 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   fallbackShell: AppPagePprFallbackCacheShell,
   currentRevalidateSeconds: number | null,
   isForceStatic: boolean,
-): Promise<Response | null> {
+): Promise<Response | AppPagePprShellResume | null> {
   const { serveAppPageFallbackShellCacheEntry } = await import("./app-page-cache.js");
-  const { rewriteAppPprFallbackShellHtmlNavigation } = await import("./app-ppr-fallback-shell.js");
+  const {
+    parseAppPprShellState,
+    replaceAppPprShellFallbackParamKeys,
+    rewriteAppPprFallbackShellHtmlNavigation,
+    stripAppPprDynamicFallbackShellMarker,
+  } = await import("./app-ppr-fallback-shell.js");
   const { produceAppPprFallbackShell } = await import("./app-ppr-fallback-shell-production.js");
   const { coalesceFallbackShellProduction } = await import("./isr-cache.js");
   // The build keys a shell by its decoded pathname, like a concrete page.
@@ -168,6 +175,21 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
   const key = options.isrFallbackShellHtmlKey(fallbackPathname);
   const produce = () =>
     produceAppPprFallbackShell(options, fallbackShell, key, currentRevalidateSeconds);
+  // The encoded params the shell rendered with, as its segment keys hold them.
+  const shellParams =
+    encodePrerenderRouteParams(
+      options.route.pattern,
+      fallbackShell.params,
+      fallbackShell.fallbackParamNames,
+    )?.params ?? {};
+  const rewriteHtml = (html: string) =>
+    rewriteAppPprFallbackShellHtmlNavigation({
+      html,
+      isForceStatic,
+      params: options.params,
+      pathname: options.cleanPathname,
+      searchParams: options.searchParams,
+    });
 
   let cached: ISRCacheEntry | null;
   try {
@@ -205,29 +227,41 @@ async function serveFallbackShell<TRoute extends AppPageDispatchRoute>(
     middlewareHeaders: options.middlewareContext.headers,
     middlewareStatus: options.middlewareContext.status,
     revalidateSeconds: currentRevalidateSeconds ?? 0,
-    resumeDynamicShell(postponed, hasPrelude) {
+    resumeDynamicShell(value, hasPrelude) {
       // Like Next.js, a route served from a shell resumes on every request
       // instead of storing the concrete page, while an empty shell's route
       // renders blocking and is stored.
       if (hasPrelude) markDynamicUsage();
-      // vinext resumes the shell as a full render whose cached parts come
-      // from the values the shell was built with. React's postponed state
-      // isn't spliced into the shell's document.
-      // A shell whose render read no cached data still resumes, with none.
+      const state = hasPrelude ? parseAppPprShellState(value.postponed) : null;
+      // The request's render reads the values the shell was built with, so
+      // its holes fit the shell. A shell whose render read no cached data
+      // still resumes, with none.
       const resumeDataCache =
-        parseResumeDataCache(postponed) ?? (hasPrelude ? createResumeDataCache() : null);
+        parseResumeDataCache(state?.resumeDataCache ?? undefined) ??
+        (hasPrelude ? createResumeDataCache() : null);
       _setResumeDataCacheSeed(resumeDataCache);
-      return resumeDataCache !== null;
+      // Like Next.js, a prelude is sent as it was stored, and only its holes
+      // render. A whole document is rendered again around them instead.
+      const linkHeader = value.headers?.link;
+      return {
+        isResumed: resumeDataCache !== null,
+        resume: state?.prelude
+          ? {
+              prelude: rewriteHtml(stripAppPprDynamicFallbackShellMarker(value.html)),
+              postponed: replaceAppPprShellFallbackParamKeys(
+                state.postponed,
+                fallbackShell.fallbackParamNames.map((name) => ({
+                  name,
+                  shellValue: shellParams[name],
+                  requestValue: options.params[name],
+                })),
+              ),
+              linkHeader: typeof linkHeader === "string" ? linkHeader : undefined,
+            }
+          : null,
+      };
     },
-    rewriteHtml(html) {
-      return rewriteAppPprFallbackShellHtmlNavigation({
-        html,
-        isForceStatic,
-        params: options.params,
-        pathname: options.cleanPathname,
-        searchParams: options.searchParams,
-      });
-    },
+    rewriteHtml,
     scheduleRegeneration() {
       (options.scheduleFallbackShellRegeneration ?? options.scheduleBackgroundRegeneration)(
         key,

@@ -858,12 +858,14 @@ export function headers(): Promise<Headers> & Headers {
     return _decorateRejectedRequestApiPromise<Headers>(state.headersContext.accessError);
   }
 
-  markDynamicUsage();
   const fallbackShellPromise =
     createPprFallbackShellRequestDataSuspensePromise<Headers>("`headers()`");
   if (fallbackShellPromise) {
+    // The shell leaves the read to a hole each request resumes, so the read
+    // doesn't make the shell itself dynamic.
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
+  markDynamicUsage();
 
   const readonlyHeaders = _getReadonlyHeaders(state.headersContext);
   return _getOrCreateDecoratedRequestApiPromise(_decoratedHeadersPromises, readonlyHeaders);
@@ -894,12 +896,14 @@ function cookiesImpl(): Promise<RequestCookies> & RequestCookies {
     return _decorateRejectedRequestApiPromise<RequestCookies>(state.headersContext.accessError);
   }
 
-  markDynamicUsage();
   const fallbackShellPromise =
     createPprFallbackShellRequestDataSuspensePromise<RequestCookies>("`cookies()`");
   if (fallbackShellPromise) {
+    // The shell leaves the read to a hole each request resumes, so the read
+    // doesn't make the shell itself dynamic.
     return _decorateSuspendingRequestApiPromise(fallbackShellPromise);
   }
+  markDynamicUsage();
 
   const cookieStore = _areCookiesMutableInCurrentPhase()
     ? _getMutableCookies(state.headersContext)

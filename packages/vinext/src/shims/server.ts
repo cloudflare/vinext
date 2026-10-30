@@ -1477,13 +1477,14 @@ export async function connection(): Promise<void> {
   }
   markRenderRequestApiUsage("connection");
   throwIfInsideCacheScope("connection()");
-  markDynamicUsage();
   // Like Next.js's prerender, a shell render leaves what follows
-  // `connection()` to its Suspense fallback.
+  // `connection()` to its Suspense fallback, a hole each request resumes, so
+  // it doesn't make the shell itself dynamic.
   const fallbackShellPromise = createPprFallbackShellSuspensePromise<void>("`connection()`");
   if (fallbackShellPromise) {
     await fallbackShellPromise;
   }
+  markDynamicUsage();
   const pendingProbe = suspendConnectionProbe();
   if (pendingProbe) {
     await pendingProbe;

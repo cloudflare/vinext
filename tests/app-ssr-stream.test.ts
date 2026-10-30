@@ -826,6 +826,50 @@ describe("createTickBufferedTransform pre-head splice", () => {
     expect(out).not.toContain("<script>x</script>");
   });
 
+  it("emits a resumed hole's scripts ahead of the batch that renders them", async () => {
+    // A resume has no head: its prelude sent it. Each hole registers its
+    // scripts as it renders, before its batch reaches the transform.
+    const registered: string[] = [];
+    const encoder = new TextEncoder();
+    const source = new ReadableStream<Uint8Array>({
+      start(controller) {
+        const holes = ['<div hidden id="S:0">a</div>', '<div hidden id="S:1">b</div>'];
+        let index = 0;
+        const enqueueNext = (): void => {
+          const hole = holes[index];
+          if (hole === undefined) {
+            controller.close();
+            return;
+          }
+          registered.push(`<script>hole${index}()</script>`);
+          index++;
+          controller.enqueue(encoder.encode(hole));
+          setTimeout(enqueueNext, 5);
+        };
+        enqueueNext();
+      },
+    });
+    const out = await new Response(
+      source.pipeThrough(
+        createTickBufferedTransform(
+          createNoopRscEmbedTransform(),
+          "",
+          () => registered.splice(0).join(""),
+          undefined,
+          "",
+          "",
+          undefined,
+          "resume",
+        ),
+      ),
+    ).text();
+
+    expect(out).toBe(
+      '<script>hole0()</script><div hidden id="S:0">a</div>' +
+        '<script>hole1()</script><div hidden id="S:1">b</div></body></html>',
+    );
+  });
+
   // Ported from Next.js: test/e2e/app-dir/app/index.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/app/index.test.ts
   // (regression for #1532)
