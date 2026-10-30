@@ -7,6 +7,7 @@ import {
 } from "vinext/shims/cacheability-classification";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { pagesRouteHasPriorityOverAppRoute } from "./hybrid-route-priority.js";
+import { isLocaleRedirect, markLocaleRedirect } from "./pages-i18n.js";
 import type { RuntimePagesDataKind } from "./pages-route-data-kind.js";
 import { cloneRequestWithHeaders, cloneRequestWithUrl } from "./request-pipeline.js";
 import { mergeHeaders } from "./worker-utils.js";
@@ -266,10 +267,11 @@ export async function renderPagesFallback(
         ? pagesEntry.renderPage(...renderArgs, undefined, initialResponseHeaders)
         : pagesEntry.renderPage(...renderArgs));
   if (pagesRes.status === 404 && pageMatch === null) return null;
-  return applyDraftModeCookie(
+  const response = applyDraftModeCookie(
     applyPagesMiddlewareContext(pagesRes, middlewareContext),
     getDraftModeCookieHeader(),
   );
+  return isLocaleRedirect(pagesRes) ? markLocaleRedirect(response) : response;
 }
 
 /**
