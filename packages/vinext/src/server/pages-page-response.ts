@@ -171,6 +171,8 @@ type RenderPagesPageResponseOptions = {
   setDocumentInitialHead?: ((head: ReactNode[]) => void) | undefined;
   documentReqRes?: PagesDocumentReqRes | null;
   gsspRes: PagesGsspResponse | null;
+  /** A page or custom `_app` getInitialProps render; rendered per request like gSSP. */
+  isInitialPropsRender?: boolean;
   isrCacheKey: (router: string, pathname: string) => string;
   /** Filesystem-route identity used for ISR persistence and cache tags. */
   isrCachePathname?: string;
@@ -770,10 +772,15 @@ export async function renderPagesPageResponse(
     }
   } else if (options.isStaticPropsRoute && shouldUseNextDeployCacheControl()) {
     responseHeaders.set("Cache-Control", BROWSER_REVALIDATE_CACHE_CONTROL);
-  } else if (options.gsspRes && !userSetCacheControl) {
-    // Default for getServerSideProps responses, matching Next.js
-    // pages-handler.ts (revalidate: 0 → getCacheControlHeader). Without this,
-    // CDNs and browsers could cache per-request gssp responses.
+  } else if (
+    (options.gsspRes || options.isInitialPropsRender || options.isFallback) &&
+    !userSetCacheControl
+  ) {
+    // Default for every render that is not a getStaticProps result, and for a
+    // getStaticPaths fallback shell, matching Next.js pages-handler.ts
+    // (`!hasStaticProps || isIsrFallback` → revalidate: 0 →
+    // getCacheControlHeader). Without this, CDNs and browsers could cache
+    // per-request gSSP and getInitialProps responses.
     responseHeaders.set("Cache-Control", ISR_NEVER_CACHE_CONTROL);
   }
   if (options.fontLinkHeader) {
