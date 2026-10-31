@@ -710,7 +710,7 @@ describe("KVCacheHandler", () => {
       expect(hit?.value?.kind).toBe("APP_PAGE");
     });
 
-    it("drops an infinite cacheLife expire and stale instead of storing an unreadable entry", async () => {
+    it("round-trips an infinite cacheLife expire and stale through stored cacheControl", async () => {
       await handler.set(
         "infinite-life",
         {
@@ -725,11 +725,12 @@ describe("KVCacheHandler", () => {
       );
 
       const stored = JSON.parse(store.get("cache:infinite-life")!);
-      expect(stored.cacheControl).toEqual({ revalidate: 60 });
+      expect(stored.cacheControl).toEqual({ revalidate: 60, expire: false, stale: false });
       expect(stored.expireAt).toBeNull();
 
+      // A warm hit replays the producing render's policy, not the route's expireTime.
       const hit = await handler.get("infinite-life");
-      expect(hit?.cacheControl).toEqual({ revalidate: 60 });
+      expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: Infinity, stale: Infinity });
       expect(hit?.value?.kind).toBe("APP_PAGE");
     });
 

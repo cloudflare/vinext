@@ -105,6 +105,26 @@ type KVCacheEntry = {
 };
 
 /**
+ * `cacheControl` as stored. JSON can't hold Infinity, so a lifetime that never
+ * runs out (`revalidate = false`, or a cacheLife `expire`/`stale` of Infinity)
+ * is stored as `false`, like Next.js stores `revalidate = false`. Reads turn it
+ * back into Infinity.
+ */
+type StoredCacheControl = {
+  revalidate: number | false;
+  expire?: number | false;
+  stale?: number | false;
+};
+
+function toStoredLifetime(seconds: number): number | false {
+  return seconds === Infinity ? false : seconds;
+}
+
+function fromStoredLifetime(seconds: number | false): number {
+  return seconds === false ? Infinity : seconds;
+}
+
+/**
  * When a revalidated tag's entries turn stale and when they expire, like
  * Next.js's tags manifest (server/lib/incremental-cache/tags-manifest.external.ts).
  * A plain revalidateTag() writes a bare timestamp, read as `expired` with no
@@ -541,28 +561,21 @@ export class KVCacheHandler implements CacheHandler {
       typeof effectiveExpire === "number" && effectiveExpire > 0
         ? now + effectiveExpire * 1000
         : null;
-    const cacheControl: CacheControlMetadata | undefined =
+    const cacheControl: StoredCacheControl | undefined =
       typeof effectiveRevalidate === "number"
         ? {
-            // JSON can't hold Infinity, so store `revalidate = false` as false,
-            // like Next.js does. Reads turn it back into Infinity. An infinite
-            // `expire` or `stale` (from cacheLife) is dropped instead.
             revalidate: Number.isFinite(effectiveRevalidate) ? effectiveRevalidate : false,
-            ...(effectiveExpire === undefined || !Number.isFinite(effectiveExpire)
-              ? {}
-              : { expire: effectiveExpire }),
+            ...(effectiveExpire === undefined ? {} : { expire: toStoredLifetime(effectiveExpire) }),
             // Client-router reuse bound — must survive KV so warm hits replay
             // the producing render's claim (see CacheControlMetadata.stale).
-            ...(effectiveStale === undefined || !Number.isFinite(effectiveStale)
-              ? {}
-              : { stale: effectiveStale }),
+            ...(effectiveStale === undefined ? {} : { stale: toStoredLifetime(effectiveStale) }),
           }
         : undefined;
 
     // Prepare entry — convert ArrayBuffers to base64 for JSON storage
     const serializable = data ? serializeForJSON(data) : null;
 
-    const entry: KVCacheEntry = {
+    const entry: Omit<KVCacheEntry, "cacheControl"> & { cacheControl?: StoredCacheControl } = {
       value: serializable,
       tags,
       lastModified: now,
@@ -786,11 +799,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (typeof obj.cacheControl.revalidate !== "number" && obj.cacheControl.revalidate !== false) {
       return null;
     }
-    if (obj.cacheControl.expire !== undefined && typeof obj.cacheControl.expire !== "number") {
-      return null;
-    }
-    if (obj.cacheControl.stale !== undefined && typeof obj.cacheControl.stale !== "number") {
-      return null;
+    for (const field of ["expire", "stale"] as const) {
+      const seconds = obj.cacheControl[field];
+      if (seconds !== undefined && seconds !== false && typeof seconds !== "number") return null;
     }
   }
 
@@ -801,9 +812,14 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     if (typeof value.kind !== "string" || !VALID_KINDS.has(value.kind)) return null;
   }
 
-  // Serve the same `revalidate = false` policy the other backends keep in memory.
-  if (obj.cacheControl?.revalidate === false) {
-    obj.cacheControl = { ...obj.cacheControl, revalidate: Infinity };
+  // Serve the same policy the other backends keep in memory (see StoredCacheControl).
+  if (obj.cacheControl !== undefined) {
+    const { revalidate, expire, stale } = obj.cacheControl as StoredCacheControl;
+    obj.cacheControl = {
+      revalidate: fromStoredLifetime(revalidate),
+      ...(expire === undefined ? {} : { expire: fromStoredLifetime(expire) }),
+      ...(stale === undefined ? {} : { stale: fromStoredLifetime(stale) }),
+    };
   }
 
   return raw as KVCacheEntry;
