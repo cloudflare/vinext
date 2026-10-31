@@ -852,6 +852,24 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(value2).toBe(value1);
   });
 
+  // Next.js's IncrementalCache.set catches cache handler errors and only warns:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/index.ts
+  test("a rejected data cache write still renders the computed value", async ({ request }) => {
+    const readPage = async () => {
+      const res = await request.get(`${baseUrl()}/unstable-cache-write-failure`);
+      expect(res.status()).toBe(200);
+      const html = await res.text();
+      expect(html).toMatch(/data-testid="rejected-writes">1</);
+      const nonce = html.match(/data-testid="nonce">([0-9a-f-]{36})</)?.[1];
+      expect(nonce).toBeDefined();
+      return nonce;
+    };
+
+    // Nothing was stored, so the next request runs the callback again.
+    const first = await readPage();
+    expect(await readPage()).not.toBe(first);
+  });
+
   // Next.js keys unstable_cache by the callback source as well as keyParts:
   // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
   test("callbacks sharing keyParts and arguments keep separate entries", async ({ request }) => {

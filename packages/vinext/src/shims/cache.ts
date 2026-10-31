@@ -649,13 +649,19 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
     revalidate: typeof revalidateSeconds === "number" ? revalidateSeconds : false,
   };
 
-  await getDataCacheHandler().set(cacheKey, cacheValue, {
-    fetchCache: true,
-    tags,
-    revalidate: revalidateSeconds,
-    // The stale entry this write refreshes, so a handler can tell a refresh from a write.
-    ...(staleEntry ? { staleEntry } : {}),
-  });
+  // A failed write skips caching but must not replace a successful result with
+  // an error, matching fetch() caching here and Next.js's IncrementalCache.set.
+  try {
+    await getDataCacheHandler().set(cacheKey, cacheValue, {
+      fetchCache: true,
+      tags,
+      revalidate: revalidateSeconds,
+      // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+      ...(staleEntry ? { staleEntry } : {}),
+    });
+  } catch (err) {
+    console.error("[vinext] unstable_cache write error:", err);
+  }
 
   return result;
 }
