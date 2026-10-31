@@ -283,9 +283,10 @@ function appPageSegmentConfigPaths(route: AppRoute): (string | null | undefined)
 }
 
 /**
- * Patterns of the static App pages that answer a request whose raw pathname
- * reaches a dynamic sibling but whose segment-decoded pathname names them, so
- * `/%61` and `/caf%C3%A9` render `/a` and `/café` rather than `/[slug]`.
+ * Patterns of the static App pages that may answer a request whose raw
+ * pathname reaches a dynamic sibling but whose segment-decoded pathname names
+ * them, so `/%61` and `/caf%C3%A9` can render `/a` and `/café` rather than
+ * `/[slug]`.
  *
  * Next.js serves those requests from the response cached under the decoded
  * pathname, which exists only for a page it prerendered. The prerender listing
@@ -294,7 +295,10 @@ function appPageSegmentConfigPaths(route: AppRoute): (string | null | undefined)
  * runtime on any segment) and a Route Handler have no such entry, so the
  * dynamic sibling renders. So does a page whose sources can't be read here;
  * its sibling's render stays out of the shared caches. A cacheComponents
- * build lists every page route, as the prerender listing does.
+ * build lists every page route, as the prerender listing does. Segment config
+ * can't tell a page that reads request data, so the matcher renders the page
+ * for another spelling (`/%61dmin`) only once the build recorded the decoded
+ * pathname's prerender; the browser's own spelling needs none.
  */
 function buildAppDecodedPathnamePatterns(
   routes: AppRoute[],
@@ -494,6 +498,8 @@ import { dispatchAppRequestStage as __dispatchAppRequestStage } from ${JSON.stri
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cdn-cache-adapter";
 import { clearAppRequestStageContext as __clearRequestContext, setAppRequestStageNavigationContext as setNavigationContext } from ${JSON.stringify(appRequestStageContextPath)};
 import { matchRoutePattern as __matchRoutePattern } from ${JSON.stringify(routePatternPath)};
+import { initPregeneratedPathsFromGlobals as __initPregeneratedPathsFromGlobals } from ${JSON.stringify(pregeneratedConcretePathsPath)};
+import "virtual:vinext-pregenerated-concrete-paths";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${middlewarePath ? `import { applyAppMiddleware as __applyAppMiddleware } from ${JSON.stringify(appMiddlewarePath)};` : ""}
 ${
@@ -555,6 +561,9 @@ export const __imageConfig = ${JSON.stringify({
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
   })};
 export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
+// The matcher reads recorded prerenders, and this stage can run without the
+// response entry that also loads them.
+__initPregeneratedPathsFromGlobals();
 const __routes = ${JSON.stringify(requestRoutes)};
 const __routeMatcher = __createAppRscRouteMatcher(__routes, ${JSON.stringify(buildAppDecodedPathnamePatterns(routes, config))});
 const __metadataRouteMatchers = ${JSON.stringify(metadataRouteMatchers)};

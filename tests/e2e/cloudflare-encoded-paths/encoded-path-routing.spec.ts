@@ -208,18 +208,20 @@ test("redirects repeated slashes and backslashes like Next.js on Workers", async
 
 // Next.js 16.2.7 answers an encoded static page pathname beside a dynamic
 // sibling with the static page it prerendered, under the decoded pathname.
-test("renders an encoded static page beside its dynamic sibling on Workers", async () => {
+// This build records no prerender, so another spelling of the page renders
+// `[slug]`.
+test("renders the dynamic sibling for an encoded static page without a prerender on Workers", async () => {
   for (const [pathname, headers] of [
     ["/encoded-parity/sibling/%6Eew", undefined],
     ["/encoded-parity/sibling/%6Eew?_rsc", { RSC: "1" }],
   ] as const) {
     const encoded = await getRawPath(pathname, headers);
     expect(encoded.status).toBe(200);
-    expect(encoded.body).toContain("static sibling new");
-    expect(encoded.body).not.toContain("dynamic sibling");
+    expect(encoded.body).toContain("dynamic sibling new");
+    expect(encoded.body).not.toContain("static sibling");
   }
 
-  // The encoded request shares the static page's cache entry, never replaces it.
+  // The encoded request never replaces the static page's cache entry.
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const literal = await getRawPath("/encoded-parity/sibling/new");
     expect(literal.status).toBe(200);
@@ -241,15 +243,48 @@ test("renders an encoded draft-mode request with its raw-matched page on Workers
   expect(encoded.body).toContain("dynamic sibling new");
 });
 
+// The spelling a browser sends for `/café` is the page's own pathname, so it
+// needs no prerender. Other spellings of it do.
 test("reaches a non-ASCII static page beside its dynamic sibling on Workers", async () => {
+  const response = await getRawPath("/encoded-parity/sibling/caf%C3%A9");
+  expect(response.status).toBe(200);
+  expect(response.body).toContain("static sibling café");
+  expect(response.body).not.toContain("dynamic sibling");
+
   for (const pathname of [
-    "/encoded-parity/sibling/caf%C3%A9",
     "/encoded-parity/sibling/caf%c3%a9",
+    "/encoded-parity/sibling/%63af%C3%A9",
   ]) {
-    const response = await getRawPath(pathname);
-    expect(response.status).toBe(200);
-    expect(response.body).toContain("static sibling café");
-    expect(response.body).not.toContain("dynamic sibling");
+    const alias = await getRawPath(pathname);
+    expect(alias.status).toBe(200);
+    expect(alias.body).toContain("dynamic sibling");
+    expect(alias.body).not.toContain("static sibling café");
+  }
+});
+
+// Next.js 16.2.7 has no prerender of a page that reads searchParams, so an
+// encoded spelling of it renders `[slug]`, and a middleware pathname check
+// for the page never has to see that spelling.
+test("renders the dynamic sibling for an encoded request-time page on Workers", async () => {
+  for (const [pathname, headers] of [
+    ["/encoded-parity/sibling/guarded", undefined],
+    ["/encoded-parity/sibling/guarded.rsc", { RSC: "1" }],
+    ["/encoded-parity/sibling/guarded?_rsc", { RSC: "1" }],
+  ] as const) {
+    const direct = await getRawPath(pathname, headers);
+    expect({ pathname, status: direct.status }).toEqual({ pathname, status: 403 });
+  }
+
+  for (const [pathname, headers] of [
+    ["/encoded-parity/sibling/%67uarded", undefined],
+    ["/encoded-parity/sibling/guarde%64?view=secret", undefined],
+    ["/encoded-parity/sibling/%67uarded.rsc", { RSC: "1" }],
+    ["/encoded-parity/sibling/%67uarded?_rsc", { RSC: "1" }],
+  ] as const) {
+    const encoded = await getRawPath(pathname, headers);
+    expect({ pathname, status: encoded.status }).toEqual({ pathname, status: 200 });
+    expect(encoded.body).toContain("dynamic sibling guarded");
+    expect(encoded.body).not.toContain("guarded sibling page");
   }
 });
 
