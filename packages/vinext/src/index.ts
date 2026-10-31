@@ -7176,7 +7176,9 @@ export const loadServerActionClient = ${
                 // for page requests and the production data normalization:
                 // `/%66r/...` is no locale and `a%2561` decodes once.
                 const rawDataMatch = parseNextDataPathname(rawRoutePathname, devBuildId);
-                const dataMatch = rawDataMatch ? parseNextDataPathname(pathname, devBuildId) : null;
+                const dataMatch = rawDataMatch
+                  ? parseNextDataPathname(pathname, devBuildId, true)
+                  : null;
                 if (dataMatch && rawDataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";

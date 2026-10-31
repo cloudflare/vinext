@@ -5,6 +5,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
+  nextDataMiddlewareMatchPathname,
   normalizePagesDataRequest,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
@@ -88,6 +89,22 @@ describe("pages-data-route", () => {
 
     it("returns null for empty page segment", () => {
       expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/.json`, BUILD_ID)).toBeNull();
+    });
+
+    it("returns null when stripping `.json` leaves a dot segment", () => {
+      for (const page of [
+        "blog/...json",
+        "blog/..json",
+        "...json",
+        "blog/%2E%2e.json",
+        "blog/.%2e.json",
+      ]) {
+        expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/${page}`, BUILD_ID), page).toBeNull();
+      }
+      expect(nextDataMiddlewareMatchPathname("/_next/data/stale-id/dashboard/...json")).toBeNull();
+      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/blog/....json`, BUILD_ID)).toEqual({
+        pagePathname: "/blog/...",
+      });
     });
 
     it("returns null for non-_next/data paths", () => {
