@@ -307,6 +307,49 @@ describe("tryServeStatic (with StaticFileCache)", () => {
     expect(captured.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
+  // Next.js's `send` serves public files with `public, max-age=0` and keeps a
+  // Cache-Control already set by middleware or config headers.
+  it("revalidates public files and lets a staged Cache-Control replace the default", async () => {
+    await writeFile(clientDir, "reports/minutes.txt", "minutes");
+    const cache = await StaticFileCache.create(clientDir);
+    const etag = cache.lookup("/reports/minutes.txt")!.etag;
+
+    for (const staticCache of [cache, undefined]) {
+      const serve = async (
+        stagedHeaders?: Record<string, string>,
+        reqHeaders?: Record<string, string>,
+      ) => {
+        const { res, captured } = mockRes();
+        await tryServeStatic(
+          mockReq(undefined, reqHeaders),
+          res,
+          clientDir,
+          "/reports/minutes.txt",
+          false,
+          staticCache,
+          stagedHeaders,
+        );
+        await captured.ended;
+        return captured;
+      };
+      const cacheControlHeaders = (captured: CapturedResponse) =>
+        Object.entries(captured.headers).filter(([name]) => name.toLowerCase() === "cache-control");
+
+      const plain = await serve();
+      expect(plain.status).toBe(200);
+      expect(cacheControlHeaders(plain)).toEqual([["Cache-Control", "public, max-age=0"]]);
+
+      const staged = { "cache-control": "private, no-store" };
+      const overridden = await serve(staged);
+      expect(overridden.status).toBe(200);
+      expect(cacheControlHeaders(overridden)).toEqual([["Cache-Control", "private, no-store"]]);
+
+      const notModified = await serve(staged, { "if-none-match": etag });
+      expect(notModified.status).toBe(304);
+      expect(cacheControlHeaders(notModified)).toEqual([["Cache-Control", "private, no-store"]]);
+    }
+  });
+
   // ── Extra headers merging ──────────────────────────────────────
 
   it("merges extra headers into the response", async () => {
