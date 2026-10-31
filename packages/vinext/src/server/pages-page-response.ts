@@ -22,6 +22,7 @@ import {
 } from "./isr-decision.js";
 import { isrCacheControl, type IsrWritePolicy } from "./isr-cache.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
+import { applyPrerenderCacheLifeHeader } from "./prerender-cache-life-header.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { createNonceAttribute, escapeHtmlAttr } from "./html.js";
 import { getClientTraceMetadataHTML } from "./client-trace-metadata.js";
@@ -46,7 +47,11 @@ import {
   splitDocumentAtMain,
 } from "./pages-document-splice.js";
 import { isBotUserAgent } from "../utils/html-limited-bots.js";
-import { NEXTJS_CACHE_HEADER, VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "./headers.js";
+import {
+  NEXTJS_CACHE_HEADER,
+  VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+} from "./headers.js";
 import { isPageNotModified } from "./http-conditional.js";
 
 // ---------------------------------------------------------------------------
@@ -88,6 +93,24 @@ export function rendersPagesNotModified(status: number): boolean {
     status === 304 ||
     getCdnCacheAdapter().deferNotModifiedResponse?.() !== true
   );
+}
+
+/**
+ * Hand the revalidate getStaticProps returned to build/prerender.ts, which
+ * records it in vinext-prerender.json like Next.js's `initialRevalidateSeconds`.
+ * The CDN adapter may rewrite Cache-Control, so the build cannot read it there.
+ * Only build-time renders carry this header.
+ */
+export function applyPagesPrerenderRevalidateHeader(
+  headers: Headers,
+  revalidateSeconds: number | false,
+): void {
+  if (typeof process === "undefined" || process.env?.VINEXT_PRERENDER !== "1") return;
+  // A notFound result replaces the policy of the 404 page rendered for it.
+  headers.delete(VINEXT_PRERENDER_CACHE_LIFE_HEADER);
+  if (typeof revalidateSeconds === "number") {
+    applyPrerenderCacheLifeHeader(headers, { revalidate: revalidateSeconds });
+  }
 }
 
 type PagesFontPreload = {
@@ -764,6 +787,7 @@ export async function renderPagesPageResponse(
       cacheControl: buildMissIsrCacheControl(options.isrRevalidateSeconds, options.expireSeconds),
       tags: [pathTag],
     });
+    applyPagesPrerenderRevalidateHeader(responseHeaders, options.isrRevalidateSeconds);
     if (options.isOnDemandRevalidate) {
       responseHeaders.set(NEXTJS_CACHE_HEADER, "REVALIDATED");
       responseHeaders.set(VINEXT_REVALIDATED_CACHE_TAG_HEADER, encodeURIComponent(pathTag));

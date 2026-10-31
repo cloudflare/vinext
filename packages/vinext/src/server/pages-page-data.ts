@@ -16,6 +16,7 @@ import { buildCacheStateHeaders } from "./cache-headers.js";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
+  applyPagesPrerenderRevalidateHeader,
   generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
@@ -520,6 +521,7 @@ function applyPagesTerminalMissHeaders(
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);
   }
+  applyPagesPrerenderRevalidateHeader(response.headers, revalidateSeconds);
   return response;
 }
 

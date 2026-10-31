@@ -30,6 +30,11 @@ function expectHit(response: APIResponse) {
   expect(response.headers()["x-vinext-cache"]).toBe("HIT");
 }
 
+/** The ISR policy for a build-time revalidate, bounded by the default expireTime. */
+function revalidateCacheControl(revalidate: number): string {
+  return `s-maxage=${revalidate}, stale-while-revalidate=${31_536_000 - revalidate}`;
+}
+
 // Next.js stores and serves both HTML and page data for prerendered Pages routes:
 // https://github.com/vercel/next.js/blob/canary/test/e2e/prerender.test.ts
 test("prerendered Pages HTML and navigation JSON are build-time cache hits", async ({
@@ -109,6 +114,22 @@ test("finite ISR and on-demand revalidation leave the packaged snapshot unchange
   const buildOnly = await request.get(`${i18nBaseURL}/fr/posts/first/`);
   expectHit(buildOnly);
   expect(await buildOnly.text()).toContain('id="render-source">build-time</p>');
+});
+
+// Next.js records the revalidate getStaticProps returned during the build render,
+// not a literal found in the source:
+// https://github.com/vercel/next.js/blob/72895219d44df111ee6ac81e4eac10d81a5e5cbf/packages/next/src/build/index.ts#L3433-L3456
+test("snapshots carry the revalidate getStaticProps returned at build time", async ({
+  request,
+}) => {
+  const buildId = await readBuildId(request, "/");
+  const response = await request.get("/hourly");
+  expectHit(response);
+  expect(response.headers()["cache-control"]).toBe(revalidateCacheControl(3600));
+  expect(await response.text()).toContain('id="render-source">build-time</p>');
+  const data = await request.get(`/_next/data/${buildId}/hourly.json`);
+  expectHit(data);
+  expect(data.headers()["cache-control"]).toBe(revalidateCacheControl(3600));
 });
 
 test("conditional rewrites taken at build time do not freeze another page", async ({ request }) => {
@@ -294,8 +315,10 @@ test("build-time redirects stay immutable for HTML and data", async ({ request }
   expect(redirect.status()).toBe(307);
   expect(redirect.headers()["location"]).toBe("/posts/first?from=build");
   expect(redirect.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(redirect.headers()["cache-control"]).toBe(revalidateCacheControl(240));
   const data = await request.get(`/_next/data/${buildId}/redirect.json`);
   expectHit(data);
+  expect(data.headers()["cache-control"]).toBe(revalidateCacheControl(240));
   expect(await data.json()).toMatchObject({
     pageProps: {
       __N_REDIRECT: "/posts/first?from=build",
@@ -309,10 +332,12 @@ test("build-time notFound results stay immutable for HTML and data", async ({ re
   const removed = await request.get("/removed");
   expect(removed.status()).toBe(404);
   expect(removed.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(removed.headers()["cache-control"]).toBe(revalidateCacheControl(120));
   expect(await removed.text()).toContain("Static Assets page not found");
   const removedData = await request.get(`/_next/data/${buildId}/removed.json`);
   expect(removedData.status()).toBe(404);
   expect(removedData.headers()["x-vinext-cache"]).toBe("HIT");
+  expect(removedData.headers()["cache-control"]).toBe(revalidateCacheControl(120));
   expect(await removedData.json()).toEqual({ notFound: true });
 });
 
