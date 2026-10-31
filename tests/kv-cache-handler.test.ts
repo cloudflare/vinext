@@ -725,13 +725,38 @@ describe("KVCacheHandler", () => {
       );
 
       const stored = JSON.parse(store.get("cache:infinite-life")!);
-      expect(stored.cacheControl).toEqual({ revalidate: 60, expire: false, stale: false });
+      expect(stored.cacheControl).toEqual({
+        revalidate: 60,
+        expire: "Infinity",
+        stale: "Infinity",
+      });
       expect(stored.expireAt).toBeNull();
 
       // A warm hit replays the producing render's policy, not the route's expireTime.
       const hit = await handler.get("infinite-life");
       expect(hit?.cacheControl).toEqual({ revalidate: 60, expire: Infinity, stale: Infinity });
       expect(hit?.value?.kind).toBe("APP_PAGE");
+    });
+
+    it("round-trips a negative infinite cacheLife stale through stored cacheControl", async () => {
+      await handler.set(
+        "negative-infinite-stale",
+        {
+          kind: "APP_PAGE",
+          html: "<div>stale</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 60, stale: -Infinity } },
+      );
+
+      const stored = JSON.parse(store.get("cache:negative-infinite-stale")!);
+      expect(stored.cacheControl).toEqual({ revalidate: 60, stale: "-Infinity" });
+
+      const hit = await handler.get("negative-infinite-stale");
+      expect(hit?.cacheControl).toEqual({ revalidate: 60, stale: -Infinity });
     });
 
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {

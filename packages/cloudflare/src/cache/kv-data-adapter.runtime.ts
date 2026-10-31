@@ -105,23 +105,26 @@ type KVCacheEntry = {
 };
 
 /**
- * `cacheControl` as stored. JSON can't hold Infinity, so a lifetime that never
- * runs out (`revalidate = false`, or a cacheLife `expire`/`stale` of Infinity)
- * is stored as `false`, like Next.js stores `revalidate = false`. Reads turn it
- * back into Infinity.
+ * `cacheControl` as stored. JSON can't hold Infinity, so `revalidate = false`
+ * is stored as `false`, like Next.js does, and a cacheLife `expire`/`stale` of
+ * ±Infinity as its string. Reads turn them back into numbers.
  */
+type StoredLifetime = number | "Infinity" | "-Infinity";
+
 type StoredCacheControl = {
   revalidate: number | false;
-  expire?: number | false;
-  stale?: number | false;
+  expire?: StoredLifetime;
+  stale?: StoredLifetime;
 };
 
-function toStoredLifetime(seconds: number): number | false {
-  return seconds === Infinity ? false : seconds;
+function toStoredLifetime(seconds: number): StoredLifetime {
+  if (seconds === Infinity) return "Infinity";
+  if (seconds === -Infinity) return "-Infinity";
+  return seconds;
 }
 
-function fromStoredLifetime(seconds: number | false): number {
-  return seconds === false ? Infinity : seconds;
+function isStoredLifetime(value: unknown): value is StoredLifetime {
+  return typeof value === "number" || value === "Infinity" || value === "-Infinity";
 }
 
 /**
@@ -801,7 +804,7 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
     }
     for (const field of ["expire", "stale"] as const) {
       const seconds = obj.cacheControl[field];
-      if (seconds !== undefined && seconds !== false && typeof seconds !== "number") return null;
+      if (seconds !== undefined && !isStoredLifetime(seconds)) return null;
     }
   }
 
@@ -816,9 +819,9 @@ function validateCacheEntry(raw: unknown): KVCacheEntry | null {
   if (obj.cacheControl !== undefined) {
     const { revalidate, expire, stale } = obj.cacheControl as StoredCacheControl;
     obj.cacheControl = {
-      revalidate: fromStoredLifetime(revalidate),
-      ...(expire === undefined ? {} : { expire: fromStoredLifetime(expire) }),
-      ...(stale === undefined ? {} : { stale: fromStoredLifetime(stale) }),
+      revalidate: revalidate === false ? Infinity : revalidate,
+      ...(expire === undefined ? {} : { expire: Number(expire) }),
+      ...(stale === undefined ? {} : { stale: Number(stale) }),
     };
   }
 
