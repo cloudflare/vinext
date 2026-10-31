@@ -1942,6 +1942,29 @@ describe("prerender path manifest", () => {
         i18n,
       ),
     ).toBe(false);
+    const slashed = { trailingSlash: true };
+    // A trailingSlash warm request reaches middleware as /admin/.
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, slashed)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/(.*)", null, slashed)).toBe(true);
+    // Only the requested spelling counts, and file-like paths stay unslashed.
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null, slashed)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/r1/x", "/r1/((?!.*\\/$).*)", null)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt", null, slashed)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/robots.txt", "/robots.txt/", null, slashed)).toBe(false);
+    // A source only the as-requested test accepts ends the request without
+    // running middleware, so it cannot rewrite the route.
+    const runs = { runsMiddleware: true, trailingSlash: true };
+    expect(matchesMiddlewareWarmPath("/admin", "/admin/", null, runs)).toBe(false);
+    expect(matchesMiddlewareWarmPath("/admin", "/admin", null, runs)).toBe(true);
+    expect(matchesMiddlewareWarmPath("/admin/users", "/admin/(.*)", null, runs)).toBe(true);
+    // A file-like Pages page's data request reaches middleware slashed.
+    expect(
+      matchesMiddlewareWarmPath("/report.csv", "/report.csv/", null, {
+        pagesDataTrailingSlash: true,
+        trailingSlash: true,
+      }),
+    ).toBe(true);
   });
 
   it("retains redirect sources only when routing runs in an uncached stage", async () => {
