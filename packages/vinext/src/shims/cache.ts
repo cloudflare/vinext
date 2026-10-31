@@ -494,7 +494,9 @@ export function unstable_cacheTag(...tags: string[]): void {
 // entries produced by an older implementation unsafe to reuse. Version 2
 // prevents results created before private-in-unstable-cache validation from
 // bypassing the new synchronous boundary check after an application upgrade.
-const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
+// Version 3 drops results that read a Route Handler's request before those
+// reads were rejected inside unstable_cache().
+const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v3";
 
 /**
  * AsyncLocalStorage to track whether we're inside an unstable_cache() callback.

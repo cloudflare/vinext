@@ -1000,6 +1000,44 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     }
   });
 
+  // Matches next@16.2.7 trackDynamic() in
+  // packages/next/src/server/route-modules/app-route/module.ts, checked
+  // against a next build of the same route handlers.
+  test("route handler request reads inside unstable_cache follow Next.js", async ({ request }) => {
+    const headers = { cookie: "session=alice", authorization: "Bearer alice" };
+    for (let i = 0; i < 2; i++) {
+      const response = await request.get(
+        `${baseUrl()}/nextjs-compat/api/unstable-cache-request-read?q=alice`,
+        { headers },
+      );
+      expect(response.status()).toBe(200);
+      const reads = (await response.json()) as Record<string, { status: string; message?: string }>;
+      expect(Object.fromEntries(Object.entries(reads).map(([k, v]) => [k, v.status]))).toEqual({
+        cookies: "threw",
+        headers: "threw",
+        url: "threw",
+        text: "threw",
+        searchParams: "threw",
+        cloneCookies: "threw",
+        method: "ok",
+        pathname: "ok",
+        host: "ok",
+        bytes: "ok",
+      });
+      expect(reads.cookies.message).toContain(
+        "`request.cookies` cannot be called inside a function cached with `unstable_cache()`",
+      );
+    }
+
+    // Next.js hands `force-dynamic` handlers the unproxied request.
+    const forceDynamic = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-request-read/force-dynamic`,
+      { headers },
+    );
+    expect(forceDynamic.status()).toBe(200);
+    expect(await forceDynamic.json()).toEqual({ session: "alice" });
+  });
+
   // Extended from Next.js: test/e2e/app-dir/app-static/app-static.test.ts
   // https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/app-static/app-static.test.ts
   test("dynamic error pages keep draft cache bypass separate from access errors", async ({

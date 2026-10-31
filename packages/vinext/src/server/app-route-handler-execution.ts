@@ -291,7 +291,9 @@ export async function runAppRouteHandler(
       options.markDynamicUsage();
     },
     requestMode:
-      options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
+      options.dynamicConfig === "force-dynamic" ||
+      options.dynamicConfig === "force-static" ||
+      options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
     signal: options.requestSignal,
