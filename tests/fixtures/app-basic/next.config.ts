@@ -336,6 +336,16 @@ const nextConfig: NextConfig = {
         },
         // Used by Vitest: app-router.test.ts
         { source: "/after-rewrite-about", destination: "/about" },
+        // Used by E2E: app-router/isr.spec.ts — a rewrite onto a dynamic
+        // metadata route is served and keyed like its decoded destination.
+        {
+          source: "/metadata-rewrite-card/:slug",
+          destination: "/metadata-rewrite-key/:slug/opengraph-image",
+        },
+        {
+          source: "/metadata-rewrite-icon/:slug/:id",
+          destination: "/metadata-rewrite-key/:slug/icon/:id",
+        },
         // Used by E2E: app-router-prod/multipart-late-routing.spec.ts
         { source: "/after-files-upload", destination: "/api/methods" },
         // Used by E2E: app-router-prod/server-action-late-routing.spec.ts
