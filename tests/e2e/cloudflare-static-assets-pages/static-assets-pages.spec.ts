@@ -452,3 +452,19 @@ test("rewrites serve public assets but cannot expose private cache artifacts", a
     }
   }
 });
+
+// Verified against Next.js 16.2.7 `next start`: its static file server sets a
+// Cache-Control only when middleware or `headers()` set none.
+test("a public file keeps the headers() Cache-Control over the asset default", async ({
+  request,
+}) => {
+  const file = await request.get("/visible.txt");
+  expect(file.status()).toBe(200);
+  expect(file.headers()["cache-control"]).toBe("private, no-store");
+
+  const etag = file.headers()["etag"];
+  expect(etag).toBeTruthy();
+  const revalidated = await request.get("/visible.txt", { headers: { "if-none-match": etag } });
+  expect(revalidated.status()).toBe(304);
+  expect(revalidated.headers()["cache-control"]).toBe("private, no-store");
+});
