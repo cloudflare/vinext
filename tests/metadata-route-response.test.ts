@@ -1323,7 +1323,9 @@ describe("metadata route cacheability registration", () => {
       servedUrl: "/event/[city]/[eventId]/opengraph-image",
       patternParts: ["event", ":city", ":eventId", "opengraph-image"],
       contentType: "image/png",
-      module: { default: response },
+      // Next.js stores a metadata route under a dynamic segment only when
+      // it generates its params.
+      module: { default: response, generateStaticParams: () => [] },
     };
   }
 
@@ -1391,6 +1393,84 @@ describe("metadata route cacheability registration", () => {
       expect(response?.status).toBe(status);
       expect(response?.headers.get("Cache-Control")).toBe("public, max-age=300");
       expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+    },
+  );
+
+  // Probed against next@16.2.7 (webpack and Turbopack): under a dynamic
+  // segment, Next.js stores a metadata route only when static generation is
+  // enabled for its own module.
+  it.each([
+    ["without generateStaticParams", {}, "/event/london/42/opengraph-image", false],
+    ["with revalidate alone", { revalidate: 60 }, "/event/london/42/opengraph-image", false],
+    ["with revalidate = false", { revalidate: false }, "/event/london/42/opengraph-image", false],
+    [
+      "with generateStaticParams",
+      { generateStaticParams: () => [] },
+      "/event/london/42/opengraph-image",
+      true,
+    ],
+    [
+      "with generateImageMetadata",
+      { generateImageMetadata: () => [{ id: "small" }] },
+      "/event/london/42/opengraph-image/small",
+      true,
+    ],
+    [
+      "with dynamic = force-static",
+      { dynamic: "force-static" },
+      "/event/london/42/opengraph-image",
+      true,
+    ],
+    ["with dynamic = error", { dynamic: "error" }, "/event/london/42/opengraph-image", true],
+  ] as const)(
+    "stores a dynamic-segment metadata route %s like Next.js",
+    async (_label, config, pathname, cacheable) => {
+      const route = dynamicImageRoute(() => new Response("image"));
+      delete route.module!.generateStaticParams;
+      Object.assign(route.module!, config);
+      const write = vi.fn();
+      const read = vi.fn(async () => null);
+      const { response, state } = await handleWithAdmission(pathname, [route], {
+        isrGet: read,
+        isrSet: write,
+        isrRouteKey: (path) => path,
+      });
+      expect(response?.status).toBe(200);
+      expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(read).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+      expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
+      if (!cacheable) expect(response?.headers.get("Cache-Control")).toContain("no-store");
+    },
+  );
+
+  it.each([
+    ["with dynamicParams = false", { dynamicParams: false }, false],
+    ["with generateStaticParams", { generateStaticParams: () => [] }, true],
+  ] as const)(
+    "stores a dynamic-segment sitemap %s like Next.js",
+    async (_label, config, cacheable) => {
+      const route: MetadataRuntimeRoute = {
+        type: "sitemap",
+        isDynamic: true,
+        filePath: "/tmp/app/event/[city]/sitemap.ts",
+        routePrefix: "/event/[city]",
+        routeSegments: ["event", "[city]"],
+        servedUrl: "/event/[city]/sitemap.xml",
+        patternParts: ["event", ":city", "sitemap.xml"],
+        contentType: "application/xml",
+        module: { default: () => [], ...config },
+      };
+      const write = vi.fn();
+      const read = vi.fn(async () => null);
+      const { response, state } = await handleWithAdmission("/event/london/sitemap.xml", [route], {
+        isrGet: read,
+        isrSet: write,
+        isrRouteKey: (path) => path,
+      });
+      expect(response?.status).toBe(200);
+      expect(state.outcome?.cacheable).toBe(cacheable);
+      expect(read).toHaveBeenCalledTimes(cacheable ? 1 : 0);
       expect(write).toHaveBeenCalledTimes(cacheable ? 1 : 0);
     },
   );

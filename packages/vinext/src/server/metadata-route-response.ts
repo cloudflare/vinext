@@ -251,6 +251,26 @@ function getMetadataRouteFunctions(route: MetadataRuntimeRoute): MetadataRouteFu
   return functions;
 }
 
+/**
+ * Next.js compiles a metadata route into a Route Handler, and under a dynamic
+ * segment its build stores it only when the route's own module generates its
+ * params or is `force-static`/`error` (collectAppRouteSegments reads no parent
+ * layout). Its metadata loader adds generateStaticParams for
+ * generateImageMetadata. Probed on next@16.2.7: a parent layout's
+ * generateStaticParams, `revalidate` or `dynamicParams` leave the route
+ * dynamic. Generated sitemaps are only served below a static prefix.
+ */
+function isMetadataRouteStaticGenEnabled(route: MetadataRuntimeRoute): boolean {
+  if (!route.isDynamic || !route.patternParts) return true;
+  const functions = getMetadataRouteFunctions(route);
+  return (
+    route.module?.dynamic === "force-static" ||
+    route.module?.dynamic === "error" ||
+    functions.generateStaticParams !== null ||
+    functions.generateImageMetadata !== null
+  );
+}
+
 function isUseCacheFunction(value: MetadataRouteFunction | null): boolean {
   return value !== null && Reflect.get(value, USE_CACHE_FUNCTION_SYMBOL) === true;
 }
@@ -366,6 +386,7 @@ async function captureRenderedMetadataRoute(
     !getActiveDraftModeState() &&
     !hasDraftModeCookieHeader() &&
     route.module?.dynamic !== "force-dynamic" &&
+    isMetadataRouteStaticGenEnabled(route) &&
     frameworkRevalidate > 0 &&
     !response.headers.has("set-cookie");
   const cacheControl = cacheable
@@ -471,7 +492,8 @@ function getOuterMetadataCacheKey(
     getActiveDraftModeState() ||
     hasDraftModeCookieHeader() ||
     route.module?.dynamic === "force-dynamic" ||
-    route.module?.revalidate === 0
+    route.module?.revalidate === 0 ||
+    !isMetadataRouteStaticGenEnabled(route)
   ) {
     return null;
   }
