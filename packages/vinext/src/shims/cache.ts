@@ -652,17 +652,21 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
 
   // A failed write skips caching but must not replace a successful result with
   // an error, matching fetch() caching here and Next.js's IncrementalCache.set.
-  const write = getDataCacheHandler()
-    .set(cacheKey, cacheValue, {
-      fetchCache: true,
-      tags,
-      revalidate: revalidateSeconds,
-      // The stale entry this write refreshes, so a handler can tell a refresh from a write.
-      ...(staleEntry ? { staleEntry } : {}),
-    })
-    .catch((err) => {
-      console.error("[vinext] unstable_cache write error:", err);
-    });
+  // The executor runs now, so the write starts before this returns, and a
+  // handler whose set() throws synchronously is caught too.
+  const write = new Promise<void>((resolve) => {
+    resolve(
+      getDataCacheHandler().set(cacheKey, cacheValue, {
+        fetchCache: true,
+        tags,
+        revalidate: revalidateSeconds,
+        // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+        ...(staleEntry ? { staleEntry } : {}),
+      }),
+    );
+  }).catch((err) => {
+    console.error("[vinext] unstable_cache write error:", err);
+  });
   if (deferWrite) {
     getRequestExecutionContext()?.waitUntil(write);
   } else {
