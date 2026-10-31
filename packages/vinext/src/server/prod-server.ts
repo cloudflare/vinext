@@ -985,9 +985,8 @@ async function tryServeStatic(
   const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
   const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
-  // behaviour and survives deploys). Use resolved.path (not pathname) so that
-  // ext and the hash extraction both come from the same file — they can diverge
-  // after HTML fallback (e.g. /_next/static/widget-abc123 → widget-abc123.html).
+  // behaviour and survives deploys). Use resolved.path (not the encoded
+  // pathname) so that ext and the hash extraction both come from the file.
   // Fall back to mtime for non-hashed files.
   const etag =
     (isHashed && etagFromFilenameHash(resolved.path, ext)) ||
@@ -1226,23 +1225,10 @@ type ResolvedFile = {
   mtimeMs: number;
 };
 
-/**
- * Resolve the actual file to serve, trying extension-less HTML fallbacks.
- * Returns the resolved path + size + mtime, or null if not found.
- */
+/** Returns the file's path + size + mtime, or null if it is not a regular file. */
 async function resolveStaticFile(staticFile: string): Promise<ResolvedFile | null> {
   const stat = await statIfFile(staticFile);
-  if (stat) return { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs };
-
-  const htmlFallback = staticFile + ".html";
-  const htmlStat = await statIfFile(htmlFallback);
-  if (htmlStat) return { path: htmlFallback, size: htmlStat.size, mtimeMs: htmlStat.mtimeMs };
-
-  const indexFallback = path.join(staticFile, "index.html");
-  const indexStat = await statIfFile(indexFallback);
-  if (indexStat) return { path: indexFallback, size: indexStat.size, mtimeMs: indexStat.mtimeMs };
-
-  return null;
+  return stat ? { path: staticFile, size: stat.size, mtimeMs: stat.mtimeMs } : null;
 }
 
 async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: number } | null> {

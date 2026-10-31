@@ -223,24 +223,11 @@ export class StaticFileCache {
         entry.notModifiedHeaders["Vary"] = "Accept-Encoding";
       }
 
-      // Register under the URL pathname (leading /)
-      // NOTE: aliases below share the same entry by reference, so all header
-      // mutations (e.g. Vary above) must happen before registration.
+      // Register under the URL pathname (leading /). Like Next.js, a file is
+      // served only at its own pathname: `/about` does not serve `about.html`
+      // and `/blog` does not serve `blog/index.html`.
       const pathname = "/" + relativePath;
       entries.set(pathname, entry);
-
-      // Register HTML fallback aliases (same entry object — no duplication)
-      if (ext === ".html") {
-        if (relativePath.endsWith("/index.html")) {
-          const dirPath = "/" + relativePath.slice(0, -"/index.html".length);
-          if (dirPath !== "/") {
-            entries.set(dirPath, entry);
-          }
-        } else {
-          const withoutExt = "/" + relativePath.slice(0, -ext.length);
-          entries.set(withoutExt, entry);
-        }
-      }
     }
 
     // Third pass: buffer small files in memory for zero-syscall serving.
@@ -248,15 +235,8 @@ export class StaticFileCache {
     // res.end(buffer) is ~2x faster than createReadStream().pipe() because
     // it skips fd open/close and stream plumbing overhead.
     // Reads are chunked at 64 concurrent to avoid fd exhaustion on large projects.
-    // Deduplicate at the entry level first: HTML aliases share the same
-    // StaticFileEntry by reference, so entries.values() yields duplicates for
-    // paths like /about and /about.html. Deduping entries avoids iterating
-    // their variants multiple times on sites with many HTML pages.
     const toBuffer: FileVariant[] = [];
-    const seenEntries = new Set<StaticFileEntry>();
     for (const entry of entries.values()) {
-      if (seenEntries.has(entry)) continue;
-      seenEntries.add(entry);
       for (const variant of [entry.original, entry.br, entry.gz, entry.zst]) {
         if (!variant || variant.size > BUFFER_THRESHOLD) continue;
         toBuffer.push(variant);
