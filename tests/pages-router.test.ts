@@ -6387,6 +6387,14 @@ export const config = { matcher: ["/protected"] };
     );
     expect(counterManifestEntry).toBeDefined();
     expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+
+    // A class field named like a getServerSideProps-only helper must not keep
+    // that helper's server-only import in the browser graph.
+    const clientCode = jsFiles
+      .map((file) => fs.readFileSync(path.join(assetsDir, file), "utf-8"))
+      .join("\n");
+    expect(clientCode).toContain("class-field-posts");
+    expect(clientCode).not.toContain("class-field-gssp-server-only.internal");
   });
 
   it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
