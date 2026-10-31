@@ -10,6 +10,7 @@ import {
   walkAst,
 } from "./ast-utils.js";
 import { canonicalizeFilePath, isPathInsideOrEqual, stripViteModuleQuery } from "../utils/path.js";
+import { hasNextJsCondition } from "../utils/next-js-condition.js";
 import { packageNameFromSpecifier } from "../utils/package-name.js";
 import { isServerEnvironment } from "./environment.js";
 
@@ -23,6 +24,7 @@ type PagesNodeExternalsOptions = {
   getTsconfigExactAliases: () => Readonly<Record<string, string>>;
   getBundledPackages: () => ReadonlySet<string>;
   isEnabled: () => boolean;
+  isCacheComponents: () => boolean;
 };
 
 const FRAMEWORK_PACKAGES = new Set([
@@ -65,6 +67,33 @@ function canNodeImport(file: string): boolean {
   } catch {
     return false;
   }
+}
+
+function readPackageJson(file: string): { exports?: unknown; imports?: unknown } | null {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8")) as { exports?: unknown; imports?: unknown };
+  } catch {
+    return null;
+  }
+}
+
+// Whether the installed package that `file` belongs to uses the `next-js`
+// condition, which Node does not resolve for external packages. `#imports`
+// resolve from the nearest package scope, which can be nested in the package.
+function usesNextJsCondition(file: string): boolean {
+  const marker = "/node_modules/";
+  const index = file.lastIndexOf(marker) + marker.length;
+  const parts = file.slice(index).split("/");
+  const packageDir =
+    file.slice(0, index) + parts.slice(0, parts[0].startsWith("@") ? 2 : 1).join("/");
+  const root = readPackageJson(path.join(packageDir, "package.json"));
+  const scopeFile = findPackageJson(file);
+  const scope = scopeFile ? readPackageJson(scopeFile) : null;
+  return (
+    hasNextJsCondition(root?.exports) ||
+    hasNextJsCondition(root?.imports) ||
+    hasNextJsCondition(scope?.imports)
+  );
 }
 
 function matchesAlias(id: string, aliases: Readonly<Record<string, string>>): boolean {
@@ -268,6 +297,15 @@ export function createPagesNodeExternalsPlugin(options: PagesNodeExternalsOption
           return null;
         }
         if (!canNodeImport(resolvedFile)) return null;
+        // With Cache Components, Vite resolves the `next-js` condition but Node
+        // would not, so packages that use it stay bundled.
+        if (
+          options.isCacheComponents() &&
+          environment.config.resolve.conditions?.includes("next-js") &&
+          usesNextJsCondition(resolvedFile)
+        ) {
+          return null;
+        }
 
         // A nested dependency must stay bundled when resolving the same request
         // from the app root selects another installed version. External output

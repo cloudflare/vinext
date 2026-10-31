@@ -19,6 +19,7 @@ import MagicString from "magic-string";
 import type { ResolvedNextConfig } from "../config/next-config.js";
 import { collectBindingNames, getAstName, parseProgram } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
+import { hasNextJsCondition } from "../utils/next-js-condition.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { VIRTUAL_MODULE_ID_RE } from "../utils/virtual-module.js";
 
@@ -81,7 +82,9 @@ type BarrelCaches = {
 // Vite doesn't publicly type `this.environment` on plugin hooks yet.
 // This cast type is used consistently across resolveId and transform handlers
 // so that when Vite adds proper typing it can be removed in one place.
-type PluginCtx = { environment?: { name?: string } };
+type PluginCtx = {
+  environment?: { name?: string; config?: { resolve: { conditions?: readonly string[] } } };
+};
 
 /**
  * Packages whose barrel imports are automatically optimized.
@@ -268,6 +271,11 @@ function resolveExportsValue(value: ExportsValue, preferReactServer: boolean): s
   return null;
 }
 
+/** The root export of a package.json `exports` field, which may omit the "." key. */
+export function getRootExport(exports: Record<string, ExportsValue>): ExportsValue | undefined {
+  return Object.keys(exports).some((key) => key.startsWith(".")) ? exports["."] : exports;
+}
+
 /**
  * Result of resolving a package, including the directory and parsed package.json.
  * Used internally by resolvePackageInfo.
@@ -330,12 +338,14 @@ async function resolvePackageInfo(
  * Resolve a package name to its ESM entry file path.
  * Checks `exports["."]` → `module` → `main`, then falls back to require.resolve.
  * Pass `preferReactServer: true` in the RSC environment to prefer the "react-server"
- * export condition over "node"/"import" when resolving the barrel entry.
+ * export condition over "node"/"import" when resolving the barrel entry. With
+ * `skipNextJs`, packages with a "next-js" export condition resolve to null.
  */
 async function resolvePackageEntry(
   packageName: string,
   projectRoot: string,
   preferReactServer: boolean,
+  skipNextJs: boolean,
 ): Promise<string | null> {
   try {
     const info = await resolvePackageInfo(packageName, projectRoot);
@@ -347,6 +357,8 @@ async function resolvePackageEntry(
       // "./Button" or "./*" are intentionally ignored — this function resolves
       // the barrel entry point, not individual sub-module paths.
       const dotExport = pkgJson.exports["."];
+      // Vite resolves their imports with the environment's own conditions.
+      if (skipNextJs && hasNextJsCondition(getRootExport(pkgJson.exports))) return null;
       if (dotExport) {
         const entryPath = resolveExportsValue(dotExport, preferReactServer);
         if (entryPath) {
@@ -854,10 +866,20 @@ export function createOptimizeImportsPlugin(
             barrelEntry = await resolveFileId(this, importSource, id);
             if (barrelEntry) barrelEntry = barrelEntry.replace(/\?.*$/, "");
           } else {
-            const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${importSource}`;
+            // With Cache Components, environments that resolve "next-js" leave
+            // imports of packages that use it to Vite, which picks the build.
+            const skipNextJs =
+              getNextConfig()?.cacheComponents === true &&
+              env?.config?.resolve.conditions?.includes("next-js") === true;
+            const cacheKey = `${preferReactServer ? "rsc" : "ssr"}:${skipNextJs ? "next-js:" : ""}${importSource}`;
             barrelEntry = entryPathCache.get(cacheKey);
             if (barrelEntry === undefined) {
-              barrelEntry = await resolvePackageEntry(importSource, root, preferReactServer);
+              barrelEntry = await resolvePackageEntry(
+                importSource,
+                root,
+                preferReactServer,
+                skipNextJs,
+              );
               entryPathCache.set(cacheKey, barrelEntry ?? null);
             }
           }

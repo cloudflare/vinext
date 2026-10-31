@@ -2256,6 +2256,46 @@ importers:
 
   tests/fixtures/multi-stage-http: {}
 
+  tests/fixtures/next-condition:
+    dependencies:
+      '@vitejs/plugin-rsc':
+        specifier: 'catalog:'
+        version: 0.5.38(@voidzero-dev/vite-plus-core@1.3.0(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0))(react-dom@19.3.1(react@19.3.1))(react-server-dom-webpack@19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1))(react@19.3.1)
+      my-barrel-package:
+        specifier: file:./__test_packages__/my-barrel-package
+        version: file:tests/fixtures/next-condition/__test_packages__/my-barrel-package
+      my-cjs-package:
+        specifier: file:./__test_packages__/my-cjs-package
+        version: file:tests/fixtures/next-condition/__test_packages__/my-cjs-package
+      my-esm-package:
+        specifier: file:./__test_packages__/my-esm-package
+        version: file:tests/fixtures/next-condition/__test_packages__/my-esm-package
+      my-external-cjs-package:
+        specifier: file:./__test_packages__/my-external-cjs-package
+        version: file:tests/fixtures/next-condition/__test_packages__/my-external-cjs-package
+      my-external-esm-package:
+        specifier: file:./__test_packages__/my-external-esm-package
+        version: file:tests/fixtures/next-condition/__test_packages__/my-external-esm-package
+      react:
+        specifier: 'catalog:'
+        version: 19.3.1
+      react-dom:
+        specifier: 'catalog:'
+        version: 19.3.1(react@19.3.1)
+      react-server-dom-webpack:
+        specifier: 'catalog:'
+        version: 19.3.1(react-dom@19.3.1(react@19.3.1))(react@19.3.1)
+      vinext:
+        specifier: workspace:*
+        version: link:../../../packages/vinext
+      vite:
+        specifier: 'catalog:'
+        version: '@voidzero-dev/vite-plus-core@1.3.0(@types/node@25.9.2)(esbuild@0.28.2)(jiti@2.7.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)'
+    devDependencies:
+      vite-plus:
+        specifier: 'catalog:'
+        version: 1.3.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.0.5(vitest@5.0.5))(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.60.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
+
   tests/fixtures/og-font-package: {}
 
   tests/fixtures/pages-app-props: {}
@@ -9973,6 +10013,21 @@ packages:
   mute-stream@3.0.0:
     resolution: {integrity: sha512-dkEJPVvun4FryqBmZ5KhDo0K9iDXAwn08tMLDinNdRBNPcYEDiWYysLcc6k3mjTMlbP9KyylvRpd4wFtwrT9rw==}
     engines: {node: ^20.17.0 || >=22.9.0}
+
+  my-barrel-package@file:tests/fixtures/next-condition/__test_packages__/my-barrel-package:
+    resolution: {directory: tests/fixtures/next-condition/__test_packages__/my-barrel-package, type: directory}
+
+  my-cjs-package@file:tests/fixtures/next-condition/__test_packages__/my-cjs-package:
+    resolution: {directory: tests/fixtures/next-condition/__test_packages__/my-cjs-package, type: directory}
+
+  my-esm-package@file:tests/fixtures/next-condition/__test_packages__/my-esm-package:
+    resolution: {directory: tests/fixtures/next-condition/__test_packages__/my-esm-package, type: directory}
+
+  my-external-cjs-package@file:tests/fixtures/next-condition/__test_packages__/my-external-cjs-package:
+    resolution: {directory: tests/fixtures/next-condition/__test_packages__/my-external-cjs-package, type: directory}
+
+  my-external-esm-package@file:tests/fixtures/next-condition/__test_packages__/my-external-esm-package:
+    resolution: {directory: tests/fixtures/next-condition/__test_packages__/my-external-esm-package, type: directory}
 
   nanoid@3.3.11:
     resolution: {integrity: sha512-N8SpfPUnUp1bK+PMYW8qSWdl9U+wwNWI4QKxOYDy9JAro3WMX7p2OeVRF9v+347pnakNevPmiHhNmZ2HbFA76w==}
@@ -18888,6 +18943,16 @@ snapshots:
       - '@types/node'
 
   mute-stream@3.0.0: {}
+
+  my-barrel-package@file:tests/fixtures/next-condition/__test_packages__/my-barrel-package: {}
+
+  my-cjs-package@file:tests/fixtures/next-condition/__test_packages__/my-cjs-package: {}
+
+  my-esm-package@file:tests/fixtures/next-condition/__test_packages__/my-esm-package: {}
+
+  my-external-cjs-package@file:tests/fixtures/next-condition/__test_packages__/my-external-cjs-package: {}
+
+  my-external-esm-package@file:tests/fixtures/next-condition/__test_packages__/my-external-esm-package: {}
 
   nanoid@3.3.11: {}
 
