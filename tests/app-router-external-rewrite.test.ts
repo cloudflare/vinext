@@ -88,6 +88,55 @@ describe("App Router external rewrite proxy credential forwarding", () => {
     expect(capturedHeaders!["x-custom-safe"]).toBe("keep-me");
   });
 
+  // Next.js's proxy always sets X-Forwarded-Host to the inbound Host header.
+  describe("X-Forwarded-Host", () => {
+    it("replaces a client value on config rewrites", async () => {
+      mockResponseMode = "plain";
+      capturedHeaders = null;
+      await fetch(`${baseUrl}/proxy-external-test/some-path`, {
+        headers: { "x-forwarded-host": "evil.example" },
+      });
+      expect(capturedHeaders!["host"]).toBe(`localhost:${mockPort}`);
+      expect(capturedHeaders!["x-forwarded-host"]).toBe(new URL(baseUrl).host);
+    });
+
+    it("is set when the client sends none", async () => {
+      mockResponseMode = "plain";
+      capturedHeaders = null;
+      await fetch(`${baseUrl}/proxy-external-test/some-path`);
+      expect(capturedHeaders!["x-forwarded-host"]).toBe(new URL(baseUrl).host);
+    });
+
+    it("is set even when the client lists it in Connection", async () => {
+      mockResponseMode = "plain";
+      capturedHeaders = null;
+      // fetch() refuses to send a Connection header.
+      const http = await import("node:http");
+      await new Promise<void>((resolve, reject) => {
+        http
+          .get(
+            `${baseUrl}/proxy-external-test/some-path`,
+            { headers: { "x-forwarded-host": "evil.example", connection: "x-forwarded-host" } },
+            (res) => res.resume().on("end", resolve),
+          )
+          .on("error", reject);
+      });
+      expect(capturedHeaders!["x-forwarded-host"]).toBe(new URL(baseUrl).host);
+    });
+
+    it("replaces a client value on middleware rewrites", async () => {
+      mockResponseMode = "plain";
+      capturedHeaders = null;
+      await fetch(`${baseUrl}/middleware-external-rewrite`, {
+        headers: {
+          "x-forwarded-host": "evil.example",
+          "x-middleware-test-rewrite-target": `http://localhost:${mockPort}`,
+        },
+      });
+      expect(capturedHeaders!["x-forwarded-host"]).toBe(new URL(baseUrl).host);
+    });
+  });
+
   it("preserves repeated query params when proxying to external rewrite targets", async () => {
     mockResponseMode = "plain";
     capturedHeaders = null;
