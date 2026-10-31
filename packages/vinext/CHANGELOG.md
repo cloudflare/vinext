@@ -1,5 +1,37 @@
 # vinext
 
+## 1.4.1
+
+### Bug Fixes
+
+#### App Router
+
+- answer shell errors with the error document, and add VINEXT_QUIET (#4411)
+- keep a reused template seed under its destination identity (#4392)
+- apply afterFiles rewrites to a dynamic interception source (#4432)
+- keep a BFCache Activity list at layout-less segment levels (#4401)
+- keep redirect() targets whose pathname starts with // on the app origin (#4424)
+- 404 .rsc requests whose suffix strip leaves a dot segment (#4417)
+- decide RSC cacheability after a disconnected client's render finishes (#4419)
+
+#### Misc
+
+- **Headers:** keep a request's draft mode after its headers context is cleared (#4437)
+- **Cache:** keep the unstable_cache result when the data cache write fails (#3742)
+- **Prerender:** skip a generateStaticParams path whose dynamic render throws a special error (#4386)
+- **Prerender:** record the revalidate getStaticProps returned for Pages routes (#4388)
+- **Dev:** run the dev origin check before vinext's pre-middlewares (#4425)
+- **Pages:** send the default Cache-Control for getInitialProps renders (#4422)
+- **Prod Server:** serve public files with Next.js's revalidating Cache-Control (#4421)
+- **Cache:** resolve cacheLife like Next.js across repeated calls and nested caches (#4399)
+- **Server:** apply trailing-slash redirects to /api routes like Next.js (#4418)
+
+### Contributors
+
+- @ash1day
+- @Godsenal
+- @james-elicx
+
 ## 1.4.0
 
 Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
