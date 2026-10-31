@@ -157,11 +157,17 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname.startsWith("/external-headers/")) {
     const upstreamPort = request.headers.get("x-test-upstream-port");
     const middlewarePath = pathname.slice("/external-headers/middleware".length);
+    const search = request.nextUrl.searchParams;
+    // Middleware's request header override for the upstream.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-mw-request-header", "1");
+    const init = search.has("middleware-request-header")
+      ? { request: { headers: requestHeaders } }
+      : undefined;
     const response =
       pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
-        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
-        : NextResponse.next();
-    const search = request.nextUrl.searchParams;
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`, init)
+        : NextResponse.next(init);
     if (search.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }

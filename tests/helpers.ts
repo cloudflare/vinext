@@ -609,3 +609,57 @@ export async function requestExternalRewriteHeaders(
     await new Promise<void>((resolve) => upstream.close(() => resolve()));
   }
 }
+
+// next.config's three rewrite phases and a middleware rewrite.
+export const EXTERNAL_REWRITE_PATHS = ["before-files", "after-files", "fallback", "middleware"].map(
+  (phase) => `/external-headers/${phase}/a`,
+);
+
+/**
+ * Request an /external-headers/* path with middleware's `x-mw-request-header`
+ * override and a client `Connection` header naming it, a client header and an
+ * invalid token. Uses node:http because fetch() rejects such a header.
+ */
+export async function requestExternalRewriteWithConnectionTokens(
+  baseUrl: string,
+  requestPath: string,
+): Promise<{
+  status: number;
+  middlewareRequestHeader: string | string[] | undefined;
+  clientNominatedHeader: string | string[] | undefined;
+}> {
+  let upstreamHeaders: IncomingHttpHeaders = {};
+  const upstream = http.createServer((req, res) => {
+    upstreamHeaders = req.headers;
+    res.end("upstream");
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  try {
+    const { port } = upstream.address() as { port: number };
+    const url = new URL(`${requestPath}?middleware-request-header`, baseUrl);
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(url, {
+        agent: false,
+        headers: {
+          connection: "keep-alive, X-Mw-Request-Header, x-client-nominated, not a header",
+          "x-client-nominated": "1",
+          "x-test-upstream-port": String(port),
+        },
+      });
+      req.on("response", (res) => {
+        res.resume();
+        res.on("end", () => resolve(res.statusCode ?? 0));
+      });
+      req.on("error", reject);
+      req.end();
+    });
+    return {
+      status,
+      middlewareRequestHeader: upstreamHeaders["x-mw-request-header"],
+      clientNominatedHeader: upstreamHeaders["x-client-nominated"],
+    };
+  } finally {
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+}

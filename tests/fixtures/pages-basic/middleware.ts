@@ -99,11 +99,17 @@ export function middleware(request: NextRequest) {
   if (url.pathname.startsWith("/external-headers/")) {
     const upstreamPort = request.headers.get("x-test-upstream-port");
     const middlewarePath = url.pathname.slice("/external-headers/middleware".length);
+    const search = url.searchParams;
+    // Middleware's request header override for the upstream.
+    const requestHeaders = new Headers(request.headers);
+    requestHeaders.set("x-mw-request-header", "1");
+    const init = search.has("middleware-request-header")
+      ? { request: { headers: requestHeaders } }
+      : undefined;
     const response =
       url.pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
-        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
-        : NextResponse.next();
-    const search = url.searchParams;
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`, init)
+        : NextResponse.next(init);
     if (search.has("middleware-cookie")) {
       response.cookies.set("middleware-cookie", "1", { path: "/" });
     }
