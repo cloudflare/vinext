@@ -983,39 +983,42 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
                 ...ctx.tags,
                 ...[...rootParamNames].map((name) => ROOT_PARAM_TAG_PREFIX + name),
               ];
-              const redirectWrite = handler.set(
-                coarseCacheKey,
-                {
-                  kind: "FETCH",
-                  data: {
-                    headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
-                    body: "",
-                    url: coarseCacheKey,
+              // Write the useful entry last, once the redirect's write settles. A
+              // bounded LRU that can retain only one of the pair must keep the
+              // specific value, not the redirect. A failed redirect write still
+              // stores the specific value.
+              try {
+                await handler.set(
+                  coarseCacheKey,
+                  {
+                    kind: "FETCH",
+                    data: {
+                      headers: { [ROOT_PARAM_REDIRECT_HEADER]: "1" },
+                      body: "",
+                      url: coarseCacheKey,
+                    },
+                    tags: redirectTags,
+                    revalidate: revalidateSeconds,
                   },
-                  tags: redirectTags,
-                  revalidate: revalidateSeconds,
-                },
-                {
-                  ...cacheContext,
-                  tags: redirectTags,
-                  // A cold isolate reads the coarse key first.
-                  ...(coarseCacheKey === cacheKey
-                    ? staleEntry && { staleEntry }
-                    : staleRedirect && { staleEntry: staleRedirect }),
-                },
-              );
-              // Write the useful entry last. A bounded LRU that can retain only
-              // one of the pair must keep the specific value, not the redirect.
+                  {
+                    ...cacheContext,
+                    tags: redirectTags,
+                    // A cold isolate reads the coarse key first.
+                    ...(coarseCacheKey === cacheKey
+                      ? staleEntry && { staleEntry }
+                      : staleRedirect && { staleEntry: staleRedirect }),
+                  },
+                );
+              } catch {
+                // The specific entry is still worth storing.
+              }
               cacheValue.data.url = specificCacheKey;
-              write = Promise.all([
-                redirectWrite,
-                handler.set(specificCacheKey, cacheValue, {
-                  ...cacheContext,
-                  // The stale entry this write refreshes, so a handler can tell a refresh
-                  // from a write.
-                  ...(staleEntry && specificCacheKey === cacheKey ? { staleEntry } : {}),
-                }),
-              ]);
+              write = handler.set(specificCacheKey, cacheValue, {
+                ...cacheContext,
+                // The stale entry this write refreshes, so a handler can tell a refresh
+                // from a write.
+                ...(staleEntry && specificCacheKey === cacheKey ? { staleEntry } : {}),
+              });
             } else {
               write = handler.set(cacheKey, cacheValue, {
                 ...cacheContext,
@@ -1029,9 +1032,9 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
               },
             );
             // Like Next.js, which queues the write on the work store, a call in a
-            // render, Server Action or route handler returns once the write has
-            // started, and the request keeps it alive. A background regeneration
-            // is the write, so it waits.
+            // render, Server Action or route handler returns once the (specific
+            // entry's) write has started, and the request keeps it alive. A
+            // background regeneration is the write, so it waits.
             if (propagate && isInsideWorkStoreScope()) {
               if (isInsideUnifiedScope()) getRequestContext().executionContext?.waitUntil(stored);
             } else {
