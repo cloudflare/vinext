@@ -57,7 +57,9 @@ export type ExecutionContextLike = {
   requestSignal?: AbortSignal;
   /**
    * Server-owned origin middleware runs against. Set by the Node production
-   * server, whose request URL comes from the client's Host header. Without it
+   * server and by entries that srvx serves on Node (Nitro's Node presets,
+   * @vitejs/plugin-rsc's dev and preview handlers), whose request URL comes
+   * from the client's Host header. Without it
    * middleware uses the request URL's origin, which Workers can trust because
    * the platform routes by hostname.
    */
