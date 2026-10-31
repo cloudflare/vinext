@@ -429,3 +429,48 @@ test.describe("History API wrappers installed after hydration", () => {
     ]);
   });
 });
+
+test.describe("redirect() targets whose pathname starts with //", () => {
+  // "/.//other.invalid/landing" starts with a single "/", so apps accept it as
+  // local, but its pathname is "//other.invalid/landing". Next.js sends the
+  // target as written and the browser stays on the app origin; it must never
+  // become a protocol-relative redirect to other.invalid.
+  const TARGET = `${BASE}/other.invalid/landing`;
+
+  async function trackOffOriginRequests(page: import("@playwright/test").Page) {
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+    return offOriginRequests;
+  }
+
+  test("a layout redirect() answering a client navigation stays on the app origin", async ({
+    page,
+  }) => {
+    const offOriginRequests = await trackOffOriginRequests(page);
+    await page.goto(`${BASE}/nextjs-compat/redirect-dot-segment`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#redirect-dot-segment-layout-redirect");
+
+    // As in Next.js, the server collapses the repeated slashes and the
+    // navigation settles on the same-origin path.
+    await expect(page).toHaveURL(TARGET);
+    expect(offOriginRequests).toEqual([]);
+  });
+
+  test("a metadata redirect() answered with a refresh meta tag stays on the app origin", async ({
+    page,
+  }) => {
+    const offOriginRequests = await trackOffOriginRequests(page);
+    await page.goto(`${BASE}/nextjs-compat/redirect-dot-segment/metadata-redirect`);
+
+    await expect(page).toHaveURL(TARGET);
+    expect(offOriginRequests).toEqual([]);
+  });
+});

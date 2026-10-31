@@ -70,6 +70,8 @@ test.describe("image optimization endpoint behind middleware", () => {
       "script-src 'none'; frame-src 'none'; sandbox;",
     );
     expect(image.headers()["x-mw-image-endpoint"]).toBe("true");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(image.headers()["cache-control"]).toBe("public, max-age=14400, must-revalidate");
     expect(Buffer.from(await image.body()).equals(heartPng)).toBe(true);
   });
 

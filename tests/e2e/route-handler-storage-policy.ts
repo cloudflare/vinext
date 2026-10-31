@@ -174,9 +174,16 @@ export function testRouteHandlerStoragePolicies(): void {
           expect(second.hit).toBe(false);
           expect(second.renderId).not.toBe(first.renderId);
         }
-        if (scenario === "no-store") {
+        // Deployed E2Es never purge the edge, whose rate limit is shared with
+        // production, so a response cache keeps serving its edge copy.
+        const backend = process.env.VINEXT_E2E_CACHE_BACKEND;
+        if (
+          scenario === "no-store" &&
+          backend !== "response-store" &&
+          backend !== "workers-cache"
+        ) {
           const path = new URL(url).pathname;
-          const invalidated = process.env.VINEXT_E2E_CACHE_BACKEND
+          const invalidated = backend
             ? await request.post(`${baseURL}/api/revalidate-path`, { data: { path } })
             : await request.get(`${baseURL}/api/revalidate-isr?path=${encodeURIComponent(path)}`);
           expect(invalidated.ok()).toBe(true);

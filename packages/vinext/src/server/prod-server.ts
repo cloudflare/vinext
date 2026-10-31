@@ -27,7 +27,12 @@ import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
 import { resolveClientBuildFile } from "./client-build-files.js";
-import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
+import {
+  StaticFileCache,
+  contentTypeForPath,
+  etagFromFilenameHash,
+  staticFileCacheControl,
+} from "./static-file-cache.js";
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
   isImageOptimizationPath,
@@ -37,6 +42,7 @@ import {
   parseImageParams,
   isImageSourceBodyStatus,
   isSafeImageContentType,
+  MUTABLE_IMAGE_SOURCE_CACHE_CONTROL,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -461,6 +467,22 @@ function readHeaderCaseInsensitive(
   return Array.isArray(value) ? value.join(", ") : value;
 }
 
+/** Spell a header's name as `name`, so spreading the record replaces that key. */
+function withHeaderName(
+  headersRecord: Record<string, string | string[]>,
+  name: string,
+): Record<string, string | string[]> {
+  const lowerName = name.toLowerCase();
+  const key = Object.keys(headersRecord).find(
+    (entry) => entry !== name && entry.toLowerCase() === lowerName,
+  );
+  if (key === undefined) return headersRecord;
+  const { [key]: value, ...rest } = headersRecord;
+  const existing = rest[name];
+  rest[name] = existing === undefined ? value : [existing, value].flat();
+  return rest;
+}
+
 /** Remove one field name from a Vary header, dropping the header if it empties. */
 function omitVaryToken(
   headers: Record<string, string | string[]>,
@@ -734,6 +756,19 @@ function staticCacheLookupPath(pathname: string): string | null {
   return lookupPath;
 }
 
+/**
+ * Give a Node image passthrough Next.js's image Cache-Control instead of the
+ * public-file default: a hashed build asset keeps its immutable default, and
+ * any other source is revalidated after the default `images.minimumCacheTTL`.
+ */
+function withImageSourceCacheControl(
+  headers: Record<string, string>,
+  sourcePath: string,
+): Record<string, string> {
+  if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
+  return { ...headers, "Cache-Control": MUTABLE_IMAGE_SOURCE_CACHE_CONTROL };
+}
+
 /** Pathnames the Pages Router serves from routes rather than the client directory. */
 function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRoutePhase): boolean {
   return (
@@ -755,7 +790,7 @@ function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRouteP
  * Without a cache, falls back to async filesystem probing (still non-blocking,
  * unlike the old sync existsSync/statSync approach).
  *
- * `extraHeaders` go on every response for the file. `representationHeaders` go
+ * `stagedHeaders` go on every response for the file. `representationHeaders` go
  * only on responses that carry the file's bytes (200 and 206), never on a 304,
  * 412, 416 or 405.
  */
@@ -766,11 +801,15 @@ async function tryServeStatic(
   pathname: string,
   compress: boolean,
   cache?: StaticFileCache,
-  extraHeaders?: Record<string, string | string[]>,
+  stagedHeaders?: Record<string, string | string[]>,
   statusCode?: number,
   representationHeaders?: Record<string, string>,
 ): Promise<boolean> {
   if (pathname === "/") return false;
+  // A Cache-Control from middleware or config headers replaces the file's
+  // default, as Next.js's `send` only sets one when none is present. Staged
+  // names arrive lowercased, so match the default's casing for the spreads.
+  const extraHeaders = stagedHeaders && withHeaderName(stagedHeaders, "Cache-Control");
   const responseStatus = statusCode ?? 200;
   const omitBody = isNoBodyResponseStatus(responseStatus);
   // Match Next.js's `send` behavior: HEAD evaluates Range like GET, then omits
@@ -983,7 +1022,7 @@ async function tryServeStatic(
   // so a single `includes` covers both the root-level `/<ASSET_PREFIX_URL_DIR>/...`
   // case and any `/<prefix>/<ASSET_PREFIX_URL_DIR>/...` assetPrefix layout.
   const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
-  const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const cacheControl = staticFileCacheControl(isHashed);
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
   // ext and the hash extraction both come from the same file — they can diverge
@@ -2003,7 +2042,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        imageSecurityHeaders,
+        withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2921,7 +2960,7 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                imageSecurityHeaders,
+                withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );

@@ -50,6 +50,14 @@ export function middleware(request: NextRequest) {
       headers: { "content-type": "text/plain" },
     });
   }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/pages-router-prod/public-file-cache-control.spec.ts
+  if (
+    url.pathname.startsWith("/members%20only/") &&
+    url.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
+  }
   if (url.pathname === "/image-source-redirect.png") {
     return NextResponse.redirect(new URL("/heart.png", request.url));
   }
@@ -65,10 +73,14 @@ export function middleware(request: NextRequest) {
   }
 
   // A middleware Cache-Control replaces the getServerSideProps default on
-  // redirect and notFound exits, as in Next.js.
-  // Coverage: tests/pages-router.test.ts
+  // redirect and notFound exits, and the getInitialProps default, as in
+  // Next.js.
+  // Coverage: tests/pages-router.test.ts,
+  // tests/e2e/pages-router-prod/initial-props-cache-control.spec.ts
   if (
-    (url.pathname === "/gssp-redirect" || url.pathname === "/gssp-not-found") &&
+    (url.pathname === "/gssp-redirect" ||
+      url.pathname === "/gssp-not-found" ||
+      url.pathname === "/nav-compat-gip/cache-policy") &&
     url.searchParams.has("mw-cache-control")
   ) {
     return NextResponse.next({ headers: { "cache-control": "public, max-age=60" } });

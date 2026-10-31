@@ -2,6 +2,7 @@ import {
   resolveHardNavigationTargetFromRscResponse,
   stripRscCacheBustingSearchParam,
   stripRscSuffix,
+  toPathAbsolutePathname,
 } from "./app-rsc-cache-busting.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "vinext/shims/url-safety";
 
@@ -38,14 +39,16 @@ type RscRedirectLifecycleDecision =
       redirectDepth: number;
     };
 
+// The hrefs the router follows are path-absolute, so a "//" pathname keeps
+// its "/." prefix and is not read as a protocol-relative URL naming another host.
 function toVisibleAppHref(href: string, origin: string): string {
   const url = new URL(href, origin);
   stripRscCacheBustingSearchParam(url);
-  return `${stripRscSuffix(url.pathname)}${url.search}${url.hash}`;
+  return `${toPathAbsolutePathname(stripRscSuffix(url.pathname))}${url.search}${url.hash}`;
 }
 
 function toStreamedRedirectVisibleAppHref(url: URL): string {
-  return `${url.pathname}${url.search}${url.hash}`;
+  return `${toPathAbsolutePathname(url.pathname)}${url.search}${url.hash}`;
 }
 
 function resolveRedirectLifecycleHopFromTarget(options: {

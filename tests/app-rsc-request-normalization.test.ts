@@ -306,6 +306,31 @@ describe("normalizeRscRequest — RSC detection and cleanPathname", () => {
     expect(result.cleanPathname).toBe("/about");
   });
 
+  it("returns 404 when stripping .rsc leaves a dot segment", () => {
+    for (const [path, basePath] of [
+      ["/dashboard/...rsc", ""],
+      ["/dashboard/..rsc", ""],
+      ["/dashboard/%2E%2E.rsc", ""],
+      ["/dashboard/.%2e.rsc", ""],
+      ["/dashboard/%2E.rsc", ""],
+      ["/...rsc", ""],
+      ["/app/dashboard/...rsc", "/app"],
+    ]) {
+      const result = normalizeRscRequest(req(path), basePath);
+      expect(result, path).toBeInstanceOf(Response);
+      expect((result as Response).status, path).toBe(404);
+    }
+  });
+
+  it("keeps dotted segment names that stay ordinary after stripping .rsc", () => {
+    expect(normalized(normalizeRscRequest(req("/dashboard/....rsc"), "")).cleanPathname).toBe(
+      "/dashboard/...",
+    );
+    expect(normalized(normalizeRscRequest(req("/dashboard/a..rsc"), "")).cleanPathname).toBe(
+      "/dashboard/a.",
+    );
+  });
+
   it("strips .rsc suffix from cleanPathname when RSC headers are also present", () => {
     const result = normalized(
       normalizeRscRequest(req("/about.rsc", { accept: "text/x-component" }), ""),

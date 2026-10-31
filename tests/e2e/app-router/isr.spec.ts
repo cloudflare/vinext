@@ -417,14 +417,18 @@ test.describe("App Router ISR", () => {
     );
   });
 
-  test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
+  // Like Next.js, the trailing-slash spelling is redirected before the
+  // handler runs, so only the canonical path is cached.
+  test("redirects a trailing-slash route handler request before caching it", async ({
+    request,
+  }) => {
     const plainPath = "/api/route-cache-identity/trailing";
-    const trailingPath = `${plainPath}/`;
     await resetIsrPath(request, plainPath);
-    await resetIsrPath(request, trailingPath);
 
-    const trailing = await waitForCacheHit(request, trailingPath);
-    expect(await trailing.text()).toBe(`CACHE_IDENTITY_API_ROUTE:${plainPath}`);
+    const trailing = await request.get(`${baseUrl()}${plainPath}/`, { maxRedirects: 0 });
+    expect(trailing.status()).toBe(308);
+    expect(trailing.headers()["location"]).toBe(plainPath);
+    expect(trailing.headers()["x-vinext-cache"]).toBeUndefined();
 
     const initialPlain = await request.get(`${baseUrl()}${plainPath}`);
     expect(initialPlain.headers()["x-vinext-cache"]).toBe("MISS");

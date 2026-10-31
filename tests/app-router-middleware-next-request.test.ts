@@ -43,12 +43,22 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-has-session")).toBe("true");
   });
 
-  it("runs an exact API middleware matcher for a trailing-slash request", async () => {
-    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+  // Like Next.js, a trailing-slash Route Handler request is redirected before
+  // middleware runs, so middleware only sees the canonical pathname.
+  it("redirects a trailing-slash route handler request before middleware", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/?a=1`, { redirect: "manual" });
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/header-override-delete?a=1");
+    expect(res.headers.get("x-mw-ran")).toBeNull();
+
+    // Following the redirect reaches middleware's exact-pathname branch.
+    const followed = await fetch(`${baseUrl}/api/header-override-delete/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${baseUrl}/api/header-override-delete`);
+    await expect(followed.json()).resolves.toMatchObject({
+      requestMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("object-form matcher requires has and missing conditions", async () => {

@@ -784,6 +784,21 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/catch-all/hello.world", "", true, "")).toBeNull();
   });
 
+  // Next.js's file rule needs a `.\w+` ending and its non-file rule needs a
+  // last segment without a dot; paths matching neither keep their spelling.
+  it("matches Next.js's file and non-file rules exactly when trailingSlash is true", () => {
+    expect(normalizeTrailingSlash("/api/v1.2.3/", "", true, "")!.headers.get("Location")).toBe(
+      "/api/v1.2.3",
+    );
+    expect(normalizeTrailingSlash("/x/a.b/c", "", true, "")!.headers.get("Location")).toBe(
+      "/x/a.b/c/",
+    );
+    expect(normalizeTrailingSlash("/api/foo.a-b/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo.", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo./", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/x/foo.\u20ac/", "", true, "")).toBeNull();
+  });
+
   it("does not redirect .well-known paths when trailingSlash is true", () => {
     expect(normalizeTrailingSlash("/.well-known/acme-challenge", "", true, "")).toBeNull();
     expect(normalizeTrailingSlash("/.well-known/acme-challenge/", "", true, "")).toBeNull();
@@ -799,8 +814,18 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/", "", false, "")).toBeNull();
   });
 
-  it("does not redirect /api routes", () => {
-    expect(normalizeTrailingSlash("/api/data", "", true, "")).toBeNull();
+  // Next.js's internal trailing-slash redirects have no /api exception.
+  it("redirects /api routes like any other path", () => {
+    const added = normalizeTrailingSlash("/api/data", "", true, "");
+    expect(added!.status).toBe(308);
+    expect(added!.headers.get("Location")).toBe("/api/data/");
+
+    const stripped = normalizeTrailingSlash("/api/data/", "", false, "?a=1");
+    expect(stripped!.status).toBe(308);
+    expect(stripped!.headers.get("Location")).toBe("/api/data?a=1");
+
+    expect(normalizeTrailingSlash("/api/data/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/data", "", false, "")).toBeNull();
   });
 
   it("does not redirect .rsc requests when trailingSlash is true", () => {
@@ -818,11 +843,11 @@ describe("normalizeTrailingSlash", () => {
     expect(res!.headers.get("Location")).toBe("/about");
   });
 
-  it("does not redirect /api or /api/", () => {
-    expect(normalizeTrailingSlash("/api", "", true, "")).toBeNull();
+  it("redirects /api and /api/ to the configured spelling", () => {
+    expect(normalizeTrailingSlash("/api", "", true, "")!.headers.get("Location")).toBe("/api/");
+    expect(normalizeTrailingSlash("/api/", "", false, "")!.headers.get("Location")).toBe("/api");
     expect(normalizeTrailingSlash("/api", "", false, "")).toBeNull();
     expect(normalizeTrailingSlash("/api/", "", true, "")).toBeNull();
-    expect(normalizeTrailingSlash("/api/", "", false, "")).toBeNull();
   });
 
   it("redirects /api-docs when trailingSlash is true", () => {

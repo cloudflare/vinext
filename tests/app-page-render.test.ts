@@ -733,7 +733,7 @@ describe("app page render lifecycle", () => {
       ]),
     });
     expect(JSON.stringify(cachedValue?.renderObservation)).not.toContain("secret");
-    expect(consumeDynamicUsage).toHaveBeenCalledTimes(2);
+    expect(consumeDynamicUsage).toHaveBeenCalledTimes(3);
   });
 
   it.each([

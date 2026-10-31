@@ -103,7 +103,8 @@ export function isCrossSiteNoCorsRequest(
  * Validate a dev server request from a Node.js IncomingMessage.
  *
  * Returns null if the request is allowed, or a reason string if it should be blocked.
- * This is used by the Pages Router connect middleware.
+ * This is used by the vinext:dev-origin-check connect middleware and the Pages
+ * Router handler.
  */
 export function validateDevRequest(
   headers: {
