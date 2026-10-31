@@ -380,6 +380,11 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "supported",
     detail: "salt mixed into output content hashes for cache-busting",
   },
+  "experimental.sri": {
+    status: "supported",
+    detail:
+      "integrity attributes on App Router bootstrap script and modulepreload tags; chunks loaded later by the client runtime are not hashed, as in Next.js",
+  },
   "experimental.swcEnvOptions": {
     status: "unsupported",
     detail:

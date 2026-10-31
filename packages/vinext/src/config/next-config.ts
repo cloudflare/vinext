@@ -289,6 +289,9 @@ export type PrefetchInliningConfig =
       maxSize: number;
     };
 
+/** Hash algorithms Next.js accepts for `experimental.sri.algorithm`. */
+export type SriAlgorithm = "sha256" | "sha384" | "sha512";
+
 export type NextConfig = {
   /** Additional env variables */
   env?: Record<string, string>;
@@ -472,6 +475,12 @@ export type NextConfig = {
     prefetchInlining?: boolean | { maxBundleSize?: number; maxSize?: number };
     /** Header names forwarded by Pages Router `res.revalidate()` internal requests. */
     allowedRevalidateHeaderKeys?: string[];
+    /**
+     * Subresource Integrity for App Router script tags. When `algorithm` is
+     * set, production HTML carries an `integrity` attribute on the bootstrap
+     * module and its preloaded chunks.
+     */
+    sri?: { algorithm?: SriAlgorithm };
     [key: string]: unknown;
   };
   /**
@@ -685,6 +694,11 @@ export type ResolvedNextConfig = {
   disableOptimizedLoading: boolean;
   /** Cross-origin mode applied to framework scripts and preload links. */
   crossOrigin: "anonymous" | "use-credentials" | undefined;
+  /**
+   * Subresource Integrity hash algorithm for App Router script tags (from
+   * `experimental.sri.algorithm`). `undefined` emits no `integrity` attributes.
+   */
+  sriAlgorithm: SriAlgorithm | undefined;
   /**
    * Resolved `reactStrictMode` from next.config, preserved as `boolean | null`
    * so each router can apply its own default (Next.js resolves `null` to OFF
@@ -1965,6 +1979,7 @@ export async function resolveNextConfig(
       removeConsole: false,
       disableOptimizedLoading: false,
       crossOrigin: undefined,
+      sriAlgorithm: undefined,
       reactStrictMode: null,
       scrollRestoration: false,
       compilerDefine: {},
@@ -2158,6 +2173,24 @@ export async function resolveNextConfig(
   const inlineCss = experimental?.inlineCss === true;
   const globalNotFound = experimental?.globalNotFound === true;
   const prefetchInlining = normalizePrefetchInliningConfig(experimental?.prefetchInlining);
+
+  // Resolve experimental.sri. Next.js only accepts the three SHA algorithms
+  // browsers support for `integrity`; like Next.js, `sri: {}` without an
+  // algorithm leaves Subresource Integrity off.
+  const sriConfig = readOptionalRecord(experimental?.sri);
+  const sriAlgorithm: SriAlgorithm | undefined =
+    sriConfig?.algorithm === "sha256" ||
+    sriConfig?.algorithm === "sha384" ||
+    sriConfig?.algorithm === "sha512"
+      ? sriConfig.algorithm
+      : undefined;
+  if (sriConfig?.algorithm !== undefined && sriAlgorithm === undefined) {
+    console.warn(
+      "Invalid next.config options detected:\n" +
+        '    Invalid option at "experimental.sri.algorithm": expected "sha256", "sha384" or "sha512"\n' +
+        "See more info here: https://nextjs.org/docs/messages/invalid-next-config",
+    );
+  }
 
   // Validate experimental.appShells co-flags. Next.js requires all of the
   // following to be enabled when appShells is true:
@@ -2419,6 +2452,7 @@ export async function resolveNextConfig(
       config.crossOrigin === "anonymous" || config.crossOrigin === "use-credentials"
         ? config.crossOrigin
         : undefined,
+    sriAlgorithm,
     // Preserve `null` (unset) so each router applies its own default — Next.js
     // resolves `null` to OFF for Pages Router, ON for App Router.
     reactStrictMode: typeof config.reactStrictMode === "boolean" ? config.reactStrictMode : null,

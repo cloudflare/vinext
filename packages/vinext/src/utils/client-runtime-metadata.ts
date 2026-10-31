@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "pathslash";
 import {
   readClientBuildManifest,
@@ -29,6 +31,8 @@ type ClientRuntimeMetadata = {
   clientEntryFile?: string;
   appBootstrapPreinitModules?: string[];
   appRouteManifestModule?: string;
+  /** Subresource Integrity hash of each App Router bootstrap chunk, by URL. */
+  integrity?: Record<string, string>;
   appClientReferenceChunks?: ClientReferenceChunks;
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];
@@ -86,10 +90,13 @@ function collectCssGraph(
   return Object.keys(cssGraph).length > 0 ? cssGraph : undefined;
 }
 
-function collectAppBootstrapPreinitModules(
+/**
+ * Manifest files of the App Router browser entry's static import graph, in
+ * import order. SSR preinitialises them ahead of the bootstrap module.
+ */
+function collectAppBootstrapPreinitFiles(
   buildManifest: NonNullable<ReturnType<typeof readClientBuildManifest>>,
   appBrowserEntry: string | undefined,
-  applyBase: (file: string) => string,
 ): string[] | undefined {
   if (!appBrowserEntry) return undefined;
 
@@ -98,7 +105,7 @@ function collectAppBootstrapPreinitModules(
   );
   if (!entryKey) return undefined;
 
-  const modules: string[] = [];
+  const files: string[] = [];
   const seenFiles = new Set<string>();
   const visitedChunks = new Set<string>();
 
@@ -113,14 +120,40 @@ function collectAppBootstrapPreinitModules(
       const importedChunk = buildManifest[importedKey];
       if (importedChunk?.file.endsWith(".js") && !seenFiles.has(importedChunk.file)) {
         seenFiles.add(importedChunk.file);
-        modules.push(applyBase(importedChunk.file));
+        files.push(importedChunk.file);
       }
       visit(importedKey);
     }
   }
 
   visit(entryKey);
-  return modules.length > 0 ? modules : undefined;
+  return files.length > 0 ? files : undefined;
+}
+
+/**
+ * Subresource Integrity hashes (`experimental.sri`) of the chunks the App
+ * Router SSR entry names in `<script>` and `modulepreload` tags: the browser
+ * entry, its static imports, and the RouteManifest chunk. Keyed by the served
+ * URL so the renderer can look them up by the URL it emits. Like Next.js,
+ * chunks the client runtime loads later (routes, client references) are not
+ * hashed. Files are read back from `clientDir`, so this runs after the
+ * client bundle is written.
+ */
+function collectAppBootstrapIntegrity(
+  clientDir: string,
+  algorithm: string,
+  files: (string | undefined)[],
+  applyUrl: (file: string) => string,
+): Record<string, string> | undefined {
+  const integrity: Record<string, string> = {};
+  for (const file of files) {
+    if (!file) continue;
+    const url = applyUrl(file);
+    if (integrity[url] !== undefined) continue;
+    const contents = fs.readFileSync(path.join(clientDir, file));
+    integrity[url] = `${algorithm}-${createHash(algorithm).update(contents).digest("base64")}`;
+  }
+  return Object.keys(integrity).length > 0 ? integrity : undefined;
 }
 
 /**
@@ -139,6 +172,8 @@ function collectAppBootstrapPreinitModules(
  *   Router module-graph order in the initial HTML.
  * - `clientEntryFile` — the client entry chunk filename (optional, only
  *   needed for Pages Router).
+ * - `integrity` — Subresource Integrity hash per App Router bootstrap chunk
+ *   URL, only when `sriAlgorithm` (`experimental.sri.algorithm`) is set.
  *
  * All file paths are normalised with the configured `assetBase` (basePath)
  * and `assetPrefix`.
@@ -148,6 +183,7 @@ export function computeClientRuntimeMetadata(opts: {
   assetBase: string;
   assetPrefix: string;
   includeClientEntry?: boolean | "pages-client-entry";
+  sriAlgorithm?: string;
 }): ClientRuntimeMetadata {
   const buildManifestPath = path.join(opts.clientDir, ".vite", "manifest.json");
   const buildManifest = readClientBuildManifest(buildManifestPath);
@@ -200,13 +236,25 @@ export function computeClientRuntimeMetadata(opts: {
     );
   }
 
-  metadata.appBootstrapPreinitModules = collectAppBootstrapPreinitModules(
+  const appBootstrapPreinitFiles = collectAppBootstrapPreinitFiles(
     buildManifest,
     clientEntryManifest?.appBrowserEntry,
-    appAssetUrl,
   );
+  metadata.appBootstrapPreinitModules = appBootstrapPreinitFiles?.map(appAssetUrl);
   if (clientEntryManifest?.appRouteManifest) {
     metadata.appRouteManifestModule = appAssetUrl(clientEntryManifest.appRouteManifest);
+  }
+  if (opts.sriAlgorithm && clientEntryManifest?.appBrowserEntry) {
+    metadata.integrity = collectAppBootstrapIntegrity(
+      opts.clientDir,
+      opts.sriAlgorithm,
+      [
+        clientEntryManifest.appBrowserEntry,
+        ...(appBootstrapPreinitFiles ?? []),
+        clientEntryManifest.appRouteManifest,
+      ],
+      appAssetUrl,
+    );
   }
   // `lazyChunks` and `dynamicPreloads` live in DIFFERENT key-spaces and must be
   // normalised differently:

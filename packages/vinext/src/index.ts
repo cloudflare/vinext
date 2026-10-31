@@ -8862,6 +8862,7 @@ export const loadServerActionClient = ${
               assetBase: envConfig.base ?? "/",
               assetPrefix: nextConfig.assetPrefix,
               includeClientEntry: !hasAppDir ? true : hasPagesDir ? "pages-client-entry" : false,
+              sriAlgorithm: nextConfig.sriAlgorithm,
             });
 
             let ssrManifest: Record<string, string[]> | undefined;
@@ -8878,6 +8879,7 @@ export const loadServerActionClient = ${
               clientEntry: runtimeMetadata.clientEntryFile ?? undefined,
               appBootstrapPreinitModules: runtimeMetadata.appBootstrapPreinitModules,
               appRouteManifestModule: runtimeMetadata.appRouteManifestModule,
+              integrity: runtimeMetadata.integrity,
               appClientReferenceChunks: runtimeMetadata.appClientReferenceChunks,
               ssrManifest,
               cssGraph: runtimeMetadata.cssGraph,
