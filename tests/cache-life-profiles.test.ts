@@ -41,16 +41,17 @@ describe("resolveCacheLifeProfiles", () => {
     ).toEqual({ stale: 5, revalidate: 30, expire: 1234 });
   });
 
-  it("warns about and drops values that are not numbers", () => {
+  it("warns about and drops values that are not numbers, including NaN", () => {
     const warn = vi.fn();
     const profiles = resolveCacheLifeProfiles(
-      { blog: { revalidate: "60", expire: 600 }, broken: 5 },
+      { blog: { revalidate: "60", expire: 600, stale: Number.NaN }, broken: 5 },
       EXPIRE_TIME,
       warn,
     );
     expect(profiles.blog).toEqual({ expire: 600 });
     expect(profiles).not.toHaveProperty("broken");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("`cacheLife.blog.revalidate`"));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("`cacheLife.blog.stale`"));
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("`cacheLife.broken`"));
   });
 

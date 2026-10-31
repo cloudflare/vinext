@@ -60,7 +60,8 @@ export function resolveCacheLifeProfiles(
     for (const field of CACHE_LIFE_FIELDS) {
       const value = rawProfile[field];
       if (value === undefined) continue;
-      if (typeof value !== "number") {
+      // Like Next.js's zod schema: NaN is not a number of seconds; Infinity is.
+      if (typeof value !== "number" || Number.isNaN(value)) {
         warn(
           `[vinext] Invalid next.config option \`cacheLife.${name}.${field}\`: expected a number of seconds.`,
         );
@@ -79,11 +80,11 @@ export function resolveCacheLifeProfiles(
 
 // JSON has no Infinity, which `cacheLife` accepts for "never".
 function encodeNonFiniteNumber(_key: string, value: unknown): unknown {
-  return typeof value === "number" && !Number.isFinite(value) ? String(value) : value;
+  return value === Infinity || value === -Infinity ? String(value) : value;
 }
 
 function decodeNonFiniteNumber(_key: string, value: unknown): unknown {
-  return value === "Infinity" || value === "-Infinity" || value === "NaN" ? Number(value) : value;
+  return value === "Infinity" || value === "-Infinity" ? Number(value) : value;
 }
 
 /** Serialize resolved profiles for the `__VINEXT_CACHE_LIFE_PROFILES` define. */
