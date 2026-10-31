@@ -1483,13 +1483,17 @@ function createPatchedFetch(): typeof globalThis.fetch {
         cached = null;
       }
       if (cached?.value && cached.value.kind === "FETCH" && cached.cacheState !== "stale") {
-        await lowerFetchCacheRevalidateIfNeeded(
+        // A hit doesn't wait for the entry's rewrite, and a failed one keeps the hit.
+        const rewrite = lowerFetchCacheRevalidateIfNeeded(
           handler,
           cacheKey,
           cached.value,
           tags,
           revalidateSeconds,
-        );
+        ).catch((err) => {
+          console.error("[vinext] fetch cache write error:", err);
+        });
+        getRequestExecutionContext()?.waitUntil(rewrite);
         const cachedData = cached.value.data;
         return recordFetchOutcome(buildCachedFetchResponse(cachedData, input), "hit", cacheReason);
       }
@@ -1501,8 +1505,11 @@ function createPatchedFetch(): typeof globalThis.fetch {
         staleEntry = cached;
         if (shouldRefreshStaleFetchInForeground()) {
           const freshResponse = await dedupeFetch(input, fetchInit);
+          // A failed write keeps the fresh response rather than fetching again.
           await writeFetchCacheResponse(handler, cacheKey, freshResponse, tags, revalidateSeconds, {
             staleEntry: cached,
+          }).catch((err) => {
+            console.error("[vinext] fetch cache write error:", err);
           });
           return recordFetchOutcome(freshResponse, "miss", cacheReason);
         }
