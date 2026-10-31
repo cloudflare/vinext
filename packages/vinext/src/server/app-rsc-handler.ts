@@ -60,7 +60,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import {
   buildRequestHeadersFromMiddlewareResponse,
@@ -1890,15 +1890,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
       // carries: the raw, still-encoded context, under the basePath the
-      // target's rewrites resolved to. Concatenate basePath rather
-      // than using `addBasePathToPathname`, which leaves a context that already
-      // starts with basePath unprefixed, so middleware would miss that segment.
-      const sourceUrlPathname =
-        resolvedPathnameHasBasePath && options.basePath
-          ? sourceRequestPathname === "/"
-            ? options.basePath
-            : options.basePath + sourceRequestPathname
-          : sourceRequestPathname;
+      // target's rewrites resolved to.
+      const sourceUrlPathname = resolvedPathnameHasBasePath
+        ? restoreBasePath(sourceRequestPathname, options.basePath)
+        : sourceRequestPathname;
       sourceUrl.pathname = sourceUrlPathname;
       if (sourceUrl.pathname !== sourceUrlPathname) {
         options.clearRequestContext();
@@ -2201,7 +2196,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     const sourceConfigHeaders = new Headers();
     const sourceConfigUrl = new URL(request.url);
     sourceConfigUrl.pathname = hadBasePath
-      ? addBasePathToPathname(requestCleanPathname, options.basePath)
+      ? restoreBasePath(requestCleanPathname, options.basePath)
       : requestCleanPathname;
     await applyAppRscConfigHeaders(
       sourceConfigHeaders,
@@ -3153,7 +3148,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     let appRequest = rawRequest;
     if (pagesDataNormalization?.isDataReq) {
       const appRequestUrl = new URL(pagesDataNormalization.request.url);
-      appRequestUrl.pathname = addBasePathToPathname(appRequestUrl.pathname, options.basePath);
+      appRequestUrl.pathname = restoreBasePath(appRequestUrl.pathname, options.basePath);
       appRequest = cloneRequestWithUrl(pagesDataCandidate!, appRequestUrl.toString());
     }
     const request = cloneRequestWithHeaders(appRequest, filteredHeaders);

@@ -46,6 +46,7 @@ import {
   hasMiddlewareRequestHeaderOverrides,
 } from "../packages/vinext/src/utils/middleware-request-headers.js";
 import { withResponseStageVary } from "../packages/vinext/src/server/response-stage-policy.js";
+import { restoreBasePath } from "../packages/vinext/src/utils/base-path.js";
 import {
   readStaticFileSignal,
   readStaticFileSignalRequestHeaders,
@@ -315,6 +316,21 @@ describe("hasBasePath", () => {
     expect(hasBasePath("/docs/v2", "/docs/v2")).toBe(true);
     expect(hasBasePath("/docs/v2/guide", "/docs/v2")).toBe(true);
     expect(hasBasePath("/docs/v20", "/docs/v2")).toBe(false);
+  });
+});
+
+describe("restoreBasePath", () => {
+  it("re-adds the basePath even when the stripped pathname starts with it", () => {
+    expect(restoreBasePath("/docs/about", "/docs")).toBe("/docs/docs/about");
+    expect(restoreBasePath("/about", "/docs")).toBe("/docs/about");
+  });
+
+  it("restores the stripped root as the bare basePath", () => {
+    expect(restoreBasePath("/", "/docs")).toBe("/docs");
+  });
+
+  it("returns pathname unchanged when basePath is empty", () => {
+    expect(restoreBasePath("/about", "")).toBe("/about");
   });
 });
 

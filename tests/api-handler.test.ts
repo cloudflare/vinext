@@ -1414,18 +1414,20 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+    it("uses the dev server's basePath-restored pathname for edge API nextUrl", async () => {
       const handler = vi.fn((request: Request) => {
         const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
           .nextUrl;
         return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
       });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      // Vite has stripped the basePath from req.url.
       const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
       await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
         basePath: "/docs",
+        requestPathname: "/docs/api/hello",
       });
 
       expect(JSON.parse(res._body.toString())).toEqual({
@@ -1434,17 +1436,25 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("does not double-prefix an exact basePath edge API rewrite", async () => {
-      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+    it("keeps a route segment equal to the basePath in the restored pathname", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { pathname: string } }).nextUrl;
+        return Response.json({ url: request.url, pathname: nextUrl?.pathname });
+      });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
-      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      // basePath "/api" and pages/api/hello: Vite strips /api/api/hello to /api/hello.
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
-        basePath: "/docs",
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/api",
+        requestPathname: "/api/api/hello",
       });
 
-      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
+      expect(JSON.parse(res._body.toString())).toEqual({
+        url: "http://example.com/api/api/hello?a=b",
+        pathname: "/api/hello",
+      });
     });
 
     it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {
