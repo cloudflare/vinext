@@ -48,6 +48,30 @@ test.describe("template navigation", () => {
     await expect(page.getByTestId("server-template-identity")).toHaveText("0");
   });
 
+  // https://github.com/cloudflare/vinext/issues/4387
+  test("a revalidating server action after a child segment change keeps the template mounted", async ({
+    page,
+  }) => {
+    await page.goto(`${BASE}/nextjs-compat/template-server/alpha`);
+    await waitForAppRouterHydration(page);
+    await page.getByTestId("server-template-identity-increment").click();
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+
+    await page.getByTestId("server-template-param-link").click();
+    await expect(page.getByTestId("server-template-section-page")).toHaveText("Section beta");
+    await expect(page.getByTestId("server-template-identity")).toHaveText("0");
+
+    await page.getByTestId("server-template-identity-increment").click();
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+
+    const renderId = await page.getByTestId("server-template-render-id").textContent();
+    expect(renderId).toBeTruthy();
+    await page.getByTestId("server-template-revalidate").click();
+    // The template's server output re-renders, but its client state stays.
+    await expect(page.getByTestId("server-template-render-id")).not.toHaveText(renderId!);
+    await expect(page.getByTestId("server-template-identity")).toHaveText("1");
+  });
+
   test("server template output stays stable from its index page to a child", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/template-server`);
     await waitForAppRouterHydration(page);

@@ -121,6 +121,7 @@ type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
   preserveAbsentSlots?: boolean;
   preserveElementIds?: readonly string[];
+  preserveElementSeedIds?: readonly string[];
   preservePreviousSlotIds?: readonly string[];
 };
 
@@ -590,6 +591,8 @@ export function mergeElements(
   const preserveAbsentSlots =
     typeof options === "boolean" ? !options : (options.preserveAbsentSlots ?? true);
   const preserveElementIds = typeof options === "boolean" ? [] : (options.preserveElementIds ?? []);
+  const preserveElementSeedIds =
+    typeof options === "boolean" ? [] : (options.preserveElementSeedIds ?? []);
   const preservePreviousSlotIds =
     typeof options === "boolean" ? [] : (options.preservePreviousSlotIds ?? []);
   const merged: Record<string, AppElementValue> = { ...next };
@@ -603,6 +606,16 @@ export function mergeElements(
         preservedIdentityIds.add(id);
       }
     }
+  }
+
+  // A seed keeps only the previous server output, which holds no client state.
+  // Its identity stays the destination's, because that identity names the
+  // segment state the seed now mounts under and the bfcache id the destination
+  // assigned to it.
+  for (const id of preserveElementSeedIds) {
+    if (preservedIdentityIds.has(id) || !Object.hasOwn(prev, id)) continue;
+    const value = prev[id];
+    if (value !== undefined) merged[id] = value;
   }
 
   const slotKeys = new Set(
@@ -688,10 +701,11 @@ export function mergeElements(
       }
     }
 
-    // An element and its identity are one preservation unit. Keeping previous
-    // content beside the destination's identity would falsely prove that stale
-    // client state belongs to the destination graph. If the previous payload
-    // had no proof, remove any destination proof and let BFCache remint.
+    // Outside seeds, an element and its identity are one preservation unit.
+    // Keeping previous content beside the destination's identity would falsely
+    // prove that stale client state belongs to the destination graph. If the
+    // previous payload had no proof, remove any destination proof and let
+    // BFCache remint.
     for (const id of preservedIdentityIds) {
       const previousIdentity = previousIdentities[id];
       if (previousIdentity === undefined) {

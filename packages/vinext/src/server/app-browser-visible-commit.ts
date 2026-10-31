@@ -255,8 +255,9 @@ function reduceApprovedVisibleCommitState(
           : bfcacheCompatiblePreserveElementIds;
       // Next stores a server template's rendered seed on the persistent layout
       // router. The template's child-segment state key may change to remount
-      // client state without replacing that seed. Compare only params bound by
-      // the template's own route prefix; refresh/HMR or a changed owner param
+      // client state without replacing that seed, so only the element is kept:
+      // its identity follows the destination. Compare only params bound by the
+      // template's own route prefix; refresh/HMR or a changed owner param
       // still installs fresh server output.
       const preserveTemplateIds =
         action.reuseCurrentBfcacheIds &&
@@ -273,14 +274,11 @@ function reduceApprovedVisibleCommitState(
                 ),
             )
           : [];
-      const mergedPreserveElementIds =
-        preserveTemplateIds.length === 0
-          ? preserveElementIds
-          : [...new Set([...preserveElementIds, ...preserveTemplateIds])];
       const mergedElements = mergeElements(state.elements, action.elements, {
         clearAbsentSlots: action.type === "traverse" || !action.reuseCurrentBfcacheIds,
         preserveAbsentSlots: action.reuseCurrentBfcacheIds && commit.decision.preserveAbsentSlots,
-        preserveElementIds: mergedPreserveElementIds,
+        preserveElementIds,
+        preserveElementSeedIds: preserveTemplateIds,
         preservePreviousSlotIds: effectivePreservePreviousSlotIds,
       });
       return commitVisibleRouterState(
