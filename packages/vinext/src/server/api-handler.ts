@@ -342,8 +342,9 @@ function enhanceApiObjects(
     },
 
     json(this: NextApiResponse, data: unknown) {
+      // Like Next.js's sendJson(), go through send() so 204/304 handling applies.
       this.setHeader("Content-Type", "application/json; charset=utf-8");
-      this.end(JSON.stringify(data));
+      this.send(JSON.stringify(data));
     },
 
     send(this: NextApiResponse, data: unknown) {
