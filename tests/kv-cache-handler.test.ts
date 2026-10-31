@@ -710,6 +710,29 @@ describe("KVCacheHandler", () => {
       expect(hit?.value?.kind).toBe("APP_PAGE");
     });
 
+    it("drops an infinite cacheLife expire and stale instead of storing an unreadable entry", async () => {
+      await handler.set(
+        "infinite-life",
+        {
+          kind: "APP_PAGE",
+          html: "<div>forever</div>",
+          rscData: undefined,
+          headers: undefined,
+          postponed: undefined,
+          status: 200,
+        },
+        { cacheControl: { revalidate: 60, expire: Infinity, stale: Infinity } },
+      );
+
+      const stored = JSON.parse(store.get("cache:infinite-life")!);
+      expect(stored.cacheControl).toEqual({ revalidate: 60 });
+      expect(stored.expireAt).toBeNull();
+
+      const hit = await handler.get("infinite-life");
+      expect(hit?.cacheControl).toEqual({ revalidate: 60 });
+      expect(hit?.value?.kind).toBe("APP_PAGE");
+    });
+
     it("serves stale when a shorter read-time revalidate has elapsed", async () => {
       vi.useFakeTimers({ toFake: ["Date"] });
       vi.setSystemTime(1_000);

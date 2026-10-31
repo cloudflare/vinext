@@ -545,12 +545,17 @@ export class KVCacheHandler implements CacheHandler {
       typeof effectiveRevalidate === "number"
         ? {
             // JSON can't hold Infinity, so store `revalidate = false` as false,
-            // like Next.js does. Reads turn it back into Infinity.
+            // like Next.js does. Reads turn it back into Infinity. An infinite
+            // `expire` or `stale` (from cacheLife) is dropped instead.
             revalidate: Number.isFinite(effectiveRevalidate) ? effectiveRevalidate : false,
-            ...(effectiveExpire === undefined ? {} : { expire: effectiveExpire }),
+            ...(effectiveExpire === undefined || !Number.isFinite(effectiveExpire)
+              ? {}
+              : { expire: effectiveExpire }),
             // Client-router reuse bound — must survive KV so warm hits replay
             // the producing render's claim (see CacheControlMetadata.stale).
-            ...(effectiveStale === undefined ? {} : { stale: effectiveStale }),
+            ...(effectiveStale === undefined || !Number.isFinite(effectiveStale)
+              ? {}
+              : { stale: effectiveStale }),
           }
         : undefined;
 
