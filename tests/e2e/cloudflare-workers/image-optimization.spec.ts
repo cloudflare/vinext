@@ -25,6 +25,8 @@ test.describe("Cloudflare Workers /_next/image cache-state headers", () => {
   test("sends no x-nextjs-cache or x-vinext-cache on an error", async ({ request }) => {
     for (const [path, status] of [
       ["/_next/image?url=%2Fvinext-image.png&w=65&q=75", 400],
+      // No `images.qualities` configured: Next.js 16 allows only its default [75].
+      ["/_next/image?url=%2Fvinext-image.png&w=64&q=90", 400],
       ["/_next/image?url=%2Fmissing.png&w=64&q=75", 400],
     ] as const) {
       const response = await request.get(path, { maxRedirects: 0 });

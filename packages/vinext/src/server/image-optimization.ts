@@ -60,9 +60,8 @@ export type ImageConfig = {
   /** Allowed fixed-image widths. Defaults to Next.js image sizes. */
   imageSizes?: number[];
   /**
-   * Allowed output qualities. When unset, any quality from 1-100 is permitted
-   * (matches Next.js: an unset `images.qualities` is not restricted to a single
-   * value). When set, only the listed qualities are accepted.
+   * Allowed output qualities. Defaults to Next.js 16's `[75]`; only the
+   * listed qualities are accepted.
    */
   qualities?: number[];
   /** Allow SVG through the image optimization endpoint. Default: false. */
@@ -90,6 +89,12 @@ export type ImageConfig = {
  */
 export const DEFAULT_DEVICE_SIZES = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
 export const DEFAULT_IMAGE_SIZES = [32, 48, 64, 96, 128, 256, 384];
+/**
+ * Next.js 16 default `images.qualities`, used when the app configures none.
+ * The default loader rounds the `quality` prop to the closest entry (see
+ * `imageOptimizationUrl`), so its URLs stay within the allowlist.
+ */
+export const DEFAULT_IMAGE_QUALITIES = [75];
 const DEV_BLUR_MAX_WIDTH = 8;
 const DEV_BLUR_QUALITY = 70;
 
@@ -100,7 +105,7 @@ export type ParseImageParamsOptions = {
 export function resolveDevImageRedirect(
   requestUrl: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
-  allowedQualities?: number[],
+  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
   options: ParseImageParamsOptions = { isDev: true },
 ): string | null {
   const params = parseImageParams(requestUrl, allowedWidths, allowedQualities, options);
@@ -270,7 +275,7 @@ const RECURSIVE_IMAGE_URL_RE = /\/_(?:next|vinext)\/image(?:$|\/)/;
 export function parseImageParams(
   url: URL,
   allowedWidths: number[] = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES],
-  allowedQualities?: number[],
+  allowedQualities: number[] = DEFAULT_IMAGE_QUALITIES,
   options: ParseImageParamsOptions = {},
 ): { imageUrl: string; width: number; quality: number } | null {
   // Intentional hardening divergence from Next.js: reject duplicate and unknown
@@ -298,11 +303,9 @@ export function parseImageParams(
   const isDevBlurQuality = options.isDev && quality === DEV_BLUR_QUALITY;
   if (width <= 0 || (!allowedWidths.includes(width) && !isDevBlurWidth)) return null;
   if (quality < 1 || quality > 100) return null;
-  // Only enforce the quality allowlist when `images.qualities` is configured.
-  // Matches Next.js: an unset `qualities` permits any quality from 1-100.
-  if (allowedQualities && !allowedQualities.includes(quality) && !isDevBlurQuality) {
-    return null;
-  }
+  // Matches Next.js 16: an unset `images.qualities` allows only the default
+  // list, not every quality from 1-100.
+  if (!allowedQualities.includes(quality) && !isDevBlurQuality) return null;
 
   // Prevent open redirect / SSRF — only allow path-relative URLs.
   // Normalize backslashes to forward slashes first: browsers and the URL

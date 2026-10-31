@@ -35,17 +35,17 @@ function optUrlHtml(src: string, w: number, q = 75): string {
 describe("default loader emits /_next/image URLs (issue #1513)", () => {
   it("imageOptimizationUrl uses /_next/image prefix", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
-    const url = imageOptimizationUrl("/photo.png", 828, 85);
+    const url = imageOptimizationUrl("/photo.png", 828, 75);
     expect(url.startsWith("/_next/image?")).toBe(true);
     expect(url).toContain("url=%2Fphoto.png");
     expect(url).toContain("w=828");
-    expect(url).toContain("q=85");
+    expect(url).toContain("q=75");
   });
 
   it("keeps the deployment ID outside the optimized source URL", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
-    expect(imageOptimizationUrl("/_next/static/media/test.hash.png?dpl=deploy-1", 828, 85)).toBe(
-      deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1"),
+    expect(imageOptimizationUrl("/_next/static/media/test.hash.png?dpl=deploy-1", 828, 75)).toBe(
+      deployedOptUrl("/_next/static/media/test.hash.png", 828, 75, "deploy-1"),
     );
   });
 
@@ -344,11 +344,13 @@ describe("Image srcSet generation", () => {
       }),
     );
 
+    // `quality={85}` rounds to the default `images.qualities` entry, 75, like
+    // the Next.js default loader does.
     expect(html).toContain(
-      `src="${deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1").replaceAll("&", "&amp;")}"`,
+      `src="${deployedOptUrl("/_next/static/media/test.hash.png", 828, 75, "deploy-1").replaceAll("&", "&amp;")}"`,
     );
     expect(html).toContain(
-      `${deployedOptUrl("/_next/static/media/test.hash.png", 640, 85, "deploy-1").replaceAll("&", "&amp;")} 1x, ${deployedOptUrl("/_next/static/media/test.hash.png", 828, 85, "deploy-1").replaceAll("&", "&amp;")} 2x`,
+      `${deployedOptUrl("/_next/static/media/test.hash.png", 640, 75, "deploy-1").replaceAll("&", "&amp;")} 1x, ${deployedOptUrl("/_next/static/media/test.hash.png", 828, 75, "deploy-1").replaceAll("&", "&amp;")} 2x`,
     );
   });
 

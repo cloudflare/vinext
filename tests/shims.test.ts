@@ -29779,10 +29779,61 @@ describe("image optimization URL generation", () => {
 
   it("imageOptimizationUrl encodes special characters", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
-    const url = imageOptimizationUrl("/images/my photo.jpg", 800, 80);
+    const url = imageOptimizationUrl("/images/my photo.jpg", 800, 75);
     expect(url).toContain("url=%2Fimages%2Fmy%20photo.jpg");
     expect(url).toContain("w=800");
-    expect(url).toContain("q=80");
+    expect(url).toContain("q=75");
+  });
+
+  it("imageOptimizationUrl rounds quality to the closest entry of images.qualities", async () => {
+    // Matches the Next.js default loader (shared/lib/find-closest-quality.ts):
+    // `<Image quality={90}>` on a default config emits q=75, the only quality
+    // the endpoint accepts; with a configured list the closest entry wins.
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrl("/img.png", 640, 90)).toContain("q=75");
+    expect(imageOptimizationUrl("/img.png", 640, 1)).toContain("q=75");
+    expect(imageOptimizationUrl("/img.png", 640, 0)).toContain("q=75");
+
+    vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[50,90]");
+    vi.resetModules();
+    try {
+      const configured = await import("../packages/vinext/src/shims/image.js");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 90)).toContain("q=90");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 60)).toContain("q=50");
+      expect(configured.imageOptimizationUrl("/img.png", 640)).toContain("q=90");
+
+      // Next.js sorts the list first, so a tie resolves to the lower quality.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[90,60]");
+      vi.resetModules();
+      const unsorted = await import("../packages/vinext/src/shims/image.js");
+      expect(unsorted.imageOptimizationUrl("/img.png", 640, 75)).toContain("q=60");
+
+      // Next.js parses the prop with getInt first: non-finite numbers and
+      // non-digit strings become NaN, which rounds from the default 75.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[25,60,90]");
+      vi.resetModules();
+      const parsed = await import("../packages/vinext/src/shims/image.js");
+      const qualityOf = (quality: unknown) =>
+        new URL(
+          parsed.getImageProps({
+            src: "/img.png",
+            alt: "",
+            width: 64,
+            height: 64,
+            quality: quality as number,
+          }).props.src,
+          "http://localhost",
+        ).searchParams.get("q");
+      expect(qualityOf(Infinity)).toBe("60");
+      expect(qualityOf("1e2")).toBe("60");
+      expect(qualityOf("90")).toBe("90");
+      // Only real strings are parsed, as in Next.js.
+      expect(qualityOf(new String("90"))).toBe("60");
+      expect(qualityOf(90n)).toBe("60");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
   });
 
   it("imageOptimizationUrl uses default quality of 75", async () => {
@@ -29944,22 +29995,22 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
-  it("parseImageParams permits any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` is not restricted to a single
-    // value. Regression test for non-75 qualities (e.g. `<Image quality={90}>`)
-    // returning 400 from the image optimization endpoint.
+  it("parseImageParams permits only the Next.js 16 default [75] when qualities is unset", async () => {
+    // Matches Next.js 16: `images.qualities` defaults to [75], so an unset
+    // allowlist does not let a client request every quality from 1-100.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
-    for (const q of [1, 50, 75, 90, 100]) {
-      const params = parseImageParams(
-        new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=${q}`),
-      );
-      expect(params).not.toBeNull();
-      expect(params!.quality).toBe(q);
+    for (const q of [1, 50, 70, 90, 100]) {
+      expect(
+        parseImageParams(new URL(`http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=${q}`)),
+      ).toBeNull();
     }
+    expect(
+      parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=75"))?.quality,
+    ).toBe(75);
   });
 
-  it("parseImageParams enforces the allowlist only when qualities is configured", async () => {
+  it("parseImageParams enforces a configured qualities allowlist", async () => {
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     const allowed = [640, 750, 828, 1080, 1200, 1920, 2048, 3840];
@@ -30080,9 +30131,9 @@ describe("image optimization request parsing", () => {
     ).toBeNull();
   });
 
-  it("parseImageParams allows any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` does not restrict the quality
-    // to a single value — any integer from 1-100 is accepted.
+  it("parseImageParams rejects qualities outside the default [75] when qualities is unset", async () => {
+    // Matches Next.js 16: an unset `images.qualities` is `[75]`, not "any
+    // integer from 1-100".
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(
@@ -30090,7 +30141,7 @@ describe("image optimization request parsing", () => {
     ).not.toBeNull();
     expect(
       parseImageParams(new URL("http://localhost/_next/image?url=%2Fimg.jpg&w=640&q=80")),
-    ).not.toBeNull();
+    ).toBeNull();
   });
 
   it("parseImageParams accepts configured qualities", async () => {
