@@ -5275,6 +5275,475 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
 
+  // https://github.com/cloudflare/vinext/issues/4397: the client names the
+  // source `/ja/tips` by its matched route pathname, as Next.js does with
+  // `Next-Url`, because the public `/tips` does not match `/[locale]/tips`.
+  // Middleware redirects that internal spelling to `/tips`, which rewrites back
+  // to the same source. Next.js runs no middleware for the source and opens the
+  // modal. vinext follows one such redirect and authorizes its target as a
+  // direct request to it; anything it cannot follow keeps middleware's response.
+  describe("an interception source that middleware redirects", () => {
+    type RedirectCase = {
+      configRedirects?: TestHandlerOptions["configRedirects"];
+      location?: (sourceUrl: URL) => string;
+      redirectHeaders?: Record<string, string>;
+      redirectStatus?: number;
+      // Sends the request as an intercepted Server Action POST.
+      serverAction?: boolean;
+      // A query target middleware rewrites the target request to.
+      targetQuery?: string;
+      // Middleware's answer for the redirect target `/tips`.
+      followed?: "rewrite" | "rewrite-elsewhere" | "rewrite-other-locale" | "next" | "redirect";
+      trailingSlash?: boolean;
+    };
+
+    async function requestFromRedirectedSource({
+      configRedirects = [],
+      location = (sourceUrl) => {
+        const url = new URL(sourceUrl);
+        url.pathname = "/docs/tips";
+        return url.href;
+      },
+      redirectHeaders = {},
+      redirectStatus = 307,
+      serverAction = false,
+      targetQuery,
+      followed = "rewrite",
+      trailingSlash = false,
+    }: RedirectCase) {
+      const targetRoute = createPageRoute({
+        pattern: "/:locale/tips/:slug",
+        routeSegments: ["[locale]", "tips", "[slug]"],
+      });
+      const tipsRoute = createPageRoute({
+        pattern: "/:locale/tips",
+        routeSegments: ["[locale]", "tips"],
+      });
+      const otherRoute = createPageRoute({
+        pattern: "/:locale/other",
+        routeSegments: ["[locale]", "other"],
+      });
+      const routeFor = (
+        pathname: string,
+      ): { route: TestRoute; params: Record<string, string | string[]> } | null => {
+        const [, locale, section, slug] = pathname.replace(/\/$/, "").split("/");
+        if (section === "tips" && slug === "a") {
+          return { route: targetRoute, params: { locale, slug } };
+        }
+        if (section === "tips" && slug === undefined) {
+          return { route: tipsRoute, params: { locale } };
+        }
+        if (section === "other" && slug === undefined) {
+          return { route: otherRoute, params: { locale } };
+        }
+        return null;
+      };
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const handleServerActionRequest = vi.fn(async () => new Response("action"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        configRedirects,
+        dispatchMatchedPage,
+        handleServerActionRequest,
+        matchInterceptRoute: (_pathname, sourcePathname) => {
+          const match = sourcePathname ? routeFor(sourcePathname) : null;
+          return match?.route === tipsRoute || match?.route === otherRoute
+            ? { ...match, interceptionSourceIsConcrete: true }
+            : null;
+        },
+        matchRoute: routeFor,
+        middlewareModule: {
+          default(request: NextRequest) {
+            const { pathname } = request.nextUrl;
+            middlewarePaths.push(pathname);
+            const rewriteTo = (rewritePathname: string) => {
+              const url = new URL(request.url);
+              url.pathname = rewritePathname;
+              return new Response(null, { headers: { "x-middleware-rewrite": url.href } });
+            };
+            if (targetQuery !== undefined && pathname === "/ja/tips/a") {
+              const url = new URL(request.url);
+              url.search = targetQuery;
+              return new Response(null, { headers: { "x-middleware-rewrite": url.href } });
+            }
+            if (pathname === "/ja/tips" || pathname === "/ja/tips/") {
+              return new Response(null, {
+                status: redirectStatus,
+                headers: { location: location(new URL(request.url)), ...redirectHeaders },
+              });
+            }
+            if (pathname === "/tips" || pathname === "/tips/") {
+              const slash = pathname.endsWith("/") ? "/" : "";
+              if (followed === "rewrite") return rewriteTo(`/docs/ja/tips${slash}`);
+              if (followed === "rewrite-elsewhere") return rewriteTo(`/docs/ja/other${slash}`);
+              if (followed === "rewrite-other-locale") return rewriteTo(`/docs/en/tips${slash}`);
+              if (followed === "redirect") {
+                return new Response(null, {
+                  status: 307,
+                  headers: { location: new URL("/docs/en/tips", request.url).href },
+                });
+              }
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+        trailingSlash,
+      });
+
+      const headers = createRscRequestHeaders({
+        interceptionContext: trailingSlash ? "/ja/tips/" : "/ja/tips",
+      });
+      const rscUrl = await createRscRequestUrl(
+        trailingSlash ? "/docs/ja/tips/a/?view=1" : "/docs/ja/tips/a?view=1",
+        headers,
+      );
+      if (serverAction) {
+        headers.set("content-type", "text/plain");
+        headers.set("next-action", "interception-action");
+      }
+      // Server Action POSTs carry no `_rsc` cache-busting param.
+      const response = await handler(
+        serverAction
+          ? new Request("https://example.test/docs/ja/tips/a?view=1", {
+              body: "[]",
+              headers,
+              method: "POST",
+            })
+          : new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+      return { dispatchMatchedPage, handleServerActionRequest, middlewarePaths, response };
+    }
+
+    it("intercepts when the redirect target rewrites back to the same source", async () => {
+      const { dispatchMatchedPage, middlewarePaths, response } = await requestFromRedirectedSource(
+        {},
+      );
+
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips", "/tips"]);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/ja/tips" }),
+      );
+    });
+
+    // Locale middleware often builds the redirect from the pathname alone. The
+    // target is authorized with the claimed source's query either way.
+    it("intercepts when the redirect drops the query", async () => {
+      const { dispatchMatchedPage, middlewarePaths, response } = await requestFromRedirectedSource({
+        location: () => "https://example.test/docs/tips",
+      });
+
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips", "/tips"]);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    });
+
+    it.each<[string, RedirectCase, string]>([
+      [
+        "sets a cookie",
+        { redirectHeaders: { "set-cookie": "locale=ja; Path=/" } },
+        "/docs/tips?view=1",
+      ],
+      [
+        "leaves the origin",
+        { location: () => "https://other.test/docs/tips?view=1" },
+        "https://other.test/docs/tips?view=1",
+      ],
+      [
+        "leaves the basePath",
+        { location: () => "https://example.test/tips?view=1" },
+        "/tips?view=1",
+      ],
+      // A tab survives URL parsing but no request URL carries it.
+      [
+        "names a pathname no client context can carry",
+        { location: () => "https://example.test/docs/tips%09?view=1" },
+        "/docs/tips%09?view=1",
+      ],
+    ])("returns a redirect that %s", async (_label, redirectCase, location) => {
+      const { dispatchMatchedPage, middlewarePaths, response } =
+        await requestFromRedirectedSource(redirectCase);
+
+      expect(response.status).toBe(307);
+      expect(response.headers.get("location")).toBe(location);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it.each<[string, RedirectCase]>([
+      ["middleware redirects again", { followed: "redirect" }],
+      ["middleware rewrites to another route", { followed: "rewrite-elsewhere" }],
+      // `/en/tips` is an interception source too, with other params.
+      ["middleware rewrites to another locale", { followed: "rewrite-other-locale" }],
+      ["middleware does not rewrite", { followed: "next" }],
+      [
+        "a config redirect matches",
+        { configRedirects: [{ source: "/tips", destination: "/en/tips", permanent: false }] },
+      ],
+    ])("does not intercept when, for the redirect target, %s", async (_label, redirectCase) => {
+      const { dispatchMatchedPage, response } = await requestFromRedirectedSource(redirectCase);
+
+      expect(response.status).toBe(404);
+      expect(response.headers.get("location")).toBeNull();
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    // The followed request carries the query target middleware resolved, so a
+    // config redirect conditioned on it applies, as for a direct request.
+    it("applies a config redirect conditioned on the target's resolved query", async () => {
+      const { dispatchMatchedPage, middlewarePaths, response } = await requestFromRedirectedSource({
+        configRedirects: [
+          {
+            source: "/tips",
+            has: [{ type: "query", key: "mode", value: "private" }],
+            destination: "/en/tips",
+            permanent: false,
+          },
+        ],
+        targetQuery: "?mode=private",
+      });
+
+      expect(response.status).toBe(404);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    // A 303 (or a 301/302 of a POST) turns the redirected request into a
+    // bodyless GET, which method-sensitive middleware may answer differently.
+    it("returns a 303 redirect of an intercepted Server Action", async () => {
+      const { handleServerActionRequest, middlewarePaths, response } =
+        await requestFromRedirectedSource({ redirectStatus: 303, serverAction: true });
+
+      expect(response.status).toBe(303);
+      expect(response.headers.get("location")).toBe("/docs/tips?view=1");
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(handleServerActionRequest).not.toHaveBeenCalled();
+    });
+
+    it("follows a 307 redirect of an intercepted Server Action", async () => {
+      const { handleServerActionRequest, middlewarePaths, response } =
+        await requestFromRedirectedSource({ serverAction: true });
+
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("action");
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips", "/tips"]);
+      expect(handleServerActionRequest).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/ja/tips" }),
+      );
+    });
+
+    // As for a direct request, a config redirect wins before middleware runs.
+    it("checks config redirects before running middleware for the redirect target", async () => {
+      const { middlewarePaths, response } = await requestFromRedirectedSource({
+        configRedirects: [{ source: "/tips", destination: "/en/tips", permanent: false }],
+      });
+
+      expect(response.status).toBe(404);
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+    });
+
+    // The issue's middleware maps the locale root `/ja` to `/`, which under a
+    // basePath is the basePath itself.
+    it("intercepts from a redirect to the basePath root", async () => {
+      const localeRoute = createPageRoute({ pattern: "/:locale", routeSegments: ["[locale]"] });
+      const targetRoute = createPageRoute({
+        pattern: "/:locale/p",
+        routeSegments: ["[locale]", "p"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/ja"
+            ? { interceptionSourceIsConcrete: true, route: localeRoute, params: { locale: "ja" } }
+            : null,
+        matchRoute: (
+          pathname: string,
+        ): { route: TestRoute; params: Record<string, string | string[]> } | null => {
+          if (pathname === "/ja/p") return { params: { locale: "ja" }, route: targetRoute };
+          if (pathname === "/ja") return { params: { locale: "ja" }, route: localeRoute };
+          return null;
+        },
+        middlewareModule: {
+          default(request: NextRequest) {
+            const { pathname } = request.nextUrl;
+            middlewarePaths.push(pathname);
+            if (pathname === "/ja") {
+              return new Response(null, {
+                status: 307,
+                headers: { location: new URL("/docs", request.url).href },
+              });
+            }
+            if (pathname === "/") {
+              return new Response(null, {
+                headers: { "x-middleware-rewrite": new URL("/docs/ja", request.url).href },
+              });
+            }
+            return new Response(null, { headers: { "x-middleware-next": "1" } });
+          },
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/ja" });
+      const rscUrl = await createRscRequestUrl("/docs/ja/p", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(200);
+      expect(middlewarePaths).toEqual(["/ja/p", "/ja", "/"]);
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/ja" }),
+      );
+    });
+
+    // Middleware's own Location normalization re-slashes `/docs/tips`, so
+    // reach the handler with the raw redirect. A direct request to `/tips`
+    // would redirect to `/tips/` first.
+    it("does not intercept from a redirect target that needs a trailing slash", async () => {
+      const tipsRoute = createPageRoute({
+        pattern: "/:locale/tips",
+        routeSegments: ["[locale]", "tips"],
+      });
+      const targetRoute = createPageRoute({
+        pattern: "/:locale/tips/:slug",
+        routeSegments: ["[locale]", "tips", "[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/ja/tips/"
+            ? { interceptionSourceIsConcrete: true, route: tipsRoute, params: { locale: "ja" } }
+            : null,
+        matchRoute: (pathname: string) =>
+          pathname === "/ja/tips/a/"
+            ? { params: { locale: "ja", slug: "a" }, route: targetRoute }
+            : null,
+        async runMiddleware({ cleanPathname }) {
+          middlewarePaths.push(cleanPathname);
+          return cleanPathname === "/ja/tips/"
+            ? {
+                kind: "response",
+                matched: true,
+                response: new Response(null, {
+                  status: 307,
+                  headers: { location: "https://example.test/docs/tips" },
+                }),
+              }
+            : cleanPathname === "/tips"
+              ? {
+                  kind: "continue",
+                  cleanPathname: "/ja/tips/",
+                  matched: true,
+                  rewritten: true,
+                  search: "",
+                }
+              : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+        },
+        trailingSlash: true,
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/ja/tips/" });
+      const rscUrl = await createRscRequestUrl("/docs/ja/tips/a/", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(404);
+      expect(middlewarePaths).toEqual(["/ja/tips/a/", "/ja/tips/"]);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("returns a redirect an external source rewrite proxies", async () => {
+      const tipsRoute = createPageRoute({
+        pattern: "/:locale/tips",
+        routeSegments: ["[locale]", "tips"],
+      });
+      const targetRoute = createPageRoute({
+        pattern: "/:locale/tips/:slug",
+        routeSegments: ["[locale]", "tips", "[slug]"],
+      });
+      const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+      const middlewarePaths: string[] = [];
+      const handler = createHandler({
+        configHeaders: [],
+        dispatchMatchedPage,
+        matchInterceptRoute: (_pathname, sourcePathname) =>
+          sourcePathname === "/ja/tips"
+            ? { interceptionSourceIsConcrete: true, route: tipsRoute, params: { locale: "ja" } }
+            : null,
+        matchRoute: (
+          pathname: string,
+        ): { route: TestRoute; params: Record<string, string | string[]> } | null => {
+          if (pathname === "/ja/tips/a") {
+            return { params: { locale: "ja", slug: "a" }, route: targetRoute };
+          }
+          if (pathname === "/ja/tips") return { params: { locale: "ja" }, route: tipsRoute };
+          return null;
+        },
+        async runMiddleware({ cleanPathname }) {
+          middlewarePaths.push(cleanPathname);
+          if (cleanPathname === "/ja/tips") {
+            return {
+              kind: "response",
+              externalRewrite: true,
+              matched: true,
+              response: new Response(null, {
+                status: 302,
+                headers: { location: "https://example.test/docs/tips" },
+              }),
+            };
+          }
+          return cleanPathname === "/tips"
+            ? {
+                kind: "continue",
+                cleanPathname: "/ja/tips",
+                matched: true,
+                rewritten: true,
+                search: "",
+              }
+            : { kind: "continue", cleanPathname, matched: true, rewritten: false, search: null };
+        },
+      });
+
+      const headers = createRscRequestHeaders({ interceptionContext: "/ja/tips" });
+      const rscUrl = await createRscRequestUrl("/docs/ja/tips/a", headers);
+      const response = await handler(
+        new Request(`https://example.test${rscUrl}`, { headers }),
+        null,
+      );
+
+      expect(response.status).toBe(302);
+      expect(response.headers.get("location")).toBe("https://example.test/docs/tips");
+      expect(middlewarePaths).toEqual(["/ja/tips/a", "/ja/tips"]);
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    });
+
+    it("intercepts from a canonical trailing-slash redirect target", async () => {
+      const { dispatchMatchedPage, response } = await requestFromRedirectedSource({
+        trailingSlash: true,
+        location: (sourceUrl) => {
+          const url = new URL(sourceUrl);
+          url.pathname = "/docs/tips/";
+          return url.href;
+        },
+      });
+
+      expect(response.status).toBe(200);
+      expect(dispatchMatchedPage).toHaveBeenCalledOnce();
+    });
+  });
+
   // Next.js matches static segments against the raw path, so a direct request
   // to `/%66eed/secret` reaches only a route whose first segment is dynamic, and
   // middleware sees that raw pathname. The source pass must resolve the claimed
