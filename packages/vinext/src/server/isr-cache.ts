@@ -22,6 +22,7 @@ import {
   type CachedAppPageValue,
 } from "vinext/shims/cache-handler";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
+import { getExplicitCdnCacheAdapter } from "vinext/shims/cdn-cache-state";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { reportRequestError, type OnRequestErrorContext } from "./instrumentation.js";
@@ -90,7 +91,51 @@ export type ISRCacheEntry = {
 export async function isrGet(key: string): Promise<ISRCacheEntry | null> {
   // Page-level reads go through the CDN cache adapter. The default adapter
   // reads the data cache; an edge adapter may return null so the CDN serves.
-  const result = await getCdnCacheAdapter().get(key);
+  return toIsrCacheEntry(await getCdnCacheAdapter().get(key));
+}
+
+/**
+ * Read a PPR fallback shell. A shell is never a response by itself, so an edge
+ * can't serve it: like Next.js's fallback entries, shells live in the data
+ * cache on every backend. An adapter that packages the build's shells, such
+ * as Static Assets, is read when the data cache has none.
+ */
+export async function isrGetFallbackShell(key: string): Promise<ISRCacheEntry | null> {
+  const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
+  const stored = await getDataCacheHandler().get(key);
+  if (stored) return toIsrCacheEntry(stored);
+  const packaged = await getExplicitCdnCacheAdapter()?.get(key);
+  return toIsrCacheEntry(packaged ? withPackagedCacheState(packaged) : null);
+}
+
+/**
+ * A packaged shell can't see `revalidatePath()` or `revalidateTag()`, so it is
+ * served stale: reading it stores a replacement in the data cache, where they
+ * act, and an invalidation that drops that replacement serves the packaged
+ * shell stale again instead of fresh. Past its expire it is a miss.
+ */
+function withPackagedCacheState(entry: CacheHandlerValue): CacheHandlerValue {
+  if (entry.cacheState !== undefined) return entry;
+  const expire = entry.cacheControl?.expire;
+  const isExpired = typeof expire === "number" && Date.now() - entry.lastModified > expire * 1000;
+  return { ...entry, cacheState: isExpired ? "expired" : "stale" };
+}
+
+/** Store a PPR fallback shell in the data cache, where {@link isrGetFallbackShell} reads it. */
+export async function isrSetFallbackShell(
+  key: string,
+  data: CachedAppPageValue,
+  policy: IsrWritePolicy,
+): Promise<void> {
+  const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
+  await getDataCacheHandler().set(key, data, {
+    cacheControl: policy.cacheControl,
+    revalidate: policy.cacheControl.revalidate,
+    tags: policy.tags ?? [],
+  });
+}
+
+function toIsrCacheEntry(result: CacheHandlerValue | null): ISRCacheEntry | null {
   if (!result) return null;
   const isExpired = result.cacheState === "expired";
 
@@ -165,33 +210,30 @@ export type AppPageCacheSetter = (
   policy: IsrWritePolicy,
 ) => Promise<void>;
 
-export async function isrSetPrerenderedAppPage(
+type PrerenderedAppPageMetadata = {
+  expireSeconds?: number;
+  revalidateSeconds?: number;
+  /** Client reuse bound from the prerender's `cacheLife`. */
+  staleSeconds?: number;
+  /**
+   * Implicit/path tags to attach to the seeded entry. Required so that
+   * `revalidatePath()` (and `revalidateTag()`) can invalidate prerender-seeded
+   * cache entries — without tags the entry is unreachable by tag-based
+   * invalidation and remains stale until natural `revalidateAt` expiry.
+   * See cloudflare/vinext#1486.
+   */
+  tags?: string[];
+};
+
+function prerenderedAppPageContext(
   key: string,
-  data: CachedAppPageValue,
-  metadata: {
-    expireSeconds?: number;
-    revalidateSeconds?: number;
-    /** Client reuse bound from the prerender's `cacheLife`. */
-    staleSeconds?: number;
-    /**
-     * Implicit/path tags to attach to the seeded entry. Required so that
-     * `revalidatePath()` (and `revalidateTag()`) can invalidate prerender-seeded
-     * cache entries — without tags the entry is unreachable by tag-based
-     * invalidation and remains stale until natural `revalidateAt` expiry.
-     * See cloudflare/vinext#1486.
-     */
-    tags?: string[];
-  },
-): Promise<void> {
+  metadata: PrerenderedAppPageMetadata,
+): Record<string, unknown> {
   const revalidateSeconds = metadata.revalidateSeconds;
   const tags = metadata.tags;
   if (process.env.NEXT_PRIVATE_DEBUG_CACHE) {
     console.debug("[vinext] ISR: seed", key);
   }
-  // Route page-level seeding through the CDN cache adapter (default adapter
-  // writes the data cache; edge adapters no-op). Merge in main's tag support
-  // (cloudflare/vinext#1486) so prerender-seeded entries are reachable by
-  // revalidatePath()/revalidateTag().
   const ctx: Record<string, unknown> = {};
   if (revalidateSeconds !== undefined) {
     ctx.revalidate = revalidateSeconds;
@@ -200,7 +242,29 @@ export async function isrSetPrerenderedAppPage(
   if (tags && tags.length > 0) {
     ctx.tags = tags;
   }
-  await getCdnCacheAdapter().set(key, data, ctx);
+  return ctx;
+}
+
+export async function isrSetPrerenderedAppPage(
+  key: string,
+  data: CachedAppPageValue,
+  metadata: PrerenderedAppPageMetadata,
+): Promise<void> {
+  // Route page-level seeding through the CDN cache adapter (default adapter
+  // writes the data cache; edge adapters no-op). Merge in main's tag support
+  // (cloudflare/vinext#1486) so prerender-seeded entries are reachable by
+  // revalidatePath()/revalidateTag().
+  await getCdnCacheAdapter().set(key, data, prerenderedAppPageContext(key, metadata));
+}
+
+/** Seed a prerendered fallback shell where {@link isrGetFallbackShell} reads it. */
+export async function isrSetPrerenderedFallbackShell(
+  key: string,
+  data: CachedAppPageValue,
+  metadata: PrerenderedAppPageMetadata,
+): Promise<void> {
+  const { getDataCacheHandler } = await import("vinext/shims/cache-handler");
+  await getDataCacheHandler().set(key, data, prerenderedAppPageContext(key, metadata));
 }
 
 // ---------------------------------------------------------------------------
@@ -226,12 +290,36 @@ const pendingOnDemandRegenerations = (_g[_PENDING_ON_DEMAND_REGEN_KEY] ??= new M
   Promise<unknown>
 >()) as Map<string, Promise<unknown>>;
 
+// Like Next.js ResponseCache, requests that find no fallback shell share one
+// blocking render of it.
+const _PENDING_FALLBACK_SHELL_KEY = Symbol.for("vinext.isrCache.pendingFallbackShellProductions");
+const pendingFallbackShellProductions = (_g[_PENDING_FALLBACK_SHELL_KEY] ??= new Map<
+  string,
+  Promise<unknown>
+>()) as Map<string, Promise<unknown>>;
+
 /** Coalesce same-key synchronous on-demand revalidations. */
 export function coalesceOnDemandRevalidation<T>(
   key: string,
   renderFn: () => Promise<T>,
 ): Promise<T> {
-  const pending = pendingOnDemandRegenerations.get(key) as Promise<T> | undefined;
+  return coalesceRender(pendingOnDemandRegenerations, key, renderFn);
+}
+
+/** Coalesce same-key blocking renders of a missing fallback shell. */
+export function coalesceFallbackShellProduction<T>(
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  return coalesceRender(pendingFallbackShellProductions, key, renderFn);
+}
+
+function coalesceRender<T>(
+  pendingRenders: Map<string, Promise<unknown>>,
+  key: string,
+  renderFn: () => Promise<T>,
+): Promise<T> {
+  const pending = pendingRenders.get(key) as Promise<T> | undefined;
   if (pending) return pending;
 
   // Defer invocation until after the promise is registered, matching Next.js's
@@ -240,12 +328,12 @@ export function coalesceOnDemandRevalidation<T>(
     Promise.resolve()
       .then(renderFn)
       .finally(() => {
-        if (pendingOnDemandRegenerations.get(key) === promise) {
-          pendingOnDemandRegenerations.delete(key);
+        if (pendingRenders.get(key) === promise) {
+          pendingRenders.delete(key);
         }
       }),
   );
-  pendingOnDemandRegenerations.set(key, promise);
+  pendingRenders.set(key, promise);
   return promise;
 }
 
@@ -302,16 +390,39 @@ export async function coalesceOnDemandResponse<R extends Response | null>(
 export function triggerBackgroundRegeneration(
   key: string,
   renderFn: () => Promise<void>,
-  errorContext?: {
-    routerKind: OnRequestErrorContext["routerKind"];
-    routePath: string;
-    routeType: OnRequestErrorContext["routeType"];
-    shouldReport?: (error: unknown) => boolean;
-  },
+  errorContext?: BackgroundRegenerationErrorContext,
 ): void {
   // Edge-managed CDN adapters revalidate by re-requesting the origin, so the
   // origin must not also run in-process regeneration.
   if (!getCdnCacheAdapter().ownsBackgroundRevalidation) return;
+  runBackgroundRegeneration(key, renderFn, errorContext);
+}
+
+/**
+ * Regenerate a PPR fallback shell in the background. Shells live in the data
+ * cache, which no edge revalidates, so the origin regenerates them on every
+ * backend.
+ */
+export function triggerFallbackShellRegeneration(
+  key: string,
+  renderFn: () => Promise<void>,
+  errorContext?: BackgroundRegenerationErrorContext,
+): void {
+  runBackgroundRegeneration(key, renderFn, errorContext);
+}
+
+type BackgroundRegenerationErrorContext = {
+  routerKind: OnRequestErrorContext["routerKind"];
+  routePath: string;
+  routeType: OnRequestErrorContext["routeType"];
+  shouldReport?: (error: unknown) => boolean;
+};
+
+function runBackgroundRegeneration(
+  key: string,
+  renderFn: () => Promise<void>,
+  errorContext?: BackgroundRegenerationErrorContext,
+): void {
   if (pendingRegenerations.has(key)) return;
 
   const promise = renderFn()
