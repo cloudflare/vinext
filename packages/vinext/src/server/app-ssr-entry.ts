@@ -35,6 +35,7 @@ import { createClientPageSsrSearchParamsSource } from "./app-page-search-params-
 import { runWithRootParamsScope, type RootParams } from "vinext/shims/root-params";
 import { isOpenRedirectShaped, repeatedSlashRedirectResponse } from "./open-redirect.js";
 import { notFoundResponse } from "./http-error-responses.js";
+import { isSrvxAbsoluteFormTarget } from "./srvx-request-target.js";
 import { withScriptNonce } from "vinext/shims/script-nonce-context";
 import { withAppRouterTree } from "vinext/shims/app-router-tree-context";
 import {
@@ -1020,6 +1021,9 @@ export async function handleSsr(
 
 export default {
   async fetch(request: Request): Promise<Response> {
+    // Nitro's Node server takes request.url's origin from an absolute-form
+    // request target, which `vinext start` 404s before routing.
+    if (isSrvxAbsoluteFormTarget(request)) return notFoundResponse();
     const url = new URL(request.url);
     // Redirect repeated slashes / backslashes like Next.js and block encoded
     // protocol-relative shapes (/%5Cevil.com/). See
