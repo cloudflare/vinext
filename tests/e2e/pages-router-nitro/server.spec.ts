@@ -1,3 +1,4 @@
+import http from "node:http";
 import { test, expect } from "@playwright/test";
 
 // tests/fixtures/pages-router-nitro built with `vite build` and served by
@@ -15,6 +16,26 @@ test.describe("Pages Router on Nitro (node server)", () => {
     expect(response.headers()["content-type"]).toContain("text/plain");
     expect(response.headers()["x-vinext-proxy"]).toBe("active");
     expect(await response.text()).toBe("Hello from public/\n");
+  });
+
+  // Nitro's Node server keeps a `#fragment` sent on the request line; Next.js
+  // drops it before proxy runs.
+  test("drops a request-line fragment before proxy", async ({ baseURL }) => {
+    const port = new URL(baseURL!).port;
+    const body = await new Promise<string>((resolve, reject) => {
+      http
+        .get({ host: "localhost", port, path: "/proxy-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({
+      url: `http://localhost:${port}/proxy-request-url?q=1`,
+      hash: "",
+    });
   });
 
   test("lets proxy answer a request for a public file", async ({ request }) => {

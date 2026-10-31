@@ -234,6 +234,26 @@ describe("Pages Worker request stage", () => {
     expect(mocks.renderResponse).not.toHaveBeenCalled();
   });
 
+  // A Node multi-stage adapter can keep a `#fragment` sent on the request
+  // line; Next.js never shows one to middleware or a page.
+  it("drops a request-line fragment before middleware and dispatch", async () => {
+    let middlewareUrl: string | undefined;
+    mocks.runMiddleware.mockImplementation(async (...args: unknown[]) => {
+      middlewareUrl = (args[0] as Request).url;
+      return { continue: true };
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async () => new Response("remote"));
+    await handleRequestStage(
+      new Request("https://example.com/page?q=1#planted"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(middlewareUrl).toBe("https://example.com/page?q=1");
+    expect(dispatch.mock.calls[0]?.[0].url).toBe("https://example.com/page?q=1");
+  });
+
   // Next.js keys a static page's response cache entry by its path, so every
   // host shares one entry. Response Store asks for a query-free identity and
   // Workers Cache a host-free one; a Pages identity keeps the query in both.

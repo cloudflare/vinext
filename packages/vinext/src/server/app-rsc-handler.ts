@@ -146,6 +146,7 @@ import {
   normalizeTrailingSlash,
   normalizeTrailingSlashPathname,
   resolvePublicFileRoute,
+  stripRequestUrlFragment,
 } from "./request-pipeline.js";
 import {
   matchPrerenderRouteParamsPayload,
@@ -3057,17 +3058,19 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
   options: CreateAppRscHandlerOptions<TRoute>,
 ): AppRscRequestHandler {
   const handleAppRscRequestLifecycle = async (
-    rawRequest: Request,
+    hostRequest: Request,
     ctx: unknown,
     allowInternalRscDocumentFallback = false,
     dispatchResponseStage?: DispatchAppWorkerResponseStage,
     responseStageProbeMode: VinextCacheabilityProbeMode | null = null,
     transportedPrerenderState?: TrustedPrerenderState | null,
   ): Promise<Response> => {
-    // Read before anything clones the request: in dev, srvx returns its own
+    // Read before anything clones the request: srvx returns its own
     // connection signal only until a clone materializes its native Request,
     // whose signal merely follows it.
-    const rawRequestSignal = rawRequest.signal;
+    const rawRequestSignal = hostRequest.signal;
+    // srvx (Nitro, `vite preview`) keeps a `#fragment` sent on the request line.
+    const rawRequest = stripRequestUrlFragment(hostRequest);
     // Strip forged internal headers at the App Router request boundary.
     // Must happen BEFORE headersContextFromRequest() and
     // requestContextFromRequest() so the captured context never contains

@@ -689,3 +689,19 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
   }
   return attachRequestCfMetadata(cloned, request);
 }
+
+/**
+ * Drop a `#fragment` the host kept from the request line. Next.js rebuilds
+ * request URLs from pathname + search, so neither middleware nor handlers
+ * ever observe one, and pathname-keyed cache entries must not either.
+ */
+export function stripRequestUrlFragment(request: Request): Request {
+  const hashIndex = request.url.indexOf("#");
+  if (hashIndex === -1) return request;
+  // Read before cloning: srvx returns its own connection signal only until a
+  // clone materializes its native Request, whose signal merely follows it and
+  // stops following once nothing retains the original request.
+  const signal = request.signal;
+  const stripped = cloneRequestWithUrl(request, request.url.slice(0, hashIndex));
+  return attachRequestCfMetadata(new Request(stripped, { signal }), request);
+}

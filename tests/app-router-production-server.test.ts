@@ -2864,6 +2864,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res2.headers.get("x-vinext-cache")).toBeNull();
   });
 
+  // Node's parser keeps a `#fragment` sent on the request line; Next.js drops
+  // it before handlers run, so it never reaches the pathname-keyed entry.
+  it("route handler ISR: drops a request-line fragment like Next.js", async () => {
+    const url = new URL(`${baseUrl}/api/isr-url-fragment`);
+    const planted = await rawHttpRequest(url, { path: "/api/isr-url-fragment#planted" });
+    expect(planted.status).toBe(200);
+    expect(JSON.parse(planted.body.toString())).toEqual({
+      pathname: "/api/isr-url-fragment",
+      hash: "",
+    });
+
+    const visitor = await fetch(url);
+    expect(visitor.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await visitor.json()).toEqual({ pathname: "/api/isr-url-fragment", hash: "" });
+  });
+
   it("route handler ISR: handler-set Cache-Control skips ISR caching", async () => {
     // /api/custom-cache exports revalidate=60 but sets its own Cache-Control
     const res1 = await fetch(`${baseUrl}/api/custom-cache`);

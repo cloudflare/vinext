@@ -12,6 +12,7 @@ import {
   isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
+  stripRequestUrlFragment,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
   sendRepeatedSlashRedirect,
@@ -1712,6 +1713,50 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.method).toBe("GET");
     expect(cloned.body).toBeNull();
     expect(cloned.headers.get("accept")).toBe("text/html");
+  });
+});
+
+// ── stripRequestUrlFragment ──────────────────────────────────────────────
+
+describe("stripRequestUrlFragment", () => {
+  it("returns a fragment-free request as is", () => {
+    const request = new Request("https://example.com/a?q=1");
+    expect(stripRequestUrlFragment(request)).toBe(request);
+  });
+
+  it("drops the fragment and keeps the query and body", async () => {
+    const stripped = stripRequestUrlFragment(
+      new Request("https://example.com/a?q=1#planted", { method: "POST", body: "payload" }),
+    );
+    expect(stripped.url).toBe("https://example.com/a?q=1");
+    expect(stripped.method).toBe("POST");
+    expect(await stripped.text()).toBe("payload");
+  });
+
+  // srvx's NodeRequest returns its connection signal until a clone reads the
+  // body and materializes a native Request, whose signal only follows it for
+  // as long as the NodeRequest is retained.
+  it("follows the host's signal from before the clone", () => {
+    const connection = new AbortController();
+    const materialized = new AbortController();
+    let bodyRead = false;
+    const hostRequest = {
+      url: "https://example.com/a#planted",
+      method: "GET",
+      headers: new Headers(),
+      get body() {
+        bodyRead = true;
+        return null;
+      },
+      get signal() {
+        return bodyRead ? materialized.signal : connection.signal;
+      },
+    } as unknown as Request;
+
+    const stripped = stripRequestUrlFragment(hostRequest);
+    expect(stripped.url).toBe("https://example.com/a");
+    connection.abort();
+    expect(stripped.signal.aborted).toBe(true);
   });
 });
 
