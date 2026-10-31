@@ -429,6 +429,11 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Vitest: app-router-production-server.test.ts
+      {
+        source: "/action-cache-control/config-policy",
+        headers: [{ key: "Cache-Control", value: "public, s-maxage=300" }],
+      },
       // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
       {
         source: "/external-headers/:path*",
