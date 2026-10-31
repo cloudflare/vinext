@@ -51,7 +51,8 @@ function findPackageJson(file: string): string | null {
   }
 }
 
-function canNodeImport(file: string): boolean {
+/** Whether Node loads a file as an ES module from its name: `.mjs`, or `.js` in a `"type": "module"` package. */
+export function canNodeImport(file: string): boolean {
   const extension = path.extname(file);
   if (extension === ".mjs") return true;
   if (extension !== ".js") return false;

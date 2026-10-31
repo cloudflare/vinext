@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vite-plus/test";
@@ -285,5 +285,271 @@ describe("vinext:require-condition-resolution", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("vinext:require-condition-resolution in unbundled ESM dependencies", () => {
+  const CACHE_DIR = "/app/node_modules/.vite";
+  const ID = "/app/node_modules/dependency/esm/index.js";
+  const devServer = {
+    mode: "dev",
+    config: { cacheDir: CACHE_DIR, dev: { moduleRunnerTransform: true }, plugins: [] },
+  };
+
+  function createDependencyTransform(environment: object = devServer) {
+    const resolve = vi.fn(async () => undefined);
+    const hook = createPlugin(resolve).transform;
+    const handler = typeof hook === "function" ? hook : hook?.handler;
+    const transform = handler!.bind({ environment } as never) as (
+      code: string,
+      id: string,
+    ) => Promise<{ code: string } | null>;
+    return { transform, resolve };
+  }
+
+  it("awaits module-level calls in place and hoists nested ones around the module", async () => {
+    const { transform, resolve } = createDependencyTransform();
+
+    const result = await transform(
+      [
+        `#!/usr/bin/env node`,
+        `"use client"`,
+        `import helper from "./helper.js";`,
+        `const path = require("node:path");`,
+        `if (typeof window !== "undefined") require("./browser.js");`,
+        `export function read() {`,
+        `  return [helper, path, require("./data.json"), require("./data.json"), require("server-only")];`,
+        `}`,
+        `export const shadowed = ((require) => require("./local.js"))(String);`,
+        `export class Reader { static value = require("./static.js"); instance = require("./instance.js"); }`,
+      ].join("\n"),
+      ID,
+    );
+
+    expect(result?.code.split("\n")).toEqual([
+      `#!/usr/bin/env node`,
+      `"use client"`,
+      // Packages, and files a class body requires as the module evaluates.
+      `const __vinext_require_1__ = await __vinext_require_load__(import("server-only"));` +
+        `const __vinext_require_2__ = await __vinext_require_load__(import("./static.js"));` +
+        `import helper from "./helper.js";`,
+      `const path = __vinext_require__(await import("node:path"));`,
+      `if (typeof window !== "undefined") __vinext_require__(await import("./browser.js"));`,
+      `export function read() {`,
+      `  return [helper, path, __vinext_require_0__(), __vinext_require_0__(), __vinext_require_1__()];`,
+      `}`,
+      `export const shadowed = ((require) => require("./local.js"))(String);`,
+      `export class Reader { static value = __vinext_require_2__(); instance = __vinext_require_3__(); }`,
+      // Files of the same package that only functions and instance fields
+      // require load last.
+      `const __vinext_require_0__ = await __vinext_require_load__(import("./data.json"));`,
+      `const __vinext_require_3__ = await __vinext_require_load__(import("./instance.js"));`,
+      expect.stringMatching(/^function __vinext_require__\(m\)/),
+      expect.stringMatching(/^function __vinext_require_load__\(load\)/),
+    ]);
+    // Vite resolves the imports; nothing is pre-resolved.
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  /** Evaluate a transformed module whose only module syntax is `export function read`. */
+  async function evaluate(code: string, modules: Record<string, () => Promise<object>>) {
+    const loads: string[] = [];
+    const body = code
+      .replaceAll("import(", "__import(")
+      .replace("export function read", "function read");
+    const module = new AsyncFunction("__import", `${body}\nreturn read;`);
+    const read = (await module((target: string) => {
+      loads.push(target);
+      return modules[target]?.() ?? Promise.reject(new Error(`Cannot find module '${target}'`));
+    })) as () => unknown;
+    return { read, loads };
+  }
+  const AsyncFunction = (async () => {}).constructor as new (
+    ...args: string[]
+  ) => (...args: unknown[]) => Promise<unknown>;
+
+  it("returns what @vitejs/plugin-rsc's interop returns and throws errors where require() would", async () => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(
+      [
+        `let optional = "fallback";`,
+        `try { optional = require("missing"); } catch {}`,
+        `const loaded = require("cjs");`,
+        `if (loaded !== require("cjs")) require("never");`,
+        `export function read() {`,
+        `  let nested = "fallback";`,
+        `  try { nested = require("missing"); } catch (error) { nested = error.message; }`,
+        `  return { optional, nested, cjs: require("cjs"), native: require("native"), converted: require("converted"),`,
+        `    esm: require("esm"), esmModuleExports: require("esm-module-exports"),`,
+        `    nullDefault: require("null-default"), workers: require("workers") };`,
+        `}`,
+      ].join("\n"),
+      ID,
+    );
+
+    const exports = { named: "named" };
+    const esm = { default: "default", named: "named" };
+    const nullDefault = { default: null, named: "named" };
+    const workers = { env: {} };
+    const marker = { marker: true };
+    const { read, loads } = await evaluate(result!.code, {
+      // CommonJS through Node and builtins, Node 24's native CommonJS, and
+      // plugin-rsc's transform.
+      cjs: async () => ({ default: exports, named: "named" }),
+      native: async () => ({ default: exports, "module.exports": exports, named: "named" }),
+      converted: async () => ({ default: exports, __cjs_module_runner_transform: true }),
+      // ESM, an ESM default that is not module.exports, ESM naming the value
+      // require() returns, and a module without a default.
+      esm: async () => esm,
+      "esm-module-exports": async () => ({ default: "default", "module.exports": marker }),
+      "null-default": async () => nullDefault,
+      workers: async () => workers,
+    });
+
+    expect(read()).toEqual({
+      optional: "fallback",
+      nested: "Cannot find module 'missing'",
+      cjs: exports,
+      native: exports,
+      converted: exports,
+      esm,
+      esmModuleExports: marker,
+      nullDefault,
+      workers,
+    });
+    // Nested targets load first, then module-level ones in order when reached.
+    expect(loads).toEqual([
+      "missing",
+      "cjs",
+      "native",
+      "converted",
+      "esm",
+      "esm-module-exports",
+      "null-default",
+      "workers",
+      "missing",
+      "cjs",
+      "cjs",
+    ]);
+  });
+
+  it.each([
+    ["export class", `@dec\nexport class C { static x = require("x"); }`],
+    ["export default class", `@dec\nexport default class { static x = require("x"); }`],
+  ])("hoists nested calls above the decorators of an %s", async (_label, code) => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(code, ID);
+
+    expect(result?.code.split("\n").slice(0, 2)).toEqual([
+      `const __vinext_require_0__ = await __vinext_require_load__(import("x"));@dec`,
+      code.split("\n")[1]!.replace(`require("x")`, `__vinext_require_0__()`),
+    ]);
+  });
+
+  it("picks helper names the module does not use", async () => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(
+      `const __vinext_require_0__ = 1;\nexport function read() { return require("x"); }`,
+      ID,
+    );
+
+    expect(result?.code).toContain(
+      `const __vinext_require_$0__ = await __vinext_require_$load__(import("x"));`,
+    );
+    expect(result?.code).toContain(`const __vinext_require_0__ = 1;`);
+  });
+
+  it.each([
+    ["builds", { ...devServer, mode: "build" }, ID, `export const x = require("x");`],
+    [
+      "environments without a module runner",
+      { ...devServer, config: { ...devServer.config, dev: { moduleRunnerTransform: false } } },
+      ID,
+      `export const x = require("x");`,
+    ],
+    [
+      "Vitest environments, whose module runner defines require",
+      { ...devServer, config: { ...devServer.config, plugins: [{ name: "vitest:config" }] } },
+      ID,
+      `export const x = require("x");`,
+    ],
+    [
+      "optimized dependencies",
+      devServer,
+      `${CACHE_DIR}/deps/x.js`,
+      `export const x = require("x");`,
+    ],
+    [
+      "optimized dependencies with a query",
+      devServer,
+      `${CACHE_DIR}/deps/x.js?v=1234`,
+      `export const x = require("x");`,
+    ],
+    [
+      "CommonJS files",
+      devServer,
+      "/app/node_modules/dependency/index.cjs",
+      `export const x = require("x");`,
+    ],
+    // @vitejs/plugin-rsc converts dependencies without module syntax.
+    [
+      "CommonJS dependencies",
+      devServer,
+      "/app/node_modules/dependency/index.js",
+      `// import x\nmodule.exports = require("x");`,
+    ],
+  ])("skips %s", async (_label, environment, id, code) => {
+    const { transform, resolve } = createDependencyTransform(environment);
+
+    expect(await transform(code, id)).toBeNull();
+    expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it.each(["mjs", "mts", "ts", "jsx"])(
+    "lowers .%s dependencies without module syntax",
+    async (extension) => {
+      const { transform } = createDependencyTransform();
+      const result = await transform(
+        `const x = require("x");`,
+        `/app/node_modules/dependency/index.${extension}`,
+      );
+
+      expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
+    },
+  );
+
+  it('lowers .js dependencies without module syntax in a "type": "module" package', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "vinext-require-type-module-"));
+    try {
+      const dependency = path.join(root, "node_modules", "dependency");
+      await mkdir(dependency, { recursive: true });
+      await writeFile(path.join(dependency, "package.json"), `{ "type": "module" }`);
+      const { transform } = createDependencyTransform();
+      const result = await transform(`const x = require("x");`, path.join(dependency, "index.js"));
+
+      expect(result?.code).toContain(`const x = __vinext_require__(await import("x"));`);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("lowers dependencies whose path only shares a prefix with the cache directory", async () => {
+    const { transform } = createDependencyTransform({
+      ...devServer,
+      config: { ...devServer.config, cacheDir: "/app/node_modules/cache" },
+    });
+    const result = await transform(
+      `export const x = require("x");`,
+      "/app/node_modules/cache-helper/index.js",
+    );
+
+    expect(result?.code).toContain(`export const x = __vinext_require__(await import("x"));`);
+  });
+
+  it("lowers ESM dependencies whose only module syntax is import.meta", async () => {
+    const { transform } = createDependencyTransform();
+    const result = await transform(`const url = import.meta.url;\nrequire("node:path");`, ID);
+
+    expect(result?.code).toContain(`__vinext_require__(await import("node:path"));`);
   });
 });

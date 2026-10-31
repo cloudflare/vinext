@@ -37,6 +37,13 @@ function simulateLegacyWorkerdModuleIdentity(): Plugin {
 }
 
 export default defineConfig({
+  // Load the dependency unbundled in dev, as @vitejs/plugin-rsc does in server
+  // environments for every package with a `react` peer dependency (e.g.
+  // @clerk/nextjs), while the CommonJS package it requires is prebundled.
+  optimizeDeps: {
+    exclude: ["esm-require-dependency"],
+    include: ["esm-require-cjs"],
+  },
   plugins: [
     vinext(),
     simulateLegacyWorkerdModuleIdentity(),
