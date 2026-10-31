@@ -1588,9 +1588,15 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
     // Same-origin absolute URLs (e.g. http://localhost:3000/about) are
     // normalized to local paths so they get client-side navigation.
     let navigateHref = normalizedHref;
+    // Next.js `linkClicked` checks `isLocalURL` on the route href, not on the
+    // interpolated `as`. A local dynamic route can still interpolate to
+    // `//host/...` (an empty param); the Pages Router collapses the repeated
+    // slashes in that `as` like Next.js `resolveHref`, so never hard-navigate.
     if (isAbsoluteOrProtocolRelativeUrl(resolvedHref)) {
       const localPath = toSameOriginAppPath(resolvedHref, __basePath);
-      if (localPath == null) {
+      if (localPath != null) {
+        navigateHref = localPath;
+      } else if (implicitDynamicRouteHref === null) {
         // Truly external. Mirror Next.js `linkClicked`: when `replace` is set
         // we have to take over because the browser's default click navigation
         // pushes to history rather than replacing the current entry.
@@ -1601,7 +1607,6 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
         }
         return;
       }
-      navigateHref = localPath;
     }
 
     e.preventDefault();
