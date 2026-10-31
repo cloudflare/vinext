@@ -190,12 +190,14 @@ describe("resolveRouteClientReferences", () => {
     routes: { "/": [0, 1] },
     routeless: [0, 2],
     async: [2],
+    stylesheets: { "/": [2, 1] },
   };
 
   it("resolves a route's files and the references every render uses", () => {
     expect(resolveRouteClientReferences(plan, "/")).toEqual({
       references: ["link", "nav", "chart"],
       streamed: ["chart"],
+      stylesheets: ["nav", "chart"],
     });
   });
 
@@ -203,6 +205,7 @@ describe("resolveRouteClientReferences", () => {
     expect(resolveRouteClientReferences(plan, null)).toEqual({
       references: ["link", "nav", "search"],
       streamed: [],
+      stylesheets: [],
     });
   });
 

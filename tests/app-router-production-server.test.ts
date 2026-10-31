@@ -1427,6 +1427,21 @@ describe("App Router Production server (startProdServer)", () => {
       try {
         fs.cpSync(APP_FIXTURE_DIR, fixtureRoot, { recursive: true });
         fs.rmSync(prefixedOutDir, { recursive: true, force: true });
+        const lateCssDir = path.join(fixtureRoot, "app", "late-client-css");
+        fs.mkdirSync(lateCssDir);
+        fs.writeFileSync(path.join(lateCssDir, "panel.css"), ".late-client-css { color: teal; }\n");
+        fs.writeFileSync(
+          path.join(lateCssDir, "panel.tsx"),
+          `"use client";\nimport "./panel.css";\nexport function Panel() { return <p className="late-client-css">late</p>; }\n`,
+        );
+        fs.writeFileSync(
+          path.join(lateCssDir, "loading.tsx"),
+          `export default function Loading() { return <p>loading</p>; }\n`,
+        );
+        fs.writeFileSync(
+          path.join(lateCssDir, "page.tsx"),
+          `import { Panel } from "./panel";\nexport const dynamic = "force-dynamic";\nexport default async function Page() {\n  await new Promise((resolve) => setTimeout(resolve, 100));\n  return <Panel />;\n}\n`,
+        );
         const fixtureNodeModules = path.join(fixtureRoot, "node_modules");
         if (!fs.existsSync(fixtureNodeModules)) {
           fs.symlinkSync(
@@ -1553,6 +1568,19 @@ describe("App Router Production server (startProdServer)", () => {
         );
         expect(clientStylesheets).not.toEqual([]);
         for (const tag of clientStylesheets) {
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        // A component rendering after the shell links its stylesheet the same way.
+        const lateHtml = await (await fetch(`${tmpBaseUrl}/late-client-css`)).text();
+        expect(lateHtml).toContain('class="late-client-css"');
+        const lateStylesheets = (lateHtml.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\brel="stylesheet"/.test(tag) &&
+            tag.includes('data-precedence="vite-rsc/client-reference"'),
+        );
+        expect(lateStylesheets).not.toEqual([]);
+        for (const tag of lateStylesheets) {
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
       } finally {

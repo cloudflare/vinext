@@ -285,6 +285,48 @@ describe("collectClientReferencePreloadPlan", () => {
     expect(plan.staticOnly.sort()).toEqual(["/chart.tsx", "/nav.tsx"]);
   });
 
+  it("plans stylesheets from the static imports of the files that render with a route", () => {
+    const plan = collectClientReferencePreloadPlan({
+      clientReferenceIds: new Set([
+        "/nav.tsx",
+        "/spinner.tsx",
+        "/panel.tsx",
+        "/modal.tsx",
+        "/retry.tsx",
+        "/missing.tsx",
+        "/lazy.tsx",
+      ]),
+      entryIds: [],
+      getModuleInfo: moduleInfo(
+        {
+          "/app/layout.tsx": ["/nav.tsx"],
+          "/app/loading.tsx": ["/spinner.tsx"],
+          "/app/page.tsx": ["/panel.tsx"],
+          "/app/error.tsx": ["/retry.tsx"],
+          "/app/not-found.tsx": ["/missing.tsx"],
+          "/app/@modal/page.tsx": ["/modal.tsx"],
+        },
+        { "/app/page.tsx": ["/lazy.tsx"] },
+      ),
+      routes: [
+        {
+          ...route("/", "/app/page.tsx", ["/app/layout.tsx"]),
+          errorPath: "/app/error.tsx",
+          loadingPath: "/app/loading.tsx",
+          notFoundPath: "/app/not-found.tsx",
+          parallelSlots: [{ interceptingRoutes: [], pagePath: "/app/@modal/page.tsx" }],
+        } as never,
+      ],
+    });
+
+    expect(plan.stylesheets.get("/")).toEqual([
+      "/nav.tsx",
+      "/spinner.tsx",
+      "/panel.tsx",
+      "/modal.tsx",
+    ]);
+  });
+
   it("always preloads references reached outside route files, from global-error or by nothing", () => {
     const plan = collectClientReferencePreloadPlan({
       alwaysRoots: ["/app/global-error.tsx"],

@@ -16,6 +16,11 @@
  * own, or after the shell's stylesheets when none does. Its scripts link as the
  * Flight stream names it.
  *
+ * React only preloads a stylesheet linked after the shell, and reveals its
+ * boundary without waiting for it. So a render still going at its first flush
+ * links its route's static references' stylesheets there, as Next.js renders
+ * them beside each route file. After the shell's, to keep the cascade.
+ *
  * plugin-rsc hints a client module's scripts without the render's nonce, which
  * a nonce-based CSP blocks, and always as anonymous, so under
  * `crossOrigin: "use-credentials"` the browser fetches the module the page
@@ -49,7 +54,10 @@ export type StreamedClientReferences = {
   positions: ReadonlyMap<string, number>;
   /** Streamed references whose stylesheets aren't linked yet, in import order. */
   unlinked: string[];
-  linkedStylesheets: Set<string>;
+  /** References to link if the render is still going at its first flush. */
+  rendered: readonly string[];
+  /** Stylesheets in `<head>` once the first flush starts. */
+  headStylesheets: Set<string>;
 };
 
 const WRAPPED = Symbol.for("vinext.streamedClientReferences.wrapped");
@@ -96,30 +104,22 @@ function linkStreamedStylesheetsBefore(render: StreamedClientReferences, id: str
   const position = render.positions.get(id);
   if (position === undefined) return;
   while (render.unlinked.length > 0 && render.positions.get(render.unlinked[0]!)! < position) {
-    const hrefs = referenceDeps.get(render.unlinked.shift()!)?.css ?? [];
-    for (const href of hrefs) render.linkedStylesheets.add(href);
-    linkStylesheets(hrefs, render);
+    linkStylesheets(referenceDeps.get(render.unlinked.shift()!)?.css ?? [], render);
   }
 }
 
 /**
  * Wrap plugin-rsc's client-reference loader before any client reference
- * loads; a production build calls this as its SSR entry starts. `asyncIds` are
- * the references any route may stream, and `getLoader` returns a reference's
- * own loader from the client-references module.
+ * loads; a production build calls this as its SSR entry starts. `getLoader`
+ * returns a reference's own loader from the client-references module.
  */
 export function wrapClientReferenceRequire(
-  asyncIds: ReadonlySet<string>,
   getLoader: (id: string) => ClientReferenceLoader | undefined,
 ): void {
   const load: ClientReferenceRequire | undefined = globalThis.__vite_rsc_client_require__;
   if (typeof load !== "function" || WRAPPED in load) return;
   setOnClientReference(({ id, deps }) => {
     referenceDeps.set(id, deps);
-    const render = renderStorage.getStore();
-    if (render && !render.streamed.has(id)) {
-      for (const href of deps.css) render.linkedStylesheets.add(href);
-    }
   });
   // One promise per reference, which React's Flight client tracks the
   // module's load state on.
@@ -133,8 +133,7 @@ export function wrapClientReferenceRequire(
     }
     let loading = loads.get(id);
     if (!loading) {
-      const loader = asyncIds.has(id) ? getLoader(id) : undefined;
-      loading = Promise.all([load(id), loader?.()]).then(
+      loading = Promise.all([load(id), getLoader(id)?.()]).then(
         ([mod, exports]) =>
           new Proxy(mod as object, {
             get(target, key, receiver) {
@@ -145,9 +144,18 @@ export function wrapClientReferenceRequire(
                 if (exports !== undefined && render.streamed.has(id)) {
                   return Reflect.get(exports as object, key);
                 }
+                const deps = referenceDeps.get(id);
+                // Likewise one already in `<head>`, which React would preload.
+                if (
+                  exports !== undefined &&
+                  deps?.css.length &&
+                  deps.css.every((href) => render.headStylesheets.has(href))
+                ) {
+                  if (key in target) linkScripts(deps, render);
+                  return Reflect.get(exports as object, key);
+                }
                 linkStreamedStylesheetsBefore(render, id);
                 // plugin-rsc links the module's assets as it's read, after this.
-                const deps = referenceDeps.get(id);
                 if (deps && key in target) {
                   linkStylesheets(deps.css, render);
                   if (hintsScripts(render)) linkScripts(deps, render);
@@ -177,7 +185,8 @@ export function createStreamedClientReferences(
     streamed,
     positions: new Map(route?.references.map((id, index) => [id, index])),
     unlinked: route?.references.filter((id) => streamed.has(id)) ?? [],
-    linkedStylesheets: new Set(),
+    rendered: route?.stylesheets ?? [],
+    headStylesheets: new Set(),
   };
 }
 
@@ -191,7 +200,6 @@ export function resetStreamedClientReferences(
 ): void {
   if (!render) return;
   render.unlinked = route?.references.filter((id) => render.streamed.has(id)) ?? [];
-  render.linkedStylesheets.clear();
 }
 
 /** Run a render, and the Flight stream it reads, with its streamed references. */
@@ -203,22 +211,37 @@ export function runWithStreamedClientReferences<R>(
 }
 
 /**
- * The `<head>` links of the streamed stylesheets a render's shell left
- * unlinked, those of streamed references after every reference it rendered.
+ * The stylesheets `<head>` must hold, in import order: streamed references' and,
+ * while `stillRendering`, `rendered`'s. Call this as React's first flush starts.
  */
-export function renderStreamedStylesheets(render: StreamedClientReferences): string {
-  const hrefs = new Set<string>();
-  for (const id of render.unlinked.splice(0)) {
-    for (const href of referenceDeps.get(id)?.css ?? []) {
-      if (!render.linkedStylesheets.has(href)) hrefs.add(href);
-    }
+export function takeStreamedStylesheets(
+  render: StreamedClientReferences,
+  stillRendering: boolean,
+): readonly string[] {
+  const ids = new Set(render.unlinked.splice(0));
+  if (stillRendering) for (const id of render.rendered) ids.add(id);
+  for (const id of [...ids].sort((a, b) => render.positions.get(a)! - render.positions.get(b)!)) {
+    for (const href of referenceDeps.get(id)?.css ?? []) render.headStylesheets.add(href);
   }
+  return [...render.headStylesheets];
+}
+
+/**
+ * The links of `hrefs` that React's `<head>` left out. Those it wrote keep their
+ * place, as a second copy after them would override the stylesheets between.
+ */
+export function renderStreamedStylesheets(
+  render: StreamedClientReferences,
+  hrefs: readonly string[],
+  headHrefs: ReadonlySet<string>,
+): string {
   // React writes "" for anonymous.
   const crossOrigin = render.crossOrigin === "use-credentials" ? "use-credentials" : "";
   let html = "";
   for (const href of hrefs) {
-    render.linkedStylesheets.add(href);
-    html += `<link rel="stylesheet" href="${escapeHtmlAttr(href)}" data-precedence="${STYLESHEET_PRECEDENCE}" crossorigin="${crossOrigin}"/>`;
+    const attr = escapeHtmlAttr(href);
+    if (headHrefs.has(attr)) continue;
+    html += `<link rel="stylesheet" href="${attr}" data-precedence="${STYLESHEET_PRECEDENCE}" crossorigin="${crossOrigin}"/>`;
   }
   return html;
 }

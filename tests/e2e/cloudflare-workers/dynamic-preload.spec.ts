@@ -115,6 +115,41 @@ test.describe("Cloudflare Workers dynamic preloads", () => {
     void consoleErrors;
   });
 
+  test("paints a client component below loading.js styled, fetching its stylesheet once", async ({
+    page,
+    consoleErrors,
+  }) => {
+    const stylesheetRequests: string[] = [];
+    // A slow stylesheet would show an unstyled reveal, which a fast one can hide.
+    await page.route(/\.css(\?|$)/, async (route) => {
+      stylesheetRequests.push(route.request().url());
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      await route.continue();
+    });
+    await page.addInitScript(() => {
+      const record = () => {
+        const panel = document.querySelector('[data-testid="late-client-css-panel"]');
+        if (panel && panel.getClientRects().length > 0) {
+          document.documentElement.dataset.firstPaintColor = getComputedStyle(panel).color;
+          return;
+        }
+        requestAnimationFrame(record);
+      };
+      requestAnimationFrame(record);
+    });
+
+    await page.goto(`${BASE_URL}/late-client-css`);
+    await expect(page.getByTestId("late-client-css-panel")).toHaveCSS("color", "rgb(102, 51, 153)");
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-first-paint-color",
+      "rgb(102, 51, 153)",
+    );
+    await page.waitForLoadState("networkidle");
+    expect(stylesheetRequests).toHaveLength(new Set(stylesheetRequests).size);
+
+    void consoleErrors;
+  });
+
   test("preserves request.cf in App Router route handlers without ISR caching", async ({
     request,
   }) => {
