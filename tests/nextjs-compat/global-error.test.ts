@@ -14,8 +14,10 @@
  *
  * NOTE: Most Next.js global-error tests are browser-based (click buttons, check
  * rendered error UI after hydration/client error). This file tests the raw HTTP
- * boundary: synchronous render errors produce server-rendered boundaries, while
- * streamed metadata errors produce a recoverable shell that the browser-level
+ * boundary: as in Next.js, a render error that rejects the shell sends the
+ * `__next_error__` document with a 500, and the browser renders the boundary
+ * that catches it from the page's payload (tests/e2e/app-router/error-handling.spec.ts).
+ * Streamed metadata errors produce a recoverable shell that the browser-level
  * suite verifies is replaced by the appropriate boundary after hydration.
  *
  * Fixture pages live in:
@@ -39,6 +41,24 @@ import {
   testCacheDir,
 } from "../helpers.js";
 
+const NEVER_CACHE_CONTROL = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+// Next.js answers a render error that rejects the shell with an empty
+// `__next_error__` document and a 500, whichever boundary catches the error;
+// the browser renders that boundary from the page's own payload.
+// https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
+function expectShellErrorDocument(res: Response, html: string): void {
+  expect(res.status).toBe(500);
+  expect(res.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+  expect(html).toMatch(/^<!DOCTYPE html><html id="__next_error__">/);
+  expect((html.match(/<html/gi) || []).length).toBe(1);
+  expect((html.match(/<body/gi) || []).length).toBe(1);
+  // The browser needs the bootstrap script and the page's payload to render it.
+  // It loads with the same CORS mode as the bootstrap modulepreload.
+  expect(html).toMatch(/<script type="module"[^>]* src="[^"]+"[^>]* crossorigin=""/);
+  expect(html).toContain(".bootstrap.rsc??={rsc:[]}");
+}
+
 describe("Next.js compat: global-error", () => {
   let server: ViteDevServer;
   let baseUrl: string;
@@ -59,17 +79,21 @@ describe("Next.js compat: global-error", () => {
   // These validate that vinext's existing error handling works,
   // providing a baseline before we test Next.js-specific patterns.
 
-  it("error-server-test: server component throw is caught by error.tsx", async () => {
+  it("error-server-test: server component throw caught by error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
-    expect(res.status).toBe(200);
-    expect(html).toContain("Server Error Caught");
+    expectShellErrorDocument(res, html);
+    // In dev the payload carries the error with its message.
+    expect(html).toContain("Server component error");
+    // The browser reports the error it throws again itself, so the document
+    // carries no copy of it for the overlay.
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
-  it("error-nested-test: nested error caught by inner error.tsx", async () => {
+  it("error-nested-test: nested error caught by inner error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
-    expect(res.status).toBe(200);
-    expect(html).toContain("inner-error-boundary");
-    expect(html).not.toContain("outer-error-boundary");
+    expectShellErrorDocument(res, html);
+    expect(html).toContain("Nested child error");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   it("route group error.tsx without sibling layout catches descendant server errors", async () => {
@@ -77,9 +101,9 @@ describe("Next.js compat: global-error", () => {
     // that segment has no layout:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/route-group-error/child");
-    expect(res.status).toBe(200);
-    expect(html).toContain("Route group error boundary");
-    expect(html).not.toContain('data-testid="global-error"');
+    expectShellErrorDocument(res, html);
+    expect(html).toContain("route group child boom");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   // ── Server component error (RSC throw -> global-error) ─────
@@ -87,20 +111,16 @@ describe("Next.js compat: global-error", () => {
   // Source: https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/basic/index.test.ts#L29-L49
   //
   // In Next.js, a server component that throws with NO local error.tsx
-  // falls through to global-error.js. Vinext matches: the error propagates
-  // to the server handler, which renders global-error.tsx without layouts.
+  // falls through to global-error.js, which the browser renders from the
+  // payload of the error document.
 
-  it("server component throw without local error.tsx renders global-error", async () => {
+  it("server component throw without local error.tsx sends the error document", async () => {
     // global-error-rsc/page.tsx throws "server page error" with no error.tsx.
-    // Next.js renders global-error.tsx with a 500 status for an unhandled error.
     // Source: index.test.ts#L29-L49
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
-    expect(res.status).toBe(500);
-    expect(res.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
-    expect(html).toContain("global-error");
+    expectShellErrorDocument(res, html);
     expect(html).toContain("server page error");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   // ── Client component SSR error ─────────────────────────────
@@ -109,16 +129,13 @@ describe("Next.js compat: global-error", () => {
   //
   // "use client" component that throws during SSR. In Next.js, global-error catches it.
 
-  it("client component SSR throw without local error.tsx renders global-error", async () => {
-    // "use client" component throws during SSR. Next.js renders global-error.tsx.
-    // Source: index.test.ts#L51-L66
+  it("client component SSR throw without local error.tsx sends the error document", async () => {
+    // "use client" component throws during SSR. Source: index.test.ts#L51-L66
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
-    expect(res.status).toBe(500);
-    expect(res.headers.get("cache-control")).toBe(
-      "private, no-cache, no-store, max-age=0, must-revalidate",
-    );
-    expect(html).toContain("global-error");
+    expectShellErrorDocument(res, html);
+    // The document carries an error only the HTML render threw, for the overlay.
     expect(html).toContain("client page error");
+    expect(html).toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   // ── Metadata error with local boundary ─────────────────────
@@ -214,42 +231,27 @@ describe("Next.js compat: global-error", () => {
   // outer boundary whose fallback is the default global-error component.
   //
   // PORT NOTE: upstream triggers the throw from the client (a `useEffect` in the
-  // global-error component). This HTTP/SSR suite instead has the shared
-  // global-error.tsx throw synchronously during SSR (keyed on the request
-  // pathname — see fixtures/app-basic/app/global-error.tsx) so the built-in
-  // fallback is observable in the server-rendered HTML without a browser.
+  // global-error component). The shared global-error.tsx here throws during
+  // render, keyed on the pathname (see fixtures/app-basic/app/global-error.tsx).
+  // The page's own error sends the error document, and the browser renders
+  // the fallback (tests/e2e/app-router/error-handling.spec.ts).
 
-  it("self-throwing global-error renders the built-in default fallback", async () => {
+  it("self-throwing global-error sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
-    expect(res.status).toBe(500);
-    // The built-in default global-error UI from
-    // packages/vinext/src/shims/default-global-error.tsx.
-    expect(html).toContain("This page couldn");
-    expect(html).toContain("load");
-    // The user's broken boundary markup must NOT appear.
-    expect(html).not.toContain("Something went wrong!");
-    // Exactly one document even when the inner boundary throws.
-    expect((html.match(/<html/gi) || []).length).toBe(1);
-    expect((html.match(/<body/gi) || []).length).toBe(1);
+    expectShellErrorDocument(res, html);
+    expect(html).toContain("error in global error");
   });
 
   // ── Structural integrity: no double <html>/<body> tags ───────
-  // global-error.tsx provides its own <html> and <body>. When it renders,
-  // the root layout's <html>/<body> must NOT also appear.
+  // global-error.tsx provides its own <html> and <body>. When the shell
+  // streams with the metadata error's boundary, the root layout's
+  // <html>/<body> must NOT also appear. (The error document's shape is
+  // checked by expectShellErrorDocument.)
 
-  it("global-error pages have exactly one <html> and one <body> tag", async () => {
-    const routes = [
-      "/nextjs-compat/global-error-rsc",
-      "/nextjs-compat/global-error-ssr",
-      "/nextjs-compat/metadata-error-without-boundary",
-    ];
-    for (const route of routes) {
-      const { html } = await fetchHtml(baseUrl, route);
-      const htmlTags = (html.match(/<html/gi) || []).length;
-      const bodyTags = (html.match(/<body/gi) || []).length;
-      expect(htmlTags, `${route} should have exactly 1 <html> tag, got ${htmlTags}`).toBe(1);
-      expect(bodyTags, `${route} should have exactly 1 <body> tag, got ${bodyTags}`).toBe(1);
-    }
+  it("a streamed global-error shell has exactly one <html> and one <body> tag", async () => {
+    const { html } = await fetchHtml(baseUrl, "/nextjs-compat/metadata-error-without-boundary");
+    expect((html.match(/<html/gi) || []).length).toBe(1);
+    expect((html.match(/<body/gi) || []).length).toBe(1);
   });
 
   // ── Browser-only tests (need Playwright, documented here) ──
@@ -320,36 +322,30 @@ describe("Next.js compat: global-error (production preview)", () => {
     fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
-  it("server component throw without local error.tsx renders global-error with 500", async () => {
+  it("server component throw without local error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-rsc");
-    expect(res.status).toBe(500);
-    expect(html).toContain("global-error");
-    expect(html).toContain("Minified React error #441");
+    expectShellErrorDocument(res, html);
+    // The page's payload carries the sanitized error, never its message.
+    expect(html).toMatch(/digest\\?":\\?"\d+/);
     expect(html).not.toContain("server page error");
-    expect(html).toMatch(/data-testid="global-error-digest"[^>]*>\w+</);
   });
 
-  it("client component SSR throw without local error.tsx renders global-error with 500", async () => {
+  it("client component SSR throw without local error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
-    expect(res.status).toBe(500);
-    expect(html).toContain("global-error");
-    expect(html).toContain("client page error");
-    expect(html).not.toContain("Minified React error #441");
-    expect(html).not.toContain('data-testid="global-error-digest"');
+    expectShellErrorDocument(res, html);
+    // Production never sends the error for the overlay.
+    expect(html).not.toContain("client page error");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
-  it("server component throw with local error.tsx renders that boundary with 200", async () => {
+  it("server component throw with local error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
-    expect(res.status).toBe(200);
-    expect(html).toContain("Server Error Caught");
-    expect(html).not.toContain('data-testid="global-error"');
+    expectShellErrorDocument(res, html);
   });
 
-  it("nested server component throw resolves to the nearest error.tsx boundary", async () => {
+  it("nested server component throw with a nested error.tsx sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
-    expect(res.status).toBe(200);
-    expect(html).toContain("inner-error-boundary");
-    expect(html).not.toContain("outer-error-boundary");
+    expectShellErrorDocument(res, html);
   });
 
   it("generateMetadata() errors stream a recoverable shell for the local boundary", async () => {
@@ -415,13 +411,8 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).not.toContain("Layout viewport error");
   });
 
-  it("self-throwing global-error renders the built-in default fallback with 500", async () => {
+  it("self-throwing global-error sends the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-self-throw");
-    expect(res.status).toBe(500);
-    expect(html).toContain("This page couldn");
-    expect(html).toContain("load");
-    expect(html).not.toContain("Something went wrong!");
-    expect((html.match(/<html/gi) || []).length).toBe(1);
-    expect((html.match(/<body/gi) || []).length).toBe(1);
+    expectShellErrorDocument(res, html);
   });
 });

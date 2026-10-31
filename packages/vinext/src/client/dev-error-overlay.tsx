@@ -41,6 +41,7 @@ const VITE_ERROR_HANDLER_DATA_KEY = "__vinext_vite_error_handler__";
 const REACT_REFRESH_RECOVERY_RETRY_DELAY_MS = 16;
 
 let reactRoot: Root | null = null;
+let overlayHost: HTMLElement | null = null;
 let installed = false;
 
 type ReactRefreshWindow = Window &
@@ -159,7 +160,17 @@ export function reportInitialDevServerErrors(): void {
 
   window.__VINEXT_INITIAL_DEV_ERRORS__ = [];
 
+  // An error the browser's render threw again is reported already, once for
+  // each React report of the same message.
+  const rethrownMessages = getOverlaySnapshot()
+    .errors.filter((error) => error.source === "caught" || error.source === "uncaught")
+    .map((error) => error.message);
   for (const payload of errors) {
+    const rethrownIndex = rethrownMessages.indexOf(payload.message);
+    if (rethrownIndex !== -1) {
+      rethrownMessages.splice(rethrownIndex, 1);
+      continue;
+    }
     const error = new Error(payload.message);
     if (payload.name) {
       error.name = payload.name;
@@ -349,8 +360,16 @@ function stringValue(value: unknown): string | undefined {
 }
 
 function ensureMounted(): void {
-  if (reactRoot) return;
+  if (reactRoot) {
+    // Client-rendering an error document clears the body, the host included.
+    const host = overlayHost;
+    if (host && !host.isConnected) {
+      (document.body ?? document.documentElement).appendChild(host);
+    }
+    return;
+  }
   const node = createDevErrorOverlayMountNode(document);
+  overlayHost = document.getElementById(DEV_ERROR_OVERLAY_HOST_ID);
   reactRoot = createRoot(node);
   reactRoot.render(<DevErrorOverlayApp />);
 }

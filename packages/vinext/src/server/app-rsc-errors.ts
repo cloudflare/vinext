@@ -2,6 +2,7 @@ import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getProperError } from "./proper-error.js";
+import { rewriteClientHookError } from "vinext/shims/client-hook-error";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -162,6 +163,17 @@ export function createRscOnErrorHandler(
       getDigestForWellKnownError(error) ?? getDigestForWellKnownError(reportableError);
     if (wellKnownDigest !== undefined) {
       return wellKnownDigest;
+    }
+
+    // Before Flight serializes the error for the browser's error boundary, a
+    // client-only React hook called in a Server Component reports the
+    // actionable error that the next/navigation shims throw (#834). A Client
+    // Component's own error during the HTML render keeps its message.
+    if (
+      reportableError instanceof Error &&
+      options.errorContext?.renderSource !== "server-rendering"
+    ) {
+      rewriteClientHookError(reportableError);
     }
 
     if (

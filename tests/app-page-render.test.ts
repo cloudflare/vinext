@@ -345,48 +345,85 @@ describe("clearRequestContext timing — issue #660", () => {
 });
 
 describe("SSR shell error recovery", () => {
-  it("returns an uncached 500 response for a recovered dynamic shell error", async () => {
-    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
-    const common = createCommonOptions();
-    try {
-      const response = await renderAppPageLifecycle({
-        ...common.options,
-        isProduction: true,
-        middlewareContext: {
-          headers: new Headers({
-            "Cache-Control": "public, max-age=3600",
-            "CDN-Cache-Control": "public, max-age=3600",
-            "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
-            "Cache-Tag": "shell-error",
+  // A render of the whole document (regeneration, warm-up, or a conditional
+  // revalidation a client waits on) answers like a live render.
+  it.each([false, true])(
+    "returns an uncached 500 response for a recovered dynamic shell error (whole document: %s)",
+    async (renderWholeDocument) => {
+      setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+      const common = createCommonOptions();
+      try {
+        const response = await renderAppPageLifecycle({
+          ...common.options,
+          isProduction: true,
+          renderWholeDocument,
+          middlewareContext: {
+            headers: new Headers({
+              "Cache-Control": "public, max-age=3600",
+              "CDN-Cache-Control": "public, max-age=3600",
+              "Cloudflare-CDN-Cache-Control": "public, max-age=3600",
+              "Cache-Tag": "shell-error",
+            }),
+            status: null,
+          },
+          revalidateSeconds: 30,
+          loadSsrHandler: async () => ({
+            async handleSsr() {
+              return {
+                htmlStream: createStream(['<html id="__next_error__"></html>']),
+                metadataReady: Promise.resolve(),
+                capturedRscData: null,
+                shellErrorRecovered: true,
+              };
+            },
           }),
-          status: null,
-        },
-        revalidateSeconds: 30,
+        });
+
+        expect(response.status).toBe(500);
+        expect(response.headers.get("cache-control")).toBe(
+          "private, no-cache, no-store, max-age=0, must-revalidate",
+        );
+        expect(response.headers.get("cdn-cache-control")).toBeNull();
+        expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
+        expect(response.headers.get("cache-tag")).toBeNull();
+        await expect(response.text()).resolves.toContain("__next_error__");
+        expect(common.isrSet).not.toHaveBeenCalled();
+      } finally {
+        setCdnCacheAdapter(new DefaultCdnCacheAdapter());
+      }
+    },
+  );
+
+  it.each([false, true])(
+    "recovers every shell error except special errors and bail-outs (whole document: %s)",
+    async (renderWholeDocument) => {
+      const common = createCommonOptions();
+      let renderErrorDocument: ((error: unknown) => boolean) | undefined;
+      await renderAppPageLifecycle({
+        ...common.options,
+        renderWholeDocument,
         loadSsrHandler: async () => ({
-          async handleSsr() {
-            return {
-              htmlStream: createStream(['<html id="__next_error__"></html>']),
-              metadataReady: Promise.resolve(),
-              capturedRscData: null,
-              shellErrorRecovered: true,
-            };
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { renderErrorDocumentOnShellError?: (error: unknown) => boolean },
+          ) {
+            renderErrorDocument = options?.renderErrorDocumentOnShellError;
+            return createStream(["<html>page</html>"]);
           },
         }),
       });
 
-      expect(response.status).toBe(500);
-      expect(response.headers.get("cache-control")).toBe(
-        "private, no-cache, no-store, max-age=0, must-revalidate",
+      expect(renderErrorDocument?.(Object.assign(new Error("render"), { digest: "123" }))).toBe(
+        true,
       );
-      expect(response.headers.get("cdn-cache-control")).toBeNull();
-      expect(response.headers.get("cloudflare-cdn-cache-control")).toBeNull();
-      expect(response.headers.get("cache-tag")).toBeNull();
-      await expect(response.text()).resolves.toContain("__next_error__");
-      expect(common.isrSet).not.toHaveBeenCalled();
-    } finally {
-      setCdnCacheAdapter(new DefaultCdnCacheAdapter());
-    }
-  });
+      expect(renderErrorDocument?.(new Error("ssr"))).toBe(true);
+      expect(renderErrorDocument?.({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" })).toBe(false);
+      expect(renderErrorDocument?.({ digest: "NEXT_REDIRECT;replace;/target;307;" })).toBe(false);
+      expect(renderErrorDocument?.({ digest: "BAILOUT_TO_CLIENT_SIDE_RENDERING" })).toBe(false);
+    },
+  );
 });
 
 describe("form state rendering", () => {
@@ -2063,7 +2100,7 @@ describe("app page render lifecycle", () => {
   it("captures late RSC cache metadata during speculative prerender", async () => {
     const common = createCommonOptions();
     let capturedWaitForAllReady: boolean | undefined;
-    let capturedFallbackToErrorDocumentOnShellError: boolean | undefined;
+    let capturedRenderErrorDocumentOnShellError: ((error: unknown) => boolean) | undefined;
     let requestCacheLife: { revalidate: number; expire: number } | null = null;
     const getRequestCacheLife = vi.fn(() => {
       const value = requestCacheLife;
@@ -2084,14 +2121,13 @@ describe("app page render lifecycle", () => {
           _fontData: unknown,
           options?: {
             capturedRscDataRef?: { value: Promise<ArrayBuffer> | null };
-            fallbackToErrorDocumentOnShellError?: boolean;
+            renderErrorDocumentOnShellError?: (error: unknown) => boolean;
             sideStream?: ReadableStream<Uint8Array>;
             waitForAllReady?: boolean;
           },
         ) {
           capturedWaitForAllReady = options?.waitForAllReady;
-          capturedFallbackToErrorDocumentOnShellError =
-            options?.fallbackToErrorDocumentOnShellError;
+          capturedRenderErrorDocumentOnShellError = options?.renderErrorDocumentOnShellError;
           if (options?.capturedRscDataRef) {
             options.capturedRscDataRef.value = releaseRscData.promise;
           }
@@ -2111,7 +2147,7 @@ describe("app page render lifecycle", () => {
     const response = await responsePromise;
 
     expect(capturedWaitForAllReady).toBe(false);
-    expect(capturedFallbackToErrorDocumentOnShellError).toBe(false);
+    expect(capturedRenderErrorDocumentOnShellError).toBeUndefined();
     expect(getRequestCacheLife).toHaveBeenCalledOnce();
     expect(response.headers.get("x-vinext-prerender-cache-life")).toBe(
       JSON.stringify({ revalidate: 1, expire: 3 }),

@@ -90,7 +90,6 @@ import {
 import { RSC_FORM_STATE_GLOBAL } from "../client/browser-globals.js";
 import { ssrServerConsumerManifest } from "./app-client-reference-manifest.js";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
-import DefaultGlobalError from "vinext/shims/default-global-error";
 import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
@@ -173,31 +172,24 @@ function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string)
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async="" fetchPriority="low"></script>'
+    '" id="_R_" async="" crossorigin="' +
+    escapeHtmlAttr(pagesClientAssets.crossOrigin ?? "") +
+    '" fetchPriority="low"></script>'
   );
 }
 
+// Next.js serves a `__next_error__` document with an empty body after a shell
+// error, with the page's own Flight payload inlined. The browser renders the
+// payload, and the nearest error boundary catches an error it throws again.
+// https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
 function renderSsrErrorDocumentShell(
   bootstrapModuleUrl?: string,
   nonce?: string,
 ): ReadableStream<Uint8Array> {
-  const html = renderToStaticMarkup(
-    createReactElement(DefaultGlobalError, {
-      error: null,
-    }),
-  ).replace("<style>", '<style data-vinext-error-shell-style="">');
-  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce);
-  if (!bootstrapScript) {
-    return createUtf8Stream(`<!DOCTYPE html>${html}`);
-  }
-
-  const documentClose = "</body></html>";
-  if (!html.endsWith(documentClose)) {
-    return createUtf8Stream(`<!DOCTYPE html>${html}${bootstrapScript}`);
-  }
-
   return createUtf8Stream(
-    `<!DOCTYPE html>${html.slice(0, -documentClose.length)}${bootstrapScript}${documentClose}`,
+    '<!DOCTYPE html><html id="__next_error__"><head><meta name="robots" content="noindex"/></head><body>' +
+      buildBootstrapModuleScript(bootstrapModuleUrl, nonce) +
+      "</body></html>",
   );
 }
 
@@ -439,7 +431,18 @@ export async function handleSsr(
      * payload leaves the query for the browser to read.
      */
     isCacheCandidate?: boolean;
-    fallbackToErrorDocumentOnShellError?: boolean;
+    /**
+     * Whether an error that rejected the shell renders the `__next_error__`
+     * document, which the browser renders from the page's payload, instead of
+     * rejecting.
+     */
+    renderErrorDocumentOnShellError?: (error: unknown) => boolean;
+    /**
+     * Whether the RSC render threw `error`. The browser renders the payload
+     * again and reports such an error itself, so in dev the error document
+     * carries only an error that the HTML render alone threw, for the overlay.
+     */
+    isServerComponentError?: (error: unknown) => boolean;
     /**
      * The parallel slot not-found boundaries that catch the error that
      * rejected the shell, or null when none catches it. The document then
@@ -755,6 +758,7 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
+        let ssrOnlyShellError: unknown;
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
@@ -854,14 +858,11 @@ export async function handleSsr(
               shouldDelayInitialHtmlPull = options?.waitForAllReady !== true;
               caughtShellError = error;
               htmlStream = caughtHtmlStream;
-            } else if (
-              options?.fallbackToErrorDocumentOnShellError !== true ||
-              options?.waitForAllReady === true ||
-              typeof (error as { digest?: unknown } | null)?.digest === "string"
-            ) {
+            } else if (options?.renderErrorDocumentOnShellError?.(error) !== true) {
               throw error;
             } else {
               shellErrorRecovered = true;
+              if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
               htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
             }
           }
@@ -914,7 +915,7 @@ export async function handleSsr(
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
-            options?.initialDevServerError,
+            options?.initialDevServerError ?? ssrOnlyShellError,
             options?.scriptNonce,
           );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();

@@ -2,6 +2,7 @@
 
 import {
   createElement,
+  Fragment,
   startTransition,
   use,
   useEffect,
@@ -1984,6 +1985,13 @@ function registerServerActionCallback(): void {
   });
 }
 
+// Reports the errors that only the HTML render threw, as Next.js's
+// ReplaySsrOnlyErrors does, once the client-rendered error document commits.
+function ReplayInitialDevServerErrors({ report }: { report: () => void }): null {
+  useEffect(report, [report]);
+  return null;
+}
+
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
   // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
@@ -1999,7 +2007,11 @@ async function main(): Promise<void> {
     devErrorOverlay = await import("../client/dev-error-overlay.js");
     devErrorOverlay.installDevErrorOverlay();
     devErrorOverlay.installViteHmrErrorHandler(import.meta.hot);
-    devErrorOverlay.reportInitialDevServerErrors();
+    // Rendering the error document clears the body the overlay mounts in, so
+    // the document's root reports them once it commits.
+    if (document.documentElement.id !== "__next_error__") {
+      devErrorOverlay.reportInitialDevServerErrors();
+    }
   }
 
   const initialRscBootstrap = getNavigationRuntime()?.bootstrap.rsc;
@@ -2142,20 +2154,26 @@ function bootstrapHydration(
     initialElements: root,
     initialNavigationSnapshot,
   });
-  const errorShellStyles = document.querySelectorAll("style[data-vinext-error-shell-style]");
   if (document.documentElement.id === "__next_error__") {
     // Next.js client/app-index.tsx uses the document id alone to select CSR
-    // after any failed App Router server render. The style marker only scopes
-    // cleanup to vinext's shell-recovery placeholder styles.
+    // after any failed App Router server render.
     // There is no server-rendered form to hydrate in this client-render path;
     // reuse only the shared root error callbacks and related root options.
     const { formState: _inertFormState, ...createRootOptions } = hydrateRootOptions;
-    for (const style of errorShellStyles) {
-      style.remove();
-    }
     startTransition(() => {
       const clientRoot = createRoot(document, createRootOptions);
-      clientRoot.render(children);
+      clientRoot.render(
+        import.meta.env.DEV && devErrorOverlay
+          ? createElement(
+              Fragment,
+              null,
+              children,
+              createElement(ReplayInitialDevServerErrors, {
+                report: devErrorOverlay.reportInitialDevServerErrors,
+              }),
+            )
+          : children,
+      );
       window.__VINEXT_RSC_ROOT__ = clientRoot;
     });
   } else {

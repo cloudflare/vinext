@@ -376,7 +376,6 @@ type CreateDispatchOptionsOverrides = {
   findIntercept?: DispatchOptions["findIntercept"];
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
-  hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
   hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
@@ -468,7 +467,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
       typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
-    hasCustomGlobalError: overrides.hasCustomGlobalError,
     hasPageDefaultExport: true,
     hasPageModule: true,
     handlerStart: 10,
@@ -4347,7 +4345,7 @@ describe("app page dispatch", () => {
       scheduledRender = renderFn;
     };
     let capturedWaitForAllReady: boolean | undefined;
-    let capturedFallbackToErrorDocument: boolean | undefined;
+    let capturedRenderErrorDocument: ((error: unknown) => boolean) | undefined;
     let capturedServeStreamingMetadata: boolean | undefined;
     let afterRan = false;
     const isrSet = vi.fn(async () => {});
@@ -4367,11 +4365,10 @@ describe("app page dispatch", () => {
         buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
       ),
       isrSet,
-      hasCustomGlobalError: false,
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           capturedWaitForAllReady = captureOptions?.waitForAllReady;
-          capturedFallbackToErrorDocument = captureOptions?.fallbackToErrorDocumentOnShellError;
+          capturedRenderErrorDocument = captureOptions?.renderErrorDocumentOnShellError;
           if (captureOptions?.capturedRscDataRef) {
             captureOptions.capturedRscDataRef.value = Promise.resolve(
               new TextEncoder().encode("fresh-flight").buffer,
@@ -4403,7 +4400,7 @@ describe("app page dispatch", () => {
     expect(capturedWaitForAllReady).toBe(true);
     // A request without a user agent streams metadata.
     expect(capturedServeStreamingMetadata).toBe(true);
-    expect(capturedFallbackToErrorDocument).toBeUndefined();
+    expect(capturedRenderErrorDocument).toBeUndefined();
     expect(createRscOnErrorHandler).toHaveBeenCalledWith("/posts/hello", "/posts/[slug]", {
       revalidateReason: "stale",
     });
@@ -6341,6 +6338,43 @@ describe("query-free App page ISR entries", () => {
     expect(rscText).not.toContain(canary);
     expect(JSON.stringify(value.headers ?? {})).not.toContain(canary);
   }
+
+  // A render error that rejects the shell sends Next.js's `__next_error__`
+  // document with a 500 and stores nothing, in a live render and in a render
+  // of the whole document (regeneration, warm-up, conditional revalidation).
+  it.each([false, true])(
+    "sends the error document for a shell error (whole document: %s)",
+    async (renderWholeDocument) => {
+      const { isrGet, isrSet } = createCache();
+      function ClientThrow(): React.ReactNode {
+        throw new Error("client render failed");
+      }
+
+      const { body, response } = await dispatchQuery("", {
+        buildPageElement: async () =>
+          toDispatchElementRecord({
+            ...AppElementsWire.createMetadataEntries({
+              interceptionContext: null,
+              layoutIds: [],
+              rootLayoutTreePath: null,
+              routeId: ROUTE_ID,
+            }),
+            [ROUTE_ID]: React.createElement("main", null, React.createElement(ClientThrow)),
+          }),
+        isrGet,
+        isrSet,
+        loadSsrHandler: createProductionSsrHandler([]),
+        renderWholeDocument,
+      });
+
+      expect(response.status).toBe(500);
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+      expect(body).toMatch(/^<!DOCTYPE html><html id="__next_error__">/);
+      expect(isrSet).not.toHaveBeenCalled();
+    },
+  );
 
   // A client component's notFound() rejects the shell during SSR itself.
   // generateMetadata() threw the same digest in the RSC render, but runs only

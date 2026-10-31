@@ -518,6 +518,26 @@ describe("app RSC error primitives", () => {
     }
   });
 
+  it("rewrites a client-only hook error from the RSC render only (#834)", () => {
+    const createOnError = (renderSource?: "server-rendering") =>
+      createRscOnErrorHandler({
+        errorContext: { ...renderErrorContext("/hooks"), renderSource },
+        nodeEnv: "development",
+        reportRequestError() {},
+        requestInfo: null,
+      });
+
+    const rscError = new TypeError("(0 , _react.useState) is not a function");
+    createOnError()(rscError);
+    expect(rscError.message).toContain("useState");
+    expect(rscError.message).toContain("use client");
+
+    // A Client Component's own error while the HTML renders keeps its message.
+    const ssrError = new TypeError("useContext(...).dispatch is not a function");
+    createOnError("server-rendering")(ssrError);
+    expect(ssrError.message).toBe("useContext(...).dispatch is not a function");
+  });
+
   it("uses process.env.NODE_ENV when no explicit environment is provided", () => {
     vi.stubEnv("NODE_ENV", "production");
 

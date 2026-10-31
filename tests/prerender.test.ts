@@ -1416,6 +1416,13 @@ describe("prerenderApp — default mode (app-basic)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
+  // As in Next.js, whose build fails on a prerender error, a page that throws
+  // is not stored, even when an error.tsx catches the error (#4394).
+  it("does not store a page whose render error an error.tsx catches", () => {
+    expect(findRoute(results, "/error-server-test")).toMatchObject({ status: "skipped" });
+    expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
+  });
+
   // ── Static routes with explicit config ────────────────────────────────────
 
   it("renders force-static page", () => {

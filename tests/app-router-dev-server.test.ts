@@ -1387,10 +1387,11 @@ describe("App Router integration", () => {
 
   it("error boundary catches string thrown in Server Component", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
-    expect(res.status).toBe(200);
-    expect(textContentByTestId(html, "string-error-message")).toBe(
-      "this is a test string thrown in a server component",
-    );
+    // As in Next.js, the error document carries the page's payload, from which
+    // the browser renders the error.tsx that catches the string.
+    expect(res.status).toBe(500);
+    expect(html).toContain('<html id="__next_error__">');
+    expect(html).toContain("this is a test string thrown in a server component");
   });
 
   it("redirect() from Server Component returns redirect response", async () => {

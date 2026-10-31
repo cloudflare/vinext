@@ -20,6 +20,14 @@ test.describe("Error Boundaries", () => {
     await expect(page.locator('[data-testid="global-error-digest"]')).toHaveCount(0);
   });
 
+  // Ported from Next.js: test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  test("a global-error.tsx that throws falls back to the built-in default", async ({ page }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/global-error-self-throw`);
+    expect(response?.status()).toBe(500);
+    await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
+    await expect(page.getByText("Something went wrong!")).toHaveCount(0);
+  });
+
   test("error.tsx catches client component error on button click", async ({ page }) => {
     await page.goto(`${BASE}/error-test`);
 
@@ -85,10 +93,11 @@ test.describe("Error Boundaries", () => {
     }
   });
 
-  test("server component error renders error.tsx boundary with 200", async ({ page }) => {
+  test("server component error renders error.tsx boundary with 500", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
-    // Next.js returns 200 when error.tsx catches an error (it's "handled")
-    expect(response?.status()).toBe(200);
+    // Next.js sends a 500 for an error that rejects the shell, and the browser
+    // renders the error.tsx that catches it.
+    expect(response?.status()).toBe(500);
     await expect(page.locator('[data-testid="server-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="server-error-message"]')).toContainText(
       "Server component error",
@@ -97,11 +106,38 @@ test.describe("Error Boundaries", () => {
 
   test("nested server component error renders child error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
-    expect(response?.status()).toBe(200);
+    expect(response?.status()).toBe(500);
     // Should render the child's error.tsx, not the parent's
     await expect(page.locator('[data-testid="inner-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="inner-error-message"]')).toContainText(
       "Nested child error",
+    );
+  });
+
+  test("a route group's error.tsx without a sibling layout catches a descendant's error", async ({
+    page,
+  }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/route-group-error/child`);
+    expect(response?.status()).toBe(500);
+    await expect(page.locator("#route-group-error-boundary")).toHaveText(
+      "Route group error boundary",
+    );
+    await expect(page.locator('[data-testid="global-error"]')).toHaveCount(0);
+  });
+
+  test("error.tsx catches a string thrown in a server component", async ({ page }) => {
+    const response = await page.goto(`${BASE}/throw-string-test`);
+    expect(response?.status()).toBe(500);
+    await expect(page.locator('[data-testid="string-error-message"]')).toHaveText(
+      "this is a test string thrown in a server component",
+    );
+  });
+
+  test("a nested layout's error renders the error.tsx above that layout", async ({ page }) => {
+    const response = await page.goto(`${BASE}/layout-error-test/child`);
+    expect(response?.status()).toBe(500);
+    await expect(page.locator('[data-testid="layout-error-message"]')).toHaveText(
+      "Nested layout error",
     );
   });
 

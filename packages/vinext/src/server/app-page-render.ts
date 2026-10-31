@@ -169,7 +169,6 @@ type RenderAppPageLifecycleOptionsBase = {
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
-  hasCustomGlobalError?: boolean;
   dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
@@ -1472,7 +1471,6 @@ async function renderAppPageLifecycleImpl(
               : options.peekRequestCacheLife?.(),
           ),
         fontData,
-        hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
@@ -1486,10 +1484,23 @@ async function renderAppPageLifecycleImpl(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        fallbackToErrorDocumentOnShellError:
-          options.isPrerender === true && options.isSpeculativePrerender === true
-            ? false
-            : undefined,
+        // As in Next.js, an error that rejects the shell of a served render
+        // sends the `__next_error__` document with a 500, and the browser
+        // renders the page from its payload, where the error boundary that
+        // catches the error renders when the error comes from the payload or
+        // the browser throws it again. A special error sets the
+        // status of its own response, and a useSearchParams() bail-out keeps
+        // its own error handling.
+        renderErrorDocumentOnShellError:
+          options.isPrerender === true
+            ? undefined
+            : (error) =>
+                !isBailoutToCSRError(error) &&
+                resolveAppPageShellSpecialError(
+                  error,
+                  rscErrorTracker.getCapturedSpecialErrors(error),
+                ) === null,
+        isServerComponentError: rscErrorTracker.isCapturedError,
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,

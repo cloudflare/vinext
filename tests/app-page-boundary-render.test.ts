@@ -1902,7 +1902,11 @@ describe("app page boundary render helpers", () => {
       sanitizeErrorForClient,
     });
 
-    expect(response?.status).toBe(200);
+    // Next.js sends a render error's document with a 500, whichever boundary catches it.
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(sanitizeErrorForClient).toHaveBeenCalledTimes(1);
 
     const html = await response?.text();
@@ -1981,7 +1985,7 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
     expect(response?.headers.get("x-middleware-security")).toBe("present");
     expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
@@ -2028,7 +2032,7 @@ describe("app page boundary render helpers", () => {
         },
       });
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(consoleError).toHaveBeenCalledWith(
         "[vinext] File-based metadata resolution failed while rendering error boundary for /posts/[slug]:",
         error,

@@ -1,23 +1,20 @@
 /**
  * SSR shell-error recovery in production builds.
  *
- * When the HTML (Fizz) render of an SSR pass rejects with an error that did
- * not originate in the RSC render (no `digest`), and the app has no custom
- * global-error.tsx, vinext serves the default `__next_error__` error-document
- * shell with the original flight payload and bootstrap module. The browser
- * detects the marker and re-renders the real tree with `createRoot` instead
- * of hydrating — Next.js's shell-error recovery semantics:
+ * When the HTML (Fizz) render of an SSR pass rejects, vinext serves the
+ * `__next_error__` error document with the original flight payload and
+ * bootstrap module. The browser detects the marker and re-renders the real
+ * tree with `createRoot` instead of hydrating — Next.js's shell-error
+ * recovery semantics:
  * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
  *
  * The throw-during-SSR-only pattern ("Expected error to opt out of server
  * rendering") comes from the Next.js `next-dynamic-css` fixture:
  * https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/next-dynamic-css/next-dynamic-css.test.ts
  *
- * This fixture intentionally has NO custom global-error.tsx — that is the
- * configuration in which handleSsr's error-document fallback is active
- * (`fallbackToErrorDocumentOnShellError`). Apps with a custom global-error
- * keep the server-rendered boundary re-render path, covered by
- * tests/nextjs-compat/global-error.test.ts.
+ * This fixture has NO custom global-error.tsx, so the built-in default
+ * global-error catches errors no local error.tsx catches. Apps with a custom
+ * global-error are covered by tests/e2e/app-router/render-error-status.browser.spec.ts.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -89,7 +86,7 @@ export default function Root({ children }: { children: ReactNode }) {
   );
 
   // No local boundary: an SSR-only client throw rejects the HTML shell and the
-  // default __next_error__ document recovery re-renders the real tree in the
+  // __next_error__ document recovery re-renders the real tree in the
   // browser. `cookies()` keeps the page dynamic so the runtime SSR pass (not a
   // prerendered document) serves the request.
   const pageDir = path.join(appDir, "page");
@@ -125,9 +122,9 @@ export default function Client() {
 `,
   );
 
-  // Genuine RSC/server error with no custom global-error.tsx. It also uses an
-  // __next_error__ document, but must retain the pre-existing hydration path
-  // rather than being mistaken for the marked SSR shell-recovery document.
+  // Genuine RSC/server error with no custom global-error.tsx. It uses the same
+  // __next_error__ document, and the browser renders the default global-error
+  // for the server error from the flight payload.
   const serverErrorDir = path.join(appDir, "server-error");
   await fs.mkdir(serverErrorDir, { recursive: true });
   await fs.writeFile(
@@ -318,26 +315,26 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
     const app = await buildPrerenderAndServeRecoveryFixture();
 
     try {
-      // SSR-only client throw without a boundary: the default __next_error__
-      // shell is served and the browser re-renders the real tree from the
-      // embedded flight payload.
+      // SSR-only client throw without a boundary: the __next_error__ document
+      // is served and the browser re-renders the real tree from the embedded
+      // flight payload.
       await page.goto(`${app.baseUrl}/page`, { waitUntil: "load" });
       await expect(page.locator("#server-content")).toHaveText("Hello Server");
       await expect(page.locator("#client-content")).toHaveText("Hello Client");
 
-      // A genuine server/RSC error also uses the default __next_error__
-      // document and follows Next.js's createRoot recovery path. Unlike the
-      // SSR-only recovery shell, it has no placeholder style marker to remove.
+      // A genuine server/RSC error also uses the __next_error__ document and
+      // follows Next.js's createRoot recovery path. The error the browser
+      // renders carries the server's digest, so the default global-error shows
+      // Next.js's server-error message.
       await page.goto(`${app.baseUrl}/server-error`, { waitUntil: "load" });
       await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
-      await expect(page.getByText("Reload to try again, or go back.")).toBeVisible();
+      await expect(page.getByText("A server error occurred. Reload to try again.")).toBeVisible();
       await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
-      await expect(page.locator("style[data-vinext-error-shell-style]")).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Back" })).toHaveCount(0);
 
-      // SSR-only throw with a local error.tsx: the default __next_error__
-      // shell is served, the browser re-render succeeds, and the local
-      // boundary never catches anything.
+      // SSR-only throw with a local error.tsx: the __next_error__ document is
+      // served, the browser re-render succeeds, and the local boundary never
+      // catches anything.
       await page.goto(`${app.baseUrl}/boundary-ssr-only`, { waitUntil: "load" });
       await expect(page.locator("#boundary-ssr-only-content")).toHaveText(
         "Recovered client render",
@@ -375,6 +372,9 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
           !message.includes("always no boundary throw") &&
           !message.includes("reload error") &&
           !message.includes("genuine server digest error") &&
+          // The browser rethrows the server error, which production Flight
+          // reports as React error #441.
+          !message.includes("Minified React error #441") &&
           !message.includes("Expected error to opt out of server rendering") &&
           // The recovery and global-error documents intentionally preserve
           // their HTTP 500 status, which browsers report as a resource error.
