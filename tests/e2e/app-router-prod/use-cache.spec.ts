@@ -398,3 +398,46 @@ test.describe('production "use cache" FormData arguments', () => {
     });
   }
 });
+
+// next.config `cacheLife` profiles set a cached page's lifetime like the
+// built-ins do: Next.js derives s-maxage from revalidate and
+// stale-while-revalidate from expire - revalidate, and sends stale as the
+// client stale time.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/cache-life.ts
+test.describe("production next.config cacheLife profiles", () => {
+  async function waitForCacheHit(request: APIRequestContext, path: string, rsc = false) {
+    let headers: Record<string, string> = {};
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(
+            path,
+            rsc ? { headers: { Accept: "text/x-component", RSC: "1" } } : undefined,
+          );
+          headers = response.headers();
+          return headers["x-vinext-cache"];
+        },
+        { timeout: 5_000, intervals: [50, 100, 250] },
+      )
+      .toBe("HIT");
+    return headers;
+  }
+
+  test("a custom profile sets the cached page's Cache-Control", async ({ request }) => {
+    const headers = await waitForCacheHit(request, "/use-cache-custom-profile");
+    expect(headers["cache-control"]).toBe("s-maxage=120, stale-while-revalidate=3480");
+
+    // The profile sets no stale, so it takes the default profile's, which
+    // Next.js fills from experimental.staleTimes.static (300).
+    const rsc = await waitForCacheHit(request, "/use-cache-custom-profile.rsc", true);
+    expect(rsc["x-nextjs-stale-time"]).toBe("300");
+  });
+
+  test("a configured profile replaces the built-in of the same name", async ({ request }) => {
+    const html = await waitForCacheHit(request, "/use-cache-overridden-profile");
+    expect(html["cache-control"]).toBe("s-maxage=90, stale-while-revalidate=1710");
+
+    const rsc = await waitForCacheHit(request, "/use-cache-overridden-profile.rsc", true);
+    expect(rsc["x-nextjs-stale-time"]).toBe("30");
+  });
+});

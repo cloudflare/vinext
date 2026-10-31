@@ -16,6 +16,7 @@ import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
+import { type CacheLifeConfig, resolveCacheLifeProfiles } from "../utils/cache-life-profiles.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
@@ -741,6 +742,11 @@ export type ResolvedNextConfig = {
    */
   staleTimes: { dynamic: number; static: number };
   /**
+   * `cacheLife` profiles (or legacy `experimental.cacheLife`) merged over the
+   * built-ins with Next.js's rules; read by the `cacheLife()` shim.
+   */
+  cacheLife: Record<string, CacheLifeConfig>;
+  /**
    * Mirrors Next.js `experimental.useLightningcss`. When `true`, switch
    * Vite's CSS pipeline from PostCSS to lightningcss for both transforms
    * and minification, so the user's `lightningCssFeatures` config takes
@@ -1112,7 +1118,7 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   }
   // Next.js drops nullish nested values before warning about a moved key.
   const experimental = readOptionalRecord(config.experimental);
-  for (const key of ["skipTrailingSlashRedirect", "cacheComponents"] as const) {
+  for (const key of ["skipTrailingSlashRedirect", "cacheComponents", "cacheLife"] as const) {
     if (experimental?.[key] != null) {
       warnConfigOnce(
         `\`experimental.${key}\` has been moved to \`${key}\`. Please update your ${configFileName} file accordingly.`,
@@ -1974,6 +1980,11 @@ export async function resolveNextConfig(
       instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
+      cacheLife: resolveCacheLifeProfiles(
+        undefined,
+        { expireTime: DEFAULT_EXPIRE_TIME, staticStaleTime: DEFAULT_STALE_TIMES.static },
+        warnConfigOnce,
+      ),
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
     };
@@ -2128,6 +2139,9 @@ export async function resolveNextConfig(
   // Next.js copies a set legacy `experimental.cacheComponents` over the
   // top-level key (warnOptionHasBeenMovedOutOfExperimental).
   const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
+  const expireTime =
+    typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME;
+  const staleTimes = resolveStaleTimes(experimental);
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -2391,7 +2405,7 @@ export async function resolveNextConfig(
     globalNotFound,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
-    expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    expireTime,
     reactMaxHeadersLength:
       typeof config.reactMaxHeadersLength === "number"
         ? config.reactMaxHeadersLength
@@ -2430,7 +2444,14 @@ export async function resolveNextConfig(
           (value): value is string => typeof value === "string",
         )
       : undefined,
-    staleTimes: resolveStaleTimes(experimental),
+    staleTimes,
+    // Next.js copies a set legacy `experimental.cacheLife` over the top-level
+    // key (warnOptionHasBeenMovedOutOfExperimental).
+    cacheLife: resolveCacheLifeProfiles(
+      experimental?.cacheLife ?? config.cacheLife,
+      { expireTime, staticStaleTime: staleTimes.static },
+      warnConfigOnce,
+    ),
     useLightningcss,
     lightningCssFeatures,
   };

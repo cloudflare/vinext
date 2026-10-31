@@ -438,6 +438,12 @@ declare global {
       __VINEXT_PREFETCH_INLINING?: string;
 
       /**
+       * JSON-encoded `cacheLife` profiles: the built-ins merged with
+       * `next.config.js` → `cacheLife` (or legacy `experimental.cacheLife`).
+       */
+      __VINEXT_CACHE_LIFE_PROFILES?: string;
+
+      /**
        * JSON-encoded array of `RemotePattern` objects from
        * `next.config.js` → `images.remotePatterns`.
        */
