@@ -1672,12 +1672,15 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
 
   // Next.js checks the filesystem after each rewrite phase, so late rewrites
-  // to the endpoint are served as well.
+  // to the endpoint are served as well. Like Next.js, it compares the raw
+  // pathname, so `/_next/%69mage` is not the endpoint.
   const serveImageEndpointIfMatched = (): Response | null => {
     if (
       !filesystemRouteEligible ||
       !resolvedPathnameHasBasePath ||
-      !isImageOptimizationPath(cleanPathname)
+      !isImageOptimizationPath(
+        cleanPathnameIsRequestPathname ? requestCleanPathname : cleanPathname,
+      )
     ) {
       return null;
     }

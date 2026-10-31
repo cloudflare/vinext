@@ -56,20 +56,25 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("canonicalizes encoded URL parts before matching app routes", () => {
-    // Next.js canonicalizes URL pathname parts before deriving dynamic segment
-    // cache keys; vinext should apply the same decode-first discipline at the
-    // App RSC route-match boundary so encoded static segments and params use
-    // one normalized representation.
-    // https://github.com/vercel/next.js/blob/47bcfa0956679c2a5fea0b941b76bb2d69878d9c/packages/next/src/client/route-params.ts
+  it("matches rewritten static segments on their raw spelling", () => {
+    // Next.js 16.2.7 routes a rewrite destination like a direct request to it,
+    // so an encoded static segment does not name the literal one. Dynamic
+    // params keep the canonical encoded representation.
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:subdomain", ["_sites", ":subdomain"]),
       route("/files/:name", ["files", ":name"]),
+      route("/:locale/dashboard", [":locale", "dashboard"]),
     ]);
 
-    expect(matcher.matchRoute("/%5Fsites/demo")).toMatchObject({
+    expect(matcher.matchRoute("/%5Fsites/demo")).toBeNull();
+    expect(matcher.matchRoute("/_sites/demo")).toMatchObject({
       route: { pattern: "/_sites/:subdomain" },
       params: { subdomain: "demo" },
+    });
+    expect(matcher.matchRoute("/en/%64ashboard")).toBeNull();
+    expect(matcher.matchRoute("/en/dashboard")).toMatchObject({
+      route: { pattern: "/:locale/dashboard" },
+      params: { locale: "en" },
     });
     expect(matcher.matchRoute("/files/a%252Fb")).toMatchObject({
       params: { name: "a%252Fb" },
@@ -118,9 +123,7 @@ describe("App RSC route matching", () => {
       { ...route("/api/:name", ["api", ":name"]), routeHandler: {} },
     ]);
 
-    expect(matcher.matchRoute("/%61dmin")).toMatchObject({
-      route: { pattern: "/admin" },
-    });
+    expect(matcher.matchRoute("/%61dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/%61dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/%2561dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/files/%61")).toMatchObject({
@@ -162,6 +165,11 @@ describe("App RSC route matching", () => {
       ["/a", "/café", "/blog/new", "/solo/only", "/files/new"],
     );
     const pattern = (pathname: string) => matcher.matchRequestRoute(pathname)?.route.pattern;
+    // Next.js answers a rewrite destination like a direct request to it.
+    expect(matcher.matchRoute("/%61")?.route.pattern).toBe("/a");
+    expect(matcher.matchRoute("/members/bob/%73ettings")?.route.pattern).toBe(
+      "/members/:user/:tab",
+    );
 
     expect(matcher.matchRequestRoute("/%61")).toEqual({
       route: expect.objectContaining({ pattern: "/a" }),

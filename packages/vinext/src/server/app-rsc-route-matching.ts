@@ -6,12 +6,7 @@ import {
   type RoutePatternParams,
 } from "../routing/route-pattern.js";
 import { createAppRouteGraphInterceptionId } from "../routing/app-route-ids.js";
-import {
-  decodeMatchedParams,
-  decodeRouteSegment,
-  splitPathnameForRouteMatch,
-  splitPathSegments,
-} from "../routing/utils.js";
+import { decodeMatchedParams, decodeRouteSegment, splitPathSegments } from "../routing/utils.js";
 import { canonicalizeAppPageParams } from "./app-page-segment-state.js";
 
 /**
@@ -187,12 +182,10 @@ function createRouteParams(): AppRscRouteParams {
   return Object.create(null);
 }
 
-function appRscPathnameParts(pathname: string, isNormalized = false): string[] {
+function appRscPathnameParts(pathname: string): string[] {
   const pathOnly = pathname.split("?")[0];
   const normalizedPathname = pathOnly === "/" ? "/" : pathOnly.replace(/\/$/, "");
-  return isNormalized
-    ? splitPathSegments(normalizedPathname)
-    : splitPathnameForRouteMatch(normalizedPathname);
+  return splitPathSegments(normalizedPathname);
 }
 
 export function isAppRouteHandlerRoute(
@@ -288,18 +281,16 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       return interceptionIds.has(interceptionId);
     },
     matchRoute(url) {
-      const rawParts = appRscPathnameParts(url, true);
-      const result = trieMatchRaw(routeTrie, appRscPathnameParts(url, false));
-      if (!result) return null;
-      result.params = extractRawRoutePatternParams(result.route.patternParts, rawParts);
-      normalizeMatchedParamsForRoute(result);
-      return result;
+      // Next.js routes a rewrite destination exactly like a direct request to
+      // it: on its still-encoded segments, so `/en/%64ashboard` is not the
+      // static `/en/dashboard` that middleware compared the pathname against.
+      return matchRequestParts(appRscPathnameParts(url));
     },
     matchRequestRoute(url) {
-      return matchRequestParts(appRscPathnameParts(url, true));
+      return matchRequestParts(appRscPathnameParts(url));
     },
     matchRawRequestRoute(url) {
-      return matchRawRequestParts(appRscPathnameParts(url, true));
+      return matchRawRequestParts(appRscPathnameParts(url));
     },
     findIntercept(pathname, sourcePathname = null, interceptionId = null) {
       // Mirror Next.js' rewrite semantics: interception only fires when the
@@ -309,12 +300,12 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
       if (sourcePathname === null) return null;
 
-      const urlParts = appRscPathnameParts(pathname, true);
+      const urlParts = appRscPathnameParts(pathname);
       // Match the source against the raw, still-encoded path, as the Next-Url
       // header regex does. Decoding first would let `/%66eed` claim the static
       // `/feed` source, and the decoded static page substitution would let
       // `/%61dmin` claim a static `/admin` that doesn't own the intercept.
-      const sourceParts = appRscPathnameParts(sourcePathname, true);
+      const sourceParts = appRscPathnameParts(sourcePathname);
       const matchedSourceRoute = matchRawRequestParts(sourceParts);
 
       for (const entry of interceptLookup) {
