@@ -533,6 +533,62 @@ describe("Pages Worker request stage", () => {
     },
   );
 
+  it.each(["/page", "/api/hello"])(
+    "keeps shared %s rendering when middleware response headers reach the request",
+    async (pathname) => {
+      // Next.js copies ordinary middleware response headers onto the request,
+      // replacing the client's. Like client headers, they keep the shared stage.
+      const responseHeaders = new Headers({ "x-viewer-role": "visitor" });
+      responseHeaders.append("set-cookie", "a=1; Path=/");
+      responseHeaders.append("set-cookie", "b=2; Path=/");
+      mocks.runMiddleware.mockResolvedValue({ continue: true, responseHeaders });
+      const dispatch = vi.fn<DispatchWorkerResponseStage>(async (request) =>
+        Response.json({
+          role: request.headers.get("x-viewer-role"),
+          cookies: request.headers.getSetCookie(),
+        }),
+      );
+
+      const response = await handleRequestStage(
+        new Request(`https://example.com${pathname}`, { headers: { "x-viewer-role": "staff" } }),
+        undefined,
+        undefined,
+        dispatch,
+      );
+
+      expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      await expect(response.json()).resolves.toEqual({
+        role: "visitor",
+        cookies: ["a=1; Path=/", "b=2; Path=/"],
+      });
+    },
+  );
+
+  it("keeps shared rendering when middleware and next.config both set Vary", async () => {
+    // Staged headers combine both Vary values; only middleware's reaches the request.
+    mocks.runMiddleware.mockResolvedValue({
+      continue: true,
+      responseHeaders: new Headers({ Vary: "Accept-Language" }),
+    });
+    mocks.configHeaders.push({
+      source: "/en/page",
+      headers: [{ key: "Vary", value: "x-visitor" }],
+    });
+    const dispatch = vi.fn<DispatchWorkerResponseStage>(async (request) =>
+      Response.json({ vary: request.headers.get("vary") }),
+    );
+
+    const response = await handleRequestStage(
+      new Request("https://example.com/page"),
+      undefined,
+      undefined,
+      dispatch,
+    );
+
+    expect(dispatch.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+    await expect(response.json()).resolves.toEqual({ vary: "Accept-Language" });
+  });
+
   it("dispatches a preview request through the non-shared response stage", async () => {
     const request = new Request("https://example.com/page", {
       headers: { Cookie: "__prerender_bypass=preview" },

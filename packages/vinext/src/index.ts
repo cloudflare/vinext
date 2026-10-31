@@ -7335,6 +7335,10 @@ export const loadServerActionClient = ${
                 for (const [key, value] of nextRequestHeaders) {
                   req.headers[key] = value;
                 }
+                // Like Next.js's toNodeOutgoingHttpHeaders, keep several
+                // Set-Cookie values (iterated separately) as an array.
+                const setCookies = nextRequestHeaders.getSetCookie();
+                if (setCookies.length > 1) req.headers["set-cookie"] = setCookies;
               };
 
               // devRunMiddlewareAdapter: wraps the dev runMiddleware call and

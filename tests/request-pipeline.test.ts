@@ -1484,6 +1484,49 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
   });
 
+  it("lets truthy middleware response headers replace the client's request headers", () => {
+    // resolve-routes.ts's generic merge writes every truthy middleware response
+    // header to the request after the override translation, except
+    // content-length and ipcForbiddenHeaders. Confirmed against Next.js 16.2.7.
+    const baseHeaders = new Headers({
+      "x-viewer-role": "staff",
+      "x-empty": "client",
+      "set-cookie": "client=1",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({
+      "x-viewer-role": "visitor",
+      "x-empty": "",
+      "content-length": "0",
+      "transfer-encoding": "chunked",
+      "x-middleware-cache": "no-cache",
+    });
+    middlewareHeaders.append("set-cookie", "a=1; Path=/");
+    middlewareHeaders.append("set-cookie", "b=2; Path=/");
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+    expect(result!.get("x-viewer-role")).toBe("visitor");
+    expect(result!.get("x-empty")).toBe("client");
+    expect(result!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.has("content-length")).toBe(false);
+    expect(result!.has("transfer-encoding")).toBe(false);
+    expect(result!.has("x-middleware-cache")).toBe(false);
+
+    // The merge runs after the override translation, so it takes precedence.
+    const withOverrides = buildRequestHeadersFromMiddlewareResponse(baseHeaders, {
+      "x-middleware-override-headers": "x-viewer-role,x-only-override",
+      "x-middleware-request-x-viewer-role": "from-override",
+      "x-middleware-request-x-only-override": "kept",
+      "x-viewer-role": "visitor",
+      "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+    });
+    expect(withOverrides!.get("x-viewer-role")).toBe("visitor");
+    expect(withOverrides!.get("x-only-override")).toBe("kept");
+    expect(withOverrides!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(withOverrides!.has("cookie")).toBe(false);
+  });
+
   it("drops empty unlisted forwarded values", () => {
     const middlewareHeaders = new Headers({
       "x-middleware-request-x-empty": "",

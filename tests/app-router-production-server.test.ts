@@ -1627,6 +1627,38 @@ describe("App Router Production server (startProdServer)", () => {
     expect(ts2).toBe(ts1);
   });
 
+  // Next.js copies every non-empty middleware response header onto the
+  // request, replacing what the client sent. Confirmed against Next.js 16.2.7.
+  it("copies middleware response headers onto App and Pages requests in production", async () => {
+    const init = { headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" } };
+
+    const appPage = await (await fetch(`${baseUrl}/header-response-merge`, init)).text();
+    expect(appPage).toContain('id="viewer-role">visitor<');
+    expect(appPage).toContain('id="empty">client<');
+    expect(appPage).toContain(
+      'id="set-cookie">merged-cookie=1; Path=/, merged-cookie-2=2; Path=/<',
+    );
+
+    const appRoute = await fetch(`${baseUrl}/api/header-response-merge?override`, init);
+    await expect(appRoute.json()).resolves.toEqual({
+      viewerRole: "visitor",
+      empty: "client",
+      setCookie: "merged-cookie=1; Path=/, merged-cookie-2=2; Path=/",
+      headersApiViewerRole: "visitor",
+    });
+
+    const pagesPage = await (await fetch(`${baseUrl}/pages-header-response-merge`, init)).text();
+    expect(pagesPage).toContain('id="viewer-role">visitor<');
+    expect(pagesPage).toContain('id="empty">client<');
+
+    const pagesApi = await fetch(`${baseUrl}/api/pages-header-response-merge`, init);
+    await expect(pagesApi.json()).resolves.toEqual({
+      viewerRole: "visitor",
+      empty: "client",
+      setCookie: ["merged-cookie=1; Path=/", "merged-cookie-2=2; Path=/"],
+    });
+  });
+
   it("applies middleware request header overrides before App->Pages fallback rendering in production", async () => {
     const res = await fetch(`${baseUrl}/pages-header-override-delete`, {
       headers: {

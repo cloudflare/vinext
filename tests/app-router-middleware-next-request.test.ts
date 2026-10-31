@@ -168,6 +168,55 @@ describe("App Router middleware with NextRequest", () => {
     });
   });
 
+  // Next.js's resolve-routes.ts copies every non-empty middleware response
+  // header onto the request after the override translation, so middleware's
+  // value replaces the client's. Confirmed against Next.js 16.2.7.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  it("copies middleware response headers onto the App page request", async () => {
+    const { res, html } = await fetchHtml(baseUrl, "/header-response-merge", {
+      headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-viewer-role")).toBe("visitor");
+    expect(html).toContain('id="viewer-role">visitor<');
+    expect(html).toContain('id="empty">client<');
+    expect(html).toContain('id="set-cookie">merged-cookie=1; Path=/, merged-cookie-2=2; Path=/<');
+  });
+
+  it("copies middleware response headers onto App Route request.headers", async () => {
+    for (const search of ["", "?override"]) {
+      const res = await fetch(`${baseUrl}/api/header-response-merge${search}`, {
+        headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        viewerRole: "visitor",
+        empty: "client",
+        setCookie: "merged-cookie=1; Path=/, merged-cookie-2=2; Path=/",
+        headersApiViewerRole: "visitor",
+      });
+    }
+  });
+
+  it("copies middleware response headers onto Pages requests in mixed projects", async () => {
+    const { html } = await fetchHtml(baseUrl, "/pages-header-response-merge", {
+      headers: { "x-viewer-role": "staff", "x-empty-from-middleware": "client" },
+    });
+    expect(html).toContain('id="viewer-role">visitor<');
+    expect(html).toContain('id="empty">client<');
+
+    const res = await fetch(`${baseUrl}/api/pages-header-response-merge`, {
+      headers: { "x-viewer-role": "staff" },
+    });
+    expect(await res.json()).toEqual({
+      viewerRole: "visitor",
+      empty: null,
+      setCookie: ["merged-cookie=1; Path=/", "merged-cookie-2=2; Path=/"],
+    });
+  });
+
   it("middleware request header overrides can delete credential headers before pages getServerSideProps in mixed projects", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/pages-header-override-delete", {
       headers: {
