@@ -200,9 +200,36 @@ function middlewareMatcher(mod: MiddlewareModule): MatcherConfig | undefined {
   return config.matcher;
 }
 
+// Next.js drops these from every middleware response before using its
+// headers (`ipcForbiddenHeaders` plus `content-length` in resolve-routes.ts).
+// They describe middleware's own message, so they must not frame the response
+// that is actually sent: a stale Content-Length on a streamed page leaves
+// surplus bytes on a kept-alive connection.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/server-ipc/utils.ts
+const MIDDLEWARE_MESSAGE_HEADER_NAMES = [
+  "accept-encoding",
+  "connection",
+  "content-encoding",
+  "content-length",
+  "expect",
+  "keep-alive",
+  "keepalive",
+  "transfer-encoding",
+];
+
+function deleteMiddlewareMessageHeaders(headers: Headers): void {
+  for (const name of MIDDLEWARE_MESSAGE_HEADER_NAMES) headers.delete(name);
+}
+
+function processMiddlewareResponseHeaders(headers: Headers): void {
+  processMiddlewareHeaders(headers);
+  deleteMiddlewareMessageHeaders(headers);
+}
+
 function stripMiddlewareHeadersFromResponse(response: Response): Response {
   const headers = new Headers(response.headers);
-  processMiddlewareHeaders(headers);
+  processMiddlewareResponseHeaders(headers);
   return new Response(response.body, {
     status: response.status,
     statusText: response.statusText,
@@ -245,7 +272,7 @@ function relativizeLocation(location: string, requestUrl: string): string {
  */
 function dataRedirectResponse(target: string, originalResponse: Response): Response {
   const headers = new Headers(originalResponse.headers);
-  processMiddlewareHeaders(headers);
+  processMiddlewareResponseHeaders(headers);
   // Headers.delete is case-insensitive per the Fetch spec, so a single call
   // covers `Location` / `location` / `LOCATION`.
   headers.delete("Location");
@@ -261,6 +288,7 @@ function collectMiddlewareHeaders(response: Response): Headers {
     }
   }
   dropEmptyMiddlewareSetCookie(responseHeaders);
+  deleteMiddlewareMessageHeaders(responseHeaders);
   return responseHeaders;
 }
 
@@ -673,7 +701,7 @@ async function executeMiddlewareModule(
 
       const responseHeaders = new Headers(response.headers);
       responseHeaders.delete("location");
-      processMiddlewareHeaders(responseHeaders);
+      processMiddlewareResponseHeaders(responseHeaders);
       // Rebuild the response with the relativized Location so consumers that
       // forward `result.response` (rather than `result.redirectUrl`) also send
       // the correct header.

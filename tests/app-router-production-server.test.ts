@@ -85,10 +85,17 @@ function getInlineStyleText(html: string): string {
 
 async function rawHttpRequest(
   url: URL,
-  options: { method?: string; path?: string; headers?: Record<string, string> } = {},
+  options: {
+    method?: string;
+    path?: string;
+    headers?: Record<string, string>;
+    agent?: false;
+    body?: string;
+  } = {},
 ): Promise<{ status: number; headers: http.IncomingHttpHeaders; body: Buffer }> {
+  const { body, ...requestOptions } = options;
   return new Promise((resolve, reject) => {
-    const request = http.request(url, options, (response) => {
+    const request = http.request(url, requestOptions, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk: Buffer) => chunks.push(chunk));
       response.on("end", () => {
@@ -100,7 +107,7 @@ async function rawHttpRequest(
       });
     });
     request.on("error", reject);
-    request.end();
+    request.end(body);
   });
 }
 
@@ -1666,6 +1673,71 @@ describe("App Router Production server (startProdServer)", () => {
       __N_SSP: true,
     });
   });
+
+  it.each([
+    {
+      name: "an App page continued with NextResponse.next()",
+      pathname: "/about?mw-mirror-request-headers",
+      status: 200,
+      marker: "About",
+    },
+    {
+      name: "an App page as RSC",
+      pathname: "/about.rsc?mw-mirror-request-headers",
+      status: 200,
+      marker: "About",
+    },
+    {
+      name: "an App route handler reached by NextResponse.rewrite()",
+      pathname: "/about?mw-mirror-request-headers=/api/hello",
+      status: 200,
+      marker: "Hello from App Router API",
+    },
+    {
+      name: "a Pages page reached by NextResponse.rewrite()",
+      pathname: "/about?mw-mirror-request-headers=/old-school",
+      status: 200,
+      marker: "Old School Pages Directory",
+    },
+    {
+      name: "a middleware redirect",
+      pathname: "/about?mw-mirror-request-headers=redirect",
+      status: 307,
+      location: "/about",
+    },
+    {
+      name: "a middleware response",
+      pathname: "/about?mw-mirror-request-headers=response",
+      status: 403,
+      marker: "blocked by middleware",
+    },
+  ])(
+    "keeps middleware's copied request framing headers off $name",
+    async ({ pathname, status, marker, location }) => {
+      // Next.js drops these from middleware's response headers
+      // (`ipcForbiddenHeaders` plus `content-length` in resolve-routes.ts),
+      // so a request body's length can't frame the response.
+      const body = "xxxxx";
+      const res = await rawHttpRequest(new URL(pathname, baseUrl), {
+        method: "GET",
+        agent: false,
+        headers: {
+          "content-length": String(body.length),
+          "content-encoding": "br",
+          "keep-alive": "timeout=1",
+        },
+        body,
+      });
+
+      expect(res.status).toBe(status);
+      expect(res.headers.location).toBe(location);
+      expect(res.headers["x-mw-mirrored"]).toBe("1");
+      expect(res.headers["content-encoding"]).toBeUndefined();
+      expect(res.headers["keep-alive"]).not.toBe("timeout=1");
+      expect(res.headers["content-length"]).not.toBe(String(body.length));
+      expect(res.body.toString()).toContain(marker ?? "");
+    },
+  );
 
   it("serves Pages Router edge API ImageResponse routes in hybrid production", async () => {
     // Ported from Next.js: test/e2e/og-api/index.test.ts

@@ -18,6 +18,25 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   // Test NextRequest.nextUrl - this would fail with TypeError if request is plain Request
   const { pathname } = request.nextUrl;
 
+  // Copies the request's headers onto middleware's response, the mix-up of
+  // `{ headers }` with `{ request: { headers } }` that the Next.js docs warn
+  // about. The request's framing headers must not frame what is sent.
+  // Coverage: tests/app-router-production-server.test.ts
+  if (request.nextUrl.searchParams.has("mw-mirror-request-headers")) {
+    const headers = new Headers(request.headers);
+    headers.set("x-mw-mirrored", "1");
+    const target = request.nextUrl.searchParams.get("mw-mirror-request-headers");
+    if (target === "redirect") {
+      return NextResponse.redirect(new URL("/about", request.url), { headers });
+    }
+    if (target === "response") {
+      return new Response("blocked by middleware", { status: 403, headers });
+    }
+    return target
+      ? NextResponse.rewrite(new URL(target, request.url), { headers })
+      : NextResponse.next({ headers });
+  }
+
   // Client-disconnect coverage: tests/node-request-cancellation.test.ts
   if (pathname === "/api/request-signal") {
     if (!request.nextUrl.searchParams.has("override")) return NextResponse.next();
