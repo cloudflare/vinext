@@ -1,5 +1,5 @@
 import { Fragment, Suspense, createElement, type ComponentType, type ReactNode } from "react";
-import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
+import { rewriteClientHookError } from "vinext/shims/client-hook-error";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import {
   ErrorBoundary,
@@ -1306,19 +1306,5 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       return renderWith(DEFAULT_GLOBAL_ERROR_COMPONENT);
     }
     throw renderError;
-  }
-}
-
-// React client-only hooks that are absent from the `react-server` export
-// condition. When called in a Server Component they produce a TypeError like
-// "useState is not a function". Rewrite into an actionable message matching
-// the format used by the next/navigation shims (see client-hook-error.ts).
-const _clientHookPattern =
-  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue|useActionState|useOptimistic|useEffectEvent)\b.*is not a function/;
-
-function rewriteClientHookError(error: Error): void {
-  const match = error.message.match(_clientHookPattern);
-  if (match) {
-    error.message = buildClientHookErrorMessage(`${match[1]}()`);
   }
 }

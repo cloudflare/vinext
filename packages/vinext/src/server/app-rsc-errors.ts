@@ -2,6 +2,8 @@ import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getProperError } from "./proper-error.js";
+import { logRequestError } from "./request-error-log.js";
+import { rewriteClientHookError } from "vinext/shims/client-hook-error";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -210,6 +212,10 @@ export function createRscOnErrorHandler(
         // must not replace the original failure with a mutation TypeError.
       }
     }
+    // Like Next.js's formatServerError, before Flight serializes the error, so
+    // the browser's error boundary and dev overlay get the actionable message.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-error-handler.tsx
+    if (nodeEnv !== "production") rewriteClientHookError(properError);
     if (options.requestInfo && options.errorContext) {
       options.reportRequestError(properError, options.requestInfo, options.errorContext);
     }
@@ -234,7 +240,7 @@ export function createRscOnErrorHandler(
     ) {
       // Like Next.js, log in production too: without an onRequestError hook,
       // reportRequestError is a no-op and the failure would leave no trace.
-      console.error("[vinext] Server render error:", properError);
+      logRequestError("[vinext] Server render error:", properError);
     }
 
     return digest;

@@ -165,6 +165,23 @@ export default withSentryConfig(nextConfig, {
 
 The Sentry SDK registers its OpenTelemetry provider through that existing setup and receives the request root and built-in child spans listed above. Sentry remains application-owned and optional; installing vinext does not install Sentry or OpenTelemetry packages.
 
+## Request error logs
+
+Like `next start`, vinext logs each error it passes to `onRequestError`, such as `[vinext] Server render error:`, in development and production. Set `VINEXT_QUIET=1` at runtime to turn these logs off, like the `quiet` option of a Next.js custom server. Use it when `onRequestError` redacts errors before recording them, so the unredacted message and stack don't also reach the server or Worker logs. `onRequestError` still runs.
+
+On Cloudflare Workers, add it to the Worker's `env` in `cloudflare.config.ts`, or to `vars` in a Wrangler config:
+
+```ts
+import { bindings } from "cf/config";
+
+env: {
+  // ...existing bindings
+  VINEXT_QUIET: bindings.text("1"),
+},
+```
+
+Workers expose these as `process.env` with the `nodejs_compat` flag and a compatibility date of 2025-04-01 or later, which configs `vinext init` generates already have.
+
 ## Cloudflare Workers traces
 
 On Cloudflare Workers, the same framework call sites also use the native Workers tracing context. There is no separate Workers implementation of the request lifecycle. A custom application span can surround vinext, and custom spans, fetches, or binding calls made inside vinext or route code inherit the currently active span:

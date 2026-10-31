@@ -307,6 +307,37 @@ describe("app page boundary render helpers", () => {
     expect(body).not.toContain('data-boundary="not-found"');
   });
 
+  it("lets a failing boundary render reject instead of answering with the error document", async () => {
+    // The error document would carry the boundary's 404 status, which the
+    // ISR guards accept as the boundary's own document and store.
+    const common = createCommonOptions();
+    let fallbackToErrorDocumentOnShellError: boolean | undefined;
+    common.loadSsrHandler.mockImplementation(async () => ({
+      async handleSsr(
+        rscStream: ReadableStream<Uint8Array>,
+        _navContext?: unknown,
+        _fontData?: unknown,
+        options?: { fallbackToErrorDocumentOnShellError?: boolean },
+      ) {
+        fallbackToErrorDocumentOnShellError = options?.fallbackToErrorDocumentOnShellError;
+        return rscStream;
+      },
+    }));
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(common.loadSsrHandler).toHaveBeenCalledTimes(1);
+    expect(fallbackToErrorDocumentOnShellError).not.toBe(true);
+  });
+
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
     const common = createCommonOptions();
 

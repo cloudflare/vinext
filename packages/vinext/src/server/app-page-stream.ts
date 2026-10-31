@@ -168,9 +168,10 @@ export type AppPageSsrHandler = {
       /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
        *  mirroring once a function returns true. */
       mirrorNextFlight?: boolean | (() => boolean);
-      /** When true, an SSR-phase-only shell render error resolves to the
-       *  default `__next_error__` error-document shell (with the original
-       *  flight payload and bootstrap) instead of rejecting. See handleSsr. */
+      /** When true, a shell render error other than a redirect, HTTP access
+       *  fallback or bail-out resolves to the default `__next_error__`
+       *  error-document shell (with the original flight payload and
+       *  bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
       /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
       resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
@@ -225,7 +226,8 @@ type RenderAppPageHtmlStreamOptions = {
   isForceStatic?: boolean;
   /** Production render that may be stored under a query-free key. */
   isCacheCandidate?: boolean;
-  /** Override the default shell-error recovery decision passed to handleSsr. */
+  /** Whether handleSsr answers a shell error with the error document. Off by
+   *  default: a boundary render that fails keeps rejecting. */
   fallbackToErrorDocumentOnShellError?: boolean;
   /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
@@ -236,10 +238,6 @@ type RenderAppPageHtmlStreamOptions = {
   /** Mirror inline Flight chunks into Next.js's `self.__next_f` transport, or start
    *  mirroring once a function returns true. */
   mirrorNextFlight?: boolean | (() => boolean);
-  /** True when the app supplies a custom global-error.tsx. Disables the
-   *  default error-document shell fallback so SSR shell errors keep driving
-   *  the server-rendered global-error boundary re-render. */
-  hasCustomGlobalError?: boolean;
 };
 
 type RenderAppPageHtmlResponseOptions = {
@@ -343,11 +341,7 @@ export async function renderAppPageHtmlStream(
     initialDevServerError: options.initialDevServerError,
     onSsrError: options.onSsrError,
     mirrorNextFlight: options.mirrorNextFlight,
-    // Only when the caller affirmatively knows there is no custom
-    // global-error.tsx; undefined (unknown) keeps reject semantics.
-    fallbackToErrorDocumentOnShellError:
-      options.fallbackToErrorDocumentOnShellError ??
-      (options.waitForAllReady !== true && options.hasCustomGlobalError === false),
+    fallbackToErrorDocumentOnShellError: options.fallbackToErrorDocumentOnShellError,
     resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
