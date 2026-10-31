@@ -48,6 +48,21 @@ test.describe("Pages Router on Nitro (node server)", () => {
     expect(await response.text()).toBe("");
   });
 
+  // The image endpoint fetches `/_next/static` sources without proxy. h3
+  // decodes these sources again and resolves them to /blocked.png.
+  test("doesn't serve a public image that proxy guards from the image endpoint", async ({
+    request,
+  }) => {
+    for (const url of [
+      "/blocked.png",
+      "/_next/static/..%5C..%5Cblocked.png",
+      "/_next/static/.%09./.%09./blocked.png",
+    ]) {
+      const response = await request.get(`/_next/image?url=${encodeURIComponent(url)}&w=64&q=75`);
+      expect(response.status(), url).toBe(400);
+    }
+  });
+
   test("serves a public image from the image endpoint", async ({ request }) => {
     const response = await request.get("/_next/image?url=%2Fpixel.png&w=64&q=75");
     expect(response.status()).toBe(200);

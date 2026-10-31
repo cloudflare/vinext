@@ -1,7 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 export function proxy(request: NextRequest) {
-  if (request.nextUrl.pathname === "/blocked.txt") {
+  if (["/blocked.txt", "/blocked.png"].includes(request.nextUrl.pathname)) {
     return NextResponse.json({ proxy: true }, { status: 403 });
   }
   const response = NextResponse.next();
