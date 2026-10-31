@@ -120,7 +120,7 @@ export function resolveDevImageRedirect(
 const IMAGE_OPTIMIZATION_SIGNAL = Symbol.for("vinext.image-optimization-signal");
 
 export type ImageOptimizationSignal = {
-  /** Middleware response headers to send with the image. */
+  /** next.config and middleware response headers to send with the image. */
   middlewareHeaders: Headers;
   /** The request headers after middleware's overrides, when it set any. */
   requestHeaders: Headers | null;

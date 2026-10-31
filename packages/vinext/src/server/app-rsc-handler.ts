@@ -1673,7 +1673,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
   // Next.js checks the filesystem after each rewrite phase, so late rewrites
   // to the endpoint are served as well.
-  const serveImageEndpointIfMatched = (): Response | null => {
+  const serveImageEndpointIfMatched = async (): Promise<Response | null> => {
     if (
       !filesystemRouteEligible ||
       !resolvedPathnameHasBasePath ||
@@ -1704,7 +1704,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     return markImageOptimizationSignal(
       Response.redirect(new URL(imageRedirect, url.origin).href, 302),
       {
-        middlewareHeaders,
+        // Hosts replace this carrier with the image, and the finalizer skips
+        // redirects, so config headers travel in the signal under middleware's.
+        middlewareHeaders: new Headers(await loadPreHandlerResponseHeaders()),
         // The context holds middleware's encoded overrides, not request headers.
         requestHeaders: overrideHeaders
           ? buildRequestHeadersFromMiddlewareResponse(request.headers, overrideHeaders)
@@ -1713,7 +1715,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       },
     );
   };
-  const imageEndpointResponse = serveImageEndpointIfMatched();
+  const imageEndpointResponse = await serveImageEndpointIfMatched();
   if (imageEndpointResponse) return imageEndpointResponse;
 
   const metadataRouteResponse = await renderMetadataRouteIfMatched();
@@ -2491,7 +2493,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       filesystemRouteEligible = resolvedPathnameHasBasePath;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();
+      const rewrittenImageEndpointResponse = await serveImageEndpointIfMatched();
       if (rewrittenImageEndpointResponse) return rewrittenImageEndpointResponse;
       const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
       if (rewrittenMetadataResponse) {
@@ -2556,7 +2558,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       filesystemRouteEligible = resolvedPathnameHasBasePath;
       const claimedRscCacheBustingRedirect = await validateClaimedOutsideBasePathRsc();
       if (claimedRscCacheBustingRedirect) return claimedRscCacheBustingRedirect;
-      const rewrittenImageEndpointResponse = serveImageEndpointIfMatched();
+      const rewrittenImageEndpointResponse = await serveImageEndpointIfMatched();
       if (rewrittenImageEndpointResponse) return rewrittenImageEndpointResponse;
       const rewrittenMetadataResponse = await renderMetadataRouteIfMatched();
       if (rewrittenMetadataResponse) {

@@ -54,6 +54,7 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { readImageOptimizationSignal } from "../packages/vinext/src/server/image-optimization.js";
 import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
@@ -4968,6 +4969,34 @@ describe("createAppRscHandler", () => {
       null,
     );
     expect(defaultOnly.status).toBe(400);
+  });
+
+  it("sends config headers with the App Router image, below middleware's", async () => {
+    // Hosts replace the redirect carrier with the image, so config headers
+    // reach it only through the signal.
+    const handler = createHandler({
+      configHeaders: [
+        {
+          source: "/:path*",
+          headers: [
+            { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
+            { key: "x-shared", value: "config" },
+          ],
+        },
+      ],
+      middlewareModule: {
+        default: () =>
+          new Response(null, { headers: { "x-middleware-next": "1", "x-shared": "middleware" } }),
+      },
+    });
+    const response = await handler(
+      new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=75"),
+      null,
+    );
+    expect(response.status).toBe(302);
+    const signal = readImageOptimizationSignal(response);
+    expect(signal?.middlewareHeaders.get("cross-origin-resource-policy")).toBe("same-origin");
+    expect(signal?.middlewareHeaders.get("x-shared")).toBe("middleware");
   });
 
   it.each([
