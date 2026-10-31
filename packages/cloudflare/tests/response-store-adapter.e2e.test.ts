@@ -681,6 +681,55 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
   });
 
+  // Next.js keys a route handler, metadata routes included, by its pathname,
+  // so neither the query nor an RSC selector header adds an entry.
+  test("shares one route handler and metadata route entry across queries and RSC selectors", async () => {
+    const selectorHeaders = [
+      {},
+      { "Next-Url": `/${crypto.randomUUID()}` },
+      { "Next-Router-State-Tree": crypto.randomUUID() },
+      { Accept: "text/x-component", RSC: "1" },
+      { "X-Vinext-Mounted-Slots": crypto.randomUUID() },
+    ];
+    for (const [pathname, status] of [
+      ["/api/host-shared", 200],
+      ["/metadata-storage/status-404/opengraph-image", 404],
+    ] as const) {
+      const queries = selectorHeaders.map(() => crypto.randomUUID());
+      const bodies: string[] = [];
+      const statuses: Array<string | null> = [];
+      for (const [index, headers] of selectorHeaders.entries()) {
+        const response = await request(`${pathname}?q=${queries[index]}`, { headers });
+        assert.equal(response.status, status, pathname);
+        statuses.push(response.headers.get("x-vinext-cache"));
+        const renderId = response.headers.get("x-render-id");
+        const body = await response.text();
+        bodies.push(renderId ?? body);
+        if (index === 0) await waitForResponseEntries(pathname, 1);
+      }
+      assert.deepEqual(statuses, ["MISS", "HIT", "HIT", "HIT", "HIT"], pathname);
+      assert.equal(new Set(bodies).size, 1, pathname);
+      await waitForResponseEntries(pathname, 1);
+      const [entry] = await responseEntries(pathname);
+      for (const query of queries) assert.doesNotMatch(JSON.stringify(entry), new RegExp(query));
+    }
+
+    // A handler filled from a query regenerates in the background into its
+    // one entry.
+    const fill = await cacheStatus(`/api/now?q=${crypto.randomUUID()}`);
+    assert.equal(fill.status, "MISS");
+    const fillId = JSON.parse(fill.body).renderId as string;
+    await waitForResponseEntries("/api/now", 1);
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    const stale = await cacheStatus(`/api/now?q=${crypto.randomUUID()}`);
+    assert.equal(JSON.parse(stale.body).renderId, fillId);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    const fresh = await cacheStatus("/api/now");
+    assert.equal(fresh.status, "HIT");
+    assert.notEqual(JSON.parse(fresh.body).renderId, fillId);
+    await waitForResponseEntries("/api/now", 1);
+  });
+
   // Next.js stores a page's notFound() with its 404 and answers a Link's
   // segment prefetch of it with a 200, so the router renders the fallback
   // without loading the document. The prefetch shares the navigation's entry.

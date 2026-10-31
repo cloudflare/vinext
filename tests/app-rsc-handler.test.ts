@@ -1414,22 +1414,13 @@ describe("createAppRscHandler", () => {
       expect(new URL(request.url).origin).toBe("https://example.test");
     });
 
-    it("keeps the query and contextual selectors in mounted-slot, interception and route-handler identities", async () => {
+    it("keeps the query and contextual selectors in mounted-slot and interception identities", async () => {
       useQueryFreeIdentityAdapter();
       const pageRoute = createPageRoute();
       const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
-      const handlerRoute = createPageRoute({
-        __loadPage: undefined,
-        __loadRouteHandler() {},
-        page: null,
-        pattern: "/route",
-        routeHandler: { GET: () => new Response("get") },
-        routeSegments: ["route"],
-      });
       const matchRoute = (pathname: string) => {
         if (pathname === "/about") return { params: {}, route: pageRoute };
         if (pathname === "/feed") return { params: {}, route: sourceRoute };
-        if (pathname === "/route") return { params: {}, route: handlerRoute };
         return null;
       };
       const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
@@ -1471,12 +1462,6 @@ describe("createAppRscHandler", () => {
         false,
         dispatchResponseStage,
       );
-      await handler(
-        new Request("https://example.test/docs/route?tab=latest"),
-        null,
-        false,
-        dispatchResponseStage,
-      );
 
       for (const [request, props, options] of dispatchResponseStage.mock.calls) {
         expect(options.cache).toBe("shared");
@@ -1498,8 +1483,108 @@ describe("createAppRscHandler", () => {
       ).toEqual([
         ["app-page", "request"],
         ["app-page", "interception"],
-        ["app-route-handler", "request"],
       ]);
+    });
+
+    // Next.js keys a route handler by its pathname. Nothing the query or an
+    // RSC selector names reaches a handler or a metadata route, and a handler
+    // that reads the request is dynamic, so neither belongs in the identity.
+    it("keeps only the method, path and route props in route-handler and metadata identities", async () => {
+      useQueryFreeIdentityAdapter();
+      const handlerRoute = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) =>
+        pathname === "/route" ? { params: {}, route: handlerRoute } : null;
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        isMetadataRoute: (pathname) => pathname === "/robots.txt",
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+      const selectorNames = VINEXT_RSC_VARY_HEADER.split(",").map((name) => name.trim());
+      const rscHeaders = createRscRequestHeaders({
+        mountedSlotsHeader: "slot:modal:/",
+        nextUrl: `/${crypto.randomUUID()}`,
+        routerState: { pathAndSearch: `/${crypto.randomUUID()}`, routeId: "route:/source" },
+      });
+      rscHeaders.set("Accept", "application/json");
+
+      for (const pathname of ["/docs/route", "/docs/robots.txt"]) {
+        const variants: Array<[string, HeadersInit]> = [
+          [pathname, { Accept: "application/json" }],
+          [`${pathname}?tab=latest`, { Accept: "application/json" }],
+          [
+            `${pathname}?junk=${crypto.randomUUID()}`,
+            {
+              Accept: "application/json",
+              "Next-Router-State-Tree": crypto.randomUUID(),
+              "Next-Url": `/${crypto.randomUUID()}`,
+              "X-Vinext-Mounted-Slots": "slot:modal:/",
+            },
+          ],
+          [await createRscRequestUrl(`${pathname}?tab=latest`, rscHeaders), rscHeaders],
+          [
+            (await createRscRequestUrl(`${pathname}?tab=latest`, rscHeaders)).replace(
+              `${pathname}?`,
+              `${pathname}.rsc?`,
+            ),
+            rscHeaders,
+          ],
+        ];
+        const identities = [];
+        for (const [requestPath, headers] of variants) {
+          dispatchResponseStage.mockClear();
+          await handler(
+            new Request(`https://example.test${requestPath}`, { headers }),
+            null,
+            false,
+            dispatchResponseStage,
+          );
+          const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+          expect(pathAndSearch(request.url)).toBe(requestPath);
+          expect(props.kind).toBe(
+            pathname === "/docs/route" ? "app-route-handler" : "app-metadata",
+          );
+          expect(options.cache).toBe("shared");
+          expect(options.cacheIdentity?.request.url).toBe(
+            `${VINEXT_CACHE_IDENTITY_ORIGIN}${pathname}`,
+          );
+          expect(options.cacheIdentity?.queryFree).toBe(true);
+          const identityHeaders = options.cacheIdentity!.request.headers;
+          for (const name of selectorNames) expect(identityHeaders.has(name)).toBe(false);
+          expect(identityHeaders.get("Accept")).toBe("application/json");
+          identities.push({
+            dispatched: props,
+            method: options.cacheIdentity!.request.method,
+            props: options.cacheIdentity!.props,
+            url: options.cacheIdentity!.request.url,
+          });
+        }
+        // The RSC request is dispatched as one; its identity is the plain one.
+        expect(identities[3]!.dispatched).toMatchObject({
+          isRscRequest: true,
+          mountedSlotsHeader: "slot:modal:/",
+        });
+        expect(identities[0]!.props).toEqual({
+          ...identities[0]!.dispatched,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        });
+        for (const identity of identities.slice(1)) {
+          expect({ ...identity, dispatched: null }).toEqual({
+            ...identities[0],
+            dispatched: null,
+          });
+        }
+      }
     });
 
     // Next.js keys its response cache by pathname, so every host an app
@@ -1549,7 +1634,7 @@ describe("createAppRscHandler", () => {
       }
       expect(identities.map(({ url }) => url)).toEqual([
         `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
-        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route?tab=latest`,
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route`,
       ]);
     });
 

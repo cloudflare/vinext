@@ -6,9 +6,11 @@ import { VINEXT_CACHE_IDENTITY_ORIGIN } from "./multi-stage.js";
 /** The core cache identity the configured adapter keys shared dispatches by, if any. */
 export function adapterSharedCacheIdentity(): "host-free" | "query-free" | null {
   const adapter = getCdnCacheAdapter();
-  // The identity is host-free, and query-free for App pages when the adapter
-  // asks, so it is safe only behind completed-response admission, which
-  // refuses dynamic renders and App pages without a negative searchParams proof.
+  // The identity is host-free, and query-free for App pages, Route Handlers
+  // and metadata routes when the adapter asks, so it is safe only behind
+  // completed-response admission, which refuses dynamic renders (a Route
+  // Handler that reads the request URL is one) and App pages without a
+  // negative searchParams proof.
   if (adapter.requiresCompletedResponseAdmission !== true) return null;
   return adapter.responseStageCacheIdentity ?? null;
 }

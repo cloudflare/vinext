@@ -731,7 +731,8 @@ const handler = {
       }
 
       // Core supplies a host-free identity for shared App Router dispatches
-      // and static Pages pages, query-free for App pages, behind
+      // and static Pages pages, query-free for App pages, Route Handlers and
+      // metadata routes, behind
       // completed-response admission. The render still receives the real
       // request; the key and RSC seed use the identity, and route replay
       // does unless the identity asks to regenerate from the dispatch.
