@@ -763,6 +763,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -1187,6 +1188,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         isDynamicError,
         isForceDynamic,
         isForceStatic,
+        isPrerender,
         isProduction: options.isProduction,
         isProgressiveActionRender: options.isProgressiveActionRender === true,
         isRscRequest: options.isRscRequest,
@@ -1222,6 +1224,9 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
   // Whether the source route that the intercepted response renders is
   // force-dynamic or revalidate = 0, from the config activated for its render.
   let isInterceptSourceKnownDynamic = false;
+  // Whether that source is force-static or dynamic = "error", so its render
+  // can't read the request.
+  let isInterceptSourceRequestIndependent = false;
   // The head the page's render prepared, for its special-error fallback.
   const renderedRouteHead: RouteHeadRef = {
     observeSearchParams: !isForceStatic,
@@ -1266,6 +1271,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
       isInterceptSourceKnownDynamic =
         sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
+      isInterceptSourceRequestIndependent =
+        sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error";
       setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
       setCurrentFetchRevalidate(sourceRevalidateSeconds);
       setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
@@ -1318,10 +1325,18 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // cacheability and dynamic config, not the matched target's. A source
       // that can't be static, a render known dynamic before it starts, or a
       // draft-mode request is never cacheable, like the source's own render.
-      // Middleware's policy still wins, merged after, as in the RSC builder.
+      // In production, so is any other source that can read the request: this
+      // response is never stored and can still reach a dynamic API as it
+      // streams. Middleware's policy still wins, merged after, as in the RSC
+      // builder.
       const isSourceStaticEligible =
         options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
-      if (!isSourceStaticEligible || isDraftMode || isInterceptSourceKnownDynamic) {
+      if (
+        !isSourceStaticEligible ||
+        isDraftMode ||
+        isInterceptSourceKnownDynamic ||
+        (options.isProduction && !isInterceptSourceRequestIndependent)
+      ) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
       }
       mergeMiddlewareResponseHeaders(interceptHeaders, options.middlewareContext.headers);

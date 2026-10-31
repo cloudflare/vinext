@@ -1736,6 +1736,52 @@ describe("App Router Production server (startProdServer)", () => {
     expect(body).toContain("guest");
   });
 
+  // The layout reads cookies behind Suspense 300 ms into the render, after
+  // these documents' headers have been sent.
+  it("never caches a generated-param miss's not-found document", async () => {
+    const session = `user-${randomUUID()}`;
+    const res = await fetch(`${baseUrl}/late-cookie-layout/handbook/${randomUUID()}`, {
+      headers: { Cookie: `session=${session}` },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(await res.text()).toContain(session);
+  });
+
+  it("never caches an error boundary's document", async () => {
+    const session = `user-${randomUUID()}`;
+    const res = await fetch(`${baseUrl}/late-cookie-layout/throws`, {
+      headers: { Cookie: `session=${session}` },
+    });
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    const html = await res.text();
+    expect(html).toContain("late-cookie-layout-error");
+    expect(html).toContain(session);
+  });
+
+  it("never caches an intercepted navigation's RSC payload", async () => {
+    const session = `user-${randomUUID()}`;
+    const res = await fetch(`${baseUrl}/late-cookie-layout/photo/1.rsc`, {
+      headers: {
+        Accept: "text/x-component",
+        Cookie: `session=${session}`,
+        RSC: "1",
+        "X-Vinext-Interception-Context": "/late-cookie-layout/feed",
+      },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    const payload = await res.text();
+    expect(payload).toContain("late-cookie-layout-photo-modal");
+    expect(payload).toContain(session);
+  });
+
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },

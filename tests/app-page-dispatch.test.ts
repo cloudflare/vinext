@@ -3522,8 +3522,11 @@ describe("app page dispatch", () => {
     expect(response.headers.get("content-type")).toBe("text/x-component");
     expect(response.headers.get("x-from-middleware")).toBe("yes");
     // The response renders the static /feed source, so the dynamic target's
-    // classification doesn't make it uncacheable.
-    expect(response.headers.get("cache-control")).toBeNull();
+    // classification doesn't decide its policy. The source can still read
+    // the request as the response streams, so it is never cached.
+    expect(response.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     await expect(response.text()).resolves.toBe("/feed:{}:modal@app/feed/@modal");
     expect(capturedInterceptOpts).toMatchObject({
       interceptGraphId: "graph-interception:/feed->/photos/:id",
@@ -4121,10 +4124,41 @@ describe("app page dispatch", () => {
           });
 
           await expect(response.text()).resolves.toBe("/feed");
-          expect(response.headers.get("cache-control")).toBeNull();
+          expect(response.headers.get("cache-control")).toBe(
+            "private, no-cache, no-store, max-age=0, must-revalidate",
+          );
         });
       }
     }
+
+    it("never caches a static source's payload unless middleware sets a policy", async () => {
+      const response = await dispatchIntercept({});
+      await expect(response.text()).resolves.toBe("/feed");
+      expect(response.headers.get("cache-control")).toBe(
+        "private, no-cache, no-store, max-age=0, must-revalidate",
+      );
+
+      const middlewareCacheControl = "public, max-age=5";
+      const withMiddlewarePolicy = await dispatchIntercept({
+        middlewareContext: {
+          headers: new Headers({ "cache-control": middlewareCacheControl }),
+          status: null,
+        },
+      });
+      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+    });
+
+    it("sends no policy for a source that can't read the request, or in dev", async () => {
+      for (const overrides of [
+        { resolveRouteDynamicConfig: () => "force-static" },
+        { resolveRouteDynamicConfig: () => "error" },
+        { isProduction: false },
+      ] satisfies CreateDispatchOptionsOverrides[]) {
+        const response = await dispatchIntercept(overrides);
+        await expect(response.text()).resolves.toBe("/feed");
+        expect(response.headers.get("cache-control")).toBeNull();
+      }
+    });
   });
 
   it("passes empty searchParams to a force-static intercept source route", async () => {
@@ -6046,6 +6080,51 @@ describe("app page dispatch", () => {
       });
     }
 
+    it("never caches a static generated-param miss", async () => {
+      const dispatch = async (
+        overrides: CreateDispatchOptionsOverrides = {},
+        middlewareHeaders?: Headers,
+      ) => {
+        const { options } = createDispatchOptions({
+          async generateStaticParams() {
+            return [{ slug: "known" }];
+          },
+          hasGenerateStaticParams: true,
+          isProduction: true,
+          route: createDynamicSegmentRoute(),
+          ...overrides,
+        });
+        options.renderHttpAccessFallbackPage = async () =>
+          new Response("not found", { headers: middlewareHeaders, status: 404 });
+        if (middlewareHeaders) options.middlewareContext.headers = middlewareHeaders;
+        return dispatchAppPage({ ...options, dynamicParamsConfig: false });
+      };
+
+      // Its layouts can still read the request after the headers leave.
+      const response = await dispatch();
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+
+      // Middleware's own cache policy still wins.
+      const middlewareCacheControl = "public, max-age=5";
+      const withMiddlewarePolicy = await dispatch(
+        {},
+        new Headers({ "cache-control": middlewareCacheControl }),
+      );
+      expect(withMiddlewarePolicy.headers.get("cache-control")).toBe(middlewareCacheControl);
+
+      // A render that can't read the request, and dev, keep no policy.
+      for (const overrides of [
+        { dynamicConfig: "force-static" },
+        { dynamicConfig: "error" },
+        { isProduction: false },
+      ]) {
+        const unstamped = await dispatch(overrides);
+        expect(unstamped.status).toBe(404);
+        expect(unstamped.headers.get("cache-control")).toBeNull();
+      }
+    });
+
     it("never caches the missing default export response of a non-static page", async () => {
       const dispatch = async (overrides: CreateDispatchOptionsOverrides) => {
         const { options: dispatchOptions } = createDispatchOptions({
@@ -6063,10 +6142,18 @@ describe("app page dispatch", () => {
         expect(response.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
       }
 
-      // A static page's response keeps no policy of its own.
+      // A static page's response isn't known dynamic, but it is never stored,
+      // so it is never cached either.
       const staticResponse = await dispatch({});
       expect(staticResponse.status).toBe(500);
-      expect(staticResponse.headers.get("cache-control")).toBeNull();
+      expect(staticResponse.headers.get("cache-control")).toBe(NEVER_CACHE_CONTROL);
+
+      // The build's prerender reads no-store as a dynamic render, so it gets
+      // no pending policy.
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const prerenderResponse = await dispatch({});
+      expect(prerenderResponse.status).toBe(500);
+      expect(prerenderResponse.headers.get("cache-control")).toBeNull();
     });
 
     it("renders non-GET requests to a dynamic-segment route without generateStaticParams", async () => {
