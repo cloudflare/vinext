@@ -1387,7 +1387,7 @@ describe("App Router integration", () => {
 
   it("error boundary catches string thrown in Server Component", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(textContentByTestId(html, "string-error-message")).toBe(
       "this is a test string thrown in a server component",
     );

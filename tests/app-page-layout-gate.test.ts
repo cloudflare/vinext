@@ -27,6 +27,19 @@ describe("app page layout gate", () => {
     expect(result).toEqual({ error: "outer", layoutIndex: 1 });
   });
 
+  it("reports the outermost held layout that has thrown so far without waiting", () => {
+    const gate = createAppPageLayoutGate();
+    gate.hold("layout:/", 0);
+    gate.hold("layout:/a", 1);
+    gate.hold("layout:/a/b", 2);
+    expect(gate.failure()).toBeNull();
+    gate.settle("layout:/");
+    gate.settle("layout:/a/b", { error: "inner" });
+    expect(gate.failure()).toEqual({ error: "inner", layoutIndex: 2 });
+    gate.settle("layout:/a", { error: "outer" });
+    expect(gate.failure()).toEqual({ error: "outer", layoutIndex: 1 });
+  });
+
   it("resolves null once held layouts rendered", async () => {
     const gate = createAppPageLayoutGate();
     gate.hold("layout:/", 0);

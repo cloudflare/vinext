@@ -129,6 +129,7 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
     middlewareContext: AppPageMiddlewareContext,
     callContext?: AppFallbackRendererCallContext,
     errorOrigin?: "rsc" | "ssr",
+    throwingLayoutIndex?: number,
   ) => Promise<Response | null>;
   renderHttpAccessFallback: (
     route: AppPageBoundaryRoute<TModule> | null,
@@ -395,6 +396,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
       middlewareContext,
       callContext,
       errorOrigin = "rsc",
+      throwingLayoutIndex,
     ) {
       return renderAppPageErrorBoundary({
         applyFileBasedMetadata,
@@ -429,6 +431,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         sanitizeErrorForClient: sanitizer,
         scriptNonce,
         sourcePageSegments: callContext?.sourcePageSegments,
+        throwingLayoutIndex,
       });
     },
   };

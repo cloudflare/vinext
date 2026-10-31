@@ -3,6 +3,7 @@ import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryComponent,
+  resolveAppPageLayoutErrorBoundary,
   resolveAppPageRootHttpAccessBoundaryTreePosition,
   resolveAppPageLayoutHttpAccessBoundary,
   wrapAppPageBoundaryElement,
@@ -161,6 +162,50 @@ describe("app page boundary helpers", () => {
       component: "GlobalError",
       isGlobalError: true,
     });
+  });
+
+  it("resolves the error boundary above a throwing layout (#4394)", () => {
+    const getDefaultExport = (errorModule: { default: string } | null | undefined) =>
+      errorModule?.default ?? null;
+    // app/error, app/(layoutless)/a/error and app/a/b/error, with layouts at
+    // app, app/a/b and app/a/b/c.
+    const segmentBoundaries = {
+      errorModules: [{ default: "RootError" }, { default: "AError" }, { default: "BError" }],
+      errorTreePositions: [0, 1, 2],
+      globalErrorModule: { default: "GlobalError" },
+      layoutTreePositions: [0, 2, 3],
+    };
+
+    // A layout's own error.tsx sits inside it: app/a/b/layout is caught by
+    // app/a/error, inside the root layout only.
+    expect(
+      resolveAppPageLayoutErrorBoundary({ ...segmentBoundaries, getDefaultExport, layoutIndex: 1 }),
+    ).toEqual({ component: "AError", isGlobalError: false, layoutCount: 1 });
+    // A deeper layout is caught by app/a/b/error, inside app/a/b/layout.
+    expect(
+      resolveAppPageLayoutErrorBoundary({ ...segmentBoundaries, getDefaultExport, layoutIndex: 2 }),
+    ).toEqual({ component: "BError", isGlobalError: false, layoutCount: 2 });
+    // The root layout's error reaches global-error, outside every layout.
+    expect(
+      resolveAppPageLayoutErrorBoundary({ ...segmentBoundaries, getDefaultExport, layoutIndex: 0 }),
+    ).toEqual({ component: "GlobalError", isGlobalError: true, layoutCount: 0 });
+
+    // Layout-aligned boundaries: the one at index i renders inside layout i.
+    expect(
+      resolveAppPageLayoutErrorBoundary({
+        getDefaultExport,
+        globalErrorModule: { default: "GlobalError" },
+        layoutErrorModules: [{ default: "RootError" }, null, { default: "LeafError" }],
+        layoutIndex: 2,
+      }),
+    ).toEqual({ component: "RootError", isGlobalError: false, layoutCount: 1 });
+    expect(
+      resolveAppPageLayoutErrorBoundary({
+        getDefaultExport,
+        layoutErrorModules: [{ default: "RootError" }],
+        layoutIndex: 0,
+      }),
+    ).toEqual({ component: null, isGlobalError: false, layoutCount: 0 });
   });
 
   it("wraps boundary elements with layouts, segment providers, and the global boundary for RSC", () => {

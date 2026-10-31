@@ -13,6 +13,11 @@ export type AppPageLayoutGate = {
   /** Reports how the layout with `layoutId` rendered. */
   settle(layoutId: string, failure?: { error: unknown }): void;
   /**
+   * The outermost held layout that has thrown so far, or null. A document
+   * whose shell an error rejected reads it to find the layout that threw.
+   */
+  failure(): AppPageLayoutGateFailure | null;
+  /**
    * The outermost held layout that threw, once every held layout `isRendered`
    * includes has rendered, or null. An error elsewhere in the render doesn't
    * stop the wait, as Flight goes on to render the other entries, but the
@@ -24,7 +29,7 @@ export type AppPageLayoutGate = {
   ): Promise<AppPageLayoutGateFailure | null>;
 };
 
-type AppPageLayoutGateFailure = {
+export type AppPageLayoutGateFailure = {
   error: unknown;
   layoutIndex: number;
 };
@@ -51,6 +56,9 @@ export function createAppPageLayoutGate(): AppPageLayoutGate {
         }
       }
       check?.();
+    },
+    failure() {
+      return failure;
     },
     wait(isRendered, renderEnded) {
       return new Promise((resolve) => {

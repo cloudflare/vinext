@@ -85,10 +85,11 @@ test.describe("Error Boundaries", () => {
     }
   });
 
-  test("server component error renders error.tsx boundary with 200", async ({ page }) => {
+  test("server component error renders error.tsx boundary with 500", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
-    // Next.js returns 200 when error.tsx catches an error (it's "handled")
-    expect(response?.status()).toBe(200);
+    // Next.js answers 500 when the error rejects the document's shell, even
+    // when error.tsx catches it. Only an error streamed after the shell keeps 200.
+    expect(response?.status()).toBe(500);
     await expect(page.locator('[data-testid="server-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="server-error-message"]')).toContainText(
       "Server component error",
@@ -97,7 +98,7 @@ test.describe("Error Boundaries", () => {
 
   test("nested server component error renders child error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
-    expect(response?.status()).toBe(200);
+    expect(response?.status()).toBe(500);
     // Should render the child's error.tsx, not the parent's
     await expect(page.locator('[data-testid="inner-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="inner-error-message"]')).toContainText(

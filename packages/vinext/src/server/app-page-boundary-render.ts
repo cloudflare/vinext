@@ -58,6 +58,7 @@ import {
   renderAppPageBoundaryResponse,
   resolveAppPageErrorBoundary,
   resolveAppPageHttpAccessBoundaryModule,
+  resolveAppPageLayoutErrorBoundary,
   wrapAppPageBoundaryElement,
   type AppPageParams,
 } from "./app-page-boundary.js";
@@ -172,6 +173,7 @@ type AppPageBoundaryLayoutEntry = {
 export type AppPageBoundaryRoute<TModule extends AppPageModule = AppPageModule> = {
   error?: TModule | null;
   errorPaths?: readonly TModule[] | null;
+  errorTreePositions?: readonly number[] | null;
   errors?: readonly (TModule | null | undefined)[] | null;
   forbidden?: TModule | null;
   forbiddenTreePosition?: number | null;
@@ -293,6 +295,8 @@ type RenderAppPageErrorBoundaryOptions<TModule extends AppPageModule = AppPageMo
   matchedParams?: AppPageParams | null;
   route?: AppPageBoundaryRoute<TModule> | null;
   sanitizeErrorForClient: (error: Error) => Error;
+  /** The index of the route layout whose own component threw `error`, if one did. */
+  throwingLayoutIndex?: number;
 } & AppPageBoundaryRenderCommonOptions<TModule>;
 
 function getDefaultExport<TModule extends AppPageModule>(
@@ -1156,13 +1160,27 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   options: RenderAppPageErrorBoundaryOptions<TModule>,
 ): Promise<Response | null> {
-  const errorBoundary = resolveAppPageErrorBoundary({
-    getDefaultExport,
-    errorModules: options.route?.errorPaths,
-    globalErrorModule: options.globalErrorModule,
-    layoutErrorModules: options.route?.errors,
-    pageErrorModule: options.route?.error,
-  });
+  const layoutErrorBoundary =
+    options.route && options.throwingLayoutIndex !== undefined
+      ? resolveAppPageLayoutErrorBoundary({
+          getDefaultExport,
+          errorModules: options.route.errorPaths,
+          errorTreePositions: options.route.errorTreePositions,
+          globalErrorModule: options.globalErrorModule,
+          layoutErrorModules: options.route.errors,
+          layoutIndex: options.throwingLayoutIndex,
+          layoutTreePositions: options.route.layoutTreePositions,
+        })
+      : null;
+  const errorBoundary =
+    layoutErrorBoundary ??
+    resolveAppPageErrorBoundary({
+      getDefaultExport,
+      errorModules: options.route?.errorPaths,
+      globalErrorModule: options.globalErrorModule,
+      layoutErrorModules: options.route?.errors,
+      pageErrorModule: options.route?.error,
+    });
   if (!errorBoundary.component) {
     return null;
   }
@@ -1173,7 +1191,12 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
   const errorObject =
     options.errorOrigin === "ssr" ? rawError : options.sanitizeErrorForClient(rawError);
   const matchedParams = options.matchedParams ?? options.route?.params ?? {};
-  const layoutModules = options.route?.layouts ?? options.rootLayouts;
+  const routeLayoutModules = options.route?.layouts ?? options.rootLayouts;
+  // The throwing layout and those below the boundary that catches it don't
+  // render: the boundary replaces its segment's children.
+  const layoutModules = layoutErrorBoundary
+    ? routeLayoutModules.slice(0, layoutErrorBoundary.layoutCount)
+    : routeLayoutModules;
   const pathname = new URL(options.requestUrl).pathname;
 
   const headElements: ReactNode[] = [createElement("meta", { charSet: "utf-8", key: "charset" })];
@@ -1259,6 +1282,15 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     });
   };
 
+  // The error rejected the document's shell before any byte was sent, so
+  // Next.js answers 500 whichever boundary catches it, error.tsx included
+  // (`renderToStream` in app-render.tsx). Only a streamed error, inside a
+  // Suspense boundary, keeps the 200 the first chunk already sent. A flight
+  // response for a local boundary keeps 200, as Next.js' dynamic flight render
+  // never changes its status.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
+  const isServerErrorResponse = errorBoundary.isGlobalError || !options.isRscRequest;
+
   const renderWith = async (BoundaryComponent: AppPageComponent): Promise<Response> => {
     const response = await renderAppPageBoundaryElementResponse({
       ...options,
@@ -1268,9 +1300,9 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       navigationParams: matchedParams,
       route: options.route,
       routePattern: options.route?.pattern,
-      status: errorBoundary.isGlobalError ? 500 : 200,
+      status: isServerErrorResponse ? 500 : 200,
     });
-    if (errorBoundary.isGlobalError) {
+    if (isServerErrorResponse) {
       applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
     }
     return response;

@@ -1902,7 +1902,12 @@ describe("app page boundary render helpers", () => {
       sanitizeErrorForClient,
     });
 
-    expect(response?.status).toBe(200);
+    // Next.js answers 500 when an error rejects the document's shell, even
+    // when a local error.tsx catches it (#4394).
+    expect(response?.status).toBe(500);
+    expect(response?.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(sanitizeErrorForClient).toHaveBeenCalledTimes(1);
 
     const html = await response?.text();
@@ -1981,7 +1986,7 @@ describe("app page boundary render helpers", () => {
       },
     });
 
-    expect(response?.status).toBe(200);
+    expect(response?.status).toBe(500);
     expect(response?.headers.get("x-middleware-security")).toBe("present");
     expect(response?.headers.get("vary")).toBe(`${VINEXT_RSC_VARY_HEADER}, x-auth-state`);
     expect(response?.headers.getSetCookie()).toContain("session=rotated; Path=/; HttpOnly");
@@ -2028,7 +2033,7 @@ describe("app page boundary render helpers", () => {
         },
       });
 
-      expect(response?.status).toBe(200);
+      expect(response?.status).toBe(500);
       expect(consoleError).toHaveBeenCalledWith(
         "[vinext] File-based metadata resolution failed while rendering error boundary for /posts/[slug]:",
         error,
@@ -2066,7 +2071,12 @@ describe("app page boundary render helpers", () => {
       },
     });
 
+    // A flight response for a local boundary keeps 200, as Next.js' dynamic
+    // flight render does.
     expect(response?.status).toBe(200);
+    expect(response?.headers.get("cache-control")).not.toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(response?.headers.get("Content-Type")).toBe("text/x-component");
 
     const payload = JSON.parse((await response?.text()) ?? "{}") as Record<string, unknown>;

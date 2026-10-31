@@ -1603,7 +1603,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           route,
         });
       },
-      renderErrorBoundaryPage(renderErr, errorOrigin) {
+      renderErrorBoundaryPage(renderErr, errorOrigin, throwingLayoutIndex) {
         const __activeIntercept = findIntercept(
           interceptionPathname,
           interceptionContext,
@@ -1614,7 +1614,7 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
           sourcePageSegments: __activeIntercept?.slotKey === __SIBLING_PAGE_INTERCEPT_SLOT_KEY
             ? __activeIntercept.sourcePageSegments
             : null,
-        }, errorOrigin);
+        }, errorOrigin, throwingLayoutIndex);
       },
       renderHttpAccessFallbackPage(statusCode, opts, currentMiddlewareContext) {
         const __activeIntercept = findIntercept(

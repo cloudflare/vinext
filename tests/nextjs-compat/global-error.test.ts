@@ -59,15 +59,23 @@ describe("Next.js compat: global-error", () => {
   // These validate that vinext's existing error handling works,
   // providing a baseline before we test Next.js-specific patterns.
 
-  it("error-server-test: server component throw is caught by error.tsx", async () => {
+  // Next.js answers 500 when an error rejects the document's shell, whichever
+  // boundary catches it; only an error streamed after the shell keeps 200.
+  // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
+  // https://github.com/cloudflare/vinext/issues/4394
+
+  it("error-server-test: server component throw is caught by error.tsx with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(html).toContain("Server Error Caught");
   });
 
-  it("error-nested-test: nested error caught by inner error.tsx", async () => {
+  it("error-nested-test: nested error caught by inner error.tsx with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("inner-error-boundary");
     expect(html).not.toContain("outer-error-boundary");
   });
@@ -77,9 +85,34 @@ describe("Next.js compat: global-error", () => {
     // that segment has no layout:
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/route-group-error/child");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("Route group error boundary");
     expect(html).not.toContain('data-testid="global-error"');
+  });
+
+  it("dynamic page throw before the shell renders error.tsx with 500", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/error-boundary-status/dynamic-throw",
+    );
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    // The page read cookies(), so the dev server sends its dynamic dev
+    // `no-store` header, as next dev does. Production sends Next.js's
+    // private never-cache header (see the production preview suite).
+    expect(res.headers.get("cache-control")).toContain("no-store");
+    expect(html).toContain('data-testid="error-boundary-status"');
+    expect(html).toContain("error-boundary-status page render failed");
+    expect(html).not.toContain('data-testid="global-error"');
+  });
+
+  it("throw inside Suspense after the shell keeps 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/error-boundary-status/streamed-throw",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain('data-testid="error-boundary-status-streamed-shell"');
   });
 
   // ── Server component error (RSC throw -> global-error) ─────
@@ -338,18 +371,44 @@ describe("Next.js compat: global-error (production preview)", () => {
     expect(html).not.toContain('data-testid="global-error-digest"');
   });
 
-  it("server component throw with local error.tsx renders that boundary with 200", async () => {
+  it("server component throw with local error.tsx renders that boundary with 500", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
     expect(html).toContain("Server Error Caught");
     expect(html).not.toContain('data-testid="global-error"');
   });
 
   it("nested server component throw resolves to the nearest error.tsx boundary", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-nested-test/child");
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(500);
     expect(html).toContain("inner-error-boundary");
     expect(html).not.toContain("outer-error-boundary");
+  });
+
+  it("dynamic page throw before the shell renders error.tsx with 500", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/error-boundary-status/dynamic-throw",
+    );
+    expect(res.status).toBe(500);
+    expect(res.headers.get("content-type")).toContain("text/html");
+    expect(res.headers.get("cache-control")).toBe(
+      "private, no-cache, no-store, max-age=0, must-revalidate",
+    );
+    expect(html).toContain('data-testid="error-boundary-status"');
+    expect(html).not.toContain('data-testid="global-error"');
+  });
+
+  it("throw inside Suspense after the shell keeps 200", async () => {
+    const { res, html } = await fetchHtml(
+      baseUrl,
+      "/nextjs-compat/error-boundary-status/streamed-throw",
+    );
+    expect(res.status).toBe(200);
+    expect(html).toContain('data-testid="error-boundary-status-streamed-shell"');
   });
 
   it("generateMetadata() errors stream a recoverable shell for the local boundary", async () => {

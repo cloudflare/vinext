@@ -437,6 +437,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   renderErrorBoundaryPage: (
     error: unknown,
     errorOrigin?: "rsc" | "ssr",
+    throwingLayoutIndex?: number,
   ) => Promise<Response | null>;
   renderHttpAccessFallbackPage: (
     statusCode: number,
@@ -1513,8 +1514,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     revalidateSeconds: currentRevalidateSeconds,
     mountedSlotsHeader: options.mountedSlotsHeader,
     renderMode: options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION,
-    renderErrorBoundaryResponse(renderError, errorOrigin) {
-      return options.renderErrorBoundaryPage(renderError, errorOrigin);
+    renderErrorBoundaryResponse(renderError, errorOrigin, throwingLayoutIndex) {
+      return options.renderErrorBoundaryPage(renderError, errorOrigin, throwingLayoutIndex);
     },
     renderPageSpecialError(specialError, renderOptions) {
       return renderPageSpecialError(

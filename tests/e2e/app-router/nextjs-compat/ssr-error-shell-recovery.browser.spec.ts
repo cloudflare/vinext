@@ -376,7 +376,7 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
           !message.includes("reload error") &&
           !message.includes("genuine server digest error") &&
           !message.includes("Expected error to opt out of server rendering") &&
-          // The recovery and global-error documents intentionally preserve
+          // The recovery and error boundary documents intentionally preserve
           // their HTTP 500 status, which browsers report as a resource error.
           !message.includes("Failed to load resource: the server responded with a status of 500") &&
           // React's companion log for an error caught by a boundary.

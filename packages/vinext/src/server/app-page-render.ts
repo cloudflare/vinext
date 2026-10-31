@@ -226,6 +226,8 @@ type RenderAppPageLifecycleOptionsBase = {
   renderErrorBoundaryResponse: (
     error: unknown,
     errorOrigin: "rsc" | "ssr",
+    /** The index of the route layout whose own component threw `error`, if one did. */
+    throwingLayoutIndex?: number,
   ) => Promise<Response | null>;
   renderPageSpecialError: (
     specialError: AppPageSpecialError,
@@ -1410,6 +1412,16 @@ async function renderAppPageLifecycleImpl(
         const response = internalServerErrorResponse(undefined, { headers });
         applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
         return Promise.resolve(response);
+      }
+      // A route layout that threw is caught by the boundary above it, so the
+      // boundary renders without it. The outermost one is the one shown.
+      const layoutFailure = getAppPageLayoutGate(options.element)?.failure() ?? null;
+      if (layoutFailure && !resolveAppPageSpecialError(layoutFailure.error)) {
+        return options.renderErrorBoundaryResponse(
+          layoutFailure.error,
+          "rsc",
+          layoutFailure.layoutIndex,
+        );
       }
       const capturedRscError = rscErrorTracker.getCapturedError();
       return options.renderErrorBoundaryResponse(

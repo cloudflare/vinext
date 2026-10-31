@@ -65,6 +65,16 @@ type ResolveAppPageErrorBoundaryResult<TComponent> = {
   isGlobalError: boolean;
 };
 
+type ResolveAppPageLayoutErrorBoundaryOptions<TModule, TComponent> = Omit<
+  ResolveAppPageErrorBoundaryOptions<TModule, TComponent>,
+  "pageErrorModule"
+> & {
+  errorTreePositions?: readonly number[] | null;
+  /** The index of the route layout that threw. */
+  layoutIndex: number;
+  layoutTreePositions?: readonly number[] | null;
+};
+
 type WrapAppPageBoundaryElementOptions<
   TElement,
   TLayoutModule,
@@ -267,6 +277,50 @@ export function resolveAppPageErrorBoundary<TModule, TComponent>(
   return {
     component: globalErrorComponent ?? null,
     isGlobalError: Boolean(globalErrorComponent),
+  };
+}
+
+/**
+ * The error boundary that catches an error a route layout threw. A layout's
+ * own error.tsx wraps only its children, so the deepest error.tsx in a segment
+ * above the layout catches it, or global-error.tsx when none does, as for the
+ * root layout. `layoutCount` is the number of route layouts that render around
+ * the boundary: those at or above its segment.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-component-tree.tsx
+ */
+export function resolveAppPageLayoutErrorBoundary<TModule, TComponent>(
+  options: ResolveAppPageLayoutErrorBoundaryOptions<TModule, TComponent>,
+): ResolveAppPageErrorBoundaryResult<TComponent> & { layoutCount: number } {
+  const layoutTreePosition = options.layoutTreePositions?.[options.layoutIndex];
+  if (options.errorModules && options.errorTreePositions && layoutTreePosition !== undefined) {
+    for (let index = options.errorModules.length - 1; index >= 0; index--) {
+      const treePosition = options.errorTreePositions[index];
+      if (treePosition === undefined || treePosition >= layoutTreePosition) continue;
+      const component = options.getDefaultExport(options.errorModules[index]);
+      if (!component) continue;
+      let layoutCount = 0;
+      while (
+        layoutCount < options.layoutIndex &&
+        (options.layoutTreePositions?.[layoutCount] ?? 0) <= treePosition
+      ) {
+        layoutCount++;
+      }
+      return { component, isGlobalError: false, layoutCount };
+    }
+  } else if (options.layoutErrorModules) {
+    // Layout-aligned boundaries: the one at index `i` renders inside layout `i`.
+    const start = Math.min(options.layoutIndex, options.layoutErrorModules.length) - 1;
+    for (let index = start; index >= 0; index--) {
+      const component = options.getDefaultExport(options.layoutErrorModules[index]);
+      if (component) return { component, isGlobalError: false, layoutCount: index + 1 };
+    }
+  }
+
+  const globalErrorComponent = options.getDefaultExport(options.globalErrorModule);
+  return {
+    component: globalErrorComponent ?? null,
+    isGlobalError: Boolean(globalErrorComponent),
+    layoutCount: 0,
   };
 }
 
