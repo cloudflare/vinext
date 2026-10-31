@@ -1231,6 +1231,82 @@ describe("resolveNextConfig image patterns", () => {
       config.images?.remotePatterns,
     );
   });
+
+  // Mirrors Next.js server/config.ts: statically imported images stay allowed
+  // whatever `images.localPatterns` lists, and an unset list is left for the
+  // image endpoint's default.
+  it("appends the static-import pattern to configured local patterns", async () => {
+    const config = await resolveNextConfig(
+      { images: { localPatterns: [{ pathname: "/photos/**", search: "" }] } },
+      "/tmp/project",
+    );
+    expect(config.images?.localPatterns).toEqual([
+      { pathname: "/photos/**", search: "" },
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+
+    const listed = await resolveNextConfig(
+      { images: { localPatterns: [{ pathname: "/_next/static/media/**", search: "" }] } },
+      "/tmp/project",
+    );
+    expect(listed.images?.localPatterns).toEqual([
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+
+    const empty = await resolveNextConfig({ images: { localPatterns: [] } }, "/tmp/project");
+    expect(empty.images?.localPatterns).toEqual([
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+  });
+
+  it("leaves unset local patterns unset", async () => {
+    const config = await resolveNextConfig({ images: { qualities: [75] } }, "/tmp/project");
+    expect(config.images?.localPatterns).toBeUndefined();
+  });
+
+  it("rejects local patterns that are not an array", async () => {
+    await expect(
+      resolveNextConfig(
+        { images: { localPatterns: { pathname: "/photos/**" } as never } },
+        "/tmp/project",
+      ),
+    ).rejects.toThrow("Specified images.localPatterns should be an Array received object.");
+    for (const [value, type] of [
+      [null, "null"],
+      [false, "boolean"],
+      ["", "string"],
+    ] as const) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: value as never } }, "/tmp/project"),
+      ).rejects.toThrow(`Specified images.localPatterns should be an Array received ${type}.`);
+    }
+  });
+
+  it("rejects malformed local pattern entries instead of allowing every source", async () => {
+    // A sparse hole serializes to `null` in the runtime config.
+    const sparse: unknown[] = [];
+    sparse.length = 1;
+    for (const localPatterns of [
+      [null],
+      ["/photos/**"],
+      [{ pathname: 1 }],
+      [{ pathname: "/a", host: "x" }],
+      [new URL("https://example.com/photos/**")],
+      [new Date()],
+      sparse,
+    ]) {
+      await expect(
+        resolveNextConfig({ images: { localPatterns: localPatterns as never } }, "/tmp/project"),
+        JSON.stringify(localPatterns),
+      ).rejects.toThrow("Specified images.localPatterns[0] should be an object");
+    }
+    await expect(
+      resolveNextConfig(
+        { images: { localPatterns: Array.from({ length: 26 }, () => ({ pathname: "/a" })) } },
+        "/tmp/project",
+      ),
+    ).rejects.toThrow("at most 25 entries");
+  });
 });
 
 describe("resolveNextConfig alias extraction", () => {

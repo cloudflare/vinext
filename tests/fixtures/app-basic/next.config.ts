@@ -45,6 +45,19 @@ const nextConfig: NextConfig = {
   // temporary outDir don't need node_modules next to the output.
   transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
+  // Used by E2E: app-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo/logo.svg", search: "?.png" },
+    ],
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
