@@ -1003,6 +1003,46 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(draft.data).not.toBe(normal.data);
   });
 
+  test("unstable_cache keeps bypassing a draft render whose HEAD response was sent", async ({
+    request,
+  }) => {
+    const id = `head-${Date.now()}`;
+
+    try {
+      expect((await request.get(`${baseUrl()}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      // The response is sent once the Suspense fallback is ready, and its body
+      // is cancelled, while the boundary still waits to call unstable_cache().
+      const head = await request.head(
+        `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${id}`,
+      );
+      expect(head.status()).toBe(200);
+      await releaseDraftLateCache(request, id);
+      await waitForDraftLateCacheDone(request, id);
+    } finally {
+      await request.get(`${baseUrl()}/nextjs-compat/api/draft-disable`);
+    }
+
+    expect((await readDraftLateCachePage(request, id)).draftMode).toBe("false");
+  });
+
+  test("unstable_cache keeps bypassing a draft render's after() callback", async ({ request }) => {
+    const id = `after-${Date.now()}`;
+
+    try {
+      expect((await request.get(`${baseUrl()}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      const response = await request.get(
+        `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${id}&phase=after`,
+      );
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toContain('id="phase">after<');
+      await waitForDraftLateCacheDone(request, id);
+    } finally {
+      await request.get(`${baseUrl()}/nextjs-compat/api/draft-disable`);
+    }
+
+    expect((await readDraftLateCachePage(request, id)).draftMode).toBe("false");
+  });
+
   test("unstable_cache exposes draft mode status", async ({ request }) => {
     const key = `status-${Date.now()}`;
 
@@ -1102,6 +1142,36 @@ async function readDraftCachePage(request: APIRequestContext, key: string) {
     data: html.match(/id="cached-data">([^<]+)/)?.[1],
     draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1],
   };
+}
+
+async function readDraftLateCachePage(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  return { draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1] };
+}
+
+async function releaseDraftLateCache(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-draft-late-probe?mode=release&id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+}
+
+async function waitForDraftLateCacheDone(request: APIRequestContext, id: string) {
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseUrl()}/nextjs-compat/api/unstable-cache-draft-late-probe?mode=status&id=${encodeURIComponent(id)}`,
+        );
+        return ((await response.json()) as { done: boolean }).done;
+      },
+      { message: `wait for the draft render's unstable_cache() call (${id})`, timeout: 5_000 },
+    )
+    .toBe(true);
 }
 
 async function readDynamicErrorDraftCachePage(request: APIRequestContext) {
