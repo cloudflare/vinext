@@ -168,6 +168,26 @@ describe("finalizeAppRscResponse — config header application", () => {
     expect(response.headers.get("x-added")).toBe("config");
   });
 
+  it("matches config header sources against the page pathname of a .rsc request", async () => {
+    // `/app/members.rsc` is the Flight payload of `/members` under basePath,
+    // so the page's rule replaces the renderer's shared-cache policy.
+    const response = new Response("body", {
+      status: 200,
+      headers: { "Cache-Control": "s-maxage=60, stale-while-revalidate=31535940" },
+    });
+
+    await finalizeAppRscResponse(response, new Request("http://example.com/app/members.rsc"), {
+      basePath: "/app",
+      configHeaders: [
+        { source: "/members", headers: [{ key: "Cache-Control", value: "private, no-store" }] },
+      ],
+      i18nConfig: null,
+      requestContext: makeRequestContext(),
+    });
+
+    expect(response.headers.get("cache-control")).toBe("private, no-store");
+  });
+
   it("does not reapply source config headers to an internally dispatched target response", async () => {
     const response = markAppRscResponseConfigHeadersApplied(
       new Response("target flight", { headers: { "x-route-value": "target" } }),

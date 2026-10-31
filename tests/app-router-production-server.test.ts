@@ -573,6 +573,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect(rawCookies).toEqual(cookies);
   });
 
+  // `<path>.rsc` serves the Flight payload of `<path>`, so next.config header
+  // sources match the page's own pathname, as they do for `RSC: 1` requests.
+  it.each([
+    { path: "/about.rsc", header: "x-page-header", value: "about-page" },
+    { path: "/blog/hello-world.rsc", header: "x-blog-slug", value: "slug=hello-world" },
+    { path: "/dashboard.rsc", header: "x-dashboard-path-star", value: "1" },
+  ])("applies next.config headers for the page to $path", async ({ path, header, value }) => {
+    const res = await fetch(`${baseUrl}${path}`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toContain("text/x-component");
+    expect(res.headers.get(header)).toBe(value);
+  });
+
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
     // request.url))`, so routing this request would echo the target's origin.
