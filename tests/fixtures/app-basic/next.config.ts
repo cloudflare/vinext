@@ -450,6 +450,21 @@ const nextConfig: NextConfig = {
         source: "/config-cookie-response",
         headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
       },
+      // Used by Vitest: app-router-production-server.test.ts — redirects that
+      // application code returns carry config headers like Next.js; the
+      // redirects() rule on /old-about does not.
+      ...[
+        "/redirect-test",
+        "/permanent-redirect-test",
+        "/nextjs-compat/api/redirect-response",
+        "/response-redirect-test",
+        "/nextjs-compat/action-progressive",
+        "/api/pages-redirect",
+        "/old-about",
+      ].map((source) => ({
+        source,
+        headers: [{ key: "X-Redirect-Config-Header", value: "1" }],
+      })),
       // Used by Vitest: app-router.test.ts
       {
         source: "/api/(.*)",

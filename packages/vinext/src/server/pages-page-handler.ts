@@ -17,7 +17,7 @@ import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
-import { extractLocaleFromUrl, resolvePagesI18nRequest } from "./pages-i18n.js";
+import { extractLocaleFromUrl, markLocaleRedirect, resolvePagesI18nRequest } from "./pages-i18n.js";
 import { createPagesReqRes } from "./pages-node-compat.js";
 import {
   appendPagesPreviewClearCookies,
@@ -598,7 +598,9 @@ export function createPagesPageHandler(
     const pageIsrCacheKey = isrCacheKeyForRequest(i18nCacheVariant);
 
     if (localeInfo.redirectUrl) {
-      return new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } });
+      return markLocaleRedirect(
+        new Response(null, { status: 307, headers: { Location: localeInfo.redirectUrl } }),
+      );
     }
 
     // Internal error render path: caller has pinned a specific route to render.
