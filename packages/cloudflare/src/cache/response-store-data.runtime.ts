@@ -27,7 +27,10 @@ type StoredCacheEntry = {
 
 type RegenerationScope = {
   captured?: Response;
-  /** Other entries the regeneration stores; callers like cached fetch don't await them. */
+  /**
+   * Writes the regeneration makes, its own entry's included: callers like cached
+   * fetch, "use cache" and unstable_cache return before they finish.
+   */
   sideWrites: Promise<void>[];
   targetKey: string;
 };
@@ -491,8 +494,7 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     context?: Record<string, unknown>,
   ): Promise<void> {
     const write = this.write(key, value, context);
-    const regeneration = regenerationStorage.getStore();
-    if (regeneration && regeneration.targetKey !== key) regeneration.sideWrites.push(write);
+    regenerationStorage.getStore()?.sideWrites.push(write);
     return write;
   }
 

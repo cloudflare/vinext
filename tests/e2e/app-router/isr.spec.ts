@@ -852,6 +852,41 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(value2).toBe(value1);
   });
 
+  // Next.js queues a miss's data cache write on the work store and returns:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  test("a render doesn't wait for slow unstable_cache and use cache writes", async ({
+    request,
+  }) => {
+    const run = crypto.randomUUID();
+    const readPage = async () => {
+      const res = await request.get(`${baseUrl()}/data-cache-deferred-write?run=${run}`);
+      expect(res.status()).toBe(200);
+      const html = await res.text();
+      return {
+        unstableCache: testIdText(html, "unstable-cache"),
+        useCache: testIdText(html, "use-cache"),
+        writes: testIdText(html, "writes"),
+      };
+    };
+
+    const first = await readPage();
+    expect(first.unstableCache).toBeTruthy();
+    expect(first.useCache).toBeTruthy();
+    // Both writes started, and the page rendered before either finished.
+    expect(first.writes).toBe("2/0");
+
+    await expect
+      .poll(async () => {
+        const res = await request.get(`${baseUrl()}/data-cache-deferred-write?observe=${run}`);
+        return testIdText(await res.text(), "settled");
+      })
+      .toBe("2");
+
+    // The writes still stored both entries.
+    expect(await readPage()).toEqual({ ...first, writes: "0/0" });
+  });
+
   // Next.js's IncrementalCache.set catches cache handler errors and only warns:
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/index.ts
   test("a rejected data cache write still renders the computed value", async ({ request }) => {
