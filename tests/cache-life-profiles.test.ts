@@ -7,19 +7,25 @@ import {
   serializeCacheLifeProfiles,
 } from "../packages/vinext/src/utils/cache-life-profiles.js";
 
-const EXPIRE_TIME = 31_536_000;
+const DEFAULTS = { expireTime: 31_536_000, staticStaleTime: 300 };
 
 describe("resolveCacheLifeProfiles", () => {
-  it("keeps the built-in profiles when cacheLife is not configured", () => {
-    expect(resolveCacheLifeProfiles(undefined, EXPIRE_TIME, vi.fn())).toEqual(
-      BUILT_IN_CACHE_LIFE_PROFILES,
-    );
+  it("keeps the built-in profiles, filling default's stale from staleTimes.static", () => {
+    expect(resolveCacheLifeProfiles(undefined, DEFAULTS, vi.fn())).toEqual({
+      ...BUILT_IN_CACHE_LIFE_PROFILES,
+      default: { stale: 300, revalidate: 900, expire: 4294967294 },
+    });
+    // Like Next.js, expireTime does not touch the built-in default's expire.
+    expect(
+      resolveCacheLifeProfiles(undefined, { expireTime: 1234, staticStaleTime: 45 }, vi.fn())
+        .default,
+    ).toEqual({ stale: 45, revalidate: 900, expire: 4294967294 });
   });
 
   it("adds custom profiles next to the built-ins, keeping their gaps", () => {
     const profiles = resolveCacheLifeProfiles(
       { blog: { stale: 120, revalidate: 600 } },
-      EXPIRE_TIME,
+      DEFAULTS,
       vi.fn(),
     );
     expect(profiles.blog).toEqual({ stale: 120, revalidate: 600 });
@@ -27,17 +33,20 @@ describe("resolveCacheLifeProfiles", () => {
   });
 
   it("replaces an overridden built-in whole, not field by field", () => {
-    const profiles = resolveCacheLifeProfiles({ hours: { revalidate: 10 } }, EXPIRE_TIME, vi.fn());
+    const profiles = resolveCacheLifeProfiles({ hours: { revalidate: 10 } }, DEFAULTS, vi.fn());
     expect(profiles.hours).toEqual({ revalidate: 10 });
   });
 
-  it("fills a configured default's missing revalidate and expire (expire from expireTime)", () => {
-    expect(resolveCacheLifeProfiles({ default: {} }, 1234, vi.fn()).default).toEqual({
+  it("fills a configured default's missing fields from staleTimes.static and expireTime", () => {
+    const defaults = { expireTime: 1234, staticStaleTime: 45 };
+    expect(resolveCacheLifeProfiles({ default: {} }, defaults, vi.fn()).default).toEqual({
+      stale: 45,
       revalidate: 900,
       expire: 1234,
     });
     expect(
-      resolveCacheLifeProfiles({ default: { stale: 5, revalidate: 30 } }, 1234, vi.fn()).default,
+      resolveCacheLifeProfiles({ default: { stale: 5, revalidate: 30 } }, defaults, vi.fn())
+        .default,
     ).toEqual({ stale: 5, revalidate: 30, expire: 1234 });
   });
 
@@ -45,7 +54,7 @@ describe("resolveCacheLifeProfiles", () => {
     const warn = vi.fn();
     const profiles = resolveCacheLifeProfiles(
       { blog: { revalidate: "60", expire: 600, stale: Number.NaN }, broken: 5 },
-      EXPIRE_TIME,
+      DEFAULTS,
       warn,
     );
     expect(profiles.blog).toEqual({ expire: 600 });
@@ -58,7 +67,7 @@ describe("resolveCacheLifeProfiles", () => {
   it("round-trips Infinity through the define", () => {
     const profiles = resolveCacheLifeProfiles(
       { forever: { stale: Infinity, revalidate: Infinity, expire: Infinity } },
-      EXPIRE_TIME,
+      DEFAULTS,
       vi.fn(),
     );
     expect(parseCacheLifeProfiles(serializeCacheLifeProfiles(profiles))).toEqual(profiles);
@@ -69,7 +78,7 @@ describe("resolveNextConfig cacheLife", () => {
   it("reads top-level cacheLife", async () => {
     const resolved = await resolveNextConfig({ cacheLife: { blog: { revalidate: 60 } } });
     expect(resolved.cacheLife.blog).toEqual({ revalidate: 60 });
-    expect(resolved.cacheLife.default).toEqual(BUILT_IN_CACHE_LIFE_PROFILES.default);
+    expect(resolved.cacheLife.default).toEqual({ stale: 300, revalidate: 900, expire: 4294967294 });
   });
 
   it("lets a legacy experimental.cacheLife replace the top-level key", async () => {
@@ -83,12 +92,13 @@ describe("resolveNextConfig cacheLife", () => {
     warn.mockRestore();
   });
 
-  it("fills a configured default's expire from expireTime", async () => {
+  it("fills a configured default from expireTime and staleTimes.static", async () => {
     const resolved = await resolveNextConfig({
       expireTime: 7200,
+      experimental: { staleTimes: { static: 45 } },
       cacheLife: { default: { revalidate: 60 } },
     });
-    expect(resolved.cacheLife.default).toEqual({ revalidate: 60, expire: 7200 });
+    expect(resolved.cacheLife.default).toEqual({ stale: 45, revalidate: 60, expire: 7200 });
   });
 });
 
@@ -98,10 +108,13 @@ describe("cacheLife() with configured profiles", () => {
     vi.resetModules();
   });
 
-  async function importShimsWithProfiles(userProfiles: Record<string, unknown>) {
+  async function importShimsWithProfiles(
+    userProfiles: Record<string, unknown>,
+    defaults = DEFAULTS,
+  ) {
     vi.stubEnv(
       "__VINEXT_CACHE_LIFE_PROFILES",
-      serializeCacheLifeProfiles(resolveCacheLifeProfiles(userProfiles, EXPIRE_TIME, vi.fn())),
+      serializeCacheLifeProfiles(resolveCacheLifeProfiles(userProfiles, defaults, vi.fn())),
     );
     vi.resetModules();
     const cache = await import("../packages/vinext/src/shims/cache.js");
@@ -145,6 +158,26 @@ describe("cacheLife() with configured profiles", () => {
 
     expect(set.mock.calls[0][2]).toMatchObject({
       cacheControl: { stale: 20, revalidate: 60, expire: 7200 },
+    });
+  });
+
+  it("gives a partial custom profile the default's stale from staleTimes.static", async () => {
+    const { MemoryCacheHandler, cacheLife, registerCachedFunction, setCacheHandler } =
+      await importShimsWithProfiles(
+        { blog: { revalidate: 10 } },
+        { expireTime: 31_536_000, staticStaleTime: 45 },
+      );
+    const handler = new MemoryCacheHandler();
+    setCacheHandler(handler);
+    const set = vi.spyOn(handler, "set");
+
+    await registerCachedFunction(async () => {
+      cacheLife("blog");
+      return "post";
+    }, "test:stale-from-static-stale-time")();
+
+    expect(set.mock.calls[0][2]).toMatchObject({
+      cacheControl: { stale: 45, revalidate: 10, expire: 4294967294 },
     });
   });
 

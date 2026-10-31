@@ -7492,10 +7492,12 @@ describe("next/cache shim", () => {
       cacheLife({ expire: 60 });
 
       expect(_peekRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });
       expect(_consumeRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });

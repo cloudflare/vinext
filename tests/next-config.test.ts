@@ -14,7 +14,7 @@ import {
   resolveNextConfig,
   type ResolvedNextConfig,
 } from "../packages/vinext/src/config/next-config.js";
-import { BUILT_IN_CACHE_LIFE_PROFILES } from "../packages/vinext/src/utils/cache-life-profiles.js";
+import { parseCacheLifeProfiles } from "../packages/vinext/src/utils/cache-life-profiles.js";
 import {
   PHASE_PRODUCTION_BUILD,
   PHASE_DEVELOPMENT_SERVER,
@@ -2788,7 +2788,7 @@ describe("detectNextIntlConfig", () => {
       instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { dynamic: 0, static: 300 },
-      cacheLife: structuredClone(BUILT_IN_CACHE_LIFE_PROFILES),
+      cacheLife: parseCacheLifeProfiles(undefined),
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
       ...overrides,

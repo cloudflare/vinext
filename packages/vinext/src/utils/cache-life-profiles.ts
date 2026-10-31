@@ -31,13 +31,10 @@ function copyBuiltInProfiles(): Record<string, CacheLifeConfig> {
  * Merge next.config `cacheLife` profiles over the built-ins, as Next.js does
  * in `assignDefaultsAndValidate` (server/config.ts): a user profile replaces
  * the built-in of the same name whole, and only `default` gets its missing
- * `revalidate` / `expire` filled (`expire` from `expireTime`). The other
- * profiles keep their gaps, which Next.js's "use cache" store resolves from
- * `default`.
- *
- * Next.js also fills a missing `default.stale` from `staleTimes.static`.
- * vinext's built-in `default` already leaves `stale` unset to mean exactly
- * that, so a user `default` keeps the same representation.
+ * fields filled: `stale` from `staleTimes.static`, `revalidate` from the
+ * built-in, `expire` from `expireTime`. That includes the built-in `default`,
+ * whose `stale` is unset in Next.js's defaults too. The other profiles keep
+ * their gaps, which the "use cache" store resolves from `default`.
  *
  * Next.js only schema-checks these profiles (fields must be numbers) and
  * warns; `revalidate > expire` is checked for `cacheLife({...})` calls, not
@@ -45,13 +42,14 @@ function copyBuiltInProfiles(): Record<string, CacheLifeConfig> {
  */
 export function resolveCacheLifeProfiles(
   userProfiles: unknown,
-  expireTime: number,
+  defaults: { expireTime: number; staticStaleTime: number },
   warn: (message: string) => void,
 ): Record<string, CacheLifeConfig> {
   const profiles = copyBuiltInProfiles();
-  if (!isUnknownRecord(userProfiles)) return profiles;
 
-  for (const [name, rawProfile] of Object.entries(userProfiles)) {
+  for (const [name, rawProfile] of Object.entries(
+    isUnknownRecord(userProfiles) ? userProfiles : {},
+  )) {
     if (!isUnknownRecord(rawProfile)) {
       warn(`[vinext] Invalid next.config option \`cacheLife.${name}\`: expected an object.`);
       continue;
@@ -73,8 +71,9 @@ export function resolveCacheLifeProfiles(
   }
 
   const defaultProfile = profiles.default;
+  defaultProfile.stale ??= defaults.staticStaleTime;
   defaultProfile.revalidate ??= BUILT_IN_CACHE_LIFE_PROFILES.default.revalidate;
-  defaultProfile.expire ??= expireTime;
+  defaultProfile.expire ??= defaults.expireTime;
   return profiles;
 }
 
@@ -92,10 +91,18 @@ export function serializeCacheLifeProfiles(profiles: Record<string, CacheLifeCon
   return JSON.stringify(profiles, encodeNonFiniteNumber);
 }
 
-/** Read the `__VINEXT_CACHE_LIFE_PROFILES` define; the built-ins when absent. */
+/**
+ * Read the `__VINEXT_CACHE_LIFE_PROFILES` define. When absent, the profiles a
+ * next.config without `cacheLife` resolves to.
+ */
 export function parseCacheLifeProfiles(
   serialized: string | undefined,
 ): Record<string, CacheLifeConfig> {
-  if (!serialized) return copyBuiltInProfiles();
+  if (!serialized) {
+    const profiles = copyBuiltInProfiles();
+    // The default `experimental.staleTimes.static`.
+    profiles.default.stale = 300;
+    return profiles;
+  }
   return JSON.parse(serialized, decodeNonFiniteNumber) as Record<string, CacheLifeConfig>;
 }

@@ -1980,7 +1980,11 @@ export async function resolveNextConfig(
       instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
-      cacheLife: resolveCacheLifeProfiles(undefined, DEFAULT_EXPIRE_TIME, warnConfigOnce),
+      cacheLife: resolveCacheLifeProfiles(
+        undefined,
+        { expireTime: DEFAULT_EXPIRE_TIME, staticStaleTime: DEFAULT_STALE_TIMES.static },
+        warnConfigOnce,
+      ),
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
     };
@@ -2137,6 +2141,7 @@ export async function resolveNextConfig(
   const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
   const expireTime =
     typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME;
+  const staleTimes = resolveStaleTimes(experimental);
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -2439,12 +2444,12 @@ export async function resolveNextConfig(
           (value): value is string => typeof value === "string",
         )
       : undefined,
-    staleTimes: resolveStaleTimes(experimental),
+    staleTimes,
     // Next.js copies a set legacy `experimental.cacheLife` over the top-level
     // key (warnOptionHasBeenMovedOutOfExperimental).
     cacheLife: resolveCacheLifeProfiles(
       experimental?.cacheLife ?? config.cacheLife,
-      expireTime,
+      { expireTime, staticStaleTime: staleTimes.static },
       warnConfigOnce,
     ),
     useLightningcss,

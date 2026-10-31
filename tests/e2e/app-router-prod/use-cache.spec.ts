@@ -426,6 +426,11 @@ test.describe("production next.config cacheLife profiles", () => {
   test("a custom profile sets the cached page's Cache-Control", async ({ request }) => {
     const headers = await waitForCacheHit(request, "/use-cache-custom-profile");
     expect(headers["cache-control"]).toBe("s-maxage=120, stale-while-revalidate=3480");
+
+    // The profile sets no stale, so it takes the default profile's, which
+    // Next.js fills from experimental.staleTimes.static (300).
+    const rsc = await waitForCacheHit(request, "/use-cache-custom-profile.rsc", true);
+    expect(rsc["x-nextjs-stale-time"]).toBe("300");
   });
 
   test("a configured profile replaces the built-in of the same name", async ({ request }) => {
