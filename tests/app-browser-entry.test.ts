@@ -1066,6 +1066,21 @@ describe("app browser entry navigation scheduling", () => {
       hardNavigationTarget: "/target/",
       kind: "hard-navigate",
     });
+
+    // A "//" pathname keeps its "/." prefix so the hard navigation stays on
+    // the app origin.
+    expect(
+      resolveRscCompatibilityNavigationDecision({
+        clientCompatibilityId: "compat-a",
+        currentHref: "/.//other.test/out",
+        origin: "https://example.com",
+        responseCompatibilityId: "compat-b",
+        responseUrl: "https://example.com//other.test/out.rsc?_rsc=stale",
+      }),
+    ).toEqual({
+      hardNavigationTarget: "/.//other.test/out",
+      kind: "hard-navigate",
+    });
   });
 
   it("keeps RSC responses on the soft-navigation path when compatibility IDs match", () => {
@@ -9032,6 +9047,35 @@ describe("app browser RSC redirect lifecycle", () => {
       previousNextUrl: null,
       redirectDepth: 1,
     });
+  });
+
+  // A same-origin path whose pathname begins with "//" must not become a
+  // protocol-relative href naming another host.
+  it("keeps a streamed redirect to a path beginning with // on the app origin", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/old",
+      historyUpdateMode: "replace",
+      maxRedirectDepth: 0,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/.//other.test/out",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", reason: "maxRedirectsExceeded" });
+  });
+
+  it("keeps an RSC response URL whose path begins with // on the app origin", () => {
+    const decision = resolveRscRedirectLifecycleHop({
+      currentHref: "https://example.com/old",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseUrl: "https://example.com//other.test/out.rsc?_rsc=abc",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", kind: "follow" });
   });
 
   // The server sends a scheme-relative redirect() target as written, so the

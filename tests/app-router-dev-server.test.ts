@@ -1511,6 +1511,34 @@ describe("App Router integration", () => {
     expect(res.headers.get("location")).toContain("/about");
   });
 
+  // "/.//other.invalid/landing" names the pathname "//other.invalid/landing" on
+  // this origin. The redirect header, Flight digest and refresh meta tag must
+  // keep it a path: sent as "//other.invalid/landing", the client resolves it
+  // as a protocol-relative URL on another host. Next.js sends the target as
+  // written.
+  it("keeps a layout redirect() to a path starting with /.// on the app origin (RSC)", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/redirect-dot-segment/layout-redirect.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/.//other.invalid/landing");
+    const text = await res.text();
+    expect(text).toContain("NEXT_REDIRECT;replace;/.//other.invalid/landing;307;");
+    expect(text).not.toContain(";//other.invalid");
+  });
+
+  it("keeps a metadata redirect() to a path starting with /.// on the app origin (document)", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/redirect-dot-segment/metadata-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/.//other.invalid/landing"/>',
+    );
+  });
+
   // ── Next.js 15+ async params/searchParams ──
   // Pages that `await params` or `await searchParams` before calling
   // notFound()/redirect() must still get the 404/redirect response.
