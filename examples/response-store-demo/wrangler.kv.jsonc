@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "workers-cache",
   "compatibility_date": "2026-04-08",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "main": "vinext/server/fetch-handler",
   "preview_urls": true,
   "account_id": "d48e2eb599d9aa075d5e682deaecc518",

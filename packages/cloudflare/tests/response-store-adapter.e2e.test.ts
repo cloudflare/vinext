@@ -57,7 +57,7 @@ async function selfContainedWorker(): Promise<Miniflare> {
           },
         },
         compatibilityDate: "2026-04-08",
-        compatibilityFlags: ["nodejs_compat", "experimental"],
+        compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
         durableObjects: {
           CACHE_METADATA: { className: "CacheMetadata", useSQLite: true },
         },
@@ -177,7 +177,7 @@ beforeEach(async () => {
   upstreamRequests = 0;
   const compatibility = {
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat", "experimental"],
+    compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
   };
   miniflare = new Miniflare({
     unsafeEphemeralDurableObjects: true,
@@ -274,7 +274,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
             },
           },
           compatibilityDate: "2026-04-08",
-          compatibilityFlags: ["nodejs_compat", "experimental"],
+          compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
           modules: await modules(appOutput, "index.js"),
           name: "app",
           serviceBindings: {
@@ -321,7 +321,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
       workers: [
         {
           compatibilityDate: "2026-04-08",
-          compatibilityFlags: ["nodejs_compat", "experimental"],
+          compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
           bindings: { CF_VERSION_METADATA: { id: crypto.randomUUID() } },
           modules: await modules(appOutput, "index.js"),
           name: "app",
@@ -332,7 +332,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
         },
         {
           compatibilityDate: "2026-04-08",
-          compatibilityFlags: ["nodejs_compat", "experimental"],
+          compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
           durableObjects: { CACHE_METADATA: { className: "CacheMetadata", useSQLite: true } },
           name: "cache",
           r2Buckets: { CACHE_BODIES: crypto.randomUUID() },

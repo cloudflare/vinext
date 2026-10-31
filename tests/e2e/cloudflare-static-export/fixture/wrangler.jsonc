@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "cloudflare-static-export-e2e",
   "compatibility_date": "2026-04-08",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "main": "vinext/server/fetch-handler",
   "assets": {
     "binding": "ASSETS",

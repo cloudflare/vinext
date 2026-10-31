@@ -23,13 +23,13 @@ let worker: { fetch(...args: any[]): Promise<any> };
 beforeEach(async () => {
   mf = new Miniflare({
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat", "experimental"],
+    compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
     unsafeEphemeralDurableObjects: true,
     workers: [
       {
         name: "user-worker",
         compatibilityDate: "2026-04-08",
-        compatibilityFlags: ["nodejs_compat", "experimental"],
+        compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
         modules: true,
         scriptPath: userWorkerScript,
         serviceBindings: {
@@ -50,7 +50,7 @@ beforeEach(async () => {
       {
         name: "cache-worker",
         compatibilityDate: "2026-04-08",
-        compatibilityFlags: ["nodejs_compat", "experimental"],
+        compatibilityFlags: ["nodejs_compat", "experimental", "typescript_implemented_streams"],
         modules: true,
         scriptPath: cacheWorkerScript,
         durableObjects: {
