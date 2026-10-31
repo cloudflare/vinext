@@ -652,7 +652,7 @@ function sendCompressed(
   req: IncomingMessage,
   res: ServerResponse,
   body: string | Buffer,
-  contentType: string,
+  contentType: string | undefined,
   statusCode: number,
   extraHeaders: Record<string, string | string[]> = {},
   compress: boolean = true,
@@ -689,7 +689,7 @@ function sendCompressed(
       mergeVaryHeader(
         {
           ...headersWithoutBodyHeaders,
-          "Content-Type": contentType,
+          ...(contentType !== undefined && { "Content-Type": contentType }),
           "Content-Encoding": encoding,
         },
         "Accept-Encoding",
@@ -703,7 +703,7 @@ function sendCompressed(
   } else {
     const identityHeaders = {
       ...headersWithoutBodyHeaders,
-      "Content-Type": contentType,
+      ...(contentType !== undefined && { "Content-Type": contentType }),
       "Content-Length": String(buf.length),
     };
     writeHead(
@@ -3024,7 +3024,10 @@ async function createPagesRouterRequestHandler(
         const responseBody = await bufferResponseBodyUntilAborted(response, webRequest.signal);
         if (!responseBody) return;
         // render → text/html, api → application/octet-stream (set by the pipeline).
-        const ct = response.headers.get("content-type") ?? result.defaultContentType;
+        // An empty body (`res.end()`, `res.send(null)`) gets none, like Next.js.
+        const ct =
+          response.headers.get("content-type") ??
+          (responseBody.length > 0 ? result.defaultContentType : undefined);
         const responseHeaders: Record<string, string | string[]> = {};
         response.headers.forEach((v, k) => {
           if (k === "set-cookie") return;
