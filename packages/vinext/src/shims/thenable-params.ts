@@ -85,90 +85,6 @@ function isPromiseContinuation(prop: PropertyKey): boolean {
 }
 
 /**
- * Build a proxy around `plain` that preserves fallback-key suspension.
- * This is the value `await params` resolves to during fallback-shell
- * prerendering. Known params are readable synchronously; fallback params
- * suspend (throw a hanging promise) only when actually accessed.
- *
- * The handler is typed as `ProxyHandler<T>` and no cast is needed because
- * the target is already `plain: T`.
- */
-function createResolvedParamsProxy<T extends Record<string, unknown>>(
-  plain: T,
-  fallbackParamNames: ReadonlySet<string> | null,
-  observer: ThenableParamsObserver | undefined,
-  getFallbackShellPromise: () => Promise<T> | null,
-): T {
-  if (!fallbackParamNames || fallbackParamNames.size === 0) {
-    return plain;
-  }
-
-  function isFallbackParam(prop: PropertyKey): boolean {
-    return typeof prop === "string" && fallbackParamNames !== null && fallbackParamNames.has(prop);
-  }
-
-  const handler: ProxyHandler<T> = {
-    get(_target, prop, _receiver) {
-      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
-        observeParamKeys(observer, [prop]);
-      }
-
-      if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
-        if (isFallbackParam(prop)) {
-          const p = getFallbackShellPromise();
-          if (p) throw p;
-        }
-        return Reflect.get(plain, prop);
-      }
-
-      return Reflect.get(plain, prop);
-    },
-    getOwnPropertyDescriptor(_target, prop) {
-      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
-        observeParamKeys(observer, [prop]);
-      }
-
-      if (!isWellKnownProperty(prop) && hasParamProperty(plain, prop)) {
-        if (isFallbackParam(prop)) {
-          return {
-            configurable: true,
-            enumerable: true,
-            get() {
-              const p = getFallbackShellPromise();
-              if (p) throw p;
-            },
-          };
-        }
-
-        return {
-          configurable: true,
-          enumerable: true,
-          value: Reflect.get(plain, prop),
-          writable: true,
-        };
-      }
-
-      return Reflect.getOwnPropertyDescriptor(plain, prop);
-    },
-    has(_target, prop) {
-      if (typeof prop === "string" && !isWellKnownProperty(prop)) {
-        observeParamKeys(observer, [prop]);
-      }
-
-      return (
-        Reflect.has(plain, prop) || (!isWellKnownProperty(prop) && hasParamProperty(plain, prop))
-      );
-    },
-    ownKeys() {
-      observeReadableParamKeys(observer, plain);
-      return Reflect.ownKeys(plain).filter((prop) => !isWellKnownProperty(prop));
-    },
-  };
-
-  return new Proxy(plain, handler);
-}
-
-/**
  * Wrap a `Promise<T>` with a proxy that also exposes param properties for
  * synchronous access. TypeScript cannot prove this hybrid shape statically,
  * so the single `as ThenableParams<T>` cast is isolated here.
@@ -211,7 +127,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     // would return `null` and silently leak the raw `[slug]` placeholder (and
     // diverge between the `get` and `getOwnPropertyDescriptor` traps).
     // Promise creation stays lazy so the dynamic-boundary side effects only
-    // fire on first actual fallback-key access.
+    // fire on the first continuation or fallback-key access.
     if (!fallbackParamNames || !fallbackShellState) return null;
     // `preparePprFallbackShellFinalRender` swaps in a fresh `AbortController`
     // on the warmup->final transition. Re-derive the hanging promise whenever
@@ -233,14 +149,7 @@ function createThenableParams<T extends Record<string, unknown>>(
     return fallbackShellPromise;
   }
 
-  const resolvedParams = createResolvedParamsProxy(
-    plain,
-    fallbackParamNames,
-    observer,
-    getFallbackShellPromise,
-  );
-
-  const promise = Promise.resolve(resolvedParams);
+  const promise = Promise.resolve(plain);
 
   function isFallbackParam(prop: PropertyKey): boolean {
     return typeof prop === "string" && (fallbackParamNames?.has(prop) ?? false);
@@ -254,20 +163,22 @@ function createThenableParams<T extends Record<string, unknown>>(
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
           if (prop !== "then") observer?.observeThenRead?.();
-          // Only observe all keys when NOT in fallback-shell mode.
-          // In fallback-shell mode, let the resolved params proxy report
-          // actual property access lazily.
-          if (!fallbackParamNames) {
-            try {
-              observeAllParamKeys(observer, plain);
-            } catch (error) {
-              // Reject like a native promise instead of throwing. React counts
-              // a pending chunk before it calls `then` (when it serializes a
-              // promise prop, and when its dev build serializes component
-              // props), so a synchronous throw leaves that chunk open and the
-              // stream never closes.
-              return Reflect.apply(value, Promise.reject(error), args);
-            }
+          // Like Next.js's `makeHangingParams`, awaiting params that hold a
+          // fallback key never resolves while the shell prerenders, so a
+          // continuation (`params.then(p => p.slug)`, or an async helper that
+          // awaits them) stays pending instead of rejecting with the
+          // suspension.
+          const hangingParams = getFallbackShellPromise();
+          if (hangingParams) return Reflect.apply(value, hangingParams, args);
+          try {
+            observeAllParamKeys(observer, plain);
+          } catch (error) {
+            // Reject like a native promise instead of throwing. React counts
+            // a pending chunk before it calls `then` (when it serializes a
+            // promise prop, and when its dev build serializes component
+            // props), so a synchronous throw leaves that chunk open and the
+            // stream never closes.
+            return Reflect.apply(value, Promise.reject(error), args);
           }
           return Reflect.apply(value, target, args);
         };

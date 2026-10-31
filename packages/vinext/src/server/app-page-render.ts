@@ -4,6 +4,8 @@ import type { NavigationContext } from "vinext/shims/navigation";
 import type { AppPageCacheSetter } from "./isr-cache.js";
 import type { RootParams } from "vinext/shims/root-params";
 import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
+import { _getResumeDataCacheCollector } from "vinext/shims/cache-request-state";
+import { isResumeDataCacheEmpty, stringifyResumeDataCache } from "vinext/shims/resume-data-cache";
 import { getRequestExecutionContext } from "vinext/shims/request-context";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { resolveClientStaleTimeSeconds } from "../utils/cache-control-metadata.js";
@@ -1555,6 +1557,17 @@ async function renderAppPageLifecycleImpl(
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {
     throw new Error("[vinext] Expected an HTML stream when no fallback response was returned");
+  }
+  if (options.isPrerender === true && options.pprFallbackShellSignal) {
+    // The shell's cache entries are all settled once its body ends.
+    const resumeDataCache = _getResumeDataCacheCollector();
+    const { appendAppPprFallbackShellResumeDataCache } =
+      await import("./app-ppr-fallback-shell.js");
+    htmlStream = appendAppPprFallbackShellResumeDataCache(htmlStream, () =>
+      resumeDataCache && !isResumeDataCacheEmpty(resumeDataCache)
+        ? stringifyResumeDataCache(resumeDataCache)
+        : null,
+    );
   }
 
   // Combine React's preload `Link` header (captured via onHeaders during SSR)
