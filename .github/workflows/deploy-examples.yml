@@ -228,6 +228,14 @@ jobs:
       - name: Build vinext plugin
         run: vp run build
 
+      # PR previews render with TanStack Redact in the browser so the smoke tests and
+      # deployed E2E exercise it. SSR, RSC and production deploys stay on React.
+      - name: Enable TanStack Redact
+        if: github.event_name == 'pull_request'
+        env:
+          EXAMPLE_DIRECTORY: ${{ matrix.example.working_directory }}
+        run: node .github/scripts/enable-redact.mjs "$EXAMPLE_DIRECTORY"
+
       - name: Configure Response Store demo preview
         if: matrix.example.name == 'response-store-demo' && github.event_name == 'pull_request'
         working-directory: ${{ matrix.example.working_directory }}
@@ -662,6 +670,8 @@ jobs:
 
             const body = [
               marker,
+              'Previews render with [TanStack Redact](https://tanstack.com/redact) in the browser; SSR, RSC and production use React.',
+              '',
               '| Example | Preview | Production | Original |',
               '|---------|---------|------------|----------|',
               rows,
