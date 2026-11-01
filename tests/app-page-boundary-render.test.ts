@@ -2141,11 +2141,10 @@ describe("app page boundary render helpers", () => {
     visit(record[record.__route as string]);
 
     expect(
-      boundaryProps.find((props) => props.fallback === GlobalErrorBoundary)?.isGlobalErrorBoundary,
-    ).toBe(true);
-    expect(
-      boundaryProps.find((props) => props.fallback === RouteErrorBoundary)?.isGlobalErrorBoundary,
-    ).toBeUndefined();
+      boundaryProps
+        .filter((props) => props.isGlobalErrorBoundary === true)
+        .map((props) => props.fallback),
+    ).toEqual([GlobalErrorBoundary]);
   });
 
   it("renders error boundary RSC responses as flat payloads", async () => {

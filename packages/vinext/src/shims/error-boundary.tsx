@@ -356,7 +356,6 @@ export function GlobalErrorBoundary({
     <ErrorBoundaryInner
       pathname={pathname}
       fallback={fallback}
-      isGlobalErrorBoundary
       isImplicitRootErrorBoundary={fallback === DefaultGlobalError}
     >
       {children}

@@ -6244,6 +6244,7 @@ describe("app page route wiring helpers", () => {
 
     expect(getElementTypeName(outerBoundary?.props.fallback)).toBe("DefaultGlobalError");
     expect(userBoundary?.props.fallback).toBe(UserGlobalError);
+    expect(userBoundary?.props.isGlobalErrorBoundary).toBe(true);
   });
 
   it("installs the default global error boundary without a user global error", () => {
