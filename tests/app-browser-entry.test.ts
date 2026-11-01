@@ -9351,6 +9351,22 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
     expect(onCaughtError).not.toHaveBeenCalled();
   });
 
+  it("notes a catch by the implicit root or a global-error boundary", () => {
+    const onRootErrorBoundaryCatch = vi.fn();
+    const handler = createDevOnCaughtError(vi.fn(), vi.fn(), onRootErrorBoundaryCatch);
+
+    handler(new Error("route error"), { errorBoundary: { props: {} } });
+    expect(onRootErrorBoundaryCatch).not.toHaveBeenCalled();
+
+    handler(new Error("global error"), {
+      errorBoundary: { props: { isGlobalErrorBoundary: true } },
+    });
+    handler(new Error("root error"), {
+      errorBoundary: { props: { isImplicitRootErrorBoundary: true } },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps explicit dev error boundaries on the caught-error path", () => {
     const onCaughtError = vi.fn();
     const onImplicitRootError = vi.fn();
@@ -9958,6 +9974,16 @@ describe("selectUnreportedInitialDevServerErrors", () => {
         [reported("caught", "Error", "load failed")],
       ),
     ).toEqual([typeError]);
+  });
+
+  it("replays nothing once a root-level boundary caught the browser's error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ name: "TypeError", message: "(0 , __vite_ssr_import_0__.fn) is not a function" }],
+        [reported("window-error", "TypeError", "fn is not a function")],
+        true,
+      ),
+    ).toEqual([]);
   });
 
   it("matches a thrown non-Error value, reported raw or coerced to an Error", () => {

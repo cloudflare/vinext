@@ -20,6 +20,8 @@ import {
 export type ErrorBoundaryProps = {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
   children: React.ReactNode;
+  /** Whether this boundary renders global-error, at the root of the page. */
+  isGlobalErrorBoundary?: boolean;
   resetKey?: string | null;
 };
 
@@ -308,10 +310,20 @@ export class ErrorBoundaryInner extends React.Component<
   }
 }
 
-export function ErrorBoundary({ fallback, children, resetKey }: ErrorBoundaryProps) {
+export function ErrorBoundary({
+  fallback,
+  children,
+  isGlobalErrorBoundary,
+  resetKey,
+}: ErrorBoundaryProps) {
   const pathname = useErrorBoundaryPathname();
   return (
-    <ErrorBoundaryInner pathname={pathname} resetKey={resetKey} fallback={fallback}>
+    <ErrorBoundaryInner
+      pathname={pathname}
+      resetKey={resetKey}
+      fallback={fallback}
+      isGlobalErrorBoundary={isGlobalErrorBoundary}
+    >
       {children}
     </ErrorBoundaryInner>
   );
@@ -344,6 +356,7 @@ export function GlobalErrorBoundary({
     <ErrorBoundaryInner
       pathname={pathname}
       fallback={fallback}
+      isGlobalErrorBoundary
       isImplicitRootErrorBoundary={fallback === DefaultGlobalError}
     >
       {children}

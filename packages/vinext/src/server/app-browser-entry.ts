@@ -2139,7 +2139,11 @@ function bootstrapHydration(
       ? createVinextHydrateRootOptions({
           formState,
           onCaughtError: invalidateOnCaughtError(
-            createDevOnCaughtError(devErrorOverlay.devOnCaughtError, onUncaughtError),
+            createDevOnCaughtError(
+              devErrorOverlay.devOnCaughtError,
+              onUncaughtError,
+              devErrorOverlay.reportRootErrorBoundaryCatch,
+            ),
           ),
           onUncaughtError,
         })

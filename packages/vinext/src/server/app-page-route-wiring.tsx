@@ -2449,7 +2449,9 @@ export function buildAppPageElements<
   routeChildren = (
     <GlobalErrorBoundary fallback={DEFAULT_GLOBAL_ERROR_COMPONENT}>
       {globalErrorComponent ? (
-        <ErrorBoundary fallback={globalErrorComponent}>{routeChildren}</ErrorBoundary>
+        <ErrorBoundary fallback={globalErrorComponent} isGlobalErrorBoundary>
+          {routeChildren}
+        </ErrorBoundary>
       ) : (
         routeChildren
       )}

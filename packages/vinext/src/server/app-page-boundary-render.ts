@@ -382,6 +382,7 @@ function wrapRenderedBoundaryElement<TModule extends AppPageModule>(
         // oxlint-disable-next-line react/no-children-prop
         children: createElement(ErrorBoundary, {
           fallback: GlobalErrorComponent,
+          isGlobalErrorBoundary: true,
           // oxlint-disable-next-line react/no-children-prop
           children,
         }),
