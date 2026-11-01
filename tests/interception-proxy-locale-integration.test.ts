@@ -160,3 +160,79 @@ describe.each([
     expect(result).toEqual({ status: 404, modal: false, fullPage: false, source: [] });
   });
 });
+
+// From https://github.com/cloudflare/vinext/issues/4397. The source sits below
+// `[locale]`, so its public pathname `/tips` does not match the source pattern
+// `/[locale]/tips` and the client sends the matched pathname `/ja/tips`, as
+// Next.js sends it as `Next-Url`. Middleware redirects that internal spelling
+// to `/tips`, which rewrites back to the same source route and params. Next.js
+// never runs middleware for the source and opens the modal.
+const REDIRECT_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/interception-proxy-locale-redirect",
+);
+
+describe.each([
+  ["development", startDevServer],
+  ["production", startProductionServer],
+] as const)(
+  "interception from a source middleware redirects to its unprefixed URL (%s)",
+  (_mode, startServer) => {
+    let fixtureRoot = "";
+    let server: StartedServer | undefined;
+
+    beforeAll(async () => {
+      fixtureRoot = await createIsolatedFixture(
+        REDIRECT_FIXTURE_DIR,
+        "vinext-interception-proxy-locale-redirect-",
+      );
+      server = await startServer(fixtureRoot);
+    }, 120_000);
+
+    afterAll(async () => {
+      await server?.close();
+      if (fixtureRoot) await fs.rm(fixtureRoot, { recursive: true, force: true });
+    });
+
+    async function fetchTip(source?: string) {
+      if (!server) throw new Error("Interception fixture server did not start");
+      const headers: Record<string, string> = { Accept: "text/x-component", RSC: "1" };
+      if (source) headers["X-Vinext-Interception-Context"] = source;
+      // Follows the RSC cache-busting redirect, and any redirect the
+      // navigation answers with, the way the client's fetch does.
+      const response = await fetch(`${server.baseUrl}/tips/a`, { headers });
+      const body = await response.text();
+      return {
+        status: response.status,
+        pathname: new URL(response.url).pathname,
+        modal: body.includes("INTERCEPTED-MODAL slug=a;"),
+        fullPage: body.includes("FULL-PAGE slug=a;"),
+        source: body.includes("TIPS-SOURCE locale=ja;"),
+        body,
+      };
+    }
+
+    it("intercepts from the matched pathname the client sends", async () => {
+      const { body, ...result } = await fetchTip("/ja/tips");
+      expect(result).toEqual({
+        status: 200,
+        pathname: "/tips/a",
+        modal: true,
+        fullPage: false,
+        source: true,
+      });
+      expect(body).toContain(`"sourceMatchedUrl":"/ja/tips"`);
+    }, 30_000);
+
+    it("renders the full page without an interception context", async () => {
+      const { body: _body, ...result } = await fetchTip();
+      expect(result).toEqual({
+        status: 200,
+        pathname: "/tips/a",
+        modal: false,
+        fullPage: true,
+        source: false,
+      });
+    }, 30_000);
+  },
+);
