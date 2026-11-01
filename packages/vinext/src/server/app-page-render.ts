@@ -87,8 +87,8 @@ import {
   applyPrerenderCacheTagsHeader,
 } from "./prerender-cache-life-header.js";
 import {
-  isPrerenderBuildFailingError,
-  markPrerenderRenderError,
+  bufferPrerenderResponse,
+  createPrerenderRenderErrorTracker,
 } from "./prerender-render-error.js";
 import { appendRscCompletionMetadata } from "./rsc-completion-metadata.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
@@ -747,27 +747,21 @@ async function renderAppPageLifecycleImpl(
   // build when its render reports an error, unless the render turned dynamic.
   // A fallback shell's own abort ends its render on purpose.
   // Ported from Next.js: packages/next/src/server/app-render/app-render.tsx
-  // (prerenderToStream's digestErrorsMap and ssrErrors checks)
-  let prerenderRenderErrorReported = false;
-  const notePrerenderRenderError = (error: unknown): void => {
-    if (
+  // (renderToHTMLOrFlightImpl's digestErrorsMap and ssrErrors checks)
+  const prerenderRenderErrors = createPrerenderRenderErrorTracker(
+    () =>
       options.isPrerender === true &&
       options.isStaticEligible &&
-      options.pprFallbackShellSignal?.aborted !== true &&
-      isPrerenderBuildFailingError(error)
-    ) {
-      prerenderRenderErrorReported = true;
-    }
-  };
+      options.pprFallbackShellSignal?.aborted !== true,
+  );
   const finalizePrerenderRenderError = (
     response: Response,
     // Peeks, so the read leaves the render's later dynamic-usage checks as they were.
     isDynamic: () => boolean = () => dynamicUsageObserved || peekRenderDynamicUsage(),
-  ): Response =>
-    prerenderRenderErrorReported && !isDynamic() ? markPrerenderRenderError(response) : response;
+  ): Response => prerenderRenderErrors.finalize(response, isDynamic);
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
     if (renderSpan) recordAppPageRenderError(renderSpan, error);
-    notePrerenderRenderError(error);
+    prerenderRenderErrors.note(error);
     return baseOnError(error, requestInfo, errorContext);
   });
   // Defensive wrap for standalone callers. In the normal dispatch path this is
@@ -1128,17 +1122,9 @@ async function renderAppPageLifecycleImpl(
             options.consumeInvalidDynamicUsageError,
           )
         : completionResponse;
-    // A prerender reads the whole payload first, so it knows every error the
-    // render reports.
     const rscResponseToFinalize =
       options.isPrerender === true && devRscResponse.body
-        ? finalizePrerenderRenderError(
-            new Response(await devRscResponse.arrayBuffer(), {
-              status: devRscResponse.status,
-              statusText: devRscResponse.statusText,
-              headers: devRscResponse.headers,
-            }),
-          )
+        ? finalizePrerenderRenderError(await bufferPrerenderResponse(devRscResponse))
         : devRscResponse;
 
     return finalizeAppPageRscCacheResponse(rscResponseToFinalize, {
@@ -1518,7 +1504,7 @@ async function renderAppPageLifecycleImpl(
       );
       const onSsrError: AppPageBoundaryOnError = (error, requestInfo, errorContext) => {
         if (renderSpan) recordAppPageRenderError(renderSpan, error);
-        notePrerenderRenderError(error);
+        prerenderRenderErrors.note(error);
         return baseOnSsrError(error, requestInfo, errorContext);
       };
       return renderAppPageHtmlStream({

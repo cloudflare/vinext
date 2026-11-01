@@ -9,6 +9,7 @@ import {
 } from "vinext/shims/error-boundary";
 import { LayoutSegmentProvider } from "vinext/shims/layout-segment-context";
 import { withUseCacheLayoutMarker } from "vinext/shims/internal/app-page-props-cache-key";
+import { peekDynamicUsage } from "vinext/shims/headers";
 import { MetadataHead, ViewportHead, type Metadata, type Viewport } from "vinext/shims/metadata";
 import type { NavigationContext } from "vinext/shims/navigation";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
@@ -67,9 +68,16 @@ import {
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import {
-  isPrerenderBuildFailingError,
+  bufferPrerenderResponse,
+  createPrerenderRenderErrorTracker,
   markPrerenderRenderError,
 } from "./prerender-render-error.js";
+import {
+  isAppPageStaticEligible,
+  isEdgeRuntime,
+  resolveAppPageSegmentConfig,
+  type AppRouteSegmentConfigModule,
+} from "./app-segment-config.js";
 import {
   createAppPageLayoutEntries,
   createAppPageRouteBodyMetadata,
@@ -148,9 +156,10 @@ function failOnLateAccessError(
 // `{ error: unknown; reset }` fallback contract, so the cast bridges the
 // contravariant mismatch the same way user global-error components do.
 const DEFAULT_GLOBAL_ERROR_COMPONENT = DefaultGlobalError as AppPageComponent;
-type AppPageModule = Record<string, unknown> & {
-  default?: AppPageComponent | null | undefined;
-};
+type AppPageModule = Record<string, unknown> &
+  AppRouteSegmentConfigModule & {
+    default?: AppPageComponent | null | undefined;
+  };
 type AppPageBoundaryOnError = (
   error: unknown,
   requestInfo: unknown,
@@ -537,6 +546,8 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     route?: AppPageBoundaryRoute<TModule> | null;
     routePattern?: string;
     status: number;
+    /** Whether a prerender's build fails on an error this render reports. */
+    tracksPrerenderRenderErrors?: boolean;
   },
 ): Promise<Response> {
   const requestUrl = new URL(options.requestUrl);
@@ -553,17 +564,12 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     pathname,
     options.routePattern ?? pathname,
   );
-  // As in `next build`, an error the root not-found page's render reports
-  // fails its prerender (`/_not-found`).
-  const tracksPrerenderRenderErrors = process.env.VINEXT_PRERENDER === "1" && !options.route;
-  let prerenderRenderErrorReported = false;
-  const notePrerenderRenderError = (error: unknown): void => {
-    if (tracksPrerenderRenderErrors && isPrerenderBuildFailingError(error)) {
-      prerenderRenderErrorReported = true;
-    }
-  };
+  const prerenderRenderErrors = createPrerenderRenderErrorTracker(
+    () => options.tracksPrerenderRenderErrors === true,
+  );
+  const isPrerenderRenderDynamic = () => peekDynamicUsage() || isRenderDynamicLatched();
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
-    notePrerenderRenderError(error);
+    prerenderRenderErrors.note(error);
     return baseRscOnErrorHandler(error, requestInfo, errorContext);
   });
   const resolveCapturedSpecialError = (error?: unknown) =>
@@ -589,7 +595,7 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           { renderSource: "server-rendering" },
         );
         const onSsrError: typeof baseOnSsrError = (error, requestInfo, errorContext) => {
-          notePrerenderRenderError(error);
+          prerenderRenderErrors.note(error);
           return baseOnSsrError(error, requestInfo, errorContext);
         };
         return renderAppPageHtmlResponse({
@@ -630,18 +636,21 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     if (specialError !== null) {
       return renderSpecialErrorResponse(specialError);
     }
+    // A prerender fails on a page that couldn't render at all, too.
+    if (options.tracksPrerenderRenderErrors === true) {
+      prerenderRenderErrors.note(error);
+      if (prerenderRenderErrors.failsBuild(isPrerenderRenderDynamic)) {
+        return markPrerenderRenderError(new Response("Internal Server Error", { status: 500 }));
+      }
+    }
     throw error;
   }
 
-  if (tracksPrerenderRenderErrors && response.body) {
-    // A prerender reads the whole page first, so it knows every error the
-    // render reports.
-    response = new Response(await response.arrayBuffer(), {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-    if (prerenderRenderErrorReported) markPrerenderRenderError(response);
+  if (options.tracksPrerenderRenderErrors === true && response.body) {
+    response = prerenderRenderErrors.finalize(
+      await bufferPrerenderResponse(response),
+      isPrerenderRenderDynamic,
+    );
   }
 
   if (!handleSpecialErrors) {
@@ -688,6 +697,22 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
   }
 
   return renderSpecialErrorResponse(specialError);
+}
+
+// Whether Next.js prerenders a root boundary page, such as `/_not-found`, from
+// the segment config of its layouts and its own module.
+function isRootBoundaryStaticEligible(
+  layoutModules: readonly (AppRouteSegmentConfigModule | null | undefined)[],
+  boundaryModule: AppRouteSegmentConfigModule | null | undefined,
+): boolean {
+  const config = resolveAppPageSegmentConfig({ layouts: layoutModules, page: boundaryModule });
+  return isAppPageStaticEligible({
+    dynamicConfig: config.dynamicConfig,
+    hasGenerateStaticParams: false,
+    isDynamicRoute: false,
+    isStaticGenerationEdgeRuntime: isEdgeRuntime(config.runtime),
+    revalidateSeconds: config.revalidateSeconds,
+  });
 }
 
 export async function renderAppPageHttpAccessFallback<TModule extends AppPageModule>(
@@ -1178,6 +1203,12 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
     route: skipLayoutWrapping ? null : options.route,
     routePattern: options.route?.pattern,
     status: options.statusCode,
+    // As in `next build`, an error the root not-found page's render reports
+    // fails its prerender (`/_not-found`), unless the page is dynamic.
+    tracksPrerenderRenderErrors:
+      process.env.VINEXT_PRERENDER === "1" &&
+      !options.route &&
+      isRootBoundaryStaticEligible(skipLayoutWrapping ? [] : layoutModules, boundaryModule),
   });
   return failOnLateAccessError(response, lateAccessErrors);
 }

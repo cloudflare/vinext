@@ -1248,9 +1248,10 @@ describe("app page dispatch", () => {
 
   it("marks the error page of a prerender whose page fails to build", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
-    const renderErrorPage = (isStaticGenerationEdgeRuntime?: boolean) => {
+    const renderErrorPage = (isStaticGenerationEdgeRuntime?: boolean, usesDynamicApi = false) => {
       const { options } = createDispatchOptions({
         buildPageElement: async () => {
+          if (usesDynamicApi) markDynamicUsage();
           throw new Error("build failed");
         },
         isStaticGenerationEdgeRuntime,
@@ -1265,6 +1266,10 @@ describe("app page dispatch", () => {
     // Next.js doesn't prerender an edge runtime page.
     const edgeResponse = await renderErrorPage(true);
     expect(edgeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    // Nor a page that turned dynamic before it failed.
+    const dynamicResponse = await renderErrorPage(false, true);
+    expect(dynamicResponse.status).toBe(500);
+    expect(dynamicResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
   it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {

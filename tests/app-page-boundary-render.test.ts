@@ -11,6 +11,11 @@ import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-r
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
 import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  headersContextFromRequest,
+  markDynamicUsage,
+  runWithHeadersContext,
+} from "../packages/vinext/src/shims/headers.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -169,6 +174,8 @@ type TestModule = {
   generateViewport?: (props: any) => unknown;
   metadata?: { description?: string; title?: string };
   viewport?: Record<string, unknown>;
+  dynamic?: string;
+  revalidate?: number;
 };
 
 const rootLayoutModule = {
@@ -291,6 +298,53 @@ describe("app page boundary render helpers", () => {
         params: { slug: "missing" },
       });
       expect(routed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("leaves a dynamic root not-found page out of the prerender", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (options: {
+      rootLayouts?: TestModule[];
+      usesDynamicApi?: boolean;
+      throwsShell?: boolean;
+    }) =>
+      runWithHeadersContext(headersContextFromRequest(new Request("http://localhost/x")), () =>
+        renderAppPageHttpAccessFallback<TestModule>({
+          ...createCommonOptions(),
+          matchedParams: {},
+          rootLayouts: options.rootLayouts ?? [rootLayoutModule],
+          rootNotFoundModule: notFoundModule,
+          renderToReadableStream(element, renderOptions) {
+            if (options.usesDynamicApi) markDynamicUsage();
+            if (options.throwsShell) throw new Error("not-found shell failed");
+            renderOptions?.onError?.(new Error("not-found render failed"), undefined, undefined);
+            return renderElementToStream(element);
+          },
+          route: null,
+          statusCode: 404,
+        }),
+      );
+    try {
+      // Next.js doesn't prerender `/_not-found` under a dynamic root layout.
+      const forceDynamic = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
+      });
+      expect(forceDynamic?.status).toBe(404);
+      expect(forceDynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      const revalidateZero = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, revalidate: 0 }],
+      });
+      expect(revalidateZero?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Nor one whose render used a dynamic API.
+      const dynamic = await renderNotFound({ usesDynamicApi: true });
+      expect(dynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+
+      // One that couldn't render at all fails the build.
+      const failed = await renderNotFound({ throwsShell: true });
+      expect(failed?.status).toBe(500);
+      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
     } finally {
       vi.unstubAllEnvs();
     }

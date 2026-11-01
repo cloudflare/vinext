@@ -132,7 +132,9 @@ class PrerenderUserFunctionError extends Error {}
 // which fails `next build` in every mode, so prerenderApp marks it fatal too.
 class InvalidStaticParamsError extends Error {}
 
-// A Pages render or getStaticProps that threw, which fails `next build`.
+// A Pages render or getStaticProps that threw, which fails `next build`. It's
+// thrown, so the route's error carries a stack like any other with
+// enablePrerenderSourceMaps.
 class PrerenderRenderError extends Error {}
 
 // Next.js's message for a page whose prerender reported an error.
@@ -1190,6 +1192,10 @@ export async function prerenderPages({
             });
             return skipped;
           }
+          if (response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
+            void response.body?.cancel().catch(() => {});
+            throw new PrerenderRenderError(PRERENDER_RENDER_ERROR_MESSAGE);
+          }
           const contentType = response.headers.get("content-type");
           // getStaticProps terminal responses carry the framework's MISS marker.
           // A middleware/config/_app early response must not become a snapshot.
@@ -1223,10 +1229,6 @@ export async function prerenderPages({
           );
           const htmlFullPath = path.join(outDir, htmlOutputPath);
 
-          if (response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
-            void response.body?.cancel().catch(() => {});
-            throw new PrerenderRenderError(PRERENDER_RENDER_ERROR_MESSAGE);
-          }
           if (response.status >= 300 && response.status < 400) {
             // getStaticProps returned a redirect — emit a meta-refresh HTML page
             // so the static export can represent the redirect without a server.

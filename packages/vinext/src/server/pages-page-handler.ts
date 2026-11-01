@@ -437,17 +437,21 @@ function buildI18nRenderContext(
 // createPagesPageHandler
 // ---------------------------------------------------------------------------
 
+// Next.js resolves a page's runtime as `runtime ?? config.runtime`.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
+function getPagesPageRuntime(pageModule: object): string | undefined {
+  const config: unknown = Reflect.get(pageModule, "config");
+  const runtime: unknown =
+    Reflect.get(pageModule, "runtime") ?? (isUnknownRecord(config) ? config.runtime : undefined);
+  return typeof runtime === "string" ? runtime : undefined;
+}
+
 /**
  * Create the Pages Router render function (`_renderPage`).
  *
  * The returned function is self-recursive for 404/500 fallback renders and
  * accepts the same options shape the generated entry always passed inline.
  */
-function getPagesPageRuntime(pageModule: object): string | undefined {
-  const config: unknown = Reflect.get(pageModule, "config");
-  const runtime = isUnknownRecord(config) ? config.runtime : undefined;
-  return typeof runtime === "string" ? runtime : undefined;
-}
 
 export function createPagesPageHandler(
   opts: CreatePagesPageHandlerOptions,
@@ -1466,11 +1470,16 @@ export function createPagesPageHandler(
         await reportSsrError(e);
 
         // As in `next build`, a page that throws while prerendering fails the
-        // build. Next.js doesn't prerender a getInitialProps or edge runtime
-        // page, and a binding the prerender can't provide doesn't fail it.
+        // build. Next.js doesn't prerender a getServerSideProps,
+        // getInitialProps or edge runtime page, nor a 404 rendered by an
+        // `_error` with getInitialProps, and a binding the prerender can't
+        // provide doesn't fail it. An error page rendered for another page's
+        // error leaves the decision to that page.
         const failsPrerender =
           process.env.VINEXT_PRERENDER === "1" &&
-          !isInitialPropsRender &&
+          !isInternalErrorRender &&
+          pagesReadiness.gssp !== true &&
+          (isStaticPropsRoute || (pagesReadiness.gip !== true && pagesReadiness.appGip !== true)) &&
           !isEdgeApiRuntime(getPagesPageRuntime(pageModule)) &&
           !isPrerenderBindingsUnavailableError(e);
         const answerError = (response: Response): Response => {

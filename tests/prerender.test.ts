@@ -1460,9 +1460,13 @@ describe("prerenderApp — default mode (app-basic)", () => {
 
   it("doesn't fail the build on a throwing page Next.js doesn't prerender", () => {
     // An edge runtime page, which throws without its env var.
-    const r = findRoute(results, "/nextjs-compat/app-static-stale-cache-serving-edge/app-page");
-    expect(r?.status).not.toBe("rendered");
-    expect(r).not.toMatchObject({ fatal: true });
+    expect(
+      findRoute(results, "/nextjs-compat/app-static-stale-cache-serving-edge/app-page"),
+    ).toEqual({
+      route: "/nextjs-compat/app-static-stale-cache-serving-edge/app-page",
+      status: "skipped",
+      reason: "dynamic",
+    });
   });
 
   // ── Static routes with explicit config ────────────────────────────────────

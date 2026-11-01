@@ -33,3 +33,41 @@ export function markPrerenderRenderError(response: Response): Response {
   response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
   return response;
 }
+
+export type PrerenderRenderErrorTracker = {
+  /** Notes an error the render reports. */
+  note(error: unknown): void;
+  /** Whether a noted error fails the build, as the render didn't turn dynamic. */
+  failsBuild(isDynamic: () => boolean): boolean;
+  /** Marks the response when the render fails the build. */
+  finalize(response: Response, isDynamic: () => boolean): Response;
+};
+
+/** Tracks the errors a prerender's render reports, while `isTracking()` holds. */
+export function createPrerenderRenderErrorTracker(
+  isTracking: () => boolean,
+): PrerenderRenderErrorTracker {
+  let reported = false;
+  const failsBuild = (isDynamic: () => boolean): boolean => reported && !isDynamic();
+  return {
+    note(error) {
+      if (!reported && isTracking() && isPrerenderBuildFailingError(error)) reported = true;
+    },
+    failsBuild,
+    finalize(response, isDynamic) {
+      return failsBuild(isDynamic) ? markPrerenderRenderError(response) : response;
+    },
+  };
+}
+
+/**
+ * Reads a prerender response's whole body first, so its render has reported
+ * every error by the time the response is finalized.
+ */
+export async function bufferPrerenderResponse(response: Response): Promise<Response> {
+  return new Response(await response.arrayBuffer(), {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  });
+}

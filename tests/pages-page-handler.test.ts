@@ -2087,7 +2087,11 @@ describe("createPagesPageHandler — internal error guard", () => {
 });
 
 describe("createPagesPageHandler — prerender render errors", () => {
-  const prerenderResponse = async (module: Record<string, unknown>) => {
+  const prerenderResponse = async (
+    module: Record<string, unknown>,
+    overrides: Partial<CreatePagesPageHandlerOptions> = {},
+    pathname = "/about",
+  ) => {
     const handler = createPagesPageHandler(
       makeOpts({
         pageRoutes: [makeRoute("/about", module)],
@@ -2095,12 +2099,13 @@ describe("createPagesPageHandler — prerender render errors", () => {
           const route = r.find((rt) => rt.pattern === url.split("?")[0]);
           return route ? { route, params: {} } : null;
         },
+        ...overrides,
       }),
     );
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
-      return await handler(makeRequest("/about"), "/about", null, null, null);
+      return await handler(makeRequest(pathname), pathname, null, null, null);
     } finally {
       consoleError.mockRestore();
       vi.unstubAllEnvs();
@@ -2119,7 +2124,7 @@ describe("createPagesPageHandler — prerender render errors", () => {
     expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
   });
 
-  it("doesn't mark a binding error, a getInitialProps page or an edge page", async () => {
+  it("doesn't mark a binding error or a page Next.js doesn't prerender", async () => {
     const bindingError = new Error("Cloudflare bindings are unavailable");
     Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
       value: true,
@@ -2158,6 +2163,76 @@ describe("createPagesPageHandler — prerender render errors", () => {
     );
     expect(edge.status).toBe(500);
     expect(edge.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    const topLevelEdge = await prerenderResponse(
+      makePageModule({
+        runtime: "experimental-edge",
+        getStaticProps: async () => {
+          throw new Error("getStaticProps failed");
+        },
+      }),
+    );
+    expect(topLevelEdge.status).toBe(500);
+    expect(topLevelEdge.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+
+    // Nor a getServerSideProps page.
+    const serverSideProps = await prerenderResponse(
+      makePageModule({
+        getServerSideProps: async () => {
+          throw new Error("getServerSideProps failed");
+        },
+      }),
+    );
+    expect(serverSideProps.status).toBe(500);
+    expect(serverSideProps.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("leaves the decision to the page when its error page throws too", async () => {
+    // Next.js doesn't prerender a getInitialProps page.
+    const response = await prerenderResponse(
+      makePageModule({ default: Object.assign(() => null, { getInitialProps: async () => ({}) }) }),
+      {
+        errorPageRoute: makeRoute("/_error", makePageModule()),
+        renderToReadableStream: async () => {
+          throw new Error("render failed");
+        },
+      },
+    );
+    expect(response.status).toBe(500);
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("doesn't mark a 404 that Next.js doesn't prerender", async () => {
+    // Without a `pages/404`, `_error` renders it, which runs a custom `_app`
+    // getInitialProps.
+    const notFound = await prerenderResponse(
+      makePageModule(),
+      {
+        AppComponent: Object.assign(() => null, {
+          async getInitialProps() {
+            throw new Error("_app getInitialProps failed");
+          },
+        }),
+        errorPageRoute: makeRoute("/_error", makePageModule()),
+      },
+      "/missing",
+    );
+    expect(notFound.status).toBe(500);
+    expect(notFound.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("marks a 404 rendered by an `_error` without getInitialProps", async () => {
+    const response = await prerenderResponse(
+      makePageModule(),
+      {
+        errorPageRoute: makeRoute("/_error", makePageModule()),
+        renderToReadableStream: async () => {
+          throw new Error("render failed");
+        },
+      },
+      "/missing",
+    );
+    expect(response.status).toBe(500);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
   });
 });
 
