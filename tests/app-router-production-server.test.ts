@@ -2579,7 +2579,7 @@ describe("App Router Production server (startProdServer)", () => {
     { label: "RSC", rsc: true, headers: { Accept: "text/x-component", RSC: "1" } },
   ]) {
     it(`streams compressed ${label} incrementally`, async () => {
-      // The shell flushes before generateMetadata's 1.2s delay resolves; the
+      // The shell flushes before the delayed generateMetadata resolves; the
       // compressor must flush it rather than buffer until the stream ends.
       const result = await readGzipStreamTimeline(
         new URL(
