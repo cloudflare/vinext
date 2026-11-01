@@ -1970,6 +1970,36 @@ export default {
     expect(output).toContain("point main in wrangler.json at it");
   });
 
+  it.each([false, true])(
+    "keeps a worker/index.ts for a static export, which serves pages asset-first (legacy Wrangler: %s)",
+    async (legacyWrangler) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(tmpDir, "next.config.mjs", 'export default { output: "export" };\n');
+      writeFile(tmpDir, "worker/index.ts", SPA_WORKER);
+
+      const { output } = await runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+        },
+      });
+
+      if (legacyWrangler) {
+        expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+          main: "./worker/index.ts",
+        });
+      } else {
+        expect(readFile(tmpDir, "cloudflare.config.ts")).toContain(
+          'entrypoint: "./worker/index.ts"',
+        );
+      }
+      expect(output).not.toContain("does not import vinext");
+    },
+  );
+
   it("keeps a worker/index.ts that loads vinext's RSC handler", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(

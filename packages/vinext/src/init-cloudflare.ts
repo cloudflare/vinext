@@ -292,7 +292,13 @@ export function setupCloudflarePlatform(
       "utf-8",
     );
     generatedPlatformFiles.push("wrangler.jsonc");
-    nextSteps.push(...ignoredWorkerEntryNextSteps(context.root, "main in wrangler.jsonc"));
+    nextSteps.push(
+      ...ignoredWorkerEntryNextSteps(
+        context.root,
+        context.isStaticExport,
+        "main in wrangler.jsonc",
+      ),
+    );
   } else if (wranglerCode && updatedWranglerCode) {
     if (updatedWranglerCode !== wranglerCode) {
       fs.writeFileSync(wranglerPath, updatedWranglerCode, "utf-8");
@@ -300,7 +306,11 @@ export function setupCloudflarePlatform(
     }
     if (!findTopLevelJsonProperty(wranglerCode, "main")) {
       nextSteps.push(
-        ...ignoredWorkerEntryNextSteps(context.root, `main in ${path.basename(wranglerPath)}`),
+        ...ignoredWorkerEntryNextSteps(
+          context.root,
+          context.isStaticExport,
+          `main in ${path.basename(wranglerPath)}`,
+        ),
       );
     }
   }
@@ -434,7 +444,11 @@ function setupCfPlatform(
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
     nextSteps.push(
-      ...ignoredWorkerEntryNextSteps(context.root, "entrypoint in cloudflare.config.ts"),
+      ...ignoredWorkerEntryNextSteps(
+        context.root,
+        context.isStaticExport,
+        "entrypoint in cloudflare.config.ts",
+      ),
     );
   }
   if (serviceBinding) {
@@ -537,7 +551,7 @@ export const responseStoreServiceBinding = responseStore.serviceBindingWorker;
 ${shared}export default defineConfig({
   worker: defineWorker({
     ${cacheSpread ? `...${cacheSpread},\n    ` : ""}name: ${JSON.stringify(info.projectName)},
-    entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root))},
+    entrypoint: ${JSON.stringify(resolveWorkerEntry(info.root, info.isStaticExport))},
     compatibilityDate: ${JSON.stringify(today)},
     compatibilityFlags: ["nodejs_compat"],
     assets: {
@@ -559,13 +573,20 @@ ${shared}export default defineConfig({
 const VINEXT_WORKER_ENTRY_RE =
   /(?<![\w$.])(?:from|import|require)\s*\(?\s*["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
 
-function findWorkerEntry(root: string): { entry: string; usesVinext: boolean } | null {
+/**
+ * A static export serves its pages asset-first, so any Worker only sees the
+ * requests no asset answers (an SPA's `/api/*`, say) and is safe to keep.
+ */
+function findWorkerEntry(
+  root: string,
+  isStaticExport: boolean | undefined,
+): { entry: string; keep: boolean } | null {
   for (const file of ["index.ts", "index.js"]) {
     const filePath = path.join(root, "worker", file);
     if (!fs.existsSync(filePath)) continue;
     return {
       entry: `./worker/${file}`,
-      usesVinext: VINEXT_WORKER_ENTRY_RE.test(fs.readFileSync(filePath, "utf-8")),
+      keep: !!isStaticExport || VINEXT_WORKER_ENTRY_RE.test(fs.readFileSync(filePath, "utf-8")),
     };
   }
   return null;
@@ -576,17 +597,21 @@ function findWorkerEntry(root: string): { entry: string; usesVinext: boolean } |
  * project. A custom `worker/index.*` wins when it hands requests to vinext;
  * otherwise the router-selected entry resolves to the App or Pages Router
  * handler at build time. Any other `worker/index.*` belongs to the app being
- * migrated (a Vite SPA's API Worker, say), and as the entry it would answer
- * every route itself (#4460).
+ * migrated (a Vite SPA's API Worker, say), and as the entry of a Worker-first
+ * app it would answer every route itself (#4460).
  */
-function resolveWorkerEntry(root: string): string {
-  const worker = findWorkerEntry(root);
-  return worker?.usesVinext ? worker.entry : "vinext/server/fetch-handler";
+function resolveWorkerEntry(root: string, isStaticExport: boolean | undefined): string {
+  const worker = findWorkerEntry(root, isStaticExport);
+  return worker?.keep ? worker.entry : "vinext/server/fetch-handler";
 }
 
-function ignoredWorkerEntryNextSteps(root: string, entrySetting: string): string[] {
-  const worker = findWorkerEntry(root);
-  if (!worker || worker.usesVinext) return [];
+function ignoredWorkerEntryNextSteps(
+  root: string,
+  isStaticExport: boolean | undefined,
+  entrySetting: string,
+): string[] {
+  const worker = findWorkerEntry(root, isStaticExport);
+  if (!worker || worker.keep) return [];
   const file = worker.entry.slice(2);
   return [
     `${file} does not import vinext, so the Worker entry is vinext/server/fetch-handler.`,
@@ -617,7 +642,7 @@ export function generateWranglerConfig(
   options: CloudflareInitOptions = DEFAULT_CLOUDFLARE_INIT_OPTIONS,
   today = new Date().toISOString().split("T")[0],
 ): string {
-  const workerEntry = resolveWorkerEntry(info.root);
+  const workerEntry = resolveWorkerEntry(info.root, info.isStaticExport);
   const routing = defaultAssetRouting(info, options);
 
   const config: Record<string, unknown> = {
@@ -1294,7 +1319,7 @@ export function updateWranglerConfigForCloudflare(
   // reports success while every route 404s. Keep these in sync with
   // `generateWranglerConfig`, which writes them on the from-scratch path.
   if (!findTopLevelJsonProperty(output, "main")) {
-    const workerEntry = resolveWorkerEntry(context.root ?? process.cwd());
+    const workerEntry = resolveWorkerEntry(context.root ?? process.cwd(), context.isStaticExport);
     output = appendTopLevelJsonProperty(output, `  "main": ${JSON.stringify(workerEntry)}`);
   }
   if (!findTopLevelJsonProperty(output, "assets")) {
