@@ -187,6 +187,12 @@ const REFRESHABLE_ENTRY = `tombstoned = 0 AND active_revision IS NOT NULL
   AND object_key IS NOT NULL AND response_headers IS NOT NULL
   AND fresh_until IS NOT NULL AND swr_until IS NOT NULL`;
 
+// Invalidations before schema 9 weren't recorded, so an entry from before it counts the revision
+// active at the upgrade as one. Rewriting every entry would make the migration scale with the
+// table, so they're marked by the column's default instead, and publish() resolves the mark from
+// the active revision it replaces. Until then the entry has no replaced revision to compare it to.
+// Upgraded stores keep the default, so inserts into entries name the column.
+const PRE_UPGRADE_INVALIDATED_REVISION = -1;
 const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
 const ORPHAN_CLEANUP_LIMIT = 100;
@@ -494,11 +500,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           if (!entries?.includes("replaced_revision")) {
             ctx.storage.sql.exec(`
               ALTER TABLE entries ADD COLUMN replaced_revision INTEGER;
-              ALTER TABLE entries ADD COLUMN invalidated_revision INTEGER;
+              ALTER TABLE entries ADD COLUMN invalidated_revision INTEGER
+                DEFAULT ${PRE_UPGRADE_INVALIDATED_REVISION};
             `);
           }
-          // Invalidations before the upgrade weren't recorded: count the active revision as one.
-          ctx.storage.sql.exec("UPDATE entries SET invalidated_revision = active_revision");
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
         }
         if (!migrations.has(10)) {
@@ -869,7 +874,8 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
 
     if (!current) {
       this.ctx.storage.sql.exec(
-        "INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned) VALUES (?, ?, ?, 1)",
+        `INSERT INTO entries (key_hash, cache_key, latest_revision, tombstoned, invalidated_revision)
+        VALUES (?, ?, ?, 1, NULL)`,
         keyHash,
         cacheKey,
         revision,
@@ -1130,7 +1136,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
           revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0,
-          replaced_revision = ?
+          replaced_revision = ?,
+          invalidated_revision = CASE invalidated_revision
+            WHEN ${PRE_UPGRADE_INVALIDATED_REVISION} THEN active_revision
+            ELSE invalidated_revision
+          END
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,
