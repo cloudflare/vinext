@@ -1901,7 +1901,11 @@ export default { plugins: [vinext({ cache: { data: customData() }, prerender: tr
 
   it("points wrangler.jsonc at an existing JavaScript worker entry", async () => {
     setupProject(tmpDir, { router: "app" });
-    writeFile(tmpDir, "worker/index.js", "export default {};");
+    writeFile(
+      tmpDir,
+      "worker/index.js",
+      'import handler from "vinext/server/fetch-handler";\nexport default handler;\n',
+    );
 
     await runInit(tmpDir);
 
@@ -1909,6 +1913,82 @@ export default { plugins: [vinext({ cache: { data: customData() }, prerender: tr
       main: "./worker/index.js",
     });
     expect(fs.existsSync(path.join(tmpDir, "worker", "index.ts"))).toBe(false);
+  });
+
+  // #4460: a Vite SPA on Workers keeps its API Worker in worker/index.ts. As
+  // the Worker entry it answers every page route itself, so each one 404s.
+  const SPA_WORKER = `export default {
+  fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname.startsWith("/api/")) return Response.json({ name: "Cloudflare" });
+    return new Response(null, { status: 404 });
+  },
+};
+`;
+
+  it("does not use a worker/index.ts that does not hand requests to vinext", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "worker/index.ts", SPA_WORKER);
+
+    const { output } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: { dataCache: "kv", cdnCache: "static-assets", imageOptimization: "none" },
+    });
+
+    const config = readFile(tmpDir, "cloudflare.config.ts");
+    expect(config).toContain('entrypoint: "vinext/server/fetch-handler"');
+    expect(output).toContain("worker/index.ts does not import vinext");
+    expect(output).toContain("point entrypoint in cloudflare.config.ts at it");
+    expect(readFile(tmpDir, "worker/index.ts")).toBe(SPA_WORKER);
+  });
+
+  it("does not point wrangler.jsonc at a worker/index.ts that does not hand requests to vinext", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "worker/index.ts", SPA_WORKER);
+
+    const { output } = await runInit(tmpDir);
+
+    expect(JSON.parse(readFile(tmpDir, "wrangler.jsonc"))).toMatchObject({
+      main: "vinext/server/fetch-handler",
+    });
+    expect(output).toContain("worker/index.ts does not import vinext");
+    expect(output).toContain("point main in wrangler.jsonc at it");
+  });
+
+  it("does not add a worker/index.ts that does not hand requests to vinext as main of an existing wrangler.json", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "wrangler.json", '{ "name": "existing" }\n');
+    writeFile(tmpDir, "worker/index.ts", SPA_WORKER);
+
+    const { output } = await runInit(tmpDir);
+
+    expect(JSON.parse(readFile(tmpDir, "wrangler.json"))).toMatchObject({
+      main: "vinext/server/fetch-handler",
+    });
+    expect(output).toContain("point main in wrangler.json at it");
+  });
+
+  it("keeps a worker/index.ts that loads vinext's RSC handler", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(
+      tmpDir,
+      "worker/index.ts",
+      `export default {
+  async fetch(request: Request) {
+    const rsc = await import.meta.viteRsc.loadModule("rsc", "index");
+    return rsc.default(request);
+  },
+};
+`,
+    );
+
+    const { output } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+
+    expect(readFile(tmpDir, "cloudflare.config.ts")).toContain('entrypoint: "./worker/index.ts"');
+    expect(output).not.toContain("does not import vinext");
   });
 
   it("adds 'type': 'module' to package.json", async () => {

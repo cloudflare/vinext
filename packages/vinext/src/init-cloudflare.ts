@@ -280,6 +280,7 @@ export function setupCloudflarePlatform(
   }
 
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!wranglerPath) {
     fs.writeFileSync(
       path.join(context.root, "wrangler.jsonc"),
@@ -291,10 +292,16 @@ export function setupCloudflarePlatform(
       "utf-8",
     );
     generatedPlatformFiles.push("wrangler.jsonc");
+    nextSteps.push(...ignoredWorkerEntryNextSteps(context.root, "main in wrangler.jsonc"));
   } else if (wranglerCode && updatedWranglerCode) {
     if (updatedWranglerCode !== wranglerCode) {
       fs.writeFileSync(wranglerPath, updatedWranglerCode, "utf-8");
       generatedPlatformFiles.push(path.basename(wranglerPath));
+    }
+    if (!findTopLevelJsonProperty(wranglerCode, "main")) {
+      nextSteps.push(
+        ...ignoredWorkerEntryNextSteps(context.root, `main in ${path.basename(wranglerPath)}`),
+      );
     }
   }
 
@@ -321,7 +328,6 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const nextSteps: string[] = [];
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -416,6 +422,7 @@ function setupCfPlatform(
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
@@ -426,8 +433,10 @@ function setupCfPlatform(
       ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
+    nextSteps.push(
+      ...ignoredWorkerEntryNextSteps(context.root, "entrypoint in cloudflare.config.ts"),
+    );
   }
-  const nextSteps: string[] = [];
   if (serviceBinding) {
     nextSteps.push(
       "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
@@ -542,16 +551,45 @@ ${shared}export default defineConfig({
 `;
 }
 
+// A custom vinext Worker hands requests to vinext: it imports
+// `vinext/server/fetch-handler` (or another vinext module), or loads the RSC
+// handler through `import.meta.viteRsc`.
+const VINEXT_WORKER_ENTRY_RE =
+  /["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
+
+function findWorkerEntry(root: string): { entry: string; usesVinext: boolean } | null {
+  for (const file of ["index.ts", "index.js"]) {
+    const filePath = path.join(root, "worker", file);
+    if (!fs.existsSync(filePath)) continue;
+    return {
+      entry: `./worker/${file}`,
+      usesVinext: VINEXT_WORKER_ENTRY_RE.test(fs.readFileSync(filePath, "utf-8")),
+    };
+  }
+  return null;
+}
+
 /**
  * `main` is what makes a Wrangler config a Worker rather than a static-assets
- * project. A custom `worker/index.*` wins when present; otherwise the
- * router-selected entry resolves to the App or Pages Router handler at build
- * time.
+ * project. A custom `worker/index.*` wins when it hands requests to vinext;
+ * otherwise the router-selected entry resolves to the App or Pages Router
+ * handler at build time. Any other `worker/index.*` belongs to the app being
+ * migrated (a Vite SPA's API Worker, say), and as the entry it would answer
+ * every route itself (#4460).
  */
 function resolveWorkerEntry(root: string): string {
-  if (fs.existsSync(path.join(root, "worker", "index.ts"))) return "./worker/index.ts";
-  if (fs.existsSync(path.join(root, "worker", "index.js"))) return "./worker/index.js";
-  return "vinext/server/fetch-handler";
+  const worker = findWorkerEntry(root);
+  return worker?.usesVinext ? worker.entry : "vinext/server/fetch-handler";
+}
+
+function ignoredWorkerEntryNextSteps(root: string, entrySetting: string): string[] {
+  const worker = findWorkerEntry(root);
+  if (!worker || worker.usesVinext) return [];
+  const file = worker.entry.slice(2);
+  return [
+    `${file} does not import vinext, so the Worker entry is vinext/server/fetch-handler.`,
+    `   Move its routes into your app, or make it call vinext/server/fetch-handler and point ${entrySetting} at it.`,
+  ];
 }
 
 /**
