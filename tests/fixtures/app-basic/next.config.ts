@@ -40,7 +40,10 @@ const nextConfig: NextConfig = {
   // Used by Vitest: app-router-production-server.test.ts — a next/dynamic()
   // call site inside this package only gets preload metadata when the package
   // is transpiled, matching Turbopack's foreign-code rule.
-  transpilePackages: ["fake-css-module-lib"],
+  //
+  // fake-tsconfig-exact-lib stays in the Pages server bundle, so builds into a
+  // temporary outDir don't need node_modules next to the output.
+  transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,

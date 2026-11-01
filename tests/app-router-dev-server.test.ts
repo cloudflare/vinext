@@ -1378,19 +1378,21 @@ describe("App Router integration", () => {
     const { res, html } = await fetchHtml(baseUrl, "/missing-use-client-react-hook");
     expect(res.status).toBe(500);
     // The error message should be clear and actionable
-    expect(html).toContain("useState()");
+    expect(html).toContain("useState only works in Client Components");
     expect(html).toContain("Client Components");
     expect(html).toContain("use client");
     // Should NOT contain the actual page content (it errored before rendering)
     expect(html).not.toContain("Missing use client react hook test");
   });
 
-  it("error boundary catches string thrown in Server Component", async () => {
+  it("answers a string thrown in a Server Component with the error document", async () => {
+    // Like Next.js, the browser renders error.tsx from the error document's
+    // payload, which carries the thrown string in development.
     const { res, html } = await fetchHtml(baseUrl, "/throw-string-test");
-    expect(res.status).toBe(200);
-    expect(textContentByTestId(html, "string-error-message")).toBe(
-      "this is a test string thrown in a server component",
-    );
+    expect(res.status).toBe(500);
+    expect(html).toContain('<html id="__next_error__"');
+    expect(html).toContain("this is a test string thrown in a server component");
+    expect(html).not.toContain(`data-testid="string-error-message"`);
   });
 
   it("redirect() from Server Component returns redirect response", async () => {
@@ -1509,6 +1511,34 @@ describe("App Router integration", () => {
 
     expect(res.status).toBe(307);
     expect(res.headers.get("location")).toContain("/about");
+  });
+
+  // "/.//other.invalid/landing" names the pathname "//other.invalid/landing" on
+  // this origin. The redirect header, Flight digest and refresh meta tag must
+  // keep it a path: sent as "//other.invalid/landing", the client resolves it
+  // as a protocol-relative URL on another host. Next.js sends the target as
+  // written.
+  it("keeps a layout redirect() to a path starting with /.// on the app origin (RSC)", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/redirect-dot-segment/layout-redirect.rsc`, {
+      redirect: "manual",
+      headers: { Accept: "text/x-component" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-vinext-rsc-redirect")).toBe("/.//other.invalid/landing");
+    const text = await res.text();
+    expect(text).toContain("NEXT_REDIRECT;replace;/.//other.invalid/landing;307;");
+    expect(text).not.toContain(";//other.invalid");
+  });
+
+  it("keeps a metadata redirect() to a path starting with /.// on the app origin (document)", async () => {
+    const res = await fetch(`${baseUrl}/nextjs-compat/redirect-dot-segment/metadata-redirect`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    expect(text).toContain(
+      '<meta id="__next-page-redirect" http-equiv="refresh" content="1;url=/.//other.invalid/landing"/>',
+    );
   });
 
   // ── Next.js 15+ async params/searchParams ──

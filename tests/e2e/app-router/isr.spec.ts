@@ -417,14 +417,18 @@ test.describe("App Router ISR", () => {
     );
   });
 
-  test("keeps trailing-slash route handler cache entries distinct", async ({ request }) => {
+  // Like Next.js, the trailing-slash spelling is redirected before the
+  // handler runs, so only the canonical path is cached.
+  test("redirects a trailing-slash route handler request before caching it", async ({
+    request,
+  }) => {
     const plainPath = "/api/route-cache-identity/trailing";
-    const trailingPath = `${plainPath}/`;
     await resetIsrPath(request, plainPath);
-    await resetIsrPath(request, trailingPath);
 
-    const trailing = await waitForCacheHit(request, trailingPath);
-    expect(await trailing.text()).toBe(`CACHE_IDENTITY_API_ROUTE:${plainPath}`);
+    const trailing = await request.get(`${baseUrl()}${plainPath}/`, { maxRedirects: 0 });
+    expect(trailing.status()).toBe(308);
+    expect(trailing.headers()["location"]).toBe(plainPath);
+    expect(trailing.headers()["x-vinext-cache"]).toBeUndefined();
 
     const initialPlain = await request.get(`${baseUrl()}${plainPath}`);
     expect(initialPlain.headers()["x-vinext-cache"]).toBe("MISS");
@@ -848,6 +852,24 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(value2).toBe(value1);
   });
 
+  // Next.js's IncrementalCache.set catches cache handler errors and only warns:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/index.ts
+  test("a rejected data cache write still renders the computed value", async ({ request }) => {
+    const readPage = async () => {
+      const res = await request.get(`${baseUrl()}/unstable-cache-write-failure`);
+      expect(res.status()).toBe(200);
+      const html = await res.text();
+      expect(html).toMatch(/data-testid="rejected-writes">1</);
+      const nonce = html.match(/data-testid="nonce">([0-9a-f-]{36})</)?.[1];
+      expect(nonce).toBeDefined();
+      return nonce;
+    };
+
+    // Nothing was stored, so the next request runs the callback again.
+    const first = await readPage();
+    expect(await readPage()).not.toBe(first);
+  });
+
   // Next.js keys unstable_cache by the callback source as well as keyParts:
   // https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/web/spec-extension/unstable-cache.ts
   test("callbacks sharing keyParts and arguments keep separate entries", async ({ request }) => {
@@ -981,6 +1003,46 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(draft.data).not.toBe(normal.data);
   });
 
+  test("unstable_cache keeps bypassing a draft render whose HEAD response was sent", async ({
+    request,
+  }) => {
+    const id = `head-${Date.now()}`;
+
+    try {
+      expect((await request.get(`${baseUrl()}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      // The response is sent once the Suspense fallback is ready, and its body
+      // is cancelled, while the boundary still waits to call unstable_cache().
+      const head = await request.head(
+        `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${id}`,
+      );
+      expect(head.status()).toBe(200);
+      await releaseDraftLateCache(request, id);
+      await waitForDraftLateCacheDone(request, id);
+    } finally {
+      await request.get(`${baseUrl()}/nextjs-compat/api/draft-disable`);
+    }
+
+    expect((await readDraftLateCachePage(request, id)).draftMode).toBe("false");
+  });
+
+  test("unstable_cache keeps bypassing a draft render's after() callback", async ({ request }) => {
+    const id = `after-${Date.now()}`;
+
+    try {
+      expect((await request.get(`${baseUrl()}/nextjs-compat/api/draft-enable`)).status()).toBe(200);
+      const response = await request.get(
+        `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${id}&phase=after`,
+      );
+      expect(response.status()).toBe(200);
+      expect(await response.text()).toContain('id="phase">after<');
+      await waitForDraftLateCacheDone(request, id);
+    } finally {
+      await request.get(`${baseUrl()}/nextjs-compat/api/draft-disable`);
+    }
+
+    expect((await readDraftLateCachePage(request, id)).draftMode).toBe("false");
+  });
+
   test("unstable_cache exposes draft mode status", async ({ request }) => {
     const key = `status-${Date.now()}`;
 
@@ -1080,6 +1142,36 @@ async function readDraftCachePage(request: APIRequestContext, key: string) {
     data: html.match(/id="cached-data">([^<]+)/)?.[1],
     draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1],
   };
+}
+
+async function readDraftLateCachePage(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/unstable-cache-draft-late?id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+  const html = await response.text();
+  return { draftMode: html.match(/id="draft-mode-enabled">([^<]+)/)?.[1] };
+}
+
+async function releaseDraftLateCache(request: APIRequestContext, id: string) {
+  const response = await request.get(
+    `${baseUrl()}/nextjs-compat/api/unstable-cache-draft-late-probe?mode=release&id=${encodeURIComponent(id)}`,
+  );
+  expect(response.status()).toBe(200);
+}
+
+async function waitForDraftLateCacheDone(request: APIRequestContext, id: string) {
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(
+          `${baseUrl()}/nextjs-compat/api/unstable-cache-draft-late-probe?mode=status&id=${encodeURIComponent(id)}`,
+        );
+        return ((await response.json()) as { done: boolean }).done;
+      },
+      { message: `wait for the draft render's unstable_cache() call (${id})`, timeout: 5_000 },
+    )
+    .toBe(true);
 }
 
 async function readDynamicErrorDraftCachePage(request: APIRequestContext) {

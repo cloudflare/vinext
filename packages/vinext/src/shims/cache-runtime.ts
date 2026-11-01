@@ -168,6 +168,8 @@ export type CacheContext = {
   tags: string[];
   /** Cache life configs collected via cacheLife() — minimum-wins rule applies */
   lifeConfigs: CacheLifeConfig[];
+  /** Resolved lives of nested caches; they only constrain fields cacheLife() left unset */
+  nestedLifeConfigs: CacheLifeConfig[];
   /** Cache variant: "default" | "remote" | "private" */
   variant: string;
   /** Root params observed while producing this public cache entry. */
@@ -380,45 +382,54 @@ async function serializeCacheResult<TResult>(
 }
 
 // ---------------------------------------------------------------------------
-// Minimum-wins resolution for cacheLife
+// Cache life resolution
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve collected cacheLife configs into a single effective config.
- * The "minimum-wins" rule: if multiple cacheLife() calls are made,
- * each field takes the smallest value across all calls.
- */
-function resolveCacheLife(configs: CacheLifeConfig[]): CacheLifeConfig {
-  if (configs.length === 0) {
-    // Default profile
-    return { ...cacheLifeProfiles.default };
-  }
+const CACHE_LIFE_FIELDS = ["stale", "revalidate", "expire"] as const;
 
-  if (configs.length === 1) {
-    return { ...configs[0] };
-  }
-
-  // Minimum-wins across all fields
+/** Per field, the smallest value any config sets. */
+function minimumCacheLife(configs: readonly CacheLifeConfig[]): CacheLifeConfig {
   const result: CacheLifeConfig = {};
-
   for (const config of configs) {
-    if (config.stale !== undefined) {
-      result.stale =
-        result.stale !== undefined ? Math.min(result.stale, config.stale) : config.stale;
-    }
-    if (config.revalidate !== undefined) {
-      result.revalidate =
-        result.revalidate !== undefined
-          ? Math.min(result.revalidate, config.revalidate)
-          : config.revalidate;
-    }
-    if (config.expire !== undefined) {
-      result.expire =
-        result.expire !== undefined ? Math.min(result.expire, config.expire) : config.expire;
+    for (const field of CACHE_LIFE_FIELDS) {
+      const value = config[field];
+      const current = result[field];
+      if (value !== undefined && (current === undefined || value < current)) {
+        result[field] = value;
+      }
     }
   }
-
   return result;
+}
+
+/**
+ * Resolve a cache scope's effective life, like Next.js's `collectResult`
+ * (use-cache-wrapper.ts). A field set by `cacheLife()` takes the minimum
+ * across those calls and wins over nested caches. Any other field takes the
+ * minimum of the default profile and the nested caches' lives.
+ */
+function resolveCacheLife(ctx: CacheContext): CacheLifeConfig {
+  const explicit = minimumCacheLife(ctx.lifeConfigs);
+  const collected = minimumCacheLife([cacheLifeProfiles.default, ...ctx.nestedLifeConfigs]);
+  const result: CacheLifeConfig = {};
+  for (const field of CACHE_LIFE_FIELDS) {
+    const value = explicit[field] ?? collected[field];
+    if (value !== undefined) result[field] = value;
+  }
+  return result;
+}
+
+/**
+ * Hand a finished cache scope's life to what encloses it, like Next.js's
+ * `propagateCacheEntryMetadata`: an enclosing cache collects it as a nested
+ * life, and only an outermost cache reaches the request.
+ */
+function propagateCacheLife(parentCtx: CacheContext | undefined, life: CacheLifeConfig): void {
+  if (parentCtx) {
+    parentCtx.nestedLifeConfigs.push(life);
+  } else {
+    _setRequestScopedCacheLife(life);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -907,7 +918,6 @@ export function registerCachedFunction<TArgs extends unknown[], TResult>(
             : knownRootParamsByFunctionId.get(id);
 
         if (propagate) {
-          recordRequestScopedCacheLife(effectiveLife);
           // Bubble the cache scope's tags up to the surrounding request so the
           // enclosing page / route-handler ISR entry is tagged for on-demand
           // revalidation (issue #1453). `ctx.tags` already includes any nested
@@ -1126,10 +1136,10 @@ function throwPrivateUseCacheInsideUnstableCacheError(): never {
 
 function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | undefined): void {
   if (cacheControl === undefined) return;
-  // A hit must contribute the same claim its producing execution did — both to
-  // the request scope and, when nested, to the enclosing cache scope (like the
-  // MISS path's `parentCtx.lifeConfigs.push`); otherwise the inner claim
-  // vanishes once the outer entry goes warm.
+  // A hit must contribute the same claim its producing execution did — to the
+  // enclosing cache scope when nested, else to the request (like the MISS
+  // path's `propagateCacheLife`); otherwise the inner claim vanishes once the
+  // outer entry goes warm.
   const life: CacheLifeConfig = {
     // `false` is an indefinite lifetime and does not constrain the enclosing
     // scope's finite revalidation window.
@@ -1138,7 +1148,7 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     stale: cacheControl.stale,
   };
   const parentCtx = cacheContextStorage.getStore();
-  parentCtx?.lifeConfigs.push(life);
+  propagateCacheLife(parentCtx, life);
 
   // A warm nested HIT must preserve the same dynamic-cache validation as the
   // MISS that produced it. The persisted cache-control fields already contain
@@ -1158,11 +1168,6 @@ function recordRequestScopedCacheControl(cacheControl: CacheControlMetadata | un
     }
     parentCtx.dynamicNestedCacheError ??= error;
   }
-  _setRequestScopedCacheLife(life);
-}
-
-function recordRequestScopedCacheLife(cacheLife: CacheLifeConfig): void {
-  _setRequestScopedCacheLife(cacheLife);
 }
 
 /**
@@ -1210,18 +1215,10 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
   cacheable: boolean;
   serialized?: SerializedCacheResult["cacheEntry"];
 }> {
-  const {
-    result,
-    ctx: _ctx,
-    effectiveLife,
-    collectedResult,
-  } = await runCachedFunctionWithContext<T, SerializedCacheResult<Awaited<ReturnType<T>>> | null>(
-    fn,
-    args,
-    variant,
-    (value) => serializeCacheResult(value, rsc),
-  );
-  recordRequestScopedCacheLife(effectiveLife);
+  const { result, collectedResult } = await runCachedFunctionWithContext<
+    T,
+    SerializedCacheResult<Awaited<ReturnType<T>>> | null
+  >(fn, args, variant, (value) => serializeCacheResult(value, rsc));
   return {
     result: collectedResult ? collectedResult.result : result,
     cacheable: collectedResult?.cacheEntry !== null,
@@ -1244,7 +1241,7 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * Callers and propagation paths:
  * - Shared cache MISS (`registerCachedFunction`, production): allocates the
  *   eager error only when the inner is nested inside a public parent, and
- *   propagates lifeConfigs/dynamicNestedCacheError up to the parent.
+ *   propagates its cache life/dynamicNestedCacheError up to the parent.
  * - Private variant (`"use cache: private"`): always reaches here via
  *   `executeWithContext`. The variant is excluded from being a *parent* that
  *   throws (see the `parentCtx.variant !== "private"` guard below). Entry into
@@ -1253,11 +1250,10 @@ async function executeWithContext<T extends (...args: any[]) => Promise<any>>(
  * - Dev mode (`registerCachedFunction`, NODE_ENV=development): skips the
  *   shared cache and always reaches here via `executeWithContext`.
  *
- * In all three paths, `recordRequestScopedCacheLife(effectiveLife)` is called
- * by `executeWithContext`/`registerCachedFunction` after this helper returns.
- * The request-scoped store uses minimum-wins accumulation, so the order of
- * inner-vs-outer recording does not affect correctness — the final request
- * stale/revalidate/expire is the min across all caches encountered.
+ * In all three paths, this helper propagates the resolved life to the
+ * enclosing cache scope, or to the request when there is none. The
+ * request-scoped store uses minimum-wins accumulation, so the order of
+ * sibling caches does not affect correctness.
  */
 type CachedFunctionResult<T, TCollected> = {
   result: T;
@@ -1311,6 +1307,7 @@ async function runCachedFunctionWithContext<
   const ctx: CacheContext = {
     tags: [],
     lifeConfigs: [],
+    nestedLifeConfigs: [],
     variant: variant || "default",
     readRootParamNames: new Set(),
     hasExplicitRevalidate: false,
@@ -1321,63 +1318,61 @@ async function runCachedFunctionWithContext<
 
   let collectedResult: TCollected | undefined;
   const workUnitType: "cache" | "private-cache" = variant === "private" ? "private-cache" : "cache";
-  const result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
-    cacheContextStorage.run(ctx, async () => {
-      if (!collectResult) return await fn(...args);
-      // Like Next.js's `createLazyResult`, the function only runs once the
-      // collector awaits it. Serialization awaits it inside its Flight render,
-      // so the function body and the components it returns share that
-      // render's React.cache scope.
-      let value: Promise<Awaited<ReturnType<T>>> | undefined;
-      const lazyValue: PromiseLike<Awaited<ReturnType<T>>> = {
-        // oxlint-disable-next-line unicorn/no-thenable
-        then: (onFulfilled, onRejected) =>
-          (value ??= new Promise((resolve) => resolve(fn(...args)))).then(onFulfilled, onRejected),
-      };
-      collectedResult = await collectResult(lazyValue, ctx);
-      return await lazyValue;
-    }),
-  );
+  let result: Awaited<ReturnType<T>>;
+  let effectiveLife: CacheLifeConfig;
+  try {
+    result = await workUnitAsyncStorage.run({ type: workUnitType }, () =>
+      cacheContextStorage.run(ctx, async () => {
+        if (!collectResult) return await fn(...args);
+        // Like Next.js's `createLazyResult`, the function only runs once the
+        // collector awaits it. Serialization awaits it inside its Flight render,
+        // so the function body and the components it returns share that
+        // render's React.cache scope.
+        let value: Promise<Awaited<ReturnType<T>>> | undefined;
+        const lazyValue: PromiseLike<Awaited<ReturnType<T>>> = {
+          // oxlint-disable-next-line unicorn/no-thenable
+          then: (onFulfilled, onRejected) =>
+            (value ??= new Promise((resolve) => resolve(fn(...args)))).then(
+              onFulfilled,
+              onRejected,
+            ),
+        };
+        collectedResult = await collectResult(lazyValue, ctx);
+        return await lazyValue;
+      }),
+    );
+  } finally {
+    // Sequencing invariant: this must run after `fn(...args)` settles. By
+    // then every nested cache has finished and pushed its own life into
+    // `ctx.nestedLifeConfigs` (it sees `ctx` as its `parentCtx`). Like
+    // Next.js, whose `collectResult` also reads an errored stream, a failed
+    // function still propagates: a cached page that calls `cacheLife()` and
+    // then `notFound()` keeps its lifetime.
+    effectiveLife = resolveCacheLife(ctx);
+    propagateCacheLife(parentCtx, effectiveLife);
+    // Propagate the eager error to the parent if this inner cache resolved
+    // dynamic, alongside the life it explains. `??=` keeps the first dynamic
+    // child as the cause, matching Next.js: see `dynamicNestedCacheError ??=`
+    // in packages/next/src/server/use-cache/use-cache-wrapper.ts.
+    if (
+      parentCtx &&
+      eagerError &&
+      (effectiveLife.revalidate === 0 ||
+        (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
+    ) {
+      parentCtx.dynamicNestedCacheError ??= eagerError;
+    }
+  }
 
   if (ctx.invalidDynamicUsageError) {
     throw ctx.invalidDynamicUsageError;
   }
 
-  // Resolve effective cache life from collected configs.
-  //
-  // Sequencing invariant: this must run after `fn(...args)` returns. By that
-  // point, any nested inner cache's `runCachedFunctionWithContext` has
-  // already completed (its `await` in `fn` resolved), and during its own
-  // post-execution it pushed its `effectiveLife` into THIS context's
-  // `lifeConfigs` (via the `parentCtx.lifeConfigs.push` block below — `ctx`
-  // here is `parentCtx` from the inner's perspective). Don't refactor the
-  // `await` away or move this resolveCacheLife before the inner's post-
-  // execution propagation, or the outer's `lifeConfigs` will be missing the
-  // inner's contribution and minimum-wins will silently produce a stale
-  // result. Tests in tests/shims.test.ts under "use cache runtime" cover
-  // this; the first-child-wins and minimum-wins documenting tests will fail
-  // if this invariant is broken.
-  //
-  // This invariant holds for both sequential inner calls (`await innerA();
-  // await innerB()`) and parallel ones (`await Promise.all([innerA(),
-  // innerB()])`), because `await cacheContextStorage.run(ctx, () =>
-  // fn(...args))` only resolves after `fn`'s returned promise settles —
-  // and that promise itself awaits all nested inner calls.
-  const effectiveLife = resolveCacheLife(ctx.lifeConfigs);
-
-  // Propagate the inner's resolved cache life into the parent's lifeConfigs so
-  // the outer's minimum-wins computation includes the inner's values. This
-  // matches Next.js, which propagates the inner's resolved metadata into the
-  // outer's revalidate store via `propagateCacheLifeAndTagsToRevalidateStore`
-  // (see use-cache-wrapper.ts: minimum-wins on revalidate/expire/stale). It is
-  // also load-bearing for the nested-dynamic error detection below: without
-  // this propagation, the outer's `effectiveLife` would not reflect the
-  // inner's dynamic values, the `revalidate === 0` / `expire < DYNAMIC_EXPIRE`
-  // threshold checks below would evaluate false, and the throw would never
-  // fire. (The `hasExplicit*` guards then independently decide whether to
-  // suppress the throw — see the longer comment below.)
+  // Like the sequencing invariant above, this holds for both sequential inner
+  // calls (`await innerA(); await innerB()`) and parallel ones
+  // (`await Promise.all([innerA(), innerB()])`): `fn`'s returned promise only
+  // settles once every nested call it awaits has propagated.
   if (parentCtx) {
-    parentCtx.lifeConfigs.push(effectiveLife);
     // Bubble this inner cache's tags into the parent cache scope so the
     // outer entry (and ultimately the request) is invalidated when a tag
     // declared by a nested `"use cache"` is revalidated. Matches Next.js's
@@ -1395,38 +1390,15 @@ async function runCachedFunctionWithContext<
     }
   }
 
-  // Propagate the eager error to the parent if this inner cache resolved
-  // dynamic. `??=` keeps the first dynamic child as the cause, matching
-  // Next.js: see `dynamicNestedCacheError ??=` in
-  // packages/next/src/server/use-cache/use-cache-wrapper.ts.
-  if (
-    parentCtx &&
-    eagerError &&
-    (effectiveLife.revalidate === 0 ||
-      (effectiveLife.expire !== undefined && effectiveLife.expire < DYNAMIC_EXPIRE))
-  ) {
-    parentCtx.dynamicNestedCacheError ??= eagerError;
-  }
-
   // If a nested inner cache propagated a dynamic life into this context,
   // and this outer cache lacks an explicit cacheLife for the relevant field,
   // throw the nested-dynamic error now.
   //
-  // This block is tightly coupled with the `lifeConfigs.push(effectiveLife)`
-  // above: it relies on the inner's dynamic values being merged into this
-  // outer's `effectiveLife` via minimum-wins. When the outer has its own
-  // explicit `cacheLife()`, the effective life may still be dynamic
-  // (e.g., `Math.min(60, 0) === 0`), so the threshold checks (`revalidate
-  // === 0` / `expire < DYNAMIC_EXPIRE`) below remain `true`. What actually
-  // suppresses the throw is the `!ctx.hasExplicitRevalidate` /
-  // `!ctx.hasExplicitExpire` guard: those flags are set whenever the
-  // outer calls `cacheLife()` at all (see cache.ts), so the outer's
-  // explicit choice opts it out of the error even though the merged
-  // effective life remains dynamic. The captured `cause` is then silently
-  // discarded, which is the desired behavior — the outer made an explicit
-  // choice that overrides the dynamic child. Do not remove the
-  // `hasExplicit*` guards under the assumption that minimum-wins alone
-  // gates the throw; it does not.
+  // Like Next.js, this checks the entry's resolved `revalidate`/`expire`
+  // together with `hasExplicitRevalidate`/`hasExplicitExpire`, per field. An
+  // explicit field is the entry's value (it wins over nested lives), so a
+  // dynamic value without one can only come from a nested cache, while an
+  // outer that explicitly chose a dynamic value itself is allowed.
   //
   // If both `revalidate === 0` and `expire < DYNAMIC_EXPIRE` are true,
   // only the revalidate error is thrown (the expire branch is unreachable),
@@ -1439,30 +1411,11 @@ async function runCachedFunctionWithContext<
   // use-cache-wrapper.ts cases 'prerender'/'request' at the read site).
   // Production dynamic SSR is not subject to the throw — a runtime request
   // that nests a dynamic cache inside a non-cacheLife() outer will just run
-  // both functions; the outer simply won't be cached (minimum-wins resolves
-  // its effective revalidate to 0). The error messages explicitly say "not
+  // both functions; the outer simply won't be cached (its effective
+  // revalidate resolves to the nested 0). The error messages explicitly say "not
   // allowed during prerendering" — outside prerendering/dev, surfacing the
   // throw would be misleading and would diverge from Next.js.
   //
-  // Semantic note on `effectiveLife.revalidate === 0`: this checks the
-  // *outer's merged* effective life after minimum-wins, not the *inner's
-  // entry metadata* directly (as Next.js does via `rdcResult.entry.revalidate`
-  // at the read site). The behavior is functionally equivalent in all
-  // observable cases because the `hasExplicitRevalidate`/`hasExplicitExpire`
-  // guards cover the scenarios where the merge could mask the inner's
-  // contribution:
-  //   - Outer no cacheLife, inner revalidate:0 → merged effective is 0,
-  //     hasExplicit is false, throw fires. (Same outcome as checking inner.)
-  //   - Outer cacheLife({ revalidate: 60 }), inner revalidate:0 → merged
-  //     effective is 0 (min), hasExplicit is true, throw is suppressed.
-  //     (Same outcome — Next.js also suppresses via hasExplicit.)
-  //   - Outer cacheLife({ revalidate: 0 }), inner revalidate:0 → merged
-  //     effective is 0, hasExplicit is true, throw is suppressed.
-  //     (Same outcome.)
-  // We use `effectiveLife` here rather than tracking the inner entry's
-  // revalidate separately because vinext doesn't model a CacheResultMetadata
-  // type — the inner's contribution lives in `parentCtx.lifeConfigs` and
-  // gets resolved as part of the outer's minimum-wins on the next iteration.
   const shouldThrow =
     typeof process !== "undefined" &&
     (process.env.VINEXT_PRERENDER === "1" || process.env.NODE_ENV === "development");

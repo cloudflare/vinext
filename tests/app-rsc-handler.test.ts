@@ -5585,6 +5585,55 @@ describe("createAppRscHandler", () => {
     },
   );
 
+  // A direct request to a dynamic route takes afterFiles rules before the route
+  // is accepted, so a rule that rewrites the source away refuses it as a source
+  // too. A static route is final before afterFiles, so the rule never applies.
+  it.each([
+    { label: "a dynamic source", isDynamic: true, status: 404 },
+    { label: "a static source", isDynamic: false, status: 200 },
+  ])("applies afterFiles rewrites to $label", async ({ isDynamic, status }) => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic,
+      pattern: "/members/7",
+      routeSegments: ["members", "7"],
+    });
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/members/:id", destination: "/login" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(status);
+    if (status === 200) {
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/members/7" }),
+      );
+    } else {
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    }
+  });
+
   // A direct request rebuilds its rewrite context after middleware, so a
   // `Host` that middleware adds selects host-conditioned beforeFiles rules.
   it("applies source beforeFiles rules to a host that source middleware adds", async () => {

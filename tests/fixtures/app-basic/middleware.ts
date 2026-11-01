@@ -50,6 +50,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       headers: { "content-type": "text/plain" },
     });
   }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/app-router-prod/public-file-encoding.spec.ts
+  if (
+    pathname.startsWith("/members%20only/") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
+  }
 
   if (pathname === "/middleware-image-rewrite") {
     return NextResponse.rewrite(new URL("/_next/image?url=%2Fheart.png&w=640&q=75", request.url));

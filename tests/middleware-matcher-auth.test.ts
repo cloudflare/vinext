@@ -203,6 +203,41 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
   }
 }
 
+async function assertRscDotSegmentAuthGuard(baseUrl: string): Promise<void> {
+  const headers = { "x-rsc-dot-segment-auth": "1" };
+  // `....rsc` strips to the ordinary segment `...`, which the matcher covers.
+  const guardedPaths = [
+    "/xx/admin/dashboard.rsc",
+    "/xx/admin/....rsc",
+    "/billing/invoices/current.rsc",
+  ];
+  // These strip to a trailing `.` / `..` segment. The router would bind it as a
+  // param value while middleware sees the URL-resolved parent, which the
+  // matcher does not cover.
+  const dotSegmentPaths = [
+    "/xx/admin/...rsc",
+    "/xx/admin/..rsc",
+    "/xx/admin/%2E%2E.rsc",
+    "/xx/admin/.%2e.rsc",
+    "/billing/invoices/...rsc",
+  ];
+
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
+  }
+  for (const pathname of dotSegmentPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(404);
+    expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
+    expect(body, pathname).not.toMatch(/protected (localized admin page|invoice route handler)/);
+  }
+}
+
 async function assertStaticAssetExclusionAuthGuard(baseUrl: string): Promise<void> {
   const headers = { "x-static-asset-auth": "1" };
   // `js(?!on)` excludes `.js` but not `.json`, and `.cs` is not `.css`/`.csv`.
@@ -352,6 +387,10 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     }, 30_000);
 
+    it("does not route `.rsc` requests that strip to a dot segment", async () => {
+      await assertRscDotSegmentAuthGuard(baseUrl);
+    }, 30_000);
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     }, 30_000);
@@ -414,6 +453,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
+
+    it("does not route `.rsc` requests that strip to a dot segment", async () => {
+      await assertRscDotSegmentAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
@@ -503,6 +546,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
+
+    it("does not route `.rsc` requests that strip to a dot segment", async () => {
+      await assertRscDotSegmentAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {

@@ -3,9 +3,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createBuilder } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   getPagesClientAssets,
@@ -23,6 +23,10 @@ import {
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/root-layout-not-found-redirect",
+);
+const APP_LAYOUT_ERROR_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-layout-error",
 );
 
 function getStylesheetHrefs(html: string): string[] {
@@ -100,6 +104,24 @@ async function rawHttpRequest(
       });
     });
     request.on("error", reject);
+    request.end();
+  });
+}
+
+// Sends a request and closes the connection as soon as the response headers
+// arrive, as a browser does when a navigation is abandoned mid-render.
+async function abandonAfterResponseHeaders(
+  url: URL,
+  headers: Record<string, string>,
+): Promise<http.IncomingHttpHeaders> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { headers }, (response) => {
+      request.destroy();
+      resolve(response.headers);
+    });
+    request.on("error", (error) => {
+      if (!request.destroyed) reject(error);
+    });
     request.end();
   });
 }
@@ -1503,6 +1525,17 @@ describe("App Router Production server (startProdServer)", () => {
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
 
+        // The error document's bootstrap script too.
+        const errorRes = await fetch(`${tmpBaseUrl}/error-server-test`);
+        expect(errorRes.status).toBe(500);
+        const errorHtml = await errorRes.text();
+        expect(errorHtml).toContain('<html id="__next_error__"');
+        const errorBootstrap = (errorHtml.match(/<script\b[^>]*>/gi) ?? []).find((tag) =>
+          tag.includes('id="_R_"'),
+        );
+        expect(errorBootstrap).toContain('src="https://cdn.example.com/_next/static/');
+        expect(errorBootstrap).toContain(`crossorigin="${expectedCrossOrigin}"`);
+
         const cssRes = await fetch(
           `${tmpBaseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`,
         );
@@ -1693,6 +1726,31 @@ describe("App Router Production server (startProdServer)", () => {
     expect(res.headers.get("content-type")).toContain("text/x-component");
   });
 
+  it("does not cache an RSC render whose client disconnected before it read cookies", async () => {
+    const session = `user-${randomUUID()}`;
+    const abandoned = await abandonAfterResponseHeaders(
+      new URL("/late-cookie-read?_rsc", baseUrl),
+      {
+        RSC: "1",
+        Cookie: `session=${session}`,
+      },
+    );
+    expect(abandoned["content-type"]).toContain("text/x-component");
+
+    // The page reads cookies 300 ms into the render, which keeps running
+    // after the client has gone. Give it time to finish before checking
+    // whether its payload was stored.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const anonymous = await fetch(`${baseUrl}/late-cookie-read.rsc`);
+    expect(anonymous.status).toBe(200);
+    const body = await anonymous.text();
+    expect(anonymous.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(anonymous.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(body).not.toContain(session);
+    expect(body).toContain("guest");
+  });
+
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
     const res = await fetch(`${baseUrl}/about`, {
       headers: { Accept: "text/x-component", RSC: "1" },
@@ -1788,12 +1846,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(healthRes.status).toBe(200);
   });
 
-  it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {
-    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+  // Like Next.js, a trailing-slash Route Handler request is redirected before
+  // middleware runs, so middleware only sees the canonical pathname.
+  it("redirects a trailing-slash route handler request before middleware", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/?a=1`, { redirect: "manual" });
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/header-override-delete?a=1");
+    expect(res.headers.get("x-mw-ran")).toBeNull();
+
+    // Following the redirect reaches middleware's exact-pathname branch.
+    const followed = await fetch(`${baseUrl}/api/header-override-delete/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${baseUrl}/api/header-override-delete`);
+    await expect(followed.json()).resolves.toMatchObject({
+      requestMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("returns 404 for nonexistent routes", async () => {
@@ -1998,6 +2066,136 @@ describe("App Router Production server (startProdServer)", () => {
           return;
         }
         redirectServer.close((error) => (error ? reject(error) : resolve()));
+      });
+      setPagesClientAssets(previousPagesClientAssets);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/global-error/layout-error/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/layout-error/index.test.ts
+  //
+  // A segment's error.tsx sits inside its layout, so a layout's error goes to
+  // the boundary above it: global-error for the root layout. The browser
+  // renders it from the error document's payload, so nothing renders again on
+  // the server, and the error is reported and logged once.
+  it("answers a server component error in the shell with the error document and reports it once", async () => {
+    const fixtureRoot = await createIsolatedFixture(
+      APP_LAYOUT_ERROR_FIXTURE_DIR,
+      "vinext-app-layout-error-",
+    );
+    let server: http.Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
+    const prodGlobalKeys = [
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+      "__VINEXT_onRequestErrorHandler__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+    const previousQuiet = process.env.VINEXT_QUIET;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    type RequestErrorReport = { message: string; digest: string | undefined; path: string };
+    const reports = (): RequestErrorReport[] =>
+      ((
+        globalThis as { __vinextLayoutErrorReports?: RequestErrorReport[] }
+      ).__vinextLayoutErrorReports ??= []);
+    const renderErrorLogs = () =>
+      consoleError.mock.calls.filter(([label]) => label === "[vinext] Server render error:");
+    const reset = () => {
+      reports().length = 0;
+      consoleError.mockClear();
+    };
+
+    try {
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const started = await startProdServer({
+        port: 0,
+        outDir: path.join(fixtureRoot, "dist"),
+        noCompression: true,
+      });
+      server = started.server;
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Production layout error fixture did not bind to a TCP port");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      // Like Next.js, an error that rejects the document's shell answers with
+      // the error document, carrying the payload of the render that failed:
+      // the browser renders its error boundary, and no server component runs
+      // again.
+      const cases = [
+        { header: "x-vinext-throw-root-layout", path: "/", message: "root layout failed" },
+        // A server component the root layout renders, outside its children.
+        { header: "x-vinext-throw-root-header", path: "/nested", message: "root header failed" },
+        {
+          header: "x-vinext-throw-nested-layout",
+          path: "/nested",
+          message: "nested layout failed",
+        },
+        { header: "x-vinext-throw-nested-page", path: "/nested", message: "nested page failed" },
+      ];
+      for (const { header, path: pathname, message } of cases) {
+        reset();
+        const res = await fetch(`${baseUrl}${pathname}`, { headers: { [header]: "1" } });
+        const html = await res.text();
+        expect(reports(), header).toEqual([
+          { message, digest: expect.any(String), path: pathname },
+        ]);
+        expect(renderErrorLogs(), header).toHaveLength(1);
+        expect(res.status, header).toBe(500);
+        expect(res.headers.get("cache-control"), header).toContain("no-store");
+        expect(html, header).toContain('<html id="__next_error__"');
+        expect(html, header).toContain('<meta name="robots" content="noindex"/>');
+        expect(html, header).not.toContain('id="root-layout"');
+        // The payload the browser renders carries the error, by its digest.
+        expect(html, header).toContain(reports()[0]!.digest!);
+      }
+
+      // VINEXT_QUIET leaves the error to onRequestError, which may redact it.
+      process.env.VINEXT_QUIET = "1";
+      reset();
+      const quietRes = await fetch(baseUrl, { headers: { "x-vinext-throw-root-layout": "1" } });
+      expect(quietRes.status).toBe(500);
+      await quietRes.text();
+      expect(reports()).toHaveLength(1);
+      expect(renderErrorLogs()).toHaveLength(0);
+    } finally {
+      if (previousQuiet === undefined) delete process.env.VINEXT_QUIET;
+      else process.env.VINEXT_QUIET = previousQuiet;
+      consoleError.mockRestore();
+      Reflect.deleteProperty(globalThis, "__vinextLayoutErrorReports");
+      await new Promise<void>((resolve, reject) => {
+        if (!server) {
+          resolve();
+          return;
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
       });
       setPagesClientAssets(previousPagesClientAssets);
       for (const [key, previous] of previousGlobals) {
@@ -2468,7 +2666,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(resetRes.status).toBe(200);
 
     const errorRes = await fetch(`${baseUrl}/error-server-test`);
-    expect(errorRes.status).toBe(200);
+    expect(errorRes.status).toBe(500);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -2476,9 +2674,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(stateRes.status).toBe(200);
     const state = await stateRes.json();
 
-    expect(state.errors.length).toBeGreaterThanOrEqual(1);
+    expect(state.errors).toHaveLength(1);
 
-    const err = state.errors[state.errors.length - 1];
+    const err = state.errors[0];
     expect(err.message).toBe("Server component error");
     expect(err.path).toBe("/error-server-test");
     expect(err.method).toBe("GET");

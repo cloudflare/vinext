@@ -1037,7 +1037,7 @@ describe("next/navigation shim", () => {
       expect(win.history.state).toEqual(capturedAppState);
       expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(8);
       expect(discardPendingNavigation).toHaveBeenCalledTimes(5);
-      // Every write through the patched methods, app-owned or not, lets a
+      // Every write made outside a router write, app-owned or not, lets a
       // committing navigation write its URL first.
       expect(flushCommittingNavigationUrl).toHaveBeenCalledTimes(10);
       expect(commitAppOwnedHistoryStateWrite).toHaveBeenNthCalledWith(
@@ -1053,6 +1053,581 @@ describe("next/navigation shim", () => {
         "replace",
         capturedAppState,
       );
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("sends router writes with a URL through history wrappers installed after boot", async () => {
+    // Next.js writes router history through the live window.history methods
+    // and its own patch forwards `__NA` writes, so a wrapper installed after
+    // hydration (GTM, GA4) sees every navigation (#4339).
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L60-L100
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/components/app-router.tsx#L331-L370
+    const externalHistoryStateKey = "__vinext_externalHistoryState";
+    const previousWindow = (globalThis as any).window;
+    const historyTraversalIndexKey = "__vinext_historyIndex";
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: { [historyTraversalIndexKey]: 4 } as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const flushCommittingNavigationUrl = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl,
+      });
+      const { pushHistoryStateWithoutNotify, replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      // Shaped like delayed-scroll-restoration-polyfill: its pushState wrapper
+      // first stamps the current entry through the replaceState it saved. The
+      // test wrappers also make their own writes once, before and after
+      // forwarding, which must not be mistaken for the router's write.
+      const calls: string[] = [];
+      const savedPushState = win.history.pushState.bind(win.history);
+      const savedReplaceState = win.history.replaceState.bind(win.history);
+      let wrapperPushed = false;
+      let wrapperReplaced = false;
+      win.history.pushState = function (data, unused, url) {
+        calls.push(`pushState ${String(url)}`);
+        savedReplaceState({ ...(win.history.state as object), stamp: 1 }, "");
+        if (wrapperPushed) {
+          savedPushState(data, unused, url);
+          return;
+        }
+        wrapperPushed = true;
+        savedPushState({ own: true }, "", "/before");
+        expect(win.history.state).toEqual({
+          [externalHistoryStateKey]: true,
+          [historyTraversalIndexKey]: 4,
+          own: true,
+        });
+        savedPushState(data, unused, url);
+        expect(win.history.state).toEqual({ landed: true });
+        savedPushState(null, "", "/extra");
+      };
+      win.history.replaceState = function (data, unused, url) {
+        calls.push(`replaceState ${String(url)}`);
+        savedReplaceState(data, unused, url);
+        if (wrapperReplaced) return;
+        wrapperReplaced = true;
+        savedReplaceState(null, "", "/extra-replace");
+      };
+
+      // The landing hook runs as the router's write lands: after the
+      // wrapper's write before forwarding it, and committing before the
+      // wrapper's write after it.
+      const landingEvents: string[] = [];
+      const land = vi.fn((data: unknown) => {
+        landingEvents.push(
+          `land after ${claimCurrentHistoryTreeSnapshot.mock.calls.length} claims`,
+        );
+        expect(data).toBeNull();
+        return {
+          data: { landed: true },
+          commit: () => {
+            landingEvents.push(`commit at ${win.location.href}`);
+          },
+        };
+      });
+      // Not app-owned data, so a router write that lost its marker would take
+      // the external path and claim the tree snapshot.
+      pushHistoryStateWithoutNotify(null, "", "/b", land);
+      expect(landingEvents).toEqual(["land after 1 claims", "commit at http://localhost/b"]);
+      expect(win.location.href).toBe("http://localhost/extra");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(2);
+      replaceHistoryStateWithoutNotify(null, "", "/c");
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [externalHistoryStateKey]: true });
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
+      // State-only bookkeeping (scroll position, tree snapshot, metadata) is
+      // kept off the wrapper; Next.js passes the URL on every router write.
+      replaceHistoryStateWithoutNotify({ [historyTraversalIndexKey]: 5, scroll: 1 }, "");
+
+      expect(calls).toEqual(["pushState /b", "replaceState /c"]);
+      expect(win.location.href).toBe("http://localhost/extra-replace");
+      expect(win.history.state).toEqual({ [historyTraversalIndexKey]: 5, scroll: 1 });
+      // The wrapper's own writes must not publish the committing navigation
+      // early or turn the router's writes into external ones.
+      expect(flushCommittingNavigationUrl).not.toHaveBeenCalled();
+      expect(claimCurrentHistoryTreeSnapshot).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  const sameUrl = (url: string | URL | null | undefined) => url;
+  it.each([
+    ["the same data", (data: unknown) => data, sameUrl],
+    ["a copy of the data", (data: unknown) => ({ ...(data as object) }), sameUrl],
+    [
+      "an absolute URL",
+      (data: unknown) => data,
+      (url: string | URL | null | undefined) => new URL(String(url), "http://localhost/a"),
+    ],
+  ])(
+    "lands a router write that a history wrapper retries with %s after the browser rejects it",
+    async (_name, retryData, retryUrl) => {
+      const previousWindow = (globalThis as any).window;
+      let rejectNextPush = true;
+      const win = {
+        location: {
+          pathname: "/a",
+          search: "",
+          hash: "",
+          href: "http://localhost/a",
+          origin: "http://localhost",
+        },
+        history: {
+          state: null as unknown,
+          pushState(data: unknown, _unused: string, url?: string | URL | null) {
+            if (rejectNextPush) {
+              rejectNextPush = false;
+              throw new DOMException("blocked", "SecurityError");
+            }
+            this.state = data;
+            if (url) win.location.href = new URL(url, win.location.href).href;
+          },
+          replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+            this.state = data;
+            if (url) win.location.href = new URL(url, win.location.href).href;
+          },
+        },
+        addEventListener: vi.fn(),
+      };
+      (globalThis as any).window = win;
+
+      try {
+        vi.resetModules();
+        const { registerNavigationRuntimeFunctions } =
+          await import("../packages/vinext/src/client/navigation-runtime.js");
+        const claimCurrentHistoryTreeSnapshot = vi.fn();
+        const commitAppOwnedHistoryStateWrite = vi.fn();
+        registerNavigationRuntimeFunctions({
+          claimCurrentHistoryTreeSnapshot,
+          commitAppOwnedHistoryStateWrite,
+          flushCommittingNavigationUrl: vi.fn(),
+        });
+        const { pushHistoryStateWithoutNotify } =
+          await import("../packages/vinext/src/shims/navigation.js");
+
+        const savedPushState = win.history.pushState.bind(win.history);
+        win.history.pushState = function (data, unused, url) {
+          try {
+            savedPushState(data, unused, url);
+          } catch {
+            savedPushState(retryData(data), unused, retryUrl(url));
+          }
+        };
+
+        const commit = vi.fn();
+        const land = vi.fn(() => ({ data: { landed: true }, commit }));
+        pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+        expect(land).toHaveBeenCalledTimes(2);
+        expect(commit).toHaveBeenCalledTimes(1);
+        expect(win.history.state).toEqual({ landed: true });
+        expect(win.location.href).toBe("http://localhost/b");
+        expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+        expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+      } finally {
+        vi.resetModules();
+        if (previousWindow === undefined) {
+          delete (globalThis as any).window;
+        } else {
+          (globalThis as any).window = previousWindow;
+        }
+      }
+    },
+  );
+
+  it("commits a router write that a wrapper installed before boot lands and then throws from", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          throw new Error("wrapper failed after writing");
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 1, landed: true }, commit }));
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1, landed: true });
+      expect(win.location.href).toBe("http://localhost/b");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("drops a retry of a router write that a wrapper installed before boot landed before throwing", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushedHrefs: string[] = [];
+    let throwAfterNextPush = true;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          pushedHrefs.push(win.location.href);
+          if (throwAfterNextPush) {
+            throwAfterNextPush = false;
+            throw new Error("wrapper failed after writing");
+          }
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot retries.
+          savedPushState(data, unused, url);
+        }
+      };
+
+      const commit = vi.fn();
+      let nextIndex = 1;
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: nextIndex }, commit }));
+      commit.mockImplementation(() => {
+        nextIndex += 1;
+      });
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(pushedHrefs).toEqual(["http://localhost/b"]);
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1 });
+      expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+      expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("lands a rejected router write once when stacked wrappers each retry it", async () => {
+    const previousWindow = (globalThis as any).window;
+    const pushedHrefs: string[] = [];
+    let throwAfterNextPush = true;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null): void {
+          if (throwAfterNextPush) {
+            throwAfterNextPush = false;
+            throw new DOMException("blocked", "SecurityError");
+          }
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+          pushedHrefs.push(win.location.href);
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      const claimCurrentHistoryTreeSnapshot = vi.fn();
+      const commitAppOwnedHistoryStateWrite = vi.fn();
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot,
+        commitAppOwnedHistoryStateWrite,
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      // An inner wrapper retries, then rethrows; an outer wrapper retries too.
+      const innerPushState = (data: unknown, unused: string, url?: string | URL | null) => {
+        try {
+          savedPushState(data, unused, url);
+        } catch (error) {
+          savedPushState(data, unused, url);
+          throw error;
+        }
+      };
+      win.history.pushState = function (data, unused, url) {
+        try {
+          innerPushState(data, unused, url);
+        } catch {
+          innerPushState(data, unused, url);
+        }
+      };
+
+      const commit = vi.fn();
+      let nextIndex = 1;
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: nextIndex }, commit }));
+      commit.mockImplementation(() => {
+        nextIndex += 1;
+      });
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      // Each entry the retry leaves behind has its own committed index.
+      expect(pushedHrefs).toEqual(["http://localhost/b"]);
+      expect(land).toHaveBeenCalledTimes(2);
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(win.history.state).toEqual({ __vinext_historyIndex: 1 });
+      expect(claimCurrentHistoryTreeSnapshot).not.toHaveBeenCalled();
+      expect(commitAppOwnedHistoryStateWrite).not.toHaveBeenCalled();
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("does not commit a router write that a wrapper installed before boot fails before pushing", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(_data: unknown, _unused: string, _url?: string | URL | null): void {
+          // Stamps the outgoing entry, then fails before pushing.
+          this.state = { __vinext_historyIndex: 0, stamped: true };
+          throw new Error("wrapper failed before pushing");
+        },
+        replaceState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { pushHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedPushState = win.history.pushState.bind(win.history);
+      win.history.pushState = function (data, unused, url) {
+        try {
+          savedPushState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 1, landed: true }, commit }));
+      pushHistoryStateWithoutNotify({ __vinext_historyIndex: 1 }, "", "/b", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
+      expect(win.location.href).toBe("http://localhost/a");
+    } finally {
+      vi.resetModules();
+      if (previousWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = previousWindow;
+      }
+    }
+  });
+
+  it("does not commit a same-URL router replace that a wrapper installed before boot fails after stamping the entry", async () => {
+    const previousWindow = (globalThis as any).window;
+    const win = {
+      location: {
+        pathname: "/a",
+        search: "",
+        hash: "",
+        href: "http://localhost/a",
+        origin: "http://localhost",
+      },
+      history: {
+        state: null as unknown,
+        pushState(data: unknown, _unused: string, url?: string | URL | null) {
+          this.state = data;
+          if (url) win.location.href = new URL(url, win.location.href).href;
+        },
+        replaceState(_data: unknown, _unused: string, _url?: string | URL | null): void {
+          // Stamps the current entry, then fails before replacing it.
+          this.state = { __vinext_historyIndex: 0, __vinext_externalHistoryState: true };
+          throw new Error("wrapper failed before replacing");
+        },
+      },
+      addEventListener: vi.fn(),
+    };
+    (globalThis as any).window = win;
+
+    try {
+      vi.resetModules();
+      const { registerNavigationRuntimeFunctions } =
+        await import("../packages/vinext/src/client/navigation-runtime.js");
+      registerNavigationRuntimeFunctions({
+        claimCurrentHistoryTreeSnapshot: vi.fn(),
+        commitAppOwnedHistoryStateWrite: vi.fn(),
+        flushCommittingNavigationUrl: vi.fn(),
+      });
+      const { replaceHistoryStateWithoutNotify } =
+        await import("../packages/vinext/src/shims/navigation.js");
+
+      const savedReplaceState = win.history.replaceState.bind(win.history);
+      win.history.replaceState = function (data, unused, url) {
+        try {
+          savedReplaceState(data, unused, url);
+        } catch {
+          // A wrapper installed after boot swallows the error.
+        }
+      };
+
+      const commit = vi.fn();
+      const land = vi.fn(() => ({ data: { __vinext_historyIndex: 0 }, commit }));
+      replaceHistoryStateWithoutNotify({ __vinext_historyIndex: 0 }, "", "/a", land);
+
+      expect(land).toHaveBeenCalledTimes(1);
+      expect(commit).not.toHaveBeenCalled();
     } finally {
       vi.resetModules();
       if (previousWindow === undefined) {
@@ -5608,6 +6183,7 @@ describe("next/server shim", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -5795,6 +6371,7 @@ describe("next/server shim", () => {
               {
                 tags: [],
                 lifeConfigs: [],
+                nestedLifeConfigs: [],
                 variant: "default",
                 hasExplicitRevalidate: false,
                 hasExplicitExpire: false,
@@ -7659,6 +8236,44 @@ describe('"use cache" runtime', () => {
     }
   });
 
+  it("keeps bypassing the shared cache once a draft request's headers context is cleared", async () => {
+    const { registerCachedFunction } =
+      await import("../packages/vinext/src/shims/cache-runtime.js");
+    const { setCacheHandler, MemoryCacheHandler } =
+      await import("../packages/vinext/src/shims/cache.js");
+    const { setHeadersContext } = await import("../packages/vinext/src/shims/headers.js");
+    const { createRequestContext, runWithRequestContext } =
+      await import("../packages/vinext/src/shims/unified-request-context.js");
+    setCacheHandler(new MemoryCacheHandler());
+
+    let draftContent = true;
+    const cached = registerCachedFunction(
+      async () => (draftContent ? "DRAFT" : "PUBLIC"),
+      "test:draft-bypass-cleared-context",
+    );
+    const headersContext = (draftModeEnabled: boolean) =>
+      createRequestContext({
+        headersContext: { headers: new Headers(), cookies: new Map(), draftModeEnabled },
+      });
+
+    try {
+      // A render, or an after() callback, still running once the response
+      // body has closed and cleared the headers context.
+      await runWithRequestContext(headersContext(true), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("DRAFT");
+      });
+
+      draftContent = false;
+      await runWithRequestContext(headersContext(false), async () => {
+        setHeadersContext(null);
+        expect(await cached()).toBe("PUBLIC");
+      });
+    } finally {
+      setCacheHandler(new MemoryCacheHandler());
+    }
+  });
+
   it("scopes shared cache entries by build ID", async () => {
     const { registerCachedFunction } =
       await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -8360,6 +8975,149 @@ describe('"use cache" runtime', () => {
     if (entry?.value && entry.value.kind === "FETCH") {
       expect(entry.value.revalidate).toBe(1);
     }
+  });
+
+  // Ported from Next.js's `cacheLife()` (cache-life.ts) and `collectResult`
+  // (use-cache-wrapper.ts): a call sets only the fields it defines, and those
+  // win over nested caches; other fields take the minimum of the default
+  // profile and the nested caches.
+  describe("cacheLife resolution parity", () => {
+    async function setup() {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const cache = await import("../packages/vinext/src/shims/cache.js");
+      cache.setCacheHandler(new cache.MemoryCacheHandler());
+      const resolveRequestLife = (fn: () => Promise<unknown>) =>
+        cache._runWithCacheState(async () => {
+          await fn();
+          return cache._peekRequestScopedCacheLife();
+        });
+      return { registerCachedFunction, cacheLife: cache.cacheLife, resolveRequestLife };
+    }
+
+    it("does not fill object fields from the default profile across repeated calls", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife({ stale: 10 });
+        cacheLife({ revalidate: 3600 });
+        return "value";
+      }, "test:life-parity-objects");
+
+      // Filled from `default`, the first call would have pinned revalidate
+      // to 900 under the per-field minimum.
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 10,
+        revalidate: 3600,
+        expire: 4294967294,
+      });
+    });
+
+    it("takes the per-field minimum across profile names and objects", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours"); // { stale: 300, revalidate: 3600, expire: 86400 }
+        cacheLife({ stale: 60, revalidate: 7200 });
+        return "value";
+      }, "test:life-parity-mixed");
+
+      expect(await resolveRequestLife(() => cached())).toEqual({
+        stale: 60,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
+
+    it("lets an explicit field win over nested caches and collects the rest", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return "inner";
+      }, "test:life-parity-nested-inner");
+      const outer = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 600 });
+        return await inner();
+      }, "test:life-parity-nested-outer");
+
+      // Only the outermost entry reaches the request: the inner's 60s
+      // revalidate stays inside the outer entry, where the explicit 600 wins.
+      const expected = { stale: 300, revalidate: 600, expire: 3600 };
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+      // A warm outer hit replays the same stored life.
+      expect(await resolveRequestLife(() => outer())).toEqual(expected);
+    });
+
+    it("a second zero-lifetime cacheLife() keeps a fallback result out of the cache", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      let upstreamUp = false;
+      let calls = 0;
+      const models = registerCachedFunction(async () => {
+        calls++;
+        cacheLife("hours");
+        if (!upstreamUp) {
+          cacheLife({ stale: 0, revalidate: 0, expire: 1 });
+          return "fallback";
+        }
+        return "models";
+      }, "test:life-parity-fallback");
+
+      // The fallback resolves the zero lifetime, so it is neither stored nor
+      // left to give the page a cacheable lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual({
+        stale: 0,
+        revalidate: 0,
+        expire: 1,
+      });
+      upstreamUp = true;
+      const hours = { stale: 300, revalidate: 3600, expire: 86400 };
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+      // The real result is stored with the profile's lifetime.
+      expect(await resolveRequestLife(() => models())).toEqual(hours);
+      expect(calls).toBe(2);
+    });
+
+    it("keeps the outer lifetime when nested caches live longer", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const inner = registerCachedFunction(async () => {
+        cacheLife("max"); // { stale: 300, revalidate: 2592000, expire: 31536000 }
+        return "inner";
+      }, "test:life-parity-longer-inner");
+      const explicitOuter = registerCachedFunction(async () => {
+        cacheLife("minutes"); // { stale: 300, revalidate: 60, expire: 3600 }
+        return await inner();
+      }, "test:life-parity-longer-explicit-outer");
+      const defaultOuter = registerCachedFunction(
+        async () => await inner(),
+        "test:life-parity-longer-default-outer",
+      );
+
+      expect(await resolveRequestLife(() => explicitOuter())).toEqual({
+        stale: 300,
+        revalidate: 60,
+        expire: 3600,
+      });
+      // Without cacheLife(), the default profile still caps what the nested
+      // cache can contribute: only fields shorter than the default lower it.
+      expect(await resolveRequestLife(() => defaultOuter())).toEqual({
+        stale: 300,
+        revalidate: 900,
+        expire: 31536000,
+      });
+    });
+
+    it("propagates the cache life of a function that throws", async () => {
+      const { registerCachedFunction, cacheLife, resolveRequestLife } = await setup();
+      const cached = registerCachedFunction(async () => {
+        cacheLife("hours");
+        throw new Error("boom");
+      }, "test:life-parity-throws");
+
+      expect(await resolveRequestLife(() => cached().catch(() => {}))).toEqual({
+        stale: 300,
+        revalidate: 3600,
+        expire: 86400,
+      });
+    });
   });
 
   it("getCacheContext returns null outside cache function", async () => {
@@ -9638,17 +10396,11 @@ describe('"use cache" runtime', () => {
     });
   });
 
-  it("explicit cacheLife on outer suppresses throw but minimum-wins still applies to effective cache life", async () => {
-    // Documents a potentially surprising behavior: when the outer has an
-    // explicit `cacheLife({ revalidate: 60 })` and the inner is dynamic
-    // (`revalidate: 0`), the throw is suppressed (outer made an explicit
-    // choice), but the outer's effective `revalidate` resolves to 0 via
-    // minimum-wins (because the inner's resolved life is pushed into the
-    // outer's `lifeConfigs`). MemoryCacheHandler treats `revalidate: 0` as
-    // not cached, so the outer function executes on every call. This matches
-    // Next.js's `propagateCacheLifeAndTagsToRevalidateStore` semantics —
-    // the outer's explicit cacheLife() opts it out of the throw, but does
-    // not override the inner's minimum-wins contribution.
+  it("explicit cacheLife on outer wins over a dynamic nested cache's revalidate", async () => {
+    // Like Next.js's `collectResult`: the outer's explicit
+    // `cacheLife({ revalidate: 60 })` is its entry's revalidate, whatever the
+    // nested caches resolve, so the outer entry is stored and its second call
+    // is a hit that never reaches the dynamic inner.
     await withPrerenderFlag(async () => {
       const { registerCachedFunction } =
         await import("../packages/vinext/src/shims/cache-runtime.js");
@@ -9675,12 +10427,84 @@ describe('"use cache" runtime', () => {
       const second = await outerCached();
       expect(first).toBe("outer-inner");
       expect(second).toBe("outer-inner");
-      // The outer function must execute twice — minimum-wins resolved its
-      // effective revalidate to 0, so the result was not cached despite the
-      // explicit `cacheLife({ revalidate: 60 })`.
-      expect(outerCalls).toBe(2);
-      // Inner is also dynamic (revalidate: 0) so it re-executes too.
-      expect(innerCalls).toBe(2);
+      expect(outerCalls).toBe(1);
+      expect(innerCalls).toBe(1);
+    });
+  });
+
+  it("an outer cacheLife without revalidate does not suppress the nested zero-revalidate error", async () => {
+    // Next.js's `hasExplicitRevalidate` is per field: `cacheLife({ expire })`
+    // leaves the entry's revalidate to the nested caches.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "inner";
+      }, "test:per-field-explicit-inner");
+      const outerCached = registerCachedFunction(async () => {
+        cacheLife({ expire: 3600 });
+        return await innerCached();
+      }, "test:per-field-explicit-outer");
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
+  it("a caught error from a dynamic nested cache still raises the nested-cache error", async () => {
+    // Like Next.js, whose `collectResult` propagates an errored entry's
+    // metadata, the outer still sees the inner's zero revalidate.
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const innerCached = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        throw new Error("inner failed");
+      }, "test:caught-dynamic-inner");
+      const outerCached = registerCachedFunction(
+        async () => await innerCached().catch(() => "fallback"),
+        "test:caught-dynamic-outer",
+      );
+
+      await expect(outerCached()).rejects.toThrow(/zero `revalidate`/);
+    });
+  });
+
+  it("a middle cache's explicit cacheLife shields its parent from a dynamic grandchild", async () => {
+    await withPrerenderFlag(async () => {
+      const { registerCachedFunction } =
+        await import("../packages/vinext/src/shims/cache-runtime.js");
+      const { setCacheHandler, MemoryCacheHandler, cacheLife } =
+        await import("../packages/vinext/src/shims/cache.js");
+      setCacheHandler(new MemoryCacheHandler());
+
+      const grandchild = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 0 });
+        return "grandchild";
+      }, "test:three-level-grandchild");
+      const middle = registerCachedFunction(async () => {
+        cacheLife({ revalidate: 60 });
+        return await grandchild();
+      }, "test:three-level-middle");
+      let outerCalls = 0;
+      const outer = registerCachedFunction(async () => {
+        outerCalls++;
+        return await middle();
+      }, "test:three-level-outer");
+
+      // The middle entry resolves revalidate 60, so the outer resolves 60 too:
+      // no error, and the outer entry is stored.
+      expect(await outer()).toBe("grandchild");
+      expect(await outer()).toBe("grandchild");
+      expect(outerCalls).toBe(1);
     });
   });
 
@@ -31697,6 +32521,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -31723,6 +32548,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -31746,6 +32572,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -31775,6 +32602,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -31805,6 +32633,7 @@ describe("cache scope guards for dynamic APIs", () => {
         {
           tags: [],
           lifeConfigs: [],
+          nestedLifeConfigs: [],
           variant: "private",
           hasExplicitRevalidate: false,
           hasExplicitExpire: false,
@@ -31835,6 +32664,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -31856,6 +32686,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -31974,6 +32805,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32054,6 +32886,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32104,6 +32937,7 @@ describe("cache scope guards for dynamic APIs", () => {
       {
         tags: [],
         lifeConfigs: [],
+        nestedLifeConfigs: [],
         variant: "default",
         hasExplicitRevalidate: false,
         hasExplicitExpire: false,
@@ -32174,6 +33008,7 @@ describe("cache scope guards for dynamic APIs", () => {
           {
             tags: [],
             lifeConfigs: [],
+            nestedLifeConfigs: [],
             variant: "default",
             hasExplicitRevalidate: false,
             hasExplicitExpire: false,

@@ -85,10 +85,11 @@ test.describe("Error Boundaries", () => {
     }
   });
 
-  test("server component error renders error.tsx boundary with 200", async ({ page }) => {
+  test("server component error renders error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-server-test`);
-    // Next.js returns 200 when error.tsx catches an error (it's "handled")
-    expect(response?.status()).toBe(200);
+    // Like Next.js, an error that rejects the shell answers 500 with the error
+    // document, and the browser renders the error.tsx its payload carries.
+    expect(response?.status()).toBe(500);
     await expect(page.locator('[data-testid="server-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="server-error-message"]')).toContainText(
       "Server component error",
@@ -97,12 +98,35 @@ test.describe("Error Boundaries", () => {
 
   test("nested server component error renders child error.tsx boundary", async ({ page }) => {
     const response = await page.goto(`${BASE}/error-nested-test/child`);
-    expect(response?.status()).toBe(200);
+    expect(response?.status()).toBe(500);
     // Should render the child's error.tsx, not the parent's
     await expect(page.locator('[data-testid="inner-error-boundary"]')).toBeVisible();
     await expect(page.locator('[data-testid="inner-error-message"]')).toContainText(
       "Nested child error",
     );
+  });
+
+  test("route group error.tsx without a sibling layout catches a descendant server error", async ({
+    page,
+  }) => {
+    // Next.js loader trees attach error conventions to the segment even when
+    // that segment has no layout:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/webpack/loaders/next-app-loader/index.ts
+    const response = await page.goto(`${BASE}/nextjs-compat/route-group-error/child`);
+    expect(response?.status()).toBe(500);
+    await expect(page.locator("#route-group-error-boundary")).toHaveText(
+      "Route group error boundary",
+    );
+    await expect(page.locator('[data-testid="global-error"]')).toHaveCount(0);
+  });
+
+  // Ported from Next.js: test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/error-in-global-error/error-in-global-error.test.ts
+  test("a global-error.tsx that throws renders the built-in fallback", async ({ page }) => {
+    const response = await page.goto(`${BASE}/nextjs-compat/global-error-self-throw`);
+    expect(response?.status()).toBe(500);
+    await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
+    await expect(page.locator('[data-testid="global-error"]')).toHaveCount(0);
   });
 
   test("parent route without error renders normally", async ({ page }) => {

@@ -32,7 +32,7 @@ export const NEXTJS_CACHE_HEADER = "x-nextjs-cache";
 /** Next.js cache-tag metadata carried by prerendered App Router responses. */
 export const NEXT_CACHE_TAGS_HEADER = "x-next-cache-tags";
 
-/** Timing metrics: `handlerStart,compileMs,renderMs`. */
+/** Timing metrics: `handlerStart,compileMs,renderMs` (handlerStart is wall-clock ms). */
 export const VINEXT_TIMING_HEADER = "x-vinext-timing";
 
 /** Matched route returned from an independently hosted response stage. */

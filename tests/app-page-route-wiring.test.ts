@@ -198,6 +198,24 @@ function findSlotById(node: unknown, id: string): ReactElement<Record<string, un
   return match as ReactElement<Record<string, unknown>> | null;
 }
 
+function collectBfcacheSpine(node: unknown): string[] {
+  const spine: string[] = [];
+  findElement(node, (element) => {
+    const typeName = getElementTypeName(element.type);
+    if (typeName === "BfcacheChildrenBoundary") {
+      spine.push(`list ${String(element.props.stateKey ?? element.props.id)}`);
+    } else if (typeName === "Slot") {
+      spine.push(String(element.props.id));
+    }
+    return false;
+  });
+  return spine;
+}
+
+function segmentKey(path: string[]): string {
+  return JSON.stringify(["segment", JSON.stringify(path)]);
+}
+
 function findSuspenseWithFallback(
   node: unknown,
   fallbackTypeName: string,
@@ -926,6 +944,113 @@ describe("app page route wiring helpers", () => {
     // root layout retains the nested layout and the nested layout the page.
     expect(childrenBoundaryId("layout:/")).toBe("layout:/blog");
     expect(childrenBoundaryId("layout:/blog")).toBe("page:/blog");
+  });
+
+  it("keeps a retention list at each segment level without a layout under cacheComponents", () => {
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    try {
+      const elements = buildAppPageElements({
+        element: createElement(PageProbe),
+        makeThenableParams(params) {
+          return Promise.resolve(params);
+        },
+        matchedParams: { id: "a" },
+        route: {
+          error: null,
+          errors: [null, null],
+          layoutTreePositions: [0, 3],
+          layouts: [{ default: RootLayout }, { default: GroupLayout }],
+          loading: null,
+          notFound: null,
+          notFounds: [null, null],
+          routeSegments: ["(marketing)", "chat", "[id]"],
+          slots: {},
+          templateTreePositions: [2],
+          templates: [{ default: GroupTemplate }],
+        },
+        routePath: "/chat/a",
+        rootNotFoundModule: null,
+      });
+
+      const spine = collectBfcacheSpine(elements["route:/chat/a"]);
+      // Next.js keeps an Activity list at every segment level, implicit layouts
+      // included. Levels above the child element key by the child segment, and
+      // each list sits outside the next level's template.
+      expect(spine).toEqual([
+        "layout:/",
+        `list ${segmentKey(["(marketing)"])}`,
+        `list ${segmentKey(["(marketing)", "chat"])}`,
+        "list layout:/(marketing)/chat/[id]",
+        "template:/(marketing)/chat",
+        "layout:/(marketing)/chat/[id]",
+        "list page:/chat/a",
+        "page:/chat/a",
+      ]);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
+  });
+
+  it("keys a loading shell's segment levels like the full render", () => {
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    try {
+      const build = (renderMode?: typeof APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL) =>
+        buildAppPageElements({
+          element: createElement(PageProbe),
+          makeThenableParams(params) {
+            return Promise.resolve(params);
+          },
+          matchedParams: { id: "a" },
+          route: {
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 2],
+            layouts: [{ default: RootLayout }, { default: GroupLayout }],
+            loading: null,
+            loadings: [{ default: RouteLoadingProbe }],
+            loadingTreePositions: [1],
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["chat", "[id]"],
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: "/chat/a",
+          rootNotFoundModule: null,
+          renderMode,
+        });
+      const shell = build(APP_RSC_RENDER_MODE_PREFETCH_LOADING_SHELL);
+      expect(shell[APP_PREFETCH_LOADING_SHELL_MARKER_KEY]).toBe("LoadingBoundary");
+
+      // The shell stops at chat's loading boundary, above the [id] layout, but
+      // keys chat's level by that layout so the full render lands in the same
+      // entry instead of leaving the shell behind as a hidden one.
+      expect(collectBfcacheSpine(shell["route:/chat/a"])).toEqual([
+        "layout:/",
+        `list ${segmentKey(["chat"])}`,
+        "list layout:/chat/[id]",
+      ]);
+      expect(collectBfcacheSpine(build()["route:/chat/a"])).toEqual([
+        "layout:/",
+        `list ${segmentKey(["chat"])}`,
+        "list layout:/chat/[id]",
+        "layout:/chat/[id]",
+        "list page:/chat/a",
+        "page:/chat/a",
+      ]);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
   });
 
   it("builds a flat elements map with route, layout, template, page, and slot entries", async () => {

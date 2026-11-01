@@ -12,7 +12,11 @@
       // Type-checks `next/navigation` without `next` installed (#4212). vinext
       // must still resolve it per environment, so Server Components keep the
       // react-server variant (see app/missing-use-client-test).
-      "next/navigation": ["./node_modules/vinext/dist/shims/navigation"]
+      "next/navigation": ["./node_modules/vinext/dist/shims/navigation"],
+      // An exact key matches only the bare specifier. Subpaths such as
+      // `fake-tsconfig-exact-lib/runtime` use the package's `exports` (see
+      // app/tsconfig-exact-path).
+      "fake-tsconfig-exact-lib": ["./__test_packages__/fake-tsconfig-exact-lib/src/index.js"]
     }
   },
   "include": ["next-env.d.ts", "app", "*.ts"]

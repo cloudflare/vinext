@@ -456,14 +456,17 @@ const PAGES_CLOUDFLARE_WORKER_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "react/jsx-dev-runtime",
 ]);
 
-// vinext's cache runtime lazily imports plugin-rsc's React serializer. The
-// Worker scan never crawls vinext's own server modules, so without this the
-// optimizer discovers it while the Worker entry is loading and rewrites the
-// deps directory mid-import. Nested through vinext because plugin-rsc is an
-// optional peer that apps need not depend on directly.
+// vinext's cache runtime lazily imports plugin-rsc's React serializer, and the
+// next/image shim imports @unpic/react and ipaddr.js. The Worker scan never
+// crawls vinext's own server modules, so without these the optimizer discovers
+// them while the Worker entry is loading and rewrites the deps directory
+// mid-import. Nested through vinext because apps need not depend on them
+// directly (plugin-rsc is an optional peer).
 const PAGES_CLOUDFLARE_WORKER_OPTIONAL_OPTIMIZE_DEPS_INCLUDE = Object.freeze([
   "use-sync-external-store/with-selector",
   "vinext > @vitejs/plugin-rsc/react/rsc",
+  "vinext > @unpic/react",
+  "vinext > ipaddr.js",
 ]);
 
 // In dev, @vitejs/plugin-rsc can serve "use client" modules nested inside a
@@ -999,7 +1002,10 @@ function resolveTsconfigExtends(configPath: string, specifier: string): string |
 }
 
 type MaterializedTsconfigPathAliases = {
+  // Trailing `/*` patterns, keyed by prefix: match the prefix and paths below it.
   vite: Record<string, string>;
+  // Keys without `*`: TypeScript matches them only against the exact specifier.
+  viteExact: Record<string, string>;
   sass: SassTsconfigPathAlias[];
 };
 
@@ -1026,6 +1032,7 @@ function materializeTsconfigPathAliases(
   projectRoot: string,
 ): MaterializedTsconfigPathAliases {
   const vite: Record<string, string> = {};
+  const viteExact: Record<string, string> = {};
   const sass: SassTsconfigPathAlias[] = [];
 
   for (const [find, rawTargets] of Object.entries(pathsConfig)) {
@@ -1072,10 +1079,10 @@ function materializeTsconfigPathAliases(
     }
 
     const replacement = path.resolve(baseUrl, target);
-    vite[find] = toViteAliasReplacement(replacement, projectRoot);
+    viteExact[find] = toViteAliasReplacement(replacement, projectRoot);
   }
 
-  return { vite, sass };
+  return { vite, viteExact, sass };
 }
 
 function toViteAliasReplacement(absolutePath: string, projectRoot: string): string {
@@ -1133,18 +1140,18 @@ function loadTsconfigPathAliases(
   seen = new Set<string>(),
 ): MaterializedTsconfigPathAliases {
   const normalizedPath = tryRealpathSync(configPath) ?? configPath;
-  if (seen.has(normalizedPath)) return { vite: {}, sass: [] };
+  if (seen.has(normalizedPath)) return { vite: {}, viteExact: {}, sass: [] };
   seen.add(normalizedPath);
 
   let parsed: Record<string, unknown> | null = null;
   try {
     parsed = parseStaticObjectLiteral(fs.readFileSync(normalizedPath, "utf-8"));
   } catch {
-    return { vite: {}, sass: [] };
+    return { vite: {}, viteExact: {}, sass: [] };
   }
-  if (!parsed) return { vite: {}, sass: [] };
+  if (!parsed) return { vite: {}, viteExact: {}, sass: [] };
 
-  let aliases: MaterializedTsconfigPathAliases = { vite: {}, sass: [] };
+  let aliases: MaterializedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
   // `extends` may be a string or (TypeScript 5.0+) an array; iterate parents in
   // order so later entries override earlier ones (matching Next.js).
   for (const extendsSpecifier of normalizeTsconfigExtends(parsed.extends)) {
@@ -1153,6 +1160,7 @@ function loadTsconfigPathAliases(
       const parent = loadTsconfigPathAliases(extendedPath, projectRoot, seen);
       aliases = {
         vite: { ...aliases.vite, ...parent.vite },
+        viteExact: { ...aliases.viteExact, ...parent.viteExact },
         sass: mergeSassTsconfigPathAliases(aliases.sass, parent.sass),
       };
     }
@@ -1170,6 +1178,7 @@ function loadTsconfigPathAliases(
   const own = materializeTsconfigPathAliases(pathsConfig, resolvedBaseUrl, projectRoot);
   return {
     vite: { ...aliases.vite, ...own.vite },
+    viteExact: { ...aliases.viteExact, ...own.viteExact },
     sass: mergeSassTsconfigPathAliases(aliases.sass, own.sass),
   };
 }
@@ -1236,10 +1245,7 @@ function createOptionalOptimizeDepsLogger(logger: Logger, warnings: ReadonlySet<
 
 // Cache materialized tsconfig/jsconfig aliases so Vite's glob and dynamic-import
 // transforms can see them via resolve.alias without re-reading config files per env.
-type ResolvedTsconfigPathAliases = {
-  vite: Record<string, string>;
-  sass: SassTsconfigPathAlias[];
-};
+type ResolvedTsconfigPathAliases = MaterializedTsconfigPathAliases;
 
 const _tsconfigAliasCache = new Map<string, ResolvedTsconfigPathAliases>();
 
@@ -1266,15 +1272,15 @@ function resolveTsconfigAliases(
     return _tsconfigAliasCache.get(cacheKey)!;
   }
 
-  let aliases: ResolvedTsconfigPathAliases = { vite: {}, sass: [] };
+  let aliases: ResolvedTsconfigPathAliases = { vite: {}, viteExact: {}, sass: [] };
   for (const candidate of configPath
     ? [configPath]
     : TSCONFIG_FILES.map((name) => path.join(projectRoot, name))) {
     if (!fs.existsSync(candidate)) continue;
     const materialized = loadTsconfigPathAliases(candidate, projectRoot);
     aliases = {
+      ...materialized,
       vite: sortTsconfigAliasesBySpecificity(materialized.vite),
-      sass: materialized.sass,
     };
     break;
   }
@@ -1283,6 +1289,9 @@ function resolveTsconfigAliases(
   // every environment and give Server Components the client variant.
   aliases.vite = Object.fromEntries(
     Object.entries(aliases.vite).filter(([find]) => !_reactServerShims.has(find)),
+  );
+  aliases.viteExact = Object.fromEntries(
+    Object.entries(aliases.viteExact).filter(([find]) => !_reactServerShims.has(find)),
   );
 
   _tsconfigAliasCache.set(cacheKey, aliases);
@@ -1356,17 +1365,34 @@ function aliasFindMatches(find: string | RegExp, id: string): boolean {
  * Convert the merged alias map into Vite alias entries, attaching the
  * stylesheet-scoping resolver to entries that came from tsconfig `paths`.
  * Array order preserves the map's first-match ordering.
+ *
+ * Exact tsconfig keys come first as anchored RegExps: a string `find` would
+ * also match paths below the key, so `"@acme/pkg": ["./src/index.ts"]` would
+ * rewrite `@acme/pkg/runtime` to `./src/index.ts/runtime`. TypeScript and
+ * Next.js match such keys only against the exact specifier and prefer them over
+ * `*` patterns.
  */
 function buildResolveAliasEntries(
   aliasMap: Record<string, string>,
   tsconfigPathAliases: Record<string, string>,
+  tsconfigExactPathAliases: Record<string, string>,
   explicitAliases: Record<string, string>,
 ): Alias[] {
-  return Object.entries(aliasMap).map(([find, replacement]) =>
-    Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
-      ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
-      : { find, replacement },
-  );
+  const exactEntries: Alias[] = Object.entries(tsconfigExactPathAliases)
+    .filter(([find]) => !Object.hasOwn(explicitAliases, find))
+    .map(([find, replacement]) => ({
+      find: new RegExp(`^${escapeRegExp(find)}$`),
+      replacement,
+      customResolver: tsconfigAliasCustomResolver,
+    }));
+  return [
+    ...exactEntries,
+    ...Object.entries(aliasMap).map(([find, replacement]) =>
+      Object.hasOwn(tsconfigPathAliases, find) && !Object.hasOwn(explicitAliases, find)
+        ? { find, replacement, customResolver: tsconfigAliasCustomResolver }
+        : { find, replacement },
+    ),
+  ];
 }
 
 // Vite 8 logs a deprecation warning when `resolve.alias` contains a
@@ -1917,6 +1943,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
   let resolvedServerExternalPackages: string[] = [];
   let registerNodeOpenTelemetryLoader = false;
   let pagesTsconfigAliases: Record<string, string> = {};
+  let pagesTsconfigExactAliases: Record<string, string> = {};
   let pagesBundledPackages = new Set<string>();
   let isServeCommand = false;
   let buildEmptyOutDir: boolean | undefined;
@@ -2595,6 +2622,38 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      // ── Dev request origin check ─────────────────────────────────────
+      // Vite registers pre plugins' middlewares first, so listing this pre
+      // plugin first validates every request (including /@*, /__vite*,
+      // /node_modules* and source file paths) before Vite or any other vinext
+      // middleware serves content, such as vinext:cloudflare-dev-module-urls,
+      // which runs Vite's module middlewares itself.
+      name: "vinext:dev-origin-check",
+      apply: "serve",
+      enforce: "pre",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          const blockReason = validateDevRequest(
+            {
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+            },
+            nextConfig?.allowedDevOrigins,
+          );
+          if (blockReason) {
+            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+          next();
+        });
+      },
+    },
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -2749,6 +2808,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
       getPagesDir: () => (hasPagesDir ? pagesDir : null),
       getAliases: () => nextConfig?.aliases ?? {},
       getTsconfigAliases: () => pagesTsconfigAliases,
+      getTsconfigExactAliases: () => pagesTsconfigExactAliases,
       getBundledPackages: () => pagesBundledPackages,
       // Workers and Nitro need a self-contained server bundle. Their runtime
       // builds intentionally keep package code inside the graph.
@@ -2822,6 +2882,7 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           (buildLifecycleInvocation !== undefined || claimViteCliBuildInvocation());
         const userResolve = config.resolve as UserResolveConfigWithTsconfigPaths | undefined;
         let tsconfigPathAliases: Record<string, string> = {};
+        let tsconfigExactPathAliases: Record<string, string> = {};
         let sassTsconfigPathAliases: SassTsconfigPathAlias[] = [];
         const swcHelpersAlias = resolveSwcHelpersAlias(root);
 
@@ -2989,7 +3050,9 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
           : undefined;
         const resolvedTsconfigAliases = resolveTsconfigAliases(root, configuredTsconfigPath);
         tsconfigPathAliases = resolvedTsconfigAliases.vite;
+        tsconfigExactPathAliases = resolvedTsconfigAliases.viteExact;
         pagesTsconfigAliases = tsconfigPathAliases;
+        pagesTsconfigExactAliases = tsconfigExactPathAliases;
         sassTsconfigPathAliases = resolvedTsconfigAliases.sass;
         // Vite's native option discovers tsconfig.json and cannot receive Next's
         // typescript.tsconfigPath. Only auto-enable it for the default config;
@@ -3002,7 +3065,10 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // (see suppressAliasCustomResolverDeprecationWarning). Mutating
         // config.customLogger (rather than returning it) keeps mergeConfig
         // from deep-cloning the logger and flattening its hasWarned getter.
-        if (Object.keys(tsconfigPathAliases).length > 0) {
+        if (
+          Object.keys(tsconfigPathAliases).length > 0 ||
+          Object.keys(tsconfigExactPathAliases).length > 0
+        ) {
           config.customLogger = suppressAliasCustomResolverDeprecationWarning(
             config.customLogger ??
               createLogger(config.logLevel, { allowClearScreen: config.clearScreen }),
@@ -3618,6 +3684,17 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
               find,
               replacement,
             }));
+        // Aliases that take precedence over a tsconfig mapping with the same key.
+        const tsconfigOverridingAliases: Record<string, string> = {
+          ...nextConfig.aliases,
+          ...nextShimMap,
+          "vinext/server/pages-client-assets": _pagesClientAssetsPath,
+          // shims/image-props.ts imports this slot for `images.loaderFile`.
+          // Like Next.js (which aliases next/dist/shared/lib/image-loader
+          // to the file), point it at the user's file, resolved against
+          // the project root; otherwise keep vinext's `undefined` default.
+          "vinext/shims/image-loader-file": resolveImageLoaderFile(nextConfig.images, root),
+        };
         if (config.resolve) {
           // Vite retains the inline resolve object for server.restart(). Do not
           // remove aliases from that shared object when arranging this result.
@@ -3891,17 +3968,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
                 {
                   ...(swcHelpersAlias ? { "@swc/helpers/_": swcHelpersAlias } : {}),
                   ...tsconfigPathAliases,
-                  ...nextConfig.aliases,
-                  ...nextShimMap,
-                  "vinext/server/pages-client-assets": _pagesClientAssetsPath,
-                  // shims/image-props.ts imports this slot for `images.loaderFile`.
-                  // Like Next.js (which aliases next/dist/shared/lib/image-loader
-                  // to the file), point it at the user's file, resolved against
-                  // the project root; otherwise keep vinext's `undefined` default.
-                  "vinext/shims/image-loader-file": resolveImageLoaderFile(nextConfig.images, root),
+                  ...tsconfigOverridingAliases,
                 },
                 tsconfigPathAliases,
-                { ...nextConfig.aliases, ...nextShimMap },
+                tsconfigExactPathAliases,
+                tsconfigOverridingAliases,
               ),
             ],
             // Dedupe React packages to prevent dual-instance errors.
@@ -6660,36 +6731,11 @@ export const loadServerActionClient = ${
           return isExistingDevPublicFile(pathname);
         };
 
-        // ── Dev request origin check ─────────────────────────────────────
-        // Registered directly (not in the returned function) so it runs
-        // BEFORE Vite's built-in middleware. This ensures all requests
-        // (including /@*, /__vite*, /node_modules* paths) are validated
-        // before Vite serves any content.
-        server.middlewares.use((req, res, next) => {
-          const blockReason = validateDevRequest(
-            {
-              origin: req.headers.origin as string | undefined,
-              host: req.headers.host,
-              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
-              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
-              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
-            },
-            nextConfig?.allowedDevOrigins,
-          );
-          if (blockReason) {
-            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
-            res.writeHead(403, { "Content-Type": "text/plain" });
-            res.end("Forbidden");
-            return;
-          }
-          next();
-        });
-
         // Like Next.js, redirect any path containing a backslash or a repeated
-        // slash once the origin check has passed (router-server.ts runs
-        // blockCrossSiteDEV before resolveRoutes) and before anything below
-        // parses it: `new URL("//", base)` throws, and `//host/x` parses as a
-        // different origin.
+        // slash once the origin check (vinext:dev-origin-check) has passed
+        // (router-server.ts runs blockCrossSiteDEV before resolveRoutes) and
+        // before anything below parses it: `new URL("//", base)` throws, and
+        // `//host/x` parses as a different origin.
         server.middlewares.use((req, res, next) => {
           if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
         });
@@ -6869,6 +6915,7 @@ export const loadServerActionClient = ${
                 return next();
               }
               const _reqStart = now();
+              const _reqWallStart = Date.now();
               let _compileMs: number | undefined;
               let _renderMs: number | undefined;
 
@@ -6881,17 +6928,18 @@ export const loadServerActionClient = ${
               // True compile time = time the RSC plugin spent loading/transforming
               // modules before our handler code ran, plus any in-handler work before
               // renderToReadableStream. Concretely:
-              //   compileMs = (handlerStart - _reqStart) + inHandlerCompileMs
+              //   compileMs = (handlerStart - _reqWallStart) + inHandlerCompileMs
               //   renderMs  = renderMs from header, or -1 for RSC-only (soft-nav)
               //               responses where rendering is not measured in the handler.
               //               In that case the middleware computes render time as
               //               totalMs - compileMs.
               //
-              // handlerStart is performance.now() recorded at the very top of
-              // _handleRequest in the generated RSC entry. _reqStart is recorded
-              // here in the Node middleware, one stack frame before the RSC plugin
-              // loads the module. The gap between them is exactly the Vite
-              // compile/transform cost.
+              // handlerStart is the wall-clock time at the very top of the RSC
+              // handler. _reqWallStart is recorded here in the Node middleware,
+              // one stack frame before the RSC plugin loads the module. The gap
+              // between them is exactly the Vite compile/transform cost. Both
+              // are Date.now() values because the handler may run in workerd,
+              // whose performance.now() does not share Node's time origin.
               function _parseTiming(raw: unknown) {
                 const [handlerStart, inHandlerCompileMs, renderMs] = String(raw)
                   .split(",")
@@ -6902,7 +6950,7 @@ export const loadServerActionClient = ${
                   inHandlerCompileMs !== -1
                 ) {
                   _compileMs =
-                    Math.max(0, Math.round(handlerStart - _reqStart)) + inHandlerCompileMs;
+                    Math.max(0, Math.round(handlerStart - _reqWallStart)) + inHandlerCompileMs;
                 }
                 if (!Number.isNaN(renderMs) && renderMs !== -1) {
                   _renderMs = renderMs;
@@ -6984,7 +7032,7 @@ export const loadServerActionClient = ${
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
               // ── Cross-origin request protection (defense-in-depth) ──────
-              // The pre-Vite middleware above already blocks cross-origin
+              // The vinext:dev-origin-check middleware already blocks cross-origin
               // requests before Vite serves any content. This second check
               // guards the Pages Router handler specifically, in case the
               // middleware ordering changes or new middleware is added between

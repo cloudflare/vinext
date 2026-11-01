@@ -1777,10 +1777,11 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // that run received the target's cleanPathname. The source pathname arrives in
   // a client header, so authorize it before anything downstream renders from it.
   // Authorization takes the steps a direct request to the source takes, in
-  // order: trailing-slash canonicalization, config redirects, middleware, then
-  // beforeFiles rewrites. Skipped when the source resolves to the route and
-  // params already matched and authorized for this request, which is also the
-  // case where interception does not fire.
+  // order: trailing-slash canonicalization, config redirects, middleware,
+  // beforeFiles rewrites, then afterFiles rewrites for a dynamic source.
+  // Skipped when the source resolves to the route and params already matched
+  // and authorized for this request, which is also the case where
+  // interception does not fire.
   // The context the selected source was resolved from. A source middleware
   // rewrite below can replace both with the rewritten source it authorized.
   // Only RSC requests authorize a source, so every other request, including a
@@ -2049,7 +2050,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         sourceRulesPathname = sourceMiddlewareResult.cleanPathname;
       }
     }
-    if (HAS_CONFIG_REWRITES && options.configRewrites.beforeFiles.length) {
+    if (
+      HAS_CONFIG_REWRITES &&
+      (options.configRewrites.beforeFiles.length || options.configRewrites.afterFiles.length)
+    ) {
       const { matchRewrite } = await import("../config/config-matchers.js");
       // The source request shares the target's cookies and query. Rebuild
       // the rest from the live headers context, which now also carries any
@@ -2059,27 +2063,39 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         resolvedUrl,
         url,
       );
-      let didRewriteSource = false;
-      for (const rewrite of options.configRewrites.beforeFiles) {
-        const destination = matchRewrite(
-          matchPathname(sourceRulesPathname),
-          [rewrite],
-          sourceRewriteContext,
-          currentBasePathState(),
-          matchPathname(sourceRulesPathname),
-          dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
-        );
-        if (!destination) continue;
-        // An external rewrite proxies instead of rendering the source, and a
-        // destination query would render it with different search params.
-        if (isExternalUrl(destination) || destination.includes("?")) {
-          options.clearRequestContext();
-          return notFoundResponse();
+      // Applies one phase's rules to the source as a direct request does:
+      // every beforeFiles rule in turn, afterFiles up to the first destination
+      // that matches a route. Returns whether the source may still intercept.
+      const rewriteSource = (rewrites: NextRewrite[], stopAtRoute: boolean): boolean => {
+        let didRewriteSource = false;
+        for (const rewrite of rewrites) {
+          const destination = matchRewrite(
+            matchPathname(sourceRulesPathname),
+            [rewrite],
+            sourceRewriteContext,
+            currentBasePathState(),
+            matchPathname(sourceRulesPathname),
+            dispatchResponseStage === undefined ? markConditionalRewriteCacheability : undefined,
+          );
+          if (!destination) continue;
+          // An external rewrite proxies instead of rendering the source, and a
+          // destination query would render it with different search params.
+          if (isExternalUrl(destination) || destination.includes("?")) return false;
+          sourceRulesPathname = pathnameForResolvedUrl(destination);
+          didRewriteSource = true;
+          if (stopAtRoute && options.matchRoute(sourceRulesPathname)) break;
         }
-        sourceRulesPathname = pathnameForResolvedUrl(destination);
-        didRewriteSource = true;
-      }
-      if (didRewriteSource && !adoptRewrittenInterceptionSource(sourceRulesPathname)) {
+        return !didRewriteSource || adoptRewrittenInterceptionSource(sourceRulesPathname);
+      };
+      // A direct request that reaches a dynamic route after beforeFiles still
+      // takes the afterFiles rules before that route is accepted, so a rule
+      // that rewrites the source away for this client refuses it here too. A
+      // static route is final before afterFiles.
+      if (
+        !rewriteSource(options.configRewrites.beforeFiles, false) ||
+        (interceptionSourceMatch.route.isDynamic &&
+          !rewriteSource(options.configRewrites.afterFiles, true))
+      ) {
         options.clearRequestContext();
         return notFoundResponse();
       }

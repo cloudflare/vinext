@@ -417,6 +417,21 @@ describe("App Router RSC cache-busting", () => {
     expect(response?.headers.get("Location")).toBe("/photos/42.rsc?_rsc");
   });
 
+  it("keeps the canonical URL of a // pathname on the app origin", async () => {
+    const headers = createRscRequestHeaders();
+    const request = new Request("https://example.com/.//other.invalid/landing.rsc?_rsc=stale", {
+      headers,
+    });
+
+    const response = await resolveInvalidRscCacheBustingRequest({
+      isRscRequest: true,
+      request,
+    });
+
+    expect(response?.status).toBe(307);
+    expect(response?.headers.get("Location")).toBe("/.//other.invalid/landing.rsc?_rsc");
+  });
+
   it("accepts RSC requests without cache-busting params when no variant headers are present", async () => {
     const headers = createRscRequestHeaders();
     const request = new Request("https://example.com/photos/42.rsc?tab=latest", { headers });
