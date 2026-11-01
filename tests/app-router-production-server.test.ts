@@ -1981,9 +1981,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(redirected.headers.get("cache-control")).toBe("public, s-maxage=300");
     expect(await redirected.text()).toContain("action-cache-control-config-policy");
 
-    // So does one from an action forwarded to the page that owns it.
+    // So does one from an action forwarded to a page that owns it.
     const forwarded = await fetchAction(
-      "/action-cache-control/config-policy",
+      "/action-cache-control/no-actions",
       actionId("redirectToConfigPolicy"),
     );
     expect(forwarded.headers.get("x-action-redirect")).toBe("/action-cache-control/config-policy");
