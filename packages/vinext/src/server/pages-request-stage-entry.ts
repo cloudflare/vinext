@@ -28,6 +28,7 @@ import {
   withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
+import { applyMiddlewareResponseHeadersToRequest } from "../utils/middleware-request-headers.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
 import { resolveClientBuildFile } from "./client-build-files.js";
 import { createStaticAssetRequest } from "./worker-utils.js";
@@ -121,6 +122,22 @@ type PagesStageRuntimeDispatch = (
   env: PagesWorkerEnv | undefined,
   ctx: ExecutionContextLike,
 ) => Promise<Response>;
+
+/**
+ * Whether middleware's request-header overrides changed the request. Next.js
+ * also copies ordinary middleware response headers onto the request; like a
+ * client's own headers, those do not opt the render out of the shared stage.
+ */
+function hasRequestHeaderOverrides(
+  originalHeaders: Headers,
+  requestHeaders: Headers,
+  middlewareResponseHeaders: Headers | undefined,
+): boolean {
+  const expectedHeaders = middlewareResponseHeaders
+    ? applyMiddlewareResponseHeadersToRequest(originalHeaders, middlewareResponseHeaders)
+    : originalHeaders;
+  return !haveSameHeaders(expectedHeaders, requestHeaders);
+}
 
 function captureOuterResponsePolicyHeaders(
   stagedHeaders: Headers,
@@ -483,6 +500,8 @@ async function handleRequestImpl(
     // request as a replay source for every render in that retry sequence.
     // Ordinary matched page renders keep the original streaming request.
     let speculativeRenderRequest: Request | null = null;
+    // The middleware response alone, before next.config headers are staged.
+    let middlewareResponseHeaders: Headers | undefined;
 
     const deps: PagesPipelineDeps = {
       assetPrefix: vinextConfig?.assetPrefix,
@@ -509,7 +528,21 @@ async function handleRequestImpl(
       matchPageRoute: typeof matchPageRoute === "function" ? matchPageRoute : null,
       runMiddleware:
         typeof runMiddleware === "function"
-          ? wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)
+          ? async (middlewareInput, middlewareCtx, middlewareOptions) => {
+              const result = await wrapMiddlewareWithBasePath(runMiddleware, basePath, hadBasePath)(
+                middlewareInput,
+                middlewareCtx,
+                middlewareOptions,
+              );
+              middlewareResponseHeaders = undefined;
+              if (result.responseHeaders) {
+                middlewareResponseHeaders = new Headers();
+                for (const [key, value] of result.responseHeaders) {
+                  middlewareResponseHeaders.append(key, value);
+                }
+              }
+              return result;
+            }
           : null,
       renderPage: (req, resolvedUrl, options, stagedHeaders) => {
         if (options?.renderErrorPageOnMiss === false && req.body !== null && !req.bodyUsed) {
@@ -531,7 +564,11 @@ async function handleRequestImpl(
                     : undefined,
                 hasRequestAwareDocument: hasRequestAwareDocument === true,
                 request: req,
-                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                requestHeadersChanged: hasRequestHeaderOverrides(
+                  filteredHeaders,
+                  req.headers,
+                  middlewareResponseHeaders,
+                ),
                 routeDataKind: matchedPage?.route.dataKind,
                 stagedHeaders,
               });
@@ -643,7 +680,11 @@ async function handleRequestImpl(
                     ? authorizeOnDemandRevalidate
                     : undefined,
                 request: req,
-                requestHeadersChanged: !haveSameHeaders(filteredHeaders, req.headers),
+                requestHeadersChanged: hasRequestHeaderOverrides(
+                  filteredHeaders,
+                  req.headers,
+                  middlewareResponseHeaders,
+                ),
                 stagedHeaders,
               });
         const dispatched = trackedDispatchResponseStage(
