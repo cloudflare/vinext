@@ -1487,6 +1487,7 @@ async function renderAppPageLifecycleImpl(
         fallbackToErrorDocumentOnShellError: !(
           options.isPrerender === true && options.isSpeculativePrerender === true
         ),
+        isServerComponentError: rscErrorTracker.isCapturedError,
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,

@@ -83,6 +83,9 @@ describe("Next.js compat: global-error", () => {
     const { res, html } = await fetchHtml(baseUrl, "/error-server-test");
     expectErrorDocument(res, html);
     expect(html).not.toContain("Server Error Caught");
+    // The browser reports the error it throws again itself, so the document
+    // carries no copy of it for the overlay.
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   it("error-nested-test: nested error answers with the error document", async () => {
@@ -113,6 +116,7 @@ describe("Next.js compat: global-error", () => {
     expectErrorDocument(res, html);
     // In development the payload carries the error's message.
     expect(html).toContain("server page error");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   // ── Client component SSR error ─────────────────────────────
@@ -126,6 +130,9 @@ describe("Next.js compat: global-error", () => {
     // and global-error.tsx catches it. Source: index.test.ts#L51-L66
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
     expectErrorDocument(res, html);
+    // Only the HTML render threw it, so the document carries it for the overlay.
+    expect(html).toContain("__VINEXT_INITIAL_DEV_ERRORS__");
+    expect(html).toContain("client page error");
   });
 
   // ── Metadata error with local boundary ─────────────────────
@@ -317,6 +324,9 @@ describe("Next.js compat: global-error (production preview)", () => {
   it("client component SSR throw without local error.tsx answers with the error document", async () => {
     const { res, html } = await fetchHtml(baseUrl, "/nextjs-compat/global-error-ssr");
     expectErrorDocument(res, html);
+    // Production never sends the error for the overlay.
+    expect(html).not.toContain("client page error");
+    expect(html).not.toContain("__VINEXT_INITIAL_DEV_ERRORS__");
   });
 
   it("server component throw with local error.tsx answers with the error document", async () => {

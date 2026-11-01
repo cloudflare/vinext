@@ -13,6 +13,7 @@ export type Source =
 export type ReportedError = {
   id: number;
   source: Source;
+  name: string | undefined;
   message: string;
   stack: string | undefined;
   ignoredStackFrames: boolean[] | undefined;

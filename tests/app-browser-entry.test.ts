@@ -66,6 +66,7 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
+  selectUnreportedInitialDevServerErrors,
 } from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
@@ -9882,6 +9883,7 @@ describe("dev overlay store", () => {
 
       reportToOverlay({
         source: "caught",
+        name: undefined,
         message: "boom",
         stack: undefined,
         ignoredStackFrames: undefined,
@@ -9900,6 +9902,74 @@ describe("dev overlay store", () => {
       unsubscribe();
       dismissOverlay();
     }
+  });
+});
+
+describe("selectUnreportedInitialDevServerErrors", () => {
+  function reported(
+    source: "caught" | "window-error" | "server",
+    name: string | undefined,
+    message: string,
+  ) {
+    return {
+      id: 0,
+      source,
+      name,
+      message,
+      stack: undefined,
+      ignoredStackFrames: undefined,
+      projectRoot: undefined,
+      codeFrame: undefined,
+      componentStack: undefined,
+    };
+  }
+
+  it("skips an error the browser's render threw again, once for each report", () => {
+    const payload = { name: "Error", message: "boom" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload, payload],
+        [reported("caught", "Error", "boom")],
+      ),
+    ).toEqual([payload]);
+    // App Router reports an error its root boundary catches as a window error.
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload],
+        [reported("window-error", "Error", "boom")],
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps an error whose name or source differs from the browser's report", () => {
+    const typeError = { name: "TypeError", message: "load failed" };
+    const serverError = { name: "Error", message: "load failed" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError, serverError],
+        [reported("caught", "Error", "other"), reported("server", "Error", "load failed")],
+      ),
+    ).toEqual([typeError, serverError]);
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError],
+        [reported("caught", "Error", "load failed")],
+      ),
+    ).toEqual([typeError]);
+  });
+
+  it("matches a thrown non-Error value, reported raw or coerced to an Error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ message: "plain string" }, { message: "plain string" }],
+        [
+          reported("caught", undefined, "plain string"),
+          reported("window-error", "Error", "plain string"),
+        ],
+      ),
+    ).toEqual([]);
   });
 });
 
