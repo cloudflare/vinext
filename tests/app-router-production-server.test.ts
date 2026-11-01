@@ -1853,16 +1853,18 @@ describe("App Router Production server (startProdServer)", () => {
     expect(await res.text()).toContain(session);
   });
 
-  it("never caches an error boundary's document", async () => {
+  it("never caches the error document of a page that throws", async () => {
     const session = `user-${randomUUID()}`;
     const res = await fetch(`${baseUrl}/late-cookie-layout/throws`, {
       headers: { Cookie: `session=${session}` },
     });
+    expect(res.status).toBe(500);
     expect(res.headers.get("cache-control")).toBe(
       "private, no-cache, no-store, max-age=0, must-revalidate",
     );
+    // The document carries the failed render's payload, the late layout's included.
     const html = await res.text();
-    expect(html).toContain("late-cookie-layout-error");
+    expect(html).toContain('id="__next_error__"');
     expect(html).toContain(session);
   });
 
