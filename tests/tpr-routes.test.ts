@@ -176,10 +176,13 @@ describe("TPR route resolution", () => {
     try {
       fs.mkdirSync(path.join(assetsDir, "videos"));
       fs.writeFileSync(path.join(assetsDir, "videos/hero.webm"), "");
+      fs.writeFileSync(path.join(assetsDir, "_headers"), "");
       expect(
         filterTrafficPaths(
           [
             { path: "/docs/videos/hero.webm", requests: 3 },
+            { path: "/docs/videos//hero.webm", requests: 3 },
+            { path: "/docs/_headers", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },
             { path: "/docs/%00", requests: 1 },
@@ -189,6 +192,7 @@ describe("TPR route resolution", () => {
           { assetsDir, basePath: "/docs" },
         ).map(({ path }) => path),
       ).toEqual([
+        "/docs/_headers",
         "/docs/videos",
         `/docs/${"a".repeat(300)}`,
         "/docs/%00",

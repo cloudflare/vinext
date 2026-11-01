@@ -193,7 +193,13 @@ async function queryTraffic(
   }));
 }
 
-/** URL pathnames of every file in the built static assets directory. */
+/** Root control files Wrangler never uploads as assets. */
+const UNSERVED_ASSET_CONTROL_FILES = new Set(["/.assetsignore", "/_headers", "/_redirects"]);
+
+/**
+ * URL pathnames of every file in the built static assets directory. Custom
+ * `.assetsignore` patterns are not applied, so an ignored file only skips warming.
+ */
 function readStaticAssetPaths(assetsDir: string): Set<string> {
   if (!fs.existsSync(assetsDir)) return new Set();
   return new Set(
@@ -203,7 +209,8 @@ function readStaticAssetPaths(assetsDir: string): Set<string> {
       .map(
         (entry) =>
           `/${path.relative(assetsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`,
-      ),
+      )
+      .filter((pathname) => !UNSERVED_ASSET_CONTROL_FILES.has(pathname)),
   );
 }
 
@@ -212,7 +219,8 @@ function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath =
   const assetPathname =
     basePath && pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
   try {
-    return assetPaths.has(decodeURIComponent(assetPathname));
+    // Static Assets collapses repeated separators after decoding.
+    return assetPaths.has(decodeURIComponent(assetPathname).replace(/\/+/g, "/"));
   } catch {
     return false;
   }
