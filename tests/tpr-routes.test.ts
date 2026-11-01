@@ -171,17 +171,20 @@ describe("TPR route resolution", () => {
     }
   });
 
-  it("matches basePath requests exactly against public files at the assets root", () => {
+  it("matches basePath requests exactly against public files and basePath build output", () => {
     const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-base-path-"));
     try {
       fs.mkdirSync(path.join(assetsDir, "videos"));
       fs.writeFileSync(path.join(assetsDir, "videos/hero.webm"), "");
       fs.writeFileSync(path.join(assetsDir, "_headers"), "");
+      fs.mkdirSync(path.join(assetsDir, "docs/_next/static"), { recursive: true });
+      fs.writeFileSync(path.join(assetsDir, "docs/_next/static/module.wasm"), "");
       expect(
         filterTrafficPaths(
           [
             { path: "/docs/videos/hero.webm", requests: 3 },
             { path: "/docs/videos//hero.webm", requests: 3 },
+            { path: "/docs/_next/static/module.wasm", requests: 3 },
             { path: "/docs/_headers", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },

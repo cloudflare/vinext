@@ -214,16 +214,25 @@ function readStaticAssetPaths(assetsDir: string): Set<string> {
   );
 }
 
-/** Whether a request path is an exact, case-sensitive match for a built asset file. */
+/**
+ * Whether a request path is an exact, case-sensitive match for a built asset
+ * file, as served with the `htmlHandling: "none"` config `vinext init` generates.
+ */
 function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath = ""): boolean {
-  const assetPathname =
-    basePath && pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
+  let assetPathname: string;
   try {
     // Static Assets collapses repeated separators after decoding.
-    return assetPaths.has(decodeURIComponent(assetPathname).replace(/\/+/g, "/"));
+    assetPathname = decodeURIComponent(pathname).replace(/\/+/g, "/");
   } catch {
     return false;
   }
+  // Build output keeps its basePath directory; public files sit at the root.
+  return (
+    assetPaths.has(assetPathname) ||
+    (Boolean(basePath) &&
+      assetPathname.startsWith(`${basePath}/`) &&
+      assetPaths.has(assetPathname.slice(basePath.length)))
+  );
 }
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
