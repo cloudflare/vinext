@@ -132,7 +132,9 @@ jobs:
     # Skip entirely for fork and Dependabot PRs — they don't have access to deploy secrets.
     if: github.event_name == 'push' || (github.event.action != 'closed' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.user.login != 'dependabot[bot]')
     name: Deploy ${{ matrix.example.name }}
-    runs-on: ubuntu-latest
+    # Playwright doesn't support Ubuntu 26.04, which ubuntu-latest now runs, so
+    # browser jobs stay on 24.04.
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
       deployments: write
@@ -503,7 +505,9 @@ jobs:
 
   deployed-e2e:
     name: E2E Deployed Example
-    runs-on: ubuntu-latest
+    # Playwright doesn't support Ubuntu 26.04, which ubuntu-latest now runs, so
+    # browser jobs stay on 24.04.
+    runs-on: ubuntu-24.04
     needs: deploy
     if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     permissions:
