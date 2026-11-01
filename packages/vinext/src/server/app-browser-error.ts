@@ -9,18 +9,21 @@ type VinextHydrateRootErrorInfo = {
 
 type HydrateRootErrorHandler = (error: unknown, errorInfo: VinextHydrateRootErrorInfo) => void;
 
-function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
-  if (!isUnknownRecord(errorInfo.errorBoundary)) return false;
+function getErrorBoundaryProps(errorInfo: VinextHydrateRootErrorInfo): Record<string, unknown> {
+  if (!isUnknownRecord(errorInfo.errorBoundary)) return {};
   const props = errorInfo.errorBoundary.props;
-  return isUnknownRecord(props) && props.isImplicitRootErrorBoundary === true;
+  return isUnknownRecord(props) ? props : {};
+}
+
+function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
+  return getErrorBoundaryProps(errorInfo).isImplicitRootErrorBoundary === true;
 }
 
 // The implicit root boundary or a global-error boundary: the boundaries that
 // stand in for Next.js's dev overlay boundary, which holds the whole page.
 function isRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
-  if (isImplicitRootErrorBoundary(errorInfo)) return true;
-  const props = isUnknownRecord(errorInfo.errorBoundary) ? errorInfo.errorBoundary.props : null;
-  return isUnknownRecord(props) && props.isGlobalErrorBoundary === true;
+  const props = getErrorBoundaryProps(errorInfo);
+  return props.isImplicitRootErrorBoundary === true || props.isGlobalErrorBoundary === true;
 }
 
 function logCaughtError(error: unknown, errorInfo: VinextHydrateRootErrorInfo): void {

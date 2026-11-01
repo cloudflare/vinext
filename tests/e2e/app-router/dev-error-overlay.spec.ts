@@ -163,8 +163,8 @@ test.describe("Dev error overlay", () => {
     const indicator = page.getByTestId("vinext-dev-error-indicator");
     await expect(dialog.or(indicator).first()).toBeVisible({ timeout: 10_000 });
     if ((await dialog.count()) === 0) await indicator.click();
-    // Once the document's copy of the error has been replayed, the overlay
-    // shows only the browser's own report.
+    // A root-level boundary caught the browser's error, so the replay drops
+    // the document's copy and the overlay shows only the browser's report.
     await expect
       .poll(() =>
         page.evaluate(
