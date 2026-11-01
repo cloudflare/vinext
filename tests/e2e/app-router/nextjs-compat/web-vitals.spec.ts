@@ -41,7 +41,13 @@ test.describe("Next.js compat: useReportWebVitals", () => {
         timeout: 10_000,
       })
       .toBe(true);
-    await page.goto("about:blank");
+    // web-vitals flushes CLS/LCP when the page becomes hidden. Hide it in
+    // place: Chromium's keepalive requests from an unloading page never reach
+    // page.route, so navigating away would drop those reports.
+    await page.evaluate(() => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+      document.dispatchEvent(new Event("visibilitychange"));
+    });
 
     await expect
       .poll(() => [...new Set(reportedMetricNames)].sort().join(","), { timeout: 10_000 })

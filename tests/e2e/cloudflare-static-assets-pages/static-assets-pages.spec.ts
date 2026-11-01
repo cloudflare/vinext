@@ -261,7 +261,9 @@ test("i18n domains render their own context instead of a locale-only snapshot", 
     ["en.example", "en"],
     ["fr.example", "fr"],
   ]) {
-    const response = await request.get(`${i18nBaseURL}/en`, { headers: { Host: host } });
+    // Request the trailing-slash URL directly: Playwright resets Host to the
+    // redirect target when it follows the `/en` -> `/en/` redirect.
+    const response = await request.get(`${i18nBaseURL}/en/`, { headers: { Host: host } });
     expect(response.status()).toBe(200);
     expect(response.headers()["x-vinext-cache"]).not.toBe("HIT");
     const html = await response.text();
