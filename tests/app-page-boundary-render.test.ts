@@ -340,6 +340,7 @@ describe("app page boundary render helpers", () => {
   it("leaves a dynamic root not-found page out of the prerender", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const renderNotFound = (options: {
+      notFound?: TestModule;
       rootLayouts?: TestModule[];
       usesDynamicApi?: boolean;
       throwsShell?: boolean;
@@ -349,7 +350,7 @@ describe("app page boundary render helpers", () => {
           ...createCommonOptions(),
           matchedParams: {},
           rootLayouts: options.rootLayouts ?? [rootLayoutModule],
-          rootNotFoundModule: notFoundModule,
+          rootNotFoundModule: options.notFound ?? notFoundModule,
           renderToReadableStream(element, renderOptions) {
             if (options.usesDynamicApi) markDynamicUsage();
             if (options.throwsShell) throw new Error("not-found shell failed");
@@ -379,17 +380,18 @@ describe("app page boundary render helpers", () => {
       const failed = await renderNotFound({ throwsShell: true });
       expect(failed?.status).toBe(500);
       expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
-      const throwingMetadataLayout = {
-        ...rootLayoutModule,
+      const throwingMetadataNotFound = {
+        ...notFoundModule,
         generateMetadata: () => {
           throw new Error("metadata failed");
         },
       };
-      const metadataFailed = await renderNotFound({ rootLayouts: [throwingMetadataLayout] });
+      const metadataFailed = await renderNotFound({ notFound: throwingMetadataNotFound });
       expect(metadataFailed?.status).toBe(500);
       expect(metadataFailed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
       const dynamicMetadataFailed = await renderNotFound({
-        rootLayouts: [{ ...throwingMetadataLayout, dynamic: "force-dynamic" }],
+        notFound: throwingMetadataNotFound,
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
       });
       expect(dynamicMetadataFailed?.status).toBe(500);
       expect(dynamicMetadataFailed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
