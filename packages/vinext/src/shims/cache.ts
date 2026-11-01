@@ -620,7 +620,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
-  staleEntry?: CacheHandlerValue,
+  staleEntry: CacheHandlerValue | undefined,
+  deferWrite: boolean,
 ): Promise<Result> {
   // As in Next.js, the callback gets the caller's arguments, which are keyed
   // when the cached function is called but read only after the cache is.
@@ -651,16 +652,25 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
 
   // A failed write skips caching but must not replace a successful result with
   // an error, matching fetch() caching here and Next.js's IncrementalCache.set.
-  try {
-    await getDataCacheHandler().set(cacheKey, cacheValue, {
-      fetchCache: true,
-      tags,
-      revalidate: revalidateSeconds,
-      // The stale entry this write refreshes, so a handler can tell a refresh from a write.
-      ...(staleEntry ? { staleEntry } : {}),
-    });
-  } catch (err) {
+  // The executor runs now, so the write starts before this returns, and a
+  // handler whose set() throws synchronously is caught too.
+  const write = new Promise<void>((resolve) => {
+    resolve(
+      getDataCacheHandler().set(cacheKey, cacheValue, {
+        fetchCache: true,
+        tags,
+        revalidate: revalidateSeconds,
+        // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+        ...(staleEntry ? { staleEntry } : {}),
+      }),
+    );
+  }).catch((err) => {
     console.error("[vinext] unstable_cache write error:", err);
+  });
+  if (deferWrite) {
+    getRequestExecutionContext()?.waitUntil(write);
+  } else {
+    await write;
   }
 
   return result;
@@ -749,6 +759,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
                   tags,
                   revalidateSeconds,
                   staleEntry,
+                  false,
                 ),
               );
               return cached.value;
@@ -767,6 +778,10 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     if (isDraftMode) {
       return await _unstableCacheAls.run(true, () => fn(...args));
     }
+    // Like Next.js, a miss in a render, Server Action or route handler returns
+    // without waiting for the write, which the request keeps alive. A stale
+    // entry refreshed in the foreground, and a call outside one (Pages Router),
+    // still wait for it.
     return await refreshUnstableCacheResult(
       fn,
       args,
@@ -775,6 +790,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tags,
       revalidateSeconds,
       staleEntry,
+      !staleEntry && isInsideWorkStoreScope(),
     );
   };
 

@@ -57,7 +57,9 @@ concurrency:
 jobs:
   build:
     name: Build vinext + Next.js
-    runs-on: ubuntu-latest
+    # Playwright doesn't support Ubuntu 26.04, which ubuntu-latest now runs, so
+    # browser jobs stay on 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout vinext
@@ -294,7 +296,9 @@ jobs:
   test:
     name: Deploy suite (${{ matrix.group }})
     needs: build
-    runs-on: ubuntu-latest
+    # Playwright doesn't support Ubuntu 26.04, which ubuntu-latest now runs, so
+    # browser jobs stay on 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     strategy:
       fail-fast: false
