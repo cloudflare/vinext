@@ -15,6 +15,7 @@
 import type { ComponentType, ReactNode } from "react";
 import { getCdnCacheAdapter } from "vinext/shims/cdn-cache";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
+import { isUnknownRecord } from "../utils/record.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatch } from "../routing/utils.js";
 import { extractLocaleFromUrl, markLocaleRedirect, resolvePagesI18nRequest } from "./pages-i18n.js";
@@ -96,6 +97,7 @@ import {
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { isPrerenderBindingsUnavailableError } from "./prerender-bindings-unavailable.js";
+import { isEdgeApiRuntime } from "./edge-api-runtime.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -441,6 +443,11 @@ function buildI18nRenderContext(
  * The returned function is self-recursive for 404/500 fallback renders and
  * accepts the same options shape the generated entry always passed inline.
  */
+function getPagesPageRuntime(pageModule: { config?: unknown }): string | undefined {
+  const runtime = isUnknownRecord(pageModule.config) ? pageModule.config.runtime : undefined;
+  return typeof runtime === "string" ? runtime : undefined;
+}
+
 export function createPagesPageHandler(
   opts: CreatePagesPageHandlerOptions,
 ): (
@@ -1458,11 +1465,12 @@ export function createPagesPageHandler(
         await reportSsrError(e);
 
         // As in `next build`, a page that throws while prerendering fails the
-        // build. Next.js doesn't prerender a getInitialProps page, and a
-        // binding the prerender can't provide doesn't fail it.
+        // build. Next.js doesn't prerender a getInitialProps or edge runtime
+        // page, and a binding the prerender can't provide doesn't fail it.
         const failsPrerender =
           process.env.VINEXT_PRERENDER === "1" &&
           !isInitialPropsRender &&
+          !isEdgeApiRuntime(getPagesPageRuntime(pageModule)) &&
           !isPrerenderBindingsUnavailableError(e);
         const answerError = (response: Response): Response => {
           if (failsPrerender) response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");

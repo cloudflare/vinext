@@ -2119,7 +2119,7 @@ describe("createPagesPageHandler — prerender render errors", () => {
     expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
   });
 
-  it("doesn't mark a binding the prerender can't provide or a getInitialProps page", async () => {
+  it("doesn't mark a binding error, a getInitialProps page or an edge page", async () => {
     const bindingError = new Error("Cloudflare bindings are unavailable");
     Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
       value: true,
@@ -2146,6 +2146,18 @@ describe("createPagesPageHandler — prerender render errors", () => {
     );
     expect(initialProps.status).toBe(500);
     expect(initialProps.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+
+    // Nor an edge runtime page.
+    const edge = await prerenderResponse(
+      makePageModule({
+        config: { runtime: "experimental-edge" },
+        getStaticProps: async () => {
+          throw new Error("getStaticProps failed");
+        },
+      }),
+    );
+    expect(edge.status).toBe(500);
+    expect(edge.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 });
 
