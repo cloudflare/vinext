@@ -8,6 +8,11 @@ import {
 export function middleware(request: NextRequest) {
   const url = new URL(request.url);
 
+  // Coverage: tests/pages-router.test.ts ("drops a request-line fragment")
+  if (url.pathname === "/mw-request-url") {
+    return Response.json({ url: request.url, hash: request.nextUrl.hash });
+  }
+
   // Client-disconnect coverage: tests/node-request-cancellation.test.ts
   if (url.pathname === "/middleware-request-signal") {
     return handleRequestSignalProbe(request);
