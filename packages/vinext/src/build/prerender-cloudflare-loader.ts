@@ -1,5 +1,5 @@
 import { register } from "node:module";
-import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../server/prerender-render-error.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../server/prerender-bindings-unavailable.js";
 
 let registered = false;
 

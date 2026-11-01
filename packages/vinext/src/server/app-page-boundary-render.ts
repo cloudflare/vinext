@@ -67,6 +67,10 @@ import {
 } from "./app-page-stream.js";
 import { AppElementsWire, type AppElements } from "./app-elements.js";
 import {
+  isPrerenderBuildFailingError,
+  markPrerenderRenderError,
+} from "./prerender-render-error.js";
+import {
   createAppPageLayoutEntries,
   createAppPageRouteBodyMetadata,
   createAppPageSourcePage,
@@ -549,7 +553,19 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     pathname,
     options.routePattern ?? pathname,
   );
-  const rscErrorTracker = createAppPageRscErrorTracker(baseRscOnErrorHandler);
+  // As in `next build`, an error the root not-found page's render reports
+  // fails its prerender (`/_not-found`).
+  const tracksPrerenderRenderErrors = process.env.VINEXT_PRERENDER === "1" && !options.route;
+  let prerenderRenderErrorReported = false;
+  const notePrerenderRenderError = (error: unknown): void => {
+    if (tracksPrerenderRenderErrors && isPrerenderBuildFailingError(error)) {
+      prerenderRenderErrorReported = true;
+    }
+  };
+  const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
+    notePrerenderRenderError(error);
+    return baseRscOnErrorHandler(error, requestInfo, errorContext);
+  });
   const resolveCapturedSpecialError = (error?: unknown) =>
     resolveAppPageSpecialError(error) ??
     resolveAppPageSpecialError(rscErrorTracker.getCapturedSpecialError());
@@ -567,11 +583,15 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
           getStyles: options.getFontStyles,
         });
         const ssrHandler = await options.loadSsrHandler();
-        const onSsrError = options.createRscOnErrorHandler(
+        const baseOnSsrError = options.createRscOnErrorHandler(
           pathname,
           options.routePattern ?? pathname,
           { renderSource: "server-rendering" },
         );
+        const onSsrError: typeof baseOnSsrError = (error, requestInfo, errorContext) => {
+          notePrerenderRenderError(error);
+          return baseOnSsrError(error, requestInfo, errorContext);
+        };
         return renderAppPageHtmlResponse({
           clearRequestContext: options.clearRequestContext,
           fontData,
@@ -611,6 +631,17 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
       return renderSpecialErrorResponse(specialError);
     }
     throw error;
+  }
+
+  if (tracksPrerenderRenderErrors && response.body) {
+    // A prerender reads the whole page first, so it knows every error the
+    // render reports.
+    response = new Response(await response.arrayBuffer(), {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    if (prerenderRenderErrorReported) markPrerenderRenderError(response);
   }
 
   if (!handleSpecialErrors) {

@@ -1,6 +1,7 @@
 import { expect, it, vi } from "vite-plus/test";
 import { register } from "node:module";
 import { registerPrerenderCloudflareLoader } from "../packages/vinext/src/build/prerender-cloudflare-loader.js";
+import { isPrerenderBindingsUnavailableError } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 
 vi.mock("node:module", () => ({ register: vi.fn() }));
 
@@ -20,6 +21,15 @@ it("rejects binding access and presence checks during prerender", async () => {
   expect(() => "MY_KV" in env).toThrow("Cloudflare bindings are unavailable");
   expect(() => Object.keys(env)).toThrow("Cloudflare bindings are unavailable");
   expect(() => Object.hasOwn(env, "MY_KV")).toThrow("Cloudflare bindings are unavailable");
+
+  // The marker that keeps a binding read from failing the build.
+  let thrown: unknown;
+  try {
+    void env.MY_KV;
+  } catch (error) {
+    thrown = error;
+  }
+  expect(isPrerenderBindingsUnavailableError(thrown)).toBe(true);
 });
 
 it("links Worker base classes but rejects their use during Node prerender", async () => {

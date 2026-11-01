@@ -95,6 +95,7 @@ import {
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
+import { isPrerenderBindingsUnavailableError } from "./prerender-bindings-unavailable.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
 import { pagesPathCacheTag } from "./pages-cache-tag.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
@@ -1456,18 +1457,21 @@ export function createPagesPageHandler(
       } catch (e) {
         await reportSsrError(e);
 
-        // Next.js keeps a response `_app` or `_document` already sent for a
-        // getStaticProps page and only reports the error.
-        if (sendsEarly && pageResponseSent()) return sentResponse;
-
         // As in `next build`, a page that throws while prerendering fails the
-        // build.
+        // build. Next.js doesn't prerender a getInitialProps page, and a
+        // binding the prerender can't provide doesn't fail it.
+        const failsPrerender =
+          process.env.VINEXT_PRERENDER === "1" &&
+          !isInitialPropsRender &&
+          !isPrerenderBindingsUnavailableError(e);
         const answerError = (response: Response): Response => {
-          if (process.env.VINEXT_PRERENDER === "1") {
-            response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
-          }
+          if (failsPrerender) response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
           return response;
         };
+
+        // Next.js keeps a response `_app` or `_document` already sent for a
+        // getStaticProps page and only reports the error.
+        if (sendsEarly && pageResponseSent()) return answerError(await sentResponse);
 
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
@@ -1525,13 +1529,14 @@ export function createPagesPageHandler(
     }
     if (!settled.rendered) {
       // The render settles into this same sent response; let it finish
-      // storing the entry without holding the visitor's response.
-      getRequestExecutionContext()?.waitUntil(
-        rendering.then(
-          () => undefined,
-          () => undefined,
-        ),
+      // storing the entry without holding the visitor's response. A prerender
+      // waits for it, so a render error still fails the build.
+      const settling = rendering.then(
+        () => undefined,
+        () => undefined,
       );
+      if (process.env.VINEXT_PRERENDER === "1") await settling;
+      else getRequestExecutionContext()?.waitUntil(settling);
     }
     return closeAfterResponseWithBody(settled.response, uCtx);
   }

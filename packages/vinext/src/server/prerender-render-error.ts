@@ -1,25 +1,9 @@
 import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
-import { isNavigationSignalError } from "../utils/navigation-signal.js";
+import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "./headers.js";
-
-/**
- * Marks the errors that the build-time prerender's stand-in for
- * `cloudflare:workers` throws, as its bindings aren't available there. A route
- * that reads them is left to cache warming rather than failing the build.
- */
-export const PRERENDER_BINDINGS_UNAVAILABLE_KEY = "vinext.prerender.bindingsUnavailable";
-
-function isPrerenderBindingsUnavailableError(error: unknown): boolean {
-  const marker = Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY);
-  // Follow a wrapping error's cause, without looping on a cyclic chain.
-  for (let depth = 0; depth < 10 && error !== null && typeof error === "object"; depth++) {
-    if (Reflect.get(error, marker) === true) return true;
-    error = Reflect.get(error, "cause");
-  }
-  return false;
-}
+import { isPrerenderBindingsUnavailableError } from "./prerender-bindings-unavailable.js";
 
 /**
  * Whether an error that a prerender's render reports fails the build. As in
@@ -35,7 +19,7 @@ function isPrerenderBindingsUnavailableError(error: unknown): boolean {
  */
 export function isPrerenderBuildFailingError(error: unknown): boolean {
   return (
-    !isNavigationSignalError(error) &&
+    !isValidNavigationSignalError(error) &&
     !isBailoutToCSRError(error) &&
     !isDynamicServerError(error) &&
     !isAppRenderAbortError(error) &&

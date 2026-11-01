@@ -10,6 +10,7 @@ import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
+import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "../packages/vinext/src/server/headers.js";
 
 function createStreamFromMarkup(markup: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -261,6 +262,38 @@ describe("app page boundary render helpers", () => {
     expect(response).toBeNull();
     expect(common.loadSsrHandler).not.toHaveBeenCalled();
     expect(common.clearRequestContext).not.toHaveBeenCalled();
+  });
+
+  it("marks a prerender of the root not-found page whose render reports an error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (route: { pattern: string; params: Record<string, string> } | null) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: { slug: "missing" },
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream(element, options) {
+          options?.onError?.(new Error("not-found render failed"), undefined, undefined);
+          return renderElementToStream(element);
+        },
+        route,
+        statusCode: 404,
+      });
+    try {
+      const response = await renderNotFound(null);
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(await response?.text()).toContain("Missing page");
+
+      // A matched route's render decides its own prerender.
+      const routed = await renderNotFound({
+        pattern: "/posts/[slug]",
+        params: { slug: "missing" },
+      });
+      expect(routed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("converts redirects thrown while rendering HTTP access fallbacks into redirect responses", async () => {

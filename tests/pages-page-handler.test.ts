@@ -35,7 +35,11 @@ import {
 } from "../packages/vinext/src/server/isr-cache.js";
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
-import { VINEXT_REVALIDATED_CACHE_TAG_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_REVALIDATED_CACHE_TAG_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 import { pagesPathCacheTag } from "../packages/vinext/src/server/pages-cache-tag.js";
 import { generatePagesETag } from "../packages/vinext/src/server/pages-page-response.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
@@ -1875,6 +1879,24 @@ describe("createPagesPageHandler — getStaticProps page whose response was sent
     }
   });
 
+  it("marks the sent response of a prerender whose page fails afterwards", async () => {
+    serveEntry("miss");
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await makeHandler("_app", {
+        async getStaticProps() {
+          throw new Error("getStaticProps failed");
+        },
+      })(makeRequest(), "/", null, null, null);
+      expect(response.status).toBe(302);
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it.each(["_app", "_document"] as const)(
     "stores a stale regeneration when %s sends the response",
     async (sender) => {
@@ -2061,6 +2083,69 @@ describe("createPagesPageHandler — internal error guard", () => {
     // isDataReq=true → no error-page recursion, direct 500
     const res = await handler(makeRequest("/about"), "/about", null, null, { isDataReq: true });
     expect(res.status).toBe(500);
+  });
+});
+
+describe("createPagesPageHandler — prerender render errors", () => {
+  const prerenderResponse = async (module: Record<string, unknown>) => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/about", module)],
+        matchRoute: (url, r) => {
+          const route = r.find((rt) => rt.pattern === url.split("?")[0]);
+          return route ? { route, params: {} } : null;
+        },
+      }),
+    );
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      return await handler(makeRequest("/about"), "/about", null, null, null);
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
+  };
+
+  it("marks a page that throws while prerendering", async () => {
+    const response = await prerenderResponse(
+      makePageModule({
+        getStaticProps: async () => {
+          throw new Error("getStaticProps failed");
+        },
+      }),
+    );
+    expect(response.status).toBe(500);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+  });
+
+  it("doesn't mark a binding the prerender can't provide or a getInitialProps page", async () => {
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    const binding = await prerenderResponse(
+      makePageModule({
+        getStaticProps: async () => {
+          throw bindingError;
+        },
+      }),
+    );
+    expect(binding.status).toBe(500);
+    expect(binding.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+
+    // Next.js doesn't prerender a getInitialProps page.
+    const initialProps = await prerenderResponse(
+      makePageModule({
+        default: Object.assign(() => null, {
+          async getInitialProps() {
+            throw new Error("getInitialProps failed");
+          },
+        }),
+      }),
+    );
+    expect(initialProps.status).toBe(500);
+    expect(initialProps.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 });
 

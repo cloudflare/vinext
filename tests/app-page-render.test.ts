@@ -55,6 +55,7 @@ import {
   NEXT_ROUTER_STALE_TIME_HEADER,
   VINEXT_DYNAMIC_STALE_TIME_HEADER,
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_RSC_COMPLETION_METADATA_HEADER,
   VINEXT_RSC_REDIRECT_HEADER,
   VINEXT_STALE_TIME_PENDING_HEADER,
@@ -425,6 +426,38 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
+  it("marks a prerender RSC response whose render reports an error late", async () => {
+    const renderRsc = (isPrerender: boolean) =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender,
+        isRscRequest: true,
+        renderToReadableStream(_element, options) {
+          let sent = false;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (sent) {
+                // A Suspense boundary's error, after the response started.
+                options?.onError?.(new Error("late failure"), undefined, undefined);
+                controller.close();
+                return;
+              }
+              controller.enqueue(new TextEncoder().encode("flight-data"));
+              sent = true;
+            },
+          });
+        },
+      });
+
+    const response = await renderRsc(true);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    await expect(response.text()).resolves.toContain("flight-data");
+
+    const runtimeResponse = await renderRsc(false);
+    expect(runtimeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await runtimeResponse.text();
+  });
+
   it("answers an RSC request with the special response of a layout that threw in the render", async () => {
     const common = createCommonOptions();
     const { element, gate } = createGatedElements(["layout:/", "layout:/posts"]);

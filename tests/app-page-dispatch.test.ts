@@ -3,6 +3,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vite-p
 import { AppElementsWire } from "../packages/vinext/src/server/app-elements.js";
 import { dispatchAppPage } from "../packages/vinext/src/server/app-page-dispatch.js";
 import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_DYNAMIC_STALE_TIME_HEADER,
+  VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_RSC_REDIRECT_HEADER,
+} from "../packages/vinext/src/server/headers.js";
+import {
   tagAppPageLayoutError,
   tagAppPageSlotError,
 } from "../packages/vinext/src/server/app-page-execution.js";
@@ -64,12 +71,6 @@ import {
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
-import {
-  VINEXT_DYNAMIC_STALE_TIME_HEADER,
-  VINEXT_INTERCEPTION_ID_HEADER,
-  VINEXT_MOUNTED_LAYOUTS_HEADER,
-  VINEXT_RSC_REDIRECT_HEADER,
-} from "../packages/vinext/src/server/headers.js";
 import { markFrameworkLinkHeaders } from "../packages/vinext/src/server/app-response-header-provenance.js";
 import {
   createWorkerCacheabilityAdmissionContext,
@@ -1243,6 +1244,27 @@ describe("app page dispatch", () => {
     expect(buildPageElement.mock.calls[0]?.[4]).toMatchObject({
       serveStreamingMetadata: false,
     });
+  });
+
+  it("marks the error page of a prerender whose page fails to build", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderErrorPage = (isStaticGenerationEdgeRuntime?: boolean) => {
+      const { options } = createDispatchOptions({
+        buildPageElement: async () => {
+          throw new Error("build failed");
+        },
+        isStaticGenerationEdgeRuntime,
+      });
+      options.renderErrorBoundaryPage = vi.fn(async () => new Response("error", { status: 500 }));
+      return dispatchAppPage(options);
+    };
+
+    const response = await renderErrorPage();
+    expect(response.status).toBe(500);
+    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    // Next.js doesn't prerender an edge runtime page.
+    const edgeResponse = await renderErrorPage(true);
+    expect(edgeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
   it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {

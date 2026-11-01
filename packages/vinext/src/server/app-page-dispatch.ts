@@ -1482,10 +1482,11 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         );
       },
       async renderErrorBoundaryPage(buildError) {
-        // As in `next build`, an error building the page fails its prerender,
-        // unless the page turned dynamic first.
+        // As in `next build`, an error building a page Next.js prerenders fails
+        // its prerender, unless the page turned dynamic first.
         const failsPrerender =
           isPrerender &&
+          isStaticEligible &&
           isPrerenderBuildFailingError(buildError) &&
           !peekDynamicUsage() &&
           !isRenderDynamicLatched();
