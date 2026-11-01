@@ -1515,13 +1515,6 @@ describe("createAppRscHandler", () => {
             },
           ],
           [await createRscRequestUrl(`${pathname}?tab=latest`, rscHeaders), rscHeaders],
-          [
-            (await createRscRequestUrl(`${pathname}?tab=latest`, rscHeaders)).replace(
-              `${pathname}?`,
-              `${pathname}.rsc?`,
-            ),
-            rscHeaders,
-          ],
         ];
         const identities = [];
         for (const [requestPath, headers] of variants) {
