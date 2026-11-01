@@ -72,7 +72,10 @@ import { internalServerErrorResponse, payloadTooLargeResponse } from "./http-err
 import { hasDigest } from "./app-rsc-errors.js";
 import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
-import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
+import {
+  markAppRscResponseConfigHeadersApplied,
+  markStreamedActionRedirectResponse,
+} from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
 import { logRequestError } from "./request-error-log.js";
 
@@ -1870,11 +1873,13 @@ export async function handleServerActionRscRequest<
         ? 200
         : 303;
 
-      return markAppRscResponseConfigHeadersApplied(
-        createServerActionRscResponse(
-          targetResponse.body,
-          { status: redirectResponseStatus, headers: redirectHeaders },
-          options.clearRequestContext,
+      return markStreamedActionRedirectResponse(
+        markAppRscResponseConfigHeadersApplied(
+          createServerActionRscResponse(
+            targetResponse.body,
+            { status: redirectResponseStatus, headers: redirectHeaders },
+            options.clearRequestContext,
+          ),
         ),
       );
     }

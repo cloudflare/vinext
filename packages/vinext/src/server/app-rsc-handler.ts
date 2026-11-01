@@ -24,7 +24,6 @@ import {
   runWithHeadersContext,
 } from "vinext/shims/headers";
 import {
-  ACTION_REDIRECT_HEADER,
   ACTION_REVALIDATED_HEADER,
   FLIGHT_HEADERS,
   NEXT_ACTION_HEADER,
@@ -93,6 +92,7 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
+  isStreamedActionRedirectResponse,
   markAppRscResponseConfigHeadersApplied,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
@@ -961,7 +961,7 @@ function markServerActionResponse(response: Response): Response {
  * target's policy, as in Next.js. Every other action response is never cached.
  */
 function withServerActionCacheControl(response: Response): Response {
-  if (response.headers.has(ACTION_REDIRECT_HEADER) && response.body !== null) return response;
+  if (isStreamedActionRedirectResponse(response)) return response;
   return withNeverCacheControl(response, SERVER_ACTION_CACHE_CONTROL);
 }
 

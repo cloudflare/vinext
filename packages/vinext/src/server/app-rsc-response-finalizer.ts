@@ -68,6 +68,18 @@ export function markAppRscResponseConfigHeadersApplied(response: Response): Resp
   return response;
 }
 
+const streamedActionRedirects = new WeakSet<Response>();
+
+/** Mark a Server Action redirect that streams its target's render, and so keeps its policy. */
+export function markStreamedActionRedirectResponse(response: Response): Response {
+  streamedActionRedirects.add(response);
+  return response;
+}
+
+export function isStreamedActionRedirectResponse(response: Response): boolean {
+  return streamedActionRedirects.has(response);
+}
+
 /** Apply only the matching next.config headers for an App Router request. */
 export async function applyAppRscConfigHeaders(
   headers: Headers,

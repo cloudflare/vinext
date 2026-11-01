@@ -165,6 +165,9 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   ) {
     const response = NextResponse.next();
     response.headers.set("Cache-Control", "public, max-age=60");
+    if (request.nextUrl.searchParams.has("middleware-action-redirect")) {
+      response.headers.set("x-action-redirect", "/action-cache-control/config-policy");
+    }
     return response;
   }
 

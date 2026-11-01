@@ -1940,6 +1940,15 @@ describe("App Router Production server (startProdServer)", () => {
         fetchAction("/action-cache-control?middleware-cache-control", actionId("setTheme")),
         200,
       ],
+      // Nor does middleware's x-action-redirect make it pass as a streamed redirect.
+      [
+        "fetch action under a middleware redirect header",
+        fetchAction(
+          "/action-cache-control?middleware-cache-control&middleware-action-redirect",
+          actionId("setTheme"),
+        ),
+        200,
+      ],
       ["form action", submitForm("/action-cache-control", actionId("setTheme")), 200],
       ["failed form action", submitForm("/action-cache-control", actionId("failAction")), 500],
       [
