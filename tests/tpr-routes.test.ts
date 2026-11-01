@@ -179,12 +179,16 @@ describe("TPR route resolution", () => {
       fs.writeFileSync(path.join(assetsDir, "_headers"), "");
       fs.mkdirSync(path.join(assetsDir, "docs/_next/static"), { recursive: true });
       fs.writeFileSync(path.join(assetsDir, "docs/_next/static/module.wasm"), "");
+      fs.writeFileSync(path.join(assetsDir, "100%real.wasm"), "");
+      fs.symlinkSync(path.join(assetsDir, "videos/hero.webm"), path.join(assetsDir, "linked.webm"));
       expect(
         filterTrafficPaths(
           [
             { path: "/docs/videos/hero.webm", requests: 3 },
             { path: "/docs/videos//hero.webm", requests: 3 },
             { path: "/docs/_next/static/module.wasm", requests: 3 },
+            { path: "/docs/100%real.wasm", requests: 3 },
+            { path: "/docs/linked.webm", requests: 3 },
             { path: "/docs/_headers", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },

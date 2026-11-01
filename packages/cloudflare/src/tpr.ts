@@ -205,11 +205,10 @@ function readStaticAssetPaths(assetsDir: string): Set<string> {
   return new Set(
     fs
       .readdirSync(assetsDir, { recursive: true, withFileTypes: true })
-      .filter((entry) => entry.isFile())
-      .map(
-        (entry) =>
-          `/${path.relative(assetsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`,
-      )
+      .map((entry) => path.join(entry.parentPath, entry.name))
+      // Wrangler stats each entry, so file symlinks are uploaded too.
+      .filter((filePath) => fs.statSync(filePath, { throwIfNoEntry: false })?.isFile())
+      .map((filePath) => `/${path.relative(assetsDir, filePath).split(path.sep).join("/")}`)
       .filter((pathname) => !UNSERVED_ASSET_CONTROL_FILES.has(pathname)),
   );
 }
@@ -219,13 +218,19 @@ function readStaticAssetPaths(assetsDir: string): Set<string> {
  * file, as served with the `htmlHandling: "none"` config `vinext init` generates.
  */
 function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath = ""): boolean {
-  let assetPathname: string;
-  try {
-    // Static Assets collapses repeated separators after decoding.
-    assetPathname = decodeURIComponent(pathname).replace(/\/+/g, "/");
-  } catch {
-    return false;
-  }
+  // Like Static Assets, decode each segment on its own, keep malformed ones
+  // verbatim, then collapse repeated separators.
+  const assetPathname = pathname
+    .split("/")
+    .map((segment) => {
+      try {
+        return decodeURIComponent(segment);
+      } catch {
+        return segment;
+      }
+    })
+    .join("/")
+    .replace(/\/+/g, "/");
   // Build output keeps its basePath directory; public files sit at the root.
   return (
     assetPaths.has(assetPathname) ||
