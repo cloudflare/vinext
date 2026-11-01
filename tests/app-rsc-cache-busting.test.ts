@@ -602,6 +602,13 @@ describe("App Router RSC cache-busting", () => {
       ),
     });
     expect(response?.status).toBe(307);
+
+    // The trailing state fingerprint is hashed only when its header is present.
+    const withFingerprint = new Headers(prefetch);
+    withFingerprint.set(VINEXT_RSC_STATE_FINGERPRINT_HEADER, "0");
+    await expect(computeRscCacheBustingSearchParam(withFingerprint)).resolves.toBe(
+      await sha256CacheBustingHash(`1,0,${prefetch.get("Next-Router-State-Tree")},0,0,0,0,0,\\0`),
+    );
   });
 
   it("does not accept the same values under a layout with fewer positions", async () => {
