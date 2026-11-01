@@ -1,7 +1,4 @@
-import {
-  keepOnlyValidatedRscCacheBustingSearchParam,
-  stripRscSuffix,
-} from "./app-rsc-cache-busting.js";
+import { keepOnlyValidatedRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import { VINEXT_RSC_VARY_HEADER } from "./app-rsc-vary.js";
 import {
   cacheabilityManifestPageState,
@@ -207,15 +204,13 @@ export function createSharedAppPageCacheIdentity(
  * handler that reads the request's URL or headers is dynamic, so admission
  * refuses its response. Keeping them in the identity would only let a client
  * store one entry per query or selector value. The method, path and route
- * props stay; the selector headers, the props derived from them and the
- * `.rsc` suffix, which the handler's request never carries, leave.
+ * props stay; the selector headers and the props derived from them leave.
  */
 export function createSharedAppRouteCacheIdentity(
   request: Request,
   props: AppMatchedWorkerResponseStageProps | AppMetadataWorkerResponseStageProps,
 ): SharedAppCacheIdentity {
   const url = new URL(request.url);
-  url.pathname = stripRscSuffix(url.pathname);
   url.search = "";
   const headers = new Headers(request.headers);
   for (const name of VINEXT_RSC_VARY_HEADER.split(",")) headers.delete(name.trim());
