@@ -92,9 +92,14 @@ export function createOgInlineFetchAssetsPlugin(): Plugin {
       if (!ownership.shouldTrackImport(source)) return null;
 
       const resolved = await this.resolve(source, importer, { ...options, skipSelf: true });
-      if (resolved === null || resolved.external) return null;
-      await ownership.recordResolvedImport(source, resolved.id);
-      return null;
+      if (resolved !== null && !resolved.external) {
+        await ownership.recordResolvedImport(source, resolved.id);
+      }
+      // Reuse the full result instead of running the remaining resolvers again,
+      // except for require() calls: Vite's dev `this.resolve()` drops
+      // `options.kind`, so the nested result can carry a dependency's `import`
+      // export where the outer pass would pick its `require` export.
+      return options.kind === "require-call" ? null : resolved;
     },
 
     transform: {

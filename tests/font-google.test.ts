@@ -16,7 +16,7 @@ import type { Plugin } from "vite-plus";
 // ── Helpers ───────────────────────────────────────────────────
 
 /** Name of the cached stylesheet in each `.vinext/fonts/<family-hash>/` dir. */
-const CACHED_STYLESHEET = "style-q7f3kd.css";
+const CACHED_STYLESHEET = "style-h8r2vn.css";
 
 /** Unwrap a Vite plugin hook that may use the object-with-filter format */
 function unwrapHook(hook: any): Function {
@@ -1516,6 +1516,35 @@ describe("fetchAndCacheFont", () => {
       expect(result.code).toContain(`url(/_next/static/_vinext_fonts/${fontDirName}/inter-`);
       expect(result.code).not.toContain(toSlash(root));
       expect(fs.readFileSync(current, "utf-8")).toContain("__VINEXT_FONT_CACHE_DIR__");
+    });
+
+    it("refetches a stylesheet that named an extensionless WOFF2 URL .ttf", async () => {
+      // `style-q7f3kd.css` predates format-hint extensions, so a `.vinext/`
+      // kept across an upgrade still points this URL at a `.ttf` file.
+      const fontUrl = "https://fonts.gstatic.com/l/font?kit=a%2Bb%25c=d&skey=test&v=v20";
+      const extensionlessCSS = `/* latin */\n@font-face {\n  font-family: 'Inter';\n  src: url(${fontUrl}) format('woff2');\n}`;
+      mockGoogleFontsCSS(extensionlessCSS);
+      mockGoogleFontFiles();
+      await transformWithFreshPlugin();
+      const fontDirName = fs.readdirSync(cacheDir).find((d) => d.startsWith("inter-"))!;
+      const fontDir = path.join(cacheDir, fontDirName);
+      fs.rmSync(path.join(fontDir, CACHED_STYLESHEET));
+      fs.writeFileSync(path.join(fontDir, "inter-old.ttf"), "font");
+      fs.writeFileSync(
+        path.join(fontDir, "style-q7f3kd.css"),
+        extensionlessCSS.replace(fontUrl, `__VINEXT_FONT_CACHE_DIR__/${fontDirName}/inter-old.ttf`),
+      );
+      const fonts = mockGoogleFontsCSS(extensionlessCSS);
+
+      const result = await transformWithFreshPlugin();
+
+      expect(fonts.count()).toBe(1);
+      expect(result.code).not.toContain("inter-old.ttf");
+      expect(result.code).toMatch(
+        new RegExp(
+          `url\\(/_next/static/_vinext_fonts/${fontDirName}/inter-[0-9a-f]{8}\\.woff2\\) format\\('woff2'\\)`,
+        ),
+      );
     });
 
     const failedDownloads = [

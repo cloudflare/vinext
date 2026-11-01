@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 import {
   createRscOnErrorHandler,
   errorDigest,
@@ -26,6 +26,14 @@ function renderErrorContext(routePath: string) {
 }
 
 describe("app RSC error primitives", () => {
+  // Generic render errors are logged in every environment; keep test output quiet.
+  beforeEach(() => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("uses the same stable digest hash shape as Next.js stringHash", () => {
     expect(errorDigest("message-stack")).toBe("701844781");
   });
@@ -222,6 +230,23 @@ describe("app RSC error primitives", () => {
     expect(error).not.toHaveProperty("digest");
   });
 
+  it("rewrites a client hook error in development, and leaves a frozen one as it is", () => {
+    const onError = createRscOnErrorHandler({
+      errorContext: null,
+      nodeEnv: "development",
+      reportRequestError() {},
+      requestInfo: null,
+    });
+    const error = new TypeError("useState is not a function or its return value is not iterable");
+    onError(error);
+    expect(error.message).toMatch(/^useState only works in Client Components/);
+    expect(error.stack?.split("\n")[0]).toBe(error.message);
+
+    const frozen = Object.freeze(new TypeError("useState is not a function"));
+    expect(() => onError(frozen)).not.toThrow();
+    expect(frozen.message).toBe("useState is not a function");
+  });
+
   // Ported from Next.js: packages/next/src/server/app-render/create-error-handler.tsx
   // It reports getProperError(thrownValue) and only hashes a thrown string.
   it.each([
@@ -314,9 +339,10 @@ describe("app RSC error primitives", () => {
     }
   });
 
-  it("does not log generic render errors to the terminal in production", () => {
-    // Production reports through `reportRequestError`; the transport error is
-    // returned to the client and must not be double-surfaced on the terminal.
+  it("logs generic render errors once in production", () => {
+    // Regression for #4305: without an onRequestError hook, a production render
+    // failure (such as a client module failing to evaluate on Workers) left no
+    // trace. Next.js logs render errors in production too.
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const onError = createRscOnErrorHandler({
@@ -329,8 +355,9 @@ describe("app RSC error primitives", () => {
       error.stack = "stack";
 
       onError(error);
+      onError(error);
 
-      expect(consoleError).not.toHaveBeenCalled();
+      expect(consoleError).toHaveBeenCalledExactlyOnceWith("[vinext] Server render error:", error);
     } finally {
       consoleError.mockRestore();
     }
@@ -406,27 +433,37 @@ describe("app RSC error primitives", () => {
     }
   });
 
-  it("does not re-log a digest-bearing error as it bubbles through nested onError passes", () => {
-    // The same error object reaches this handler on both the RSC and SSR/HTML
-    // render passes; the first pass stamps a digest, so a digest-bearing error
-    // must not be logged again (matching Next.js's silenceLog dedup).
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
-    try {
-      const onError = createRscOnErrorHandler({
-        errorContext: null,
-        nodeEnv: "development",
-        reportRequestError() {},
-        requestInfo: null,
-      });
-      const error = Object.assign(new Error("boom"), { digest: "customdigest123" });
+  it.each(["development", "production"])(
+    "logs a %s error with its own digest once as it passes through nested onError passes",
+    (nodeEnv) => {
+      // The same error object can reach separate handlers for the RSC and
+      // SSR/HTML passes. A digest user code set is not a sign the error was
+      // logged (Next.js only silences errors it already logged).
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        const options = {
+          errorContext: null,
+          loggedErrors: new WeakSet<object>(),
+          nodeEnv,
+          reportRequestError() {},
+          requestInfo: null,
+        };
+        const rscOnError = createRscOnErrorHandler(options);
+        const ssrOnError = createRscOnErrorHandler({ ...options, attachDigest: false });
+        const error = Object.assign(new Error("boom"), { digest: "customdigest123" });
 
-      onError(error);
+        expect(rscOnError(error)).toBe("customdigest123");
+        expect(ssrOnError(error)).toBe("customdigest123");
 
-      expect(consoleError).not.toHaveBeenCalled();
-    } finally {
-      consoleError.mockRestore();
-    }
-  });
+        expect(consoleError).toHaveBeenCalledExactlyOnceWith(
+          "[vinext] Server render error:",
+          error,
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    },
+  );
 
   it("does not double-log well-known navigation signals in development", () => {
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});

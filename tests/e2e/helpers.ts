@@ -149,6 +149,38 @@ export function getWithHost(
 }
 
 /**
+ * POST one body chunk, pause the upload for `stallMs`, then finish it.
+ * Resolves with the response, which a server may send before the upload ends.
+ */
+export function postStalledUpload(
+  baseURL: string,
+  path: string,
+  stallMs: number,
+): Promise<{ body: string; status: number }> {
+  const { hostname, port } = new URL(baseURL);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        headers: { "content-type": "application/octet-stream" },
+        host: hostname,
+        method: "POST",
+        path,
+        port,
+      },
+      (res) => {
+        let body = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (body += chunk));
+        res.on("end", () => resolve({ body, status: res.statusCode ?? 0 }));
+      },
+    );
+    req.on("error", reject);
+    req.write("first chunk");
+    setTimeout(() => req.end("last chunk"), stallMs);
+  });
+}
+
+/**
  * Start a listener standing in for the external host a middleware rewrite
  * proxies to. Resolves with its `host:port` and the paths it received.
  */

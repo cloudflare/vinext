@@ -929,6 +929,30 @@ test.describe("Shallow Routing (history.pushState/replaceState)", () => {
     await expect(page.locator('[data-testid="pathname"]')).toHaveText("pathname: /about");
   });
 
+  test("replaceState entry renders its own page after a reload", async ({ page }) => {
+    await page.goto(`${BASE}/shallow-test`);
+    await waitForAppRouterHydration(page);
+
+    // The entry's copied tree lived in the first document's memory. A new
+    // document must render the entry's URL instead of its own current tree.
+    await page.evaluate(() => window.history.replaceState(null, "", "/shallow-test?sort=name"));
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/about");
+    });
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.reload();
+    await waitForAppRouterHydration(page);
+    await expect(page.locator("h1#app-page")).toHaveText("About");
+
+    await page.goBack();
+    await expect(page).toHaveURL(`${BASE}/shallow-test?sort=name`);
+    await expect(page.getByRole("heading", { name: "Shallow Routing Test" })).toBeVisible();
+    await expect(page.locator('[data-testid="search"]')).toHaveText("search: sort=name");
+  });
+
   test("pushState entry keeps its copied tree across router refresh", async ({ page }) => {
     await page.goto(`${BASE}/nextjs-compat/refresh-test`);
     await waitForAppRouterHydration(page);

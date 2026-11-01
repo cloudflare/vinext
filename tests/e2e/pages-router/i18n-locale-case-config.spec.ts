@@ -62,12 +62,87 @@ test.describe("i18n config rules with mixed-case locale prefixes", () => {
     }
   });
 
+  test("redirects() with params after the locale segment fire for every locale", async ({
+    request,
+  }) => {
+    for (const [pathname, location] of [
+      ["/locale-param-gated/settings", "/about"],
+      ["/en/locale-param-gated/settings", "/about"],
+      ["/EN/locale-param-gated/settings", "/about"],
+      ["/sv/locale-param-gated/settings", "/sv/about"],
+      ["/SV/locale-param-gated/a/b", "/SV/about"],
+      ["/nl/locale-param-gated/settings", "/nl/about"],
+      ["/locale-param-gated", "/about"],
+      ["/sv/locale-param-gated", "/sv/about"],
+      ["/SV/locale-param-gated", "/SV/about"],
+      // `locale: false` keeps the user-written `/:locale(en|sv)?` param as is.
+      ["/locale-param-raw/x", "/about"],
+      ["/en/locale-param-raw/x", "/about"],
+      ["/sv/locale-param-raw/x", "/about"],
+      ["/SV/locale-param-raw/x", "/about"],
+      ["/sv/locale-param-raw", "/about"],
+    ]) {
+      const response = await request.get(`${BASE_URL}${pathname}`, { maxRedirects: 0 });
+      expect(response.status(), pathname).toBe(307);
+      expect(response.headers()["location"], pathname).toBe(location);
+      expect(await response.text(), pathname).not.toContain("locale param");
+
+      const authed = await request.get(`${BASE_URL}${pathname}`, {
+        headers: { cookie: "session=1" },
+        maxRedirects: 0,
+      });
+      expect(authed.status(), pathname).toBe(200);
+    }
+
+    // `nl` is outside the user-written alternation.
+    const unmatched = await request.get(`${BASE_URL}/nl/locale-param-raw/x`, { maxRedirects: 0 });
+    expect(unmatched.status()).toBe(200);
+    expect(await unmatched.text()).toContain("locale param raw content");
+  });
+
   test("headers() applies to mixed-case locale prefixes", async ({ request }) => {
     for (const pathname of ["/about", "/en/about", "/EN/about", "/SV/about", "/NL/about"]) {
       const response = await request.get(`${BASE_URL}${pathname}`, { maxRedirects: 0 });
       expect(response.status(), pathname).toBe(200);
       expect(response.headers()["x-locale-case-header"], pathname).toBe("about");
       expect(await response.text(), pathname).toContain("about page");
+    }
+  });
+
+  test("headers() negative lookaheads skip the locale prefix and apply once", async ({
+    request,
+  }) => {
+    // Next.js matches header rules only in their `/:nextInternalLocale(...)`
+    // form against the default-locale-prefixed path, so the lookahead sees
+    // `api/hello` rather than `sv/api/hello`, and `/about` matches once.
+    // `/` becomes `/en`, which `/((?!api).*)` does not match. Expected values
+    // were observed against real Next.js 16.2.7 with the same rule.
+    const lookaheadHeaders = async (pathname: string) => {
+      const response = await request.get(`${BASE_URL}${pathname}?locale-lookahead=1`, {
+        maxRedirects: 0,
+      });
+      const values = (name: string) =>
+        response
+          .headersArray()
+          .filter((header) => header.name.toLowerCase() === name)
+          .map((header) => header.value);
+      return {
+        cookies: values("set-cookie").filter((value) => value.startsWith("locale-lookahead=")),
+        header: response.headers()["x-locale-lookahead-header"],
+        status: response.status(),
+      };
+    };
+
+    for (const pathname of ["/about", "/en/about", "/sv/about", "/SV/about"]) {
+      const { cookies, header, status } = await lookaheadHeaders(pathname);
+      expect(status, pathname).toBe(200);
+      expect(header, pathname).toBe("page");
+      expect(cookies, pathname).toEqual(["locale-lookahead=1"]);
+    }
+    for (const pathname of ["/", "/api/hello", "/en/api/hello", "/sv/api/hello"]) {
+      const { cookies, header } = await lookaheadHeaders(pathname);
+      expect(header, pathname).toBeUndefined();
+      expect(cookies, pathname).toEqual([]);
     }
   });
 

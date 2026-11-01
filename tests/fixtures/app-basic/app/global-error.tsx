@@ -22,6 +22,12 @@ export default function GlobalError({
   if (pathname === "/nextjs-compat/global-error-self-throw") {
     throw new Error("custom global error boundary threw");
   }
+  // Dev overlay fixture: a falsy value thrown here reaches the implicit root
+  // boundary, which must still surface it in the overlay.
+  if (pathname === "/dev-overlay-global-error-throw-undefined") {
+    const thrown: unknown = undefined;
+    throw thrown;
+  }
   return (
     <html>
       <body>

@@ -15,6 +15,11 @@ export function middleware(request: NextRequest) {
     "x-http-stage-visitor",
     request.headers.get("x-test-visitor") ?? "anonymous",
   );
+  if (request.nextUrl.pathname === "/api/auth-challenge") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("x-auth-source", "middleware");
+  }
   // Sliding-session refresh: re-issue the session cookie with a renewed
   // expiry. The route handler's logout/rotation cookie must still win.
   const session = request.cookies.get("session");

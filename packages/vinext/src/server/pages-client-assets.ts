@@ -1,10 +1,18 @@
+import type { ClientReferenceChunks } from "../utils/client-reference-chunks.js";
+
 export type AssetCrossOrigin = "" | "anonymous" | "use-credentials";
 
 export type PagesClientAssets = {
   clientEntry?: string;
   appBootstrapPreinitModules?: string[];
+  appRouteManifestModule?: string;
+  /** What each App Router client reference loads in the browser, by URL. */
+  appClientReferenceChunks?: ClientReferenceChunks;
   ssrManifest?: Record<string, string[]>;
-  /** Build-time shared file list, valid only for this ssrManifest object. */
+  /**
+   * Shared Pages chunk files (framework, vinext runtime, client entry) keyed on
+   * chunk names from this client build, in the SSR-manifest key-space.
+   */
   sharedChunks?: string[];
   cssGraph?: Record<string, { imports?: string[]; css?: string[] }>;
   lazyChunks?: string[];

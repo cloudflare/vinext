@@ -18,13 +18,19 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { runInWorkStoreScope } from "vinext/shims/internal/work-store-scope";
-import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
+import {
+  coalesceOnDemandResponse,
+  isrCacheControl,
+  type ISRCacheEntry,
+  type IsrWritePolicy,
+} from "./isr-cache.js";
 import {
   buildAppRouteCacheValue,
   buildRouteHandlerCachedResponse,
 } from "./app-route-handler-response.js";
 import {
   _consumeRequestScopedCacheLife,
+  _isOnDemandRevalidate,
   type CacheLifeConfig,
 } from "vinext/shims/cache-request-state";
 import {
@@ -347,7 +353,9 @@ async function captureRenderedMetadataRoute(
   const frameworkRevalidate = Math.min(observedCacheLife?.revalidate ?? Infinity, revalidate);
   const cacheLife = { ...observedCacheLife, revalidate: frameworkRevalidate };
   const cacheable =
-    (response.status < 400 || response.status === 404) &&
+    // Like Next.js's ResponseCache, an on-demand revalidation stores whatever
+    // status the route answers with, as route handlers do.
+    (_isOnDemandRevalidate() || response.status < 400 || response.status === 404) &&
     completed &&
     !isRenderDynamicLatched() &&
     !getActiveDraftModeState() &&
@@ -447,24 +455,64 @@ async function runMetadataRouteRegeneration(
   }
 }
 
-async function readMatchedPrerenderedMetadataRouteResponse(
+/** The outer ISR key for a matched metadata route, or null if it's never cached. */
+function getOuterMetadataCacheKey(
   options: MetadataRouteRequestOptions,
   route: MetadataRuntimeRoute,
-  render: () => Promise<RenderedMetadataRoute | null>,
-): Promise<{ cachedEntry: ISRCacheEntry | null; response: Response | null }> {
+): string | null {
   if (
     !isOuterMetadataCacheEnabled() ||
-    !options.isrGet ||
     !options.isrRouteKey ||
     getActiveDraftModeState() ||
     hasDraftModeCookieHeader() ||
     route.module?.dynamic === "force-dynamic" ||
     route.module?.revalidate === 0
   ) {
+    return null;
+  }
+  return options.isrRouteKey(options.cleanPathname);
+}
+
+/**
+ * Renders a matched metadata route that wasn't served from the cache, and
+ * stores it. Concurrent on-demand revalidations of one entry share a single
+ * render, as Next.js batches ResponseCache work by its key and
+ * isOnDemandRevalidate.
+ */
+async function renderMetadataRouteMiss(
+  options: MetadataRouteRequestOptions,
+  route: MetadataRuntimeRoute,
+  render: () => Promise<RenderedMetadataRoute | null>,
+  cachedEntry: ISRCacheEntry | null,
+): Promise<Response | null> {
+  const renderAndStore = async () => {
+    const rendered = await render();
+    if (!rendered) return null;
+    await writeMetadataRouteMiss(options, route, rendered, cachedEntry);
+    return rendered.response;
+  };
+  const routeKey = _isOnDemandRevalidate() ? getOuterMetadataCacheKey(options, route) : null;
+  if (routeKey === null || !options.isrSet) return renderAndStore();
+  // A metadata route answers every method with the same response.
+  return coalesceOnDemandResponse(routeKey, "GET", renderAndStore);
+}
+
+async function readMatchedPrerenderedMetadataRouteResponse(
+  options: MetadataRouteRequestOptions,
+  route: MetadataRuntimeRoute,
+  render: () => Promise<RenderedMetadataRoute | null>,
+): Promise<{ cachedEntry: ISRCacheEntry | null; response: Response | null }> {
+  const routeKey = getOuterMetadataCacheKey(options, route);
+  if (
+    routeKey === null ||
+    !options.isrGet ||
+    // Like Next.js's ResponseCache, an authorized on-demand revalidation never
+    // serves the stored entry: it renders in the foreground and stores that.
+    _isOnDemandRevalidate()
+  ) {
     return { cachedEntry: null, response: null };
   }
 
-  const routeKey = options.isrRouteKey(options.cleanPathname);
   let cached: ISRCacheEntry | null;
   try {
     cached = await options.isrGet(routeKey);
@@ -894,11 +942,13 @@ export async function handleMetadataRouteRequest(
           };
           const cached = await readMatchedPrerenderedMetadataRouteResponse(options, route, render);
           if (cached.response) return cached.response;
-          const rendered = await render();
-          if (rendered) {
-            await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);
-            return rendered.response;
-          }
+          const response = await renderMetadataRouteMiss(
+            options,
+            route,
+            render,
+            cached.cachedEntry,
+          );
+          if (response) return response;
         }
 
         // Next.js serves only generated sitemap children when generateSitemaps()
@@ -952,9 +1002,7 @@ export async function handleMetadataRouteRequest(
       if (dynamicParamsResponse) return dynamicParamsResponse;
     }
 
-    const rendered = await render();
-    await writeMetadataRouteMiss(options, route, rendered, cached.cachedEntry);
-    return rendered.response;
+    return renderMetadataRouteMiss(options, route, render, cached.cachedEntry);
   }
 
   return null;

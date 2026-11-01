@@ -1397,6 +1397,18 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
         vinext({ appDir: root }),
         identityResourcePlugin(),
         await loadCloudflarePlugin(root, false),
+        {
+          name: "test:top-level-worker-chunks",
+          outputOptions(output) {
+            if (this.environment.config.consumer !== "server") return;
+            // Before the Vite+ upgrade, this fixture resolved runtime.js as
+            // /bundle/runtime.js. Rolldown now splits shared modules into
+            // _next/static chunks, producing /bundle/_next/static/runtime.js.
+            // Keep server chunks at the root so the unchanged assertions still
+            // cover top-level module identities for runtime and prerendered routes.
+            return { ...output, chunkFileNames: "[name]-[hash].js" };
+          },
+        },
       ],
       logLevel: "silent",
     });

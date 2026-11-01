@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { test } from "vitest";
+import { test } from "vite-plus/test";
 import { liveFetch } from "./live-fetch";
 
 const base =

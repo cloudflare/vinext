@@ -7,7 +7,7 @@ import { NODE_MODULES_PATH_RE, stripViteModuleQuery } from "../utils/path.js";
 import { parseModuleRecord, quotedStringAt } from "./ast-utils.js";
 import { magicStringTransformResult } from "./transform-result.js";
 
-const WORKER_IMAGE_METADATA_PREFIX = "\0vinext-worker-image-meta:";
+export const WORKER_IMAGE_METADATA_PREFIX = "\0vinext-worker-image-meta:";
 // oxlint-disable-next-line no-control-regex -- null byte prefix is intentional (Vite virtual module convention)
 const WORKER_IMAGE_METADATA_RE = /^\0vinext-worker-image-meta:/;
 const WORKER_SCRIPT_RE = /\.(?:[cm]?[jt]sx?)$/;

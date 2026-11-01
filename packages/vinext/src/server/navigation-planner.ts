@@ -6,10 +6,10 @@ import {
 import { splitPathnameForRouteMatch } from "../routing/utils.js";
 import { stripBasePath } from "../utils/base-path.js";
 import type {
-  RouteManifest,
-  RouteManifestInterception,
-  RouteManifestRoute,
-} from "../routing/app-route-graph.js";
+  BrowserRouteManifest,
+  BrowserRouteManifestInterception,
+  BrowserRouteManifestRoute,
+} from "../routing/browser-route-manifest.js";
 import {
   AppElementsWire,
   compareAppElementsSlotIds,
@@ -325,7 +325,7 @@ export type NavigationPlannerInput = {
   // Graph-owned route topology is the semantic authority for root/layout/slot
   // decisions whenever the caller can supply it. Null keeps the legacy
   // snapshot-only path for low-level tests and unknown route shapes.
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   state: NavigationPlannerState;
   event: NavigationEvent;
 };
@@ -850,9 +850,9 @@ function splitMatchedUrlIntoRouteParts(matchedUrl: string): string[] {
 }
 
 function findRouteManifestRouteByMatchedUrl(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   matchedUrl: string,
-): RouteManifestRoute | null {
+): BrowserRouteManifestRoute | null {
   const urlParts = splitMatchedUrlIntoRouteParts(matchedUrl);
 
   // RouteManifest preserves buildAppRouteGraph's sortRoutes() order, so the
@@ -867,15 +867,18 @@ function findRouteManifestRouteByMatchedUrl(
   return null;
 }
 
-function routeManifestRouteMatchesUrl(route: RouteManifestRoute, matchedUrl: string): boolean {
+function routeManifestRouteMatchesUrl(
+  route: BrowserRouteManifestRoute,
+  matchedUrl: string,
+): boolean {
   return matchRoutePattern(splitMatchedUrlIntoRouteParts(matchedUrl), route.patternParts) !== null;
 }
 
 function findRouteManifestRouteByIdOrMatchedUrl(options: {
   matchedUrl: string;
   routeId: string;
-  routeManifest: RouteManifest;
-}): RouteManifestRoute | null {
+  routeManifest: BrowserRouteManifest;
+}): BrowserRouteManifestRoute | null {
   const routeId = stripInterceptionContextFromRouteId(options.routeId);
   const route = options.routeManifest.segmentGraph.routes.get(routeId);
   if (route && routeManifestRouteMatchesUrl(route, options.matchedUrl)) {
@@ -896,9 +899,9 @@ function findRouteManifestRouteByIdOrMatchedUrl(options: {
 }
 
 function findRouteManifestRouteForSnapshot(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   snapshot: RouteSnapshot,
-): RouteManifestRoute | null {
+): BrowserRouteManifestRoute | null {
   if (snapshot.interception !== null) {
     return findRouteManifestRouteByIdOrMatchedUrl({
       matchedUrl: snapshot.interception.sourceMatchedUrl,
@@ -915,8 +918,8 @@ function findRouteManifestRouteForSnapshot(
 }
 
 function resolveRouteManifestSlotBindings(
-  routeManifest: RouteManifest,
-  route: RouteManifestRoute,
+  routeManifest: BrowserRouteManifest,
+  route: BrowserRouteManifestRoute,
 ): readonly ParallelSlotBindingSnapshot[] {
   const bindings: ParallelSlotBindingSnapshot[] = [];
   for (const slotId of route.slotIds) {
@@ -933,15 +936,15 @@ function resolveRouteManifestSlotBindings(
 }
 
 function resolveRouteManifestRootLayoutTreePath(
-  routeManifest: RouteManifest,
-  route: RouteManifestRoute,
+  routeManifest: BrowserRouteManifest,
+  route: BrowserRouteManifestRoute,
 ): string | null {
   if (route.rootBoundaryId === null) return null;
   return routeManifest.segmentGraph.rootBoundaries.get(route.rootBoundaryId)?.treePath ?? null;
 }
 
 function resolveRouteTopologySnapshot(options: {
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   slotBindingSource: RouteTopologySlotBindingSource;
   snapshot: RouteSnapshot;
 }): RouteTopologyResolution {
@@ -972,9 +975,9 @@ function resolveRouteTopologySnapshot(options: {
 }
 
 function findRouteManifestInterceptionForProof(
-  routeManifest: RouteManifest,
+  routeManifest: BrowserRouteManifest,
   proof: InterceptionSnapshot,
-): RouteManifestInterception | null {
+): BrowserRouteManifestInterception | null {
   const sourceParts = splitMatchedUrlIntoRouteParts(proof.sourceMatchedUrl);
   const targetParts = splitMatchedUrlIntoRouteParts(proof.targetMatchedUrl);
   const targetRoute = findRouteManifestRouteByIdOrMatchedUrl({
@@ -1419,7 +1422,7 @@ function validateInterceptedPreservation(options: {
   currentTopology: RouteTopologySnapshot;
   lane: OperationLane;
   restoredHistorySnapshot: boolean;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   targetSnapshot: RouteSnapshot;
   targetTopology: RouteTopologySnapshot;
 }): InterceptedPreservationValidation {
@@ -1524,7 +1527,7 @@ function validateInterceptedPreservation(options: {
 
 function planFlightResponseArrived(options: {
   event: Extract<NavigationEvent, { kind: "flightResponseArrived" }>;
-  routeManifest: RouteManifest | null;
+  routeManifest: BrowserRouteManifest | null;
   state: NavigationPlannerState;
 }): NavigationDecision {
   const targetSnapshot = options.event.result.targetSnapshot;

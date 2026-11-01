@@ -12,8 +12,10 @@ import type {
   IncrementalCacheValue,
 } from "vinext/shims/cache";
 import { cacheForRequest } from "vinext/cache";
+import type { CdnAppPageDocument } from "vinext/shims/cdn-cache";
 import type { VinextCacheFunctionInvocation } from "vinext/server/multi-stage";
 
+import { readCacheTimestamp } from "../utils/cache-control-metadata.js";
 import { encodeCloudflareCacheTag } from "./cdn-adapter.runtime.js";
 import { isStaleTagInvalidation } from "./workers-cache-invalidation.js";
 
@@ -38,7 +40,11 @@ type ResponseStoreInvocation = {
 
 export type ResponseStoreInvocationCapture = {
   admittedResponse?: Promise<Response>;
+  /** Store the page's document beside an App page RSC response. */
+  captureDocument?: boolean;
   captureRscData?: boolean;
+  /** The page's document, set before admission completes the response. */
+  document?: CdnAppPageDocument;
   /** The render matched the request's If-None-Match; the adapter sends the 304. */
   notModified?: boolean;
   rscData?: Promise<ArrayBuffer>;
@@ -47,10 +53,13 @@ export type ResponseStoreInvocationCapture = {
 
 const ARRAY_BUFFER_MARKER = "$vinextArrayBuffer";
 const CACHE_MAX_AGE_SECONDS = 10 * 365 * 24 * 60 * 60;
-const CACHE_MAX_AGE = `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
 const DATA_ENTRY_PATH = "__vinext_data";
 const REPLAYABLE_HEADER = "X-Vinext-Response-Store-Replayable";
+/** The Store's internal header for when a response's generation started. */
+const GENERATED_AT_HEADER = "X-Workers-Response-Store-Generated-At";
 const MAX_CACHE_TAG_HEADER_BYTES = 16 * 1024;
+/** How long past its revalidate a current Store's hit can still be marked fresh: write latency. */
+const STALE_FRESH_HIT_GRACE_MS = 5_000;
 const DATA_REVALIDATOR_ID = "vinext:data";
 const CACHE_FUNCTION_REVALIDATOR_ID = "vinext:cache-function";
 const invocationStorage = new AsyncLocalStorage<ResponseStoreInvocation>();
@@ -81,6 +90,20 @@ export function captureResponseStoreRscData(rscData: Promise<ArrayBuffer>): void
   } else {
     void rscData.catch(() => {});
   }
+}
+
+/**
+ * Retain the page's document only when the outer response-store invocation
+ * requested it. Admission settles it before it completes the response.
+ */
+export function captureResponseStoreAppPageDocument():
+  | ((document: CdnAppPageDocument | null) => void)
+  | undefined {
+  const capture = invocationStorage.getStore()?.capture;
+  if (!capture?.captureDocument) return undefined;
+  return (document) => {
+    capture.document = document ?? undefined;
+  };
 }
 
 /** A shared invocation stores the page, so its adapter sends the page's 304. */
@@ -309,17 +332,26 @@ function deserialize(value: string): StoredCacheEntry | null {
 
 function cachePolicy(revalidate: number | false | undefined, expire: number | undefined): string {
   if (revalidate === false || revalidate === undefined) {
-    return `public, max-age=${CACHE_MAX_AGE_SECONDS}`;
+    // Never stale, but still hard-expired at a finite `expire` (e.g. from cacheLife).
+    return `public, max-age=${expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(1, Math.ceil(expire))}`;
   }
   // Like Next.js, an entry without `expire` (unstable_cache, cached fetch) never
   // hard-expires: past `revalidate` it is served stale and refreshed in the background.
+  // The Store reads whole seconds only, so round fractional ones (Next.js accepts them),
+  // keeping at least a second of freshness and hard expiry no earlier than `expire`.
+  const maxAge = revalidate > 0 ? Math.max(1, Math.floor(revalidate)) : 0;
   const staleSeconds =
-    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, expire - revalidate);
-  return `public, max-age=${Math.max(0, revalidate)}, stale-while-revalidate=${staleSeconds}`;
+    expire === undefined ? CACHE_MAX_AGE_SECONDS : Math.max(0, Math.ceil(expire) - maxAge);
+  return `public, max-age=${maxAge}, stale-while-revalidate=${staleSeconds}`;
 }
 
 export class WorkersResponseStoreCacheHandler implements CacheHandler {
   private readonly tagExpirations = cacheForRequest(() => new Map<string, Promise<number>>());
+  /** The revision behind each entry returned stale by the Store, for the write refreshing it. */
+  private readonly staleRevisions = new WeakMap<
+    CacheHandlerValue,
+    { revision: number; tagExpiration?: { tags: string[]; expiration: number } }
+  >();
 
   constructor(private readonly store: WorkersResponseStore = responseStore!) {
     if (!store) {
@@ -377,16 +409,19 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         return null;
       }
 
+      let tagExpiration: { tags: string[]; expiration: number } | undefined;
       if (softTags.length) {
         const expiration = eagerExpiration
           ? await eagerExpiration
           : { value: await getTagExpiration() };
         if ("error" in expiration) throw expiration.error;
         if (expiration.value >= entry.lastModified) return null;
+        tagExpiration = { tags: softTags, expiration: expiration.value };
       }
 
       const age = Date.now() - entry.lastModified;
       const requestedRevalidate = readCacheControlField(context, "revalidate");
+      const storedRevalidate = entry.cacheControl?.revalidate;
       const requestedStale =
         typeof requestedRevalidate === "number" &&
         requestedRevalidate > 0 &&
@@ -402,22 +437,43 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
       ) {
         cacheState = "expired";
       } else if (
-        requestedStale ||
-        // Only an invalidate() marks a non-replayable entry stale; the Store cannot
-        // regenerate it, so the caller revalidates it.
+        // The Store can't regenerate a non-replayable entry, so the caller revalidates it
+        // once the Store reports it stale: past its stored revalidate, or after invalidate().
+        // Its own edge copy has expired by then, so the first refresh normally replaces it
+        // without an edge purge.
         storeStatus === "BLOB-STALE" ||
-        (typeof entry.cacheControl?.revalidate === "number" &&
-          entry.cacheControl.revalidate > 0 &&
-          age > entry.cacheControl.revalidate * 1000)
+        // A shorter requested revalidate makes it stale before the Store does.
+        (requestedStale &&
+          typeof requestedRevalidate === "number" &&
+          (typeof storedRevalidate !== "number" || requestedRevalidate < storedRevalidate)) ||
+        // An edge copy still marked fresh well past revalidate came from a Store that gave
+        // it longer, e.g. an older cache Worker during a rollout: refresh it anyway.
+        (typeof storedRevalidate === "number" &&
+          storedRevalidate > 0 &&
+          age > storedRevalidate * 1000 + STALE_FRESH_HIT_GRACE_MS)
       ) {
         cacheState = "stale";
       }
-      return {
+      const value: CacheHandlerValue = {
         lastModified: entry.lastModified,
         value: entry.value,
         ...(cacheState ? { cacheState } : {}),
         ...(entry.cacheControl ? { cacheControl: entry.cacheControl } : {}),
       };
+      // Only an entry the Store itself reports stale is refreshed as that revision. A copy
+      // stale only to its caller may be an edge copy, whose replacement must still purge it.
+      const revision = Number(response.headers.get("X-Workers-Response-Store-Revision"));
+      if (
+        cacheState &&
+        storeStatus === "BLOB-STALE" &&
+        Number.isSafeInteger(revision) &&
+        revision > 0
+      ) {
+        // The Store can't see soft tags (e.g. revalidatePath()) expire, so the refresh carries
+        // them with the expiration this read saw.
+        this.staleRevisions.set(value, { revision, ...(tagExpiration ? { tagExpiration } : {}) });
+      }
+      return value;
     } catch (error) {
       console.error(
         JSON.stringify({
@@ -448,10 +504,15 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     let revalidate = readCacheControlField(context, "revalidate");
     if (value && "revalidate" in value) revalidate = value.revalidate;
     if (revalidate === 0) return;
+    // JSON and the Store's Cache-Control can't hold Infinity, so store it as `false`
+    // (never revalidates) and drop an infinite `expire`, like the KV adapter does.
+    if (typeof revalidate === "number" && !Number.isFinite(revalidate)) revalidate = false;
 
     const rawExpire = readCacheControlField(context, "expire");
-    const expire = typeof rawExpire === "number" ? rawExpire : undefined;
-    const stale = readCacheControlField(context, "stale");
+    const expire =
+      typeof rawExpire === "number" && Number.isFinite(rawExpire) ? rawExpire : undefined;
+    const rawStale = readCacheControlField(context, "stale");
+    const stale = typeof rawStale === "number" && Number.isFinite(rawStale) ? rawStale : undefined;
     const cacheControl =
       typeof revalidate === "number" || revalidate === false
         ? {
@@ -486,15 +547,22 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
         : invocation?.replayable
           ? { id: DATA_REVALIDATOR_ID, args: [key, invocation.serialized] }
           : undefined;
+    // Like Next.js, a "use cache" entry is dated from when its generation started.
+    const lastModified = readCacheTimestamp(context, Date.now());
     const response = new Response(
       serialize({
         ...(cacheControl ? { cacheControl } : {}),
-        lastModified: Date.now(),
+        lastModified,
         value,
       }),
       {
         headers: {
-          "Cache-Control": revalidator ? cachePolicy(revalidate, expire) : CACHE_MAX_AGE,
+          // The Store ages it from then, and publishes it stale, or expired, if its tags were
+          // invalidated, or purged, while it was generated, including when it regenerates it.
+          ...(lastModified === context?.timestamp
+            ? { [GENERATED_AT_HEADER]: String(lastModified) }
+            : {}),
+          "Cache-Control": cachePolicy(revalidate, expire),
           ...(tagHeader ? { "Cache-Tag": tagHeader } : {}),
           "Content-Type": "application/json",
           ...(revalidator ? { [REPLAYABLE_HEADER]: "1" } : {}),
@@ -513,18 +581,31 @@ export class WorkersResponseStoreCacheHandler implements CacheHandler {
     }
     if (regeneration && !revalidator) return;
 
+    // Concurrent requests that read the entry stale each refresh it, passing it as
+    // `staleEntry`. Once one has replaced that revision, the Store drops the rest instead of
+    // replacing it again and spending an edge purge on each.
+    const staleEntry = context?.staleEntry;
+    const replaces =
+      staleEntry && typeof staleEntry === "object"
+        ? this.staleRevisions.get(staleEntry as CacheHandlerValue)
+        : undefined;
     await this.store.put(await cacheRequest(key), response, {
       ...(revalidator ? { revalidator } : {}),
       // A read that finds a page-replay entry expired must not wait for the replay: a page
       // reading two such entries would replay itself for each in turn (A -> B -> A). The
       // Store answers a miss and the caller recomputes, as in Next.js; refresh() still replays.
-      // An entry without a revalidator only expires through invalidate()'s `expire`, and the
-      // Store can't regenerate it either.
+      // The Store can't regenerate an entry without a revalidator either.
       ...(revalidator?.id !== CACHE_FUNCTION_REVALIDATOR_ID
         ? { expiryBehavior: "miss" as const }
         : {}),
       coalesce: true,
       purgeExisting: true,
+      ...(replaces
+        ? {
+            replacesRevision: replaces.revision,
+            ...(replaces.tagExpiration ? { replacesTagExpiration: replaces.tagExpiration } : {}),
+          }
+        : {}),
     });
   }
 

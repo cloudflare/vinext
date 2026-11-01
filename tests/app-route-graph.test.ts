@@ -1216,6 +1216,34 @@ describe("App Router route graph builder", () => {
     });
   });
 
+  it("exposes layoutless HTTP access boundary facts", async () => {
+    await withTempApp(async (appDir) => {
+      await writeAppFile(appDir, "layout.tsx", EMPTY_LAYOUT);
+      await writeAppFile(appDir, "not-found.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/not-found.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/forbidden.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/unauthorized.tsx", EMPTY_PAGE);
+      await writeAppFile(appDir, "shop/[id]/page.tsx", EMPTY_PAGE);
+
+      const graph = await buildAppRouteGraph(appDir, createValidFileMatcher());
+      const { boundaries } = graph.routeManifest.segmentGraph;
+
+      expect(boundaries.get("boundary:notFound:/shop")).toEqual({
+        id: "boundary:notFound:/shop",
+        outcome: "notFound",
+        treePath: "/shop",
+        ownerLayoutId: null,
+        rootBoundaryId: "root-boundary:/",
+      });
+      expect(boundaries.get("boundary:forbidden:/shop")).toMatchObject({ ownerLayoutId: null });
+      expect(boundaries.get("boundary:unauthorized:/shop/[id]")).toMatchObject({
+        ownerLayoutId: null,
+      });
+      // The root boundary sits beside the root layout and keeps its owner.
+      expect(boundaries.get("boundary:notFound:/")).toMatchObject({ ownerLayoutId: "layout:/" });
+    });
+  });
+
   it("keeps semantic ids stable across different filesystem roots", async () => {
     const firstIds = await withTempApp(async (appDir) => {
       await createSemanticIdsFixture(appDir);

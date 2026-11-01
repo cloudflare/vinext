@@ -218,8 +218,14 @@ function buildNextConfig(options: TrackedAppRouteRequestOptions): {
  * Undici's Request follows its input's signal through a WeakRef, and so does
  * every clone between the host signal and the handler's request. A handler
  * that only listens on `request.signal` (e.g. to stop a stream) would miss the
- * abort once GC collects any of them, so the request follows the host signal
- * directly and stays reachable for as long as that signal is.
+ * abort once GC collects any of them, so the request stays reachable for as
+ * long as the host signal is.
+ *
+ * The request must not follow the host signal itself, though. Undici registers
+ * every Request in a FinalizationRegistry whose held value strongly references
+ * the followed signal, so the registry would keep the host signal (the WeakMap
+ * key) and therefore the request alive forever. It follows a relay instead,
+ * which the host signal aborts through a strong listener.
  */
 const requestsByHostSignal = new WeakMap<AbortSignal, Request[]>();
 
@@ -227,6 +233,13 @@ function retainWhileSignalLives(signal: AbortSignal, request: Request): void {
   const requests = requestsByHostSignal.get(signal);
   if (requests) requests.push(request);
   else requestsByHostSignal.set(signal, [request]);
+}
+
+function followHostSignal(signal: AbortSignal): AbortSignal {
+  const relay = new AbortController();
+  if (signal.aborted) relay.abort(signal.reason);
+  else signal.addEventListener("abort", () => relay.abort(signal.reason), { once: true });
+  return relay.signal;
 }
 
 function createForceStaticNextRequest(
@@ -455,16 +468,17 @@ export function createTrackedAppRouteRequest(
     const sourceCfMetadata = sourceCfAccessor
       ? undefined
       : Reflect.get(requestWithOverrides, "cf", requestWithOverrides);
+    const signal = options.signal ? followHostSignal(options.signal) : undefined;
     const nextRequest =
       requestMode === "force-static"
-        ? createForceStaticNextRequest(requestWithOverrides, nextConfig, options.signal)
+        ? createForceStaticNextRequest(requestWithOverrides, nextConfig, signal)
         : requestWithOverrides instanceof NextRequest &&
             sourceCfDescriptor?.configurable !== false &&
-            !options.signal
+            !signal
           ? requestWithOverrides
           : new NextRequest(requestWithOverrides, {
               nextConfig: nextConfig ?? undefined,
-              signal: options.signal,
+              signal,
             });
     if (options.signal) retainWhileSignalLives(options.signal, nextRequest);
     const rawCfMetadata = sourceCfAccessor

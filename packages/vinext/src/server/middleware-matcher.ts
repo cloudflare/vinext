@@ -26,8 +26,8 @@ const EMPTY_MIDDLEWARE_REQUEST_CONTEXT: RequestContext = {
   host: "",
 };
 
-const UNSAFE_MATCHER_PATTERN = Symbol("unsafe matcher pattern");
-type CompiledMatcherPattern = RegExp | typeof UNSAFE_MATCHER_PATTERN;
+const INVALID_MATCHER_PATTERN = Symbol("invalid matcher pattern");
+type CompiledMatcherPattern = RegExp | typeof INVALID_MATCHER_PATTERN;
 
 const _mwPatternCache = new Map<string, CompiledMatcherPattern>();
 
@@ -170,8 +170,8 @@ function matchNextDataPattern(
   i18nConfig: NextI18nConfig | null | undefined,
   localized: boolean,
 ): boolean {
-  // An invalid or unsafe source runs middleware for every path, as elsewhere.
-  if (compiledPattern(source) === UNSAFE_MATCHER_PATTERN) return true;
+  // An invalid source runs middleware for every path, as elsewhere.
+  if (compiledPattern(source) === INVALID_MATCHER_PATTERN) return true;
   return matchPattern(pathname, nextDataMatcherSource(source, i18nConfig, localized));
 }
 
@@ -223,7 +223,7 @@ export function matchPattern(pathname: string, pattern: string): boolean {
     return false;
   }
   const compiled = compiledPattern(pattern);
-  if (compiled === UNSAFE_MATCHER_PATTERN) return true;
+  if (compiled === INVALID_MATCHER_PATTERN) return true;
   return compiled.test(pathname);
 }
 
@@ -240,11 +240,10 @@ function compileMatcherPattern(pattern: string): CompiledMatcherPattern {
   const result = compileMiddlewareMatcherPattern(pattern);
   if (result.regexp) return result.regexp;
 
-  const problem = result.kind === "unsafe" ? "potentially unsafe" : "invalid";
   console.warn(
-    `[vinext] Rejecting ${problem} middleware matcher: ${pattern}\n` +
+    `[vinext] Rejecting invalid middleware matcher: ${pattern}\n` +
       `  ${result.error}.\n` +
       `  Middleware will run for all paths to avoid bypassing request guards.`,
   );
-  return UNSAFE_MATCHER_PATTERN;
+  return INVALID_MATCHER_PATTERN;
 }

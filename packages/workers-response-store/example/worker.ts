@@ -16,6 +16,8 @@ type FixtureRevalidatorOptions = {
   cacheTags?: string[];
   delayMs?: number;
   fail?: boolean;
+  /** Date the response from when regeneration started. */
+  generatedAt?: boolean;
   failOnce?: boolean;
 };
 
@@ -77,6 +79,8 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     if (value) headers.set(name, value);
   }
   if (age) headers.set("Age", age);
+  const generatedAt = request.headers.get("X-Generated-At");
+  if (generatedAt) headers.set("X-Workers-Response-Store-Generated-At", generatedAt);
   if (cloudflareCacheControl) {
     headers.set("Cloudflare-CDN-Cache-Control", cloudflareCacheControl);
   }
@@ -135,6 +139,17 @@ async function handlePut(request: Request, store: WorkersResponseStore): Promise
     coalesce: request.headers.get("X-Coalesce") === "1",
     revalidator,
     purgeExisting: request.headers.get("X-Purge-Existing") === "1",
+    ...(request.headers.has("X-Replaces-Revision")
+      ? { replacesRevision: Number(request.headers.get("X-Replaces-Revision")) }
+      : {}),
+    ...(request.headers.has("X-Replaces-Tag-Expiration")
+      ? {
+          replacesTagExpiration: JSON.parse(request.headers.get("X-Replaces-Tag-Expiration")!) as {
+            tags: string[];
+            expiration: number;
+          },
+        }
+      : {}),
     ...(request.headers.get("X-Expiry-Behavior") === "miss"
       ? { expiryBehavior: "miss" as const }
       : {}),
@@ -157,6 +172,7 @@ const responseStoreOptions = {
     const cacheKey = requestUrl.pathname + requestUrl.search;
     activeRegenerationRequests.add(cacheKey);
 
+    const startedAt = Date.now();
     try {
       const options = (input.args[0] ?? {}) as FixtureRevalidatorOptions;
       if (options.delayMs) {
@@ -187,6 +203,9 @@ const responseStoreOptions = {
 
       if (options.cacheTags?.length) {
         headers.set("Cache-Tag", options.cacheTags.join(","));
+      }
+      if (options.generatedAt) {
+        headers.set("X-Workers-Response-Store-Generated-At", String(startedAt));
       }
 
       return new Response(body, { headers });

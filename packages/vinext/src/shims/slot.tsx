@@ -11,7 +11,6 @@ import {
   type AppElementsInterception,
   type AppElementsBfcacheSegmentIdentities,
   type AppElementsSlotBinding,
-  type LayoutFlags,
 } from "../server/app-elements.js";
 import type { ArtifactCompatibilityEnvelope } from "../server/artifact-compatibility.js";
 import {
@@ -122,6 +121,7 @@ type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
   preserveAbsentSlots?: boolean;
   preserveElementIds?: readonly string[];
+  preserveElementSeedIds?: readonly string[];
   preservePreviousSlotIds?: readonly string[];
 };
 
@@ -194,12 +194,6 @@ export function stageBfcacheSlotEntryForRender(
     order,
     snapshots,
   };
-}
-
-function isLayoutFlagsValue(value: unknown): value is LayoutFlags {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const entries = Object.values(value);
-  return entries.length > 0 && entries.every((entry) => entry === "s" || entry === "d");
 }
 
 function isArtifactCompatibilityEnvelopeValue(
@@ -281,7 +275,6 @@ function isTransportMetadataValue(
   id: string,
   value: AppElementValue | undefined,
 ): value is
-  | LayoutFlags
   | AppElementsBfcacheSegmentIdentities
   | ArtifactCompatibilityEnvelope
   | CacheEntryReuseProof
@@ -289,7 +282,6 @@ function isTransportMetadataValue(
   | readonly string[]
   | readonly AppElementsSlotBinding[] {
   return (
-    isLayoutFlagsValue(value) ||
     isBfcacheSegmentIdentitiesMetadataValue(id, value) ||
     isArtifactCompatibilityEnvelopeValue(value) ||
     isCacheEntryReuseProofValue(value) ||
@@ -464,6 +456,77 @@ export function BfcacheSegmentBoundary({
   );
 }
 
+/**
+ * Retains a layout's children across navigations that change which segment
+ * they render. Each child keeps its own wrappers, so a page and a nested layout
+ * give the layout's children different element shapes, and a retention list
+ * inside the child would remount with them. Next.js keeps this Activity list in
+ * the parent's layout router, above the child's boundaries, so a page left for a
+ * sibling with its own layout keeps its state when navigating back.
+ */
+export function BfcacheChildrenBoundary({
+  children,
+  id,
+  stateKey,
+}: {
+  children: React.ReactNode;
+  /** The child element whose identity keys the entries. */
+  id?: string;
+  /** A fixed key, for a segment level with no element of its own. */
+  stateKey?: string;
+}) {
+  if (!BfcacheIdMapContext || !BfcacheSegmentIdContext || !isCacheComponentsEnabled()) {
+    return <>{children}</>;
+  }
+  return (
+    <BfcacheChildrenActivityBoundary
+      id={id}
+      IdMapContext={BfcacheIdMapContext}
+      SegmentContext={BfcacheSegmentIdContext}
+      stateKey={stateKey}
+    >
+      {children}
+    </BfcacheChildrenActivityBoundary>
+  );
+}
+
+function BfcacheChildrenActivityBoundary({
+  children,
+  id,
+  IdMapContext,
+  SegmentContext,
+  stateKey,
+}: {
+  children: React.ReactNode;
+  id: string | undefined;
+  IdMapContext: React.Context<Readonly<Record<string, string>> | null>;
+  SegmentContext: React.Context<string | null>;
+  stateKey: string | undefined;
+}) {
+  const elements = React.useContext(ElementsContext);
+  const identityMap = React.useContext(BfcacheIdentityMapContext);
+  const bfcacheIdMap = React.useContext(IdMapContext);
+  // The children keep the segment id of the layout that renders them.
+  const segmentId = React.useContext(SegmentContext);
+  const activeStateKey =
+    stateKey ??
+    (id === undefined ? undefined : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap));
+  if (segmentId === null || activeStateKey === undefined) {
+    return <>{children}</>;
+  }
+
+  return (
+    <BfcacheActivitySlotBoundary
+      activeStateKey={activeStateKey}
+      content={children}
+      elements={elements}
+      id={segmentId}
+      SegmentContext={SegmentContext}
+      stateKeyMap={identityMap}
+    />
+  );
+}
+
 export function getNonCacheComponentsSegmentKey(
   id: string,
   activeStateKey: string,
@@ -528,6 +591,8 @@ export function mergeElements(
   const preserveAbsentSlots =
     typeof options === "boolean" ? !options : (options.preserveAbsentSlots ?? true);
   const preserveElementIds = typeof options === "boolean" ? [] : (options.preserveElementIds ?? []);
+  const preserveElementSeedIds =
+    typeof options === "boolean" ? [] : (options.preserveElementSeedIds ?? []);
   const preservePreviousSlotIds =
     typeof options === "boolean" ? [] : (options.preservePreviousSlotIds ?? []);
   const merged: Record<string, AppElementValue> = { ...next };
@@ -541,6 +606,16 @@ export function mergeElements(
         preservedIdentityIds.add(id);
       }
     }
+  }
+
+  // A seed keeps only the previous server output, which holds no client state.
+  // Its identity stays the destination's, because that identity names the
+  // segment state the seed now mounts under and the bfcache id the destination
+  // assigned to it.
+  for (const id of preserveElementSeedIds) {
+    if (preservedIdentityIds.has(id) || !Object.hasOwn(prev, id)) continue;
+    const value = prev[id];
+    if (value !== undefined) merged[id] = value;
   }
 
   const slotKeys = new Set(
@@ -626,10 +701,11 @@ export function mergeElements(
       }
     }
 
-    // An element and its identity are one preservation unit. Keeping previous
-    // content beside the destination's identity would falsely prove that stale
-    // client state belongs to the destination graph. If the previous payload
-    // had no proof, remove any destination proof and let BFCache remint.
+    // Outside seeds, an element and its identity are one preservation unit.
+    // Keeping previous content beside the destination's identity would falsely
+    // prove that stale client state belongs to the destination graph. If the
+    // previous payload had no proof, remove any destination proof and let
+    // BFCache remint.
     for (const id of preservedIdentityIds) {
       const previousIdentity = previousIdentities[id];
       if (previousIdentity === undefined) {

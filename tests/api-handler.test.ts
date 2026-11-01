@@ -380,6 +380,31 @@ describe("handleApiRoute", () => {
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("settles when the client disconnects while the body decoder loads", async () => {
+      const handler = vi.fn();
+      const req = mockReq("POST", "/api/test", "+ZeVnLIqe-");
+      // Disconnect once parseBody() is awaiting the decoder, as when iconv-lite
+      // takes time to load.
+      Object.defineProperty(req.headers, "content-type", {
+        get() {
+          queueMicrotask(() => req.destroy());
+          return "text/plain; charset=utf-7";
+        },
+      });
+      const handled = handleApiRoute(
+        mockServer({ default: handler }),
+        req,
+        mockRes(),
+        "/api/test",
+        [route("/api/test")],
+      );
+      const timedOut = Symbol("timed out");
+      await expect(
+        Promise.race([handled, new Promise((resolve) => setTimeout(resolve, 1000, timedOut))]),
+      ).resolves.not.toBe(timedOut);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it("does not expose process environment variables on the request", async () => {
       const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
       process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
@@ -506,6 +531,21 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toEqual({});
+    });
+
+    it("keeps a text body that decodes to nothing as an empty string", async () => {
+      const bodies: unknown[] = [];
+      const handler = vi.fn((req: any) => {
+        bodies.push(req.body);
+      });
+      const server = mockServer({ default: handler });
+      for (const body of [Buffer.from([0xef, 0xbb, 0xbf]), undefined]) {
+        const req = mockReq("POST", "/api/users", body, { "content-type": "text/plain" });
+        await handleApiRoute(server, req, mockRes(), "/api/users", [route("/api/users")]);
+      }
+
+      // The decoder strips the BOM, and Next.js still hands over "".
+      expect(bodies).toEqual(["", undefined]);
     });
 
     it("parses application/ld+json bodies as JSON", async () => {

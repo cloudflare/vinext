@@ -171,7 +171,12 @@ export function createStaticAssetRequest(
   sourceRequest: Request,
   headers: Headers | null = null,
 ): Request {
-  const assetUrl = new URL(assetPath, sourceRequest.url);
+  // A `?` or `#` in a public file's name would otherwise start the query or
+  // fragment.
+  const assetUrl = new URL(
+    assetPath.replace(/[?#]/g, (character) => encodeURIComponent(character)),
+    sourceRequest.url,
+  );
   if (sourceRequest.method === "GET" || sourceRequest.method === "HEAD") {
     return headers
       ? new Request(new Request(assetUrl, sourceRequest), { headers })

@@ -129,7 +129,11 @@ type ResolvePublicFileRouteOptions = {
   request: Request;
 };
 
-const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
+// The sources of Next.js's two internal trailingSlash: true redirects
+// (lib/load-custom-routes): a slashed path whose last segment ends in `.\w+`
+// loses its slash, and an unslashed path whose last segment has no dot gains one.
+const SLASHED_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/]+\.\w+\/$/;
+const UNSLASHED_NON_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/.]+$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
@@ -165,26 +169,18 @@ export function normalizeTrailingSlashPathname(
   pathname: string,
   trailingSlash: boolean,
 ): string | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
-
-  const hasTrailing = pathname.endsWith("/");
+  if (pathname === "/") return null;
 
   if (trailingSlash) {
-    // Next.js emits two internal redirect rules for trailingSlash:true:
-    // file-looking paths lose a trailing slash, non-file paths gain one, and
-    // /.well-known stays untouched for RFC-defined discovery URLs.
+    // /.well-known stays untouched for RFC-defined discovery URLs. Paths that
+    // match neither rule, such as `/foo.a-b/` or `/foo.`, are left as they are.
     if (isWellKnownPathname(pathname)) return null;
-    if (FILE_LIKE_PATHNAME_RE.test(pathname)) {
-      const normalized = removeTrailingSlash(pathname);
-      return normalized === pathname ? null : normalized;
-    }
-    if (!hasTrailing && !pathname.endsWith(".rsc")) return `${pathname}/`;
+    if (SLASHED_FILE_PATHNAME_RE.test(pathname)) return pathname.slice(0, -1);
+    if (UNSLASHED_NON_FILE_PATHNAME_RE.test(pathname)) return `${pathname}/`;
     return null;
   }
 
-  if (hasTrailing) return removeTrailingSlash(pathname);
+  if (pathname.endsWith("/")) return removeTrailingSlash(pathname);
   return null;
 }
 
@@ -192,8 +188,8 @@ export function normalizeTrailingSlashPathname(
  * Check if the pathname needs a trailing slash redirect, and return the
  * redirect Response if so.
  *
- * Follows Next.js behavior:
- * - `/api` routes are never redirected
+ * Follows Next.js behavior, whose internal trailing-slash redirects cover
+ * every path, `/api` included:
  * - The root path `/` is never redirected
  * - If `trailingSlash` is true, redirect `/about` → `/about/`
  * - If `trailingSlash` is true, redirect file-looking `/file.ext/` → `/file.ext`
@@ -212,9 +208,7 @@ export function normalizeTrailingSlash(
   trailingSlash: boolean,
   search: string,
 ): Response | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
+  if (pathname === "/") return null;
   // Defense-in-depth: `guardProtocolRelativeUrl` runs earlier and should
   // have rejected these shapes. Refuse to emit a Location header that the
   // browser would resolve as protocol-relative, even if a caller somehow
@@ -485,7 +479,21 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * @param headers - The Headers object to modify in place
  */
+/**
+ * Next.js drops each empty middleware Set-Cookie value when it converts
+ * middleware's response headers, so blank values never reach the response.
+ */
+export function dropEmptyMiddlewareSetCookie(headers: Headers): void {
+  const cookies = headers.getSetCookie();
+  if (!cookies.includes("")) return;
+  headers.delete("set-cookie");
+  for (const cookie of cookies) {
+    if (cookie) headers.append("set-cookie", cookie);
+  }
+}
+
 export function processMiddlewareHeaders(headers: Headers): void {
+  dropEmptyMiddlewareSetCookie(headers);
   const keysToDelete: string[] = [];
   const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
@@ -605,6 +613,40 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
     cloned = new Request(request.url, init);
   }
   return attachRequestCfMetadata(cloned, request);
+}
+
+export function haveSameHeaders(first: Headers, second: Headers): boolean {
+  const firstEntries = [...first];
+  const secondEntries = [...second];
+  return (
+    firstEntries.length === secondEntries.length &&
+    firstEntries.every(
+      ([name, value], index) =>
+        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
+    )
+  );
+}
+
+// Node hosts can hand over Request look-alikes, such as srvx's NodeRequest,
+// that pass `instanceof Request` but lack its internal state, so native
+// Request code throws on them. Only the native getter tells them apart.
+function isNativeRequest(request: Request): boolean {
+  try {
+    Reflect.get(Request.prototype, "url", request);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `cloneRequestWithHeaders`, except that a native request whose headers
+ * already match is returned as is, so its body stays where it is.
+ */
+export function withRequestHeaders(request: Request, headers: Headers): Request {
+  return isNativeRequest(request) && haveSameHeaders(headers, request.headers)
+    ? request
+    : cloneRequestWithHeaders(request, headers);
 }
 
 /**

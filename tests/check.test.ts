@@ -906,6 +906,14 @@ describe("analyzeConfig", () => {
     );
   });
 
+  it("reports the legacy experimental.cacheComponents as partially supported", () => {
+    writeFile("next.config.mjs", `export default { experimental: { cacheComponents: true } };`);
+    const items = analyzeConfig(tmpDir);
+    const item = items.find((i) => i.name === "experimental.cacheComponents");
+    expect(item?.status).toBe("partial");
+    expect(item?.detail).toContain("legacy alias of cacheComponents");
+  });
+
   it("reads next.config.ts files", () => {
     writeFile("next.config.ts", `const config = { basePath: "/app" }; export default config;`);
 
@@ -1067,7 +1075,7 @@ describe("checkLibraries", () => {
     expect(items[0].detail).toContain("clerkMiddleware");
   });
 
-  it("reports next-intl as supported and names the experimental options that don't work", () => {
+  it("reports next-intl as supported and names the experimental option that doesn't work", () => {
     writeFile(
       "package.json",
       JSON.stringify({
@@ -1077,7 +1085,8 @@ describe("checkLibraries", () => {
 
     const [item] = checkLibraries(tmpDir);
     expect(item.status).toBe("supported");
-    expect(item.detail).toContain("precompile");
+    expect(item.detail).toContain("extract");
+    expect(item.detail).not.toContain("precompile");
     expect(item.detail).not.toContain("No intl context found");
   });
 

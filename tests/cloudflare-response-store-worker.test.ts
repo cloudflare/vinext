@@ -229,7 +229,11 @@ describe("Cloudflare Response Store Worker", () => {
     expect(options?.revalidator?.args).toHaveLength(1);
     expect(JSON.parse(String(options?.revalidator?.args[0]))).toEqual({
       props: { kind: "app-page" },
-      request: { headers: [], method: "GET", url: "https://example.com/miss" },
+      request: {
+        headers: [["host", "example.com"]],
+        method: "GET",
+        url: "https://example.com/miss",
+      },
     });
   });
 
@@ -404,7 +408,7 @@ describe("Cloudflare Response Store Worker", () => {
         fetch,
         getTagExpiration: vi.fn(),
         purge: vi.fn(),
-        put: vi.fn(),
+        put: vi.fn(async () => ({ backingStoreUpdated: true, edgePurgeAccepted: true })),
         invalidate: vi.fn(),
         refresh: vi.fn(),
       };
@@ -458,7 +462,7 @@ describe("Cloudflare Response Store Worker", () => {
 });
 
 describe("Cloudflare Response Store Worker query-free cache identity", () => {
-  type PutOptions = { revalidator?: { id: string; args: unknown[] } };
+  type PutOptions = { purgeExisting?: boolean; revalidator?: { id: string; args: unknown[] } };
   type StoredEntry = { body: string; headers: Headers; options?: PutOptions; status: number };
 
   beforeEach(() => {
@@ -529,6 +533,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
               cache: "shared",
               cacheIdentity: {
                 props: { ...props, resolvedUrl: url.pathname },
+                queryFree: true,
                 request: new Request(identityUrl, { headers: request.headers }),
               },
             }
@@ -542,7 +547,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
   }
 
   function revalidatorInvocation(entry: StoredEntry | undefined) {
-    return JSON.parse(String(entry?.options?.revalidator?.args[0])) as {
+    return JSON.parse(String(entry?.options?.revalidator?.args.at(-1))) as {
       props: { resolvedUrl: string; isRscRequest: boolean };
       request: { url: string };
     };
@@ -596,6 +601,96 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     });
   });
 
+  // A Pages page's custom _app can read the request host, so it regenerates
+  // from the request that filled it, while the key names the identity.
+  it("regenerates from the dispatch when the identity asks to", async () => {
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) => {
+      const props = pageProps("/page");
+      return dispatchResponseStage(request, props, {
+        cache: "shared",
+        cacheIdentity: {
+          props: { ...props, requestOrigin: "https://cache-identity.vinext.invalid" },
+          regenerateFromDispatch: true,
+          request: new Request("https://cache-identity.vinext.invalid/page"),
+        },
+      });
+    });
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const first = await handler.fetch(
+      new Request("https://tenant-a.example/page"),
+      {} as never,
+      context(),
+    );
+    await first.text();
+    const second = await handler.fetch(
+      new Request("https://tenant-b.example/page"),
+      {} as never,
+      context(),
+    );
+
+    expect(second.headers.get("X-Vinext-Cache")).toBe("HIT");
+    const [key] = store.fetch.mock.calls.map(([request]) => request.url);
+    expect(new URL(key!).origin).toBe("https://cache-identity.vinext.invalid");
+    expect(revalidatorInvocation(entries.get(key!))).toMatchObject({
+      request: { url: "https://tenant-a.example/page" },
+    });
+
+    // A custom _app reads req.headers.host, which a regeneration keeps.
+    stages.response.mockClear();
+    await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entries.get(key!)!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request(key!),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    const [replayedRequest] = stages.response.mock.calls[0]!;
+    expect((replayedRequest as Request).url).toBe("https://tenant-a.example/page");
+    expect((replayedRequest as Request).headers.get("host")).toBe("tenant-a.example");
+  });
+
+  // A Pages page rendered per request, such as one whose getInitialProps
+  // runs, is keyed by its own host, and its regeneration reads the same host.
+  it("regenerates an entry keyed by its host with that host", async () => {
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) =>
+      dispatchResponseStage(request, pageProps("/page"), { cache: "shared" }),
+    );
+    stages.response.mockImplementation(
+      async () => new Response("rendered", { headers: { "Cache-Control": "public, max-age=60" } }),
+    );
+    const { entries, store } = createMemoryStore();
+    const handler = createVinextResponseStoreHandler(store);
+
+    const response = await handler.fetch(
+      new Request("https://tenant-a.example/page"),
+      {} as never,
+      context(),
+    );
+    await response.text();
+
+    const [key] = store.fetch.mock.calls.map(([request]) => request.url);
+    stages.response.mockClear();
+    await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entries.get(key!)!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request(key!),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    const [replayedRequest] = stages.response.mock.calls[0]!;
+    expect((replayedRequest as Request).url).toBe("https://tenant-a.example/page");
+    expect((replayedRequest as Request).headers.get("host")).toBe("tenant-a.example");
+  });
+
   it("keys the full request when no identity is given", async () => {
     dispatchWithIdentity(false);
     stages.response.mockImplementation(
@@ -620,6 +715,43 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
       "https://example.com/page?q=a",
       "https://example.com/page?q=b",
     ]);
+  });
+
+  it("stores both parts of a page only under a query-free identity", async () => {
+    stages.response.mockImplementation(async () => {
+      captureResponseStoreRscData(Promise.resolve(new TextEncoder().encode("rsc").buffer));
+      return new Response("html", { headers: { "Cache-Control": "public, max-age=60" } });
+    });
+    const storedUrls = async () => {
+      const { entries, store } = createMemoryStore();
+      const handler = createVinextResponseStoreHandler(store);
+      const ctx = context();
+      const response = await handler.fetch(
+        new Request("https://example.com/page?q=a"),
+        {} as never,
+        ctx,
+      );
+      await response.text();
+      await Promise.all(ctx.waitUntil.mock.calls.map(([promise]) => promise));
+      return [...entries.values()].map((entry) => revalidatorInvocation(entry).request.url);
+    };
+
+    dispatchWithIdentity();
+    expect((await storedUrls()).sort()).toEqual([
+      "https://example.com/page",
+      "https://example.com/page?_rsc",
+    ]);
+
+    // An identity that keeps the query, as a public cache policy's does, is
+    // cached per full URL, so it stores its own part.
+    stages.request.mockImplementation((request: Request, _env, _context, dispatchResponseStage) => {
+      const props = pageProps("/page?q=a");
+      return dispatchResponseStage(request, props, {
+        cache: "shared",
+        cacheIdentity: { props, request: new Request(request.url) },
+      });
+    });
+    expect(await storedUrls()).toEqual(["https://example.com/page?q=a"]);
   });
 
   it("stores and regenerates App page RSC without the request's params and path headers", async () => {
@@ -786,16 +918,28 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     );
     await warmup.text();
 
+    // The seed is stored first, so a failed write leaves the document missing too.
     const invocations = [...entries.values()].map(revalidatorInvocation);
     expect(invocations).toEqual([
-      expect.objectContaining({
-        props: expect.objectContaining({ isRscRequest: false, resolvedUrl: "/page" }),
-        request: expect.objectContaining({ url: "https://example.com/page" }),
-      }),
       expect.objectContaining({
         props: expect.objectContaining({ isRscRequest: true, resolvedUrl: "/page" }),
         request: expect.objectContaining({ url: "https://example.com/page?_rsc" }),
       }),
+      expect.objectContaining({
+        props: expect.objectContaining({ isRscRequest: false, resolvedUrl: "/page" }),
+        request: expect.objectContaining({ url: "https://example.com/page" }),
+      }),
+    ]);
+    // Both parts regenerate together.
+    expect([...entries.values()].map((entry) => entry.options?.revalidator?.args[0])).toEqual([
+      "vinext:page-parts",
+      "vinext:page-parts",
+    ]);
+    // Neither write purges an edge copy. Regenerations write the other part
+    // the same way.
+    expect([...entries.values()].map((entry) => entry.options?.purgeExisting)).toEqual([
+      undefined,
+      undefined,
     ]);
 
     // A later canonical RSC navigation with any query reaches the seeded entry.
@@ -811,6 +955,7 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
           cache: "shared",
           cacheIdentity: {
             props,
+            queryFree: true,
             request: new Request("https://example.com/page?_rsc", {
               headers: createCanonicalRscRequestHeaders(),
             }),
@@ -867,8 +1012,8 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
         status: entry.status,
       }));
       expect(stored).toEqual([
-        { body: "html", location, marker: null, status: documentStatus },
         { body: "rsc", location, marker, status: rscStatus },
+        { body: "html", location, marker: null, status: documentStatus },
       ]);
     },
   );

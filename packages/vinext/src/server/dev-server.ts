@@ -13,7 +13,7 @@ import {
   PRERENDER_REVALIDATE_ONLY_GENERATED_HEADER,
   isOnDemandRevalidateRequest,
 } from "./isr-cache.js";
-import { ensureFetchPatch } from "vinext/shims/fetch-cache";
+import { ensureFetchPatch, setCurrentFetchDraftMode } from "vinext/shims/fetch-cache";
 import {
   closeAfterResponse,
   createRequestContext,
@@ -46,7 +46,7 @@ import { getScriptNonceFromNodeHeaderSources } from "./csp.js";
 import { mergeRouteParamsIntoQuery, parseQueryString as parseQuery } from "../utils/query.js";
 import { stripViteModuleQuery } from "../utils/path.js";
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream } from "react-dom/server";
 import { logRequest, now } from "./request-log.js";
 import {
   createValidFileMatcher,
@@ -107,6 +107,7 @@ import {
   tracePagesDocumentStream,
   traceFindPageComponents,
 } from "./pages-execution-tracing.js";
+import { logRequestError } from "./request-error-log.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -211,6 +212,11 @@ function writeGsspRedirect(
     ...props,
     pageProps: props.pageProps,
   });
+  // Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+  // so its redirect is answered private/no-store unless the handler set its own.
+  if (options.method === "getServerSideProps" && !res.getHeader("Cache-Control")) {
+    res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+  }
   // `getServerSideProps` may set response headers before returning a redirect.
   // Pass them explicitly to writeHead: unlike the normal render path, redirects
   // return before the later gSSP-header capture/forwarding step runs.
@@ -810,7 +816,9 @@ export function createSSRHandler(
         return;
       }
       // No route matched — try to render custom 404 page
-      const requestContext = createRequestContext();
+      const requestContext = createRequestContext({
+        isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
+      });
       const closeRequest = () => void closeAfterResponse(requestContext);
       res.on("finish", closeRequest);
       res.on("close", closeRequest);
@@ -856,7 +864,11 @@ export function createSSRHandler(
       : null;
     let query = mergeRouteParamsIntoQuery(parseQuery(url), params);
     // Wrap the entire request in a single unified AsyncLocalStorage scope.
-    const requestContext = createRequestContext();
+    // An authorized res.revalidate() request skips data cache reads, as in
+    // Next.js.
+    const requestContext = createRequestContext({
+      isOnDemandRevalidate: isOnDemandRevalidateRequest(req.headers[PRERENDER_REVALIDATE_HEADER]),
+    });
     let isStaticPropsRender = false;
     const closeRequest = () => void closeAfterResponse(requestContext);
     res.on("finish", closeRequest);
@@ -943,6 +955,7 @@ export function createSSRHandler(
             })
           : ({ data: false, shouldClear: false } satisfies PagesPreviewState);
         const requestPreviewData = requestPreview.data;
+        setCurrentFetchDraftMode(requestPreviewData !== false);
         const pagesNextData = {
           ...buildPagesReadinessNextData({
             pageModule,
@@ -1241,12 +1254,21 @@ export function createSSRHandler(
               if (!res.hasHeader("Content-Type")) {
                 res.setHeader("Content-Type", "application/json");
               }
+              // Same getServerSideProps `revalidate: 0` default as the redirect.
+              if (!res.getHeader("Cache-Control")) {
+                res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
+              }
               if (deploymentId && !res.hasHeader(NEXTJS_DEPLOYMENT_ID_HEADER)) {
                 res.setHeader(NEXTJS_DEPLOYMENT_ID_HEADER, deploymentId);
               }
               res.writeHead(404);
               res.end('{"notFound":true}');
               return;
+            }
+            // Next.js sets the gSSP `revalidate: 0` default before render404(),
+            // so a 404 render that ends early or throws still carries it.
+            if (!res.getHeader("Cache-Control")) {
+              res.setHeader("Cache-Control", ISR_NEVER_CACHE_CONTROL);
             }
             await renderErrorPage(
               server,
@@ -1263,6 +1285,14 @@ export function createSSRHandler(
               {
                 ...errorPageContext,
                 notFoundSrcPage: patternToNextFormat(route.pattern),
+                // Next.js dev answers the rendered 404 with its development
+                // page Cache-Control, over any value user code set. Preview
+                // and preview-cookie cleanup responses stay private, as in
+                // production's finalizePagesPreviewResponse.
+                cacheControl:
+                  requestPreview.data === false && !requestPreview.shouldClear
+                    ? DEV_PAGES_CACHE_CONTROL
+                    : PAGES_PREVIEW_CACHE_CONTROL,
               },
             );
             return;
@@ -1788,7 +1818,7 @@ export function createSSRHandler(
       } catch (e) {
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
         // when using ModuleRunner — no stack trace fixup is needed here.
-        console.error(e);
+        logRequestError(e);
         // Report error via instrumentation hook if registered
         await reportRequestError(
           e,
@@ -1883,6 +1913,8 @@ async function renderErrorPage(
     requestPathname?: string;
     /** Original Pages route that produced this development-only notFound render. */
     notFoundSrcPage?: string;
+    /** Cache-Control written after error-page and custom App initial props run. */
+    cacheControl?: string;
   } = { basePath: "" },
 ): Promise<void> {
   attachPagesRequestCookies(req);
@@ -2145,6 +2177,9 @@ async function renderErrorPage(
               : undefined,
           crossOrigin: context.crossOrigin,
           preserveExistingContentType: statusCode === 404,
+          extraHeaders: context.cacheControl
+            ? { "Cache-Control": context.cacheControl }
+            : undefined,
         });
       } else {
         const bodyHtml = await tracePagesDocument(errorPage, () => renderToStringAsync(element));
@@ -2185,6 +2220,7 @@ async function renderErrorPage(
           ),
           protectedAssetMarker,
         );
+        if (context.cacheControl) res.setHeader("Cache-Control", context.cacheControl);
         res.writeHead(
           statusCode,
           statusCode === 404 && res.hasHeader("Content-Type")
@@ -2216,6 +2252,7 @@ async function renderErrorPage(
     defaultResponse.headers.forEach((value, key) => {
       headers[key] = value;
     });
+    if (context.cacheControl) headers["cache-control"] = context.cacheControl;
     res.writeHead(defaultResponse.status, headers);
     res.end(await defaultResponse.text());
     return;

@@ -343,6 +343,86 @@ it('keeps the locale cookie updated when changing the locale and uses soft navig
   expect(tracker.numPageLoads).toBe(1);
 });
 
+// vinext: Next.js cancels a Link's queued prefetch when the Link unmounts.
+// A `/de/*` prefetch still queued when the German page goes away must never
+// reach the middleware, which would reset `NEXT_LOCALE` to `de` after the
+// switch to English.
+it('drops prefetches queued by the previous locale after switching the locale', async ({
+  page
+}) => {
+  await page.setViewportSize({width: 1280, height: 2400});
+  let releaseHeld!: () => void;
+  const held = new Promise<void>((resolve) => {
+    releaseHeld = resolve;
+  });
+  let heldCount = 0;
+  let switched = false;
+  const stalePrefetches: Array<string> = [];
+
+  await page.route('**/*', async (route) => {
+    const request = route.request();
+    if (request.headers()['next-router-prefetch'] !== '1') {
+      return route.continue();
+    }
+    const {pathname} = new URL(request.url());
+    if (switched && pathname.startsWith('/de')) stalePrefetches.push(pathname);
+    if (heldCount < 4) {
+      // Occupy the four prefetch slots so the page's other prefetches queue.
+      heldCount++;
+      const response = await route.fetch({maxRedirects: 0});
+      await held;
+      return route.fulfill({response});
+    }
+    return route.continue();
+  });
+
+  try {
+    await page.goto('/de');
+    await assertLocaleCookieValue(page, 'de');
+    await expect.poll(() => heldCount).toBe(4);
+    // Count the pending prefetches and keep a barrier for all of them.
+    const pendingPrefetches = () =>
+      page.evaluate(() => {
+        const state = window as unknown as {
+          __VINEXT_RSC_PREFETCH_CACHE__?: Map<string, {pending?: Promise<unknown>}>;
+          __germanPrefetches?: Promise<unknown>;
+        };
+        const pending = new Set(
+          [...(state.__VINEXT_RSC_PREFETCH_CACHE__?.values() ?? [])].flatMap(
+            (entry) => (entry.pending ? [entry.pending] : [])
+          )
+        );
+        state.__germanPrefetches = Promise.allSettled(pending);
+        return pending.size;
+      });
+    // Four held requests plus at least one still waiting for a slot.
+    await expect.poll(pendingPrefetches).toBeGreaterThan(4);
+
+    switched = true;
+    await page.getByRole('link', {name: 'Zu Englisch wechseln'}).click();
+    await expect(page).toHaveURL('/');
+    await expect(
+      page.getByRole('heading', {name: 'Home', exact: true})
+    ).toBeVisible();
+    await assertLocaleCookieValue(page, 'en');
+
+    releaseHeld();
+    await page.evaluate(
+      () =>
+        (window as unknown as {__germanPrefetches: Promise<unknown>})
+          .__germanPrefetches
+    );
+    await assertLocaleCookieValue(page, 'en');
+    expect(stalePrefetches).toEqual([]);
+
+    await page.reload();
+    await expect(page).toHaveURL('/');
+  } finally {
+    releaseHeld();
+    await page.unrouteAll({behavior: 'wait'});
+  }
+});
+
 it('can use `Link` in client components without using a provider', async ({
   page
 }) => {

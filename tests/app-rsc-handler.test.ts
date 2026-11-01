@@ -18,18 +18,14 @@ import {
   type DispatchAppWorkerResponseStage,
 } from "../packages/vinext/src/server/app-worker-stages.js";
 import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src/server/worker-stages.js";
+import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
+import type { PagesRouteDataKind } from "../packages/vinext/src/server/pages-route-data-kind.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
-import { createArtifactCompatibilityEnvelope } from "../packages/vinext/src/server/artifact-compatibility.js";
-import {
-  createClientReuseManifest,
-  createClientReusePayloadHash,
-} from "../packages/vinext/src/server/client-reuse-manifest.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MW_CTX_HEADER,
   VINEXT_PARAMS_HEADER,
@@ -58,6 +54,7 @@ import {
   headers as requestHeaders,
 } from "../packages/vinext/src/shims/headers.js";
 import { readStaticFileSignal } from "../packages/vinext/src/server/static-file-signal.js";
+import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
 import { publicFileRouteKey } from "../packages/vinext/src/utils/public-file-path.js";
 import {
   runWithExecutionContext,
@@ -174,7 +171,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
 
   return createAppRscHandler<TestRoute>({
     assetPrefix: overrides.assetPrefix,
-    basePath: "/docs",
+    basePath: overrides.basePath ?? "/docs",
     buildId: overrides.buildId ?? "build-id",
     cacheabilityRequestProjection: overrides.cacheabilityRequestProjection,
     clearRequestContext: overrides.clearRequestContext ?? (() => {}),
@@ -577,6 +574,58 @@ describe("createAppRscHandler", () => {
     expect(workUnitType).toBe("request");
   });
 
+  it.each([
+    {
+      name: "an authorized on-demand revalidation",
+      secret: () => getRevalidateSecret(),
+      expected: true,
+    },
+    { name: "a wrong revalidation secret", secret: () => "wrong-secret", expected: false },
+  ])("marks the split response stage's data caches for $name", async ({ secret, expected }) => {
+    let isOnDemandRevalidate: boolean | undefined;
+    const handler = createHandler({
+      dispatchMatchedPage: async () => {
+        isOnDemandRevalidate = _isOnDemandRevalidate();
+        return new Response("page");
+      },
+    });
+
+    const response = await handler.handleResponseStage(
+      new Request("https://example.test/docs/about", {
+        headers: { [PRERENDER_REVALIDATE_HEADER]: secret() },
+      }),
+      null,
+      {
+        kind: "app-page",
+        buildId: "build-id",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/about" },
+        bypassInterceptionContextCache: false,
+        cachePathname: "/about",
+        canUseCanonicalLoadingShell: false,
+        canonicalPathname: "/about",
+        cleanPathname: "/about",
+        draftModeCookie: null,
+        interceptionContext: null,
+        interceptionId: null,
+        isRscRequest: false,
+        matchKind: "resolved",
+        middlewareCookieOverlay: null,
+        mountedSlotsHeader: null,
+        params: {},
+        protocolVersion: APP_WORKER_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestOrigin: "https://example.test",
+        renderMode: "navigation",
+        resolvedUrl: "/about",
+        routePattern: "/about",
+        routePathname: "/about",
+        scriptNonce: null,
+      },
+    );
+
+    expect(response.status).toBe(200);
+    expect(isOnDemandRevalidate).toBe(expected);
+  });
+
   it("carries route-identity cache bypass into split route-handler execution", async () => {
     const route = createPageRoute({
       __loadPage: undefined,
@@ -937,7 +986,7 @@ describe("createAppRscHandler", () => {
     });
   });
 
-  it("keeps rewritten and mounted-slot RSC requests contextual", async () => {
+  it("canonicalizes rewritten RSC requests and keeps mounted-slot ones contextual", async () => {
     const route = createPageRoute();
     const matchRoute = (pathname: string) => (pathname === "/about" ? { params: {}, route } : null);
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
@@ -963,8 +1012,10 @@ describe("createAppRscHandler", () => {
     );
 
     const [rewrittenRequest, rewrittenProps] = dispatchResponseStage.mock.calls[0]!;
-    expect(rewrittenRequest.headers.get("next-url")).toBe("/source");
-    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).not.toBe("");
+    // The rewrite target is in the props, so the per-navigation selectors are
+    // canonicalized away and every navigation shares one cache entry.
+    expect(rewrittenRequest.headers.get("next-url")).toBeNull();
+    expect(new URL(rewrittenRequest.url).searchParams.get("_rsc")).toBe("");
     expect(rewrittenProps).toMatchObject({ matchKind: "resolved" });
 
     dispatchResponseStage.mockClear();
@@ -1020,9 +1071,11 @@ describe("createAppRscHandler", () => {
     }
   });
 
-  describe("query-free cache identity", () => {
+  describe("shared cache identity", () => {
     function useQueryFreeIdentityAdapter(
-      overrides: Partial<Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission">> = {},
+      overrides: Partial<
+        Pick<CdnCacheAdapter, "requiresCompletedResponseAdmission" | "responseStageCacheIdentity">
+      > = {},
     ): void {
       setCdnCacheAdapter({
         buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
@@ -1066,9 +1119,16 @@ describe("createAppRscHandler", () => {
           resolvedUrl: "/about?tab=latest&utm_source=x",
         });
         expect(options.cache).toBe("shared");
-        expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+        expect(options.cacheIdentity?.request.url).toBe(
+          `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
+        );
         expect(options.cacheIdentity?.request.method).toBe("GET");
-        expect(options.cacheIdentity?.props).toEqual({ ...props, resolvedUrl: "/about" });
+        expect(options.cacheIdentity?.queryFree).toBe(true);
+        expect(options.cacheIdentity?.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+          resolvedUrl: "/about",
+        });
       }
     });
 
@@ -1089,7 +1149,7 @@ describe("createAppRscHandler", () => {
       const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
       expect(props).toMatchObject({ isRscRequest: false, kind: "app-page" });
       expect(new URL(request.url).searchParams.has("_rsc")).toBe(true);
-      expect(options.cacheIdentity?.request.url).toBe("https://example.test/docs/about");
+      expect(options.cacheIdentity?.request.url).toBe(`${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`);
     });
 
     it("drops RSC selector headers from HTML identities, which never read them", async () => {
@@ -1168,14 +1228,11 @@ describe("createAppRscHandler", () => {
       );
 
       const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
-      // Rewritten RSC requests stay contextual, so the raw URL reaches dispatch.
+      // Rewritten RSC requests are canonicalized like direct ones, so the
+      // per-navigation hash and the user's `_rsc` pairs leave the identity.
       expect(props).toMatchObject({ isRscRequest: true, matchKind: "resolved" });
-      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([
-        hash,
-        "ignored",
-        "encoded",
-      ]);
-      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe(`/docs/source?_rsc=${hash}`);
+      expect(new URL(request.url).searchParams.getAll("_rsc")).toEqual([""]);
+      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc");
     });
 
     it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
@@ -1213,7 +1270,11 @@ describe("createAppRscHandler", () => {
       expect(props).toMatchObject({ renderMode: "navigation", resolvedUrl: "/about?tab=latest" });
       expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about?_rsc");
       expect(options.cacheIdentity!.request.headers.get(RSC_HEADER)).toBe("1");
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
 
       dispatchResponseStage.mockClear();
       const shellHeaders = createRscRequestHeaders({
@@ -1243,7 +1304,11 @@ describe("createAppRscHandler", () => {
       expect(options.cacheIdentity!.request.headers.get("x-vinext-rsc-render-mode")).toBe(
         "prefetch-loading-shell",
       );
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
 
       dispatchResponseStage.mockClear();
       const suffixHeaders = createRscRequestHeaders();
@@ -1256,7 +1321,11 @@ describe("createAppRscHandler", () => {
       [request, props, options] = dispatchResponseStage.mock.calls[0]!;
       expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?tab=latest&_rsc");
       expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about.rsc?_rsc");
-      expect(options.cacheIdentity!.props).toEqual({ ...props, resolvedUrl: "/about" });
+      expect(options.cacheIdentity!.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        resolvedUrl: "/about",
+      });
     });
 
     it("is absent unless the adapter declares it behind completed-response admission", async () => {
@@ -1330,13 +1399,22 @@ describe("createAppRscHandler", () => {
         dispatchResponseStage,
       );
 
-      expect(dispatchResponseStage.mock.calls[0]?.[1].cacheability.policyHeaders).toEqual([
-        ["Cache-Control", "public, s-maxage=60"],
-      ]);
-      expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+      const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+      expect(props.cacheability.policyHeaders).toEqual([["Cache-Control", "public, s-maxage=60"]]);
+      // The policy is cached per URL, so the identity keeps the query and
+      // drops only the host.
+      expect(options.cacheIdentity?.request.url).toBe(
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about?tab=latest`,
+      );
+      expect(options.cacheIdentity?.queryFree).toBeUndefined();
+      expect(options.cacheIdentity?.props).toEqual({
+        ...props,
+        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+      });
+      expect(new URL(request.url).origin).toBe("https://example.test");
     });
 
-    it("is absent for mounted-slot, interception and route-handler dispatches", async () => {
+    it("keeps the query and contextual selectors in mounted-slot, interception and route-handler identities", async () => {
       useQueryFreeIdentityAdapter();
       const pageRoute = createPageRoute();
       const sourceRoute = createPageRoute({ pattern: "/feed", routeSegments: ["feed"] });
@@ -1400,17 +1478,198 @@ describe("createAppRscHandler", () => {
         dispatchResponseStage,
       );
 
+      for (const [request, props, options] of dispatchResponseStage.mock.calls) {
+        expect(options.cache).toBe("shared");
+        expect(options.cacheIdentity?.request.url).toBe(
+          `${VINEXT_CACHE_IDENTITY_ORIGIN}${pathAndSearch(request.url)}`,
+        );
+        expect([...options.cacheIdentity!.request.headers]).toEqual([...request.headers]);
+        expect(options.cacheIdentity?.queryFree).toBeUndefined();
+        expect(options.cacheIdentity?.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        });
+      }
       expect(
-        dispatchResponseStage.mock.calls.map(([, props, options]) => [
+        dispatchResponseStage.mock.calls.map(([, props]) => [
           props.kind,
           "matchKind" in props ? props.matchKind : null,
-          options,
         ]),
       ).toEqual([
-        ["app-page", "request", { cache: "shared" }],
-        ["app-page", "interception", { cache: "shared" }],
-        ["app-route-handler", "request", { cache: "shared" }],
+        ["app-page", "request"],
+        ["app-page", "interception"],
+        ["app-route-handler", "request"],
       ]);
+    });
+
+    // Next.js keys its response cache by pathname, so every host an app
+    // serves shares one entry.
+    it("names one origin for every host, whatever the dispatch kind", async () => {
+      useQueryFreeIdentityAdapter();
+      const pageRoute = createPageRoute();
+      const handlerRoute = createPageRoute({
+        __loadPage: undefined,
+        __loadRouteHandler() {},
+        page: null,
+        pattern: "/route",
+        routeHandler: { GET: () => new Response("get") },
+        routeSegments: ["route"],
+      });
+      const matchRoute = (pathname: string) => {
+        if (pathname === "/about") return { params: {}, route: pageRoute };
+        if (pathname === "/route") return { params: {}, route: handlerRoute };
+        return null;
+      };
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      const handler = createHandler({
+        configHeaders: [],
+        matchRequestRoute: matchRoute,
+        matchRoute,
+      });
+
+      const identities = [];
+      for (const pathname of ["/docs/about?tab=latest", "/docs/route?tab=latest"]) {
+        const perHost = [];
+        for (const origin of ["https://tenant-a.example", "http://tenant-b.example:8080"]) {
+          dispatchResponseStage.mockClear();
+          await handler(new Request(`${origin}${pathname}`), null, false, dispatchResponseStage);
+          const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+          expect(new URL(request.url).origin).toBe(origin);
+          expect(props.requestOrigin).toBe(origin);
+          perHost.push({
+            method: options.cacheIdentity!.request.method,
+            props: options.cacheIdentity!.props,
+            url: options.cacheIdentity!.request.url,
+          });
+        }
+        expect(perHost[0]).toEqual(perHost[1]);
+        identities.push(perHost[0]);
+      }
+      expect(identities.map(({ url }) => url)).toEqual([
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about`,
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/route?tab=latest`,
+      ]);
+    });
+
+    // Workers Cache keys the dispatched path and query, so its identity only
+    // names one origin, and the dispatch keeps the query for the render.
+    it("keeps the query and selector headers in a host-free page identity", async () => {
+      useQueryFreeIdentityAdapter({ responseStageCacheIdentity: "host-free" });
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("page"),
+      );
+      const handler = createHandler({ configHeaders: [] });
+
+      const identities = [];
+      for (const origin of ["https://tenant-a.example", "http://tenant-b.example:8080"]) {
+        dispatchResponseStage.mockClear();
+        await handler(
+          new Request(`${origin}/docs/about?tab=latest`, { headers: { "Next-Url": "/feed" } }),
+          null,
+          false,
+          dispatchResponseStage,
+        );
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(request.url).toBe(`${origin}/docs/about?tab=latest`);
+        expect(props).toMatchObject({ requestOrigin: origin, resolvedUrl: "/about?tab=latest" });
+        expect(options.cacheIdentity!.props).toEqual({
+          ...props,
+          requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+        });
+        expect(options.cacheIdentity!.request.headers.get("Next-Url")).toBe("/feed");
+        identities.push({
+          method: options.cacheIdentity!.request.method,
+          props: options.cacheIdentity!.props,
+          url: options.cacheIdentity!.request.url,
+        });
+      }
+      expect(identities[0]).toEqual(identities[1]);
+      expect(identities[0]!.url).toBe(`${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/about?tab=latest`);
+    });
+
+    // Next.js keys a static Pages page by its path, while vinext's Pages ISR
+    // key keeps a configured i18n domain.
+    it("names one origin for every host of a static hybrid Pages page", async () => {
+      useQueryFreeIdentityAdapter();
+      const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
+        async () => new Response("payload"),
+      );
+      let dataKind: PagesRouteDataKind = "static";
+      let runsInitialProps = false;
+      const handler = createHandler({
+        configHeaders: [],
+        i18nConfig: {
+          defaultLocale: "en",
+          domains: [{ defaultLocale: "fr", domain: "example.fr", http: true }],
+          locales: ["en", "fr"],
+        },
+        matchRequestRoute: () => null,
+        matchRoute: () => null,
+        renderPagesFallback: async (options) =>
+          options.dispatchPagesResponseStage?.(
+            options.request,
+            "page",
+            dataKind,
+            false,
+            runsInitialProps,
+          ) ?? null,
+      });
+      const dispatch = async (url: string) => {
+        dispatchResponseStage.mockClear();
+        await handler(new Request(url), null, false, dispatchResponseStage);
+        const [request, props, options] = dispatchResponseStage.mock.calls[0]!;
+        expect(request.url).toBe(url);
+        expect(props).toMatchObject({ requestOrigin: new URL(url).origin, requestUrl: url });
+        return { props, options };
+      };
+
+      for (const kind of ["static", "none"] as const) {
+        dataKind = kind;
+        const identities = [];
+        for (const url of [
+          "https://tenant-a.example/docs/pages?tab=latest",
+          "http://tenant-b.example:8080/docs/pages?tab=latest",
+        ]) {
+          const { props, options } = await dispatch(url);
+          expect(props).toMatchObject({ kind: "hybrid-pages", sharedAcrossHosts: true });
+          expect(options.cacheIdentity!.regenerateFromDispatch).toBe(true);
+          identities.push({
+            props: options.cacheIdentity!.props,
+            url: options.cacheIdentity!.request.url,
+          });
+        }
+        expect(identities[0]).toEqual(identities[1]);
+        expect(identities[0]).toMatchObject({
+          props: {
+            requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
+            requestUrl: `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/pages?tab=latest`,
+            sharedAcrossHosts: true,
+          },
+          url: `${VINEXT_CACHE_IDENTITY_ORIGIN}/docs/pages?tab=latest`,
+        });
+
+        const { options } = await dispatch("https://example.fr:8443/docs/pages");
+        expect(options.cacheIdentity!.request.url).toBe("http://example.fr/docs/pages");
+        expect(options.cacheIdentity!.props).toMatchObject({
+          requestOrigin: "http://example.fr",
+          requestUrl: "http://example.fr/docs/pages",
+        });
+      }
+
+      // A getServerSideProps page, or one whose getInitialProps runs, renders
+      // per request and keeps the host in its key.
+      for (const [kind, initialProps] of [
+        ["server", false],
+        ["none", true],
+      ] as const) {
+        dataKind = kind;
+        runsInitialProps = initialProps;
+        const { props, options } = await dispatch("https://tenant-a.example/docs/pages");
+        expect(props).toMatchObject({ sharedAcrossHosts: false });
+        expect(options).toEqual({ cache: "shared" });
+      }
     });
   });
 
@@ -2775,6 +3034,46 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
   });
 
+  // A probe renders as the shared dispatch, whose entry every host shares.
+  it("marks a hybrid Pages probe shared across hosts as the shared dispatch would be", async () => {
+    setCdnCacheAdapter({
+      buildResponseHeaders: ({ cacheControl }) => ({ "Cache-Control": cacheControl }),
+      ownsBackgroundRevalidation: false,
+      requiresCompletedResponseAdmission: true,
+      responseStageCacheIdentity: "host-free",
+      async get() {
+        return null;
+      },
+      async revalidateTag() {},
+      async set() {},
+    });
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("probe")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async (options) =>
+        options.dispatchPagesResponseStage?.(options.request, "page", "none") ?? null,
+    });
+
+    await handler(
+      new Request("https://example.test/docs/pages"),
+      null,
+      false,
+      dispatchResponseStage,
+      "probe",
+    );
+
+    expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({
+      kind: "hybrid-pages",
+      cacheability: { probeMode: "probe" },
+      sharedAcrossHosts: true,
+    });
+    expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "bypass" });
+  });
+
   it("carries hybrid Pages data and API identity in response-stage props", async () => {
     const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(
       async () => new Response("stage"),
@@ -2814,6 +3113,42 @@ describe("createAppRscHandler", () => {
     );
     expect(dispatchResponseStage.mock.calls[0]?.[1]).toMatchObject({ resourceKind: "api" });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
+  });
+
+  // Next.js re-adds the root's trailing slash after splicing in the default
+  // locale only when the raw request pathname ended in `/`. Without
+  // middleware a `/_next/data` index request is matched raw, so the
+  // locale-prefixed root rule must not apply to it even though the handler
+  // rewrites it to `/` before header matching.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  it("restores the locale root trailing slash for header matching only from the raw URL", async () => {
+    const { applyLocaleToRoutes } =
+      await import("../packages/vinext/src/config/config-matchers.js");
+    const i18nConfig = { locales: ["en", "fr"], defaultLocale: "en" };
+    const handler = createHandler({
+      configHeaders: applyLocaleToRoutes(
+        [{ source: "/", headers: [{ key: "x-locale-root", value: "1" }] }],
+        i18nConfig,
+        "header",
+        { trailingSlash: true },
+      ),
+      basePath: "",
+      i18nConfig,
+      trailingSlash: true,
+      matchRequestRoute: () => null,
+      matchRoute: () => null,
+      renderPagesFallback: async () => new Response("page"),
+    });
+
+    const root = await handler(new Request("https://example.test/"), null);
+    expect(root.headers.get("x-locale-root")).toBe("1");
+
+    const data = await handler(
+      new Request("https://example.test/_next/data/build-id/index.json"),
+      null,
+    );
+    expect(await data.text()).toBe("page");
+    expect(data.headers.get("x-locale-root")).toBeNull();
   });
 
   // Ported from Next.js cross-router res.revalidate() coverage:
@@ -3080,6 +3415,42 @@ describe("createAppRscHandler", () => {
     });
     expect(dispatchResponseStage.mock.calls[0]?.[2]).toEqual({ cache: "shared" });
     expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=3600");
+  });
+
+  it("normalizes a contextual RSC request reached through a rewrite before shared dispatch", async () => {
+    const route = createPageRoute();
+    const dispatchResponseStage = vi.fn<DispatchAppWorkerResponseStage>(async () =>
+      Promise.resolve(new Response("rsc")),
+    );
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [{ source: "/alias", destination: "/about" }],
+        afterFiles: [],
+        fallback: [],
+      },
+      matchRequestRoute: () => null,
+      matchRoute: (pathname) => (pathname === "/about" ? { params: {}, route } : null),
+    });
+    const headers = createRscRequestHeaders({
+      nextUrl: "/source",
+      routerState: { pathAndSearch: "/source", routeId: "route:/source" },
+    });
+    const contextualUrl = await createRscRequestUrl("/docs/alias", headers);
+
+    await handler(
+      new Request(new URL(contextualUrl, "https://example.test"), { headers }),
+      null,
+      false,
+      dispatchResponseStage,
+    );
+
+    const [request, props] = dispatchResponseStage.mock.calls[0]!;
+    expect(props).toMatchObject({ kind: "app-page", matchKind: "resolved" });
+    // Without canonicalization the per-navigation state tree and `_rsc` hash
+    // reach the cache key, so every prefetch and reload misses.
+    expect(request.headers.get("next-router-state-tree")).toBeNull();
+    expect(request.headers.get("next-url")).toBeNull();
   });
 
   it.each([
@@ -3435,6 +3806,7 @@ describe("createAppRscHandler", () => {
         resolvedUrl: "/pages",
         resourceKind: "page",
         scriptNonce: null,
+        sharedAcrossHosts: false,
       },
       { cache: "shared" },
     );
@@ -3933,6 +4305,115 @@ describe("createAppRscHandler", () => {
 
     expect(sourceConfigHeader).toBe("applied");
   });
+
+  // Next.js stages next.config headers before middleware, whose own Set-Cookie
+  // replaces a config one.
+  it.each([
+    { middlewareCookie: false, cookies: ["config-cookie=1; Path=/"] },
+    { middlewareCookie: true, cookies: [] },
+  ])(
+    "drops a config Set-Cookie from Server Action source headers when middleware sets cookies: $middlewareCookie",
+    async ({ middlewareCookie, cookies }) => {
+      let sourceConfigCookies: string[] | undefined;
+      const handler = createHandler({
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }] },
+        ],
+        handleServerActionRequest: async (options) => {
+          sourceConfigCookies = options.sourceConfigHeaders?.getSetCookie();
+          return new Response("action");
+        },
+        middlewareModule: {
+          async default() {
+            const headers = new Headers({ "x-middleware-next": "1" });
+            if (middlewareCookie) headers.append("Set-Cookie", "middleware-cookie=1; Path=/");
+            return new Response(null, { headers });
+          },
+        },
+      });
+
+      await handler(
+        new Request("https://example.test/docs/about", {
+          method: "POST",
+          headers: { "next-action": "action-id", "content-type": "text/plain" },
+        }),
+        null,
+      );
+
+      expect(sourceConfigCookies).toEqual(cookies);
+    },
+  );
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's,
+  // keeping middleware's cookies ahead of the upstream's.
+  it.each([
+    { rewrite: "beforeFiles", configHeader: null, middlewareHeader: null },
+    { rewrite: "afterFiles", configHeader: null, middlewareHeader: null },
+    { rewrite: "fallback", configHeader: null, middlewareHeader: null },
+    { rewrite: "middleware", configHeader: "1", middlewareHeader: "1" },
+  ])(
+    "applies staged headers to a $rewrite external rewrite like Next.js",
+    async ({ rewrite, ...expected }) => {
+      const upstream = createServer((_req, res) => {
+        res.setHeader("Set-Cookie", ["upstream-cookie=1"]);
+        res.setHeader("Cache-Control", "public, max-age=60");
+        res.end("upstream");
+      });
+      await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+      const destination = `http://127.0.0.1:${(upstream.address() as AddressInfo).port}/proxy`;
+      const configRewrite = [{ source: "/outside", destination }];
+
+      try {
+        const handler = createHandler({
+          configHeaders: [
+            {
+              source: "/outside",
+              headers: [
+                { key: "Set-Cookie", value: "config-cookie=1" },
+                { key: "x-config-header", value: "1" },
+              ],
+            },
+          ],
+          configRewrites: {
+            beforeFiles: rewrite === "beforeFiles" ? configRewrite : [],
+            afterFiles: rewrite === "afterFiles" ? configRewrite : [],
+            fallback: rewrite === "fallback" ? configRewrite : [],
+          },
+          middlewareModule: {
+            default() {
+              const headers = new Headers({
+                "cache-control": "private, max-age=7",
+                "x-mw-response-header": "1",
+              });
+              headers.append("set-cookie", "middleware-cookie=1");
+              if (rewrite === "middleware") headers.set("x-middleware-rewrite", destination);
+              else headers.set("x-middleware-next", "1");
+              return new Response(null, { headers });
+            },
+          },
+          matchRoute: () => null,
+        });
+
+        const response = await handler(new Request("https://example.test/docs/outside"), null);
+
+        expect(await response.text()).toBe("upstream");
+        expect({
+          cacheControl: response.headers.get("cache-control"),
+          cookies: response.headers.getSetCookie(),
+          configHeader: response.headers.get("x-config-header"),
+          middlewareHeader: response.headers.get("x-mw-response-header"),
+        }).toEqual({
+          cacheControl: "public, max-age=60",
+          cookies: ["middleware-cookie=1", "upstream-cookie=1"],
+          ...expected,
+        });
+      } finally {
+        upstream.closeAllConnections();
+        await new Promise<void>((resolve) => upstream.close(() => resolve()));
+      }
+    },
+  );
 
   it.each(["afterFiles", "fallback"] as const)(
     "does not let out-of-basePath POST requests through %s rewrites reach App route handlers",
@@ -5103,6 +5584,55 @@ describe("createAppRscHandler", () => {
       }
     },
   );
+
+  // A direct request to a dynamic route takes afterFiles rules before the route
+  // is accepted, so a rule that rewrites the source away refuses it as a source
+  // too. A static route is final before afterFiles, so the rule never applies.
+  it.each([
+    { label: "a dynamic source", isDynamic: true, status: 404 },
+    { label: "a static source", isDynamic: false, status: 200 },
+  ])("applies afterFiles rewrites to $label", async ({ isDynamic, status }) => {
+    const targetRoute = createPageRoute({ pattern: "/photos/1", routeSegments: ["photos", "1"] });
+    const sourceRoute = createPageRoute({
+      isDynamic,
+      pattern: "/members/7",
+      routeSegments: ["members", "7"],
+    });
+    const loginRoute = createPageRoute({ pattern: "/login", routeSegments: ["login"] });
+    const dispatchMatchedPage = vi.fn(async () => new Response("member"));
+    const handler = createHandler({
+      configHeaders: [],
+      configRewrites: {
+        beforeFiles: [],
+        afterFiles: [{ source: "/members/:id", destination: "/login" }],
+        fallback: [],
+      },
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) =>
+        sourcePathname === "/members/7"
+          ? { interceptionSourceIsConcrete: true, route: sourceRoute, params: {} }
+          : null,
+      matchRoute: (pathname: string) => {
+        if (pathname === "/photos/1") return { params: {}, route: targetRoute };
+        if (pathname === "/members/7") return { params: {}, route: sourceRoute };
+        if (pathname === "/login") return { params: {}, route: loginRoute };
+        return null;
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/members/7" });
+    const rscUrl = await createRscRequestUrl("/docs/photos/1", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(status);
+    if (status === 200) {
+      expect(dispatchMatchedPage).toHaveBeenCalledWith(
+        expect.objectContaining({ interceptionContext: "/members/7" }),
+      );
+    } else {
+      expect(dispatchMatchedPage).not.toHaveBeenCalled();
+    }
+  });
 
   // A direct request rebuilds its rewrite context after middleware, so a
   // `Host` that middleware adds selects host-conditioned beforeFiles rules.
@@ -7258,6 +7788,68 @@ describe("createAppRscHandler", () => {
     expect(dispatchResponseStage).toHaveBeenCalledOnce();
     expect(response.headers.get("Cache-Control")).toBe("private, no-store");
     await expect(response.text()).resolves.toBe("staged-page");
+  });
+
+  // Next.js also serves JSON at data URLs with trailingSlash enabled:
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/middleware-trailing-slash/test/index.test.ts
+  describe.each(["", "/docs"])("Pages data canonicalization (basePath=%s)", (basePath) => {
+    it.each([
+      { trailingSlash: false, page: "index" },
+      { trailingSlash: false, page: "legacy-static" },
+      { trailingSlash: false, page: "legacy-data/one" },
+      { trailingSlash: true, page: "index" },
+      { trailingSlash: true, page: "legacy-static" },
+      { trailingSlash: true, page: "legacy-data/one" },
+    ])(
+      "serves $page data without a document redirect (trailingSlash=$trailingSlash)",
+      async ({ trailingSlash, page }) => {
+        const renderPagesFallback = vi.fn(
+          async ({ pagesDataRequest }: { pagesDataRequest?: Request | null }) =>
+            Response.json({ url: pagesDataRequest?.url }),
+        );
+        const handler = createHandler({
+          basePath,
+          trailingSlash,
+          configHeaders: [],
+          matchRequestRoute: () => null,
+          matchRoute: () => null,
+          renderPagesFallback,
+        });
+
+        const response = await handler(
+          new Request(`https://example.test${basePath}/_next/data/build-id/${page}.json?q=kept`),
+          null,
+        );
+
+        expect(response.status).toBe(200);
+        expect(response.headers.has("location")).toBe(false);
+        const data = await response.json();
+        expect(new URL(data.url).search).toBe("?q=kept");
+        expect(renderPagesFallback).toHaveBeenCalledTimes(1);
+        expect(renderPagesFallback).toHaveBeenCalledWith(
+          expect.objectContaining({ isDataRequest: true }),
+        );
+      },
+    );
+
+    it.each([false, true])(
+      "still canonicalizes documents with a forged data header (trailingSlash=%s)",
+      async (trailingSlash) => {
+        const handler = createHandler({ basePath, trailingSlash, configHeaders: [] });
+        const pathname = `/about${trailingSlash ? "" : "/"}`;
+        const response = await handler(
+          new Request(`https://example.test${basePath}${pathname}?q=kept`, {
+            headers: { "x-nextjs-data": "1" },
+          }),
+          null,
+        );
+
+        expect(response.status).toBe(308);
+        expect(response.headers.get("location")).toBe(
+          `${basePath}/about${trailingSlash ? "/" : ""}?q=kept`,
+        );
+      },
+    );
   });
 
   it("does not trailing-slash redirect RSC requests built from already-canonical trailingSlash paths", async () => {
@@ -10029,45 +10621,6 @@ describe("createAppRscHandler", () => {
     expect(dispatchMatchedPage).toHaveBeenCalledWith(
       expect.objectContaining({
         cleanPathname: "/about",
-        isRscRequest: true,
-      }),
-    );
-  });
-
-  it("passes parsed ClientReuseManifest hints from canonical RSC requests to page dispatch", async () => {
-    const dispatchMatchedPage = vi.fn(async () => new Response("page", { status: 200 }));
-    const manifest = createClientReuseManifest({
-      entries: [
-        {
-          artifactCompatibility: createArtifactCompatibilityEnvelope(),
-          id: "layout:/",
-          payloadHash: createClientReusePayloadHash("root-layout"),
-          privacy: "public",
-          variantCacheKey: "cp1:root",
-        },
-      ],
-      visibleCommitVersion: 1,
-    });
-    const handler = createHandler({
-      configHeaders: [],
-      dispatchMatchedPage,
-    });
-
-    const response = await handler(
-      new Request("https://example.test/docs/about.rsc", {
-        headers: {
-          [VINEXT_CLIENT_REUSE_MANIFEST_HEADER]: JSON.stringify(manifest),
-        },
-      }),
-      null,
-    );
-
-    expect(response.status).toBe(200);
-    expect(dispatchMatchedPage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        clientReuseManifest: expect.objectContaining({
-          kind: "parsed",
-        }),
         isRscRequest: true,
       }),
     );

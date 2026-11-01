@@ -26,6 +26,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next({ request: { headers } });
   }
 
+  // Middleware cookies must precede the Pages API route's res.appendHeader
+  // cookies. Coverage: tests/app-router-production-server.test.ts
+  if (pathname === "/api/pages-append-header") {
+    const response = NextResponse.next();
+    response.cookies.set("mw", "1");
+    return response;
+  }
+
   if (pathname === "/internal-header-secret.txt") {
     return new Response("blocked by middleware", {
       status: 403,
@@ -41,6 +49,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       status: 403,
       headers: { "content-type": "text/plain" },
     });
+  }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/app-router-prod/public-file-encoding.spec.ts
+  if (
+    pathname.startsWith("/members%20only/") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
   }
 
   if (pathname === "/middleware-image-rewrite") {
@@ -143,6 +159,56 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return NextResponse.next();
   }
 
+  // next.config.ts adds config headers to /external-headers/* and proxies its
+  // before-files, after-files and fallback paths to the local upstream.
+  // Middleware proxies /external-headers/middleware/* there itself.
+  if (pathname.startsWith("/external-headers/")) {
+    const upstreamPort = request.headers.get("x-test-upstream-port");
+    const middlewarePath = pathname.slice("/external-headers/middleware".length);
+    const response =
+      pathname.startsWith("/external-headers/middleware/") && /^\d+$/.test(upstreamPort ?? "")
+        ? NextResponse.rewrite(`http://127.0.0.1:${upstreamPort}${middlewarePath}`)
+        : NextResponse.next();
+    const search = request.nextUrl.searchParams;
+    if (search.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    if (search.has("middleware-header")) response.headers.set("x-mw-response-header", "1");
+    if (search.has("middleware-cache-control")) {
+      response.headers.set("Cache-Control", "private, max-age=7");
+    }
+    return response;
+  }
+
+  // next.config.ts adds a config Set-Cookie to these paths. Middleware's own
+  // cookie replaces it, as in Next.js.
+  if (pathname === "/config-cookie-redirect" || pathname === "/config-cookie-response") {
+    const response =
+      pathname === "/config-cookie-redirect"
+        ? NextResponse.redirect(new URL("/about", request.url))
+        : new NextResponse("from middleware");
+    if (request.nextUrl.searchParams.has("middleware-cookie")) {
+      response.cookies.set("middleware-cookie", "1", { path: "/" });
+    }
+    // Next.js ignores an empty middleware Set-Cookie.
+    if (request.nextUrl.searchParams.has("empty-middleware-cookie")) {
+      response.headers.set("Set-Cookie", "");
+    }
+    return response;
+  }
+  if (pathname === "/api/config-cookie" && request.nextUrl.searchParams.has("middleware-cookie")) {
+    const response = NextResponse.next();
+    response.cookies.set("middleware-cookie", "1", { path: "/" });
+    return response;
+  }
+  // Next.js ignores an empty middleware Set-Cookie.
+  if (
+    pathname === "/api/config-cookie" &&
+    request.nextUrl.searchParams.has("empty-middleware-cookie")
+  ) {
+    return NextResponse.next({ headers: { "Set-Cookie": "" } });
+  }
+
   // Test NextRequest.cookies - this would fail with TypeError if request is plain Request
   const sessionToken = request.cookies.get("session");
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
@@ -171,6 +237,13 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
 
   if (sessionToken) {
     response.headers.set("x-mw-has-session", "true");
+  }
+
+  if (pathname === "/api/auth-challenge" || pathname === "/api/pages-auth-challenge") {
+    response.headers.set("WWW-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("Proxy-Authenticate", 'Basic realm="middleware"');
+    response.headers.set("x-auth-source", "middleware");
+    return response;
   }
 
   // Sliding-session refresh: re-issue the session cookie with a renewed
@@ -559,8 +632,15 @@ export const config = {
     "/header-override-delete",
     "/api/header-override-delete",
     "/api/session-refresh",
+    "/api/auth-challenge",
+    "/api/pages-auth-challenge",
+    "/api/config-cookie",
+    "/config-cookie-redirect",
+    "/config-cookie-response",
+    "/external-headers/:path*",
     "/api/header-override-stray",
     "/api/pages-og",
+    "/api/pages-append-header",
     "/api/pages-fallback-to-app/:path*",
     "/header-override-after-prior-access",
     "/pages-header-override-delete",

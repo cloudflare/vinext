@@ -372,6 +372,84 @@ describe("useLinkStatus", () => {
     }
     ReactDOMServer.renderToString(React.createElement(TestComponent));
   });
+
+  it("returns { pending: false } inside a server-rendered Link, from the Link's own provider", () => {
+    const outside: unknown[] = [];
+    const inside: unknown[] = [];
+    function Inside() {
+      inside.push(useLinkStatus());
+      return React.createElement("span", null, "status");
+    }
+    function Outside() {
+      outside.push(useLinkStatus());
+      return React.createElement(
+        React.Fragment,
+        null,
+        React.createElement(Link, { href: "/about" }, React.createElement(Inside)),
+        React.createElement(Link, { href: "/blog" }, React.createElement(Inside)),
+      );
+    }
+    const html = ReactDOMServer.renderToString(React.createElement(Outside));
+    expect(html).toBe(
+      '<a href="/about"><span>status</span></a><a href="/blog"><span>status</span></a>',
+    );
+    expect(inside).toEqual([{ pending: false }, { pending: false }]);
+    // As on the client, each Link provides its own value rather than the
+    // default or a value shared with other Links.
+    expect(inside[0]).not.toBe(outside[0]);
+    expect(inside[1]).not.toBe(outside[0]);
+    expect(inside[0]).not.toBe(inside[1]);
+  });
+});
+
+describe("Link server render", () => {
+  it("renders the anchor with its props and without handlers or refs", () => {
+    const ref = React.createRef<HTMLAnchorElement>();
+    const html = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        {
+          href: "/about?x=1#top",
+          className: "nav",
+          target: "_self",
+          "aria-label": "About",
+          onClick: () => {},
+          onMouseEnter: () => {},
+          prefetch: false,
+          replace: true,
+          scroll: false,
+          ref,
+        },
+        "About",
+      ),
+    );
+    expect(html).toBe(
+      '<a href="/about?x=1#top" class="nav" target="_self" aria-label="About">About</a>',
+    );
+    expect(ref.current).toBeNull();
+  });
+
+  it("renders legacyBehavior and dangerous hrefs through the full component", () => {
+    const legacy = ReactDOMServer.renderToString(
+      React.createElement(
+        Link,
+        { href: "/about", legacyBehavior: true },
+        React.createElement("a", { className: "legacy" }, "About"),
+      ),
+    );
+    expect(legacy).toBe('<a class="legacy" href="/about">About</a>');
+
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const dangerous = ReactDOMServer.renderToString(
+        // oxlint-disable-next-line no-script-url
+        React.createElement(Link, { href: "javascript:alert(1)", className: "x" }, "x"),
+      );
+      expect(dangerous).toBe('<a class="x">x</a>');
+    } finally {
+      warn.mockRestore();
+    }
+  });
 });
 
 describe("Link App Router prefetch mode", () => {
@@ -414,6 +492,210 @@ describe("Link App Router prefetch mode", () => {
       expect(canAutoPrefetchFullAppRoute("/teams/vercel/dashboard")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/settings")).toBe(false);
       expect(canAutoPrefetchFullAppRoute("/missing")).toBe(false);
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("never renders the page of a dynamically rendered route in an automatic prefetch", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/blog",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["dashboard"],
+          isDynamic: false,
+          rendersDynamically: true,
+        },
+        { canPrefetchLoadingShell: false, patternParts: ["about"], isDynamic: false },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["products", ":id"],
+          isDynamic: true,
+          rendersDynamically: true,
+        },
+        { canPrefetchLoadingShell: false, patternParts: ["posts", ":slug"], isDynamic: true },
+        {
+          canPrefetchLoadingShell: true,
+          patternParts: ["blog", ":slug"],
+          isDynamic: true,
+          rendersDynamically: true,
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["teams", ":team", "dashboard"],
+          isDynamic: true,
+          rendersDynamically: true,
+          requiresDynamicNavigationRequest: true,
+        },
+      ],
+    };
+
+    try {
+      // Like Next.js's automatic prefetch, a route whose segment config rules
+      // out static generation never has its page rendered: it prefetches a
+      // learning-only loading shell, fresh for the static period, whether or
+      // not it has a loading boundary.
+      for (const href of [
+        "/dashboard",
+        "/dashboard?tab=usage",
+        "/products/1",
+        "/products/1?tab=reviews",
+        "/blog/hello",
+        "/blog/hello?ref=home",
+        "/teams/vercel/dashboard?tab=members",
+      ]) {
+        expect(resolveAutoAppRoutePrefetch(href)).toMatchObject({
+          cacheForNavigation: false,
+          dynamicStaleTime: "ignore",
+          rendersDynamically: true,
+          shouldPrefetch: true,
+        });
+      }
+      // Routes that may be statically generated keep their full prefetch. If
+      // the page turns out dynamic while rendering, the prefetch is kept as
+      // learning-only for the static period.
+      for (const href of ["/about", "/posts/hello"]) {
+        const policy = resolveAutoAppRoutePrefetch(href);
+        expect(policy.cacheForNavigation).toBe(true);
+        expect(policy.dynamicStaleTime).toBe("learning-only");
+        expect(policy.rendersDynamically).toBeUndefined();
+      }
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as any).window;
+      } else {
+        (globalThis as any).window = originalWindow;
+      }
+    }
+  });
+
+  it("classifies an intercepted prefetch by the intercepting page under its interception context", () => {
+    const originalWindow = globalThis.window;
+    (globalThis as any).window = {
+      location: {
+        href: "http://localhost/feed",
+        origin: "http://localhost",
+      },
+      __VINEXT_LINK_PREFETCH_ROUTES__: [
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["photos", ":id"],
+          isDynamic: true,
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", ":id"],
+              rendersDynamically: true,
+            },
+          ],
+        },
+        {
+          // A static route that the `/photos/:id` intercept also matches.
+          canPrefetchLoadingShell: false,
+          patternParts: ["photos", "featured"],
+          isDynamic: false,
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", ":id"],
+              rendersDynamically: true,
+            },
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["photos", "other"],
+            },
+          ],
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["videos", "featured"],
+          isDynamic: false,
+          intercepts: [
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["videos", "other"],
+              rendersDynamically: true,
+            },
+          ],
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["posts", ":id"],
+          isDynamic: true,
+          rendersDynamically: true,
+          intercepts: [{ sourcePatternParts: ["feed"], targetPatternParts: ["posts", ":id"] }],
+        },
+        { canPrefetchLoadingShell: false, patternParts: ["feed"], isDynamic: false },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["feed", "recent"],
+          isDynamic: false,
+          rendersDynamically: true,
+        },
+        {
+          canPrefetchLoadingShell: false,
+          patternParts: ["tags", ":id"],
+          isDynamic: true,
+          intercepts: [
+            { sourcePatternParts: [], targetPatternParts: ["tags", ":id"] },
+            {
+              sourcePatternParts: ["feed"],
+              targetPatternParts: ["tags", ":id"],
+              rendersDynamically: true,
+            },
+          ],
+        },
+      ],
+    };
+
+    try {
+      // `ƒ /feed/(..)photos/[id]`: under /feed the modal renders dynamically,
+      // so only the route is learned, whatever the target page is.
+      expect(resolveAutoAppRoutePrefetch("/photos/1", "/feed")).toMatchObject({
+        cacheForNavigation: false,
+        rendersDynamically: true,
+      });
+      expect(resolveAutoAppRoutePrefetch("/photos/1", "/feed/latest").cacheForNavigation).toBe(
+        false,
+      );
+      // Without a matching context the target page renders.
+      // The server matches the still-encoded source, so `/%66eed` isn't `/feed`.
+      for (const context of [null, "/feedback", "/elsewhere", "/%66eed"]) {
+        expect(resolveAutoAppRoutePrefetch("/photos/1", context).cacheForNavigation).toBe(true);
+      }
+      // The server matches the still-encoded target, so `/%70hotos/1` renders
+      // the target page, not the modal.
+      expect(resolveAutoAppRoutePrefetch("/%70hotos/1", "/feed").cacheForNavigation).toBe(true);
+      // Only intercepts whose target matches the URL apply.
+      expect(resolveAutoAppRoutePrefetch("/photos/featured", "/feed").cacheForNavigation).toBe(
+        false,
+      );
+      expect(resolveAutoAppRoutePrefetch("/photos/featured").cacheForNavigation).toBe(true);
+      expect(resolveAutoAppRoutePrefetch("/videos/featured", "/feed").cacheForNavigation).toBe(
+        true,
+      );
+      // `● /feed/(..)posts/[id]`: the modal is static even though the target is not.
+      expect(resolveAutoAppRoutePrefetch("/posts/1", "/feed")).toMatchObject({
+        cacheForNavigation: true,
+        dynamicStaleTime: "learning-only",
+      });
+      expect(resolveAutoAppRoutePrefetch("/posts/1").cacheForNavigation).toBe(false);
+      // The intercepted response renders the dynamic route the context resolves to.
+      expect(resolveAutoAppRoutePrefetch("/posts/1", "/feed/recent").cacheForNavigation).toBe(
+        false,
+      );
+      // Of several matching intercepting pages, any dynamic one counts.
+      expect(resolveAutoAppRoutePrefetch("/tags/1", "/feed").cacheForNavigation).toBe(false);
+      expect(resolveAutoAppRoutePrefetch("/tags/1", "/about").cacheForNavigation).toBe(true);
     } finally {
       if (originalWindow === undefined) {
         delete (globalThis as any).window;
@@ -1053,6 +1335,50 @@ describe("Link locale handling", () => {
     const html = ReactDOMServer.renderToString(React.createElement(Link, { href: "/" }, "x"));
 
     expect(html).toContain('href="/id"');
+  });
+
+  it("renders App Router Links without reading the browser location when no locales are configured", () => {
+    const locationReads: string[] = [];
+    const location = {
+      get pathname() {
+        locationReads.push("pathname");
+        return "/current";
+      },
+      get hostname() {
+        locationReads.push("hostname");
+        return "example.com";
+      },
+    };
+    const cases = [
+      { href: "/", expected: "/" },
+      { href: "/user?id=1", expected: "/user?id=1" },
+      { href: "/a/b/#c", expected: "/a/b#c" },
+      { href: "https://example.com/x", expected: "https://example.com/x" },
+      { href: "//cdn.example.com/x", expected: "//cdn.example.com/x" },
+    ];
+    const render = (href: string) =>
+      ReactDOMServer.renderToString(React.createElement(Link, { href }, "x"));
+
+    for (const window of [
+      { location },
+      { location, __VINEXT_LOCALES__: [], __NEXT_DATA__: { domainLocales: [] } },
+    ]) {
+      (globalThis as any).window = window;
+      for (const { href, expected } of cases) {
+        expect(render(href), href).toContain(`href="${expected}"`);
+      }
+    }
+    expect(locationReads).toEqual([]);
+
+    // Configured locales and domain locales still resolve from the location.
+    (globalThis as any).window = {
+      location,
+      __VINEXT_LOCALES__: ["en", "id"],
+      __VINEXT_DEFAULT_LOCALE__: "en",
+      __NEXT_DATA__: { domainLocales: [{ domain: "example.com", defaultLocale: "id" }] },
+    };
+    expect(render("/about")).toContain('href="/id/about"');
+    expect(locationReads).toEqual(expect.arrayContaining(["pathname", "hostname"]));
   });
 
   it("locale string prepends locale prefix", () => {

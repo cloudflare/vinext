@@ -47,6 +47,14 @@ type LazyLoadableIntercept = {
   __loadInterceptLayouts?: LazyModuleLoaderArray | null;
   interceptLoadings?: readonly unknown[] | null;
   __loadInterceptLoadings?: LazyModuleLoaderArray | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  __loadInterceptNotFounds?: LazyModuleLoaderArray | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  __loadInterceptForbiddens?: LazyModuleLoaderArray | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  __loadInterceptUnauthorizeds?: LazyModuleLoaderArray | null;
+  interceptErrors?: readonly unknown[] | null;
+  __loadInterceptErrors?: LazyModuleLoaderArray | null;
   __loadState?: {
     page?: unknown;
     pageLoading?: Promise<unknown> | null;
@@ -65,6 +73,7 @@ type LazyLoadableSlot = {
   loadings?: readonly unknown[];
   error?: unknown;
   notFound?: unknown;
+  notFounds?: readonly unknown[];
   __loadPage?: LazyModuleThunk | null;
   __loadDefault?: LazyModuleThunk | null;
   __loadLayout?: LazyModuleThunk | null;
@@ -73,6 +82,7 @@ type LazyLoadableSlot = {
   __loadLoadings?: LazyModuleLoaderArray | null;
   __loadError?: LazyModuleThunk | null;
   __loadNotFound?: LazyModuleThunk | null;
+  __loadNotFounds?: LazyModuleLoaderArray | null;
   /** Hydrated only after an intercept matches, not with the slot's base modules. */
   intercepts?: LazyLoadableIntercept[];
 };
@@ -88,6 +98,9 @@ export type LazyLoadableRoute = {
   notFounds?: unknown[];
   forbiddens?: unknown[];
   unauthorizeds?: unknown[];
+  segmentNotFounds?: unknown[];
+  segmentForbiddens?: unknown[];
+  segmentUnauthorizeds?: unknown[];
   loading?: unknown;
   error?: unknown;
   notFound?: unknown;
@@ -107,6 +120,9 @@ export type LazyLoadableRoute = {
   __loadNotFounds?: LazyModuleLoaderArray | null;
   __loadForbiddens?: LazyModuleLoaderArray | null;
   __loadUnauthorizeds?: LazyModuleLoaderArray | null;
+  __loadSegmentNotFounds?: LazyModuleLoaderArray | null;
+  __loadSegmentForbiddens?: LazyModuleLoaderArray | null;
+  __loadSegmentUnauthorizeds?: LazyModuleLoaderArray | null;
   __loadLoading?: LazyModuleThunk | null;
   __loadError?: LazyModuleThunk | null;
   __loadNotFound?: LazyModuleThunk | null;
@@ -219,6 +235,10 @@ export function loadAppInterceptLayouts(
   const loads: Promise<unknown>[] = [];
   pushArrayLoads(loads, intercept.interceptLayouts, intercept.__loadInterceptLayouts);
   pushArrayLoads(loads, intercept.interceptLoadings, intercept.__loadInterceptLoadings);
+  pushArrayLoads(loads, intercept.interceptNotFounds, intercept.__loadInterceptNotFounds);
+  pushArrayLoads(loads, intercept.interceptForbiddens, intercept.__loadInterceptForbiddens);
+  pushArrayLoads(loads, intercept.interceptUnauthorizeds, intercept.__loadInterceptUnauthorizeds);
+  pushArrayLoads(loads, intercept.interceptErrors, intercept.__loadInterceptErrors);
   if (loads.length === 0) return Promise.resolve(intercept.interceptLayouts ?? []);
 
   const loading = shareIsolatePromise(
@@ -267,6 +287,9 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
   pushArrayLoads(loads, route.notFounds, route.__loadNotFounds);
   pushArrayLoads(loads, route.forbiddens, route.__loadForbiddens);
   pushArrayLoads(loads, route.unauthorizeds, route.__loadUnauthorizeds);
+  pushArrayLoads(loads, route.segmentNotFounds, route.__loadSegmentNotFounds);
+  pushArrayLoads(loads, route.segmentForbiddens, route.__loadSegmentForbiddens);
+  pushArrayLoads(loads, route.segmentUnauthorizeds, route.__loadSegmentUnauthorizeds);
 
   for (const slot of Object.values(route.slots ?? {})) {
     pushFieldLoad(loads, slot as Record<string, unknown>, "page", slot.__loadPage);
@@ -277,6 +300,7 @@ export function ensureAppRouteModulesLoaded<TRoute extends LazyLoadableRoute>(
     pushArrayLoads(loads, slot.loadings, slot.__loadLoadings);
     pushFieldLoad(loads, slot as Record<string, unknown>, "error", slot.__loadError);
     pushFieldLoad(loads, slot as Record<string, unknown>, "notFound", slot.__loadNotFound);
+    pushArrayLoads(loads, slot.notFounds, slot.__loadNotFounds);
   }
 
   if (loads.length === 0) {

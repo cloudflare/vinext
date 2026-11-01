@@ -60,6 +60,17 @@ export const config = {
       has: [{ type: "header", key: "x-encoded-delimiter-auth", value: "1" }],
     },
     {
+      // Prefixes whose parent path is outside the matcher: removing a `.rsc`
+      // suffix must not leave a `..` segment that routes below the prefix while
+      // middleware sees the parent.
+      source: "/:locale/admin/:page",
+      has: [{ type: "header", key: "x-rsc-dot-segment-auth", value: "1" }],
+    },
+    {
+      source: "/billing/invoices/:path+",
+      has: [{ type: "header", key: "x-rsc-dot-segment-auth", value: "1" }],
+    },
+    {
       source: "/staff/:path*",
       has: [{ type: "header", key: "x-hybrid-pages-auth", value: "1" }],
     },

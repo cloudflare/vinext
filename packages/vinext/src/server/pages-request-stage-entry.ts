@@ -21,10 +21,11 @@ import {
 import type { ImageConfig } from "./image-optimization.js";
 import {
   attachRequestCfMetadata,
-  cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
+  haveSameHeaders,
+  withRequestHeaders,
 } from "./request-pipeline.js";
 import { notFoundStaticAssetResponse } from "./http-error-responses.js";
 import { assetPrefixPathname, isNextStaticPath } from "../utils/asset-prefix.js";
@@ -42,7 +43,10 @@ import {
 } from "./headers.js";
 import { runWithExecutionContext, type ExecutionContextLike } from "vinext/shims/request-context";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
-import { normalizeDefaultLocalePathname } from "./pages-i18n.js";
+import {
+  normalizeDefaultLocalePathname,
+  shouldRestoreLocaleRootTrailingSlash,
+} from "./pages-i18n.js";
 import { requestContextFromRequest } from "../config/request-context.js";
 import { resolveResponseStageCachePolicy } from "./config-headers.js";
 import {
@@ -52,10 +56,17 @@ import {
   validateCdnRequest,
 } from "./cache-control.js";
 import {
+  createSharedPagesPageCacheIdentity,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type DispatchWorkerResponseStage,
+  type PagesPageResponseStageProps,
   type WorkerResponseStageProps,
 } from "./worker-stages.js";
+import {
+  adapterUsesSharedCacheIdentity,
+  pagesCacheIdentityOrigin,
+  pagesPageSharesAcrossHosts,
+} from "./shared-cache-identity.js";
 import { getPagesResponseStageCacheDisposition } from "./pages-response-stage.js";
 import type {
   VinextAssetFetcher,
@@ -111,18 +122,6 @@ type PagesStageRuntimeDispatch = (
   ctx: ExecutionContextLike,
 ) => Promise<Response>;
 
-function haveSameHeaders(first: Headers, second: Headers): boolean {
-  const firstEntries = [...first];
-  const secondEntries = [...second];
-  return (
-    firstEntries.length === secondEntries.length &&
-    firstEntries.every(
-      ([name, value], index) =>
-        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
-    )
-  );
-}
-
 function captureOuterResponsePolicyHeaders(
   stagedHeaders: Headers,
   transportedPolicyHeaders: Array<[string, string]> | null,
@@ -159,6 +158,10 @@ export const pagesRequestStagePrerenderSecret: string | null = pagesEntry.preren
 const basePath: string = vinextConfig?.basePath ?? "";
 const assetPathPrefix: string = assetPrefixPathname(vinextConfig?.assetPrefix ?? "");
 const trailingSlash: boolean = vinextConfig?.trailingSlash ?? false;
+const localeRootTrailingSlashConfig = {
+  trailingSlash,
+  skipProxyUrlNormalize: vinextConfig?.skipProxyUrlNormalize,
+};
 const skipTrailingSlashRedirect: boolean = vinextConfig?.skipTrailingSlashRedirect ?? false;
 const i18nConfig = vinextConfig?.i18n ?? null;
 const configRedirects = vinextConfig?.redirects ?? [];
@@ -381,7 +384,7 @@ async function handleRequestImpl(
         filteredHeaders.set(VINEXT_EXPECTED_WORKER_VERSION_HEADER, expectedWorkerVersion);
       }
     }
-    request = cloneRequestWithHeaders(request, filteredHeaders);
+    request = withRequestHeaders(request, filteredHeaders);
 
     const url = new URL(request.url);
     let pathname = url.pathname;
@@ -435,6 +438,10 @@ async function handleRequestImpl(
     // Track basePath presence on the original request so matcher gating can
     // distinguish requests inside basePath from requests outside it.
     const hadBasePath = !basePath || hasBasePath(pathname, basePath);
+    const restoreLocaleRootTrailingSlash = shouldRestoreLocaleRootTrailingSlash(
+      pathname,
+      localeRootTrailingSlashConfig,
+    );
     {
       const stripped = stripBasePath(pathname, basePath);
       if (stripped !== pathname) {
@@ -459,7 +466,10 @@ async function handleRequestImpl(
       pathname = dataNorm.normalizedPathname;
     }
     const responseStagePolicyPathname = i18nConfig
-      ? normalizeDefaultLocalePathname(pathname, i18nConfig, { hostname: url.hostname })
+      ? normalizeDefaultLocalePathname(pathname, i18nConfig, {
+          hostname: url.hostname,
+          restoreRootTrailingSlash: restoreLocaleRootTrailingSlash,
+        })
       : pathname;
     const responseStagePolicyHeaders = resolveResponseStageCachePolicy({
       basePathState: { basePath, hadBasePath },
@@ -489,6 +499,7 @@ async function handleRequestImpl(
       hasMiddleware,
       ctx,
       recordCacheability: forceCacheBypass,
+      restoreLocaleRootTrailingSlash,
       middlewareRequest:
         isDataReq && vinextConfig?.skipProxyUrlNormalize ? middlewareRequest : undefined,
       dataNotFoundResponse: vinextConfig?.skipProxyUrlNormalize ? dataNorm.notFoundResponse : null,
@@ -525,10 +536,17 @@ async function handleRequestImpl(
                 stagedHeaders,
               });
         const isSharedStaticPage = cache === "shared" && matchedPage?.route.dataKind === "static";
+        // Next.js keys a static page's response cache entry by its path, so
+        // one entry answers every host that is not a configured i18n domain.
+        // A probe classifies the shared dispatch, so it renders as one.
+        const sharedAcrossHosts =
+          (cache === "shared" || probeMode !== null) &&
+          pagesPageSharesAcrossHosts(matchedPage?.route) &&
+          adapterUsesSharedCacheIdentity();
         const transportedPolicyHeaders = isSharedStaticPage
           ? withoutResponseStageVary(responseStagePolicyHeaders)
           : withResponseStageVary(responseStagePolicyHeaders, stagedHeaders?.get("Vary"));
-        const responseStageProps = (): WorkerResponseStageProps => ({
+        const responseStageProps = (): PagesPageResponseStageProps => ({
           buildId: pagesEntry.buildId,
           cacheability: {
             policyHeaders: transportedPolicyHeaders,
@@ -543,6 +561,7 @@ async function handleRequestImpl(
             ? { ...options, originalUrl: originalRenderUrl }
             : (options ?? null),
           resolvedUrl,
+          sharedAcrossHosts,
           // Static/ISR pages cannot observe Node's response object. Keep their
           // request-specific middleware headers outside the shared artifact so
           // one safe render can still serve every outer composition. Pages
@@ -551,10 +570,20 @@ async function handleRequestImpl(
           stagedHeaders: isSharedStaticPage ? null : [...(stagedHeaders ?? new Headers())],
         });
         const isHeadRequest = req.method.toUpperCase() === "HEAD";
+        const props = responseStageProps();
         const dispatched = trackedDispatchResponseStage(
           stageRequest,
-          responseStageProps(),
-          { cache },
+          props,
+          cache === "shared" && sharedAcrossHosts
+            ? {
+                cache,
+                cacheIdentity: createSharedPagesPageCacheIdentity(
+                  stageRequest,
+                  props,
+                  pagesCacheIdentityOrigin(stageRequest.url, i18nConfig),
+                ),
+              }
+            : { cache },
           env,
           ctx,
         );
@@ -703,6 +732,10 @@ async function handleRequestImpl(
         {
           ...deps,
           hadBasePath: sourceHadBasePath,
+          restoreLocaleRootTrailingSlash: shouldRestoreLocaleRootTrailingSlash(
+            sourceUrl.pathname,
+            localeRootTrailingSlashConfig,
+          ),
           isDataReq: false,
           isDataRequest: false,
           middlewareRequest: undefined,

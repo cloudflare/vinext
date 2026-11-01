@@ -160,3 +160,16 @@ export default defineConfig({
 ```
 
 Follow the [Nitro deployment guide](https://v3.nitro.build/deploy) for host-specific presets and output. On Cloudflare, prefer vinext's native integration for direct bindings, caching, image optimization, and the one-command deployment workflow.
+
+### Middleware and static files
+
+In Next.js, middleware runs for every path its `matcher` matches, including files in `public/`. On presets where Nitro's own server serves the static output, such as `node-server` and `bun`, vinext runs requests for `public/` files through middleware and then serves the file from Nitro's output, so rewrites to public files work too. As in Next.js, `public/docs/index.html` is served only at `/docs/index.html`, not at `/docs`. As on Cloudflare Workers, middleware does not run for the `/_next/static` build output, which Nitro serves directly.
+
+Where something else serves the output directory before Nitro's server runs, middleware does not run for `public/` files:
+
+- presets whose platform serves the static output, such as Vercel, Netlify, and AWS Amplify, or whose web server does, such as IIS with `iis-node`;
+- `vite preview` and `nitro preview`.
+
+On presets whose platform serves the static output, rewrites to public files don't work either. Under a Nitro `baseURL` other than `/`, vinext neither runs requests for `public/` files through middleware nor serves rewrites to them; set vinext's `basePath` in `next.config` instead. Files that Nitro serves from its own `publicAssets` directories, rather than from Vite's `publicDir`, also skip middleware.
+
+Requests for public files skip Nitro's route rules, `request` and `response` hooks, error handling, and its async request context. When vinext serves the file, the route rules and hooks run for the request vinext makes for the file instead. This includes a request that a directory `index.html` in `public/` would answer, such as `/` with `public/index.html`, even though vinext renders the page there. Nitro's server middleware never runs for static files.

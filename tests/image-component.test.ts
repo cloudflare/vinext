@@ -1138,7 +1138,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
-    // Module-level constants in image.tsx are evaluated at import time from
+    // Module-level constants in image-props.ts are evaluated at import time from
     // process.env, so we must re-evaluate the module after changing env.
     vi.resetModules();
     const { default: PrivateIpImage } = await import("../packages/vinext/src/shims/image.js");
@@ -1178,7 +1178,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "true";
 
-    // Module-level constants in image.tsx are evaluated at import time from
+    // Module-level constants in image-props.ts are evaluated at import time from
     // process.env, so we must re-evaluate the module after changing env.
     vi.resetModules();
     const { default: PrivateIpImage } = await import("../packages/vinext/src/shims/image.js");
@@ -1200,7 +1200,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
     process.env.__VINEXT_IMAGE_REMOTE_PATTERNS = JSON.stringify([{ hostname: "**" }]);
     process.env.__VINEXT_IMAGE_DANGEROUSLY_ALLOW_LOCAL_IP = "false";
 
-    // Module-level constants in image.tsx are evaluated at import time from
+    // Module-level constants in image-props.ts are evaluated at import time from
     // process.env, so we must re-evaluate the module after changing env.
     vi.resetModules();
     const { default: PrivateIpImage } = await import("../packages/vinext/src/shims/image.js");
@@ -1224,7 +1224,7 @@ describe("dangerouslyAllowLocalIP private-IP guard", () => {
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // Module-level constants in image.tsx are evaluated at import time from
+    // Module-level constants in image-props.ts are evaluated at import time from
     // process.env, so we must re-evaluate the module after changing env.
     vi.resetModules();
     const { default: PrivateIpImage } = await import("../packages/vinext/src/shims/image.js");

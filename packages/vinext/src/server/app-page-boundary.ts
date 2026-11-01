@@ -8,6 +8,7 @@ import {
   applyRscDeploymentIdHeader,
 } from "./app-rsc-cache-busting.js";
 import { resolveAppPageSegmentParams } from "./app-page-params.js";
+import { isAppPageRouteGroupSegment } from "./app-page-segment-state.js";
 
 export type AppPageParams = Record<string, string | string[]>;
 
@@ -41,6 +42,14 @@ type ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule> = {
   routeNotFoundModules?: readonly (TModule | null | undefined)[] | null;
   routeUnauthorizedModules?: readonly (TModule | null | undefined)[] | null;
   statusCode: number;
+};
+
+type ResolveAppPageLayoutHttpAccessBoundaryOptions<TModule> = {
+  /** Segment boundaries for the status, root first, aligned with the positions. */
+  boundaryModules: readonly (TModule | null | undefined)[];
+  boundaryTreePositions: readonly number[];
+  /** Tree position of the layout that threw. */
+  layoutTreePosition: number;
 };
 
 type ResolveAppPageErrorBoundaryOptions<TModule, TComponent> = {
@@ -143,16 +152,55 @@ export function resolveAppPageHttpAccessBoundaryModule<TModule>(
   return boundaryModule ?? null;
 }
 
-export function resolveAppPageParentHttpAccessBoundaryModule<TModule>(
-  options: ResolveAppPageParentHttpAccessBoundaryModuleOptions<TModule>,
-): TModule | null {
-  return resolveAppPageParentHttpAccessBoundary(options).module;
+/**
+ * The boundary that catches `notFound()` / `forbidden()` / `unauthorized()`
+ * thrown by a layout: the deepest segment boundary above the layout's own
+ * segment. A segment's boundary wraps its children inside its layout, so the
+ * layout's own boundary, and any below it, cannot catch the layout's error.
+ * Returns `null` when no segment above the layout has one (issue #4045).
+ */
+export function resolveAppPageLayoutHttpAccessBoundary<TModule>(
+  options: ResolveAppPageLayoutHttpAccessBoundaryOptions<TModule>,
+): { module: TModule; treePosition: number } | null {
+  for (let index = options.boundaryTreePositions.length - 1; index >= 0; index--) {
+    const treePosition = options.boundaryTreePositions[index];
+    const module = options.boundaryModules[index];
+    if (module && treePosition < options.layoutTreePosition) return { module, treePosition };
+  }
+  return null;
 }
 
 /**
- * Like {@link resolveAppPageParentHttpAccessBoundaryModule}, but also returns
- * the layout index that owns the resolved boundary so callers can slice the
- * layouts array to skip rendering layouts below the boundary owner.
+ * Tree position at which the root segment's boundary catches a layout's error.
+ * Next.js gives a first-layer route group the root segment's boundary (the
+ * custom file or the built-in page) when the group has none of its
+ * own, so the boundary renders inside the group's layout, which is often the
+ * root layout. Without `app/layout`, the root layout sits deeper (for example
+ * `app/[lang]/layout`), and the boundary renders inside it so the page keeps
+ * its `<html>` and `<body>`. A boundary file above that root layout renders
+ * there too.
+ */
+export function resolveAppPageRootHttpAccessBoundaryTreePosition(
+  routeSegments: readonly string[],
+  layoutTreePositions: readonly number[],
+  layoutTreePosition: number | undefined,
+): number {
+  if (layoutTreePosition === undefined) return 0;
+  const firstSegment = routeSegments[0];
+  const groupTreePosition =
+    layoutTreePosition > 1 && firstSegment !== undefined && isAppPageRouteGroupSegment(firstSegment)
+      ? 1
+      : 0;
+  const rootLayoutTreePosition = layoutTreePositions[0] ?? 0;
+  return rootLayoutTreePosition < layoutTreePosition
+    ? Math.max(groupTreePosition, rootLayoutTreePosition)
+    : groupTreePosition;
+}
+
+/**
+ * Resolves the nearest layout-aligned boundary before `layoutIndex`, falling
+ * back to the root module, and returns the layout index that owns it so
+ * callers can slice the layouts array to skip layouts below the boundary owner.
  *
  * `layoutIndex` is the per-layout index where the boundary lives, or `null` if
  * the resolved boundary is the root module (which conceptually sits above all

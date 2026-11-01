@@ -12,10 +12,6 @@ import {
 import type { AppPageSearchParams } from "./app-page-head.js";
 import { searchParamsToRecord } from "../utils/query.js";
 
-type AppPageSearchParamsObservationOptions = {
-  observeReactPromiseStatus?: boolean;
-};
-
 type ClientPageSsrSearchParamsOptions = {
   isForceStatic?: boolean;
   isPprFallbackShell?: boolean;
@@ -28,7 +24,7 @@ function markAppPageSearchParamsAccess(): void {
   markRenderRequestApiUsage("searchParams");
 }
 
-export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
+function createAppPageSearchParamsObserver(): ThenableParamsObserver {
   return {
     observeParamAccess() {
       markAppPageSearchParamsAccess();
@@ -39,18 +35,20 @@ export function createAppPageSearchParamsObserver(): ThenableParamsObserver {
   };
 }
 
+/**
+ * The observer a route's head hands generateMetadata() and generateViewport()
+ * for `searchParams`, or none when a read doesn't count (`force-static`).
+ */
+export function createAppPageMetadataSearchParamsObserver(
+  observe: boolean,
+): ThenableParamsObserver | undefined {
+  return observe ? createAppPageSearchParamsObserver() : undefined;
+}
+
 export function makeObservedAppPageSearchParamsThenable(
   pageSearchParams: AppPageSearchParams,
-  options: AppPageSearchParamsObservationOptions = {},
 ): ThenableParams<AppPageSearchParams> {
-  const observer = createAppPageSearchParamsObserver();
-  if (options.observeReactPromiseStatus === true) {
-    return makeThenableParams(pageSearchParams, {
-      ...observer,
-      observeReactPromiseStatus: true,
-    });
-  }
-  return makeThenableParams(pageSearchParams, observer);
+  return makeThenableParams(pageSearchParams, createAppPageSearchParamsObserver());
 }
 
 /**

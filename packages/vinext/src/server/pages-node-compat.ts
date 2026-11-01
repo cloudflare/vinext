@@ -1,10 +1,16 @@
 import { decode as decodeQueryString } from "node:querystring";
-import { Readable, Writable } from "node:stream";
+import { Readable, Writable, Stream } from "node:stream";
 import { parseCookieHeader } from "../utils/parse-cookie.js";
 import { readStreamAsTextWithLimit } from "../utils/text-stream.js";
 import { DEFAULT_PAGES_API_BODY_SIZE_LIMIT } from "./pages-body-parser-config.js";
-import { PagesBodyParseError, getMediaType, isJsonMediaType } from "./pages-media-type.js";
+import {
+  PagesBodyParseError,
+  createPagesBodyDecoder,
+  isJsonMediaType,
+  type PagesBodyDecoder,
+} from "./pages-media-type.js";
 import { performOnDemandRevalidate, type RevalidateOptions } from "./pages-revalidate.js";
+import { getRequestExecutionContext } from "vinext/shims/request-context";
 import {
   clearPagesPreviewData,
   getPagesPreviewState,
@@ -38,16 +44,52 @@ export type PagesReqResRequest = Readable & {
   previewData: PagesPreviewData | false;
 };
 
+// Like @types/node's OutgoingHttpHeader, arrays are typed as string[] even
+// though appending to a number or boolean keeps that scalar in the list.
+type PagesReqResHeaderValue = string | number | boolean | string[];
+
 type PagesReqResHeaders = {
-  [key: string]: string | number | boolean | string[];
+  [key: string]: PagesReqResHeaderValue;
 };
+
+// Node's http validateHeaderName/validateHeaderValue rules.
+const HTTP_TOKEN_PATTERN = /^[\^_`a-zA-Z\-0-9!#$%&'*+.|~]+$/;
+const INVALID_HEADER_VALUE_CHAR_PATTERN = /[^\t\x20-\x7e\x80-\xff]/;
+
+function createNodeTypeError(code: string, message: string): TypeError {
+  return Object.assign(new TypeError(message), { code });
+}
+
+function validateAppendedHeader(name: string, value: string | readonly string[]): void {
+  if (typeof name !== "string" || !name || !HTTP_TOKEN_PATTERN.test(name)) {
+    throw createNodeTypeError(
+      "ERR_INVALID_HTTP_TOKEN",
+      `Header name must be a valid HTTP token ["${String(name)}"]`,
+    );
+  }
+  for (const item of Array.isArray(value) ? value : [value]) {
+    if (item === undefined) {
+      throw createNodeTypeError(
+        "ERR_HTTP_INVALID_HEADER_VALUE",
+        `Invalid value "undefined" for header "${name}"`,
+      );
+    }
+    if (INVALID_HEADER_VALUE_CHAR_PATTERN.test(String(item))) {
+      throw createNodeTypeError(
+        "ERR_INVALID_CHAR",
+        `Invalid character in header content ["${name}"]`,
+      );
+    }
+  }
+}
 
 export type PagesReqResResponse = Writable & {
   statusCode: number;
   readonly headersSent: boolean;
   writeHead: (code: number, headers?: PagesReqResHeaders) => PagesReqResResponse;
-  setHeader: (name: string, value: string | number | boolean | string[]) => PagesReqResResponse;
-  getHeader: (name: string) => string | number | boolean | string[] | undefined;
+  setHeader: (name: string, value: PagesReqResHeaderValue) => PagesReqResResponse;
+  appendHeader: (name: string, value: string | readonly string[]) => PagesReqResResponse;
+  getHeader: (name: string) => PagesReqResHeaderValue | undefined;
   status: (code: number) => PagesReqResResponse;
   json: (data: unknown) => void;
   send: (data: unknown) => void;
@@ -91,14 +133,31 @@ type CreatePagesReqResResult<Res extends PagesReqResResponse = PagesReqResRespon
   responsePromise: Promise<Response>;
 };
 
-async function readPagesRequestBodyWithLimit(request: Request, maxBytes: number): Promise<string> {
+/** The decoded body, or undefined when the request carried no body bytes. */
+async function readPagesRequestBodyWithLimit(
+  request: Request,
+  maxBytes: number,
+  decoder: PagesBodyDecoder,
+): Promise<string | undefined> {
   if (!request.body) {
-    return "";
+    return undefined;
   }
 
-  return readStreamAsTextWithLimit(request.body, maxBytes, () => {
-    throw new PagesBodyParseError("Request body too large", 413);
-  });
+  let byteLength = 0;
+  const text = await readStreamAsTextWithLimit(
+    request.body,
+    maxBytes,
+    () => {
+      throw new PagesBodyParseError("Request body too large", 413);
+    },
+    {
+      decode(input, options) {
+        byteLength += input?.byteLength ?? 0;
+        return decoder.decode(input, options);
+      },
+    },
+  );
+  return byteLength > 0 ? text : undefined;
 }
 
 /**
@@ -115,14 +174,16 @@ export async function parsePagesApiBody(
   request: Request,
   maxBytes = MAX_PAGES_API_BODY_SIZE,
 ): Promise<unknown> {
+  // Like Next.js (raw-body), an undecodable charset is rejected before the size.
+  const { mediaType, decoder } = await createPagesBodyDecoder(request.headers.get("content-type"));
   const contentLength = Number.parseInt(request.headers.get("content-length") || "0", 10);
   if (contentLength > maxBytes) {
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  let rawBody = "";
+  let rawBody: string | undefined;
   try {
-    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes);
+    rawBody = await readPagesRequestBodyWithLimit(request, maxBytes, decoder);
   } catch (err) {
     if (err instanceof PagesBodyParseError) {
       throw err;
@@ -130,13 +191,14 @@ export async function parsePagesApiBody(
     throw new PagesBodyParseError("Request body too large", 413);
   }
 
-  const mediaType = getMediaType(request.headers.get("content-type"));
   if (!rawBody) {
+    // A body that decodes to nothing, such as a lone BOM, stays "" like in
+    // Next.js; only a request without body bytes gets undefined.
     return isJsonMediaType(mediaType)
       ? {}
       : mediaType === "application/x-www-form-urlencoded"
-        ? decodeQueryString(rawBody)
-        : undefined;
+        ? decodeQueryString("")
+        : rawBody;
   }
 
   if (isJsonMediaType(mediaType)) {
@@ -154,39 +216,54 @@ export async function parsePagesApiBody(
   return rawBody;
 }
 
-async function* requestBodyChunks(request: Request): AsyncGenerator<Buffer> {
-  if (!request.body || request.bodyUsed) {
-    return;
-  }
+function createRequestReadable(request: Request): Readable {
+  const body = request.bodyUsed ? null : request.body;
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 
-  const reader = request.body.getReader();
-  try {
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) {
+  // A byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
+  // semantics, byte-based highWaterMark). The body is only locked on the
+  // first read: a handler that never consumes it must not observe a client
+  // abort as an unhandled `error` event, and `Readable.fromWeb` would attach
+  // to the body eagerly. `destroy()` cancels a pending read directly, so a
+  // stalled upload still emits `close`.
+  return new Readable({
+    read() {
+      if (!body) {
+        this.push(null);
         return;
       }
-      // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
-      // handler code routinely calls `chunk.toString("utf8")`, which on a
-      // raw Uint8Array comma-joins the byte values instead of decoding.
-      // Buffer.from(buffer, offset, length) is a zero-copy view.
-      yield Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-    }
-  } finally {
-    try {
-      await reader.cancel();
-    } catch {
-      // Ignore cancellation errors from the upstream source.
-    }
-    reader.releaseLock();
-  }
-}
-
-function createRequestReadable(request: Request): Readable {
-  // `Readable.from` defaults to objectMode — opt out so the request is a
-  // byte stream like `IncomingMessage` (`setEncoding()`/`read(n)` byte
-  // semantics, byte-based highWaterMark).
-  return Readable.from(requestBodyChunks(request), { objectMode: false });
+      reader ??= body.getReader();
+      reader.read().then(
+        ({ value, done }) => {
+          if (this.destroyed) return;
+          if (done) {
+            this.push(null);
+            return;
+          }
+          // Node `IncomingMessage` yields `Buffer` chunks, not `Uint8Array`:
+          // handler code routinely calls `chunk.toString("utf8")`, which on a
+          // raw Uint8Array comma-joins the byte values instead of decoding.
+          // Buffer.from(buffer, offset, length) is a zero-copy view.
+          this.push(Buffer.from(value.buffer, value.byteOffset, value.byteLength));
+        },
+        (error: unknown) => this.destroy(error as Error),
+      );
+    },
+    destroy(error, callback) {
+      const cancelled = reader
+        ? reader.cancel(error ?? undefined)
+        : body?.cancel(error ?? undefined);
+      if (!cancelled) {
+        callback(error);
+        return;
+      }
+      // Cancellation errors from the upstream source are not the consumer's.
+      cancelled.then(
+        () => callback(error),
+        () => callback(error),
+      );
+    },
+  });
 }
 
 function parsePagesRequestCookies(cookieHeader: string | string[] | null | undefined) {
@@ -244,9 +321,13 @@ export function attachPagesPreviewApi(req: PagesReqResRequest, res: PagesReqResR
 
 class PagesResponseStream extends Writable {
   private resStatusCode = 200;
-  private readonly resHeaders: Record<string, string | number | boolean> = {};
-  private readonly setCookieHeaders: string[] = [];
+  // Null-prototype like Node's header map, so names such as `constructor` or
+  // `__proto__` are ordinary headers.
+  private readonly resHeaders: PagesReqResHeaders = Object.create(null);
   private resolved = false;
+  // Node's ServerResponse commits its head on writeHead(), not only on the
+  // first body write.
+  private headWritten = false;
   private controller: ReadableStreamDefaultController | null = null;
   private readonly bufferedChunks: Buffer[] = [];
   private streamEnded = false;
@@ -282,21 +363,35 @@ class PagesResponseStream extends Writable {
     this.resStatusCode = code;
     if (headers) {
       for (const [key, value] of Object.entries(headers)) {
-        this.setHeaderValue(key, value, { replaceSetCookie: true });
+        this.setHeaderValue(key, value, { append: false });
       }
     }
+    this.headWritten = true;
     return this as PagesReqResResponse;
   }
 
-  setHeader(name: string, value: string | number | boolean | string[]): PagesReqResResponse {
-    this.setHeaderValue(name, value, { replaceSetCookie: true });
+  setHeader(name: string, value: PagesReqResHeaderValue): PagesReqResResponse {
+    this.setHeaderValue(name, value, { append: false });
     return this as PagesReqResResponse;
   }
 
-  getHeader(name: string): string | number | boolean | string[] | undefined {
-    if (name.toLowerCase() === "set-cookie") {
-      return this.setCookieHeaders.length > 0 ? this.setCookieHeaders : undefined;
+  // Node's ServerResponse.appendHeader (Node 18.3+): adds to any existing
+  // value instead of replacing it.
+  appendHeader(name: string, value: string | readonly string[]): PagesReqResResponse {
+    if (this.headWritten || this.headersSent) {
+      // The Response headers were snapshotted on the first write, so a late
+      // append would be silently dropped. Node throws here.
+      throw Object.assign(new Error("Cannot append headers after they are sent to the client"), {
+        code: "ERR_HTTP_HEADERS_SENT",
+      });
     }
+    // Node validates at the call site, so handlers can catch the error.
+    validateAppendedHeader(name, value);
+    this.setHeaderValue(name, value, { append: true });
+    return this as PagesReqResResponse;
+  }
+
+  getHeader(name: string): PagesReqResHeaderValue | undefined {
     return this.resHeaders[name.toLowerCase()];
   }
 
@@ -311,6 +406,22 @@ class PagesResponseStream extends Writable {
   }
 
   send(data: unknown): void {
+    // Next.js's sendData() ends 204/304 responses before it inspects the data,
+    // so a stream is never piped into them. Fetch also forbids a 205 body.
+    // resolveOnce() strips the headers.
+    if (NO_BODY_RESPONSE_STATUSES.has(this.resStatusCode)) {
+      this.end();
+      return;
+    }
+
+    if (data instanceof Stream) {
+      if (!this.resHeaders["content-type"]) {
+        this.resHeaders["content-type"] = "application/octet-stream";
+      }
+      data.pipe(this);
+      return;
+    }
+
     if (Buffer.isBuffer(data)) {
       if (!this.resHeaders["content-type"]) {
         this.resHeaders["content-type"] = "application/octet-stream";
@@ -349,11 +460,7 @@ class PagesResponseStream extends Writable {
   }
 
   getHeaders(): PagesReqResHeaders {
-    const headers: PagesReqResHeaders = { ...this.resHeaders };
-    if (this.setCookieHeaders.length > 0) {
-      headers["set-cookie"] = this.setCookieHeaders;
-    }
-    return headers;
+    return { ...this.resHeaders };
   }
 
   setPreviewData(
@@ -455,21 +562,22 @@ class PagesResponseStream extends Writable {
 
   private setHeaderValue(
     name: string,
-    value: string | number | boolean | string[],
-    options: { replaceSetCookie: boolean },
+    value: PagesReqResHeaderValue | readonly string[],
+    options: { append: boolean },
   ): void {
-    if (name.toLowerCase() === "set-cookie") {
-      // getHeader() exposes this array like Node's ServerResponse. Snapshot it
-      // before replacement so passing that live value back does not clear it.
-      const values = Array.isArray(value) ? value.map(String) : [String(value)];
-      if (options.replaceSetCookie) {
-        this.setCookieHeaders.length = 0;
-      }
-      this.setCookieHeaders.push(...values);
+    const key = name.toLowerCase();
+    // Like Node, keep header arrays (and appended values) as a list of the
+    // original values so getHeader() returns every value in its own type.
+    const existing = this.resHeaders[key];
+    if (!options.append || existing === undefined) {
+      // Node keeps the caller's array itself, so later pushes to it (and later
+      // appends) are emitted too.
+      this.resHeaders[key] = value as PagesReqResHeaderValue;
       return;
     }
-
-    this.resHeaders[name.toLowerCase()] = Array.isArray(value) ? value.join(", ") : value;
+    const values = (Array.isArray(existing) ? existing : [existing]) as string[];
+    values.push(...((Array.isArray(value) ? value : [value]) as string[]));
+    this.resHeaders[key] = values;
   }
 
   private releasePendingWrite(error?: Error | null): void {
@@ -486,10 +594,11 @@ class PagesResponseStream extends Writable {
 
     const headers = new Headers();
     for (const [key, value] of Object.entries(this.resHeaders)) {
-      headers.set(key, String(value));
-    }
-    for (const cookie of this.setCookieHeaders) {
-      headers.append("set-cookie", cookie);
+      if (Array.isArray(value)) {
+        for (const item of value) headers.append(key, String(item));
+      } else {
+        headers.set(key, String(value));
+      }
     }
 
     // Fetch rejects a Response that pairs 204/205/304 with any body, including
@@ -608,13 +717,17 @@ export function createPagesApiReqRes(
   options: CreatePagesApiReqResOptions,
 ): CreatePagesReqResResult<PagesApiReqResResponse> {
   const { req, res, responsePromise } = createPagesReqRes(options);
-  // Fetch runtimes do not expose a listening socket origin. Fall back to the
-  // platform-provided Request URL origin and deliberately ignore any raw Host
-  // header carried in request.headers.
-  const trustedRevalidateOrigin =
-    options.trustedRevalidateOrigin ?? new URL(options.request.url).origin;
   const apiRes = Object.assign(res, {
     async revalidate(urlPath: string, opts?: RevalidateOptions): Promise<void> {
+      // Fetch runtimes do not expose a listening socket origin. An in-process
+      // dispatcher addresses its internal request with the Request URL origin,
+      // but that origin must never receive the credential over the network:
+      // Node fetch hosts such as srvx derive it from the client Host header.
+      const trustedRevalidateOrigin =
+        options.trustedRevalidateOrigin ??
+        (getRequestExecutionContext()?.dispatchPagesRevalidate
+          ? new URL(options.request.url).origin
+          : undefined);
       await performOnDemandRevalidate(
         options.request.headers,
         urlPath,

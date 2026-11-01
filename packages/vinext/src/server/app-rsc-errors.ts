@@ -2,6 +2,8 @@ import { resolveAppPageSpecialError } from "./app-page-execution.js";
 import { isNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getProperError } from "./proper-error.js";
+import { logRequestError } from "./request-error-log.js";
+import { rewriteClientHookError } from "vinext/shims/client-hook-error";
 
 type DigestError = Error & { digest?: string };
 const ORIGINAL_SERVER_ERROR = Symbol.for("vinext.originalServerError");
@@ -29,6 +31,14 @@ type RscErrorReporter = (
 type CreateRscOnErrorHandlerOptions = {
   attachDigest?: boolean;
   errorContext: RscErrorContext | null;
+  /**
+   * The errors this request already logged, shared by its handlers so an error
+   * reaching more than one, such as in the RSC and then the SSR pass, is logged
+   * once. Like Next.js, a digest alone does not mean an error was logged: user
+   * code can set its own. Request-scoped, as a failed module evaluation throws
+   * the same error on every request. Defaults to this handler's own.
+   */
+  loggedErrors?: WeakSet<object>;
   nodeEnv?: string;
   reportRequestError: RscErrorReporter;
   requestInfo: RscRequestInfo | null;
@@ -120,6 +130,13 @@ export function createRscOnErrorHandler(
   options: CreateRscOnErrorHandlerOptions,
 ): (error: unknown) => string | undefined {
   let loggedPrerenderErrors: Set<unknown> | undefined;
+  const loggedErrors = options.loggedErrors ?? new WeakSet<object>();
+  const wasLogged = (error: unknown): boolean => {
+    if ((typeof error !== "object" && typeof error !== "function") || error === null) return false;
+    if (loggedErrors.has(error)) return true;
+    loggedErrors.add(error);
+    return false;
+  };
   return (error) => {
     const nodeEnv = options.nodeEnv ?? process.env.NODE_ENV;
     const reportableError =
@@ -195,6 +212,10 @@ export function createRscOnErrorHandler(
         // must not replace the original failure with a mutation TypeError.
       }
     }
+    // Like Next.js's formatServerError, before Flight serializes the error, so
+    // the browser's error boundary and dev overlay get the actionable message.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/create-error-handler.tsx
+    if (nodeEnv !== "production") rewriteClientHookError(properError);
     if (options.requestInfo && options.errorContext) {
       options.reportRequestError(properError, options.requestInfo, options.errorContext);
     }
@@ -212,9 +233,14 @@ export function createRscOnErrorHandler(
           reportableError,
         );
       }
-    } else if (nodeEnv !== "production" && !thrownHasDigest) {
-      // Preserve dev logging, where a digest suppresses repeat RSC/SSR callbacks.
-      console.error("[vinext] Server render error:", properError);
+    } else if (
+      // A sanitized error was reported where it was sanitized.
+      !(reportableError !== error && thrownHasDigest) &&
+      !wasLogged(reportableError)
+    ) {
+      // Like Next.js, log in production too: without an onRequestError hook,
+      // reportRequestError is a no-op and the failure would leave no trace.
+      logRequestError("[vinext] Server render error:", properError);
     }
 
     return digest;

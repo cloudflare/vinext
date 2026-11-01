@@ -10,6 +10,12 @@ const tempDirs: string[] = [];
 type NitroSetupTarget = {
   options: {
     dev?: boolean;
+    preset?: string;
+    baseURL?: string;
+    serveStatic?: boolean | string;
+    plugins?: string[];
+    virtual?: Record<string, string | (() => string)>;
+    output?: { publicDir?: string };
     routeRules?: Record<string, Record<string, unknown>>;
     traceDeps?: string[];
   };
@@ -196,6 +202,87 @@ describe("vinext Nitro setup integration", () => {
     await nitroPlugin.nitro!.setup!(nitro);
 
     expect(nitro.options.routeRules).toEqual({});
+  });
+
+  // vinext serves the public files its router resolves, such as a rewrite
+  // destination, through Nitro's static handler.
+  it("registers the public files plugin when Nitro's server serves static files", async () => {
+    const root = createPagesProject();
+    writeProjectFile(root, "public/a%20b.txt", "file\n");
+    writeProjectFile(root, "public/%2Fsecret.txt", "file\n");
+    writeProjectFile(root, "public/data.json", "{}\n");
+    writeProjectFile(root, "public/uncopied.txt", "file\n");
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    const nitro: NitroSetupTarget = {
+      options: {
+        dev: false,
+        preset: "node-server",
+        baseURL: "/",
+        serveStatic: true,
+        output: { publicDir: path.join(root, ".output/public") },
+      },
+    };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+    await nitroPlugin.nitro!.setup!(nitro);
+    // Nitro copies the public files, and `compressPublicAssets` writes its
+    // compressed copies, after setup and before it bundles the server.
+    for (const file of ["a%20b.txt", "%2Fsecret.txt", "data.json", "data.json.gz"]) {
+      writeProjectFile(root, `.output/public/${file}`, "");
+    }
+
+    expect(nitro.options.plugins).toEqual(["#vinext/nitro-public-files"]);
+    const template = nitro.options.virtual?.["#vinext/nitro-public-files"];
+    expect(typeof template).toBe("function");
+    // Keyed as Nitro keys its static files: decoded, then joined to `/`. A
+    // file Nitro didn't copy to its output isn't listed.
+    expect((template as () => string)()).toContain(
+      'publicAssets: ["/a b.txt","/data.json","/data.json.gz","/secret.txt"]',
+    );
+  });
+
+  it("lists the files in Vite's resolved public directory", async () => {
+    const root = createPagesProject();
+    writeProjectFile(root, "public/default.txt", "file\n");
+    writeProjectFile(root, "static/custom.txt", "file\n");
+    const nitroPlugin = await initializeNitroSetupPlugin(root);
+    writeProjectFile(root, ".output/public/default.txt", "file\n");
+    writeProjectFile(root, ".output/public/custom.txt", "file\n");
+    const nitro: NitroSetupTarget = {
+      options: {
+        dev: false,
+        preset: "node-server",
+        baseURL: "/",
+        serveStatic: true,
+        output: { publicDir: path.join(root, ".output/public") },
+      },
+    };
+
+    (nitroPlugin.configResolved as (config: { publicDir: string }) => void)({
+      publicDir: path.join(root, "static"),
+    });
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    const template = nitro.options.virtual?.["#vinext/nitro-public-files"] as () => string;
+    expect(template()).toContain('publicAssets: ["/custom.txt"]');
+  });
+
+  it.each([
+    ["in dev", { dev: true, serveStatic: true }],
+    ["when Nitro doesn't serve static files", { dev: false, serveStatic: false }],
+    [
+      "on AWS Amplify, whose CDN serves them",
+      { dev: false, preset: "aws_amplify", serveStatic: true },
+    ],
+    ["under a Nitro baseURL", { dev: false, baseURL: "/docs/", serveStatic: true }],
+  ])("does not register the public files plugin %s", async (_, options) => {
+    const nitroPlugin = await initializeNitroSetupPlugin(createAppProject());
+    const nitro: NitroSetupTarget = { options };
+
+    await nitroPlugin.nitro!.setup!(nitro);
+
+    expect(nitro.options.plugins).toBeUndefined();
+    expect(nitro.options.virtual).toBeUndefined();
   });
 
   it("propagates server externals during Nitro dev", async () => {

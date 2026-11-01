@@ -993,6 +993,72 @@ describe("Form prefetch prop", () => {
     expect(init).toMatchObject({ credentials: "include", priority: "low", purpose: "prefetch" });
   });
 
+  it("resolves a relative viewport-prefetch action from the URL before the route manifest wait", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    const effects: Array<() => void | (() => void)> = [];
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      Promise.resolve(new Response("prefetched")),
+    );
+    let intersectionCallback: IntersectionObserverCallback | undefined;
+
+    class FakeIntersectionObserver {
+      constructor(callback: IntersectionObserverCallback) {
+        intersectionCallback = callback;
+      }
+
+      observe = vi.fn();
+      unobserve = vi.fn();
+      disconnect = vi.fn();
+      takeRecords = vi.fn(() => []);
+    }
+
+    let releaseManifest!: (loaded: boolean) => void;
+    const manifestLoad = new Promise<boolean>((resolve) => {
+      releaseManifest = resolve;
+    });
+    const { window } = createWindowStub();
+    const runtime = window[Symbol.for("vinext.navigationRuntime")];
+    const location = {
+      ...window.location,
+      href: "http://localhost:3000/docs/page",
+      pathname: "/docs/page",
+    };
+    vi.stubGlobal("window", {
+      ...window,
+      [Symbol.for("vinext.navigationRuntime")]: {
+        ...runtime,
+        functions: { ...runtime.functions, loadRouteManifest: () => manifestLoad },
+      },
+      location,
+      navigator: { userAgent: "Mozilla/5.0" },
+    });
+    vi.stubGlobal("fetch", fetch);
+    vi.stubGlobal("IntersectionObserver", FakeIntersectionObserver);
+
+    const { ref } = renderClientForm({ action: "search" }, { effects });
+    const form = {} as HTMLFormElement;
+    ref(form);
+    for (const effect of effects) effect();
+    intersectionCallback?.(
+      [
+        {
+          intersectionRatio: 1,
+          isIntersecting: true,
+          target: form,
+        } as unknown as IntersectionObserverEntry,
+      ],
+      {} as IntersectionObserver,
+    );
+    location.href = "http://localhost:3000/other/page";
+    location.pathname = "/other/page";
+    releaseManifest(true);
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+
+    const [url] = fetch.mock.calls[0]!;
+    const requestUrl = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+    expect(new URL(requestUrl, "http://localhost:3000").pathname).toBe("/docs/search");
+  });
+
   it("does not observe or fetch when prefetch={false}", () => {
     vi.stubEnv("NODE_ENV", "production");
     const effects: Array<() => void | (() => void)> = [];

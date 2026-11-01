@@ -10,6 +10,15 @@
   --color-chart-vinext: #3b82f6;
 }
 
+:root {
+  /* Benchmark chart series: an ordinal blue ramp for Vinext versions, orange for Next.js and
+     teal for TanStack Redact. */
+  --bench-v13: light-dark(#7aa5ee, #2f5db6);
+  --bench-v14: light-dark(#1d4ed8, #5794ef);
+  --bench-next: light-dark(#ea580c, #e2702c);
+  --bench-redact: light-dark(#0d9488, #0f9b89);
+}
+
 html,
 body {
   font-family: var(--font-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;

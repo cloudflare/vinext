@@ -133,6 +133,55 @@ test.describe("Dev error overlay", () => {
     );
   });
 
+  // Next.js only reports window "error" events that carry an `error` value:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/next-devtools/userspace/app/errors/use-error-handler.ts
+  test("ignores window error events without an error value (ResizeObserver loop)", async ({
+    page,
+  }) => {
+    await page.addInitScript(() => {
+      const messages: string[] = [];
+      (window as unknown as { __nullErrorMessages: string[] }).__nullErrorMessages = messages;
+      window.addEventListener("error", (event) => {
+        if (event.error === null) messages.push(event.message);
+      });
+    });
+    await page.goto(`${BASE}/dev-overlay-test`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByTestId("trigger-resize-observer-loop").click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => (window as unknown as { __nullErrorMessages: string[] }).__nullErrorMessages,
+        ),
+      )
+      .toContainEqual(expect.stringContaining("ResizeObserver loop"));
+
+    // The browser event has already been dispatched to every listener. A real
+    // error reported afterwards must be the only entry in the overlay.
+    await page.evaluate(() => {
+      setTimeout(() => {
+        throw new Error("real error after resize loop");
+      }, 0);
+    });
+    await expect(page.getByTestId("vinext-dev-error-message")).toContainText(
+      "real error after resize loop",
+    );
+    await expect(page.getByTestId("vinext-dev-error-pagination")).toBeHidden();
+  });
+
+  // Next.js coerces non-Error values before reporting uncaught errors in dev:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/client/react-client-callbacks/error-boundary-callbacks.ts
+  test("surfaces a falsy value that reaches the implicit root error boundary", async ({ page }) => {
+    await page.goto(`${BASE}/dev-overlay-global-error-throw-undefined`);
+    await waitForAppRouterHydration(page);
+
+    await page.getByTestId("trigger-global-error-throw-undefined").click();
+
+    await expect(page.getByTestId("vinext-dev-error-title")).toHaveText("Unhandled Script Error");
+    await expect(page.getByTestId("vinext-dev-error-message")).toHaveText("undefined");
+  });
+
   test("surfaces unhandled promise rejections", async ({ page }) => {
     await page.goto(`${BASE}/dev-overlay-test`);
     await expect(page.getByTestId("dev-overlay-content")).toBeVisible();

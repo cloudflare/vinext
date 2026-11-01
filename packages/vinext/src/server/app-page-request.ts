@@ -3,7 +3,6 @@ import { runWithFetchDedupe } from "vinext/shims/fetch-cache";
 import { getAppPageSegmentParamName } from "./app-page-params.js";
 import { matchRoutePattern } from "../routing/route-pattern.js";
 import { notFoundResponse } from "./http-error-responses.js";
-import type { AppLayoutParamAccessTracker } from "./app-layout-param-observation.js";
 import {
   loadAppInterceptLayouts,
   loadAppInterceptNotFound,
@@ -85,8 +84,11 @@ type AppPageInterceptMatch<TPage = unknown> = {
   interceptLoadings?: readonly unknown[] | null;
   interceptLoadingTreePositions?: readonly number[] | null;
   interceptNotFoundBranchSegments?: readonly string[] | null;
+  interceptNotFounds?: readonly unknown[] | null;
+  interceptNotFoundTreePositions?: readonly number[] | null;
   __loadInterceptLayouts?: readonly (() => Promise<unknown>)[] | null;
   __loadInterceptLoadings?: readonly (() => Promise<unknown>)[] | null;
+  __loadInterceptNotFounds?: readonly (() => Promise<unknown>)[] | null;
   matchedParams: AppPageParams;
   sourceMatchedParams?: AppPageParams;
   page: TPage;
@@ -94,6 +96,15 @@ type AppPageInterceptMatch<TPage = unknown> = {
   notFound?: unknown;
   __loadNotFound?: (() => Promise<unknown>) | null;
   notFoundTreePosition?: number | null;
+  interceptForbiddens?: readonly unknown[] | null;
+  interceptForbiddenTreePositions?: readonly number[] | null;
+  __loadInterceptForbiddens?: readonly (() => Promise<unknown>)[] | null;
+  interceptUnauthorizeds?: readonly unknown[] | null;
+  interceptUnauthorizedTreePositions?: readonly number[] | null;
+  __loadInterceptUnauthorizeds?: readonly (() => Promise<unknown>)[] | null;
+  interceptErrors?: readonly unknown[] | null;
+  interceptErrorTreePositions?: readonly number[] | null;
+  __loadInterceptErrors?: readonly (() => Promise<unknown>)[] | null;
   __loadState?: {
     page: TPage;
     pageLoading: Promise<TPage> | null;
@@ -154,7 +165,6 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     params: AppPageParams,
     interceptOpts: TInterceptOpts | undefined,
     searchParams: URLSearchParams,
-    layoutParamAccess?: AppLayoutParamAccessTracker,
     buildOptions?: {
       observeMetadataSearchParamsAccess?: boolean;
       observePageSearchParamsAccess?: boolean;
@@ -166,7 +176,6 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
   getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isRscRequest: boolean;
-  layoutParamAccess?: AppLayoutParamAccessTracker;
   resolveNavigationParams: (
     route: TRoute,
     params: AppPageParams,
@@ -730,7 +739,14 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
 
   await loadAppInterceptPage(intercept);
   await loadAppInterceptNotFound(intercept);
-  if (intercept.__loadInterceptLayouts || intercept.__loadInterceptLoadings) {
+  if (
+    intercept.__loadInterceptLayouts ||
+    intercept.__loadInterceptLoadings ||
+    intercept.__loadInterceptNotFounds ||
+    intercept.__loadInterceptForbiddens ||
+    intercept.__loadInterceptUnauthorizeds ||
+    intercept.__loadInterceptErrors
+  ) {
     await loadAppInterceptLayouts(intercept);
   }
 
@@ -838,7 +854,6 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       renderParams,
       interceptOpts,
       renderSearchParams,
-      options.layoutParamAccess,
     );
 
     return {

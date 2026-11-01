@@ -1,3 +1,4 @@
+import { getCdnCacheAdapter } from "./cdn-cache.js";
 import { getHeadersAccessPhase } from "./internal/headers-state.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -30,28 +31,29 @@ export {
 
 export type UnstableCacheRevalidationMode = "foreground" | "background";
 export type ActionRevalidationKind = 0 | 1 | 2;
-export type UnstableCacheObservation = Readonly<{
-  kind: "unstable_cache";
-  keyHash: string;
-  revalidate: number | false | null;
-  tagCount: number;
-  tagHash: string | null;
-}>;
 
-/**
- * Collects the cacheLife claims made anywhere below the scope that installed
- * it, including nested scopes that reset `requestScopedCacheLife`. Shallow
- * scope clones share it by reference.
- */
-export type CacheLifeSink = { cacheLife: CacheLifeConfig | null };
+type TagInvalidationDurations = { expire?: number } | undefined;
+
+/** A CDN purge waiting for the request boundary, after its data-cache invalidation. */
+export type PendingCdnTagInvalidation = Readonly<{
+  tag: string;
+  durations: TagInvalidationDurations;
+  dataInvalidation: Promise<void>;
+}>;
 
 export type CacheState = {
   actionRevalidationKind: ActionRevalidationKind;
-  cacheLifeSink: CacheLifeSink | null;
+  /**
+   * The request is an authorized on-demand revalidation (`res.revalidate()`).
+   * Like Next.js's `workStore.isOnDemandRevalidate`, the data caches then skip
+   * their reads but still execute and store fresh results. Set once when the
+   * request context is created; nested scopes inherit it.
+   */
+  isOnDemandRevalidate: boolean;
+  pendingCdnTagInvalidations: PendingCdnTagInvalidation[];
   pendingRevalidatedTags: Set<string>;
   pendingRevalidations: Set<Promise<void>>;
   requestScopedCacheLife: CacheLifeConfig | null;
-  unstableCacheObservations: Map<string, UnstableCacheObservation>;
   unstableCacheRevalidation: UnstableCacheRevalidationMode;
 };
 
@@ -65,11 +67,11 @@ export const ACTION_DID_REVALIDATE_DYNAMIC_ONLY = 2 satisfies ActionRevalidation
 
 const fallbackState = (globalState[FALLBACK_KEY] ??= {
   actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-  cacheLifeSink: null,
+  isOnDemandRevalidate: false,
+  pendingCdnTagInvalidations: [],
   pendingRevalidatedTags: new Set<string>(),
   pendingRevalidations: new Set<Promise<void>>(),
   requestScopedCacheLife: null,
-  unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
   unstableCacheRevalidation: "foreground",
 } satisfies CacheState) as CacheState;
 
@@ -86,19 +88,17 @@ export function _runWithCacheState<T>(fn: () => T | Promise<T>): T | Promise<T> 
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
       context.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
-      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
-      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
       context.unstableCacheRevalidation = "foreground";
     }, fn);
   }
   const state: CacheState = {
     actionRevalidationKind: ACTION_DID_NOT_REVALIDATE,
-    cacheLifeSink: null,
+    isOnDemandRevalidate: false,
+    pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     requestScopedCacheLife: null,
-    unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     unstableCacheRevalidation: "foreground",
   };
   return cacheAls.run(state, fn);
@@ -108,7 +108,18 @@ export function _initRequestScopedCacheState(): void {
   const state = getCacheState();
   state.actionRevalidationKind = ACTION_DID_NOT_REVALIDATE;
   state.requestScopedCacheLife = null;
-  state.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
+}
+
+/**
+ * Whether the current request is an authorized on-demand revalidation, so the
+ * data caches must skip their reads (not their writes). Mirrors Next.js's
+ * `workStore.isOnDemandRevalidate` checks in use-cache-wrapper, patch-fetch
+ * and unstable-cache.
+ *
+ * @internal
+ */
+export function _isOnDemandRevalidate(): boolean {
+  return getCacheState().isOnDemandRevalidate === true;
 }
 
 export function markActionRevalidation(kind: ActionRevalidationKind): void {
@@ -170,9 +181,85 @@ export function _queuePendingRevalidation(promise: Promise<void>): boolean {
 }
 
 /**
- * Await and clear every cache invalidation queued in the current request.
- * Clearing before awaiting also lets a later drain observe work enqueued by
- * an async continuation while this batch is settling.
+ * Defer the CDN purge for `tag` to the current Server Action or Route Handler
+ * boundary, so the request sends one adapter call per cacheLife profile like
+ * Next.js' `executeRevalidates`. Edge purges are rate limited (Workers Cache
+ * allows 5 requests a minute per account), so per-call purges run out fast.
+ *
+ * Only those two phases defer: their executors always drain before the
+ * request finishes. Once the response has closed, `after()` callbacks run
+ * past the last drain, so they purge immediately too. Everywhere else returns
+ * false and the caller purges immediately.
+ *
+ * @internal
+ */
+export function _queuePendingCdnTagInvalidation(
+  tag: string,
+  durations: TagInvalidationDurations,
+  dataInvalidation: Promise<void>,
+): boolean {
+  const phase = getHeadersAccessPhase();
+  if (phase !== "action" && phase !== "route-handler") return false;
+  if (isInsideUnifiedScope() && getRequestContext().afterContext.responseClosed) return false;
+
+  getCacheState().pendingCdnTagInvalidations.push({ tag, durations, dataInvalidation });
+  return true;
+}
+
+/**
+ * Ask the CDN adapter to invalidate `tags`, logging rather than rethrowing a
+ * failure. The data cache is already invalidated by then, so a failed edge
+ * purge leaves edge-cached responses stale until they expire, and failing the
+ * request would not change that. It would only report a committed Server
+ * Action write as a failure.
+ *
+ * @internal
+ */
+export async function _revalidateCdnTags(
+  tags: string | string[],
+  durations?: { expire?: number },
+): Promise<void> {
+  try {
+    await getCdnCacheAdapter().revalidateTag(tags, durations);
+  } catch (error) {
+    console.error(
+      "[vinext] CDN cache invalidation failed; edge-cached responses may stay stale until they expire:",
+      error,
+    );
+  }
+}
+
+async function flushCdnTagInvalidations(
+  invalidations: readonly PendingCdnTagInvalidation[],
+): Promise<void> {
+  if (invalidations.length === 0) return;
+
+  const settled = await Promise.allSettled(
+    invalidations.map(({ dataInvalidation }) => dataInvalidation),
+  );
+  const batches = new Map<string, { durations: TagInvalidationDurations; tags: Set<string> }>();
+  invalidations.forEach(({ tag, durations }, index) => {
+    // Purging the edge for a tag whose data-cache invalidation failed would
+    // let the edge refetch and re-cache stale data.
+    if (settled[index].status === "rejected") return;
+    const key = durations === undefined ? "" : JSON.stringify(durations);
+    let batch = batches.get(key);
+    if (!batch) {
+      batch = { durations, tags: new Set() };
+      batches.set(key, batch);
+    }
+    batch.tags.add(tag);
+  });
+  await Promise.all(
+    [...batches.values()].map(({ durations, tags }) => _revalidateCdnTags([...tags], durations)),
+  );
+}
+
+/**
+ * Await and clear every cache invalidation queued in the current request,
+ * then send the deferred CDN purges in batches. Clearing before awaiting also
+ * lets a later drain observe work enqueued by an async continuation while
+ * this batch is settling.
  *
  * @internal
  */
@@ -180,9 +267,11 @@ export async function _drainPendingRevalidations(): Promise<void> {
   const state = getCacheState();
   let didReject = false;
   let firstRejection: unknown;
-  while (state.pendingRevalidations.size > 0) {
+  while (state.pendingRevalidations.size > 0 || state.pendingCdnTagInvalidations.length > 0) {
     const pending = [...state.pendingRevalidations];
     state.pendingRevalidations.clear();
+    // Mutate in place: shallow-cloned child scopes share this array.
+    const cdnInvalidations = state.pendingCdnTagInvalidations.splice(0);
     const results = await Promise.allSettled(pending);
     for (const result of results) {
       if (result.status === "rejected" && !didReject) {
@@ -190,6 +279,7 @@ export async function _drainPendingRevalidations(): Promise<void> {
         firstRejection = result.reason;
       }
     }
+    await flushCdnTagInvalidations(cdnInvalidations);
   }
   if (didReject) throw firstRejection;
 }
@@ -217,9 +307,6 @@ function mergeCacheLife(current: CacheLifeConfig | null, config: CacheLifeConfig
 export function _setRequestScopedCacheLife(config: CacheLifeConfig): void {
   const state = getCacheState();
   state.requestScopedCacheLife = mergeCacheLife(state.requestScopedCacheLife, config);
-  if (state.cacheLifeSink) {
-    state.cacheLifeSink.cacheLife = mergeCacheLife(state.cacheLifeSink.cacheLife, config);
-  }
 }
 
 export function _peekRequestScopedCacheLife(): CacheLifeConfig | null {
@@ -259,35 +346,21 @@ export function _captureRequestScopedCacheLifeAccessors(): {
   };
 }
 
-export function recordUnstableCacheObservation(observation: UnstableCacheObservation): void {
-  getCacheState().unstableCacheObservations.set(observation.keyHash, observation);
-}
-
-export function _peekUnstableCacheObservations(): UnstableCacheObservation[] {
-  return [...getCacheState().unstableCacheObservations.values()].sort((a, b) =>
-    a.keyHash.localeCompare(b.keyHash),
-  );
-}
-
 /**
  * Run `fn` with the request's cache settings, including its revalidation mode,
- * but its own record of cache lives and unstable_cache observations, so work
+ * but its own record of cache lives, so work
  * done on the request's behalf after the fact leaves the request untouched.
  */
 export function runWithDetachedCacheObservations<T>(fn: () => Promise<T>): Promise<T> {
   if (isInsideUnifiedScope()) {
     return runWithUnifiedStateMutation((context) => {
-      context.cacheLifeSink = null;
       context.requestScopedCacheLife = null;
-      context.unstableCacheObservations = new Map<string, UnstableCacheObservation>();
     }, fn);
   }
   return cacheAls.run(
     {
       ...getCacheState(),
-      cacheLifeSink: null,
       requestScopedCacheLife: null,
-      unstableCacheObservations: new Map<string, UnstableCacheObservation>(),
     },
     fn,
   );

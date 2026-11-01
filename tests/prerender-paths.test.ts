@@ -908,7 +908,7 @@ describe("prerender path manifest", () => {
         "    { source: '/conditional', missing: [{ type: 'query', key: '_rsc' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "    { source: '/cookie', has: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Set-Cookie', value: 'rsc=1' }] },",
         "    { source: '/unlisted/public-only', headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
-        "    { source: '/wildcard/*', missing: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
+        "    { source: '/wildcard/:path*', missing: [{ type: 'query', key: '_rsc', value: '.*' }], headers: [{ key: 'Cache-Control', value: 's-maxage=60' }] },",
         "  ],",
         "};",
       ].join("\n"),

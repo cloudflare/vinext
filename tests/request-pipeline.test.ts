@@ -19,6 +19,7 @@ import {
   validateServerActionPayload,
   processMiddlewareHeaders,
   VINEXT_INTERNAL_HEADERS,
+  withRequestHeaders,
 } from "../packages/vinext/src/server/request-pipeline.js";
 import {
   applyConfigHeadersToHeaderRecord,
@@ -393,6 +394,41 @@ describe("applyConfigHeadersToResponse", () => {
     expect(response.headers.get("vary")).toBe("RSC, Accept");
     expect(response.headers.get("set-cookie")).toBe("from=config; Path=/");
   });
+
+  // Next.js stages config headers before middleware: config cookies precede
+  // the response's own, and middleware's Set-Cookie replaces them.
+  it.each([
+    { middlewareHeaders: undefined, cookies: ["config=1; Path=/", "handler=1; Path=/"] },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "" }),
+      cookies: ["config=1; Path=/", "handler=1; Path=/"],
+    },
+    {
+      middlewareHeaders: new Headers({ "set-cookie": "mw=1; Path=/" }),
+      cookies: ["handler=1; Path=/"],
+    },
+  ])(
+    "orders config Set-Cookie like Next.js (middleware cookie: $middlewareHeaders)",
+    ({ middlewareHeaders, cookies }) => {
+      const headers = new Headers({ "set-cookie": "handler=1; Path=/" });
+
+      applyConfigHeadersToResponse(headers, {
+        configHeaders: [
+          { source: "/about", headers: [{ key: "Set-Cookie", value: "config=1; Path=/" }] },
+        ],
+        middlewareHeaders,
+        pathname: "/about",
+        requestContext: {
+          headers: new Headers(),
+          cookies: {},
+          query: new URLSearchParams(),
+          host: "example.com",
+        },
+      });
+
+      expect(headers.getSetCookie()).toEqual(cookies);
+    },
+  );
 });
 
 describe("response-stage config policy", () => {
@@ -476,7 +512,8 @@ describe("applyConfigHeadersToHeaderRecord", () => {
     expect(headers["x-middleware"]).toBe("winner");
     expect(headers["x-added"]).toBe("config");
     expect(headers.vary).toBe("RSC, Accept");
-    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/", "cfg=1; Path=/"]);
+    // Next.js drops a config Set-Cookie when middleware sets its own.
+    expect(headers["set-cookie"]).toEqual(["mw=1; Path=/"]);
   });
 });
 
@@ -747,6 +784,21 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/catch-all/hello.world", "", true, "")).toBeNull();
   });
 
+  // Next.js's file rule needs a `.\w+` ending and its non-file rule needs a
+  // last segment without a dot; paths matching neither keep their spelling.
+  it("matches Next.js's file and non-file rules exactly when trailingSlash is true", () => {
+    expect(normalizeTrailingSlash("/api/v1.2.3/", "", true, "")!.headers.get("Location")).toBe(
+      "/api/v1.2.3",
+    );
+    expect(normalizeTrailingSlash("/x/a.b/c", "", true, "")!.headers.get("Location")).toBe(
+      "/x/a.b/c/",
+    );
+    expect(normalizeTrailingSlash("/api/foo.a-b/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo.", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/foo./", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/x/foo.\u20ac/", "", true, "")).toBeNull();
+  });
+
   it("does not redirect .well-known paths when trailingSlash is true", () => {
     expect(normalizeTrailingSlash("/.well-known/acme-challenge", "", true, "")).toBeNull();
     expect(normalizeTrailingSlash("/.well-known/acme-challenge/", "", true, "")).toBeNull();
@@ -762,8 +814,18 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/", "", false, "")).toBeNull();
   });
 
-  it("does not redirect /api routes", () => {
-    expect(normalizeTrailingSlash("/api/data", "", true, "")).toBeNull();
+  // Next.js's internal trailing-slash redirects have no /api exception.
+  it("redirects /api routes like any other path", () => {
+    const added = normalizeTrailingSlash("/api/data", "", true, "");
+    expect(added!.status).toBe(308);
+    expect(added!.headers.get("Location")).toBe("/api/data/");
+
+    const stripped = normalizeTrailingSlash("/api/data/", "", false, "?a=1");
+    expect(stripped!.status).toBe(308);
+    expect(stripped!.headers.get("Location")).toBe("/api/data?a=1");
+
+    expect(normalizeTrailingSlash("/api/data/", "", true, "")).toBeNull();
+    expect(normalizeTrailingSlash("/api/data", "", false, "")).toBeNull();
   });
 
   it("does not redirect .rsc requests when trailingSlash is true", () => {
@@ -781,11 +843,11 @@ describe("normalizeTrailingSlash", () => {
     expect(res!.headers.get("Location")).toBe("/about");
   });
 
-  it("does not redirect /api or /api/", () => {
-    expect(normalizeTrailingSlash("/api", "", true, "")).toBeNull();
+  it("redirects /api and /api/ to the configured spelling", () => {
+    expect(normalizeTrailingSlash("/api", "", true, "")!.headers.get("Location")).toBe("/api/");
+    expect(normalizeTrailingSlash("/api/", "", false, "")!.headers.get("Location")).toBe("/api");
     expect(normalizeTrailingSlash("/api", "", false, "")).toBeNull();
     expect(normalizeTrailingSlash("/api/", "", true, "")).toBeNull();
-    expect(normalizeTrailingSlash("/api/", "", false, "")).toBeNull();
   });
 
   it("redirects /api-docs when trailingSlash is true", () => {
@@ -1086,6 +1148,21 @@ describe("validateServerActionPayload", () => {
 // ── processMiddlewareHeaders ────────────────────────────────────────────
 
 describe("processMiddlewareHeaders", () => {
+  it("drops each empty Set-Cookie value like Next.js", () => {
+    const headers = new Headers();
+    headers.append("set-cookie", "");
+    headers.append("set-cookie", "mw=1; Path=/");
+    headers.append("set-cookie", "");
+    processMiddlewareHeaders(headers);
+    expect(headers.getSetCookie()).toEqual(["mw=1; Path=/"]);
+
+    const emptyOnly = new Headers();
+    emptyOnly.append("set-cookie", "");
+    emptyOnly.append("set-cookie", "");
+    processMiddlewareHeaders(emptyOnly);
+    expect(emptyOnly.has("set-cookie")).toBe(false);
+  });
+
   it("strips x-middleware-next header", () => {
     const headers = new Headers({
       "x-middleware-next": "1",
@@ -1430,6 +1507,65 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
 //
 // These tests lock down the helper so it can't be "simplified" back into the
 // broken URL-constructor pattern that drops body/redirect/signal semantics.
+
+describe("withRequestHeaders", () => {
+  it("returns the request itself, body untouched, when no header changed", () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "payload",
+    });
+    const result = withRequestHeaders(original, new Headers(original.headers));
+    expect(result).toBe(original);
+    expect(original.bodyUsed).toBe(false);
+  });
+
+  it("rebuilds a Request look-alike that lacks native state", () => {
+    // Shaped like srvx's NodeRequest (used by Nitro): it passes `instanceof
+    // Request` and forwards to a native Request, but native Request getters
+    // throw on the object itself.
+    const NativeRequest = Request;
+    const inner = new NativeRequest("http://localhost/page", { headers: { accept: "text/html" } });
+    class LookAlikeRequest {
+      static [Symbol.hasInstance](value: unknown) {
+        return value instanceof NativeRequest || Object.hasOwn(Object(value), "lookAlike");
+      }
+      readonly lookAlike = true;
+    }
+    Object.setPrototypeOf(LookAlikeRequest.prototype, NativeRequest.prototype);
+    for (const key of Object.keys(Object.getOwnPropertyDescriptors(NativeRequest.prototype))) {
+      if (key === "constructor") continue;
+      Object.defineProperty(LookAlikeRequest.prototype, key, {
+        get() {
+          const value = (inner as unknown as Record<string, unknown>)[key];
+          return typeof value === "function" ? value.bind(inner) : value;
+        },
+      });
+    }
+    const lookAlike = new LookAlikeRequest() as unknown as Request;
+    expect(lookAlike instanceof NativeRequest).toBe(true);
+
+    const result = withRequestHeaders(lookAlike, new Headers(lookAlike.headers));
+    expect(result).not.toBe(lookAlike);
+    expect(Object.getOwnPropertyDescriptor(NativeRequest.prototype, "url")?.get?.call(result)).toBe(
+      "http://localhost/page",
+    );
+  });
+
+  it("rebuilds the request when a header changed", async () => {
+    const original = new Request("http://localhost/api", {
+      method: "POST",
+      headers: { "content-type": "text/plain", "x-internal": "1" },
+      body: "payload",
+    });
+    const headers = new Headers(original.headers);
+    headers.delete("x-internal");
+    const result = withRequestHeaders(original, headers);
+    expect(result).not.toBe(original);
+    expect(result.headers.has("x-internal")).toBe(false);
+    await expect(result.text()).resolves.toBe("payload");
+  });
+});
 
 describe("cloneRequestWithHeaders", () => {
   it("preserves method", () => {

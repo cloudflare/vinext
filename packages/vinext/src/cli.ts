@@ -162,6 +162,10 @@ async function start() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("start");
 
+  // Like `next start`, default to production so React and other packages
+  // load their production builds, which omit dev-only error details.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
+
   loadDotenv({
     root: process.cwd(),
     mode: "production",
@@ -265,6 +269,10 @@ async function check() {
 async function typegen() {
   const parsed = parseArgs(rawArgs);
   if (parsed.help) return printHelp("typegen");
+
+  // Like `next typegen`, default to production so next.config and its
+  // callbacks take their production paths.
+  if (!process.env.NODE_ENV) Reflect.set(process.env, "NODE_ENV", "production");
 
   const root = path.resolve(parsed.positionals?.[0] ?? process.cwd());
   loadDotenv({
@@ -375,6 +383,9 @@ function printHelp(cmd?: string) {
                          (Response Store or Workers Cache, default: prompt with No)
     --legacy-wrangler-cloudflare-init
                          Use the legacy Wrangler setup instead of cf
+    --ignore-wrangler-config
+                         Set up cf even if a root Wrangler config exists
+                         (use when it belongs to an unrelated Worker)
     --cdn-cache <type>   Cloudflare CDN cache: none, response-store, workers-cache,
                          static-assets, or data-cache
                          (default: none; response-store is the default cache choice)

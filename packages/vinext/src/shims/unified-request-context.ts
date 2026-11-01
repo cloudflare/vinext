@@ -17,6 +17,7 @@ import {
   markFullyBufferedBody,
   preserveFullyBufferedBodyMetadata,
 } from "../server/fully-buffered-response.js";
+import { deferUntilStreamConsumed } from "../server/defer-until-stream-consumed.js";
 
 import type {
   CacheState,
@@ -62,6 +63,14 @@ export type UnifiedRequestContext = {
   // ── next/server after() ───────────────────────────────────────────
   /** Shared lifecycle state for work deferred until the response closes. */
   afterContext: AfterRequestContext;
+
+  // ── headers.ts ────────────────────────────────────────────────────
+  /**
+   * Draft-mode state of the headers context this request last cleared. The
+   * render can outlive its headers context (cleared once the response body
+   * closes), and so do after() callbacks; cache bypasses keep reading this.
+   */
+  draftModeAtHeadersClear: boolean;
 } & VinextHeadersShimState &
   I18nState &
   NavigationState &
@@ -112,7 +121,8 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
   return {
     headersContext: null,
     actionRevalidationKind: 0,
-    cacheLifeSink: null,
+    isOnDemandRevalidate: false,
+    pendingCdnTagInvalidations: [],
     pendingRevalidatedTags: new Set<string>(),
     pendingRevalidations: new Set<Promise<void>>(),
     dynamicUsageDetected: false,
@@ -129,15 +139,14 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     serverContext: null,
     serverInsertedHTMLCallbacks: [],
     requestScopedCacheLife: null,
-    unstableCacheObservations: new Map(),
     unstableCacheRevalidation: "foreground",
     _privateCache: null,
-    cacheableFetchUrls: new Set<string>(),
     currentRequestTags: [],
     currentFetchSoftTags: [],
     currentFetchCacheMode: null,
     currentFetchRevalidate: null,
     currentForceDynamicFetchDefault: false,
+    isDraftMode: false,
     dynamicFetchUrls: new Set<string>(),
     refreshStaleFetchesInForeground: false,
     isFetchDedupeActive: false,
@@ -146,6 +155,7 @@ export function createRequestContext(opts?: Partial<UnifiedRequestContext>): Uni
     executionContext: _getInheritedExecutionContext(), // inherits from standalone ALS if present
     requestSignal: null,
     requestCache: new WeakMap(),
+    draftModeAtHeadersClear: false,
     afterContext: {
       callbacks: [],
       responseClosed: false,
@@ -300,13 +310,8 @@ export function closeAfterResponseWithBody(
     return response;
   }
 
-  const passthrough = new TransformStream<Uint8Array, Uint8Array>();
-  void response.body.pipeTo(passthrough.writable).then(
-    () => void closeAfterResponse(ctx),
-    () => void closeAfterResponse(ctx),
-  );
-
-  const wrapped = new Response(passthrough.readable, {
+  const body = deferUntilStreamConsumed(response.body, () => void closeAfterResponse(ctx));
+  const wrapped = new Response(body, {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
@@ -388,13 +393,14 @@ export function runWithUnifiedStateMutation<T>(
   ensureRenderDynamicLatch(parentCtx);
   const childCtx = { ...parentCtx };
   // NOTE: This is a shallow clone. Object/array fields (afterContext, pendingSetCookies,
-  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren), Set
+  // serverInsertedHTMLCallbacks, currentRequestTags, ssrHeadChildren,
+  // pendingCdnTagInvalidations), Set
   // fields (renderRequestApiUsage, pendingRevalidatedTags, pendingRevalidations,
-  // cacheableFetchUrls, dynamicFetchUrls),
-  // Map fields (unstableCacheObservations, _privateCache),
+  // dynamicFetchUrls),
+  // Map fields (_privateCache),
   // requestCache WeakMap, and object fields (headersContext,
   // i18nContext, serverContext, ssrContext, executionContext,
-  // requestScopedCacheLife, renderDynamicLatch, cacheLifeSink) still share references with
+  // requestScopedCacheLife, renderDynamicLatch) still share references with
   // the parent until replaced. requestCache is intentionally shared — nested
   // scopes within the same request should see the same cached values.
   // renderDynamicLatch must stay shared: dynamic usage in an isolated child

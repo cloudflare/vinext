@@ -402,14 +402,19 @@ self.postMessage("worker.ts:" + typeof keyLength);
     writeFile(
       root,
       "app/worker.ts",
-      `self.postMessage(["__webpack_require__", "u"].join(".") + ":" + String("__webpack_require__.u"));
+      `self.postMessage("webpack-token-worker:" + ["__webpack_require__", "u"].join(".") + ":" + String("__webpack_require__.u"));
 `,
     );
 
     await buildFixture(root);
+    // Worker file names are hash-only; find this worker by its contents.
     const workerDir = path.join(root, "dist/client/_next/static/workers");
-    const workerFile = fs.readdirSync(workerDir).find((file) => /^worker-[^.]+\.js$/.test(file));
-    const workerJavaScript = fs.readFileSync(path.join(workerDir, workerFile!), "utf8");
+    const workerJavaScript = fs
+      .readdirSync(workerDir)
+      .filter((file) => file.endsWith(".js"))
+      .map((file) => fs.readFileSync(path.join(workerDir, file), "utf8"))
+      .find((source) => source.includes("webpack-token-worker:"));
+    expect(workerJavaScript).toBeDefined();
     expect(workerJavaScript).toContain("__webpack_require__.u");
     expect(workerJavaScript).not.toContain("({}).u");
   }, 120_000);
@@ -449,11 +454,13 @@ self.postMessage("worker.ts:" + typeof keyLength);
   }
 
   // Other fixture workers import cache functions too; read only this one.
+  // Worker file names are hash-only, so find it by its message prefix.
   function readWorkerJavaScript(workerDir: string): string {
     return fs
       .readdirSync(workerDir)
-      .filter((file) => /^worker-[^.]+\.js$/.test(file))
+      .filter((file) => file.endsWith(".js"))
       .map((file) => fs.readFileSync(path.join(workerDir, file), "utf8"))
+      .filter((source) => /[`"']worker\.ts:/.test(source))
       .join("");
   }
 

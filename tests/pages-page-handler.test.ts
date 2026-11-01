@@ -5,6 +5,8 @@
  * verifying route matching, 404/500 fallback, _next/data envelope,
  * i18n redirect, 405 method check, and internal-error guard.
  */
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import React from "react";
 import { renderToReadableStream } from "react-dom/server.edge";
 import { afterEach, describe, it, expect, vi } from "vite-plus/test";
@@ -817,6 +819,54 @@ describe("createPagesPageHandler — preview responses", () => {
         nextData: expect.objectContaining({ isPreview: true }),
       }),
     );
+  });
+
+  it("bypasses the fetch cache in preview renders", async () => {
+    let upstreamCalls = 0;
+    const upstream = http.createServer((_req, res) => {
+      upstreamCalls++;
+      res.end(`token-${upstreamCalls}`);
+    });
+    await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+
+    try {
+      const { port } = upstream.address() as AddressInfo;
+      const upstreamUrl = `http://127.0.0.1:${port}/data?run=${Date.now()}`;
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: [
+            makeRoute(
+              "/about",
+              makePageModule({
+                getServerSideProps: async () => {
+                  const res = await fetch(upstreamUrl, { next: { revalidate: false } });
+                  return { props: { token: await res.text() } };
+                },
+              }),
+            ),
+          ],
+        }),
+      );
+      const dataUrl = "/_next/data/test-build-id/about.json";
+      const previewCookie = makePreviewCookieHeader({ draft: true });
+      const readToken = async (cookie?: string) => {
+        const request = new Request(`http://localhost${dataUrl}`, {
+          headers: cookie ? { cookie } : {},
+        });
+        const response = await handler(request, dataUrl, null, null, null);
+        return ((await response.json()) as { pageProps: { token: string } }).pageProps.token;
+      };
+
+      expect(await readToken()).toBe("token-1");
+      expect(await readToken()).toBe("token-1");
+      expect(await readToken(previewCookie)).toBe("token-2");
+      expect(await readToken(previewCookie)).toBe("token-3");
+      expect(await readToken()).toBe("token-1");
+      expect(upstreamCalls).toBe(3);
+    } finally {
+      upstream.closeAllConnections();
+      await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    }
   });
 
   it("clears both cookies when preview data is tampered on a preview-capable page", async () => {

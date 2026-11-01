@@ -3,9 +3,9 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { createBuilder } from "vite";
-import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import {
   getPagesClientAssets,
@@ -14,13 +14,19 @@ import {
 import {
   APP_FIXTURE_DIR,
   createIsolatedFixture,
+  EXTERNAL_REWRITE_HEADER_CASES,
   expectRepeatedSlashRedirects,
+  requestExternalRewriteHeaders,
   testCacheDir,
 } from "./helpers.js";
 
 const ROOT_LAYOUT_NOT_FOUND_REDIRECT_FIXTURE_DIR = path.resolve(
   import.meta.dirname,
   "./fixtures/root-layout-not-found-redirect",
+);
+const APP_LAYOUT_ERROR_FIXTURE_DIR = path.resolve(
+  import.meta.dirname,
+  "./fixtures/app-layout-error",
 );
 
 function getStylesheetHrefs(html: string): string[] {
@@ -98,6 +104,24 @@ async function rawHttpRequest(
       });
     });
     request.on("error", reject);
+    request.end();
+  });
+}
+
+// Sends a request and closes the connection as soon as the response headers
+// arrive, as a browser does when a navigation is abandoned mid-render.
+async function abandonAfterResponseHeaders(
+  url: URL,
+  headers: Record<string, string>,
+): Promise<http.IncomingHttpHeaders> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, { headers }, (response) => {
+      request.destroy();
+      resolve(response.headers);
+    });
+    request.on("error", (error) => {
+      if (!request.destroyed) reject(error);
+    });
     request.end();
   });
 }
@@ -474,6 +498,84 @@ describe("App Router Production server (startProdServer)", () => {
       expect(sessionCookies[1]).toMatch(session);
     },
   );
+
+  // Next.js's send-response keeps a route handler's WWW-Authenticate and
+  // Proxy-Authenticate values after middleware's; singular headers stay
+  // middleware-owned.
+  it("keeps a route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
+  });
+
+  it("never joins a hybrid Pages API route's challenge to middleware's", async () => {
+    const res = await fetch(`${baseUrl}/api/pages-auth-challenge`);
+    expect(res.status).toBe(401);
+    // Next.js lets the handler's setHeader() replace middleware's challenge.
+    expect(['Basic realm="middleware"', 'Bearer realm="handler"']).toContain(
+      res.headers.get("www-authenticate"),
+    );
+  });
+
+  // Next.js proxies a next.config external rewrite without the headers it
+  // staged, and sets the upstream's headers over a middleware rewrite's.
+  it.each(EXTERNAL_REWRITE_HEADER_CASES)(
+    "applies config and middleware headers to external rewrites like Next.js for $path",
+    async ({ path: requestPath, ...expected }) => {
+      expect(await requestExternalRewriteHeaders(baseUrl, requestPath)).toEqual({
+        status: 200,
+        cacheControl: "public, max-age=60",
+        upstreamHeader: "1",
+        ...expected,
+      });
+    },
+  );
+
+  // Next.js stages next.config headers before middleware: a config Set-Cookie
+  // precedes the response's own cookies, and middleware's cookie replaces it.
+  it.each([
+    {
+      path: "/api/config-cookie",
+      cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    {
+      path: "/api/config-cookie?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    {
+      path: "/api/config-cookie?middleware-cookie",
+      cookies: ["middleware-cookie=1; Path=/", "handler-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-redirect", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-redirect?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+    {
+      path: "/config-cookie-redirect?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    {
+      path: "/config-cookie-response?empty-middleware-cookie",
+      cookies: ["config-cookie=1; Path=/"],
+    },
+    { path: "/config-cookie-response", cookies: ["config-cookie=1; Path=/"] },
+    { path: "/config-cookie-response?middleware-cookie", cookies: ["middleware-cookie=1; Path=/"] },
+  ])("orders next.config Set-Cookie like Next.js for $path", async ({ path, cookies }) => {
+    // Read raw headers: fetch() hides an empty Set-Cookie line.
+    const rawCookies = await new Promise<string[]>((resolve, reject) => {
+      http
+        .get(`${baseUrl}${path}`, (res) => {
+          res.resume();
+          resolve(res.headers["set-cookie"] ?? []);
+        })
+        .on("error", reject);
+    });
+    expect(rawCookies).toEqual(cookies);
+  });
 
   it("never lets an absolute-form request target choose the request origin", async () => {
     // `/middleware-redirect` answers `NextResponse.redirect(new URL("/about",
@@ -1104,12 +1206,18 @@ describe("App Router Production server (startProdServer)", () => {
     // of its own, its script preload links must not follow the text, or React
     // leaves a `<!-- -->` separator in their place, which Next.js doesn't emit.
     expect(html).toMatch(/<div>Index<p id="dynamic-use-id">/);
-    // The component's script preload is still rendered (and hoisted).
+    // The component's script preload is still rendered (and hoisted). Client
+    // file names are hash-only, so find the chunk through the build manifest.
+    const clientManifest = JSON.parse(
+      fs.readFileSync(path.join(outDir, "client", ".vite", "manifest.json"), "utf8"),
+    ) as Record<string, { file: string }>;
+    const useIdKey = Object.keys(clientManifest).find((key) => key.endsWith("/use-id-field.tsx"));
+    expect(useIdKey).toBeDefined();
     const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
       (tag) =>
         /\brel="modulepreload"/.test(tag) &&
         /\bfetchpriority="low"/i.test(tag) &&
-        /use-id-field[^"]*\.js"/.test(tag),
+        tag.includes(`href="/${clientManifest[useIdKey!].file}"`),
     );
     expect(dynamicScriptPreloads).toHaveLength(1);
   });
@@ -1368,23 +1476,36 @@ describe("App Router Production server (startProdServer)", () => {
         );
 
         const html = await res.text();
-        const dynamicScriptPreloads = (html.match(/<link\b[^>]*>/g) ?? []).filter(
-          (tag) =>
-            /\bfetchpriority="low"/i.test(tag) &&
-            tag.includes('nonce="vinext-test-nonce"') &&
-            tag.includes("https://cdn.example.com/_next/static/chunks/"),
-        );
+        const lowPriorityScriptPreloads = (page: string) =>
+          (page.match(/<link\b[^>]*>/g) ?? []).filter(
+            (tag) =>
+              /\bfetchpriority="low"/i.test(tag) &&
+              tag.includes("https://cdn.example.com/_next/static/chunks/"),
+          );
+        const dynamicScriptPreloads = lowPriorityScriptPreloads(html);
 
-        expect(dynamicScriptPreloads.length).toBeGreaterThan(0);
+        // next/dynamic's links, and client references' hints, which leave `as` out.
+        expect(dynamicScriptPreloads.filter((tag) => tag.includes('as="script"'))).not.toEqual([]);
+        expect(dynamicScriptPreloads.filter((tag) => !tag.includes('as="script"'))).not.toEqual([]);
         for (const tag of dynamicScriptPreloads) {
           expect(tag).toMatch(
             /\bhref="https:\/\/cdn\.example\.com\/_next\/static\/chunks\/[^"]+\.js"/,
           );
+          expect(tag).toContain('nonce="vinext-test-nonce"');
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
 
-        // @vitejs/plugin-rsc owns additional client-reference hints. This parity port covers
-        // the bootstrap and next/dynamic assets emitted by vinext in this PR.
+        // Without a nonce too.
+        const unnoncedHtml = await (await fetch(`${tmpBaseUrl}/nextjs-compat/dynamic`)).text();
+        const unnoncedScriptPreloads = lowPriorityScriptPreloads(unnoncedHtml);
+        expect(unnoncedScriptPreloads.length).toBe(dynamicScriptPreloads.length);
+        for (const tag of unnoncedScriptPreloads) {
+          expect(tag).not.toContain("nonce=");
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        // Client-reference stylesheets keep plugin-rsc's crossOrigin. This
+        // parity port covers the scripts and next/dynamic assets.
         const cdnAssetScripts = (html.match(/<script\b[^>]*>/g) ?? []).filter((tag) =>
           tag.includes('src="https://cdn.example.com/_next/static/'),
         );
@@ -1404,6 +1525,17 @@ describe("App Router Production server (startProdServer)", () => {
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
 
+        // The error document's bootstrap script too.
+        const errorRes = await fetch(`${tmpBaseUrl}/error-server-test`);
+        expect(errorRes.status).toBe(500);
+        const errorHtml = await errorRes.text();
+        expect(errorHtml).toContain('<html id="__next_error__"');
+        const errorBootstrap = (errorHtml.match(/<script\b[^>]*>/gi) ?? []).find((tag) =>
+          tag.includes('id="_R_"'),
+        );
+        expect(errorBootstrap).toContain('src="https://cdn.example.com/_next/static/');
+        expect(errorBootstrap).toContain(`crossorigin="${expectedCrossOrigin}"`);
+
         const cssRes = await fetch(
           `${tmpBaseUrl}/nextjs-compat/dynamic/rsc-imports-client?csp-nonce=1`,
         );
@@ -1421,6 +1553,21 @@ describe("App Router Production server (startProdServer)", () => {
         for (const tag of dynamicStylesheets) {
           expect(tag).toContain('nonce="vinext-test-nonce"');
           expect(tag).not.toContain('as="style"');
+          expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
+        }
+
+        // Anonymous when unset, unlike Next.js: Vite's preload helper links a
+        // lazily imported component's stylesheet as anonymous, which would
+        // fail the CORS check on a no-cors copy the browser cached.
+        const bannerHtml = await (await fetch(`${tmpBaseUrl}/cookie-notice-chunks`)).text();
+        expect(bannerHtml).toContain('data-testid="consent-banner"');
+        const clientStylesheets = (bannerHtml.match(/<link\b[^>]*>/g) ?? []).filter(
+          (tag) =>
+            /\brel="stylesheet"/.test(tag) &&
+            tag.includes('data-precedence="vite-rsc/client-reference"'),
+        );
+        expect(clientStylesheets).not.toEqual([]);
+        for (const tag of clientStylesheets) {
           expect(tag).toContain(`crossorigin="${expectedCrossOrigin}"`);
         }
       } finally {
@@ -1546,6 +1693,19 @@ describe("App Router Production server (startProdServer)", () => {
     expect((await res.blob()).size).toBeGreaterThan(0);
   });
 
+  it("supports res.appendHeader in Pages API routes after middleware cookies in hybrid production", async () => {
+    const res = await fetch(`${baseUrl}/api/pages-append-header`);
+
+    expect(res.status).toBe(200);
+    expect(res.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+    expect(res.headers.get("x-multi")).toBe("a, b");
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      multi: ["a", "b"],
+      headersMulti: ["a", "b"],
+    });
+  });
+
   it("serves dynamic routes", async () => {
     const res = await fetch(`${baseUrl}/blog/test-post`);
     expect(res.status).toBe(200);
@@ -1564,6 +1724,31 @@ describe("App Router Production server (startProdServer)", () => {
     const res = await fetch(`${baseUrl}/about.rsc`);
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
+  });
+
+  it("does not cache an RSC render whose client disconnected before it read cookies", async () => {
+    const session = `user-${randomUUID()}`;
+    const abandoned = await abandonAfterResponseHeaders(
+      new URL("/late-cookie-read?_rsc", baseUrl),
+      {
+        RSC: "1",
+        Cookie: `session=${session}`,
+      },
+    );
+    expect(abandoned["content-type"]).toContain("text/x-component");
+
+    // The page reads cookies 300 ms into the render, which keeps running
+    // after the client has gone. Give it time to finish before checking
+    // whether its payload was stored.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const anonymous = await fetch(`${baseUrl}/late-cookie-read.rsc`);
+    expect(anonymous.status).toBe(200);
+    const body = await anonymous.text();
+    expect(anonymous.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(anonymous.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    expect(body).not.toContain(session);
+    expect(body).toContain("guest");
   });
 
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {
@@ -1661,12 +1846,22 @@ describe("App Router Production server (startProdServer)", () => {
     expect(healthRes.status).toBe(200);
   });
 
-  it("runs an exact API middleware matcher for a trailing-slash route handler request", async () => {
-    const res = await fetch(`${baseUrl}/api/header-override-delete/`);
+  // Like Next.js, a trailing-slash Route Handler request is redirected before
+  // middleware runs, so middleware only sees the canonical pathname.
+  it("redirects a trailing-slash route handler request before middleware", async () => {
+    const res = await fetch(`${baseUrl}/api/header-override-delete/?a=1`, { redirect: "manual" });
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/api/header-override-delete/");
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/header-override-delete?a=1");
+    expect(res.headers.get("x-mw-ran")).toBeNull();
+
+    // Following the redirect reaches middleware's exact-pathname branch.
+    const followed = await fetch(`${baseUrl}/api/header-override-delete/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${baseUrl}/api/header-override-delete`);
+    await expect(followed.json()).resolves.toMatchObject({
+      requestMiddlewareHeader: "hello-from-middleware",
+    });
   });
 
   it("returns 404 for nonexistent routes", async () => {
@@ -1884,6 +2079,136 @@ describe("App Router Production server (startProdServer)", () => {
     }
   });
 
+  // Ported from Next.js: test/e2e/app-dir/global-error/layout-error/index.test.ts
+  // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/global-error/layout-error/index.test.ts
+  //
+  // A segment's error.tsx sits inside its layout, so a layout's error goes to
+  // the boundary above it: global-error for the root layout. The browser
+  // renders it from the error document's payload, so nothing renders again on
+  // the server, and the error is reported and logged once.
+  it("answers a server component error in the shell with the error document and reports it once", async () => {
+    const fixtureRoot = await createIsolatedFixture(
+      APP_LAYOUT_ERROR_FIXTURE_DIR,
+      "vinext-app-layout-error-",
+    );
+    let server: http.Server | undefined;
+    const previousPagesClientAssets = getPagesClientAssets();
+    const prodGlobalKeys = [
+      "__vite_rsc_client_require__",
+      "__vite_rsc_require__",
+      "__vite_rsc_server_require__",
+      "__webpack_chunk_load__",
+      "__webpack_require__",
+      "__VINEXT_onRequestErrorHandler__",
+    ];
+    const previousGlobals = new Map(
+      prodGlobalKeys.map((key) => [
+        key,
+        {
+          exists: Reflect.has(globalThis, key),
+          value: Reflect.get(globalThis, key),
+        },
+      ]),
+    );
+    const previousQuiet = process.env.VINEXT_QUIET;
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    type RequestErrorReport = { message: string; digest: string | undefined; path: string };
+    const reports = (): RequestErrorReport[] =>
+      ((
+        globalThis as { __vinextLayoutErrorReports?: RequestErrorReport[] }
+      ).__vinextLayoutErrorReports ??= []);
+    const renderErrorLogs = () =>
+      consoleError.mock.calls.filter(([label]) => label === "[vinext] Server render error:");
+    const reset = () => {
+      reports().length = 0;
+      consoleError.mockClear();
+    };
+
+    try {
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        plugins: [vinext({ appDir: fixtureRoot })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+      const started = await startProdServer({
+        port: 0,
+        outDir: path.join(fixtureRoot, "dist"),
+        noCompression: true,
+      });
+      server = started.server;
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Production layout error fixture did not bind to a TCP port");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}`;
+
+      // Like Next.js, an error that rejects the document's shell answers with
+      // the error document, carrying the payload of the render that failed:
+      // the browser renders its error boundary, and no server component runs
+      // again.
+      const cases = [
+        { header: "x-vinext-throw-root-layout", path: "/", message: "root layout failed" },
+        // A server component the root layout renders, outside its children.
+        { header: "x-vinext-throw-root-header", path: "/nested", message: "root header failed" },
+        {
+          header: "x-vinext-throw-nested-layout",
+          path: "/nested",
+          message: "nested layout failed",
+        },
+        { header: "x-vinext-throw-nested-page", path: "/nested", message: "nested page failed" },
+      ];
+      for (const { header, path: pathname, message } of cases) {
+        reset();
+        const res = await fetch(`${baseUrl}${pathname}`, { headers: { [header]: "1" } });
+        const html = await res.text();
+        expect(reports(), header).toEqual([
+          { message, digest: expect.any(String), path: pathname },
+        ]);
+        expect(renderErrorLogs(), header).toHaveLength(1);
+        expect(res.status, header).toBe(500);
+        expect(res.headers.get("cache-control"), header).toContain("no-store");
+        expect(html, header).toContain('<html id="__next_error__"');
+        expect(html, header).toContain('<meta name="robots" content="noindex"/>');
+        expect(html, header).not.toContain('id="root-layout"');
+        // The payload the browser renders carries the error, by its digest.
+        expect(html, header).toContain(reports()[0]!.digest!);
+      }
+
+      // VINEXT_QUIET leaves the error to onRequestError, which may redact it.
+      process.env.VINEXT_QUIET = "1";
+      reset();
+      const quietRes = await fetch(baseUrl, { headers: { "x-vinext-throw-root-layout": "1" } });
+      expect(quietRes.status).toBe(500);
+      await quietRes.text();
+      expect(reports()).toHaveLength(1);
+      expect(renderErrorLogs()).toHaveLength(0);
+    } finally {
+      if (previousQuiet === undefined) delete process.env.VINEXT_QUIET;
+      else process.env.VINEXT_QUIET = previousQuiet;
+      consoleError.mockRestore();
+      Reflect.deleteProperty(globalThis, "__vinextLayoutErrorReports");
+      await new Promise<void>((resolve, reject) => {
+        if (!server) {
+          resolve();
+          return;
+        }
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+      setPagesClientAssets(previousPagesClientAssets);
+      for (const [key, previous] of previousGlobals) {
+        if (previous.exists) {
+          Reflect.set(globalThis, key, previous.value);
+        } else {
+          Reflect.deleteProperty(globalThis, key);
+        }
+      }
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   // Ported from Next.js: test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
   // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/rsc-redirect/rsc-redirect.test.ts
   //
@@ -1899,6 +2224,12 @@ describe("App Router Production server (startProdServer)", () => {
     const location = res.headers.get("location");
     expect(location).toBeTruthy();
     expect(location).toContain("/about");
+  });
+
+  it("answers a config redirect with its statusCode (production)", async () => {
+    const res = await fetch(`${baseUrl}/config-redirect-status-code`, { redirect: "manual" });
+    expect(res.status).toBe(301);
+    expect(res.headers.get("location")).toMatch(/\/about$/);
   });
 
   // Issue #1529: an RSC client navigation that hits a next.config.js redirect
@@ -2281,8 +2612,16 @@ describe("App Router Production server (startProdServer)", () => {
     expect(response.status).toBe(200);
 
     const html = await response.text();
-    expect(html.match(/<title>/g) ?? []).toHaveLength(1);
-    expect(html).toContain("<title>Streamed not-found metadata</title>");
+    // Count title elements like Next's cheerio assertion does: the inline RSC
+    // payload scripts carry the same markup as text.
+    const markup = html
+      .split("<script")
+      .map((part, index) =>
+        index === 0 ? part : part.slice(part.indexOf("</script>") + "</script>".length),
+      )
+      .join("");
+    expect(markup.match(/<title>/g) ?? []).toHaveLength(1);
+    expect(markup).toContain("<title>Streamed not-found metadata</title>");
 
     const rscResponse = await fetch(`${baseUrl}/metadata-streaming-not-found.rsc`, {
       headers: { Accept: "text/x-component", RSC: "1", "user-agent": "HeadlessChrome" },
@@ -2327,7 +2666,7 @@ describe("App Router Production server (startProdServer)", () => {
     expect(resetRes.status).toBe(200);
 
     const errorRes = await fetch(`${baseUrl}/error-server-test`);
-    expect(errorRes.status).toBe(200);
+    expect(errorRes.status).toBe(500);
 
     await new Promise((resolve) => setTimeout(resolve, 200));
 
@@ -2335,9 +2674,9 @@ describe("App Router Production server (startProdServer)", () => {
     expect(stateRes.status).toBe(200);
     const state = await stateRes.json();
 
-    expect(state.errors.length).toBeGreaterThanOrEqual(1);
+    expect(state.errors).toHaveLength(1);
 
-    const err = state.errors[state.errors.length - 1];
+    const err = state.errors[0];
     expect(err.message).toBe("Server component error");
     expect(err.path).toBe("/error-server-test");
     expect(err.method).toBe("GET");
@@ -2766,6 +3105,83 @@ describe("App Router Production server (startProdServer)", () => {
 
     expect(freshRes.headers.get("x-vinext-cache")).toBe("HIT");
     expect(freshBody.timestamp).not.toBe(coldBody.timestamp);
+  });
+
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // request that finds it stale regenerates the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: a stale RSC request regenerates the page's document too", async () => {
+    const readTimestamp = (html: string) =>
+      html.replaceAll("<!-- -->", "").match(/data-testid="timestamp"[^>]*>(\d+)/)?.[1];
+    const fetchRsc = () =>
+      fetch(`${baseUrl}/isr-test.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+
+    // An HTML render stores both entries; let them go stale (revalidate = 1).
+    const filled = await fetch(`${baseUrl}/isr-test`);
+    const filledTimestamp = readTimestamp(await filled.text());
+    expect(filledTimestamp).toBeTruthy();
+    await new Promise((resolve) => setTimeout(resolve, 2000));
+
+    // Only RSC requests reach the page until its RSC entry regenerates.
+    const stale = await fetchRsc();
+    await stale.arrayBuffer();
+    expect(stale.headers.get("x-vinext-cache")).toBe("STALE");
+    await waitForCondition(
+      async () => {
+        const res = await fetchRsc();
+        await res.arrayBuffer();
+        return res.headers.get("x-vinext-cache") === "HIT";
+      },
+      { timeoutMs: 5000 },
+    );
+
+    const document = await fetch(`${baseUrl}/isr-test`);
+    const documentTimestamp = readTimestamp(await document.text());
+    expect(documentTimestamp).toBeTruthy();
+    expect(documentTimestamp).not.toBe(filledTimestamp);
+  });
+
+  // Next.js keeps a page's document and RSC payload in one entry, so an RSC
+  // miss stores the document too.
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/templates/app-page.ts
+  it("App Router ISR: an RSC miss stores the page's document too", async () => {
+    const pathname = "/route-cache-identity/rsc-miss-document";
+    const fetchRsc = () =>
+      fetch(`${baseUrl}${pathname}.rsc`, { headers: { Accept: "text/x-component", RSC: "1" } });
+    const miss = await fetchRsc();
+    await miss.arrayBuffer();
+    expect(miss.headers.get("x-vinext-cache")).toBe("MISS");
+    await waitForCondition(async () => {
+      const res = await fetchRsc();
+      await res.arrayBuffer();
+      return res.headers.get("x-vinext-cache") === "HIT";
+    });
+
+    const document = await fetch(`${baseUrl}${pathname}`);
+    expect(document.headers.get("x-vinext-cache")).toBe("HIT");
+    expect(await document.text()).toContain("CACHE_IDENTITY_CATCH_ALL:<!-- -->rsc-miss-document");
+  });
+
+  // Next.js prerenders a page's document beside its payload, so a client page
+  // that reads its searchParams makes the route dynamic. An RSC miss renders
+  // the document too, so it stores neither part.
+  it("App Router ISR: an RSC miss for a client page that reads searchParams stores nothing", async () => {
+    const pathname = "/client-page-search-params";
+    const fetchRsc = (q: string) =>
+      fetch(`${baseUrl}${pathname}.rsc?q=${q}`, {
+        headers: { Accept: "text/x-component", RSC: "1" },
+      });
+    const miss = await fetchRsc("first");
+    await miss.arrayBuffer();
+    // Give the background cache write time to settle.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+
+    const rsc = await fetchRsc("second");
+    await rsc.arrayBuffer();
+    expect(rsc.headers.get("x-vinext-cache")).not.toBe("HIT");
+    const document = await fetch(`${baseUrl}${pathname}?q=document`);
+    expect(document.headers.get("x-vinext-cache")).not.toBe("HIT");
+    expect(await document.text()).toContain('data-testid="client-page-search-params-q">document<');
   });
 
   it("route handler ISR: auto-HEAD returns cached headers with empty body", async () => {

@@ -25,6 +25,7 @@ function getMatcherRule(redirect: ClientRedirect): NextRedirect[] {
         missing: redirect.missing,
         locale: redirect.locale,
         basePath: redirect.basePath,
+        defaultLocaleVariant: redirect.defaultLocaleVariant,
       },
     ];
     matcherRules.set(redirect, rule);

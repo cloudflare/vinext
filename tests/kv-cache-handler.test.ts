@@ -874,6 +874,174 @@ describe("KVCacheHandler", () => {
       expect(store.get("__tag:_N_T_/revalidate-tag-test")).toMatch(/^\d+$/);
     });
 
+    // Adapted from Next.js's tags manifest (areTagsStale / areTagsExpired):
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/incremental-cache/tags-manifest.external.ts
+    it("serves entries of a tag revalidated with a profile stale until it expires, across handler instances", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(1_000_000);
+        const value = {
+          kind: "FETCH" as const,
+          data: { headers: {}, body: "posts", url: "https://example.test/posts" },
+          revalidate: 3600,
+        };
+        await handler.set("tagged", value, { revalidate: 3600, tags: ["posts"] });
+        await handler.set("soft-tagged", value, { revalidate: 3600 });
+
+        vi.setSystemTime(1_001_000);
+        await handler.revalidateTag("posts", { expire: 60 });
+
+        // Another isolate reads the persisted marker.
+        let reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("tagged")).resolves.toMatchObject({ cacheState: "stale" });
+        await expect(reader.get("soft-tagged", { softTags: ["posts"] })).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+        expect(store.has("cache:tagged")).toBe(true);
+
+        // An entry written after the revalidation is fresh.
+        vi.setSystemTime(1_002_000);
+        await handler.set("fresh", value, { revalidate: 3600, tags: ["posts"] });
+        expect((await reader.get("fresh"))?.cacheState).toBeUndefined();
+
+        // Once the profile's expire time passes, every entry written before it
+        // is gone. One written later is kept.
+        vi.setSystemTime(1_062_000);
+        await handler.set("after-expiry", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(1_062_001);
+        reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("tagged")).resolves.toBeNull();
+        await expect(reader.get("soft-tagged", { softTags: ["posts"] })).resolves.toBeNull();
+        await expect(reader.get("fresh")).resolves.toBeNull();
+        await expect(reader.get("after-expiry")).resolves.not.toBeNull();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Next.js dates a "use cache" entry from when its generation started:
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/use-cache/use-cache-wrapper.ts
+    it("dates an entry from the generation start it is given", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const set = (key: string, tags: string[], timestamp?: unknown, revalidate = 3600) =>
+          handler.set(
+            key,
+            { kind: "FETCH", data: { headers: {}, body: "posts", url: "" }, revalidate },
+            { revalidate, tags, timestamp },
+          );
+
+        // Each generation starts before the revalidation and is stored after it.
+        vi.setSystemTime(1_001_000);
+        await handler.revalidateTag("stale-tag", { expire: 60 });
+        await handler.revalidateTag("expired-tag");
+        vi.setSystemTime(1_002_000);
+        await set("stale", ["stale-tag"], 1_000_000);
+        await set("expired", ["expired-tag"], 1_000_000);
+        await set("aged", [], 1_000_000, 1);
+        // One that started after the revalidation, and writes without a valid start.
+        await set("fresh", ["stale-tag"], 1_001_500);
+        await set("unset", ["stale-tag"]);
+        await set("future", ["stale-tag"], 1_003_000);
+        await set("malformed", ["stale-tag"], Number.NaN);
+
+        const reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("stale")).resolves.toMatchObject({
+          cacheState: "stale",
+          lastModified: 1_000_000,
+        });
+        await expect(reader.get("expired")).resolves.toBeNull();
+        // Its revalidate period counts from the generation start too.
+        await expect(reader.get("aged")).resolves.toMatchObject({ cacheState: "stale" });
+        for (const key of ["fresh", "unset", "future", "malformed"]) {
+          const entry = await reader.get(key);
+          expect(entry?.cacheState, key).toBeUndefined();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("serves stale after the public revalidateTag with a cacheLife profile name", async () => {
+      await handler.set(
+        "posts",
+        {
+          kind: "FETCH",
+          data: { headers: {}, body: "cached posts", url: "https://example.test/posts" },
+          revalidate: 3600,
+        },
+        { revalidate: 3600, tags: ["posts"] },
+      );
+      await new Promise((resolve) => setTimeout(resolve, 2));
+
+      setCacheHandler(handler);
+      try {
+        await _runWithCacheState(async () => {
+          revalidateTag("posts", "hours");
+          await _drainPendingRevalidations();
+        });
+      } finally {
+        setCacheHandler(new MemoryCacheHandler());
+      }
+
+      await expect(new KVCacheHandler(kv as any).get("posts")).resolves.toMatchObject({
+        cacheState: "stale",
+      });
+    });
+
+    it("keeps an earlier expiry when a profile without expire revalidates the tag", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        const value = {
+          kind: "FETCH" as const,
+          data: { headers: {}, body: "posts", url: "" },
+          revalidate: 3600,
+        };
+        vi.setSystemTime(1_000);
+        await handler.set("before-expiry", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(2_000);
+        await handler.revalidateTag("posts");
+        vi.setSystemTime(3_000);
+        await handler.set("before-stale", value, { revalidate: 3600, tags: ["posts"] });
+        vi.setSystemTime(4_000);
+        await handler.revalidateTag("posts", {});
+
+        expect(JSON.parse(store.get("__tag:posts")!)).toEqual({ stale: 4_000, expired: 2_000 });
+        const reader = new KVCacheHandler(kv as any);
+        await expect(reader.get("before-expiry")).resolves.toBeNull();
+        await expect(reader.get("before-stale")).resolves.toMatchObject({ cacheState: "stale" });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("serves entries of a tag revalidated with an infinite expire stale indefinitely", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      try {
+        vi.setSystemTime(1_000);
+        await handler.set("tagged", pageValue, { tags: ["posts"] });
+        vi.setSystemTime(2_000);
+        await handler.revalidateTag("posts", { expire: Infinity });
+
+        expect(JSON.parse(store.get("__tag:posts")!)).toEqual({ stale: 2_000 });
+        vi.setSystemTime(1e12);
+        await expect(new KVCacheHandler(kv as any).get("tagged")).resolves.toMatchObject({
+          cacheState: "stale",
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it.each(['{"stale":"soon"}', "{not json", "", " ", "12abc", "{}", '{"other":1}'])(
+      "treats an unreadable profile marker %s as an invalidation",
+      async (marker) => {
+        await handler.set("tagged", pageValue, { tags: ["posts"] });
+        store.set("__tag:posts", marker);
+        await expect(new KVCacheHandler(kv as any).get("tagged")).resolves.toBeNull();
+      },
+    );
+
     it("expires a revalidate = false entry after 30 days and keeps its invalidation marker", async () => {
       await handler.set(
         "static-tagged",

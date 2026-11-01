@@ -1735,6 +1735,25 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(snapshotProject(tmpDir)).toBe(before);
   });
 
+  it("rejects ignoreWranglerConfig with the legacy setup before mutating the project", async () => {
+    setupProject(tmpDir);
+    writeFile(tmpDir, "wrangler.jsonc", '{ "name": "other-worker", "main": "src/other.ts" }\n');
+    const before = snapshotProject(tmpDir);
+    await expect(
+      runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          legacyWrangler: true,
+          ignoreWranglerConfig: true,
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+        },
+      }),
+    ).rejects.toThrow("cannot be combined with --legacy-wrangler-cloudflare-init");
+    expect(snapshotProject(tmpDir)).toBe(before);
+  });
+
   it("rejects an incompatible typed Response Store config before mutating the project", async () => {
     setupProject(tmpDir);
     writeFile(tmpDir, "cloudflare.config.ts", "export default {};\n");

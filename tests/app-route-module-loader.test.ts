@@ -184,11 +184,13 @@ describe("ensureAppRouteModulesLoaded", () => {
     const slotNotFound = { default: () => null, metadata: { title: "slot not found" } };
     const nestedSlotLayout = { default: () => null, revalidate: 30 };
     const nestedSlotLoading = { default: () => null };
+    const nestedSlotNotFound = { default: () => null };
     const __loadPage = vi.fn(async () => slotPage);
     const __loadLayout = vi.fn(async () => slotLayout);
     const __loadNotFound = vi.fn(async () => slotNotFound);
     const __loadConfigLayout = vi.fn(async () => nestedSlotLayout);
     const __loadSlotLoading = vi.fn(async () => nestedSlotLoading);
+    const __loadSlotNotFound = vi.fn(async () => nestedSlotNotFound);
     const route: LazyLoadableRoute = {
       slots: {
         "@modal": {
@@ -196,11 +198,13 @@ describe("ensureAppRouteModulesLoaded", () => {
           layout: null,
           configLayouts: [null],
           loadings: [null],
+          notFounds: [null],
           __loadPage,
           __loadLayout,
           __loadNotFound,
           __loadConfigLayouts: [__loadConfigLayout],
           __loadLoadings: [__loadSlotLoading],
+          __loadNotFounds: [__loadSlotNotFound],
         },
       },
     };
@@ -212,25 +216,30 @@ describe("ensureAppRouteModulesLoaded", () => {
     expect(route.slots?.["@modal"].notFound).toBe(slotNotFound);
     expect(route.slots?.["@modal"].configLayouts).toEqual([nestedSlotLayout]);
     expect(route.slots?.["@modal"].loadings).toEqual([nestedSlotLoading]);
+    expect(route.slots?.["@modal"].notFounds).toEqual([nestedSlotNotFound]);
   });
 });
 
 describe("loadAppInterceptLayouts", () => {
-  it("hydrates intercept layouts from their loaders and returns the array", async () => {
+  it("hydrates intercept layouts, loadings and not-founds from their loaders and returns the layouts", async () => {
     const layoutA = { default: () => null };
     const layoutB = { default: () => null };
     const loading = { default: () => null };
+    const notFound = { default: () => null };
     const intercept = {
       interceptLayouts: [null, null],
       __loadInterceptLayouts: [async () => layoutA, async () => layoutB],
       interceptLoadings: [null],
       __loadInterceptLoadings: [async () => loading],
+      interceptNotFounds: [null],
+      __loadInterceptNotFounds: [async () => notFound],
     };
 
     const result = await loadAppInterceptLayouts(intercept);
 
     expect(intercept.interceptLayouts).toEqual([layoutA, layoutB]);
     expect(intercept.interceptLoadings).toEqual([loading]);
+    expect(intercept.interceptNotFounds).toEqual([notFound]);
     expect(result).toBe(intercept.interceptLayouts);
   });
 

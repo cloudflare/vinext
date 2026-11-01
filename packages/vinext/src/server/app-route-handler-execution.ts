@@ -59,6 +59,7 @@ import {
 } from "./cacheability-limits.js";
 import { frameworkTracer } from "./tracer.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
+import { logRequestError } from "./request-error-log.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -371,7 +372,7 @@ async function executeAppRouteHandlerImpl(
             };
           } catch (error) {
             if (
-              resolveAppRouteHandlerSpecialError(error, options.request.url, {
+              resolveAppRouteHandlerSpecialError(error, {
                 isAction: isPossibleAppRouteActionRequest(options.request),
               })
             ) {
@@ -423,10 +424,22 @@ async function executeAppRouteHandlerImpl(
         requiresCompletedResponseAdmission: isRouteCacheabilityEvaluation(),
       })
     ) {
-      const completed = await completeAppRouteHandlerResponse(response);
+      const completed = await completeAppRouteHandlerResponse(response).catch(
+        async (error: unknown) => {
+          // Drain what the body queued before it failed. The body error stays
+          // the response error, as the eager drain above does for handlers.
+          await _drainPendingRevalidations().catch(() => {});
+          throw error;
+        },
+      );
       response = completed.response;
       cleanupDeferredToBody = !completed.completed;
-      if (completed.completed) markRouteCacheabilityResponseBodyComplete();
+      if (completed.completed) {
+        markRouteCacheabilityResponseBodyComplete();
+        // The body's producer ran after the eager drain above, so it owns any
+        // next/cache invalidations it queued (incomplete bodies drain at cleanup).
+        await _drainPendingRevalidations();
+      }
       const dynamicUsedDuringCompletion = options.consumeDynamicUsage();
       dynamicUsedInHandler =
         handlerResult.didAccessDynamicRequest() ||
@@ -566,7 +579,14 @@ async function executeAppRouteHandlerImpl(
           console.error("[vinext] ISR route cache write error:", cacheErr);
         }
       })();
-      options.executionContext?.waitUntil(routeWritePromise);
+      // Next.js's ResponseCache awaits an on-demand revalidation's write
+      // before it answers, so `await res.revalidate()` resolves once the entry
+      // is stored.
+      if (options.revalidateReason === "on-demand") {
+        await routeWritePromise;
+      } else {
+        options.executionContext?.waitUntil(routeWritePromise);
+      }
     }
 
     let finalized = applyDraftModeCachePolicy(
@@ -619,9 +639,14 @@ async function executeAppRouteHandlerImpl(
     if (handlerDraftCookie != null) {
       markKnownDynamicAppRoute(options.routePattern);
     }
-    const specialError = resolveAppRouteHandlerSpecialError(error, options.request.url, {
+    const specialError = resolveAppRouteHandlerSpecialError(error, {
       isAction: isPossibleAppRouteActionRequest(options.request),
     });
+    // A request read before redirect() or notFound() makes the response
+    // depend on the request, so no provider policy may share it.
+    if (specialError && options.consumeDynamicUsage()) {
+      recordRouteCacheability({ cacheable: false, dynamicUsage: true });
+    }
     options.clearRequestContext();
 
     if (specialError) {
@@ -656,7 +681,7 @@ async function executeAppRouteHandlerImpl(
       );
     }
 
-    console.error("[vinext] Route handler error:", error);
+    logRequestError("[vinext] Route handler error:", error);
     await options.reportRequestError(
       error,
       {

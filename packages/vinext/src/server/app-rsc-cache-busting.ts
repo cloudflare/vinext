@@ -15,9 +15,9 @@ import {
   NEXT_ROUTER_STATE_TREE_HEADER,
   NEXT_URL_HEADER,
   RSC_HEADER,
-  VINEXT_CLIENT_REUSE_MANIFEST_HEADER,
   VINEXT_INTERCEPTION_CONTEXT_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
+  VINEXT_MOUNTED_LAYOUTS_HEADER,
   VINEXT_MOUNTED_SLOTS_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_RSC_RENDER_MODE_HEADER,
@@ -43,10 +43,10 @@ const CACHE_BUSTING_DIGEST_BYTES = 12;
 const textEncoder = new TextEncoder();
 
 type CreateRscRequestHeadersOptions = {
-  clientReuseManifestHeader?: string | null;
   interceptionContext?: string | null;
   interceptionId?: string | null;
   mountedSlotsHeader?: string | null;
+  mountedLayoutsHeader?: string | null;
   includePrefetchHeader?: boolean;
   renderMode?: AppRscRenderMode;
   fetchPriority?: "auto" | "high" | "low";
@@ -152,7 +152,7 @@ export function resolveHardNavigationTargetFromRscResponse(
     pathname += "/";
   }
 
-  let hardNavigationTarget = pathname + parsed.search;
+  let hardNavigationTarget = toPathAbsolutePathname(pathname) + parsed.search;
   if (origUrl.hash) hardNavigationTarget += origUrl.hash;
   return hardNavigationTarget;
 }
@@ -373,12 +373,10 @@ export function createRscRequestHeaders(options: CreateRscRequestHeadersOptions 
   if (options.mountedSlotsHeader !== undefined && options.mountedSlotsHeader !== null) {
     headers.set(VINEXT_MOUNTED_SLOTS_HEADER, options.mountedSlotsHeader);
   }
-
-  if (
-    options.clientReuseManifestHeader !== undefined &&
-    options.clientReuseManifestHeader !== null
-  ) {
-    headers.set(VINEXT_CLIENT_REUSE_MANIFEST_HEADER, options.clientReuseManifestHeader);
+  // Not part of the cache-busting hash: only a render that's never stored
+  // reads it (see app-mounted-layouts.ts).
+  if (options.mountedLayoutsHeader !== undefined && options.mountedLayoutsHeader !== null) {
+    headers.set(VINEXT_MOUNTED_LAYOUTS_HEADER, options.mountedLayoutsHeader);
   }
 
   const renderMode = options.renderMode ?? APP_RSC_RENDER_MODE_NAVIGATION;
@@ -408,8 +406,8 @@ export function canonicalizePrewarmableRscRequestHeaders(headers: Headers): bool
   headers.delete(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER);
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
   return true;
 }
 
@@ -432,8 +430,8 @@ export function canonicalizeLoadingShellRscRequestHeaders(headers: Headers): boo
   headers.set(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER, "1");
   headers.delete(NEXT_ROUTER_STATE_TREE_HEADER);
   headers.delete(NEXT_URL_HEADER);
+  headers.delete(VINEXT_MOUNTED_LAYOUTS_HEADER);
   headers.delete(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  headers.delete(VINEXT_CLIENT_REUSE_MANIFEST_HEADER);
   return true;
 }
 
@@ -455,16 +453,23 @@ export function parseRscRequestPath(href: string): URL {
 }
 
 /**
+ * A pathname as the start of a path-absolute reference. One that begins with
+ * "//" would serialize as a protocol-relative URL naming another host, so it
+ * keeps a "/." prefix, as the WHATWG URL serializer does. URL resolution drops
+ * the dot segment, so the reference still targets the same pathname on the
+ * origin it is resolved against.
+ */
+export function toPathAbsolutePathname(pathname: string): string {
+  return pathname.startsWith("//") ? `/.${pathname}` : pathname;
+}
+
+/**
  * Serialize the path-absolute reference callers fetch against the app origin.
- * A pathname that begins with "//" would serialize as a protocol-relative URL
- * and send the request to another host, so it keeps a "/." prefix, as the
- * WHATWG URL serializer does. URL resolution drops the dot segment, so the
- * request still targets the same pathname on the app origin, as Next.js's
- * full-URL fetch does.
+ * A "//" pathname keeps its "/." prefix so the request still targets the same
+ * pathname on the app origin, as Next.js's full-URL fetch does.
  */
 export function formatRscRequestPath(url: URL): string {
-  const pathname = url.pathname.startsWith("//") ? `/.${url.pathname}` : url.pathname;
-  return `${pathname}${url.search}`;
+  return `${toPathAbsolutePathname(url.pathname)}${url.search}`;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
@@ -609,7 +614,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   return new Response(null, {
     status: 307,
     headers: {
-      Location: `${url.pathname}${url.search}`,
+      Location: formatRscRequestPath(url),
     },
   });
 }

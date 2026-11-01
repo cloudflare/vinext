@@ -499,6 +499,10 @@ jobs:
             label: app-router-bfcache
             shardIndex: 1
             shardTotal: 1
+          - project: app-router-bfcache-prod
+            label: app-router-bfcache-prod
+            shardIndex: 1
+            shardTotal: 1
           - project: app-router-prefetch-searchparams
             label: app-router-prefetch-searchparams
             shardIndex: 1
@@ -641,6 +645,14 @@ jobs:
             shardTotal: 1
           - project: app-router-nitro-dev
             label: app-router-nitro-dev
+            shardIndex: 1
+            shardTotal: 1
+          - project: app-router-nitro-server
+            label: app-router-nitro-server
+            shardIndex: 1
+            shardTotal: 1
+          - project: pages-router-nitro
+            label: pages-router-nitro
             shardIndex: 1
             shardTotal: 1
           - project: standalone-output

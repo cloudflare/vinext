@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { request as sendHttpRequest } from "node:http";
 import { createServer } from "node:net";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import {
   createHttpStageCacheAdapter,
   KNOWN_ROUTE_FALLBACK_MARKER,
@@ -436,6 +436,18 @@ describe("generic HTTP multi-stage transport", () => {
     expect(sessionCookies).toHaveLength(2);
     expect(sessionCookies[0]).toMatch(/^session=old; .*Max-Age=600/);
     expect(sessionCookies[1]).toMatch(/^session=; /);
+  });
+
+  it("keeps a response-stage route handler's authentication challenges after middleware's", async () => {
+    const res = await fetch(`${requestServer.origin}/api/auth-challenge`);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("proxy-authenticate")).toBe(
+      'Basic realm="middleware", Bearer realm="handler"',
+    );
+    expect(res.headers.get("x-auth-source")).toBe("middleware");
   });
 
   it("clears stale shared-cache policy when an admitted response becomes private", () => {

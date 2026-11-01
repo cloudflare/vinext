@@ -30,7 +30,6 @@
   "devDependencies": {
     "@changesets/cli": "2.31.0",
     "@mswjs/interceptors": "catalog:",
-    "@oxlint/plugins": "1.81.0",
     "@playwright/test": "catalog:",
     "@sentry/nextjs": "catalog:",
     "@types/node": "catalog:",

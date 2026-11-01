@@ -234,6 +234,7 @@ describe("App Worker response stage", () => {
               resolvedUrl: "/posts/one",
               resourceKind: "page",
               scriptNonce: null,
+              sharedAcrossHosts: false,
             };
 
       await handleResponseStage(

@@ -10,12 +10,13 @@ import type {
   CacheHandlerValue,
   CacheControlMetadata,
 } from "vinext/shims/cache-handler";
-import { applyCdnResponseHeaders } from "./cache-control.js";
+import { applyCdnResponseHeaders, NEVER_CACHE_CONTROL } from "./cache-control.js";
 import { buildMissIsrCacheControl, decideIsr } from "./isr-decision.js";
 import { buildCacheStateHeaders } from "./cache-headers.js";
 import { isrCacheControl, type ISRCacheEntry, type IsrWritePolicy } from "./isr-cache.js";
 import type { PagesPreviewData } from "./pages-preview.js";
 import {
+  applyPagesPrerenderRevalidateHeader,
   generatePagesETag,
   isPagesStreamingBot,
   rendersPagesNotModified,
@@ -467,6 +468,23 @@ function buildPagesNotFoundResult(
   };
 }
 
+/**
+ * Write a Pages res header the way Node sends it: an array sends one header
+ * line per item, so `[]` sends none.
+ */
+export function setPagesResponseHeader(
+  headers: Headers,
+  name: string,
+  value: string | number | boolean | string[],
+): void {
+  headers.delete(name);
+  if (!Array.isArray(value)) {
+    headers.set(name, String(value));
+    return;
+  }
+  for (const item of value) headers.append(name, String(item));
+}
+
 export function mergePagesNotFoundSourceHeaders(
   response: Response,
   sourceHeaders: Record<string, string | number | boolean | string[]> | undefined,
@@ -476,14 +494,7 @@ export function mergePagesNotFoundSourceHeaders(
   const headers = new Headers(response.headers);
 
   for (const [name, value] of Object.entries(sourceHeaders)) {
-    const lowerName = name.toLowerCase();
-    if (lowerName === "set-cookie") {
-      headers.delete("set-cookie");
-      const cookies = Array.isArray(value) ? value : [value];
-      for (const cookie of cookies) headers.append("set-cookie", String(cookie));
-    } else {
-      headers.set(name, Array.isArray(value) ? value.join(", ") : String(value));
-    }
+    setPagesResponseHeader(headers, name, value);
   }
 
   return new Response(response.body, {
@@ -510,6 +521,7 @@ function applyPagesTerminalMissHeaders(
   for (const [name, value] of Object.entries(buildCacheStateHeaders("MISS"))) {
     response.headers.set(name, value);
   }
+  applyPagesPrerenderRevalidateHeader(response.headers, revalidateSeconds);
   return response;
 }
 
@@ -815,6 +827,16 @@ function buildPagesRedirectResponse(
       headers,
     },
   );
+}
+
+/**
+ * Next.js pages-handler.ts gives a getServerSideProps result `revalidate: 0`,
+ * so its redirect and notFound exits are answered private/no-store unless the
+ * handler set its own Cache-Control. Like Next's `!res.getHeader(...)`, this
+ * reads the raw value, so `""` and `0` count as unset.
+ */
+function applyPagesGsspCacheControlDefault(headers: Headers, res: PagesGsspResponse): void {
+  if (!res.getHeaders()["cache-control"]) headers.set("Cache-Control", NEVER_CACHE_CONTROL);
 }
 
 function getPagesGsspResponseHeaders(res: PagesGsspResponse): Headers {
@@ -1378,6 +1400,8 @@ export async function resolvePagesPageData(
     }
 
     if (result?.redirect) {
+      const responseHeaders = getPagesGsspResponseHeaders(res);
+      applyPagesGsspCacheControlDefault(responseHeaders, res);
       return {
         kind: "response",
         response: buildPagesRedirectResponse(
@@ -1385,20 +1409,25 @@ export async function resolvePagesPageData(
           options,
           renderProps,
           "getServerSideProps",
-          getPagesGsspResponseHeaders(res),
+          responseHeaders,
         ),
       };
     }
 
     if (result?.notFound) {
       const responseHeaders = res.getHeaders();
-      return buildPagesNotFoundResult(
+      const notFoundResult = buildPagesNotFoundResult(
         options,
         undefined,
         undefined,
         undefined,
         Object.keys(responseHeaders).length > 0 ? responseHeaders : undefined,
       );
+      // The document 404 takes this default from the not-found render instead.
+      if (notFoundResult.kind === "response") {
+        applyPagesGsspCacheControlDefault(notFoundResult.response.headers, res);
+      }
+      return notFoundResult;
     }
 
     // Mirrors Next.js render.tsx's `isSerializableProps(pathname, "getServerSideProps", data.props)`

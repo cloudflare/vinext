@@ -6,10 +6,16 @@ import worker, {
 } from "../packages/cloudflare/src/cache/cdn-adapter.worker.js";
 import { VINEXT_CDN_BUILD_ID_HEADER } from "../packages/cloudflare/src/cache/cdn-build-id.js";
 import {
+  createSharedPagesPageCacheIdentity,
   PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
   type WorkerResponseStageProps,
 } from "../packages/vinext/src/server/worker-stages.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  createSharedAppCacheIdentity,
+  type SharedAppCacheIdentityProps,
+} from "../packages/vinext/src/server/app-worker-stages.js";
+import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import { cloneRequestWithUrl } from "../packages/vinext/src/server/request-pipeline.js";
 import { NextRequest } from "../packages/vinext/src/shims/server.js";
 
@@ -79,6 +85,7 @@ function pagesPageProps(
     requestHost: "example.com",
     renderOptions,
     resolvedUrl,
+    sharedAcrossHosts: false,
     stagedHeaders: null,
   };
 }
@@ -483,6 +490,10 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
   it.each<{ name: string; headers: Record<string, string> }>([
     { name: "a deployment warm-up", headers: { "User-Agent": "vinext-cloudflare-cdn-warm" } },
+    {
+      name: "the gateway's fill of a page's document",
+      headers: { "x-vinext-internal-render-whole-document": "1" },
+    },
     { name: "an ETag revalidation", headers: { "If-None-Match": 'W/"stored"' } },
     {
       name: "a Last-Modified revalidation",
@@ -499,6 +510,28 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       cache: "shared",
       renderWholeDocument: true,
     });
+    const stageRequest = stages.response.mock.calls[0]?.[0] as Request;
+    expect(stageRequest.headers.has("x-vinext-internal-render-whole-document")).toBe(false);
+  });
+
+  it("streams a document whose client forges the whole-document marker", async () => {
+    const binding = vi.fn(({ props }: { props: unknown }) => ({
+      fetch: (request: Request) => createEntrypoint(props).fetch(request),
+    }));
+    stages.request.mockImplementation((request, _env, _ctx, dispatch) =>
+      dispatch(request, { kind: "app-page", isRscRequest: false }, { cache: "shared" }),
+    );
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    await worker.fetch(
+      new Request("https://example.com/page", {
+        headers: { "x-vinext-internal-render-whole-document": "1" },
+      }),
+      {},
+      { exports: { VinextCachedResponse: binding } },
+    );
+
+    expect(stages.response.mock.calls[0]?.[5]).toEqual({ cache: "shared" });
   });
 
   it.each<{ name: string; props: Record<string, unknown>; headers: Record<string, string> }>([
@@ -910,6 +943,29 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     expect(stages.response).not.toHaveBeenCalled();
   });
 
+  it("returns redirects from shared dispatch instead of following them", async () => {
+    // A cache-fronted fetch follows redirects by default. When the render
+    // responds with a redirect, following it re-enters the entrypoint for the
+    // redirect target while the invocation still describes the original URL,
+    // re-rendering the redirect source until the runtime's redirect budget is
+    // exhausted (observed as `TypeError: Too many redirects` on any route that
+    // redirects unauthenticated visitors, e.g. a CMS admin login gate).
+    const fetch = vi.fn().mockResolvedValue(new Response(null, { status: 307 }));
+    const binding = vi.fn(() => ({ fetch }));
+    stages.request.mockImplementation((_request, _env, _ctx, dispatch) =>
+      dispatch(new Request("https://example.com/admin"), { kind: "app-page" }, { cache: "shared" }),
+    );
+
+    const result = await worker.fetch(new Request("https://example.com/admin"), {}, {
+      exports: { VinextCachedResponse: binding },
+    } as never);
+
+    expect(result.status).toBe(307);
+    expect(fetch).toHaveBeenCalledOnce();
+    const cacheRequest = fetch.mock.calls[0]![0] as Request;
+    expect(cacheRequest.redirect).toBe("manual");
+  });
+
   it.each(["HIT", "MISS", "UPDATING"])(
     "exposes the response-entrypoint %s status through vinext cache headers",
     async (cacheStatus) => {
@@ -1030,6 +1086,217 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
     await expect(responses[1]?.json()).resolves.toEqual({
       url: "https://tenant-b.example/page",
     });
+  });
+
+  // Workers Cache keys the path and query, entrypoint, ctx.props and Worker
+  // version, never the host, so a host-free identity in ctx.props and the
+  // digest gives every host one entry, as Next.js keys its response cache by
+  // pathname. https://developers.cloudflare.com/workers/cache/cache-keys/
+  it.each([
+    {
+      dispatch: (request: Request) => {
+        const props = {
+          kind: "app-page",
+          requestOrigin: new URL(request.url).origin,
+          resolvedUrl: "/page?tab=latest",
+        };
+        return {
+          identity: createSharedAppCacheIdentity(
+            request,
+            props as unknown as SharedAppCacheIdentityProps,
+          ),
+          props,
+        };
+      },
+      hostOf: (origin: string) => origin,
+      hostProp: "requestOrigin",
+      kind: "App",
+    },
+    {
+      dispatch: (request: Request) => {
+        const props = {
+          ...pagesPageProps("/page?tab=latest", null),
+          requestHost: new URL(request.url).host,
+          sharedAcrossHosts: true,
+        };
+        return {
+          identity: createSharedPagesPageCacheIdentity(
+            request,
+            props,
+            VINEXT_CACHE_IDENTITY_ORIGIN,
+          ),
+          props,
+        };
+      },
+      hostOf: (origin: string) => new URL(origin).host,
+      hostProp: "requestHost",
+      kind: "Pages",
+    },
+  ])(
+    "keys a $kind host-free identity once for every host and renders each with its own",
+    async ({ dispatch, hostOf, hostProp }) => {
+      const cacheFacingRequests: Request[] = [];
+      const entrypointProps: unknown[] = [];
+      const binding = vi.fn(({ props }: { props: unknown }) => {
+        entrypointProps.push(props);
+        return {
+          fetch(request: Request) {
+            cacheFacingRequests.push(request);
+            return createEntrypoint(props).fetch(request);
+          },
+        };
+      });
+      stages.request.mockImplementation((request: Request, _env, _ctx, dispatchStage) => {
+        const { identity, props } = dispatch(request);
+        return dispatchStage(request, props, { cache: "shared", cacheIdentity: identity });
+      });
+      stages.response.mockImplementation((request: Request, _env, _ctx, props) =>
+        Response.json({
+          dispatchTransport: request.headers.has("x-vinext-internal-dispatch"),
+          host: Reflect.get(props as object, hostProp),
+          url: request.url,
+        }),
+      );
+
+      const rendered = [];
+      for (const origin of ["https://tenant-a.example", "http://tenant-b.example:8080"]) {
+        const response = await worker.fetch(
+          new Request(`${origin}/page?tab=latest`),
+          {},
+          { exports: { VinextCachedResponse: binding } },
+        );
+        rendered.push(await response.json());
+      }
+
+      expect(entrypointProps).toHaveLength(2);
+      expect(entrypointProps[0]).toEqual(entrypointProps[1]);
+      expect(entrypointProps[0]).toMatchObject({
+        props: { [hostProp]: hostOf(VINEXT_CACHE_IDENTITY_ORIGIN) },
+        requestUrl: `${VINEXT_CACHE_IDENTITY_ORIGIN}/page?tab=latest`,
+        restoresDispatch: true,
+      });
+      const keys = cacheFacingRequests.map((request) => {
+        const url = new URL(request.url);
+        const digest = url.searchParams.get("__vinext_cache_key");
+        url.searchParams.delete("__vinext_cache_key");
+        return { digest, pathAndSearch: `${url.pathname}${url.search}` };
+      });
+      expect(keys[0]!.digest).toMatch(/^[0-9a-f]{64}$/);
+      expect(keys[0]).toEqual(keys[1]);
+      expect(keys[0]!.pathAndSearch).toBe("/page?tab=latest");
+      expect(rendered).toEqual([
+        {
+          dispatchTransport: false,
+          host: hostOf("https://tenant-a.example"),
+          url: "https://tenant-a.example/page?tab=latest",
+        },
+        {
+          dispatchTransport: false,
+          host: hostOf("http://tenant-b.example:8080"),
+          url: "http://tenant-b.example:8080/page?tab=latest",
+        },
+      ]);
+    },
+  );
+
+  it("keys a dispatch by its own host when its identity differs in more than the host", async () => {
+    const entrypointProps: unknown[] = [];
+    const binding = vi.fn(({ props }: { props: unknown }) => {
+      entrypointProps.push(props);
+      return { fetch: (request: Request) => createEntrypoint(props).fetch(request) };
+    });
+    stages.request.mockImplementation((request: Request, _env, _ctx, dispatch) => {
+      const props = { kind: "app-page", requestOrigin: new URL(request.url).origin };
+      // A query-free identity names another path and query than the dispatch,
+      // and one that drops a prop other than the host keys less than it renders.
+      const identity =
+        new URL(request.url).pathname === "/page"
+          ? createSharedAppCacheIdentity(
+              new Request("https://example.com/page"),
+              props as unknown as SharedAppCacheIdentityProps,
+            )
+          : {
+              ...createSharedAppCacheIdentity(
+                request,
+                props as unknown as SharedAppCacheIdentityProps,
+              ),
+              props: { kind: "app-page", requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+            };
+      return dispatch(
+        request,
+        { ...props, resolvedUrl: new URL(request.url).pathname },
+        { cache: "shared", cacheIdentity: identity },
+      );
+    });
+    stages.response.mockImplementation(() => new Response("rendered"));
+
+    for (const pathname of ["/page", "/other"]) {
+      await worker.fetch(
+        new Request(`https://example.com${pathname}?tab=latest`),
+        {},
+        { exports: { VinextCachedResponse: binding } },
+      );
+    }
+
+    expect(entrypointProps).toEqual(
+      ["/page", "/other"].map((pathname) => ({
+        options: { cache: "shared" },
+        props: { kind: "app-page", requestOrigin: "https://example.com", resolvedUrl: pathname },
+        requestMethod: "GET",
+        requestUrl: `https://example.com${pathname}?tab=latest`,
+      })),
+    );
+  });
+
+  it("refuses a host-free invocation whose dispatch restore is missing or names another page", async () => {
+    const invocation = {
+      ...responseStageInvocation(
+        { kind: "app-page", requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+        `${VINEXT_CACHE_IDENTITY_ORIGIN}/page?tab=latest`,
+      ),
+      restoresDispatch: true,
+    };
+    const restore = (requestUrl: string) =>
+      encodeURIComponent(
+        JSON.stringify({ props: { requestOrigin: new URL(requestUrl).origin }, requestUrl }),
+      );
+    stages.response.mockResolvedValue(new Response("rendered"));
+
+    for (const headers of [
+      {} as Record<string, string>,
+      { "x-vinext-internal-dispatch": "not-json" },
+      { "x-vinext-internal-dispatch": restore("https://tenant.example/other?tab=latest") },
+      { "x-vinext-internal-dispatch": restore("https://tenant.example/page?tab=other") },
+      {
+        "x-vinext-internal-dispatch": encodeURIComponent(
+          JSON.stringify({
+            props: { kind: "pages-page" },
+            requestUrl: "https://tenant.example/page?tab=latest",
+          }),
+        ),
+      },
+    ]) {
+      const response = await createEntrypoint(invocation).fetch(
+        new Request("https://tenant.example/page?tab=latest&__vinext_cache_key=digest", {
+          headers,
+        }),
+      );
+      expect(response.status).toBe(400);
+      expect(response.headers.get("Cache-Control")).toBe("no-store");
+    }
+    expect(stages.response).not.toHaveBeenCalled();
+
+    const response = await createEntrypoint(invocation).fetch(
+      new Request("https://tenant.example/page?tab=latest&__vinext_cache_key=digest", {
+        headers: {
+          "x-vinext-internal-dispatch": restore("https://tenant.example/page?tab=latest"),
+        },
+      }),
+    );
+    await expect(response.text()).resolves.toBe("rendered");
+    const [request, , , props] = stages.response.mock.calls[0]!;
+    expect((request as Request).url).toBe("https://tenant.example/page?tab=latest");
+    expect(props).toEqual({ kind: "app-page", requestOrigin: "https://tenant.example" });
   });
 
   // The request stage keeps the query of a runtime-check path's dispatch, and
@@ -1822,6 +2089,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
       stages.response.mockImplementation((request) =>
         Response.json({
           authorizationTransport: request.headers.get("x-vinext-internal-authorization"),
+          dispatchTransport: request.headers.get("x-vinext-internal-dispatch"),
           requestCfTransport: request.headers.get("x-vinext-internal-request-cf"),
         }),
       );
@@ -1830,6 +2098,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
         new Request("https://example.com/private", {
           headers: {
             "x-vinext-internal-authorization": "forged-authorization",
+            "x-vinext-internal-dispatch": "forged-dispatch",
             "x-vinext-internal-request-cf": "forged-request-cf",
           },
         }),
@@ -1844,6 +2113,7 @@ describe("Cloudflare CDN multi-stage Worker facade", () => {
 
       await expect(response.json()).resolves.toEqual({
         authorizationTransport: null,
+        dispatchTransport: null,
         requestCfTransport: null,
       });
       stages.request.mockReset();
@@ -1985,5 +2255,304 @@ describe("Workers Cache deployment configuration", () => {
     expect(() =>
       configureWorkersCacheEntrypoints({ compatibility_flags: ["disable_ctx_exports"] }),
     ).toThrow(/requires ctx\.exports/);
+  });
+});
+
+describe("Workers Cache page parts", () => {
+  const pageProps = {
+    interceptionContext: null,
+    interceptionId: null,
+    isRscRequest: false,
+    kind: "app-page",
+    matchKind: "request",
+    mountedSlotsHeader: null,
+    renderMode: "navigation",
+  };
+  const rscPageProps = { ...pageProps, isRscRequest: true };
+
+  beforeEach(() => {
+    stages.request.mockReset();
+    stages.response.mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  type EntrypointCall = { invocation: Record<string, unknown>; request: Request };
+
+  /**
+   * Dispatch one shared response stage through the gateway, with each
+   * entrypoint call answered by its cache status and recorded.
+   */
+  async function dispatchPagePart(
+    request: Request,
+    props: unknown,
+    cacheStatuses: string[],
+    otherPartBody: () => BodyInit = () => "other part",
+    hostFree = false,
+  ) {
+    const calls: EntrypointCall[] = [];
+    const binding = vi.fn(({ props: invocation }: { props: Record<string, unknown> }) => ({
+      fetch: vi.fn(async (entrypointRequest: Request) => {
+        calls.push({ invocation, request: entrypointRequest });
+        const body = calls.length === 1 ? "part" : otherPartBody();
+        return new Response(body, {
+          headers: { "CF-Cache-Status": cacheStatuses[calls.length - 1] ?? "MISS" },
+        });
+      }),
+    }));
+    const pending: Promise<unknown>[] = [];
+    stages.request.mockImplementation((stageRequest, _env, _ctx, dispatch) =>
+      dispatch(
+        stageRequest,
+        props,
+        hostFree
+          ? {
+              cache: "shared",
+              cacheIdentity: createSharedAppCacheIdentity(
+                stageRequest,
+                props as SharedAppCacheIdentityProps,
+              ),
+            }
+          : { cache: "shared" },
+      ),
+    );
+    const response = await worker.fetch(request, {}, {
+      exports: { VinextCachedResponse: binding },
+      waitUntil: (promise: Promise<unknown>) => pending.push(promise),
+    } as never);
+    await response.text();
+    await Promise.all(pending);
+    return { calls, response };
+  }
+
+  it("stores a page's RSC payload when its document renders for the cache", async () => {
+    const { calls, response } = await dispatchPagePart(
+      new Request("https://example.com/page", {
+        headers: {
+          Accept: "text/html",
+          "If-Match": '"etag"',
+          "If-Modified-Since": "Tue, 06 Oct 2026 00:00:00 GMT",
+          "If-None-Match": '"etag"',
+          "If-Range": '"etag"',
+          "If-Unmodified-Since": "Tue, 06 Oct 2026 00:00:00 GMT",
+          Range: "bytes=0-1",
+          "User-Agent": "browser",
+        },
+      }),
+      pageProps,
+      ["MISS", "MISS"],
+    );
+
+    expect(response.headers.get("X-Vinext-Cache")).toBe("MISS");
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: { ...pageProps, isRscRequest: true, renderMode: "navigation" },
+      requestMethod: "GET",
+      requestUrl: "https://example.com/page?_rsc",
+    });
+    expect(other.request.headers.get("RSC")).toBe("1");
+    expect(other.request.headers.get("User-Agent")).toBe("browser");
+    for (const name of [
+      "If-Match",
+      "If-Modified-Since",
+      "If-None-Match",
+      "If-Range",
+      "If-Unmodified-Since",
+      "Range",
+    ]) {
+      expect(other.request.headers.get(name)).toBeNull();
+    }
+    expect(other.request.headers.has("x-vinext-internal-render-whole-document")).toBe(false);
+  });
+
+  it("stores a page's document when its RSC payload renders for the cache", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?_rsc", {
+        headers: {
+          RSC: "1",
+          "Next-Router-State-Tree": "tree",
+          "User-Agent": "browser",
+          "x-deployment-id": "deployment",
+        },
+      }),
+      rscPageProps,
+      ["UPDATING", "UPDATING"],
+    );
+
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: pageProps,
+      requestUrl: "https://example.com/page",
+    });
+    for (const name of VINEXT_RSC_VARY_HEADER.split(",")) {
+      expect(other.request.headers.get(name.trim())).toBeNull();
+    }
+    expect(other.request.headers.get("User-Agent")).toBe("browser");
+    expect(other.request.headers.get("x-deployment-id")).toBeNull();
+    // No client waits on this document, so the entrypoint renders it whole.
+    expect(other.request.headers.get("x-vinext-internal-render-whole-document")).toBe("1");
+  });
+
+  it.each([
+    ["document", "https://example.com/page", pageProps],
+    ["RSC payload", "https://example.com/page?_rsc", rscPageProps],
+  ])(
+    "gives the other part the cf properties of a request for the %s",
+    async (_part, url, props) => {
+      const requestCf = { country: "NZ" };
+      const request = new Request(url, { headers: { RSC: "1" } });
+      Object.defineProperty(request, "cf", { enumerable: true, value: requestCf });
+
+      const { calls } = await dispatchPagePart(request, props, ["MISS", "MISS"]);
+
+      expect(calls).toHaveLength(2);
+      const transported = calls[1]!.request.headers.get("x-vinext-internal-request-cf");
+      expect(JSON.parse(decodeURIComponent(transported!))).toEqual(requestCf);
+    },
+  );
+
+  it("fetches the other part under the entry its own request reads", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?x=1", { headers: { "User-Agent": "browser" } }),
+      pageProps,
+      ["MISS", "HIT"],
+    );
+    const { calls: rscCalls } = await dispatchPagePart(
+      new Request("https://example.com/page?x=1&_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1", "User-Agent": "browser" },
+      }),
+      rscPageProps,
+      ["HIT"],
+    );
+
+    expect(calls[1]!.request.url).toBe(rscCalls[0]!.request.url);
+    expect(new URL(calls[1]!.request.url).searchParams.get("__vinext_cache_key")).toMatch(
+      /^[0-9a-f]{64}$/,
+    );
+  });
+
+  it("fetches the other part under the host-free entry a request for it from any host reads", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://tenant-a.example/page?x=1", { headers: { "User-Agent": "browser" } }),
+      { ...pageProps, requestOrigin: "https://tenant-a.example" },
+      ["MISS", "HIT"],
+      undefined,
+      true,
+    );
+    const { calls: rscCalls } = await dispatchPagePart(
+      new Request("http://tenant-b.example:8080/page?x=1&_rsc", {
+        headers: { Accept: "text/x-component", RSC: "1", "User-Agent": "browser" },
+      }),
+      { ...rscPageProps, requestOrigin: "http://tenant-b.example:8080" },
+      ["HIT"],
+      undefined,
+      true,
+    );
+
+    expect(calls).toHaveLength(2);
+    const other = calls[1]!;
+    expect(other.invocation).toMatchObject({
+      props: { isRscRequest: true, requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN },
+      requestUrl: `${VINEXT_CACHE_IDENTITY_ORIGIN}/page?x=1&_rsc`,
+      restoresDispatch: true,
+    });
+    expect(other.invocation).toEqual(rscCalls[0]!.invocation);
+    // Workers Cache leaves the host out of its key.
+    const pathAndSearch = (request: Request) => {
+      const url = new URL(request.url);
+      return `${url.pathname}${url.search}`;
+    };
+    expect(pathAndSearch(other.request)).toBe(pathAndSearch(rscCalls[0]!.request));
+    // The other part still renders with the host whose request filled it.
+    expect(
+      JSON.parse(decodeURIComponent(other.request.headers.get("x-vinext-internal-dispatch")!)),
+    ).toEqual({
+      props: { requestOrigin: "https://tenant-a.example" },
+      requestUrl: "https://tenant-a.example/page?x=1&_rsc",
+    });
+  });
+
+  it("reads the other part's body to the end, so Workers Cache stores it", async () => {
+    let finished = false;
+    await dispatchPagePart(
+      new Request("https://example.com/page"),
+      pageProps,
+      ["MISS", "MISS"],
+      () =>
+        new ReadableStream({
+          pull(controller) {
+            finished = true;
+            controller.enqueue(new TextEncoder().encode("payload"));
+            controller.close();
+          },
+        }),
+    );
+    expect(finished).toBe(true);
+  });
+
+  it.each(["HIT", "REVALIDATED", "BYPASS", "DYNAMIC", "STALE"])(
+    "fetches no other part for a %s",
+    async (cacheStatus) => {
+      const { calls } = await dispatchPagePart(new Request("https://example.com/page"), pageProps, [
+        cacheStatus,
+      ]);
+      expect(calls).toHaveLength(1);
+    },
+  );
+
+  it.each([
+    ["a prefetch shell", { ...rscPageProps, renderMode: "prefetch-loading-shell" }],
+    ["an interception", { ...rscPageProps, interceptionContext: "/feed" }],
+    ["mounted slots", { ...rscPageProps, mountedSlotsHeader: "@modal" }],
+    ["an unmatched page", { ...pageProps, matchKind: "raw-request" }],
+    ["a route handler", { kind: "app-route" }],
+  ])("fetches no other part for %s", async (_name, props) => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page?_rsc", { headers: { RSC: "1" } }),
+      props,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("fetches no document for a .rsc path", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page.rsc", { headers: { RSC: "1" } }),
+      rscPageProps,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("leaves a deployment warm-up to request both parts itself", async () => {
+    const { calls } = await dispatchPagePart(
+      new Request("https://example.com/page", {
+        headers: { "User-Agent": "vinext-cloudflare-cdn-warm" },
+      }),
+      pageProps,
+      ["MISS"],
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("logs a failed other part without failing the response", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const { response } = await dispatchPagePart(
+      new Request("https://example.com/page"),
+      pageProps,
+      ["MISS", "MISS"],
+      () => {
+        throw new Error("render failed");
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(error).toHaveBeenCalledWith(
+      "[vinext] Workers Cache could not store a page's other part:",
+      expect.any(Error),
+    );
   });
 });

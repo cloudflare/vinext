@@ -56,6 +56,30 @@ type InterceptingRoute = {
   notFoundBranchSegments?: string[];
   /** Tree position relative to the normalized interception branch. */
   notFoundTreePosition?: number | null;
+  /** Nearest forbidden convention inside the interception branch. */
+  forbiddenPath?: string | null;
+  /** Tree position relative to the normalized interception branch. */
+  forbiddenTreePosition?: number | null;
+  /** Nearest unauthorized convention inside the interception branch. */
+  unauthorizedPath?: string | null;
+  /** Tree position relative to the normalized interception branch. */
+  unauthorizedTreePosition?: number | null;
+  /** Every not-found convention inside the interception branch, outermost first. */
+  notFoundPaths?: string[];
+  /** Tree positions for notFoundPaths in the normalized interception branch. */
+  notFoundTreePositions?: number[];
+  /** Every forbidden convention inside the interception branch, outermost first. */
+  forbiddenPaths?: string[];
+  /** Tree positions for forbiddenPaths in the normalized interception branch. */
+  forbiddenTreePositions?: number[];
+  /** Every unauthorized convention inside the interception branch, outermost first. */
+  unauthorizedPaths?: string[];
+  /** Tree positions for unauthorizedPaths in the normalized interception branch. */
+  unauthorizedTreePositions?: number[];
+  /** Every error convention inside the interception branch, outermost first. */
+  errorPaths?: string[];
+  /** Tree positions for errorPaths in the normalized interception branch. */
+  errorTreePositions?: number[];
   /** Parameter names for dynamic segments */
   params: string[];
   /**
@@ -102,6 +126,10 @@ type ParallelSlot = {
   notFoundPath?: string | null;
   /** Tree position of that convention relative to the slot root. */
   notFoundTreePosition?: number | null;
+  /** Every not-found convention from the slot root to its active page, outermost first. */
+  notFoundPaths?: string[];
+  /** Slot-root-relative tree positions aligned with notFoundPaths. */
+  notFoundTreePositions?: number[];
   /** Intercepting routes within this slot */
   interceptingRoutes: InterceptingRoute[];
   /**
@@ -206,6 +234,18 @@ export type AppRoute = {
   /** Unauthorized component paths per layout level (aligned with layouts array). */
   unauthorizedPaths: (string | null)[];
   /**
+   * Not-found, forbidden and unauthorized component paths for every segment
+   * from app/ to the route's directory, including segments without a layout,
+   * aligned with the matching tree positions. A layout's notFound() is caught
+   * by the deepest of these above the layout's own segment.
+   */
+  segmentNotFoundPaths?: string[];
+  segmentNotFoundTreePositions?: number[];
+  segmentForbiddenPaths?: string[];
+  segmentForbiddenTreePositions?: number[];
+  segmentUnauthorizedPaths?: string[];
+  segmentUnauthorizedTreePositions?: number[];
+  /**
    * Filesystem segments from app/ root to the route's directory.
    * Includes route groups and dynamic segments (as template strings like "[id]").
    * Used at render time to compute the child segments for useSelectedLayoutSegments().
@@ -296,7 +336,7 @@ type RouteManifestRouteHandler = {
   pattern: string;
 };
 
-type RouteManifestLayout = {
+export type RouteManifestLayout = {
   id: string;
   treePath: string;
   patternParts: readonly string[];
@@ -554,7 +594,7 @@ function createStaticSegmentGraph(routes: readonly AppRouteGraphRoute[]): Static
       }
     }
 
-    addRouteManifestSegmentErrorBoundaryFacts({ boundaries, route });
+    addRouteManifestSegmentBoundaryFacts({ boundaries, route });
 
     for (const [index, templateId] of route.ids.templates.entries()) {
       const treePosition = route.templateTreePositions?.[index];
@@ -826,27 +866,36 @@ function addRouteManifestBoundaryFacts(input: {
   );
 }
 
-function addRouteManifestSegmentErrorBoundaryFacts(input: {
+function addRouteManifestSegmentBoundaryFacts(input: {
   boundaries: Map<string, RouteManifestBoundary>;
   route: AppRouteGraphRoute;
 }): void {
-  for (const [index, boundaryPath] of (input.route.errorPaths ?? []).entries()) {
-    const treePosition = input.route.errorTreePositions?.[index];
-    assertRouteManifestBoundaryTreePosition(input.route, boundaryPath, treePosition);
-    const ownerLayoutId = findRouteManifestOwnerLayoutId(input.route, treePosition);
-    if (ownerLayoutId !== null) continue;
+  const { route } = input;
+  const segmentBoundaries: [
+    RouteManifestBoundaryOutcome,
+    readonly string[] | undefined,
+    readonly number[] | undefined,
+  ][] = [
+    ["error", route.errorPaths, route.errorTreePositions],
+    ["notFound", route.segmentNotFoundPaths, route.segmentNotFoundTreePositions],
+    ["forbidden", route.segmentForbiddenPaths, route.segmentForbiddenTreePositions],
+    ["unauthorized", route.segmentUnauthorizedPaths, route.segmentUnauthorizedTreePositions],
+  ];
+  for (const [outcome, boundaryPaths, treePositions] of segmentBoundaries) {
+    for (const [index, boundaryPath] of (boundaryPaths ?? []).entries()) {
+      const treePosition = treePositions?.[index];
+      assertRouteManifestBoundaryTreePosition(route, boundaryPath, treePosition);
+      // Boundaries beside a layout are recorded with their layout.
+      const ownerLayoutId = findRouteManifestOwnerLayoutId(route, treePosition);
+      if (ownerLayoutId !== null) continue;
 
-    const treePath = createAppRouteGraphTreePath(input.route.routeSegments, treePosition);
-    addRouteManifestBoundaryFact(
-      {
-        boundaries: input.boundaries,
-        route: input.route,
-        layoutId: ownerLayoutId,
-        treePath,
-      },
-      "error",
-      boundaryPath,
-    );
+      const treePath = createAppRouteGraphTreePath(route.routeSegments, treePosition);
+      addRouteManifestBoundaryFact(
+        { boundaries: input.boundaries, route, layoutId: ownerLayoutId, treePath },
+        outcome,
+        boundaryPath,
+      );
+    }
   }
 }
 
@@ -1160,7 +1209,6 @@ function discoverSlotSubRoutes(
       const subPage = slotPages.get(slot.key);
       if (subPage !== undefined) {
         const configLayoutPaths = findSlotConfigLayoutPaths(slot.ownerDir, subPage, matcher);
-        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage, matcher);
         return withSlotLoadingEntries(
           {
             ...slot,
@@ -1170,8 +1218,6 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            notFoundPath: notFoundBoundary.path,
-            notFoundTreePosition: notFoundBoundary.treePosition,
             routeSegments: rawSegments,
           },
           subPage,
@@ -1375,7 +1421,6 @@ function discoverSlotSubRoutes(
           subPage ?? null,
           matcher,
         );
-        const notFoundBoundary = findSlotNotFoundBoundary(slot.ownerDir, subPage ?? null, matcher);
         return withSlotLoadingEntries(
           {
             ...slot,
@@ -1385,8 +1430,6 @@ function discoverSlotSubRoutes(
               slot.ownerDir,
               configLayoutPaths,
             ),
-            notFoundPath: notFoundBoundary.path,
-            notFoundTreePosition: notFoundBoundary.treePosition,
             routeSegments: subPage ? rawSegments : null,
           },
           subPage ?? null,
@@ -1433,6 +1476,12 @@ function discoverSlotSubRoutes(
         unauthorizedPath: parentRoute.unauthorizedPath,
         unauthorizedTreePosition: parentRoute.unauthorizedTreePosition,
         unauthorizedPaths: parentRoute.unauthorizedPaths,
+        segmentNotFoundPaths: parentRoute.segmentNotFoundPaths,
+        segmentNotFoundTreePositions: parentRoute.segmentNotFoundTreePositions,
+        segmentForbiddenPaths: parentRoute.segmentForbiddenPaths,
+        segmentForbiddenTreePositions: parentRoute.segmentForbiddenTreePositions,
+        segmentUnauthorizedPaths: parentRoute.segmentUnauthorizedPaths,
+        segmentUnauthorizedTreePositions: parentRoute.segmentUnauthorizedTreePositions,
         routeSegments: [...parentRoute.routeSegments, ...rawSegments],
         childrenRouteSegments: childrenDefault ? parentRoute.routeSegments : undefined,
         templateTreePositions: parentRoute.templateTreePositions,
@@ -1569,9 +1618,32 @@ function findSlotConfigLayoutTreePositions(
   });
 }
 
+/**
+ * The tree position of a slot's active page relative to the slot root, in the
+ * coordinates of configLayoutTreePositions. Route groups count, unlike in
+ * `routeSegments`, since each is its own loader-tree segment.
+ */
+export function findSlotPageTreePosition(
+  slot: Pick<ParallelSlot, "ownerDir" | "pagePath">,
+): number | null {
+  return slot.pagePath
+    ? findSlotConfigLayoutTreePositions(slot.ownerDir, [slot.pagePath])[0]
+    : null;
+}
+
 function findSlotLoadingEntries(
   slotDir: string,
   pagePath: string | null,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  return findSlotSegmentFileEntries(slotDir, pagePath, "loading", matcher);
+}
+
+/** Find a convention file in each directory from the slot root to the page, outermost first. */
+function findSlotSegmentFileEntries(
+  slotDir: string,
+  pagePath: string | null,
+  fileName: string,
   matcher: ValidFileMatcher,
 ): { path: string; treePosition: number }[] {
   const pageDir = pagePath ? path.dirname(pagePath) : slotDir;
@@ -1579,18 +1651,18 @@ function findSlotLoadingEntries(
 
   const relativeDir = path.relative(slotDir, pageDir);
   const segments = relativeDir ? relativeDir.split(path.sep).filter(Boolean) : [];
-  const loadings: { path: string; treePosition: number }[] = [];
+  const entries: { path: string; treePosition: number }[] = [];
   let currentDir = slotDir;
 
-  const rootLoading = findFile(currentDir, "loading", matcher);
-  if (rootLoading) loadings.push({ path: rootLoading, treePosition: 0 });
+  const rootEntry = findFile(currentDir, fileName, matcher);
+  if (rootEntry) entries.push({ path: rootEntry, treePosition: 0 });
 
   for (let index = 0; index < segments.length; index++) {
     currentDir = path.join(currentDir, segments[index]);
-    const loading = findFile(currentDir, "loading", matcher);
-    if (loading) loadings.push({ path: loading, treePosition: index + 1 });
+    const entry = findFile(currentDir, fileName, matcher);
+    if (entry) entries.push({ path: entry, treePosition: index + 1 });
   }
-  return loadings;
+  return entries;
 }
 
 function withSlotLoadingEntries<TSlot extends ParallelSlot>(
@@ -1603,28 +1675,30 @@ function withSlotLoadingEntries<TSlot extends ParallelSlot>(
     ...slot,
     loadingPaths: loadingEntries.map((entry) => entry.path),
     loadingTreePositions: loadingEntries.map((entry) => entry.treePosition),
+    ...findSlotNotFoundFields(slot.ownerDir, pagePath, matcher),
   };
 }
 
-function findSlotNotFoundBoundary(
+/**
+ * Every not-found convention on the slot's active branch, plus the nearest one,
+ * which supplies the slot's not-found metadata.
+ */
+function findSlotNotFoundFields(
   slotDir: string,
   pagePath: string | null,
   matcher: ValidFileMatcher,
-): { path: string | null; treePosition: number | null } {
-  let dir = pagePath ? path.dirname(pagePath) : slotDir;
-  while (dir === slotDir || dir.startsWith(`${slotDir}${path.sep}`)) {
-    const boundaryPath = findFile(dir, "not-found", matcher);
-    if (boundaryPath) {
-      const relativeDir = path.relative(slotDir, dir);
-      return {
-        path: boundaryPath,
-        treePosition: relativeDir ? relativeDir.split(path.sep).filter(Boolean).length : 0,
-      };
-    }
-    if (dir === slotDir) break;
-    dir = path.dirname(dir);
-  }
-  return { path: null, treePosition: null };
+): Pick<
+  ParallelSlot,
+  "notFoundPath" | "notFoundTreePosition" | "notFoundPaths" | "notFoundTreePositions"
+> {
+  const entries = findSlotSegmentFileEntries(slotDir, pagePath, "not-found", matcher);
+  const nearest = entries.at(-1);
+  return {
+    notFoundPath: nearest?.path ?? null,
+    notFoundTreePosition: nearest?.treePosition ?? null,
+    notFoundPaths: entries.map((entry) => entry.path),
+    notFoundTreePositions: entries.map((entry) => entry.treePosition),
+  };
 }
 
 /**
@@ -1749,12 +1823,22 @@ function directoryToAppRoute(
   const unauthorizedEntry = discoverBoundaryFileEntry(segments, appDir, "unauthorized", matcher);
   const unauthorizedPath = unauthorizedEntry?.path ?? null;
 
-  // Discover per-layout not-found files (one per layout directory).
-  // These are used for per-layout NotFoundBoundary to match Next.js behavior where
-  // notFound() thrown from a layout is caught by the parent layout's boundary.
+  // Discover per-layout not-found files (one per layout directory), aligned
+  // with the layouts array. The segment lists below also cover segments
+  // without a layout, and a probed layout's notFound() uses the deepest of
+  // those above it.
   const notFoundPaths = discoverBoundaryFilePerLayout(layouts, "not-found", matcher);
   const forbiddenPaths = discoverBoundaryFilePerLayout(layouts, "forbidden", matcher);
   const unauthorizedPaths = discoverBoundaryFilePerLayout(layouts, "unauthorized", matcher);
+  // A route handler never renders these boundaries, so its requests must not
+  // import them. Next.js's App Route entry loads only the handler module.
+  const discoverPageSegmentBoundaryFiles = (fileName: string) =>
+    pagePath === null && routePath !== null
+      ? []
+      : discoverSegmentBoundaryFiles(segments, appDir, fileName, matcher);
+  const segmentNotFounds = discoverPageSegmentBoundaryFiles("not-found");
+  const segmentForbiddens = discoverPageSegmentBoundaryFiles("forbidden");
+  const segmentUnauthorizeds = discoverPageSegmentBoundaryFiles("unauthorized");
 
   // Discover parallel slots (@team, @analytics, etc.).
   // Slots at the route's own directory use page.tsx; slots at ancestor directories
@@ -1798,6 +1882,12 @@ function directoryToAppRoute(
     forbiddenTreePosition: forbiddenEntry?.treePosition ?? null,
     unauthorizedPath,
     unauthorizedTreePosition: unauthorizedEntry?.treePosition ?? null,
+    segmentNotFoundPaths: segmentNotFounds.map((entry) => entry.path),
+    segmentNotFoundTreePositions: segmentNotFounds.map((entry) => entry.treePosition),
+    segmentForbiddenPaths: segmentForbiddens.map((entry) => entry.path),
+    segmentForbiddenTreePositions: segmentForbiddens.map((entry) => entry.treePosition),
+    segmentUnauthorizedPaths: segmentUnauthorizeds.map((entry) => entry.path),
+    segmentUnauthorizedTreePositions: segmentUnauthorizeds.map((entry) => entry.treePosition),
     unauthorizedPaths,
     routeSegments: segments,
     templateTreePositions,
@@ -2087,6 +2177,27 @@ function discoverBoundaryFileEntry(
     if (f) return { path: f, treePosition: i };
   }
   return null;
+}
+
+/**
+ * Discover boundary files (not-found, forbidden, unauthorized) by segment tree
+ * position. As with error.tsx, Next.js wraps each segment's children in its
+ * boundary whether or not the segment has a layout.
+ */
+function discoverSegmentBoundaryFiles(
+  segments: string[],
+  appDir: string,
+  fileName: string,
+  matcher: ValidFileMatcher,
+): { path: string; treePosition: number }[] {
+  const boundaries: { path: string; treePosition: number }[] = [];
+  let currentDir = appDir;
+  for (let index = 0; index <= segments.length; index++) {
+    if (index > 0) currentDir = path.join(currentDir, segments[index - 1]);
+    const boundary = findFile(currentDir, fileName, matcher);
+    if (boundary) boundaries.push({ path: boundary, treePosition: index });
+  }
+  return boundaries;
 }
 
 /**
@@ -2450,7 +2561,6 @@ function discoverParallelSlots(
 
     const configLayoutPaths = findSlotConfigLayoutPaths(slotDir, pagePath, matcher);
     const loadingEntries = findSlotLoadingEntries(slotDir, pagePath, matcher);
-    const notFoundBoundary = findSlotNotFoundBoundary(slotDir, pagePath, matcher);
     slots.push({
       id: createAppRouteGraphSlotId(slotName, ownerTreePath),
       key: `${slotName}@${path.relative(appDir, slotDir)}`,
@@ -2468,8 +2578,7 @@ function discoverParallelSlots(
       loadingPaths: loadingEntries.map((loading) => loading.path),
       loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
       errorPath: findFile(slotDir, "error", matcher),
-      notFoundPath: notFoundBoundary.path,
-      notFoundTreePosition: notFoundBoundary.treePosition,
+      ...findSlotNotFoundFields(slotDir, pagePath, matcher),
       interceptingRoutes,
       layoutIndex: -1, // Will be set by discoverInheritedParallelSlots
       routeSegments: pagePath ? [] : null,
@@ -2685,6 +2794,7 @@ function scanForInterceptingPages(
   results: InterceptingRoute[],
   matcher: ValidFileMatcher,
   parentLoadingEntries: readonly { path: string; treePosition: number }[] = [],
+  parentLayoutPaths: readonly string[] = [],
 ): void {
   if (!fs.existsSync(currentDir)) return;
 
@@ -2719,12 +2829,15 @@ function scanForInterceptingPages(
         slotRootDir,
         results,
         matcher,
-        [],
+        // An intercepted slot replaces the slot's layout chain, so it keeps
+        // the layouts of the slot segments above the marker.
+        parentLayoutPaths,
         parentLoadingEntries,
         path.relative(slotRootDir, currentDir).split(path.sep).filter(Boolean).length,
       );
     } else {
       // Regular subdirectory — keep scanning for intercepting dirs
+      const layout = findFile(interceptDir, "layout", matcher);
       const loading = findFile(interceptDir, "loading", matcher);
       const loadingEntries = loading
         ? [
@@ -2744,6 +2857,7 @@ function scanForInterceptingPages(
         results,
         matcher,
         loadingEntries,
+        layout ? [...parentLayoutPaths, layout] : parentLayoutPaths,
       );
     }
   }
@@ -2815,11 +2929,23 @@ function collectInterceptingPages(
     );
     if (targetPattern) {
       const sourceMatchPattern = computeInterceptSourceMatchPattern(interceptParentDir, appDir);
-      const notFoundBoundary = findSlotNotFoundBoundary(
-        slotRootDir ?? interceptRoot,
-        page,
-        matcher,
-      );
+      // Sibling interception branches start one segment above their root.
+      const notFoundTreePositionOffset = slotRootDir ? 0 : 1;
+      const notFoundFields = findSlotNotFoundFields(slotRootDir ?? interceptRoot, page, matcher);
+      // Every error, forbidden and unauthorized boundary on the intercept's
+      // branch, on the same positions as its not-found files: a slot
+      // intercept's branch starts at its slot, a sibling's one position below
+      // the source segment. Each catches errors inside its own segment's layout.
+      const findInterceptBoundaries = (fileName: "error" | "forbidden" | "unauthorized") =>
+        findSlotSegmentFileEntries(slotRootDir ?? interceptRoot, page, fileName, matcher).map(
+          (entry) => ({
+            path: entry.path,
+            treePosition: entry.treePosition + notFoundTreePositionOffset,
+          }),
+        );
+      const forbiddenBoundaries = findInterceptBoundaries("forbidden");
+      const unauthorizedBoundaries = findInterceptBoundaries("unauthorized");
+      const errorBoundaries = findInterceptBoundaries("error");
       const slotParentSegments = slotRootDir
         ? path.relative(slotRootDir, interceptParentDir).split(path.sep).filter(Boolean)
         : [];
@@ -2833,7 +2959,15 @@ function collectInterceptingPages(
         convention,
         layoutPaths: [...layoutPaths],
         layoutSegments: layoutPaths.map((layoutPath) => {
-          const relativeDir = path.relative(interceptRoot, path.dirname(layoutPath));
+          const layoutDir = path.dirname(layoutPath);
+          if (
+            slotRootDir &&
+            layoutDir !== interceptRoot &&
+            !layoutDir.startsWith(`${interceptRoot}${path.sep}`)
+          ) {
+            return path.relative(slotRootDir, layoutDir).split(path.sep).filter(Boolean);
+          }
+          const relativeDir = path.relative(interceptRoot, layoutDir);
           return [
             ...slotParentSegments,
             interceptSegment,
@@ -2843,13 +2977,25 @@ function collectInterceptingPages(
         loadingPaths: loadingEntries.map((loading) => loading.path),
         loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
         notFoundBranchSegments: branchSegments,
-        notFoundPath: notFoundBoundary.path,
+        notFoundPath: notFoundFields.notFoundPath,
         notFoundTreePosition:
-          notFoundBoundary.treePosition === null
+          notFoundFields.notFoundTreePosition == null
             ? null
-            : slotRootDir
-              ? notFoundBoundary.treePosition
-              : notFoundBoundary.treePosition + 1,
+            : notFoundFields.notFoundTreePosition + notFoundTreePositionOffset,
+        notFoundPaths: notFoundFields.notFoundPaths,
+        notFoundTreePositions: notFoundFields.notFoundTreePositions?.map(
+          (treePosition) => treePosition + notFoundTreePositionOffset,
+        ),
+        forbiddenPath: forbiddenBoundaries.at(-1)?.path ?? null,
+        forbiddenTreePosition: forbiddenBoundaries.at(-1)?.treePosition ?? null,
+        forbiddenPaths: forbiddenBoundaries.map((boundary) => boundary.path),
+        forbiddenTreePositions: forbiddenBoundaries.map((boundary) => boundary.treePosition),
+        unauthorizedPath: unauthorizedBoundaries.at(-1)?.path ?? null,
+        unauthorizedTreePosition: unauthorizedBoundaries.at(-1)?.treePosition ?? null,
+        unauthorizedPaths: unauthorizedBoundaries.map((boundary) => boundary.path),
+        unauthorizedTreePositions: unauthorizedBoundaries.map((boundary) => boundary.treePosition),
+        errorPaths: errorBoundaries.map((boundary) => boundary.path),
+        errorTreePositions: errorBoundaries.map((boundary) => boundary.treePosition),
         targetPattern: targetPattern.pattern,
         sourceMatchPattern,
         pagePath: page,

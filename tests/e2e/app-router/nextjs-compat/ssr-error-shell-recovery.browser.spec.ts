@@ -1,10 +1,10 @@
 /**
  * SSR shell-error recovery in production builds.
  *
- * When the HTML (Fizz) render of an SSR pass rejects with an error that did
- * not originate in the RSC render (no `digest`), and the app has no custom
- * global-error.tsx, vinext serves the default `__next_error__` error-document
- * shell with the original flight payload and bootstrap module. The browser
+ * When the HTML (Fizz) render of an SSR pass rejects with an error other than
+ * a redirect, notFound(), forbidden() or unauthorized(), vinext serves the
+ * default `__next_error__` error-document shell with the original flight
+ * payload and bootstrap module. The browser
  * detects the marker and re-renders the real tree with `createRoot` instead
  * of hydrating — Next.js's shell-error recovery semantics:
  * https://github.com/vercel/next.js/blob/v16.2.6/packages/next/src/server/app-render/app-render.tsx
@@ -13,11 +13,9 @@
  * rendering") comes from the Next.js `next-dynamic-css` fixture:
  * https://github.com/vercel/next.js/blob/v16.2.6/test/e2e/app-dir/next-dynamic-css/next-dynamic-css.test.ts
  *
- * This fixture intentionally has NO custom global-error.tsx — that is the
- * configuration in which handleSsr's error-document fallback is active
- * (`fallbackToErrorDocumentOnShellError`). Apps with a custom global-error
- * keep the server-rendered boundary re-render path, covered by
- * tests/nextjs-compat/global-error.test.ts.
+ * This fixture has no custom global-error.tsx, so the browser falls back to
+ * the built-in one. Apps with a custom global-error are covered by
+ * tests/e2e/app-router/error-handling.spec.ts.
  */
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -125,9 +123,8 @@ export default function Client() {
 `,
   );
 
-  // Genuine RSC/server error with no custom global-error.tsx. It also uses an
-  // __next_error__ document, but must retain the pre-existing hydration path
-  // rather than being mistaken for the marked SSR shell-recovery document.
+  // Genuine RSC/server error: the same error document, from whose payload the
+  // browser renders the built-in global-error.
   const serverErrorDir = path.join(appDir, "server-error");
   await fs.mkdir(serverErrorDir, { recursive: true });
   await fs.writeFile(
@@ -326,13 +323,14 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
       await expect(page.locator("#client-content")).toHaveText("Hello Client");
 
       // A genuine server/RSC error also uses the default __next_error__
-      // document and follows Next.js's createRoot recovery path. Unlike the
-      // SSR-only recovery shell, it has no placeholder style marker to remove.
+      // document and follows Next.js's createRoot recovery path. The built-in
+      // global-error receives the error's digest, so, like Next.js's, it
+      // reports a server error and offers no Back button.
       await page.goto(`${app.baseUrl}/server-error`, { waitUntil: "load" });
       await expect(page.getByRole("heading", { name: "This page couldn’t load" })).toBeVisible();
-      await expect(page.getByText("Reload to try again, or go back.")).toBeVisible();
+      await expect(page.getByText("A server error occurred. Reload to try again.")).toBeVisible();
       await expect(page.getByRole("button", { name: "Reload" })).toBeVisible();
-      await expect(page.getByRole("button", { name: "Back" })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Back" })).toHaveCount(0);
       await expect(page.locator("style[data-vinext-error-shell-style]")).toHaveCount(0);
 
       // SSR-only throw with a local error.tsx: the default __next_error__
@@ -375,6 +373,8 @@ test.describe("SSR shell-error recovery (no custom global-error.tsx)", () => {
           !message.includes("always no boundary throw") &&
           !message.includes("reload error") &&
           !message.includes("genuine server digest error") &&
+          // The browser's copy of the server error, which production sanitizes.
+          !message.includes("Minified React error #441") &&
           !message.includes("Expected error to opt out of server rendering") &&
           // The recovery and global-error documents intentionally preserve
           // their HTTP 500 status, which browsers report as a resource error.
