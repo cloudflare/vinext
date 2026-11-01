@@ -1980,6 +1980,15 @@ describe("App Router Production server (startProdServer)", () => {
     expect(redirected.headers.get("x-action-redirect")).toBe("/action-cache-control/config-policy");
     expect(redirected.headers.get("cache-control")).toBe("public, s-maxage=300");
     expect(await redirected.text()).toContain("action-cache-control-config-policy");
+
+    // So does one from an action forwarded to the page that owns it.
+    const forwarded = await fetchAction(
+      "/action-cache-control/config-policy",
+      actionId("redirectToConfigPolicy"),
+    );
+    expect(forwarded.headers.get("x-action-redirect")).toBe("/action-cache-control/config-policy");
+    expect(forwarded.headers.get("cache-control")).toBe("public, s-maxage=300");
+    expect(await forwarded.text()).toContain("action-cache-control-config-policy");
   });
 
   it("redirects header-only RSC requests at canonical page URLs to cache-separated Flight URLs", async () => {

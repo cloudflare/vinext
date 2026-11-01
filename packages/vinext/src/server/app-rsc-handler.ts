@@ -94,6 +94,7 @@ import {
   finalizeAppRscResponse,
   isStreamedActionRedirectResponse,
   markAppRscResponseConfigHeadersApplied,
+  markStreamedActionRedirectResponse,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
@@ -3315,7 +3316,11 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       await closeAfterResponse(requestContext);
       throw error;
     }
-    return closeAfterResponseWithBody(response, requestContext);
+    const closedResponse = closeAfterResponseWithBody(response, requestContext);
+    // A forwarded action's streamed redirect is read back through this wrapper.
+    return isStreamedActionRedirectResponse(response)
+      ? markStreamedActionRedirectResponse(closedResponse)
+      : closedResponse;
   };
 
   const appRscHandler = async function appRscHandler(
