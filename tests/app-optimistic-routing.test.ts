@@ -299,6 +299,134 @@ describe("App Router optimistic routing", () => {
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
   });
 
+  // Learns a template for `learnedHref` whose page identity is keyed by
+  // `segmentKeys`, then renders it optimistically for `targetHref`.
+  function reifyLearnedTemplate(options: {
+    learnedHref: string;
+    routeManifest: RouteManifest;
+    segmentKeys: (href: string) => readonly string[];
+    targetHref: string;
+  }) {
+    const routeId = AppElementsWire.encodeRouteId(options.learnedHref, null);
+    const pageId = AppElementsWire.encodePageId(options.learnedHref, null);
+    const pageIdentity = (href: string) =>
+      deriveBfcacheSegmentIdentity({
+        boundSegmentKey: JSON.stringify(options.segmentKeys(href)),
+        graphId: "page",
+        kind: "page",
+        rootBoundaryId: null,
+      });
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageId]: pageIdentity(options.learnedHref) },
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("article", null, "Page"),
+      [routeId]: createElement(
+        Suspense,
+        { fallback: createElement("p", null, "Loading...") },
+        createElement("section", null, "Page slot"),
+      ),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: options.learnedHref,
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: options.routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const payload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: options.targetHref,
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: options.routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+    if (payload === null) throw new Error("Expected optimistic payload");
+    expect(AppElementsWire.readMetadata(payload.elements).bfcacheSegmentIdentities).toEqual({
+      [pageId]: pageIdentity(options.targetHref),
+    });
+    return { elements, pageId, pageIdentity, routeId, template };
+  }
+
+  it("rebinds a learned template's BFCache state keys to the target params", () => {
+    // Like Next.js's reifyRouteTree: a template learned from /blog/post-1 keys
+    // /blog/post-2's segments by post-2, so its optimistic segments don't take
+    // over post-1's retained entry.
+    const { elements, pageId, pageIdentity, routeId, template } = reifyLearnedTemplate({
+      learnedHref: "/blog/post-1",
+      routeManifest: blogManifest(),
+      segmentKeys: (href) => ["blog", `slug|${href.slice("/blog/".length)}|d`],
+      targetHref: "/blog/post-2",
+    });
+    // The learned template itself is unchanged.
+    expect(AppElementsWire.readMetadata(template.elements).bfcacheSegmentIdentities).toEqual({
+      [pageId]: pageIdentity("/blog/post-1"),
+    });
+    // Its own URL keeps the learned keys.
+    expect(createOptimisticRouteElements(template)[routeId]).toBe(elements[routeId]);
+  });
+
+  it("rebinds an optional catch-all that matches nothing in either direction", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/docs/:parts*",
+        isDynamic: true,
+        paramNames: ["parts"],
+        pattern: "/docs/:parts*",
+        patternParts: ["docs", ":parts*"],
+      }),
+    ]);
+    // An optional catch-all that matches nothing binds "".
+    const segmentKeys = (href: string) => ["docs", `parts|${href.slice("/docs/".length)}|oc`];
+    reifyLearnedTemplate({
+      learnedHref: "/docs",
+      routeManifest,
+      segmentKeys,
+      targetHref: "/docs/a/b",
+    });
+    reifyLearnedTemplate({
+      learnedHref: "/docs/a/b",
+      routeManifest,
+      segmentKeys,
+      targetHref: "/docs",
+    });
+  });
+
+  it("rebinds params whose names hold the token separator", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/blog/:a|b",
+        isDynamic: true,
+        paramNames: ["a|b"],
+        pattern: "/blog/:a|b",
+        patternParts: ["blog", ":a|b"],
+      }),
+    ]);
+    reifyLearnedTemplate({
+      learnedHref: "/blog/post-1",
+      routeManifest,
+      segmentKeys: (href) => ["blog", `a|b|${href.slice("/blog/".length)}|d`],
+      targetHref: "/blog/post-2",
+    });
+  });
+
   it("includes active parallel slot params in optimistic navigation payloads", () => {
     // Mirrors the immediate pre-dynamic-render assertion in Next.js:
     // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
@@ -1071,6 +1199,7 @@ describe("optimistic route template store", () => {
       omittedBfcacheSegmentIds: [],
       omittedLayoutIds: [],
       pageElementIds: [],
+      params: {},
       routeId,
     };
   }

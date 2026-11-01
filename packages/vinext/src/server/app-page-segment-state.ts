@@ -93,6 +93,60 @@ function resolveSingleSegmentStateKey(segment: string, params: AppPageParams): s
   return `${param.name}|${formatSegmentStateParamValue(param, params, segment)}|${param.type}`;
 }
 
+const SEGMENT_PARAM_TYPES: readonly AppPageSegmentParamType[] = ["d", "c", "oc"];
+
+function formatSegmentParamPattern(param: AppPageSegmentParam): string {
+  if (param.type === "oc") return `[[...${param.name}]]`;
+  if (param.type === "c") return `[...${param.name}]`;
+  return `[${param.name}]`;
+}
+
+/**
+ * Rebinds segment state keys and BFCache identities resolved with one set of
+ * params to another. Keys are JSON arrays of segment keys, nested to any
+ * depth, so each whole segment key is compared with the param tokens
+ * `resolveSingleSegmentStateKey` produced for the learned params; only those
+ * whose value differs are replaced. Returns null when no token changes.
+ */
+export function createAppPageSegmentStateKeyRebinder(
+  fromParams: AppPageParams,
+  toParams: AppPageParams,
+): ((stateKey: string) => string) | null {
+  const tokens = new Map<string, string>();
+  for (const name of new Set([...Object.keys(fromParams), ...Object.keys(toParams)])) {
+    for (const type of SEGMENT_PARAM_TYPES) {
+      const param = { name, type };
+      const fallbackSegment = formatSegmentParamPattern(param);
+      const from = formatSegmentStateParamValue(param, fromParams, fallbackSegment);
+      const to = formatSegmentStateParamValue(param, toParams, fallbackSegment);
+      if (from !== to) tokens.set(`${name}|${from}|${type}`, `${name}|${to}|${type}`);
+    }
+  }
+  if (tokens.size === 0) return null;
+
+  const rebind = (stateKey: string): string => {
+    const token = tokens.get(stateKey);
+    if (token !== undefined) return token;
+    if (!stateKey.startsWith("[")) return stateKey;
+    let parts: unknown;
+    try {
+      parts = JSON.parse(stateKey);
+    } catch {
+      return stateKey;
+    }
+    if (!Array.isArray(parts)) return stateKey;
+    let changed = false;
+    const rebound = parts.map((part: unknown) => {
+      if (typeof part !== "string") return part;
+      const next = rebind(part);
+      if (next !== part) changed = true;
+      return next;
+    });
+    return changed ? JSON.stringify(rebound) : stateKey;
+  };
+  return rebind;
+}
+
 export function resolveAppPageChildSegments(
   routeSegments: readonly string[],
   treePosition: number,

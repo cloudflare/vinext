@@ -878,4 +878,45 @@ test.describe("BFCache Activity effects", () => {
     );
     await expectHiddenEffectState(page, "shots", "Count: 0");
   });
+
+  // A prefetch of /rooms/a or /rooms/b teaches the router an optimistic shell
+  // for rooms/[id]. Like Next.js's reifyRouteTree, a navigation to /rooms/d
+  // keys that shell by d, so it doesn't take over a retained room's entry.
+  test("keeps retained entries when an optimistic shell renders new params", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "room:a#1"], true), ["shell#1", "room:a#1"]);
+    await incrementEffect(page, "room:a", 2);
+
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(
+      page,
+      ["cleanup room:a#1", ...setupEffects(["room:b#1"], true)],
+      ["shell#1", "room:b#1"],
+    );
+    await incrementEffect(page, "room:b", 3);
+    // Let the layout's room links prefetch, so /rooms/d renders the learned
+    // shell before its own payload.
+    await page.waitForLoadState("networkidle");
+
+    await page.evaluate(() => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        "/bfcache-effects/rooms/d",
+      );
+    });
+    await expectEffectsHeading(page, "Room d");
+    await expectEffects(
+      page,
+      ["cleanup room:b#1", ...setupEffects(["room:d#1"], true)],
+      ["shell#1", "room:d#1"],
+    );
+    await expectHiddenEffectState(page, "room:b", "Count: 3");
+
+    await clickEffectsLink(page, "/rooms/a", "Room a");
+    await expectEffects(page, ["cleanup room:d#1", "setup room:a#1"], ["shell#1", "room:a#1"]);
+    await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+    await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+  });
 });
