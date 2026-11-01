@@ -1,5 +1,5 @@
 import { Fragment, Suspense, createElement, type ComponentType, type ReactNode } from "react";
-import { buildClientHookErrorMessage } from "vinext/shims/client-hook-error";
+import { rewriteClientHookError } from "vinext/shims/client-hook-error";
 import DefaultGlobalError from "vinext/shims/default-global-error";
 import {
   ErrorBoundary,
@@ -22,7 +22,6 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { createArtifactCompatibilityEnvelope } from "./artifact-compatibility.js";
-import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   isRenderDynamicLatched,
   isStaticGenerationAccessError,
@@ -685,8 +684,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
-  const routePathname =
-    options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
+  const routePathname = options.routePathname ?? stripBasePath(pathname, options.basePath ?? "");
   const headBoundaryModule = options.headBoundaryModule ?? boundaryModule;
   const headLayoutModules = options.headLayoutModules ?? layoutModules;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(
@@ -1072,8 +1070,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
         key: "metadata",
         metadata,
         // As for the route's own render: relative canonical and alternate URLs
-        // resolve against the normalized route pathname, never the `.rsc` or
-        // pre-rewrite request path.
+        // resolve against the normalized route pathname, never the pre-rewrite
+        // request path.
         pathname: routePathname,
         trailingSlash: options.trailingSlash,
       }),
@@ -1306,19 +1304,5 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       return renderWith(DEFAULT_GLOBAL_ERROR_COMPONENT);
     }
     throw renderError;
-  }
-}
-
-// React client-only hooks that are absent from the `react-server` export
-// condition. When called in a Server Component they produce a TypeError like
-// "useState is not a function". Rewrite into an actionable message matching
-// the format used by the next/navigation shims (see client-hook-error.ts).
-const _clientHookPattern =
-  /\b(useState|useEffect|useReducer|useRef|useContext|useLayoutEffect|useInsertionEffect|useSyncExternalStore|useTransition|useImperativeHandle|useDeferredValue|useActionState|useOptimistic|useEffectEvent)\b.*is not a function/;
-
-function rewriteClientHookError(error: Error): void {
-  const match = error.message.match(_clientHookPattern);
-  if (match) {
-    error.message = buildClientHookErrorMessage(`${match[1]}()`);
   }
 }

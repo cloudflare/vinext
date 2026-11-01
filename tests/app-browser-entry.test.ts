@@ -1047,7 +1047,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target?tab=1#details",
         origin: "https://example.com",
         responseCompatibilityId: null,
-        responseUrl: "https://example.com/target.rsc?tab=1&_rsc=stale",
+        responseUrl: "https://example.com/target?tab=1&_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target?tab=1#details",
@@ -1060,10 +1060,25 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target/",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com/target.rsc?_rsc=stale",
+        responseUrl: "https://example.com/target?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target/",
+      kind: "hard-navigate",
+    });
+
+    // A "//" pathname keeps its "/." prefix so the hard navigation stays on
+    // the app origin.
+    expect(
+      resolveRscCompatibilityNavigationDecision({
+        clientCompatibilityId: "compat-a",
+        currentHref: "/.//other.test/out",
+        origin: "https://example.com",
+        responseCompatibilityId: "compat-b",
+        responseUrl: "https://example.com//other.test/out?_rsc=stale",
+      }),
+    ).toEqual({
+      hardNavigationTarget: "/.//other.test/out",
       kind: "hard-navigate",
     });
   });
@@ -1077,7 +1092,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target",
         origin: "https://example.com",
         responseCompatibilityId: "compat-a",
-        responseUrl: "https://example.com/target.rsc?_rsc=fresh",
+        responseUrl: "https://example.com/target?_rsc=fresh",
       }),
     ).toEqual({ kind: "compatible" });
   });
@@ -1144,7 +1159,7 @@ describe("app browser entry navigation scheduling", () => {
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
     stubWindow("https://example.com/current");
 
-    const responseUrl = "https://example.com/target.rsc?_rsc=fresh";
+    const responseUrl = "https://example.com/target?_rsc=fresh";
     const snapshot = navigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
@@ -6802,6 +6817,56 @@ describe("app browser entry previousNextUrl helpers", () => {
     expect(nextState.elements[templateId]).toBe(previousTemplate);
   });
 
+  // https://github.com/cloudflare/vinext/issues/4387
+  it("keeps a reused server template seed's key stable across the next refresh", async () => {
+    const templateId = "template:/template";
+    const xIdentity = '["template","template-graph","root","x"]';
+    const yIdentity = '["template","template-graph","root","y"]';
+    const seed = React.createElement("h1", null, "template seed x");
+    const state = createState({
+      bfcacheIds: { [templateId]: "_b_1_" },
+      elements: createResolvedElements("route:/template/x", "/", null, {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: xIdentity },
+        [templateId]: seed,
+      }),
+      routeId: "route:/template/x",
+    });
+
+    const navigatedState = await applyApprovedTestCommit(state, {
+      extraEntries: {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: yIdentity },
+        [templateId]: React.createElement("h1", null, "template seed y"),
+        "page:/template/y": React.createElement("main", null, "y"),
+      },
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/y",
+    });
+
+    // The seed survives, but its key follows the destination child segment.
+    expect(navigatedState.elements[templateId]).toBe(seed);
+    expect(createBfcacheSegmentIdentityMap({ elements: navigatedState.elements })).toEqual({
+      [templateId]: yIdentity,
+    });
+
+    const refreshedTemplate = React.createElement("h1", null, "refreshed template");
+    const refreshedState = await applyApprovedTestCommit(navigatedState, {
+      extraEntries: {
+        [APP_BFCACHE_SEGMENT_IDENTITIES_KEY]: { [templateId]: yIdentity },
+        [templateId]: refreshedTemplate,
+        "page:/template/y": React.createElement("main", null, "y"),
+      },
+      operationLane: "refresh",
+      rootLayoutTreePath: "/",
+      routeId: "route:/template/y",
+    });
+
+    expect(refreshedState.elements[templateId]).toBe(refreshedTemplate);
+    expect(refreshedState.bfcacheIds[templateId]).toBe(navigatedState.bfcacheIds[templateId]);
+    expect(createBfcacheSegmentIdentityMap({ elements: refreshedState.elements })).toEqual({
+      [templateId]: yIdentity,
+    });
+  });
+
   it("installs fresh server template output when its own dynamic param changes", async () => {
     const templateId = "template:/template/[section]";
     const previousTemplate = React.createElement("h1", null, "alpha template");
@@ -8931,7 +8996,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/target.rsc?tab=1&_rsc=abc",
+      responseUrl: "https://example.com/target?tab=1&_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -8950,7 +9015,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/items.rsc?sort=new&_rsc=abc",
+      responseUrl: "https://example.com/items?sort=new&_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -8968,7 +9033,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/new.rsc?_rsc=abc",
+      responseUrl: "https://example.com/new?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9004,7 +9069,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/b.rsc?_rsc=abc",
+      responseUrl: "https://example.com/b?_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9032,6 +9097,35 @@ describe("app browser RSC redirect lifecycle", () => {
       previousNextUrl: null,
       redirectDepth: 1,
     });
+  });
+
+  // A same-origin path whose pathname begins with "//" must not become a
+  // protocol-relative href naming another host.
+  it("keeps a streamed redirect to a path beginning with // on the app origin", () => {
+    const decision = resolveStreamedRscRedirectLifecycleHop({
+      currentHref: "/old",
+      historyUpdateMode: "replace",
+      maxRedirectDepth: 0,
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      streamedRedirectTarget: "/.//other.test/out",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", reason: "maxRedirectsExceeded" });
+  });
+
+  it("keeps an RSC response URL whose path begins with // on the app origin", () => {
+    const decision = resolveRscRedirectLifecycleHop({
+      currentHref: "https://example.com/old",
+      historyUpdateMode: "replace",
+      origin: "https://example.com",
+      redirectDepth: 0,
+      requestPreviousNextUrl: null,
+      responseUrl: "https://example.com//other.test/out?_rsc=abc",
+    });
+
+    expect(decision).toMatchObject({ href: "/.//other.test/out", kind: "follow" });
   });
 
   // The server sends a scheme-relative redirect() target as written, so the
@@ -9132,11 +9226,11 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 1,
       requestPreviousNextUrl: null,
-      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+      streamedRedirectTarget: "/target?visible=1&_rsc=abc#details",
     });
 
     expect(decision).toEqual({
-      href: "/target.rsc?visible=1&_rsc=abc#details",
+      href: "/target?visible=1&_rsc=abc#details",
       historyUpdateMode: "replace",
       kind: "follow",
       previousNextUrl: null,

@@ -6387,6 +6387,14 @@ export const config = { matcher: ["/protected"] };
     );
     expect(counterManifestEntry).toBeDefined();
     expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+
+    // A class field named like a getServerSideProps-only helper must not keep
+    // that helper's server-only import in the browser graph.
+    const clientCode = jsFiles
+      .map((file) => fs.readFileSync(path.join(assetsDir, file), "utf-8"))
+      .join("\n");
+    expect(clientCode).toContain("class-field-posts");
+    expect(clientCode).not.toContain("class-field-gssp-server-only.internal");
   });
 
   it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
@@ -11259,6 +11267,59 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
       expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
     });
+  });
+
+  // Next.js pages-handler.ts gives every render that is not a getStaticProps
+  // result `revalidate: 0` (`!hasStaticProps`), so a page rendered through a
+  // page or custom App getInitialProps is never cached by a shared cache.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  it("never caches custom and page getInitialProps renders in prod", async () => {
+    const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    const appOnly = await fetch(`${prodUrl}/with-page-props`);
+    expect(appOnly.status).toBe(200);
+    expect(appOnly.headers.get("cache-control")).toBe(neverCache);
+    const html = await appOnly.text();
+    const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];
+    expect(buildId).toBeTruthy();
+
+    const page = await fetch(`${prodUrl}/page-gip`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("cache-control")).toBe(neverCache);
+    await page.body?.cancel();
+
+    for (const pathname of ["with-page-props", "page-gip"]) {
+      const data = await fetch(`${prodUrl}/_next/data/${buildId}/${pathname}.json`, {
+        headers: { "x-nextjs-data": "1" },
+      });
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe(neverCache);
+      await data.body?.cancel();
+    }
+
+    // Next.js only fills a missing raw res value: `[]` is set (and sends no
+    // header line), an empty string is not.
+    const arrayData = await fetch(
+      `${prodUrl}/_next/data/${buildId}/page-gip.json?cacheControl=array`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(arrayData.status).toBe(200);
+    expect(arrayData.headers.get("cache-control")).toBeNull();
+    await arrayData.body?.cancel();
+    const emptyData = await fetch(
+      `${prodUrl}/_next/data/${buildId}/page-gip.json?cacheControl=empty`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(emptyData.status).toBe(200);
+    expect(emptyData.headers.get("cache-control")).toBe(neverCache);
+    await emptyData.body?.cancel();
+
+    // getStaticProps results keep their ISR policy under the custom App,
+    // including a notFound drawn by the built-in error page.
+    const notFound = await fetch(`${prodUrl}/gsp-not-found-revalidate`);
+    expect(notFound.status).toBe(404);
+    expect(notFound.headers.get("cache-control")).toMatch(/^s-maxage=60, stale-while-revalidate/);
+    await notFound.body?.cancel();
   });
 
   // Next.js dev sets its development page Cache-Control after the 404 render,

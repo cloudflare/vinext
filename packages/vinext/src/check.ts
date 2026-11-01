@@ -263,13 +263,10 @@ const CONFIG_SUPPORT: Record<string, { status: Status; detail?: string }> = {
     status: "unsupported",
     detail: "ignored; configure cache adapters with vinext({ cache }) in vite.config",
   },
-  cacheLife: {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
-  },
+  cacheLife: { status: "supported" },
   "experimental.cacheLife": {
-    status: "unsupported",
-    detail: "custom cacheLife profiles are ignored; only the built-in profiles are available",
+    status: "supported",
+    detail: "legacy alias of cacheLife",
   },
   skipTrailingSlashRedirect: { status: "supported" },
   "experimental.skipTrailingSlashRedirect": {

@@ -307,6 +307,37 @@ describe("app page boundary render helpers", () => {
     expect(body).not.toContain('data-boundary="not-found"');
   });
 
+  it("lets a failing boundary render reject instead of answering with the error document", async () => {
+    // The error document would carry the boundary's 404 status, which the
+    // ISR guards accept as the boundary's own document and store.
+    const common = createCommonOptions();
+    let fallbackToErrorDocumentOnShellError: boolean | undefined;
+    common.loadSsrHandler.mockImplementation(async () => ({
+      async handleSsr(
+        rscStream: ReadableStream<Uint8Array>,
+        _navContext?: unknown,
+        _fontData?: unknown,
+        options?: { fallbackToErrorDocumentOnShellError?: boolean },
+      ) {
+        fallbackToErrorDocumentOnShellError = options?.fallbackToErrorDocumentOnShellError;
+        return rscStream;
+      },
+    }));
+
+    const response = await renderAppPageHttpAccessFallback<TestModule>({
+      ...common,
+      matchedParams: { slug: "missing" },
+      rootLayouts: [rootLayoutModule],
+      rootNotFoundModule: notFoundModule,
+      route: null,
+      statusCode: 404,
+    });
+
+    expect(response?.status).toBe(404);
+    expect(common.loadSsrHandler).toHaveBeenCalledTimes(1);
+    expect(fallbackToErrorDocumentOnShellError).not.toBe(true);
+  });
+
   it("renders HTTP access fallbacks with layout metadata and wrapped HTML", async () => {
     const common = createCommonOptions();
 
@@ -457,8 +488,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { id: "alice", rest: ["tail"] },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/base/distinct/alice/tail.rsc"),
-      requestUrl: "https://example.com/base/distinct/alice/tail.rsc",
+      request: new Request("https://example.com/base/distinct/alice/tail"),
+      requestUrl: "https://example.com/base/distinct/alice/tail",
       route,
       statusCode: 404,
     });
@@ -1201,8 +1232,8 @@ describe("app page boundary render helpers", () => {
           isRscRequest: true,
           matchedParams: { slug: "missing" },
           renderToReadableStream: renderWirePayloadToStream,
-          request: new Request("https://example.com/posts/missing.rsc"),
-          requestUrl: "https://example.com/posts/missing.rsc",
+          request: new Request("https://example.com/posts/missing"),
+          requestUrl: "https://example.com/posts/missing",
           route: {
             layoutTreePositions: [0],
             layouts: [rootLayoutModule],
@@ -1495,8 +1526,8 @@ describe("app page boundary render helpers", () => {
         isRscRequest: true,
         matchedParams: {},
         renderToReadableStream: renderWirePayloadToStream,
-        request: new Request("https://example.com/photo/1.rsc"),
-        requestUrl: "https://example.com/photo/1.rsc",
+        request: new Request("https://example.com/photo/1"),
+        requestUrl: "https://example.com/photo/1",
         route: {
           ...(page
             ? {}
@@ -1573,8 +1604,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { slug: "missing" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/posts/missing.rsc"),
-      requestUrl: "https://example.com/posts/missing.rsc",
+      request: new Request("https://example.com/posts/missing"),
+      requestUrl: "https://example.com/posts/missing",
       route,
       routeHead,
       statusCode: 404,
@@ -1606,8 +1637,8 @@ describe("app page boundary render helpers", () => {
       layoutModules: [rootLayoutModule],
       matchedParams: { team: "acme" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/acme/settings.rsc"),
-      requestUrl: "https://example.com/acme/settings.rsc",
+      request: new Request("https://example.com/acme/settings"),
+      requestUrl: "https://example.com/acme/settings",
       route: {
         layoutTreePositions: [0, 1],
         layouts: [rootLayoutModule, leafLayoutModule],

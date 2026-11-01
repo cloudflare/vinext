@@ -35,6 +35,9 @@ test.describe("Next.js compat: error-boundary-navigation (browser)", () => {
     });
     await expect(page.locator("#error-message")).not.toBeEmpty();
 
+    // Like Next.js's, the dev overlay opens on the server error the browser's
+    // error.tsx caught, and would intercept the click.
+    await disableDevErrorOverlay(page);
     // Click reset — since the page always throws, the error boundary
     // should appear again after the reset attempt
     await page.click("#reset-btn");

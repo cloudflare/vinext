@@ -1236,14 +1236,20 @@ export async function prerenderPages({
             outputFiles.push(htmlOutputPath);
           }
 
+          // A getStaticProps render reports the revalidate it returned; no
+          // report means `false`. Other responses keep the source classification.
+          const renderedRevalidate = isStaticPropsResponse
+            ? (readPrerenderCacheLifeHeader(response.headers)?.revalidate ?? false)
+            : revalidate;
+
           result = {
             route: route.pattern,
             status: "rendered",
             outputFiles,
-            revalidate,
+            revalidate: renderedRevalidate,
             // Pages Router cache metadata comes only from getStaticProps.revalidate;
             // Next.js applies expireTime as the fallback when no route expire exists.
-            ...(typeof revalidate === "number" ? { expire: config.expireTime } : {}),
+            ...(typeof renderedRevalidate === "number" ? { expire: config.expireTime } : {}),
             router: "pages",
             ...(urlPath !== route.pattern ? { path: urlPath } : {}),
             ...(locale ? { locale } : {}),

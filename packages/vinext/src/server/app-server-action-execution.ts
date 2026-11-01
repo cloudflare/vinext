@@ -73,6 +73,7 @@ import { shareIsolatePromise } from "./isolate-shared-promise.js";
 import { createStaticGenerationHeadersContext } from "./app-static-generation.js";
 import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import type { AppRenderErrorContextOverrides } from "./app-rsc-error-handler.js";
+import { logRequestError } from "./request-error-log.js";
 
 type AppPageParams = Record<string, string | string[]>;
 
@@ -1153,7 +1154,10 @@ function createRejectedActionResult(error: unknown): Promise<never> {
  */
 function logRejectedActionResult(error: unknown): void {
   if (process.env.NODE_ENV === "production" || hasDigest(error)) {
-    console.error("[vinext] Server action error:", error);
+    // The render reports the result unless it's a thrown string, which isn't
+    // reported, so VINEXT_QUIET doesn't silence it.
+    if (typeof error === "string") console.error("[vinext] Server action error:", error);
+    else logRequestError("[vinext] Server action error:", error);
   }
 }
 
@@ -1179,7 +1183,7 @@ function createServerActionErrorResponse(
   },
 ): Response {
   options.getAndClearPendingCookies();
-  console.error("[vinext] Server action error:", error);
+  logRequestError("[vinext] Server action error:", error);
   options.reportRequestError(
     error,
     {
@@ -1373,7 +1377,7 @@ export async function handleProgressiveServerActionRequest(
         actionFailedWithError =
           getActionHttpFallbackStatus(error) === null && !isServerActionNotFoundError(error, null);
         if (actionFailedWithError) {
-          console.error("[vinext] Server action error:", error);
+          logRequestError("[vinext] Server action error:", error);
           options.reportRequestError(
             error,
             {
@@ -1503,7 +1507,7 @@ export async function handleProgressiveServerActionRequest(
 
     getAndClearActionRevalidationKind();
     options.getAndClearPendingCookies();
-    console.error("[vinext] Server action payload parsing error:", error);
+    logRequestError("[vinext] Server action payload parsing error:", error);
     options.reportRequestError(
       error,
       {

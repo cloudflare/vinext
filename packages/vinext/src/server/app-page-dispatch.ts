@@ -382,7 +382,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasGenerateStaticParams: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
-  hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
@@ -1528,7 +1527,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
     },
     renderToReadableStream: options.renderToReadableStream,
-    hasCustomGlobalError: options.hasCustomGlobalError,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,
