@@ -1917,7 +1917,8 @@ export default { plugins: [vinext({ cache: { data: customData() }, prerender: tr
 
   // #4460: a Vite SPA on Workers keeps its API Worker in worker/index.ts. As
   // the Worker entry it answers every page route itself, so each one 404s.
-  const SPA_WORKER = `export default {
+  const SPA_WORKER = `const framework = "vinext";
+export default {
   fetch(request) {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/api/")) return Response.json({ name: "Cloudflare" });

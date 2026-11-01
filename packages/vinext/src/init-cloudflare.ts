@@ -553,9 +553,11 @@ ${shared}export default defineConfig({
 
 // A custom vinext Worker hands requests to vinext: it imports
 // `vinext/server/fetch-handler` (or another vinext module), or loads the RSC
-// handler through `import.meta.viteRsc`.
+// handler through `import.meta.viteRsc`. This is a text check: a commented-out
+// or type-only vinext import still counts, and a Worker that reaches vinext
+// only through a local module does not (init then names the setting to change).
 const VINEXT_WORKER_ENTRY_RE =
-  /["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
+  /\b(?:from|import|require)\s*\(?\s*["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
 
 function findWorkerEntry(root: string): { entry: string; usesVinext: boolean } | null {
   for (const file of ["index.ts", "index.js"]) {
