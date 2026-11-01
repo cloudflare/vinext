@@ -374,6 +374,10 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           swr_until INTEGER,
           edge_invalidate INTEGER NOT NULL DEFAULT 0
         ) WITHOUT ROWID;
+        CREATE TABLE IF NOT EXISTS invalidated_revision_legacy (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          through_rowid INTEGER NOT NULL
+        );
       `);
 
       ctx.storage.transactionSync(() => {
@@ -498,7 +502,22 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
             `);
           }
           // Invalidations before the upgrade weren't recorded: count the active revision as one.
-          ctx.storage.sql.exec("UPDATE entries SET invalidated_revision = active_revision");
+          // Rewriting every entry here runs in the constructor's transaction, so on a large store
+          // it fails (SQLITE_NOMEM), rolls back and re-runs on every wake. Instead, record which
+          // rows predate the upgrade; publish() fills each one from its active revision the first
+          // time it replaces it, which is before the column can affect anything. Entries are only
+          // ever inserted, so a later row never takes a pre-upgrade rowid.
+          const { through_rowid: throughRowid } = ctx.storage.sql
+            .exec<{ through_rowid: number }>(
+              "SELECT COALESCE(MAX(rowid), 0) AS through_rowid FROM entries",
+            )
+            .one();
+          if (throughRowid > 0) {
+            ctx.storage.sql.exec(
+              "INSERT OR REPLACE INTO invalidated_revision_legacy (singleton, through_rowid) VALUES (1, ?)",
+              throughRowid,
+            );
+          }
           ctx.storage.sql.exec("INSERT INTO metadata_schema_migrations (version) VALUES (9)");
         }
         if (!migrations.has(10)) {
@@ -1130,7 +1149,11 @@ export class CacheMetadata extends DurableObject<CacheMetadataEnv> {
           active_revision = ?, object_key = ?, status_text = ?, response_headers = ?,
           fresh_until = ?, swr_until = ?,
           revalidator_id = ?, revalidator_args = ?, expiry_behavior = ?, cache_tags = ?, tombstoned = 0,
-          replaced_revision = ?
+          replaced_revision = ?,
+          invalidated_revision = CASE
+            WHEN invalidated_revision IS NULL
+              AND rowid <= (SELECT through_rowid FROM invalidated_revision_legacy WHERE singleton = 1)
+            THEN active_revision ELSE invalidated_revision END
         WHERE key_hash = ? AND latest_revision >= ?
           AND (active_revision IS NULL OR active_revision < ?)
         RETURNING key_hash`,

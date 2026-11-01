@@ -3494,13 +3494,52 @@ test("the previous metadata schema is upgraded in place", async () => {
       // The purge above recorded the revision it tombstoned.
       [{ expiry_behavior: null, invalidated_revision: 2, replaced_revision: null }],
     );
-    // Invalidations before the upgrade weren't recorded, so the active revision counts as one.
+    // The upgrade rewrites no entries: it records which rows predate it instead.
     assert.deepEqual(
       await storage.exec(
         "SELECT replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
         "legacy-kept",
       ),
-      [{ invalidated_revision: 3, replaced_revision: null }],
+      [{ invalidated_revision: null, replaced_revision: null }],
+    );
+    assert.deepEqual(await storage.exec("SELECT through_rowid FROM invalidated_revision_legacy"), [
+      { through_rowid: 2 },
+    ]);
+    // Invalidations before the upgrade weren't recorded, so the active revision counts as one
+    // from the first publish over the entry.
+    const upgradedStub = (
+      await upgraded.getDurableObjectNamespace("CACHE_METADATA", "migration-worker")
+    ).getByName(metadataName) as any;
+    const refresh = await upgradedStub.reserveWrite(
+      "legacy-kept",
+      "/legacy-kept",
+      "runtime-cache/migration/legacy-kept",
+      Date.now(),
+    );
+    const refreshed = await upgradedStub.publish(
+      "legacy-kept",
+      refresh.revision,
+      {
+        objectKey: refresh.objectKey,
+        statusText: "",
+        responseHeaders: [],
+        freshUntil: Date.now() + 60_000,
+        swrUntil: Date.now() + 60_000,
+        revalidator: null,
+        cacheTags: [],
+        fenceTags: [],
+      },
+      undefined,
+      refresh.objectKey,
+      { revision: 3 },
+    );
+    assert.equal(refreshed.published, true);
+    assert.deepEqual(
+      await storage.exec(
+        "SELECT active_revision, replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
+        "legacy-kept",
+      ),
+      [{ active_revision: 4, invalidated_revision: 3, replaced_revision: 3 }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(
