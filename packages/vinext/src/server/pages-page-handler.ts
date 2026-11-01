@@ -92,6 +92,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
 import { buildMissIsrCacheControl, ISR_NEVER_CACHE_CONTROL } from "./isr-decision.js";
@@ -1459,6 +1460,15 @@ export function createPagesPageHandler(
         // getStaticProps page and only reports the error.
         if (sendsEarly && pageResponseSent()) return sentResponse;
 
+        // As in `next build`, a page that throws while prerendering fails the
+        // build.
+        const answerError = (response: Response): Response => {
+          if (process.env.VINEXT_PRERENDER === "1") {
+            response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+          }
+          return response;
+        };
+
         // Data requests can't render HTML; avoid recursion if already rendering
         // the error page. Mirrors Next.js base-server.ts: render /500 or _error
         // when SSR throws. Fixes #1458.
@@ -1476,7 +1486,7 @@ export function createPagesPageHandler(
           }
           if (errorRoute) {
             try {
-              return await renderPage(
+              const errorPageResponse = await renderPage(
                 request,
                 url,
                 manifest,
@@ -1491,12 +1501,13 @@ export function createPagesPageHandler(
                 },
                 initialResponseHeaders,
               );
+              return answerError(errorPageResponse);
             } catch (errorPageErr) {
               console.error("[vinext] Error page render failed:", errorPageErr);
             }
           }
         }
-        return new Response("Internal Server Error", { status: 500 });
+        return answerError(new Response("Internal Server Error", { status: 500 }));
       }
     });
     if (!sendsEarly) return closeAfterResponseWithBody(await rendering, uCtx);

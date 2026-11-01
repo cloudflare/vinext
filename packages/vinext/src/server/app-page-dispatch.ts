@@ -15,6 +15,7 @@ import {
   getDraftModeCookieHeader,
   getHeadersContext,
   isDraftModeRequest,
+  isRenderDynamicLatched,
   peekDynamicUsage,
   peekRenderRequestApiUsage,
   runWithConnectionProbe,
@@ -108,6 +109,10 @@ import {
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
 import { buildAppPageTags } from "./implicit-tags.js";
+import {
+  isPrerenderBuildFailingError,
+  markPrerenderRenderError,
+} from "./prerender-render-error.js";
 import { resolveAppPageTraceOperation } from "./app-page-tracing.js";
 import {
   coalesceOnDemandResponse,
@@ -1476,8 +1481,16 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           },
         );
       },
-      renderErrorBoundaryPage(buildError) {
-        return options.renderErrorBoundaryPage(buildError);
+      async renderErrorBoundaryPage(buildError) {
+        // As in `next build`, an error building the page fails its prerender,
+        // unless the page turned dynamic first.
+        const failsPrerender =
+          isPrerender &&
+          isPrerenderBuildFailingError(buildError) &&
+          !peekDynamicUsage() &&
+          !isRenderDynamicLatched();
+        const response = await options.renderErrorBoundaryPage(buildError);
+        return response && failsPrerender ? markPrerenderRenderError(response) : response;
       },
       renderSpecialError(specialError) {
         return renderPageSpecialError(

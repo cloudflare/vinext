@@ -1167,6 +1167,12 @@ describe("prerenderPages — default mode (pages-basic)", () => {
     }
   });
 
+  // As in `next build`, a page that throws while rendering fails the build.
+  it("fails the prerender of a page whose render throws", () => {
+    expect(findRoute(results, "/error-throw")).toMatchObject({ status: "error", fatal: true });
+    expect(fs.existsSync(path.join(outDir, "error-throw.html"))).toBe(false);
+  });
+
   // ── ISR page ───────────────────────────────────────────────────────────────
 
   it("renders ISR page with correct revalidate interval", () => {
@@ -1416,11 +1422,40 @@ describe("prerenderApp — default mode (app-basic)", () => {
     fs.rmSync(outDir, { recursive: true, force: true });
   });
 
-  // As in Next.js, whose build fails on a prerender error, a page that throws
-  // is not stored, even when an error.tsx catches the error (#4394).
-  it("does not store a page whose render error an error.tsx catches", () => {
-    expect(findRoute(results, "/error-server-test")).toMatchObject({ status: "skipped" });
+  // As in `next build`, a render error fails the build, even when an
+  // error.tsx catches it (#4394).
+  it("fails the prerender of a page whose render error an error.tsx catches", () => {
+    expect(findRoute(results, "/error-server-test")).toMatchObject({
+      status: "error",
+      fatal: true,
+    });
     expect(fs.existsSync(path.join(outDir, "error-server-test.html"))).toBe(false);
+  });
+
+  it("fails the prerender of a page whose metadata throws", () => {
+    expect(
+      findRoute(results, "/nextjs-compat/layout-metadata-error-without-boundary"),
+    ).toMatchObject({ status: "error", fatal: true });
+  });
+
+  it("fails the prerender of a page whose error a Suspense boundary catches", () => {
+    // A server component, then a client component, that throws inside
+    // Suspense: the document is a 200 that renders the error in the browser.
+    for (const route of ["/react19-dev-rsc-error", "/nextjs-compat/dynamic/loading-error/ssr"]) {
+      expect(findRoute(results, route)).toMatchObject({
+        status: "error",
+        error: "Error occurred prerendering page",
+        fatal: true,
+      });
+    }
+    expect(fs.existsSync(path.join(outDir, "react19-dev-rsc-error.html"))).toBe(false);
+  });
+
+  it("skips a page that throws after turning dynamic", () => {
+    expect(findRoute(results, "/prerender-dynamic-throw")).toMatchObject({
+      status: "skipped",
+      reason: "dynamic",
+    });
   });
 
   // ── Static routes with explicit config ────────────────────────────────────

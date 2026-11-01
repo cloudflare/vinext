@@ -132,6 +132,9 @@ class PrerenderUserFunctionError extends Error {}
 // which fails `next build` in every mode, so prerenderApp marks it fatal too.
 class InvalidStaticParamsError extends Error {}
 
+// A Pages render or getStaticProps that threw, which fails `next build`.
+class PrerenderRenderError extends Error {}
+
 // The prerender static-params / static-paths endpoints return the real error
 // thrown by a user's generateStaticParams/getStaticPaths as `{ error }` in a 500
 // body (app-prerender-endpoints.ts). Extract that message. For our JSON envelope
@@ -1228,7 +1231,10 @@ export async function prerenderPages({
             outputFiles.push(htmlOutputPath);
           } else {
             if (!response.ok && !notFound) {
-              throw new Error(`renderPage returned ${response.status} for ${urlPath}`);
+              const message = `renderPage returned ${response.status} for ${urlPath}`;
+              throw response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1"
+                ? new PrerenderRenderError(message)
+                : new Error(message);
             }
             const html = await response.text();
             fs.mkdirSync(path.dirname(htmlFullPath), { recursive: true });
@@ -1271,6 +1277,7 @@ export async function prerenderPages({
             route: route.pattern,
             status: "error",
             error: config.enablePrerenderSourceMaps ? getErrorMessageWithStack(err) : err.message,
+            ...(e instanceof PrerenderRenderError ? { fatal: true as const } : {}),
           };
         }
         onProgress?.({
@@ -2019,7 +2026,7 @@ export async function prerenderApp({
               requestCacheLife: responseCacheLife ?? processCacheLife,
               status: response.status,
               tags: cacheTags,
-              fatal: false,
+              fatal,
               specialErrorLocation: specialError?.location ?? null,
               isSpecialError,
             };
@@ -2035,6 +2042,16 @@ export async function prerenderApp({
             status: "error",
             error: `RSC handler returned ${htmlRender.status}`,
             ...(htmlRender.fatal ? { fatal: true as const } : {}),
+          };
+        }
+        // As in `next build`, an error the render reported fails the build,
+        // even when a Suspense or error boundary caught it.
+        if (htmlRender.fatal) {
+          return {
+            route: routePattern,
+            status: "error",
+            error: "Error occurred prerendering page",
+            fatal: true,
           };
         }
 
