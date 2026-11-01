@@ -193,17 +193,27 @@ async function queryTraffic(
   }));
 }
 
-/** Whether a request path names a file in the built static assets directory. */
-function isStaticAssetPath(assetsDir: string, pathname: string, basePath = ""): boolean {
+/** URL pathnames of every file in the built static assets directory. */
+function readStaticAssetPaths(assetsDir: string): Set<string> {
+  if (!fs.existsSync(assetsDir)) return new Set();
+  return new Set(
+    fs
+      .readdirSync(assetsDir, { recursive: true, withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map(
+        (entry) =>
+          `/${path.relative(assetsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`,
+      ),
+  );
+}
+
+/** Whether a request path is an exact, case-sensitive match for a built asset file. */
+function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath = ""): boolean {
   const assetPathname =
     basePath && pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
   try {
-    const filePath = path.join(assetsDir, decodeURIComponent(assetPathname));
-    const relative = path.relative(assetsDir, filePath);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
-    return fs.statSync(filePath, { throwIfNoEntry: false })?.isFile() ?? false;
+    return assetPaths.has(decodeURIComponent(assetPathname));
   } catch {
-    // Malformed encodings, NUL bytes, and overlong names cannot be asset files.
     return false;
   }
 }
@@ -213,6 +223,7 @@ export function filterTrafficPaths(
   entries: TrafficEntry[],
   options: { assetsDir?: string; basePath?: string } = {},
 ): TrafficEntry[] {
+  const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
@@ -220,8 +231,7 @@ export function filterTrafficPaths(
     // Static assets
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
       return false;
-    if (options.assetsDir && isStaticAssetPath(options.assetsDir, e.path, options.basePath))
-      return false;
+    if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
     // API routes
     if (e.path.startsWith("/api/")) return false;
     // Internal routes

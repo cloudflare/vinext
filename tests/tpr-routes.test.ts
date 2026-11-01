@@ -171,7 +171,7 @@ describe("TPR route resolution", () => {
     }
   });
 
-  it("matches basePath requests to public files at the assets root", () => {
+  it("matches basePath requests exactly against public files at the assets root", () => {
     const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-base-path-"));
     try {
       fs.mkdirSync(path.join(assetsDir, "videos"));
@@ -183,10 +183,18 @@ describe("TPR route resolution", () => {
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },
             { path: "/docs/%00", requests: 1 },
+            { path: "/docs/videos%5Chero.webm", requests: 1 },
+            { path: "/docs/Videos/Hero.webm", requests: 1 },
           ],
           { assetsDir, basePath: "/docs" },
         ).map(({ path }) => path),
-      ).toEqual(["/docs/videos", `/docs/${"a".repeat(300)}`, "/docs/%00"]);
+      ).toEqual([
+        "/docs/videos",
+        `/docs/${"a".repeat(300)}`,
+        "/docs/%00",
+        "/docs/videos%5Chero.webm",
+        "/docs/Videos/Hero.webm",
+      ]);
     } finally {
       fs.rmSync(assetsDir, { recursive: true, force: true });
     }
