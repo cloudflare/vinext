@@ -1272,6 +1272,18 @@ describe("app page dispatch", () => {
     expect(dynamicResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
+  it("doesn't mark the error page of a runtime render whose page fails to build", async () => {
+    const { options } = createDispatchOptions({
+      buildPageElement: async () => {
+        throw new Error("build failed");
+      },
+    });
+    options.renderErrorBoundaryPage = vi.fn(async () => new Response("error", { status: 500 }));
+    const response = await dispatchAppPage(options);
+    expect(response.status).toBe(500);
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
   it("preserves request-time metadata placement for PPR fallback-shell prerenders", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>

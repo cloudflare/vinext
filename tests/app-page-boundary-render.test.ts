@@ -301,6 +301,40 @@ describe("app page boundary render helpers", () => {
     } finally {
       vi.unstubAllEnvs();
     }
+
+    // A runtime render is never marked.
+    const runtime = await renderNotFound(null);
+    expect(runtime?.status).toBe(404);
+    expect(runtime?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("keeps a prerender's error when a redirect replaces the root not-found page", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: {},
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream(element, options) {
+          options?.onError?.(new Error("not-found render failed"), undefined, undefined);
+          options?.onError?.(
+            Object.assign(new Error("NEXT_REDIRECT"), {
+              digest: "NEXT_REDIRECT;replace;/login;307;",
+            }),
+            undefined,
+            undefined,
+          );
+          return renderElementToStream(element);
+        },
+        route: null,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(307);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("leaves a dynamic root not-found page out of the prerender", async () => {
@@ -341,10 +375,24 @@ describe("app page boundary render helpers", () => {
       const dynamic = await renderNotFound({ usesDynamicApi: true });
       expect(dynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
 
-      // One that couldn't render at all fails the build.
+      // One that couldn't render at all fails the build, unless it's dynamic.
       const failed = await renderNotFound({ throwsShell: true });
       expect(failed?.status).toBe(500);
       expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const throwingMetadataLayout = {
+        ...rootLayoutModule,
+        generateMetadata: () => {
+          throw new Error("metadata failed");
+        },
+      };
+      const metadataFailed = await renderNotFound({ rootLayouts: [throwingMetadataLayout] });
+      expect(metadataFailed?.status).toBe(500);
+      expect(metadataFailed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const dynamicMetadataFailed = await renderNotFound({
+        rootLayouts: [{ ...throwingMetadataLayout, dynamic: "force-dynamic" }],
+      });
+      expect(dynamicMetadataFailed?.status).toBe(500);
+      expect(dynamicMetadataFailed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
     }

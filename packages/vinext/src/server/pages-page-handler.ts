@@ -446,6 +446,17 @@ function getPagesPageRuntime(pageModule: object): string | undefined {
   return typeof runtime === "string" ? runtime : undefined;
 }
 
+// Like Next.js's hasCustomGetInitialProps: `next/error`'s own getInitialProps
+// doesn't count.
+function hasCustomGetInitialProps(component: unknown): boolean {
+  if (typeof component !== "function") return false;
+  const getInitialProps: unknown = Reflect.get(component, "getInitialProps");
+  return (
+    typeof getInitialProps === "function" &&
+    getInitialProps !== Reflect.get(component, "origGetInitialProps")
+  );
+}
+
 /**
  * Create the Pages Router render function (`_renderPage`).
  *
@@ -1472,14 +1483,17 @@ export function createPagesPageHandler(
         // As in `next build`, a page that throws while prerendering fails the
         // build. Next.js doesn't prerender a getServerSideProps,
         // getInitialProps or edge runtime page, nor a 404 rendered by an
-        // `_error` with getInitialProps, and a binding the prerender can't
-        // provide doesn't fail it. An error page rendered for another page's
-        // error leaves the decision to that page.
+        // `_error` with its own getInitialProps, and a binding the prerender
+        // can't provide doesn't fail it. An error or 404 page rendered for
+        // another page leaves the decision to that page.
+        const hasPageInitialProps = isRouteMissErrorRender
+          ? hasCustomGetInitialProps(pageModule.default)
+          : pagesReadiness.gip === true;
         const failsPrerender =
           process.env.VINEXT_PRERENDER === "1" &&
-          !isInternalErrorRender &&
+          options?.__forcedRoute === undefined &&
           pagesReadiness.gssp !== true &&
-          (isStaticPropsRoute || (pagesReadiness.gip !== true && pagesReadiness.appGip !== true)) &&
+          (isStaticPropsRoute || (!hasPageInitialProps && pagesReadiness.appGip !== true)) &&
           !isEdgeApiRuntime(getPagesPageRuntime(pageModule)) &&
           !isPrerenderBindingsUnavailableError(e);
         const answerError = (response: Response): Response => {

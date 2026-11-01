@@ -2113,15 +2113,26 @@ describe("createPagesPageHandler — prerender render errors", () => {
   };
 
   it("marks a page that throws while prerendering", async () => {
-    const response = await prerenderResponse(
-      makePageModule({
-        getStaticProps: async () => {
-          throw new Error("getStaticProps failed");
-        },
-      }),
-    );
+    const module = makePageModule({
+      getStaticProps: async () => {
+        throw new Error("getStaticProps failed");
+      },
+    });
+    const response = await prerenderResponse(module);
     expect(response.status).toBe(500);
     expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+
+    // A runtime render is never marked.
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const runtime = await createPagesPageHandler(
+        makeOpts({ pageRoutes: [makeRoute("/about", module)] }),
+      )(makeRequest("/about"), "/about", null, null, null);
+      expect(runtime.status).toBe(500);
+      expect(runtime.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 
   it("doesn't mark a binding error or a page Next.js doesn't prerender", async () => {
@@ -2201,6 +2212,19 @@ describe("createPagesPageHandler — prerender render errors", () => {
     expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
+  it("leaves the decision to the page whose getStaticProps returned notFound", async () => {
+    // Next.js doesn't render the 404 page for it.
+    const page = makePageModule({ getStaticProps: async () => ({ notFound: true }) });
+    const response = await prerenderResponse(page, {
+      pageRoutes: [makeRoute("/about", page), makeRoute("/404", makePageModule())],
+      renderToReadableStream: async () => {
+        throw new Error("render failed");
+      },
+    });
+    expect(response.status).toBe(500);
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
   it("doesn't mark a 404 that Next.js doesn't prerender", async () => {
     // Without a `pages/404`, `_error` renders it, which runs a custom `_app`
     // getInitialProps.
@@ -2220,19 +2244,30 @@ describe("createPagesPageHandler — prerender render errors", () => {
     expect(notFound.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
-  it("marks a 404 rendered by an `_error` without getInitialProps", async () => {
-    const response = await prerenderResponse(
-      makePageModule(),
-      {
-        errorPageRoute: makeRoute("/_error", makePageModule()),
-        renderToReadableStream: async () => {
-          throw new Error("render failed");
+  it("marks a 404 rendered by an `_error` without its own getInitialProps", async () => {
+    const renderNotFound = (errorPage: unknown) =>
+      prerenderResponse(
+        makePageModule(),
+        {
+          errorPageRoute: makeRoute("/_error", makePageModule({ default: errorPage })),
+          renderToReadableStream: async () => {
+            throw new Error("render failed");
+          },
         },
-      },
-      "/missing",
-    );
-    expect(response.status).toBe(500);
-    expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+        "/missing",
+      );
+    const getInitialProps = async () => ({ statusCode: 404 });
+    // `next/error`'s getInitialProps is its `origGetInitialProps`.
+    for (const errorPage of [
+      () => null,
+      Object.assign(() => null, { getInitialProps, origGetInitialProps: getInitialProps }),
+    ]) {
+      const response = await renderNotFound(errorPage);
+      expect(response.status).toBe(500);
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    }
+    const custom = await renderNotFound(Object.assign(() => null, { getInitialProps }));
+    expect(custom.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 });
 
