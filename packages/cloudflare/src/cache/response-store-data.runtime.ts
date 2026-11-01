@@ -28,8 +28,9 @@ type StoredCacheEntry = {
 type RegenerationScope = {
   captured?: Response;
   /**
-   * Writes the regeneration makes, its own entry's included: callers like cached
-   * fetch, "use cache" and unstable_cache return before they finish.
+   * Writes the regeneration makes, its own entry's included, and the work it hands
+   * to waitUntil: callers like cached fetch, "use cache" and unstable_cache return
+   * before they finish, and a delegating cache handler may reach this one later.
    */
   sideWrites: Promise<void>[];
   targetKey: string;
@@ -235,6 +236,16 @@ export function deferResponseStoreAdmission(
   void capture.admittedResponse.catch((error) => finishAdmission({ reason: error }));
   void writer.closed.catch((error) => finishAdmission({ reason: error }));
   return new Response(foreground, response);
+}
+
+/** Keeps work a regeneration hands to waitUntil inside the regeneration. */
+export function trackResponseStoreRegenerationWork(work: Promise<unknown>): void {
+  regenerationStorage.getStore()?.sideWrites.push(
+    work.then(
+      () => undefined,
+      () => undefined,
+    ),
+  );
 }
 
 /** Re-render an invocation and return the exact rewritten data-cache entry. */
