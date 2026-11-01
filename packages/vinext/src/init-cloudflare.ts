@@ -557,7 +557,7 @@ ${shared}export default defineConfig({
 // or type-only vinext import still counts, and a Worker that reaches vinext
 // only through a local module does not (init then names the setting to change).
 const VINEXT_WORKER_ENTRY_RE =
-  /\b(?:from|import|require)\s*\(?\s*["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
+  /(?<![\w$.])(?:from|import|require)\s*\(?\s*["'](?:vinext|@vinext\/[\w.-]+)(?:\/[^"']*)?["']|import\.meta\.viteRsc\b/;
 
 function findWorkerEntry(root: string): { entry: string; usesVinext: boolean } | null {
   for (const file of ["index.ts", "index.js"]) {
