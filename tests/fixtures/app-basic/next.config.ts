@@ -45,6 +45,13 @@ const nextConfig: NextConfig = {
   // temporary outDir don't need node_modules next to the output.
   transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
 
+  // Used by E2E: app-router/use-cache.spec.ts, app-router-prod/use-cache.spec.ts —
+  // a custom profile and an overridden built-in read by cacheLife().
+  cacheLife: {
+    customProfile: { revalidate: 120, expire: 3600 },
+    minutes: { stale: 30, revalidate: 90, expire: 1800 },
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
