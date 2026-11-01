@@ -2145,6 +2145,9 @@ describe("app page boundary render helpers", () => {
         .filter((props) => props.isGlobalErrorBoundary === true)
         .map((props) => props.fallback),
     ).toEqual([GlobalErrorBoundary]);
+    expect(boundaryProps.filter((props) => props.wrapsGlobalErrorBoundary === true)).toHaveLength(
+      1,
+    );
   });
 
   it("renders error boundary RSC responses as flat payloads", async () => {

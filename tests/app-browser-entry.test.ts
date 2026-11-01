@@ -9366,6 +9366,15 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
     });
     expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
 
+    // The root boundary around a global-error boundary only catches the
+    // global-error fallback's own throw.
+    handler(new Error("global-error threw"), {
+      errorBoundary: {
+        props: { isImplicitRootErrorBoundary: true, wrapsGlobalErrorBoundary: true },
+      },
+    });
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
     handler(
       Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }),
       {

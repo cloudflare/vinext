@@ -20,10 +20,14 @@ function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boo
 }
 
 // The implicit root boundary or a global-error boundary: the boundaries that
-// stand in for Next.js's dev overlay boundary, which holds the whole page.
+// stand in for Next.js's dev overlay boundary, which holds the whole page. An
+// implicit root boundary around the user's global-error boundary only catches
+// what that boundary's fallback threw, which React reports in place of the
+// page's error, so it doesn't count.
 function isRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
   const props = getErrorBoundaryProps(errorInfo);
-  return props.isImplicitRootErrorBoundary === true || props.isGlobalErrorBoundary === true;
+  if (props.isGlobalErrorBoundary === true) return true;
+  return props.isImplicitRootErrorBoundary === true && props.wrapsGlobalErrorBoundary !== true;
 }
 
 function logCaughtError(error: unknown, errorInfo: VinextHydrateRootErrorInfo): void {

@@ -65,6 +65,7 @@ type RedirectBoundaryProps = {
 type ErrorBoundaryInnerProps = {
   isImplicitRootErrorBoundary?: boolean;
   pathname: string | null;
+  wrapsGlobalErrorBoundary?: boolean;
 } & ErrorBoundaryProps;
 
 export type ErrorBoundaryState = {
@@ -344,9 +345,13 @@ export function ErrorBoundary({
 export function GlobalErrorBoundary({
   fallback,
   children,
+  wrapsGlobalErrorBoundary,
 }: {
   fallback: React.ComponentType<{ error: unknown; reset: () => void }>;
   children: React.ReactNode;
+  // Set when the children are the user's global-error boundary, so a catch
+  // here means that boundary's fallback threw.
+  wrapsGlobalErrorBoundary?: boolean;
 }) {
   const pathname = useErrorBoundaryPathname();
   // No `resetKey`: as the outermost root boundary it resets only on pathname
@@ -357,6 +362,7 @@ export function GlobalErrorBoundary({
       pathname={pathname}
       fallback={fallback}
       isImplicitRootErrorBoundary={fallback === DefaultGlobalError}
+      wrapsGlobalErrorBoundary={wrapsGlobalErrorBoundary}
     >
       {children}
     </ErrorBoundaryInner>
