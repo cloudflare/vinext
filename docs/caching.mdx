@@ -489,7 +489,7 @@ Dynamic APIs include `cookies()`, `headers()`, `connection()`, a `fetch` with `c
 Next.js keeps one cache entry per static page, whatever the query string, and vinext does the same for App Router pages: `/blog/a?ref=x` and `/blog/a?utm_source=y` share the `/blog/a` entry. A render that reads the query is dynamic and isn't stored, so one visitor's query can't reach the shared entry.
 
 - **KV and in-memory:** page keys leave out the query, for App Router and Pages Router pages.
-- **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query.
+- **Workers Response Store:** a miss renders from the full request, and the response is stored under the path without the query. A cacheable Route Handler or metadata route is stored under its path too, as Next.js keys a route handler by its pathname; a handler that reads the request URL is dynamic and isn't stored.
 - **Workers Cache:** a hit skips rendering (middleware and routing still run), so the key is chosen before rendering, from the cacheability manifest that a staged deploy writes (`--warm-cache`, see [Cache warming](#cache-warming)). Paths the manifest marks static share one entry across queries, and a request for one that turns dynamic at runtime can fail with a 500, like Next.js's `Page changed from static to dynamic at runtime` error. Other paths, and every path without the manifest, keep the full query in their key.
 
 With Workers Response Store and Workers Cache, some responses aren't stored under the query-free key, for example interception RSC requests and responses that an explicit provider policy in a `next.config` `headers()` rule makes cacheable. Pages Router pages keep the query in their keys on these two backends.
