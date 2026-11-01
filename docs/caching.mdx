@@ -358,7 +358,7 @@ For apps with many routes, use traffic-aware warming to prioritize pages people 
 npx @vinext/cloudflare deploy --traffic-aware-warm-cache
 ```
 
-vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand.
+vinext queries Cloudflare zone analytics, ranks page paths by request count, and resolves them against the app's routes. It selects paths up to the traffic coverage target or route limit, then uses the same staged warming flow and cacheability checks described above. Traffic can supply concrete dynamic paths that were not enumerated by `generateStaticParams()` or `getStaticPaths()`; pages that cannot be cached still render on demand. Requests the app never renders are left out: Cloudflare's reserved `/cdn-cgi/` paths and files served as static assets, such as those in `public/`.
 
 <table>
   <thead>

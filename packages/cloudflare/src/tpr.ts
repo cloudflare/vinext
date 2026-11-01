@@ -36,6 +36,10 @@ export type TPROptions = {
   typedConfig?: boolean;
   /** Analytics lookback window in hours. Default: 24. */
   window: number;
+  /** Built static assets directory; requests for its files are not rendered pages. */
+  assetsDir?: string;
+  /** Next.js basePath; public files are served below it but built at the assets root. */
+  basePath?: string;
 };
 
 export type TPRRouteResult = {
@@ -183,20 +187,40 @@ async function queryTraffic(
   const groups = data.data?.viewer?.zones?.[0]?.httpRequestsAdaptiveGroups;
   if (!groups || groups.length === 0) return [];
 
-  return filterTrafficPaths(
-    groups.map((g) => ({
-      path: g.dimensions.clientRequestPath,
-      requests: g.count,
-    })),
-  );
+  return groups.map((g) => ({
+    path: g.dimensions.clientRequestPath,
+    requests: g.count,
+  }));
+}
+
+/** Whether a request path names a file in the built static assets directory. */
+function isStaticAssetPath(assetsDir: string, pathname: string, basePath = ""): boolean {
+  const assetPathname =
+    basePath && pathname.startsWith(`${basePath}/`) ? pathname.slice(basePath.length) : pathname;
+  try {
+    const filePath = path.join(assetsDir, decodeURIComponent(assetPathname));
+    const relative = path.relative(assetsDir, filePath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+    return fs.statSync(filePath, { throwIfNoEntry: false })?.isFile() ?? false;
+  } catch {
+    // Malformed encodings, NUL bytes, and overlong names cannot be asset files.
+    return false;
+  }
 }
 
 /** Filter out non-page requests (static assets, API routes, internal routes). */
-export function filterTrafficPaths(entries: TrafficEntry[]): TrafficEntry[] {
+export function filterTrafficPaths(
+  entries: TrafficEntry[],
+  options: { assetsDir?: string; basePath?: string } = {},
+): TrafficEntry[] {
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
+    // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
+    if (e.path.startsWith("/cdn-cgi/")) return false;
     // Static assets
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
+      return false;
+    if (options.assetsDir && isStaticAssetPath(options.assetsDir, e.path, options.basePath))
       return false;
     // API routes
     if (e.path.startsWith("/api/")) return false;
@@ -298,6 +322,10 @@ export async function resolveTPRRoutes(options: TPROptions): Promise<TPRRouteRes
       `analytics query failed: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
+  traffic = filterTrafficPaths(traffic, {
+    assetsDir: options.assetsDir,
+    basePath: options.basePath,
+  });
   if (traffic.length === 0) return skip("no traffic data available (first deploy?)");
 
   return { routes: traffic, targetUrl };

@@ -813,6 +813,39 @@ export function createBuilder(config) {
     log.mockRestore();
   });
 
+  it.each(["wrangler", "cf"])(
+    "filters TPR traffic against the deployed %s assets directory and basePath",
+    async (deploymentTool) => {
+      writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
+      if (deploymentTool === "cf") writeCfBuildOutputScaffolding();
+      const viteConfigPath = path.join(tmpDir, "vite.config.ts");
+      fs.writeFileSync(
+        viteConfigPath,
+        fs
+          .readFileSync(viteConfigPath, "utf8")
+          .replace(
+            "vinext({ cache:",
+            'vinext({ clientOutDir: "build/client", nextConfig: { basePath: "/docs" }, cache:',
+          ),
+      );
+      const { deploy } = await import("../packages/cloudflare/src/deploy.js");
+
+      await deploy({ root: tmpDir, skipBuild: true, experimentalTPR: true });
+
+      expect(resolveTPRRoutesMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          assetsDir: path.join(
+            tmpDir,
+            deploymentTool === "cf"
+              ? ".cloudflare/output/v0/workers/default/assets"
+              : "build/client",
+          ),
+          basePath: "/docs",
+        }),
+      );
+    },
+  );
+
   it("uses a normal deploy when a TPR warmup cannot be staged safely", async () => {
     writeProject(undefined, '{ data: kvDataAdapter({ binding: "MY_KV" }) }');
     writeFile(
