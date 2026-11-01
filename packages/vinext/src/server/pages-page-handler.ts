@@ -443,8 +443,9 @@ function buildI18nRenderContext(
  * The returned function is self-recursive for 404/500 fallback renders and
  * accepts the same options shape the generated entry always passed inline.
  */
-function getPagesPageRuntime(pageModule: { config?: unknown }): string | undefined {
-  const runtime = isUnknownRecord(pageModule.config) ? pageModule.config.runtime : undefined;
+function getPagesPageRuntime(pageModule: object): string | undefined {
+  const config: unknown = Reflect.get(pageModule, "config");
+  const runtime = isUnknownRecord(config) ? config.runtime : undefined;
   return typeof runtime === "string" ? runtime : undefined;
 }
 
