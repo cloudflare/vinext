@@ -1257,6 +1257,10 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     });
   };
 
+  // A render error sends a document with a 500, whichever boundary catches it,
+  // as in Next.js. A local boundary's payload streams with a 200, as Next.js's
+  // payload carrying the error does.
+  const isErrorStatus = errorBoundary.isGlobalError || !options.isRscRequest;
   const renderWith = async (BoundaryComponent: AppPageComponent): Promise<Response> => {
     const response = await renderAppPageBoundaryElementResponse({
       ...options,
@@ -1266,9 +1270,9 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       navigationParams: matchedParams,
       route: options.route,
       routePattern: options.route?.pattern,
-      status: errorBoundary.isGlobalError ? 500 : 200,
+      status: isErrorStatus ? 500 : 200,
     });
-    if (errorBoundary.isGlobalError) {
+    if (isErrorStatus) {
       applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
     }
     return response;

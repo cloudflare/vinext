@@ -173,6 +173,8 @@ export type AppPageSsrHandler = {
        *  error-document shell (with the original flight payload and
        *  bootstrap) instead of rejecting. See handleSsr. */
       fallbackToErrorDocumentOnShellError?: boolean;
+      /** Whether the RSC render threw the given shell error. See handleSsr. */
+      isServerComponentError?: (error: unknown) => boolean;
       /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
       resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
       dynamicStaleTimeSeconds?: number;
@@ -229,6 +231,8 @@ type RenderAppPageHtmlStreamOptions = {
   /** Whether handleSsr answers a shell error with the error document. Off by
    *  default: a boundary render that fails keeps rejecting. */
   fallbackToErrorDocumentOnShellError?: boolean;
+  /** Whether the RSC render threw the given shell error. See handleSsr. */
+  isServerComponentError?: (error: unknown) => boolean;
   /** The parallel slot not-found boundaries that catch a shell error. See handleSsr. */
   resolveCaughtNotFoundBoundaries?: (error: unknown) => readonly string[] | null;
   /** Dev-only: original server error to surface in the browser overlay. */
@@ -342,6 +346,7 @@ export async function renderAppPageHtmlStream(
     onSsrError: options.onSsrError,
     mirrorNextFlight: options.mirrorNextFlight,
     fallbackToErrorDocumentOnShellError: options.fallbackToErrorDocumentOnShellError,
+    isServerComponentError: options.isServerComponentError,
     resolveCaughtNotFoundBoundaries: options.resolveCaughtNotFoundBoundaries,
     dynamicStaleTimeSeconds: options.dynamicStaleTimeSeconds,
     getInitialNavigationCacheMetadata: options.getInitialNavigationCacheMetadata,
