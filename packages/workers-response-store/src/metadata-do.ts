@@ -191,7 +191,9 @@ const REFRESHABLE_ENTRY = `tombstoned = 0 AND active_revision IS NOT NULL
 // active at the upgrade as one. Rewriting every entry would make the migration scale with the
 // table, so they're marked by the column's default instead, and publish() resolves the mark from
 // the active revision it replaces. Until then the entry has no replaced revision to compare it to.
-// Upgraded stores keep the default, so inserts into entries name the column.
+// Upgraded stores keep the default, so inserts into entries name the column. Older code that
+// doesn't, after a rollback, marks its new entries too: resolving that only counts one more
+// revision as invalidated, so at worst a duplicate refresh of an older revision lands.
 const PRE_UPGRADE_INVALIDATED_REVISION = -1;
 const MAX_SQL_PARAMETERS = 100;
 const ORPHAN_RETENTION_MS = 60 * 60 * 1000;
