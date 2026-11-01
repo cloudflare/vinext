@@ -804,7 +804,15 @@ describe("triggerBackgroundRegeneration", () => {
 
       expect(consoleError).toHaveBeenCalled();
       expect(handler).not.toHaveBeenCalled();
+
+      // Not reported, so VINEXT_QUIET still logs it.
+      vi.stubEnv("VINEXT_QUIET", "1");
+      consoleError.mockClear();
+      triggerBackgroundRegeneration("regen-no-ctx-quiet", renderFn);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(consoleError).toHaveBeenCalled();
     } finally {
+      vi.unstubAllEnvs();
       delete globalThis.__VINEXT_onRequestErrorHandler__;
       consoleError.mockRestore();
     }

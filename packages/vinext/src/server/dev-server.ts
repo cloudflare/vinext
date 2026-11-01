@@ -107,6 +107,7 @@ import {
   tracePagesDocumentStream,
   traceFindPageComponents,
 } from "./pages-execution-tracing.js";
+import { logRequestError } from "./request-error-log.js";
 
 /**
  * Render a React element to a string using renderToReadableStream.
@@ -1817,7 +1818,7 @@ export function createSSRHandler(
       } catch (e) {
         // ssrFixStacktrace() is specific to ssrLoadModule and is not applicable
         // when using ModuleRunner — no stack trace fixup is needed here.
-        console.error(e);
+        logRequestError(e);
         // Report error via instrumentation hook if registered
         await reportRequestError(
           e,

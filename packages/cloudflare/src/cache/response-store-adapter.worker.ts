@@ -53,6 +53,7 @@ import {
   DATA_REVALIDATOR_ID,
   runWithResponseStoreInvocation,
   setResponseStore,
+  trackResponseStoreRegenerationWork,
   type ResponseStoreInvocationCapture,
 } from "./response-store-data.runtime.js";
 
@@ -105,7 +106,10 @@ function stageContext(ctx: WorkerExecutionContext, env: VinextResponseStoreEnv):
     hostRuntime: "worker" as const,
     passThroughOnException: () => ctx.passThroughOnException(),
     ...(ctx.props === undefined ? {} : { props: ctx.props }),
-    waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise),
+    waitUntil: (promise: Promise<unknown>) => {
+      trackResponseStoreRegenerationWork(promise);
+      ctx.waitUntil(promise);
+    },
   });
 }
 

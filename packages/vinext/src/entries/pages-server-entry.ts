@@ -23,6 +23,7 @@ const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.u
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _requestErrorLogPath = resolveEntryPath("../server/request-error-log.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
@@ -560,6 +561,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
+import { logRequestError as __logRequestError } from ${JSON.stringify(_requestErrorLogPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
@@ -808,7 +810,7 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
     trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
-      console.error("[vinext] API error:", error);
+      __logRequestError("[vinext] API error:", error);
       return _reportRequestError(
         error,
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },

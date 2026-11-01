@@ -376,7 +376,6 @@ type CreateDispatchOptionsOverrides = {
   findIntercept?: DispatchOptions["findIntercept"];
   ensureRouteLoaded?: DispatchOptions["ensureRouteLoaded"];
   generateStaticParams?: DispatchOptions["generateStaticParams"];
-  hasCustomGlobalError?: DispatchOptions["hasCustomGlobalError"];
   hasAnyGenerateStaticParams?: DispatchOptions["hasAnyGenerateStaticParams"];
   hasGenerateStaticParams?: DispatchOptions["hasGenerateStaticParams"];
   isStaticGenerationEdgeRuntime?: DispatchOptions["isStaticGenerationEdgeRuntime"];
@@ -468,7 +467,6 @@ function createDispatchOptions(overrides: CreateDispatchOptionsOverrides = {}) {
       typeof overrides.generateStaticParams === "function",
     hasGenerateStaticParams:
       overrides.hasGenerateStaticParams ?? typeof overrides.generateStaticParams === "function",
-    hasCustomGlobalError: overrides.hasCustomGlobalError,
     hasPageDefaultExport: true,
     hasPageModule: true,
     handlerStart: 10,
@@ -4367,7 +4365,6 @@ describe("app page dispatch", () => {
         buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
       ),
       isrSet,
-      hasCustomGlobalError: false,
       loadSsrHandler: async () => ({
         async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
           capturedWaitForAllReady = captureOptions?.waitForAllReady;

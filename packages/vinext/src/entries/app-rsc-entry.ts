@@ -1551,7 +1551,6 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
       getSourceRoute(sourceRouteIndex) {
         return routes[sourceRouteIndex];
       },
-      hasCustomGlobalError: ${globalErrorVar ? `Boolean(${globalErrorVar}?.default)` : "false"},
       hasAnyGenerateStaticParams: __generateStaticParams.length > 0,
       hasGenerateStaticParams: __staticGeneration.hasGenerateStaticParams,
       hasPageDefaultExport: !!PageComponent,

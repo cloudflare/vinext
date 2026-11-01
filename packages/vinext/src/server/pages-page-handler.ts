@@ -33,7 +33,10 @@ import {
 } from "./pages-page-data.js";
 import type { PagesPageModule } from "./pages-page-data.js";
 import { resolvePagesPageMethodResponse } from "./pages-page-method.js";
-import { renderPagesPageResponse } from "./pages-page-response.js";
+import {
+  applyPagesPrerenderRevalidateHeader,
+  renderPagesPageResponse,
+} from "./pages-page-response.js";
 import { tracePagesDocumentStream, traceFindPageComponents } from "./pages-execution-tracing.js";
 import { buildPagesReadinessNextData } from "./pages-readiness.js";
 import type { PagesI18nRenderContext } from "./pages-page-response.js";
@@ -98,6 +101,7 @@ import {
   hasPagesGetInitialProps,
   type PagesGetInitialPropsRouter,
 } from "./pages-get-initial-props.js";
+import { logRequestError } from "./request-error-log.js";
 
 export async function renderTracedPagesPageResponse(
   options: Parameters<typeof renderPagesPageResponse>[0],
@@ -788,7 +792,7 @@ export function createPagesPageHandler(
       resolveSentResponse = resolve;
     });
     const reportSsrError = async (e: unknown) => {
-      console.error("[vinext] SSR error:", e);
+      logRequestError("[vinext] SSR error:", e);
       await reportRequestError(
         e,
         {
@@ -1266,6 +1270,13 @@ export function createPagesPageHandler(
             );
           } else if (pageDataResult.cacheState) {
             notFoundResponse = withPagesCacheState(notFoundResponse, pageDataResult.cacheState);
+          }
+          // Whichever 404 rendered, the build records the source route's lifetime.
+          if (pageDataResult.revalidateSeconds !== undefined) {
+            applyPagesPrerenderRevalidateHeader(
+              notFoundResponse.headers,
+              pageDataResult.revalidateSeconds,
+            );
           }
           return finalizePagesPreviewResponse(withBrowserPolicy(notFoundResponse), preview);
         }

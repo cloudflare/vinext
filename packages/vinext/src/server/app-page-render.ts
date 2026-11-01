@@ -169,7 +169,6 @@ type RenderAppPageLifecycleOptionsBase = {
   peekRequestCacheLife?: () => AppPageRequestCacheLife | null;
   getDraftModeCookieHeader: () => string | null | undefined;
   handlerStart: number;
-  hasCustomGlobalError?: boolean;
   dynamicStaleTimeSeconds?: number;
   isDynamicError: boolean;
   isDraftMode: boolean;
@@ -1341,6 +1340,29 @@ async function renderAppPageLifecycleImpl(
     return prerenderResponse;
   };
 
+  // A page that reads cookies() before its redirect() or notFound(), such as an
+  // auth guard, is dynamic in Next.js: the dynamic API read interrupts static
+  // generation before the special error is thrown. Marked as the page's own,
+  // its no-store response is skipped by the build as dynamic, not failed.
+  // Ported from Next.js: packages/next/src/server/app-render/dynamic-rendering.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/dynamic-rendering.ts
+  const markPrerenderedDynamicShellSpecialError = (
+    response: Response,
+    specialError: AppPageSpecialError,
+  ): void => {
+    if (
+      options.isPrerender === true &&
+      response.status === specialError.statusCode &&
+      resolveEarlyResponseCacheControl(options) !== null &&
+      response.headers.get("cache-control")?.includes("no-store")
+    ) {
+      getRequestExecutionContext()?.recordPrerenderSpecialError?.({
+        headers: resolveAppPageSpecialErrorStoredHeaders(specialError, options.basePath) ?? {},
+        status: response.status,
+      });
+    }
+  };
+
   // The special-error response replaces the page's document, and is stored as
   // a normal render would be, with its status and redirect `location`. The
   // RSC entry is the page's own payload, captured from the same render.
@@ -1449,7 +1471,6 @@ async function renderAppPageLifecycleImpl(
               : options.peekRequestCacheLife?.(),
           ),
         fontData,
-        hasCustomGlobalError: options.hasCustomGlobalError,
         navigationContext: options.getNavigationContext(),
         basePath: options.basePath,
         clientTraceMetadata: options.clientTraceMetadata,
@@ -1463,10 +1484,9 @@ async function renderAppPageLifecycleImpl(
         scriptNonce: options.scriptNonce,
         sideStream: rscCapture.sideStream,
         ssrHandler,
-        fallbackToErrorDocumentOnShellError:
+        fallbackToErrorDocumentOnShellError: !(
           options.isPrerender === true && options.isSpeculativePrerender === true
-            ? false
-            : undefined,
+        ),
         waitForAllReady: shouldWaitForAllReady,
         isStaticGeneration: options.isPrerender === true,
         isForceStatic: options.isForceStatic,
@@ -1550,7 +1570,9 @@ async function renderAppPageLifecycleImpl(
         prerenderedSpecialError,
       );
     }
-    return applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    const response = applyIneligibleRouteCachePolicy(htmlRender.response, options);
+    if (shellSpecialError) markPrerenderedDynamicShellSpecialError(response, shellSpecialError);
+    return response;
   }
   let htmlStream = htmlRender.htmlStream;
   if (!htmlStream) {

@@ -121,6 +121,7 @@ type MergeElementsOptions = {
   clearAbsentSlots?: boolean;
   preserveAbsentSlots?: boolean;
   preserveElementIds?: readonly string[];
+  preserveElementSeedIds?: readonly string[];
   preservePreviousSlotIds?: readonly string[];
 };
 
@@ -466,9 +467,13 @@ export function BfcacheSegmentBoundary({
 export function BfcacheChildrenBoundary({
   children,
   id,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  /** The child element whose identity keys the entries. */
+  id?: string;
+  /** A fixed key, for a segment level with no element of its own. */
+  stateKey?: string;
 }) {
   if (!BfcacheIdMapContext || !BfcacheSegmentIdContext || !isCacheComponentsEnabled()) {
     return <>{children}</>;
@@ -478,6 +483,7 @@ export function BfcacheChildrenBoundary({
       id={id}
       IdMapContext={BfcacheIdMapContext}
       SegmentContext={BfcacheSegmentIdContext}
+      stateKey={stateKey}
     >
       {children}
     </BfcacheChildrenActivityBoundary>
@@ -489,18 +495,22 @@ function BfcacheChildrenActivityBoundary({
   id,
   IdMapContext,
   SegmentContext,
+  stateKey,
 }: {
   children: React.ReactNode;
-  id: string;
+  id: string | undefined;
   IdMapContext: React.Context<Readonly<Record<string, string>> | null>;
   SegmentContext: React.Context<string | null>;
+  stateKey: string | undefined;
 }) {
   const elements = React.useContext(ElementsContext);
   const identityMap = React.useContext(BfcacheIdentityMapContext);
   const bfcacheIdMap = React.useContext(IdMapContext);
   // The children keep the segment id of the layout that renders them.
   const segmentId = React.useContext(SegmentContext);
-  const activeStateKey = resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
+  const activeStateKey =
+    stateKey ??
+    (id === undefined ? undefined : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap));
   if (segmentId === null || activeStateKey === undefined) {
     return <>{children}</>;
   }
@@ -581,6 +591,8 @@ export function mergeElements(
   const preserveAbsentSlots =
     typeof options === "boolean" ? !options : (options.preserveAbsentSlots ?? true);
   const preserveElementIds = typeof options === "boolean" ? [] : (options.preserveElementIds ?? []);
+  const preserveElementSeedIds =
+    typeof options === "boolean" ? [] : (options.preserveElementSeedIds ?? []);
   const preservePreviousSlotIds =
     typeof options === "boolean" ? [] : (options.preservePreviousSlotIds ?? []);
   const merged: Record<string, AppElementValue> = { ...next };
@@ -594,6 +606,16 @@ export function mergeElements(
         preservedIdentityIds.add(id);
       }
     }
+  }
+
+  // A seed keeps only the previous server output, which holds no client state.
+  // Its identity stays the destination's, because that identity names the
+  // segment state the seed now mounts under and the bfcache id the destination
+  // assigned to it.
+  for (const id of preserveElementSeedIds) {
+    if (preservedIdentityIds.has(id) || !Object.hasOwn(prev, id)) continue;
+    const value = prev[id];
+    if (value !== undefined) merged[id] = value;
   }
 
   const slotKeys = new Set(
@@ -679,10 +701,11 @@ export function mergeElements(
       }
     }
 
-    // An element and its identity are one preservation unit. Keeping previous
-    // content beside the destination's identity would falsely prove that stale
-    // client state belongs to the destination graph. If the previous payload
-    // had no proof, remove any destination proof and let BFCache remint.
+    // Outside seeds, an element and its identity are one preservation unit.
+    // Keeping previous content beside the destination's identity would falsely
+    // prove that stale client state belongs to the destination graph. If the
+    // previous payload had no proof, remove any destination proof and let
+    // BFCache remint.
     for (const id of preservedIdentityIds) {
       const previousIdentity = previousIdentities[id];
       if (previousIdentity === undefined) {
