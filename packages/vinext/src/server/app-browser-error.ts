@@ -15,8 +15,8 @@ function isImplicitRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boo
   return isUnknownRecord(props) && props.isImplicitRootErrorBoundary === true;
 }
 
-// The implicit root boundary or a global-error boundary, which in Next.js's dev
-// overlay boundary would hold the whole page.
+// The implicit root boundary or a global-error boundary: the boundaries that
+// stand in for Next.js's dev overlay boundary, which holds the whole page.
 function isRootErrorBoundary(errorInfo: VinextHydrateRootErrorInfo): boolean {
   if (!isUnknownRecord(errorInfo.errorBoundary)) return false;
   const props = errorInfo.errorBoundary.props;

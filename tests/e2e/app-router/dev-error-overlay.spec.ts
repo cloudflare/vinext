@@ -187,6 +187,9 @@ test.describe("Dev error overlay", () => {
     const response = await page.goto(`${BASE}/dev-overlay-root-rethrow`);
     expect(response?.status()).toBe(500);
     await page.waitForLoadState("networkidle");
+    await expect(page.getByTestId("global-error-message")).toHaveText(
+      "root rethrow in the browser",
+    );
 
     const dialog = page.getByTestId("vinext-dev-error-overlay");
     const indicator = page.getByTestId("vinext-dev-error-indicator");

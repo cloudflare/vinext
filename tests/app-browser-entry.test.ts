@@ -9365,6 +9365,14 @@ describe("devOnCaughtError (hydrateRoot dev handler)", () => {
       errorBoundary: { props: { isImplicitRootErrorBoundary: true } },
     });
     expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
+
+    handler(
+      Object.assign(new Error("NEXT_NOT_FOUND"), { digest: "NEXT_HTTP_ERROR_FALLBACK;404" }),
+      {
+        errorBoundary: { props: { isGlobalErrorBoundary: true } },
+      },
+    );
+    expect(onRootErrorBoundaryCatch).toHaveBeenCalledTimes(2);
   });
 
   it("keeps explicit dev error boundaries on the caught-error path", () => {
