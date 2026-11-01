@@ -56,7 +56,7 @@ export function createAppRscOnErrorHandler(
     routeType: overrides?.routeType ?? ("render" as const),
     renderSource:
       overrides?.renderSource ??
-      (request.headers.get(RSC_HEADER) === "1" || new URL(request.url).pathname.endsWith(".rsc")
+      (request.headers.get(RSC_HEADER) === "1"
         ? ("react-server-components-payload" as const)
         : ("react-server-components" as const)),
     revalidateReason: isOnDemandRevalidateRequest(request.headers.get(PRERENDER_REVALIDATE_HEADER))

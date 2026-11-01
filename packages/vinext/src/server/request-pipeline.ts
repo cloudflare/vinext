@@ -124,7 +124,6 @@ type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
   /** `requestHeaders` holds middleware's request-header override instructions. */
   middlewareContext: StaticFileSignalContext & { requestHeaders?: Headers | null };
-  pathname: string;
   publicFiles: ReadonlySet<string>;
   request: Request;
 };
@@ -144,11 +143,10 @@ function isWellKnownPathname(pathname: string): boolean {
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the RSC exclusion, existence-first method enforcement, and
+ * helper owns existence-first method enforcement and
  * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
   if (options.request.method !== "GET" && options.request.method !== "HEAD") {
     return methodNotAllowedResponse("GET, HEAD", {

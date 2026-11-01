@@ -189,7 +189,7 @@ describe("App Router optimistic routing", () => {
     expect(
       matchOptimisticRouteManifestRoute({
         basePath: "",
-        href: "/blog/post-1.rsc?_rsc=abc",
+        href: "/blog/post-1?_rsc=abc",
         routeManifest: routes,
       }),
     ).toMatchObject({
@@ -260,7 +260,7 @@ describe("App Router optimistic routing", () => {
     const template = createOptimisticRouteTemplate({
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc?_rsc=abc",
+      href: "/blog/post-1?_rsc=abc",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -334,7 +334,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/vercel/sub/folder.rsc",
+      href: "/vercel/sub/folder",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -411,7 +411,7 @@ describe("App Router optimistic routing", () => {
     const template = createOptimisticRouteTemplate({
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -440,7 +440,7 @@ describe("App Router optimistic routing", () => {
       createOptimisticRouteTemplate({
         basePath: "",
         elements,
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -452,7 +452,7 @@ describe("App Router optimistic routing", () => {
         allowLoadingShell: true,
         basePath: "",
         elements: { ...elements, [routeId]: null },
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -464,7 +464,7 @@ describe("App Router optimistic routing", () => {
         allowLoadingShell: true,
         basePath: "",
         elements: { ...elements, [AppElementsWire.encodePageId("/blog/post-1", null)]: null },
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -480,7 +480,7 @@ describe("App Router optimistic routing", () => {
       createOptimisticRouteTemplate({
         basePath: "",
         elements,
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -491,7 +491,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -509,7 +509,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createSettingsLoadingShellElements(),
-      href: "/settings.rsc",
+      href: "/settings",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -944,7 +944,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createBlogLoadingShellElements(),
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: "modal",
       routeManifest,
@@ -953,7 +953,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createBlogLoadingShellElements(),
-      href: "/blog/post-2.rsc",
+      href: "/blog/post-2",
       interceptionContext: null,
       mountedSlotsHeader: "drawer",
       routeManifest,
@@ -1005,7 +1005,7 @@ describe("App Router optimistic routing", () => {
   });
 
   it("scopes prefetch source learning by current router context", () => {
-    const cacheKey = "/blog/post-1.rsc\0/feed";
+    const cacheKey = "/blog/post-1\0/feed";
 
     expect(
       getOptimisticPrefetchSourceKey({
@@ -1043,7 +1043,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: "/feed",
       mountedSlotsHeader: null,
       routeManifest,

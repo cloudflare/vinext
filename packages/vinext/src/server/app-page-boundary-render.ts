@@ -22,7 +22,6 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { createArtifactCompatibilityEnvelope } from "./artifact-compatibility.js";
-import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   isRenderDynamicLatched,
   isStaticGenerationAccessError,
@@ -685,8 +684,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
-  const routePathname =
-    options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
+  const routePathname = options.routePathname ?? stripBasePath(pathname, options.basePath ?? "");
   const headBoundaryModule = options.headBoundaryModule ?? boundaryModule;
   const headLayoutModules = options.headLayoutModules ?? layoutModules;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(
@@ -1072,8 +1070,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
         key: "metadata",
         metadata,
         // As for the route's own render: relative canonical and alternate URLs
-        // resolve against the normalized route pathname, never the `.rsc` or
-        // pre-rewrite request path.
+        // resolve against the normalized route pathname, never the pre-rewrite
+        // request path.
         pathname: routePathname,
         trailingSlash: options.trailingSlash,
       }),

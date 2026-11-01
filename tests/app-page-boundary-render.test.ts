@@ -488,8 +488,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { id: "alice", rest: ["tail"] },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/base/distinct/alice/tail.rsc"),
-      requestUrl: "https://example.com/base/distinct/alice/tail.rsc",
+      request: new Request("https://example.com/base/distinct/alice/tail"),
+      requestUrl: "https://example.com/base/distinct/alice/tail",
       route,
       statusCode: 404,
     });
@@ -1232,8 +1232,8 @@ describe("app page boundary render helpers", () => {
           isRscRequest: true,
           matchedParams: { slug: "missing" },
           renderToReadableStream: renderWirePayloadToStream,
-          request: new Request("https://example.com/posts/missing.rsc"),
-          requestUrl: "https://example.com/posts/missing.rsc",
+          request: new Request("https://example.com/posts/missing"),
+          requestUrl: "https://example.com/posts/missing",
           route: {
             layoutTreePositions: [0],
             layouts: [rootLayoutModule],
@@ -1526,8 +1526,8 @@ describe("app page boundary render helpers", () => {
         isRscRequest: true,
         matchedParams: {},
         renderToReadableStream: renderWirePayloadToStream,
-        request: new Request("https://example.com/photo/1.rsc"),
-        requestUrl: "https://example.com/photo/1.rsc",
+        request: new Request("https://example.com/photo/1"),
+        requestUrl: "https://example.com/photo/1",
         route: {
           ...(page
             ? {}
@@ -1604,8 +1604,8 @@ describe("app page boundary render helpers", () => {
       isRscRequest: true,
       matchedParams: { slug: "missing" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/posts/missing.rsc"),
-      requestUrl: "https://example.com/posts/missing.rsc",
+      request: new Request("https://example.com/posts/missing"),
+      requestUrl: "https://example.com/posts/missing",
       route,
       routeHead,
       statusCode: 404,
@@ -1637,8 +1637,8 @@ describe("app page boundary render helpers", () => {
       layoutModules: [rootLayoutModule],
       matchedParams: { team: "acme" },
       renderToReadableStream: renderWirePayloadToStream,
-      request: new Request("https://example.com/acme/settings.rsc"),
-      requestUrl: "https://example.com/acme/settings.rsc",
+      request: new Request("https://example.com/acme/settings"),
+      requestUrl: "https://example.com/acme/settings",
       route: {
         layoutTreePositions: [0, 1],
         layouts: [rootLayoutModule, leafLayoutModule],

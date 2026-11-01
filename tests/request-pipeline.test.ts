@@ -533,7 +533,6 @@ describe("resolvePublicFileRoute", () => {
         }),
         status: 203,
       },
-      pathname: "/logo.svg",
       publicFiles: new Set(["/logo.svg"]),
       request: new Request("https://example.com/logo.svg"),
     });
@@ -563,7 +562,6 @@ describe("resolvePublicFileRoute", () => {
         }),
         status: null,
       },
-      pathname: "/video.mp4",
       publicFiles: new Set(["/video.mp4"]),
       request,
     });
@@ -615,7 +613,6 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/logo.svg",
       middlewareContext: { headers: null, requestHeaders: null, status: null },
-      pathname: "/logo.svg",
       publicFiles: new Set(["/logo.svg"]),
       request: new Request("https://example.com/logo.svg"),
     });
@@ -649,7 +646,6 @@ describe("resolvePublicFileRoute", () => {
         headers: new Headers({ "x-from-middleware": "1" }),
         status: null,
       },
-      pathname: "/logo.svg",
       publicFiles,
       request: new Request("https://example.com/logo.svg", { method: "POST" }),
     });
@@ -661,20 +657,19 @@ describe("resolvePublicFileRoute", () => {
     expect(mutationResponse?.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(mutationResponse?.headers.get("transfer-encoding")).toBeNull();
     await expect(mutationResponse?.text()).resolves.toBe("Method Not Allowed");
+    // A `.rsc` public file is an ordinary static file.
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/about.rsc",
         middlewareContext,
-        pathname: "/about.rsc",
         publicFiles,
         request: new Request("https://example.com/about.rsc"),
       }),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/missing.svg",
         middlewareContext,
-        pathname: "/missing.svg",
         publicFiles,
         request: new Request("https://example.com/missing.svg"),
       }),
@@ -685,7 +680,6 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/hello copy.txt",
       middlewareContext: { headers: null, status: null },
-      pathname: "/hello%20copy.txt",
       publicFiles: new Set(["/hello copy.txt"]),
       request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
     });
@@ -828,7 +822,7 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/api/data", "", false, "")).toBeNull();
   });
 
-  it("does not redirect .rsc requests when trailingSlash is true", () => {
+  it("does not add a trailing slash to a file-like .rsc path", () => {
     expect(normalizeTrailingSlash("/about.rsc", "", true, "")).toBeNull();
   });
 

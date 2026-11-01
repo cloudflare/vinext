@@ -2317,9 +2317,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       },
       getStatus: () => res.statusCode,
       headers,
-      // Read the raw path: `new URL("//", base)` throws, and `//host/x` would
-      // parse as a different origin.
-      isRsc: target.split("?", 1)[0].endsWith(".rsc") || headers.get("RSC") === "1",
+      isRsc: headers.get("RSC") === "1",
       method: req.method ?? "GET",
       target,
     });

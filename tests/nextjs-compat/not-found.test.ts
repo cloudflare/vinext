@@ -25,7 +25,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml } from "../helpers.js";
+import { APP_FIXTURE_DIR, startFixtureServer, fetchHtml, fetchRsc } from "../helpers.js";
 
 describe("Next.js compat: not-found", () => {
   let server: ViteDevServer;
@@ -542,9 +542,7 @@ describe("Next.js compat: not-found", () => {
   });
 
   it("layout+page notFound(): RSC request returns 404 (not 500)", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/not-found-layout-page/invalid.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/nextjs-compat/not-found-layout-page/invalid");
     // RSC response must be 404 with valid flight data, not 500
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("text/x-component");
@@ -573,13 +571,11 @@ describe("Next.js compat: not-found", () => {
   });
 
   // ── RSC (client-side navigation) not-found ──────────────────
-  // When navigating client-side, the request goes to .rsc endpoint.
+  // When navigating client-side, the request selects RSC with `RSC: 1`.
   // The RSC response must contain valid flight data with not-found content.
 
   it("RSC request for unmatched route returns 404 with valid RSC payload", async () => {
-    const res = await fetch(`${baseUrl}/does-not-exist.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/does-not-exist");
     expect(res.status).toBe(404);
     expect(res.headers.get("content-type")).toContain("text/x-component");
     const body = await res.text();
@@ -591,9 +587,7 @@ describe("Next.js compat: not-found", () => {
   // As in Next.js dev, the page's notFound() streams as a digest in a 200
   // flight; the client renders the not-found boundary from it.
   it("RSC request for page calling notFound() streams the not-found digest", async () => {
-    const res = await fetch(`${baseUrl}/notfound-test.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/notfound-test");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
     const body = await res.text();
@@ -605,13 +599,9 @@ describe("Next.js compat: not-found", () => {
     // component wrapper structure (ErrorBoundary, LayoutSegmentProvider) as
     // normal pages. Without these, React's tree reconciliation during
     // client-side navigation fails, causing a blank white page.
-    const nfRes = await fetch(`${baseUrl}/does-not-exist.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const nfRes = await fetchRsc(baseUrl, "/does-not-exist");
     const nfBody = await nfRes.text();
-    const normalRes = await fetch(`${baseUrl}/about.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const normalRes = await fetchRsc(baseUrl, "/about");
     const normalBody = await normalRes.text();
 
     // Both should reference ErrorBoundary (from global-error or error boundary wrapper)
@@ -649,7 +639,7 @@ describe("Next.js compat: not-found", () => {
     // `/app/<file path>#<exportName>` convention (see action-headers.test.ts).
     const actionId = "/app/actions/actions.ts#notFoundAction";
 
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": actionId,

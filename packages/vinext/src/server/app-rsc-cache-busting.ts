@@ -147,7 +147,7 @@ export function resolveHardNavigationTargetFromRscResponse(
   const parsed = new URL(responseUrl, origin);
   stripRscCacheBustingSearchParam(parsed);
   const origUrl = new URL(currentHref, origin);
-  let pathname = stripRscSuffix(parsed.pathname);
+  let pathname = parsed.pathname;
   if (origUrl.pathname.length > 1 && origUrl.pathname.endsWith("/") && !pathname.endsWith("/")) {
     pathname += "/";
   }
@@ -305,14 +305,6 @@ export function keepOnlyValidatedRscCacheBustingSearchParam(url: URL, isRscReque
   const hash = isRscRequest ? url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM) : null;
   url.search = "";
   if (hash !== null) setRscCacheBustingSearchParam(url, hash);
-}
-
-/**
- * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
- * unchanged when the suffix is absent.
- */
-export function stripRscSuffix(pathname: string): string {
-  return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
 }
 
 export function createCanonicalRscRequestHeaders(
@@ -540,10 +532,6 @@ export async function resolveInvalidRscCacheBustingRequest(
   const url = new URL(options.request.url);
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
-
-  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
-    return null;
-  }
 
   const acceptedHashes = new Set<string>([expectedHash]);
   if (actualHash !== null && actualHash !== expectedHash) {

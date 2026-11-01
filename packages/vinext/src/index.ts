@@ -6872,15 +6872,15 @@ export const loadServerActionClient = ${
           if (hasAppDir) {
             server.middlewares.use((req, res, next) => {
               const url = req.url ?? "/";
-              // Skip Vite internals, HMR, and static assets.
-              // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
-              // — those are soft navigations and should be logged like any other page request.
+              // Skip Vite internals, HMR, and static assets. RSC wire requests
+              // (`RSC: 1`) are soft navigations and are logged like any other
+              // page request.
               const [pathname] = url.split("?");
               if (
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules") ||
-                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
+                (url.includes(".") && !pathname.endsWith(".html"))
               ) {
                 return next();
               }
@@ -6963,9 +6963,6 @@ export const loadServerActionClient = ${
               };
 
               res.on("finish", () => {
-                // Strip .rsc suffix — it's an internal RSC protocol detail,
-                // not part of the actual page path the user navigated to.
-                const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
                 const totalMs = now() - _reqStart;
 
                 // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
@@ -6981,7 +6978,7 @@ export const loadServerActionClient = ${
 
                 logRequest({
                   method: req.method ?? "GET",
-                  url: logUrl,
+                  url,
                   status: res.statusCode,
                   totalMs,
                   compileMs: _compileMs,
@@ -7816,9 +7813,6 @@ export const loadServerActionClient = ${
             ) {
               return next();
             }
-
-            // Skip .rsc requests — those are for the App Router RSC handler
-            if (url.split("?")[0].endsWith(".rsc")) return next();
 
             // The Cloudflare dev proxy owns request execution and tracing in
             // workerd. Do not create a second Node-side request root here.

@@ -18,7 +18,7 @@ import {
   deriveBfcacheSegmentIdentity,
   isNestedBfcacheSlotSegmentId,
 } from "./bfcache-identity.js";
-import { stripRscCacheBustingSearchParam, stripRscSuffix } from "./app-rsc-cache-busting.js";
+import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
@@ -106,8 +106,7 @@ function hrefToRouteParts(
   }
 
   stripRscCacheBustingSearchParam(url);
-  const withoutRscSuffix = stripRscSuffix(url.pathname);
-  const appPathname = stripBasePath(withoutRscSuffix, basePath);
+  const appPathname = stripBasePath(url.pathname, basePath);
   const pathname = appPathname === "" ? "/" : appPathname;
   return {
     normalized: splitPathnameForRouteMatch(pathname),

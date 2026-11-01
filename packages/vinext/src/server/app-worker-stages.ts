@@ -176,9 +176,8 @@ export function createSharedAppCacheIdentity(
 
 /**
  * Build the query-free cache identity of a shared App page dispatch. The user
- * query leaves both the URL and `resolvedUrl`; the `.rsc` suffix, an RSC
- * request's validated `_rsc`, and the render mode stay because they select the
- * representation. HTML identities also drop the RSC selector headers.
+ * query leaves both the URL and `resolvedUrl`; an RSC request's validated
+ * `_rsc` and the render mode stay because they select the representation. HTML identities also drop the RSC selector headers.
  */
 export function createSharedAppPageCacheIdentity(
   request: Request,

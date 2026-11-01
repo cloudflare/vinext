@@ -2519,15 +2519,6 @@ describe("Workers Cache page parts", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("fetches no document for a .rsc path", async () => {
-    const { calls } = await dispatchPagePart(
-      new Request("https://example.com/page.rsc", { headers: { RSC: "1" } }),
-      rscPageProps,
-      ["MISS"],
-    );
-    expect(calls).toHaveLength(1);
-  });
-
   it("leaves a deployment warm-up to request both parts itself", async () => {
     const { calls } = await dispatchPagePart(
       new Request("https://example.com/page", {
