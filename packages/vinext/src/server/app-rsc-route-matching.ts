@@ -124,6 +124,7 @@ type AppRscRouteForMatching = {
   pattern: string;
   patternParts: string[];
   routeHandler?: unknown;
+  routeSegments?: readonly string[] | null;
   slots?: Record<string, AppRscSlotForMatching>;
   siblingIntercepts?: AppRscSiblingInterceptForMatching[];
 };
@@ -132,6 +133,14 @@ type AppRscInterceptMatch = AppRscInterceptLookupEntry & {
   matchedParams: AppRscRouteParams;
   sourceRouteIsConcrete: boolean;
   sourceMatchedParams: AppRscRouteParams;
+  /**
+   * The source route and params the request's interception context names,
+   * which the request handler authorizes. They differ from the rendered
+   * `sourceRouteIndex` only for a sibling intercept opened from a deeper
+   * source, which renders the intercepting route itself.
+   */
+  authorizationSourceRouteIndex: number;
+  authorizationSourceParams: AppRscRouteParams;
 };
 
 type AppRscInterceptLoadState = {
@@ -146,6 +155,11 @@ type AppRscInterceptLookupEntry = {
   interceptionId: string | null;
   interceptionGraphId: string | null;
   sourceRouteIndex: number;
+  /**
+   * A sibling intercept whose owner route's page sits in the directory of the
+   * interception marker, so the owner is the intercepting route itself.
+   */
+  ownerIsInterceptingRoute: boolean;
   slotKey: string;
   targetPattern: string;
   targetPatternParts: string[];
@@ -368,6 +382,21 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
         if (!concreteSourceRoute && matchedSourceParams) {
           canonicalizeAppPageParams(matchedSourceParams);
         }
+        // A sibling intercept renders the intercepting route itself, whatever
+        // the source: Next.js rewrites it to the fixed intercepting route, so
+        // its layouts come from the owner, never from a deeper source page.
+        // The source the context names is still the one authorized.
+        const ownerRoute = routes[entry.sourceRouteIndex];
+        const rendersOwnerRoute =
+          entry.ownerIsInterceptingRoute &&
+          concreteSourceRouteIndex !== entry.sourceRouteIndex &&
+          ownerRoute !== undefined;
+        const renderedSourceParams = rendersOwnerRoute
+          ? matchSlotOwnerSourceParams(sourceParts, ownerRoute.patternParts, true)
+          : matchedSourceParams;
+        if (rendersOwnerRoute && renderedSourceParams) {
+          canonicalizeAppPageParams(renderedSourceParams);
+        }
 
         // Secondary gate (from #1249): when the entry has no
         // `sourceMatchPatternParts` declared (older manifest shapes), reject
@@ -382,21 +411,40 @@ export function createAppRscRouteMatcher<Route extends AppRscRouteForMatching>(
           continue;
         }
         const sourceParams =
-          matchedSourceParams && entry.sourceMatchPatternParts !== null
-            ? pickPatternParams(matchedSourceParams, entry.sourceMatchPatternParts)
-            : (matchedSourceParams ?? createRouteParams());
+          renderedSourceParams && entry.sourceMatchPatternParts !== null
+            ? pickPatternParams(renderedSourceParams, entry.sourceMatchPatternParts)
+            : (renderedSourceParams ?? createRouteParams());
         return {
           ...entry,
           page: entry.__loadState.page,
           sourceRouteIsConcrete: concreteSourceRoute !== null,
-          sourceRouteIndex: concreteSourceRouteIndex,
+          sourceRouteIndex: rendersOwnerRoute ? entry.sourceRouteIndex : concreteSourceRouteIndex,
           matchedParams: mergeMatchedParams(sourceParams, params),
-          sourceMatchedParams: matchedSourceParams ?? createRouteParams(),
+          sourceMatchedParams: renderedSourceParams ?? createRouteParams(),
+          authorizationSourceRouteIndex: concreteSourceRouteIndex,
+          authorizationSourceParams: matchedSourceParams ?? createRouteParams(),
         };
       }
       return null;
     },
   };
+}
+
+/**
+ * Whether a sibling intercept's owner route is the intercepting route: its
+ * page lives in the directory that holds the interception marker. An owner
+ * found elsewhere stands in for a marker directory without a page.
+ */
+function isInterceptingRoute(
+  routeSegments: readonly string[] | null | undefined,
+  sourcePageSegments: readonly string[] | null | undefined,
+): boolean {
+  if (!routeSegments || !sourcePageSegments) return false;
+  const markerIndex = sourcePageSegments.findIndex((segment) => /^\(\.+\)/.test(segment));
+  return (
+    markerIndex === routeSegments.length &&
+    routeSegments.every((segment, index) => segment === sourcePageSegments[index])
+  );
 }
 
 /**
@@ -548,6 +596,7 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
                 : null,
             interceptionGraphId: null,
             sourceRouteIndex: ownerRouteIndex,
+            ownerIsInterceptingRoute: false,
             slotKey,
             slotId: typeof slotModule.id === "string" ? slotModule.id : null,
             targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),
@@ -603,6 +652,10 @@ function createInterceptLookup<Route extends AppRscRouteForMatching>(
           interceptionId: typeof intercept.id === "string" ? intercept.id : null,
           interceptionGraphId: typeof intercept.id === "string" ? intercept.id : null,
           sourceRouteIndex: routeIndex,
+          // A Route Handler can stand in as the owner, but never renders a tree.
+          ownerIsInterceptingRoute:
+            !isAppRouteHandlerRoute(route) &&
+            isInterceptingRoute(route.routeSegments, intercept.sourcePageSegments),
           slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
           slotId: typeof intercept.slotId === "string" ? intercept.slotId : null,
           targetRouteGraphId: resolveTargetRouteGraphId(intercept.targetPattern),

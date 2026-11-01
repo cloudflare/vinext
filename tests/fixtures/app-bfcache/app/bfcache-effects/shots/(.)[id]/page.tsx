@@ -16,6 +16,11 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
         <EffectProbe name={`shot-modal:${id}`} />
       </Suspense>
       <StatusLink href="/bfcache-effects/shots" id={`shot-${id}-back`} label="Back to shots" />
+      <StatusLink
+        href={`/bfcache-effects/shots/${(Number(id) % 3) + 1}`}
+        id={`shot-${id}-next`}
+        label="Next shot"
+      />
     </>
   );
 }

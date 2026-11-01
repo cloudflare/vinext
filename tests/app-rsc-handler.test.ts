@@ -7054,6 +7054,60 @@ describe("createAppRscHandler", () => {
     expect(interceptSources).toContain("/en/feed");
   });
 
+  // A sibling intercept opened from a deeper source renders the intercepting
+  // route itself, but the deeper source is what a source rewrite reaches, so
+  // it is the source the handler authorizes.
+  it("authorizes a deeper sibling intercept source while dispatching its owner", async () => {
+    const ownerRoute = createPageRoute({ pattern: "/shots", routeSegments: ["shots"] });
+    const deeperRoute = createPageRoute({
+      isDynamic: true,
+      params: ["id"],
+      pattern: "/shots/:id",
+      routeSegments: ["shots", "[id]"],
+    });
+    const dispatchMatchedPage = vi.fn(async () => new Response("page"));
+    const handler = createHandler({
+      configHeaders: [],
+      dispatchMatchedPage,
+      matchInterceptRoute: (_pathname, sourcePathname) => {
+        const id = { "/shots/1": "1", "/shots/one": "one" }[sourcePathname];
+        return id === undefined
+          ? null
+          : {
+              authorizationParams: { id },
+              authorizationRoute: deeperRoute,
+              interceptionSourceIsConcrete: true,
+              params: {},
+              route: ownerRoute,
+            };
+      },
+      matchRoute(pathname: string) {
+        const id = { "/shots/1": "1", "/shots/one": "one" }[pathname];
+        return id === undefined
+          ? null
+          : { params: { id } as Record<string, string | string[]>, route: deeperRoute };
+      },
+      middlewareModule: {
+        default(request: NextRequest) {
+          return request.nextUrl.pathname === "/shots/1"
+            ? new Response(null, {
+                headers: { "x-middleware-rewrite": "https://example.test/docs/shots/one" },
+              })
+            : new Response(null, { headers: { "x-middleware-next": "1" } });
+        },
+      },
+    });
+
+    const headers = createRscRequestHeaders({ interceptionContext: "/shots/1" });
+    const rscUrl = await createRscRequestUrl("/docs/preview/2", headers);
+    const response = await handler(new Request(`https://example.test${rscUrl}`, { headers }), null);
+
+    expect(response.status).toBe(200);
+    expect(dispatchMatchedPage).toHaveBeenCalledWith(
+      expect.objectContaining({ interceptionContext: "/shots/one", route: ownerRoute }),
+    );
+  });
+
   // The source is authorized under the basePath the target resolved to, so a
   // target middleware rewrites into the basePath keeps its source there too.
   it("authorizes the interception source of a target middleware rewrites into basePath", async () => {

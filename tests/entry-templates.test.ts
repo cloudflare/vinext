@@ -2256,7 +2256,13 @@ describe("App Router entry templates", () => {
       ),
     ).toHaveLength(2);
     expect(code).toContain("const route = routes[intercept.sourceRouteIndex]");
-    expect(code).toContain("intercept.sourceMatchedParams");
+    expect(code).toContain("params: pickParams(route, intercept.sourceMatchedParams)");
+    expect(code).toContain(
+      "const authorizationRoute = routes[intercept.authorizationSourceRouteIndex]",
+    );
+    expect(code).toContain(
+      "authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams)",
+    );
   });
 
   it("installs server globals before App Router user modules are imported", () => {
