@@ -22,6 +22,22 @@ export default function EffectsLayout({ children }: { children: React.ReactNode 
           <li>
             <Link href={`${base}/chat/a?from=search`}>Chat a (with search param)</Link>
           </li>
+          <li>
+            <Link href={`${base}/gallery`}>Gallery</Link>
+          </li>
+          {["1", "2", "3"].map((id) => (
+            <li key={`photo-${id}`}>
+              <Link href={`${base}/gallery/photo/${id}`}>Photo {id}</Link>
+            </li>
+          ))}
+          <li>
+            <Link href={`${base}/shots`}>Shots</Link>
+          </li>
+          {["1", "2", "3"].map((id) => (
+            <li key={`shot-${id}`}>
+              <Link href={`${base}/shots/${id}`}>Shot {id}</Link>
+            </li>
+          ))}
           {["1", "2"].map((q) => (
             <li key={q}>
               <Link href={`${base}/search?q=${q}`}>Search {q}</Link>

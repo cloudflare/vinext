@@ -678,4 +678,157 @@ test.describe("BFCache Activity effects", () => {
     );
     await expectHiddenEffectState(page, "lobby", "Count: 2");
   });
+
+  // A sibling intercept renders the intercepting route, gallery/(.)photo/[id],
+  // so /gallery/photo/1 sits in the "gallery" entry of the effects layout's
+  // list beside /gallery: leaving for two more routes evicts neither.
+  test("keeps a sibling intercept in its source segment's entry", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/gallery`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "gallery#1"], true), [
+      "shell#1",
+      "gallery#1",
+    ]);
+    await incrementEffect(page, "gallery", 2);
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", ...setupEffects(["photo-modal:1#1"], true)],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await incrementEffect(page, "photo-modal:1", 3);
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await clickEffectsLink(page, "/gallery", "Gallery");
+    await expectEffects(page, ["setup gallery#1"], ["shell#1", "gallery#1"]);
+    await expect(effectCount(page, "gallery")).toHaveText("Count: 2");
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+  });
+
+  test("restores a sibling intercept and its source segment on back and forward", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/gallery`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "gallery#1"], true), [
+      "shell#1",
+      "gallery#1",
+    ]);
+    await incrementEffect(page, "gallery", 2);
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", ...setupEffects(["photo-modal:1#1"], true)],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await incrementEffect(page, "photo-modal:1", 3);
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["cleanup search#1", "cleanup search-query:1#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+    await expectHiddenEffectState(page, "gallery", "Count: 2");
+
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "setup gallery#1"],
+      ["shell#1", "gallery#1"],
+    );
+    await expect(effectCount(page, "gallery")).toHaveText("Count: 2");
+
+    await page.goForward();
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+  });
+
+  // shots/(.)[id] intercepts at the shots level itself, so each shot is its
+  // own entry of that level's list, inside the "shots" entry of the effects
+  // layout's list: leaving the shots for search evicts none of them.
+  test("keys a dynamic sibling intercept per value inside its source segment's entry", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "shots#1"], true), ["shell#1", "shots#1"]);
+    await incrementEffect(page, "shots", 2);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:1#1"], true)],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await incrementEffect(page, "shot-modal:1", 3);
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(page, ["cleanup shot-modal:1#1", "setup shots#1"], ["shell#1", "shots#1"]);
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:2#1"], true)],
+      ["shell#1", "shot-modal:2#1"],
+    );
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup shot-modal:2#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(
+      page,
+      ["cleanup search#1", "cleanup search-query:1#1", "setup shots#1"],
+      ["shell#1", "shots#1"],
+    );
+    await expect(effectCount(page, "shots")).toHaveText("Count: 2");
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", "setup shot-modal:1#1"],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await expect(effectCount(page, "shot-modal:1")).toHaveText("Count: 3");
+  });
 });

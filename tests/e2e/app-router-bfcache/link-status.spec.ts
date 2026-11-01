@@ -83,4 +83,46 @@ test.describe("useLinkStatus in BFCache Activity entries", () => {
     await expect(linkStatus(page, "back-link")).toHaveText("idle");
     expect(await visiblePending(page)).toEqual([]);
   });
+
+  // A sibling intercept keeps its source page in a BFCache entry, and the
+  // intercept itself is kept when its source is shown again.
+  test("links in a sibling intercept and its source are idle when revealed", async ({ page }) => {
+    await page.goto("/bfcache-effects/gallery");
+    await waitForAppRouterHydration(page);
+    await recordVisiblePending(page);
+
+    for (const [link, heading, revealed] of [
+      ["gallery-open-photo", "Photo modal 1", "photo-1-back"],
+      ["photo-1-back", "Gallery", "gallery-open-photo"],
+      ["gallery-open-photo", "Photo modal 1", "photo-1-back"],
+    ]) {
+      await page.evaluate(() => {
+        (window as unknown as { __visiblePending: string[] }).__visiblePending.length = 0;
+      });
+      await page.locator(`#${link}:visible`).click();
+      await expect(page.locator("h2:visible")).toHaveText(heading);
+      await expect(linkStatus(page, revealed)).toHaveText("idle");
+      // Only the clicked link may show pending, while its navigation is in
+      // flight.
+      expect((await visiblePending(page)).filter((id) => id !== `${link}-status`)).toEqual([]);
+    }
+  });
+
+  test("links in a dynamic sibling intercept are idle after browser back and forward", async ({
+    page,
+  }) => {
+    await page.goto("/bfcache-effects/shots");
+    await waitForAppRouterHydration(page);
+    await page.locator("#shots-open-shot:visible").click();
+    await expect(page.locator("h2:visible")).toHaveText("Shot modal 1");
+    await recordVisiblePending(page);
+
+    await page.goBack();
+    await expect(page.locator("h2:visible")).toHaveText("Shots");
+    await expect(linkStatus(page, "shots-open-shot")).toHaveText("idle");
+    await page.goForward();
+    await expect(page.locator("h2:visible")).toHaveText("Shot modal 1");
+    await expect(linkStatus(page, "shot-1-back")).toHaveText("idle");
+    expect(await visiblePending(page)).toEqual([]);
+  });
 });
