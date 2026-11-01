@@ -1047,7 +1047,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target?tab=1#details",
         origin: "https://example.com",
         responseCompatibilityId: null,
-        responseUrl: "https://example.com/target.rsc?tab=1&_rsc=stale",
+        responseUrl: "https://example.com/target?tab=1&_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target?tab=1#details",
@@ -1060,7 +1060,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target/",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com/target.rsc?_rsc=stale",
+        responseUrl: "https://example.com/target?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target/",
@@ -1075,7 +1075,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/.//other.test/out",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com//other.test/out.rsc?_rsc=stale",
+        responseUrl: "https://example.com//other.test/out?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/.//other.test/out",
@@ -1092,7 +1092,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target",
         origin: "https://example.com",
         responseCompatibilityId: "compat-a",
-        responseUrl: "https://example.com/target.rsc?_rsc=fresh",
+        responseUrl: "https://example.com/target?_rsc=fresh",
       }),
     ).toEqual({ kind: "compatible" });
   });
@@ -1159,7 +1159,7 @@ describe("app browser entry navigation scheduling", () => {
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
     stubWindow("https://example.com/current");
 
-    const responseUrl = "https://example.com/target.rsc?_rsc=fresh";
+    const responseUrl = "https://example.com/target?_rsc=fresh";
     const snapshot = navigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
@@ -8996,7 +8996,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/target.rsc?tab=1&_rsc=abc",
+      responseUrl: "https://example.com/target?tab=1&_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9015,7 +9015,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/items.rsc?sort=new&_rsc=abc",
+      responseUrl: "https://example.com/items?sort=new&_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9033,7 +9033,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/new.rsc?_rsc=abc",
+      responseUrl: "https://example.com/new?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9069,7 +9069,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/b.rsc?_rsc=abc",
+      responseUrl: "https://example.com/b?_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9122,7 +9122,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com//other.test/out.rsc?_rsc=abc",
+      responseUrl: "https://example.com//other.test/out?_rsc=abc",
     });
 
     expect(decision).toMatchObject({ href: "/.//other.test/out", kind: "follow" });
@@ -9226,11 +9226,11 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 1,
       requestPreviousNextUrl: null,
-      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+      streamedRedirectTarget: "/target?visible=1&_rsc=abc#details",
     });
 
     expect(decision).toEqual({
-      href: "/target.rsc?visible=1&_rsc=abc#details",
+      href: "/target?visible=1&_rsc=abc#details",
       historyUpdateMode: "replace",
       kind: "follow",
       previousNextUrl: null,

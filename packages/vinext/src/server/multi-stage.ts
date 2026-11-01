@@ -98,8 +98,8 @@ export type VinextResponseStageDispatchOptions = {
    *
    * Under `responseStageCacheIdentity: "query-free"`, an App page identity
    * also drops the user query from the URL and `resolvedUrl`, keeping
-   * framework representation selectors: the `.rsc` suffix, the render mode,
-   * and, for RSC requests only, the one validated `_rsc` value. That is safe
+   * framework representation selectors: the render mode and, for RSC
+   * requests only, the one validated `_rsc` value. That is safe
    * only because completed-response admission refuses a cacheable App page
    * response unless its render proved it never read `searchParams`. The
    * dispatched request still carries the real query for the render itself. A

@@ -2097,7 +2097,7 @@ describe("Link prefetch scheduling", () => {
             contentType: "text/x-component",
             paramsHeader: null,
             renderedPathAndSearch: null,
-            url: "/products/1.rsc",
+            url: "/products/1",
           },
         }),
       );
@@ -2977,7 +2977,7 @@ describe("Link prefetch scheduling", () => {
         dynamicStaleTimeSeconds: 0,
         paramsHeader: null,
         renderedPathAndSearch: null,
-        url: "/blog/hello.rsc",
+        url: "/blog/hello",
       };
       const navigatedAt = now - navigation.PREFETCH_CACHE_TTL + 1;
       const readVisitedResponseForFullPrefetch = vi.fn(() => ({

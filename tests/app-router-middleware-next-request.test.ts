@@ -1,6 +1,6 @@
 import { type ViteDevServer } from "vite";
 import { beforeAll, afterAll, describe, expect, it } from "vite-plus/test";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "./helpers.js";
+import { APP_FIXTURE_DIR, fetchHtml, fetchRsc, startFixtureServer } from "./helpers.js";
 
 describe("App Router middleware with NextRequest", () => {
   let server: ViteDevServer;
@@ -23,12 +23,11 @@ describe("App Router middleware with NextRequest", () => {
     expect(res.headers.get("x-mw-pathname")).toBe("/about");
   });
 
-  it("middleware NextRequest.nextUrl.pathname strips .rsc suffix", async () => {
-    // Regression: .rsc is an internal transport detail; middleware should see
-    // the clean pathname (/about), not the raw URL (/about.rsc).
+  it("middleware NextRequest.nextUrl.pathname keeps a .rsc suffix as part of the path", async () => {
+    // As in Next.js, `.rsc` is an ordinary part of the pathname.
     const res = await fetch(`${baseUrl}/about.rsc`);
     expect(res.headers.get("x-mw-ran")).toBe("true");
-    expect(res.headers.get("x-mw-pathname")).toBe("/about");
+    expect(res.headers.get("x-mw-pathname")).toBe("/about.rsc");
   });
 
   it("middleware receives NextRequest and can use .cookies", async () => {
@@ -258,11 +257,8 @@ describe("App Router middleware with NextRequest", () => {
     // Intercepting route responses are constructed via renderInterceptResponse(),
     // which must merge _mwCtx.headers into the Response — same as the normal
     // page path through buildAppPageRscResponse().
-    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
-      headers: {
-        Accept: "text/x-component",
-        "X-Vinext-Interception-Context": "/feed",
-      },
+    const res = await fetchRsc(baseUrl, "/photos/42", {
+      headers: { "X-Vinext-Interception-Context": "/feed" },
     });
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");

@@ -1235,7 +1235,7 @@ describe("createAppRscHandler", () => {
       expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/source?_rsc");
     });
 
-    it("keeps _rsc, the .rsc suffix and the render mode in shared RSC identities", async () => {
+    it("keeps _rsc and the render mode in shared RSC identities", async () => {
       useQueryFreeIdentityAdapter();
       const route = createPageRoute({ canUseCanonicalLoadingShell: true });
       const matchRoute = (pathname: string) =>
@@ -1304,23 +1304,6 @@ describe("createAppRscHandler", () => {
       expect(options.cacheIdentity!.request.headers.get("x-vinext-rsc-render-mode")).toBe(
         "prefetch-loading-shell",
       );
-      expect(options.cacheIdentity!.props).toEqual({
-        ...props,
-        requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
-        resolvedUrl: "/about",
-      });
-
-      dispatchResponseStage.mockClear();
-      const suffixHeaders = createRscRequestHeaders();
-      await handler(
-        new Request("https://example.test/docs/about.rsc?tab=latest", { headers: suffixHeaders }),
-        null,
-        false,
-        dispatchResponseStage,
-      );
-      [request, props, options] = dispatchResponseStage.mock.calls[0]!;
-      expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?tab=latest&_rsc");
-      expect(pathAndSearch(options.cacheIdentity!.request.url)).toBe("/docs/about.rsc?_rsc");
       expect(options.cacheIdentity!.props).toEqual({
         ...props,
         requestOrigin: VINEXT_CACHE_IDENTITY_ORIGIN,
@@ -1830,19 +1813,6 @@ describe("createAppRscHandler", () => {
         await computeRscCacheBustingSearchParam(request.headers),
       );
       expect(props).toMatchObject({ renderMode: "prefetch-loading-shell", resolvedUrl: "/about" });
-
-      dispatchResponseStage.mockClear();
-      await handler(
-        new Request("https://example.test/docs/about.rsc?tab=latest", {
-          headers: createRscRequestHeaders(),
-        }),
-        null,
-        false,
-        dispatchResponseStage,
-      );
-      [request, props] = dispatchResponseStage.mock.calls[0]!;
-      expect(pathAndSearch(request.url)).toBe("/docs/about.rsc?_rsc");
-      expect(props).toMatchObject({ resolvedUrl: "/about" });
     });
 
     it("judges a rewritten request by its resolved route pathname", async () => {
@@ -4699,7 +4669,7 @@ describe("createAppRscHandler", () => {
       });
 
       const response = await handler(
-        new Request("https://example.test/outside.rsc?tab=latest", { headers }),
+        new Request("https://example.test/outside?tab=latest", { headers }),
         null,
       );
 
@@ -4722,12 +4692,12 @@ describe("createAppRscHandler", () => {
     });
 
     const response = await handler(
-      new Request("https://example.test/outside.rsc?tab=latest", { headers }),
+      new Request("https://example.test/outside?tab=latest", { headers }),
       null,
     );
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe(`/outside.rsc?tab=latest&_rsc=${expectedHash}`);
+    expect(response.headers.get("location")).toBe(`/outside?tab=latest&_rsc=${expectedHash}`);
   });
 
   it("does not expose App routes directly outside basePath", async () => {
@@ -4745,7 +4715,7 @@ describe("createAppRscHandler", () => {
     const handler = createHandler({ configHeaders: [] });
 
     const response = await handler(
-      new Request("https://example.test/about.rsc?tab=latest", { headers }),
+      new Request("https://example.test/about?tab=latest", { headers }),
       null,
     );
 
@@ -9765,7 +9735,7 @@ describe("createAppRscHandler", () => {
     });
 
     const response = await handler(
-      new Request("https://example.test/docs/old-about.rsc", { headers }),
+      new Request("https://example.test/docs/old-about", { headers }),
       null,
     );
 
@@ -9773,31 +9743,6 @@ describe("createAppRscHandler", () => {
     expect(response.headers.get("location")).toBe(
       `https://example.test/docs/about?from=old&_rsc=${expectedHash}`,
     );
-  });
-
-  it("preserves the _rsc query on config redirects for .rsc requests without the RSC header (#1529)", async () => {
-    // A `.rsc`-suffixed request is an RSC request even when the `RSC: 1`
-    // header is absent (e.g. a CDN-style or auto-followed fetch). Without the
-    // header the handler can't recompute the cache-busting hash, so the
-    // non-header branch carries the original request query onto the Location
-    // verbatim (mirroring Next.js resolve-routes.ts) rather than dropping it.
-    // (Note: the `.rsc` suffix is not re-applied to the destination, so the
-    // followed request isn't re-detected as RSC purely from `_rsc` — the
-    // guarantee here is query preservation, not RSC re-detection.)
-    const handler = createHandler({
-      configHeaders: [],
-      configRedirects: [{ source: "/old-about", destination: "/about", permanent: true }],
-    });
-
-    const response = await handler(
-      new Request("https://example.test/docs/old-about.rsc?_rsc=abc123", {
-        headers: { Accept: "text/x-component" },
-      }),
-      null,
-    );
-
-    expect(response.status).toBe(308);
-    expect(response.headers.get("location")).toBe("/docs/about?_rsc=abc123");
   });
 
   it("preserves the original request query on config redirects for document requests (#1529)", async () => {
@@ -9831,14 +9776,12 @@ describe("createAppRscHandler", () => {
     });
 
     const response = await handler(
-      new Request("https://example.test/docs/about.rsc?tab=latest", { headers }),
+      new Request("https://example.test/docs/about?tab=latest", { headers }),
       null,
     );
 
     expect(response.status).toBe(307);
-    expect(response.headers.get("location")).toBe(
-      `/docs/about.rsc?tab=latest&_rsc=${expectedHash}`,
-    );
+    expect(response.headers.get("location")).toBe(`/docs/about?tab=latest&_rsc=${expectedHash}`);
     expect(middleware).not.toHaveBeenCalled();
     expect(dispatchMatchedPage).not.toHaveBeenCalled();
   });
@@ -9951,14 +9894,12 @@ describe("createAppRscHandler", () => {
 
         for (const method of ["GET", "HEAD"] as const) {
           const response = await handler(
-            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            new Request("https://example.test/outside?tab=latest", { headers, method }),
             null,
           );
 
           expect(response.status).toBe(307);
-          expect(response.headers.get("location")).toBe(
-            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
-          );
+          expect(response.headers.get("location")).toBe(`/outside?tab=latest&_rsc=${expectedHash}`);
         }
         expect(receivedUrls).toEqual([]);
       } finally {
@@ -10012,14 +9953,12 @@ describe("createAppRscHandler", () => {
 
         for (const method of ["GET", "HEAD"] as const) {
           const response = await handler(
-            new Request("https://example.test/outside.rsc?tab=latest", { headers, method }),
+            new Request("https://example.test/outside?tab=latest", { headers, method }),
             null,
           );
 
           expect(response.status).toBe(307);
-          expect(response.headers.get("location")).toBe(
-            `/outside.rsc?tab=latest&_rsc=${expectedHash}`,
-          );
+          expect(response.headers.get("location")).toBe(`/outside?tab=latest&_rsc=${expectedHash}`);
           expect(response.headers.get("set-cookie")).toBe(`session=${mode}`);
         }
         expect(receivedUrls).toEqual([]);
@@ -10432,8 +10371,8 @@ describe("createAppRscHandler", () => {
   });
 
   it("normalizes edge route handler RSC URLs and hides internal params", async () => {
-    // Next.js normalizes `.rsc` in web/adapter.ts before stripping internal
-    // search params from the Edge NextRequest.
+    // Next.js strips internal search params from the Edge NextRequest in
+    // web/adapter.ts.
     const route = createPageRoute({
       page: null,
       pattern: "/api/inspect",
@@ -12016,7 +11955,7 @@ describe("createAppRscHandler", () => {
 
     try {
       const response = await handler(
-        new Request(`https://example.test/docs/about.rsc?_rsc=${rscHash}`, {
+        new Request(`https://example.test/docs/about?_rsc=${rscHash}`, {
           body: "streamed-action-body",
           headers: rscHeaders,
           method: "POST",
@@ -12052,7 +11991,7 @@ describe("createAppRscHandler", () => {
 
     try {
       const response = await handler(
-        new Request(`https://example.test/docs/about.rsc?_rsc=${rscHash}`, {
+        new Request(`https://example.test/docs/about?_rsc=${rscHash}`, {
           body: "streamed-action-body",
           headers: rscHeaders,
           method: "POST",
@@ -12090,7 +12029,7 @@ describe("createAppRscHandler", () => {
 
     try {
       const response = await handler(
-        new Request(`https://example.test/docs/about.rsc?_rsc=${rscHash}`, {
+        new Request(`https://example.test/docs/about?_rsc=${rscHash}`, {
           body: "streamed-action-body",
           headers: rscHeaders,
           method: "POST",

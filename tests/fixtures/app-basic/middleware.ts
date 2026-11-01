@@ -214,7 +214,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
 
   if (acceptsRsc && pathname === "/rsc-fetch-redirect-src") {
-    return NextResponse.redirect(new URL("/rsc-fetch-error-target.rsc", request.url), 307);
+    return NextResponse.redirect(new URL("/rsc-fetch-error-target", request.url), 307);
   }
 
   if (acceptsRsc && pathname === "/rsc-fetch-error-target") {

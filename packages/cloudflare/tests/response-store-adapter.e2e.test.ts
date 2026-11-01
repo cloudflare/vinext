@@ -411,9 +411,9 @@ describe("Cloudflare Workers Response Store adapter", () => {
     );
 
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
-    const firstRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    const firstRsc = await request("/static-default?_rsc=", rscInit);
     await firstRsc.arrayBuffer();
-    const secondRsc = await request("/static-default.rsc?_rsc=", rscInit);
+    const secondRsc = await request("/static-default?_rsc=", rscInit);
     await secondRsc.arrayBuffer();
     assert.equal(secondRsc.status, 200);
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
@@ -427,17 +427,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const onHost = (host: string, pathname: string, init?: Init) =>
       miniflare.dispatchFetch(`https://${host}${pathname}`, init);
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
-    // A page's document stores its RSC payload too; a `.rsc` path stores its
-    // payload alone.
+    // A page's document stores its RSC payload too, and an RSC miss stores its
+    // document. A special error's RSC render has no document to store.
     const entries: Array<[string, Init | undefined, number, number]> = [
       ["/static-default", undefined, 200, 2],
-      ["/static-default.rsc?_rsc=", rscInit, 200, 1],
+      ["/cached/host-shared-rsc?_rsc=", rscInit, 200, 2],
       ["/api/host-shared", undefined, 200, 1],
       ["/metadata-storage/status-404/opengraph-image", undefined, 404, 1],
-      ["/special-error/absolute-redirect.rsc?_rsc=", rscInit, 200, 1],
+      ["/special-error/absolute-redirect?_rsc=", rscInit, 200, 1],
     ];
     for (const [pathname, init, status, stored] of entries) {
-      const entryPath = new URL(pathname, "https://app.test").pathname.replace(/\.rsc$/, "");
+      const entryPath = new URL(pathname, "https://app.test").pathname;
       const before = (await responseEntries(entryPath)).length;
       const fill = await onHost("tenant-a.test", pathname, init);
       const fillBody = await fill.text();
@@ -456,7 +456,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     // The shared redirect keeps the absolute target the page wrote.
     const redirect = await onHost(
       "tenant-b.test",
-      "/special-error/absolute-redirect.rsc?_rsc=",
+      "/special-error/absolute-redirect?_rsc=",
       rscInit,
     );
     assert.match(
@@ -620,7 +620,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstBody = await first.text();
     const second = await request("/dynamic-segment/a");
     const secondBody = await second.text();
-    const rsc = await request("/dynamic-segment/a.rsc?_rsc=", {
+    const rsc = await request("/dynamic-segment/a?_rsc=", {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     await rsc.text();
@@ -736,16 +736,17 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const rscInit = { headers: { Accept: "text/x-component", RSC: "1" } };
     const html = await request(`${pathname}?canary=${canary}`);
     await html.text();
-    const rsc = await request(`${pathname}.rsc?canary=${canary}&_rsc=`, rscInit);
-    await rsc.arrayBuffer();
     assert.equal(html.headers.get("x-vinext-cache"), "MISS");
-    assert.equal(rsc.status, 200);
     // The HTML miss stored the payload a client navigation reads too.
-    await waitForResponseEntries(pathname, 3);
+    await waitForResponseEntries(pathname, 2);
+    const rsc = await request(`${pathname}?canary=${canary}&_rsc=`, rscInit);
+    await rsc.arrayBuffer();
+    assert.equal(rsc.status, 200);
+    assert.equal(rsc.headers.get("x-vinext-cache"), "HIT");
 
     const queryless = await request(pathname);
     const querylessBody = await queryless.text();
-    const querylessRsc = await request(`${pathname}.rsc?_rsc=`, rscInit);
+    const querylessRsc = await request(`${pathname}?_rsc=`, rscInit);
     const storedRscBody = await querylessRsc.text();
     assert.equal(queryless.headers.get("x-vinext-cache"), "HIT");
     assert.equal(querylessRsc.headers.get("x-vinext-cache"), "HIT");
@@ -780,7 +781,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     const firstBody = await first.text();
     const second = await request(pathname);
     const secondBody = await second.text();
-    const rsc = await request(`${pathname}.rsc?_rsc=`, {
+    const rsc = await request(`${pathname}?_rsc=`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     await rsc.text();
@@ -923,7 +924,7 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
 
     // The page's searchParams no longer travel through Flight.
-    const rsc = await request(`/client-search-params/ignores.rsc?q=${query}&_rsc=`, {
+    const rsc = await request(`/client-search-params/ignores?q=${query}&_rsc=`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
     assert.equal(rsc.status, 200);
@@ -1166,17 +1167,16 @@ describe("Cloudflare Workers Response Store adapter", () => {
     }
 
     const init = { headers: { Accept: "text/x-component", RSC: "1" } };
-    const firstRsc = await request("/cached/rsc.rsc?_rsc=", init);
+    const firstRsc = await request("/cached/rsc?_rsc=", init);
     const firstBody = await firstRsc.text();
-    await waitForResponseEntries("/cached/rsc", 1);
-    const secondRsc = await request("/cached/rsc.rsc?_rsc=", init);
+    await waitForResponseEntries("/cached/rsc", 2);
+    const secondRsc = await request("/cached/rsc?_rsc=", init);
     assert.equal(firstRsc.headers.get("x-vinext-cache"), "MISS");
     assert.equal(secondRsc.headers.get("x-vinext-cache"), "HIT");
     assert.equal(await secondRsc.text(), firstBody);
-    // A `.rsc` path reaches its page's HTML path only through the app's
-    // trailingSlash policy, so it stores its payload alone.
+    // The RSC miss stored the page's document too.
     const document = await request("/cached/rsc");
-    assert.equal(document.headers.get("x-vinext-cache"), "MISS");
+    assert.equal(document.headers.get("x-vinext-cache"), "HIT");
     await document.arrayBuffer();
   });
 

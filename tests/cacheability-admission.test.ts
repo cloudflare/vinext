@@ -1874,7 +1874,7 @@ describe("single-request cacheability admission", () => {
 
     const rscContext = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
-      new Request("https://example.com/posts/static.rsc", {
+      new Request("https://example.com/posts/static?_rsc", {
         headers: { Accept: "text/x-component", RSC: "1" },
       }),
       raw,

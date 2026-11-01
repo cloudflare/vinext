@@ -359,7 +359,7 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
 /**
  * Prefetch a URL for faster navigation.
  *
- * For App Router (RSC): fetches the .rsc payload in the background and
+ * For App Router (RSC): fetches the RSC payload in the background and
  * stores it in an in-memory cache for instant use during navigation.
  * For Pages Router: warms the page chunk, prefetches data only for SSG pages,
  * and falls back to a document prefetch hint when no page loader matches.
@@ -877,7 +877,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
       getPrefetchInterceptionContext,
       promotePrefetchCacheEntryForNavigation,
     },
-    { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
+    { parseRscRequestPath, stripRscCacheBustingSearchParam },
   ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
 
   let target: URL;
@@ -913,7 +913,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
       continue;
     }
     stripRscCacheBustingSearchParam(cached);
-    if (stripRscSuffix(cached.pathname) === target.pathname && cached.search === target.search) {
+    if (cached.pathname === target.pathname && cached.search === target.search) {
       promotePrefetchCacheEntryForNavigation(cacheKey, entry);
     }
   }

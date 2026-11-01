@@ -1076,9 +1076,9 @@ export async function buildPageElements<
  *    slot-scoped params, which `app-page-route-wiring` then hands to the
  *    slot page instead of the route's matched params.
  *
- * `routePath` is the already-normalized request pathname (basePath stripped,
- * RSC suffix removed). Re-parsing `request.url` here would re-introduce the
- * basePath and silently break the match for any app that configures one.
+ * `routePath` is the already-normalized request pathname (basePath stripped).
+ * Re-parsing `request.url` here would re-introduce the basePath and silently
+ * break the match for any app that configures one.
  */
 function buildSlotOverrides<TModule extends AppPageModule, TErrorModule extends AppPageErrorModule>(
   route: AppPageBuildRoute<TModule, TErrorModule>,

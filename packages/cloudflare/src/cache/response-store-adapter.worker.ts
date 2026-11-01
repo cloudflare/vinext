@@ -24,7 +24,7 @@ import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
+import { isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -491,7 +491,7 @@ function otherPagePart(identityRequest: Request, identityProps: unknown): PagePa
   if (isCanonicalAppPage(identityProps, false)) {
     return { invocation: rscPartInvocation(identityRequest, identityProps), kind: "rsc" };
   }
-  if (isCanonicalAppPage(identityProps, true) && hasDocumentPart(identityRequest.url)) {
+  if (isCanonicalAppPage(identityProps, true)) {
     return { invocation: documentPartInvocation(identityRequest, identityProps), kind: "document" };
   }
   return undefined;

@@ -73,9 +73,9 @@ test.describe('production "use cache" server function references', () => {
     });
 
     test(`rejects an RSC action request for derived id ${actionId}`, async ({ request }) => {
-      const exploit = await request.post("/use-cache-hidden-reference.rsc", {
+      const exploit = await request.post("/use-cache-hidden-reference", {
         data: JSON.stringify(["victim"]),
-        headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
+        headers: { "Content-Type": "text/plain", RSC: "1", "x-rsc-action": actionId },
       });
 
       expect(exploit.status()).toBe(404);
@@ -429,7 +429,7 @@ test.describe("production next.config cacheLife profiles", () => {
 
     // The profile sets no stale, so it takes the default profile's, which
     // Next.js fills from experimental.staleTimes.static (300).
-    const rsc = await waitForCacheHit(request, "/use-cache-custom-profile.rsc", true);
+    const rsc = await waitForCacheHit(request, "/use-cache-custom-profile?_rsc", true);
     expect(rsc["x-nextjs-stale-time"]).toBe("300");
   });
 
@@ -437,7 +437,7 @@ test.describe("production next.config cacheLife profiles", () => {
     const html = await waitForCacheHit(request, "/use-cache-overridden-profile");
     expect(html["cache-control"]).toBe("s-maxage=90, stale-while-revalidate=1710");
 
-    const rsc = await waitForCacheHit(request, "/use-cache-overridden-profile.rsc", true);
+    const rsc = await waitForCacheHit(request, "/use-cache-overridden-profile?_rsc", true);
     expect(rsc["x-nextjs-stale-time"]).toBe("30");
   });
 });

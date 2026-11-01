@@ -11395,6 +11395,25 @@ describe("middleware matcher patterns", () => {
     ).toBe(true);
   });
 
+  // Next.js compiles every matcher with optional App Router transport suffixes:
+  // packages/next/src/build/analysis/get-page-static-info.ts
+  it("matchesMiddleware: matchers cover App Router transport suffixes", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchesMiddlewarePathname } =
+      await import("../packages/vinext/src/server/middleware-matcher.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    for (const pathname of ["/about.rsc", "/about.segments/_tree.segment.rsc"]) {
+      expect(matchesMiddleware(pathname, "/about"), pathname).toBe(true);
+      expect(matchesMiddleware(pathname, [{ source: "/about" }]), pathname).toBe(true);
+      expect(matchesMiddlewarePathname(pathname, ["/about"]), pathname).toBe(true);
+      expect(matchesMiddleware(`/fr${pathname}`, "/about", undefined, i18n), pathname).toBe(true);
+    }
+    expect(matchesMiddleware("/admin/dashboard.rsc", "/admin/dashboard")).toBe(true);
+    expect(matchesMiddleware("/index.rsc", "/")).toBe(true);
+    expect(matchesMiddleware("/about.rsc", "/")).toBe(false);
+    expect(matchesMiddleware("/aboutx.rsc", "/about")).toBe(false);
+  });
+
   it("matchesMiddleware: locale-prefixed negative-lookahead matchers keep internal paths excluded", async () => {
     const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
     const matcher = "/((?!api|_next|favicon\\.ico).*)";

@@ -1,7 +1,6 @@
 import {
   resolveHardNavigationTargetFromRscResponse,
   stripRscCacheBustingSearchParam,
-  stripRscSuffix,
   toPathAbsolutePathname,
 } from "./app-rsc-cache-busting.js";
 import { isDangerousScheme, reportBlockedDangerousNavigation } from "vinext/shims/url-safety";
@@ -44,7 +43,7 @@ type RscRedirectLifecycleDecision =
 function toVisibleAppHref(href: string, origin: string): string {
   const url = new URL(href, origin);
   stripRscCacheBustingSearchParam(url);
-  return `${toPathAbsolutePathname(stripRscSuffix(url.pathname))}${url.search}${url.hash}`;
+  return `${toPathAbsolutePathname(url.pathname)}${url.search}${url.hash}`;
 }
 
 function toStreamedRedirectVisibleAppHref(url: URL): string {

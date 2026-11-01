@@ -39,7 +39,6 @@ import {
   formatRscRequestPath,
   parseRscRequestPath,
   stripRscCacheBustingSearchParam,
-  stripRscSuffix,
   VINEXT_RSC_COMPATIBILITY_ID_HEADER,
   VINEXT_RSC_CONTENT_TYPE,
 } from "../server/app-rsc-cache-busting.js";
@@ -618,8 +617,7 @@ function normalizeRscCacheLookupUrl(rscUrl: string): string | null {
 
 function normalizeRscCacheLookupPathname(rscUrl: string): string | null {
   try {
-    const url = parseRscRequestPath(rscUrl);
-    return stripRscSuffix(url.pathname);
+    return parseRscRequestPath(rscUrl).pathname;
   } catch {
     return null;
   }
@@ -3327,8 +3325,8 @@ const _appRouter: AppRouterInstance = {
       throw new Error(`Cannot prefetch '${href}' because it cannot be converted to a URL.`);
     }
     // Normalize same-origin absolute URLs to local paths; bail for external
-    // origins so we don't pollute the prefetch cache with a same-path .rsc on
-    // the current origin. Mirrors Link's prefetchUrl and navigateClientSide.
+    // origins so we don't pollute the prefetch cache with a same-path payload
+    // on the current origin. Mirrors Link's prefetchUrl and navigateClientSide.
     const prefetchHref = isExternalUrl(href) ? toSameOriginAppPath(href, __basePath) : href;
     if (prefetchHref == null) return;
     // Resolved here rather than inside the closure so relative hrefs resolve
