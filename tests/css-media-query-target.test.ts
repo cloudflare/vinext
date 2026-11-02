@@ -145,14 +145,39 @@ describe("CSS media-query syntax preservation in production build", () => {
     });
   }, 30_000);
 
-  it("does not append the pinned cssTarget when a later plugin sets one", async () => {
+  it.each<[string, Plugin]>([
+    ["config", { name: "test:later", config: () => ({ build: { cssTarget: userTarget } }) }],
+    [
+      "post-ordered config",
+      {
+        name: "test:later",
+        enforce: "post",
+        config: { order: "post", handler: () => ({ build: { cssTarget: userTarget } }) },
+      },
+    ],
+  ])(
+    "does not append the pinned cssTarget when a later plugin's %s hook sets one",
+    async (_, later) => {
+      expect(
+        await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] }),
+      ).toEqual({ top: userTarget, client: userTarget, ssr: userTarget });
+    },
+    30_000,
+  );
+
+  it("does not append the pinned cssTarget when a later plugin's configEnvironment hook sets one", async () => {
+    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
     const later: Plugin = {
-      name: "test:later-css-target",
-      config: () => ({ build: { cssTarget: userTarget } }),
+      name: "test:later",
+      enforce: "post",
+      configEnvironment: {
+        order: "post",
+        handler: (name) => ({ build: { cssTarget: name === "client" ? false : userTarget } }),
+      },
     };
     expect(await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] })).toEqual({
-      top: userTarget,
-      client: userTarget,
+      top: pin,
+      client: false,
       ssr: userTarget,
     });
   }, 30_000);
@@ -168,6 +193,30 @@ describe("CSS media-query syntax preservation in production build", () => {
       }),
     ).toEqual({ top: pin, client: false, ssr: userTarget });
   }, 30_000);
+
+  it("minifies CSS for a raised cssTarget", async () => {
+    const tmpDir = await makeFixture();
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-css-mq-build-"));
+    try {
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        // Every engine here supports range syntax, so the minifier may use it.
+        build: {
+          cssTarget: ["chrome120", "edge120", "firefox121", "safari17.2"],
+          outDir: path.join(outDir, "client"),
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      expect(await findBuiltCss(path.join(outDir, "client"))).toMatch(/width\s*<=\s*768px/);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
 
   it("builds when an environment sets cssTarget to false", async () => {
     const tmpDir = await makeFixture();

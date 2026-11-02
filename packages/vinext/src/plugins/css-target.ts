@@ -49,34 +49,36 @@ const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
  * stop an app from ever raising it. `false` is a real Vite value (skip CSS
  * syntax lowering), so only `undefined` means "not chosen".
  *
- * The `config` hook runs last so that targets set by the app or by any other
- * plugin's `config` hook are visible. The pin stays at the top level because
- * dev and `builder.sharedConfigBuild` builds read the top-level `build`.
- * Vite then folds the top-level `build` into each environment, which would
- * concatenate the pin onto a per-environment target, so `configEnvironment`
- * puts those targets back as they were declared.
+ * The pin is set at the top level, which dev and `builder.sharedConfigBuild`
+ * builds read and Vite folds into every environment. A target set later, per
+ * environment or by another plugin's hook, is merged after the pin, so once
+ * config is resolved the pin is dropped from any target it prefixes.
  */
 export function createCssTargetPlugin(): Plugin {
-  let environmentTargets = new Map<string, CssTarget>();
+  let pinned = false;
 
   return {
     name: "vinext:css-target",
     config: {
       order: "post",
       handler(config) {
-        environmentTargets = new Map();
-        if (config.build?.cssTarget !== undefined) return;
-        for (const [name, environment] of Object.entries(config.environments ?? {})) {
-          const target = environment?.build?.cssTarget;
-          if (target !== undefined) environmentTargets.set(name, target);
-        }
-        return { build: { cssTarget: DEFAULT_CSS_TARGET } };
+        pinned = config.build?.cssTarget === undefined;
+        if (pinned) return { build: { cssTarget: [...DEFAULT_CSS_TARGET] } };
       },
     },
-    configEnvironment(name, config) {
-      if (!environmentTargets.has(name)) return;
-      config.build ??= {};
-      config.build.cssTarget = environmentTargets.get(name);
+    configResolved(config) {
+      if (!pinned) return;
+      const builds = [config.build, ...Object.values(config.environments).map((env) => env.build)];
+      for (const build of builds) {
+        (build as { cssTarget: CssTarget }).cssTarget = withoutDefaultCssTarget(build.cssTarget);
+      }
     },
   };
+}
+
+function withoutDefaultCssTarget(target: CssTarget): CssTarget {
+  if (!Array.isArray(target) || target.length <= DEFAULT_CSS_TARGET.length) return target;
+  if (DEFAULT_CSS_TARGET.some((entry, index) => target[index] !== entry)) return target;
+  const chosen: unknown[] = target.slice(DEFAULT_CSS_TARGET.length);
+  return chosen.length === 1 && chosen[0] === false ? false : (chosen as string[]);
 }
