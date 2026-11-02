@@ -1286,6 +1286,34 @@ describe("app page dispatch", () => {
     expect(dynamicResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 
+  it("fails a prerendered page's build on the errors of the fallback answering its signal", async () => {
+    const renderFallback = async (isStaticGenerationEdgeRuntime?: boolean) => {
+      const { options } = createDispatchOptions({
+        buildPageElement: async () => {
+          throw Object.assign(new Error("NEXT_HTTP_ERROR_FALLBACK;404"), {
+            digest: "NEXT_HTTP_ERROR_FALLBACK;404",
+          });
+        },
+        isStaticGenerationEdgeRuntime,
+      });
+      const renderHttpAccessFallbackPage = vi.fn<DispatchOptions["renderHttpAccessFallbackPage"]>(
+        async () => new Response("<html>not found</html>", { status: 404 }),
+      );
+      options.renderHttpAccessFallbackPage = renderHttpAccessFallbackPage;
+      const response = await dispatchAppPage(options);
+      expect(response.status).toBe(404);
+      expect(renderHttpAccessFallbackPage).toHaveBeenCalledTimes(1);
+      return renderHttpAccessFallbackPage.mock.calls[0]?.[1];
+    };
+
+    // A runtime render tracks nothing.
+    expect(await renderFallback()).not.toHaveProperty("tracksPrerenderRenderErrors");
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    expect(await renderFallback()).toMatchObject({ tracksPrerenderRenderErrors: true });
+    // Next.js doesn't prerender an edge runtime page.
+    expect(await renderFallback(true)).not.toHaveProperty("tracksPrerenderRenderErrors");
+  });
+
   it("doesn't mark the error page of a runtime render whose page fails to build", async () => {
     const { options } = createDispatchOptions({
       buildPageElement: async () => {

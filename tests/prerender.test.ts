@@ -966,7 +966,10 @@ describe("prerenderApp — special errors that escape the shell", () => {
 
 // As in `next build`, a 404 page whose render reported an error fails the build.
 describe("prerender — a 404 page whose render reports an error", () => {
-  function createMarkedNotFoundServer(marker: string): {
+  function createMarkedNotFoundServer(
+    marker: string,
+    rewritten = "0",
+  ): {
     server: Server;
     requestedPaths: string[];
   } {
@@ -975,7 +978,7 @@ describe("prerender — a 404 page whose render reports an error", () => {
       requestedPaths.push(req.url ?? "");
       res.statusCode = 404;
       res.setHeader("content-type", "text/html");
-      res.setHeader(VINEXT_PRERENDER_REWRITTEN_HEADER, "0");
+      res.setHeader(VINEXT_PRERENDER_REWRITTEN_HEADER, rewritten);
       res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, marker);
       res.end("<html><body>not found</body></html>");
     });
@@ -1008,9 +1011,9 @@ describe("prerender — a 404 page whose render reports an error", () => {
     }
   }
 
-  async function prerenderPagesNotFound(fixture: string, marker: string) {
+  async function prerenderPagesNotFound(fixture: string, marker: string, rewritten?: string) {
     const outDir = tmpDir("vinext-prerender-pages-404-error-");
-    const { server, requestedPaths } = createMarkedNotFoundServer(marker);
+    const { server, requestedPaths } = createMarkedNotFoundServer(marker, rewritten);
     const port = await listen(server);
     try {
       const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
@@ -1050,6 +1053,11 @@ describe("prerender — a 404 page whose render reports an error", () => {
     expect(failed.requestedPaths).toContain("/404");
     expect(failed.route).toMatchObject({ status: "error", fatal: true });
     expect(failed.has404).toBe(false);
+
+    // Not for the page a conditional rewrite of `/404` reaches.
+    const rewritten = await prerenderPagesNotFound(PAGES_FIXTURE, "1", "1");
+    expect(rewritten.requestedPaths).toContain("/404");
+    expect(rewritten.route).toBeUndefined();
 
     // Without `pages/404`, `_error` renders the nonexistent path, unless it
     // reached a dynamic page.

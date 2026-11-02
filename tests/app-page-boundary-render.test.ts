@@ -276,7 +276,10 @@ describe("app page boundary render helpers", () => {
 
   it("marks a prerender of the root not-found page whose render reports an error", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
-    const renderNotFound = (route: { pattern: string; params: Record<string, string> } | null) =>
+    const renderNotFound = (
+      route: { pattern: string; params: Record<string, string> } | null,
+      tracksPrerenderRenderErrors?: boolean,
+    ) =>
       renderAppPageHttpAccessFallback<TestModule>({
         ...createCommonOptions(),
         matchedParams: { slug: "missing" },
@@ -288,6 +291,7 @@ describe("app page boundary render helpers", () => {
         },
         route,
         statusCode: 404,
+        tracksPrerenderRenderErrors,
       });
     try {
       const response = await renderNotFound(null);
@@ -297,12 +301,14 @@ describe("app page boundary render helpers", () => {
       );
       expect(await response?.text()).toContain("Missing page");
 
-      // A matched route's render decides its own prerender.
-      const routed = await renderNotFound({
-        pattern: "/posts/[slug]",
-        params: { slug: "missing" },
-      });
-      expect(routed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // A matched route's fallback fails the prerender of the page whose
+      // signal it answers, when that page's dispatch tracks its errors.
+      const route = { pattern: "/posts/[slug]", params: { slug: "missing" } };
+      const routed = await renderNotFound(route, true);
+      expect(routed?.status).toBe(404);
+      expect(routed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const untracked = await renderNotFound(route);
+      expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
     } finally {
       vi.unstubAllEnvs();
     }

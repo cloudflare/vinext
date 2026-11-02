@@ -276,6 +276,11 @@ type RenderAppPageHttpAccessFallbackOptions<TModule extends AppPageModule = AppP
   intercept?: AppPageInterceptOptions<TModule> | null;
   layoutModules?: readonly (TModule | null | undefined)[] | null;
   matchedParams: AppPageParams;
+  /**
+   * Whether a matched route's fallback answers the signal of a page the
+   * prerender renders and Next.js prerenders, whose build its errors fail.
+   */
+  tracksPrerenderRenderErrors?: boolean;
   rootForbiddenModule?: TModule | null;
   rootNotFoundModule?: TModule | null;
   rootUnauthorizedModule?: TModule | null;
@@ -549,6 +554,8 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     status: number;
     /** Whether a prerender's build fails on an error this render reports. */
     tracksPrerenderRenderErrors?: boolean;
+    /** Whether the render is the root not-found page's own, the build's 404. */
+    isPrerenderNotFoundPage?: boolean;
   },
 ): Promise<Response> {
   const requestUrl = new URL(options.requestUrl);
@@ -565,10 +572,9 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     pathname,
     options.routePattern ?? pathname,
   );
-  // Only the root not-found page's render tracks its errors.
   const prerenderRenderErrors = createPrerenderRenderErrorTracker(
     () => options.tracksPrerenderRenderErrors === true,
-    true,
+    options.isPrerenderNotFoundPage === true,
   );
   const isPrerenderRenderDynamic = () => peekDynamicUsage() || isRenderDynamicLatched();
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
@@ -720,14 +726,20 @@ function isRootBoundaryStaticEligible(
 export async function renderAppPageHttpAccessFallback<TModule extends AppPageModule>(
   options: RenderAppPageHttpAccessFallbackOptions<TModule>,
 ): Promise<Response | null> {
-  if (process.env.VINEXT_PRERENDER !== "1" || options.route) {
-    return renderHttpAccessFallback(options, null);
+  if (process.env.VINEXT_PRERENDER !== "1") return renderHttpAccessFallback(options, null);
+  // As in `next build`, an error the not-found, forbidden or unauthorized page
+  // reports fails the prerender of the page whose signal it answers.
+  if (options.route) {
+    return renderHttpAccessFallback(options, {
+      isNotFoundPage: false,
+      tracksRenderErrors: options.tracksPrerenderRenderErrors === true,
+    });
   }
-  // As in `next build`, an error the root not-found page's render reports
-  // fails its prerender (`/_not-found`), unless Next.js doesn't prerender the
-  // page or the render turned dynamic. That includes an error, such as one
-  // from its metadata, that leaves no page to answer with.
-  const prerender = { tracksRenderErrors: false };
+  // Without a route, it's the root not-found page's own prerender
+  // (`/_not-found`), unless Next.js doesn't prerender the page or the render
+  // turned dynamic. That includes an error, such as one from its metadata,
+  // that leaves no page to answer with.
+  const prerender = { isNotFoundPage: true, tracksRenderErrors: false };
   try {
     return await renderHttpAccessFallback(options, prerender);
   } catch (error) {
@@ -743,7 +755,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
 async function renderHttpAccessFallback<TModule extends AppPageModule>(
   options: RenderAppPageHttpAccessFallbackOptions<TModule>,
-  prerender: { tracksRenderErrors: boolean } | null,
+  prerender: { isNotFoundPage: boolean; tracksRenderErrors: boolean } | null,
 ): Promise<Response | null> {
   const resolvedBoundaryModule = resolveAppPageHttpAccessBoundaryModule({
     rootForbiddenModule: options.rootForbiddenModule,
@@ -766,7 +778,7 @@ async function renderHttpAccessFallback<TModule extends AppPageModule>(
   }
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
-  if (prerender) {
+  if (prerender?.isNotFoundPage) {
     prerender.tracksRenderErrors = isRootBoundaryStaticEligible(
       options.skipLayoutWrapping ? [] : layoutModules,
       boundaryModule,
@@ -1237,6 +1249,7 @@ async function renderHttpAccessFallback<TModule extends AppPageModule>(
     routePattern: options.route?.pattern,
     status: options.statusCode,
     tracksPrerenderRenderErrors: prerender?.tracksRenderErrors === true,
+    isPrerenderNotFoundPage: prerender?.isNotFoundPage === true,
   });
   return failOnLateAccessError(response, lateAccessErrors);
 }

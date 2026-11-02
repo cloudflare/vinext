@@ -149,6 +149,8 @@ type AppFallbackRenderer<TModule extends AppPageModule = AppPageModule> = {
       matchedParams?: AppPageParams;
       /** The route's render threw the signal, so the document keeps the route's head. */
       routeHead?: AppPageFallbackRouteHead | null;
+      /** The page whose signal it answers fails its prerender on the fallback's errors. */
+      tracksPrerenderRenderErrors?: boolean;
     },
     scriptNonce: string | undefined,
     middlewareContext: AppPageMiddlewareContext,
@@ -361,6 +363,7 @@ export function createAppFallbackRenderer<TModule extends AppPageModule>(
         skipLayoutWrapping: useGlobalNotFound,
         sourcePageSegments: callContext?.sourcePageSegments,
         statusCode,
+        tracksPrerenderRenderErrors: opts?.tracksPrerenderRenderErrors,
       });
     },
 
