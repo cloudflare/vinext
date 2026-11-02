@@ -321,7 +321,11 @@ export function setupCloudflarePlatform(
       );
     }
   }
-  const nextSteps: string[] = [...workerEntryWarning(context.root)];
+  // Warn only when this run chose the entry: an existing `main` is the app's own.
+  const wroteWorkerEntry = !wranglerCode || !findTopLevelJsonProperty(wranglerCode, "main");
+  const nextSteps: string[] = wroteWorkerEntry
+    ? workerEntryWarning(context.root, context.isStaticExport)
+    : [];
   if (
     cloudflare.cdnCache === "response-store" &&
     (cloudflare.responseStoreMode ?? "service-binding") === "service-binding"
@@ -416,6 +420,7 @@ function setupCfPlatform(
 
   const configPath = path.join(context.root, "cloudflare.config.ts");
   const generatedPlatformFiles: string[] = [];
+  const nextSteps: string[] = [];
   if (!fs.existsSync(configPath)) {
     fs.writeFileSync(
       configPath,
@@ -426,8 +431,8 @@ function setupCfPlatform(
       ),
     );
     generatedPlatformFiles.push("cloudflare.config.ts");
+    nextSteps.push(...workerEntryWarning(context.root, context.isStaticExport));
   }
-  const nextSteps: string[] = [...workerEntryWarning(context.root)];
   if (serviceBinding) {
     nextSteps.push(
       "After `vinext build`, deploy the Response Store Worker explicitly (and repeat when its code/config changes):",
@@ -558,7 +563,9 @@ function resolveWorkerEntry(root: string): string {
  * A `worker/index.*` that never reaches vinext's handler (say, a migrated Vite
  * SPA's API Worker) answers every page route itself, so each one 404s (#4460).
  */
-function workerEntryWarning(root: string): string[] {
+function workerEntryWarning(root: string, isStaticExport: boolean | undefined): string[] {
+  // A static export serves its pages asset-first, so the Worker never sees them.
+  if (isStaticExport) return [];
   const entry = resolveWorkerEntry(root);
   if (entry === "vinext/server/fetch-handler") return [];
   const source = fs.readFileSync(path.join(root, entry), "utf-8");

@@ -1931,6 +1931,48 @@ export default { plugins: [vinext({ cache: { data: customData() }, prerender: tr
     );
   });
 
+  it.each([
+    { legacyWrangler: false, file: "cloudflare.config.ts", content: "export default {};\n" },
+    {
+      legacyWrangler: true,
+      file: "wrangler.jsonc",
+      content: '{ "main": "vinext/server/fetch-handler" }\n',
+    },
+  ])(
+    "does not warn about worker/index.ts when an existing $file sets the entry",
+    async ({ legacyWrangler, file, content }) => {
+      setupProject(tmpDir, { router: "app" });
+      writeFile(tmpDir, "worker/index.ts", "export default {};\n");
+      writeFile(tmpDir, file, content);
+
+      const { output } = await runInit(tmpDir, {
+        install: false,
+        cloudflare: {
+          dataCache: "none",
+          cdnCache: "none",
+          imageOptimization: "none",
+          legacyWrangler,
+        },
+      });
+
+      expect(output).not.toContain("Warning: worker/index.ts");
+    },
+  );
+
+  it("does not warn about worker/index.ts for a static export, which serves pages asset-first", async () => {
+    setupProject(tmpDir, { router: "app" });
+    writeFile(tmpDir, "next.config.mjs", 'export default { output: "export" };\n');
+    writeFile(tmpDir, "worker/index.ts", "export default {};\n");
+
+    const { output } = await runInit(tmpDir, {
+      install: false,
+      cloudflare: { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+    });
+
+    expect(readFile(tmpDir, "cloudflare.config.ts")).toContain('entrypoint: "./worker/index.ts"');
+    expect(output).not.toContain("Warning: worker/index.ts");
+  });
+
   it("does not warn when worker/index.ts imports vinext's fetch handler", async () => {
     setupProject(tmpDir, { router: "app" });
     writeFile(
