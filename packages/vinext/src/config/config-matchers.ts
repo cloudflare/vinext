@@ -1156,8 +1156,10 @@ const LOCATION_STRIPPED_RE = /^[\u0000- ]+|[\u0000- ]+$|[\t\n\r]/g;
 // oxlint-disable-next-line no-control-regex -- C0 controls are the point
 const LOCATION_UNSAFE_RE = /[\u0000-\u0008\u000A-\u001F\u007F]|[^\u0000-\u007F]/gu;
 // encodeURIComponent throws on a lone UTF-16 surrogate; the URL parser
-// serializes it as U+FFFD.
-const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+// serializes it as U+FFFD. A valid pair matches first and is kept, so any other
+// surrogate match is a lone one. No lookbehind: this module reaches the client,
+// and a bundler cannot lower one for a target without it (Safari below 16.4).
+const SURROGATE_RE = /[\uD800-\uDBFF][\uDC00-\uDFFF]|[\uD800-\uDFFF]/g;
 
 /**
  * Percent-encode what a config-redirect `Location` header cannot carry.
@@ -1171,7 +1173,7 @@ const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF
  */
 export function encodeRedirectLocation(location: string): string {
   return location
-    .replace(LONE_SURROGATE_RE, "\uFFFD")
+    .replace(SURROGATE_RE, (surrogate) => (surrogate.length === 2 ? surrogate : "\uFFFD"))
     .replace(LOCATION_UNSAFE_RE, encodeURIComponent);
 }
 
