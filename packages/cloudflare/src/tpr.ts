@@ -232,11 +232,12 @@ function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath =
     })
     .join("/")
     .replace(/\/+/g, "/");
-  // Build output keeps its basePath directory; public files sit at the root.
+  if (!basePath) return assetPaths.has(assetPathname);
+  // Build output keeps its asset prefix directory above `_next/static`, which
+  // Static Assets serves directly; public files sit at the root below basePath.
   return (
-    assetPaths.has(assetPathname) ||
-    (Boolean(basePath) &&
-      assetPathname.startsWith(`${basePath}/`) &&
+    (assetPathname.includes("/_next/static/") && assetPaths.has(assetPathname)) ||
+    (assetPathname.startsWith(`${basePath}/`) &&
       assetPaths.has(assetPathname.slice(basePath.length)))
   );
 }
@@ -247,22 +248,23 @@ export function filterTrafficPaths(
   options: { assetsDir?: string; basePath?: string } = {},
 ): TrafficEntry[] {
   const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
-  return entries.filter((e) => {
-    if (!e.path.startsWith("/")) return false;
+  return entries.flatMap((e) => {
+    if (!e.path.startsWith("/")) return [];
     // Resolve dot segments (including encoded ones) as candidate discovery does,
     // without reading a leading `//` as a host, then collapse repeated separators.
+    // Route selection aggregates entries that canonicalize to the same path.
     const pathname = new URL(`http://vinext.local${e.path}`).pathname.replace(/\/+/g, "/");
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
-    if (pathname.startsWith("/cdn-cgi/")) return false;
+    if (pathname.startsWith("/cdn-cgi/")) return [];
     // Static assets
     if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(pathname))
-      return false;
-    if (assetPaths && isStaticAssetPath(assetPaths, pathname, options.basePath)) return false;
+      return [];
+    if (assetPaths && isStaticAssetPath(assetPaths, pathname, options.basePath)) return [];
     // API routes
-    if (pathname.startsWith("/api/")) return false;
+    if (pathname.startsWith("/api/")) return [];
     // Internal routes
-    if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return false;
-    return true;
+    if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return [];
+    return [{ path: pathname, requests: e.requests }];
   });
 }
 

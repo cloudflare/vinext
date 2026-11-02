@@ -171,7 +171,7 @@ describe("TPR route resolution", () => {
     }
   });
 
-  it("matches basePath requests exactly against public files and basePath build output", () => {
+  it("canonicalizes basePath requests and matches public files and build output exactly", () => {
     const assetsDir = fs.mkdtempSync(path.join(os.tmpdir(), "vinext-tpr-base-path-"));
     try {
       fs.mkdirSync(path.join(assetsDir, "videos"));
@@ -180,6 +180,7 @@ describe("TPR route resolution", () => {
       fs.mkdirSync(path.join(assetsDir, "docs/_next/static"), { recursive: true });
       fs.writeFileSync(path.join(assetsDir, "docs/_next/static/module.wasm"), "");
       fs.writeFileSync(path.join(assetsDir, "100%real.wasm"), "");
+      fs.writeFileSync(path.join(assetsDir, "docs/promo.wasm"), "");
       fs.symlinkSync(path.join(assetsDir, "videos/hero.webm"), path.join(assetsDir, "linked.webm"));
       expect(
         filterTrafficPaths(
@@ -194,6 +195,10 @@ describe("TPR route resolution", () => {
             { path: "/x/%2e%2E/cdn-cgi/zaraz/t", requests: 2 },
             { path: "//docs/videos/hero.webm", requests: 2 },
             { path: "//cdn-cgi/zaraz/t", requests: 2 },
+            { path: "/docs/docs/promo.wasm", requests: 2 },
+            { path: "/docs/promo.wasm", requests: 2 },
+            { path: "/docs/x/%2e%2e/hot", requests: 2 },
+            { path: "//docs/hot", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },
             { path: "/docs/%00", requests: 1 },
@@ -204,6 +209,9 @@ describe("TPR route resolution", () => {
         ).map(({ path }) => path),
       ).toEqual([
         "/docs/_HEADERS",
+        "/docs/promo.wasm",
+        "/docs/hot",
+        "/docs/hot",
         "/docs/videos",
         `/docs/${"a".repeat(300)}`,
         "/docs/%00",
