@@ -21,6 +21,7 @@ import {
 import { stripRscCacheBustingSearchParam } from "./app-rsc-cache-busting.js";
 import {
   AppElementsWire,
+  APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
   type AppElementValue,
@@ -28,6 +29,7 @@ import {
 } from "./app-elements.js";
 import {
   canonicalizeAppPageParams,
+  createAppPageSegmentStateKeyRebinder,
   resolveAppPagePatternStateKey,
   resolveAppPageSemanticSegmentStateKey,
 } from "./app-page-segment-state.js";
@@ -41,6 +43,8 @@ export type OptimisticRouteTemplate = {
   omittedBfcacheSegmentIds: readonly string[];
   omittedLayoutIds: readonly string[];
   pageElementIds: readonly string[];
+  /** The navigation params of the URL the template was learned from. */
+  params: Readonly<Record<string, string | string[]>>;
   routeId: string;
 };
 
@@ -390,6 +394,8 @@ export function createOptimisticRouteTemplate(options: {
 
   const pageElementIds = getPageElementIds(options.elements, match.route);
   if (pageElementIds.length === 0) return null;
+  const urlParts = hrefToRouteParts(options.href, options.basePath);
+  if (urlParts === null) return null;
 
   return {
     elements: options.elements,
@@ -403,14 +409,38 @@ export function createOptimisticRouteTemplate(options: {
         ? metadata.layoutIds.filter((layoutId) => !Object.hasOwn(options.elements, layoutId))
         : [],
     pageElementIds,
+    params: resolveOptimisticNavigationParams({
+      match,
+      rawUrlParts: urlParts.raw,
+      routeManifest: options.routeManifest,
+      urlParts: urlParts.normalized,
+    }).navigationParams,
     routeId: match.route.id,
   };
 }
 
-export function createOptimisticRouteElements(template: OptimisticRouteTemplate): AppElements {
+export function createOptimisticRouteElements(
+  template: OptimisticRouteTemplate,
+  params: Readonly<Record<string, string | string[]>> = template.params,
+): AppElements {
   const elements: Record<string, AppElementValue> = { ...template.elements };
   for (const pageElementId of template.pageElementIds) {
     elements[pageElementId] = createElement(OptimisticRouteSegment);
+  }
+  // Like Next.js's reifyRouteTree for the route tree it learned: segments keyed
+  // by a param the two URLs bind differently key by the target's value, so the
+  // optimistic segments don't replace the learned URL's retained entry. A
+  // level without a layout keeps its key on a retention boundary inside the
+  // learned tree, which this doesn't rebind.
+  const reify = createAppPageSegmentStateKeyRebinder(template.params, params);
+  if (reify === null) return elements;
+
+  const metadata = AppElementsWire.readMetadata(template.elements);
+  const identities = metadata.bfcacheSegmentIdentities;
+  if (Object.keys(identities).length > 0) {
+    elements[APP_BFCACHE_SEGMENT_IDENTITIES_KEY] = Object.fromEntries(
+      Object.entries(identities).map(([id, identity]) => [id, reify(identity)]),
+    );
   }
   return elements;
 }
@@ -573,7 +603,7 @@ export function resolveOptimisticNavigationPayload(options: {
     urlParts: urlParts.normalized,
   });
   return {
-    elements: createOptimisticRouteElements(template),
+    elements: createOptimisticRouteElements(template, navigationParams),
     params: navigationParams,
     routeParams,
     template,

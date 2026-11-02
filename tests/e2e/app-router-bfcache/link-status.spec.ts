@@ -178,4 +178,44 @@ test.describe("useLinkStatus in BFCache Activity entries", () => {
       expect((await visiblePending(page)).filter((id) => id !== `${clicked}-status`)).toEqual([]);
     }
   });
+
+  // An optimistic shell for /rooms/d, learned from another room's prefetch,
+  // hides room b with the link that left room a still in its tree.
+  test("links in an entry an optimistic shell hides are idle when revealed", async ({ page }) => {
+    await page.goto("/bfcache-effects/rooms/a");
+    await waitForAppRouterHydration(page);
+    await page.waitForLoadState("networkidle");
+    await recordVisiblePending(page);
+
+    const steps: [() => Promise<unknown>, string, string, string | null][] = [
+      [
+        () => page.locator("#room-a-switch:visible").click(),
+        "Room b",
+        "room-b-switch",
+        "room-a-switch",
+      ],
+      [() => page.goBack(), "Room a", "room-a-switch", null],
+      [() => page.goForward(), "Room b", "room-b-switch", null],
+      [
+        () =>
+          page.evaluate(() => {
+            (
+              window as unknown as { next: { router: { push(href: string): void } } }
+            ).next.router.push("/bfcache-effects/rooms/d");
+          }),
+        "Room d",
+        "room-d-switch",
+        null,
+      ],
+      [() => page.goBack(), "Room b", "room-b-switch", null],
+      [() => page.goBack(), "Room a", "room-a-switch", null],
+    ];
+    for (const [navigate, heading, revealed, clicked] of steps) {
+      await clearVisiblePending(page);
+      await navigate();
+      await expect(page.locator("h2:visible")).toHaveText(heading);
+      await expect(linkStatus(page, revealed)).toHaveText("idle");
+      expect((await visiblePending(page)).filter((id) => id !== `${clicked}-status`)).toEqual([]);
+    }
+  });
 });

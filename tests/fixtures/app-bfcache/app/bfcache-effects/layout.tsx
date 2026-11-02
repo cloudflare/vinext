@@ -38,6 +38,11 @@ export default function EffectsLayout({ children }: { children: React.ReactNode 
               <Link href={`${base}/shots/${id}`}>Shot {id}</Link>
             </li>
           ))}
+          {["a", "b"].map((id) => (
+            <li key={`room-${id}`}>
+              <Link href={`${base}/rooms/${id}`}>Room {id}</Link>
+            </li>
+          ))}
           {["1", "2"].map((q) => (
             <li key={q}>
               <Link href={`${base}/search?q=${q}`}>Search {q}</Link>
