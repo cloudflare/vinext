@@ -363,6 +363,13 @@ export type NextConfig = {
         }
     >;
     domains?: string[];
+    /**
+     * Local sources the image optimization endpoint may serve. Statically
+     * imported images are allowed too, except under a basePath (the added
+     * pattern is unprefixed, as in Next.js). When unset, any local path
+     * without a query string is allowed (matches Next.js).
+     */
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
@@ -1356,6 +1363,74 @@ async function resolveBuildId(
 }
 
 /**
+ * Mirror Next.js's config resolution of `images.localPatterns`: statically
+ * imported images (`/_next/static/media/**`) stay allowed whatever the app
+ * lists, though like Next.js the pattern is unprefixed, so it never matches
+ * under a basePath. An unset list stays unset; the image endpoint then applies the
+ * Next.js default.
+ */
+function resolveImageLocalPatterns(
+  localPatterns: unknown,
+): Array<{ pathname?: string; search?: string }> | undefined {
+  if (localPatterns === undefined) return undefined;
+  if (!Array.isArray(localPatterns)) {
+    throw new Error(
+      `Specified images.localPatterns should be an Array received ${localPatterns === null ? "null" : typeof localPatterns}.\n` +
+        "See more info here: https://nextjs.org/docs/messages/invalid-images-config",
+    );
+  }
+  // Next.js rejects anything else with its config schema (fatal for
+  // `images`). A malformed entry must not become `{}`, which matches every
+  // local URL.
+  if (localPatterns.length > 25) {
+    throw new Error("Specified images.localPatterns can have at most 25 entries.");
+  }
+  // Array.from visits sparse holes, which map would skip.
+  const patterns = Array.from(localPatterns, (pattern: unknown, index) => {
+    // Next.js's zod strictObject: any object zod doesn't type as an array,
+    // date, map, set or promise, whose enumerable keys (inherited ones too,
+    // so a URL fails) are only `pathname` and `search`, read as strings.
+    const entry = pattern as { pathname?: unknown; search?: unknown; then?: unknown };
+    let valid =
+      typeof pattern === "object" &&
+      pattern !== null &&
+      !Array.isArray(pattern) &&
+      !(pattern instanceof Date) &&
+      !(pattern instanceof Map) &&
+      !(pattern instanceof Set) &&
+      !(
+        typeof entry.then === "function" &&
+        typeof (pattern as Promise<unknown>).catch === "function"
+      ) &&
+      (entry.pathname === undefined || typeof entry.pathname === "string") &&
+      (entry.search === undefined || typeof entry.search === "string");
+    if (valid) {
+      for (const key in pattern as object) {
+        if (key !== "pathname" && key !== "search") valid = false;
+      }
+    }
+    if (!valid) {
+      throw new Error(
+        `Specified images.localPatterns[${index}] should be an object with optional string ` +
+          "`pathname` and `search` fields.",
+      );
+    }
+    const resolved: { pathname?: string; search?: string } = {};
+    if (entry.pathname !== undefined) resolved.pathname = entry.pathname as string;
+    if (entry.search !== undefined) resolved.search = entry.search as string;
+    return resolved;
+  });
+  if (
+    !patterns.some(
+      (pattern) => pattern.pathname === "/_next/static/media/**" && pattern.search === "",
+    )
+  ) {
+    patterns.push({ pathname: "/_next/static/media/**", search: "" });
+  }
+  return patterns;
+}
+
+/**
  * Normalize the `assetPrefix` option from next.config.
  *
  * Accepts both absolute URLs (`https://cdn.example.com[/subpath]`) and
@@ -2345,6 +2420,7 @@ export async function resolveNextConfig(
               }
             : { ...pattern },
         ),
+        localPatterns: resolveImageLocalPatterns(config.images.localPatterns),
       }
     : undefined;
 
