@@ -1,5 +1,16 @@
 # @vinext/cloudflare
 
+## 1.3.2
+
+### Bug Fixes
+
+- **App Router:** send an intercepted response's params to useParams() (#4489)
+- **Cloudflare:** skip /cdn-cgi and static asset paths in traffic-aware warming (#4480)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.1
 
 ### Bug Fixes

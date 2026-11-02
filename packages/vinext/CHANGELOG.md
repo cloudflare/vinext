@@ -1,5 +1,47 @@
 # vinext
 
+## 1.4.2
+
+### Bug Fixes
+
+#### App Router
+
+- take a same-route interception's config from its own loader tree (#4500)
+- take an interception's segment config from its own loader tree (#4493)
+- render the dynamic sibling for an encoded request-time page (#4430)
+- match encoded paths like Next.js after rewrites, for metadata routes and the image endpoint (#4420)
+- send next.config headers with /_next/image responses (#4454)
+- keep a route's slot params above a staged response stage (#4492)
+- send Next.js's Cache-Control on every Server Action response (#4428)
+- never cache early and intercepted page responses (#4427)
+- rebind an optimistic shell's layout-less level keys (#4490)
+- send an intercepted response's params to useParams() (#4489)
+- catch errors in a named slot's nested error boundaries (#4488)
+- don't render a learned shell over a retained BFCache entry (#4487)
+- keep a BFCache list for a named slot's page level (#4486)
+- keep BFCache segment lists under layouts with named slots (#4485)
+- render a restored history entry with its own URL (#4484)
+- key optimistic route shells by their target params (#4482)
+- render a sibling intercept's own route from deeper sources (#4481)
+- keep Next's BFCache segment lists for sibling intercepts (#4477)
+
+#### Misc
+
+- **Build:** apply the pinned cssTarget only when the app does not set one (#4415)
+- **Config:** keep RegExp lookbehinds out of client chunks (#4495)
+- **Nitro:** keep asset fetches on the file the caller named (#4438)
+- **Pages Router:** 404 _next/data requests whose .json strip leaves a dot segment (#4439)
+- **Pages Router:** restore a stripped basePath when a route's first segment repeats it (#4434)
+- **Image:** round the quality prop to a configured images.qualities like Next.js (#4449)
+- **Cloudflare:** keep middleware and headers() Cache-Control on Worker-served public files (#4457)
+- **Image:** enforce images.localPatterns on the image endpoint like Next.js (#4455)
+- **Init:** warn when worker/index.* does not import vinext's fetch handler (#4479)
+
+### Contributors
+
+- @haruki860
+- @james-elicx
+
 ## 1.4.1
 
 ### Bug Fixes
@@ -8,7 +50,7 @@
 
 - reject route handler request reads inside unstable_cache() like Next.js (#4456)
 - report SSR-only shell errors in the dev overlay and answer error boundary documents with 500 (#4466)
-- accept _rsc values only for the headers they were computed from (#4448)
+- accept \_rsc values only for the headers they were computed from (#4448)
 - answer shell errors with the error document, and add VINEXT_QUIET (#4411)
 - keep a reused template seed under its destination identity (#4392)
 - apply afterFiles rewrites to a dynamic interception source (#4432)
