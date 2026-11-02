@@ -831,4 +831,51 @@ test.describe("BFCache Activity effects", () => {
     );
     await expect(effectCount(page, "shot-modal:1")).toHaveText("Count: 3");
   });
+
+  // shots/(.)[id] intercepts at the shots level itself, which keys it per id,
+  // so three shots evict the shots page. A shot's entry doesn't depend on the
+  // page it was opened from: shot 2, opened from shot 1, is restored from
+  // /shots.
+  test("keys a dynamic sibling intercept per value in its level's list", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "shots#1"], true), ["shell#1", "shots#1"]);
+    await incrementEffect(page, "shots", 2);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:1#1"], true)],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await incrementEffect(page, "shot-modal:1", 3);
+    for (const [from, to] of [
+      ["1", "2"],
+      ["2", "3"],
+    ]) {
+      await clickEffectsLink(page, `/shots/${to}`, `Shot modal ${to}`);
+      await expectEffects(
+        page,
+        [`cleanup shot-modal:${from}#1`, ...setupEffects([`shot-modal:${to}#1`], true)],
+        ["shell#1", `shot-modal:${to}#1`],
+      );
+    }
+    await expect(effectCount(page, "shots")).toHaveCount(0);
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(
+      page,
+      ["cleanup shot-modal:3#1", ...setupEffects(["shots#2"], true)],
+      ["shell#1", "shots#2"],
+    );
+    await expect(effectCount(page, "shots")).toHaveText("Count: 0");
+
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expectEffects(
+      page,
+      ["cleanup shots#2", "setup shot-modal:2#1"],
+      ["shell#1", "shot-modal:2#1"],
+    );
+    await expectHiddenEffectState(page, "shots", "Count: 0");
+  });
 });

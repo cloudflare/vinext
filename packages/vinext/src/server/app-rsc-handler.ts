@@ -394,10 +394,29 @@ export type AppRscHandlerRoute = {
 };
 
 type AppRscRouteMatch<TRoute> = {
+  /**
+   * For an interception match, the source route and params the interception
+   * context names, when they differ from the rendered `route` and `params`:
+   * a sibling intercept opened from a deeper source renders the intercepting
+   * route itself, while the deeper source is what gets authorized.
+   */
+  authorizationParams?: AppPageParams;
+  authorizationRoute?: TRoute;
   interceptionSourceIsConcrete?: boolean;
   params: AppPageParams;
   route: TRoute;
 };
+
+function isSameInterceptionSource<TRoute>(
+  a: AppRscRouteMatch<TRoute>,
+  b: { params: AppPageParams; route: TRoute } | null | undefined,
+): boolean {
+  return (
+    b != null &&
+    (a.authorizationRoute ?? a.route) === b.route &&
+    haveSamePageParams(a.authorizationParams ?? a.params, b.params)
+  );
+}
 
 function applyMiddlewareContextToResponse(
   response: Response,
@@ -1063,7 +1082,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     // proves existence; match the raw context like a direct request to it.
     return (
       sourceContext !== null &&
-      (options.matchRequestRoute ?? options.matchRoute)(sourceContext)?.route === sourceMatch.route
+      (options.matchRequestRoute ?? options.matchRoute)(sourceContext)?.route ===
+        (sourceMatch.authorizationRoute ?? sourceMatch.route)
     );
   };
   const directInterceptionSourceMatch =
@@ -1816,10 +1836,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     interceptionSourceMatch !== null &&
     interceptionContextHeader !== null &&
     interceptionSourcePathname !== null &&
-    !(
-      interceptionSourceMatch.route === directPreActionMatch?.route &&
-      haveSamePageParams(interceptionSourceMatch.params, directPreActionMatch.params)
-    )
+    !isSameInterceptionSource(interceptionSourceMatch, directPreActionMatch)
   ) {
     // A direct request to a non-canonical spelling redirects to the canonical
     // one first, so every later step sees that. The client can legitimately
@@ -1857,8 +1874,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       const rewrittenSourceMatch = options.matchRoute(rewrittenPathname);
       return (
         interceptionSourceMatch !== null &&
-        rewrittenSourceMatch?.route === interceptionSourceMatch.route &&
-        haveSamePageParams(rewrittenSourceMatch.params, interceptionSourceMatch.params)
+        isSameInterceptionSource(interceptionSourceMatch, rewrittenSourceMatch)
       );
     };
     // A direct request to a redirected source never renders it.
@@ -2084,7 +2100,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       // static route is final before afterFiles.
       if (
         !rewriteSource(options.configRewrites.beforeFiles, false) ||
-        (interceptionSourceMatch.route.isDynamic &&
+        ((interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route).isDynamic &&
           !rewriteSource(options.configRewrites.afterFiles, true))
       ) {
         options.clearRequestContext();
@@ -2594,8 +2610,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       hasVerifiedInterceptionSource &&
       interceptionSourceMatch !== null &&
       provesConcreteInterceptionSource(finalInterceptionSourceMatch) &&
-      finalInterceptionSourceMatch?.route === interceptionSourceMatch.route &&
-      haveSamePageParams(finalInterceptionSourceMatch.params, interceptionSourceMatch.params);
+      finalInterceptionSourceMatch !== null &&
+      finalInterceptionSourceMatch.route === interceptionSourceMatch.route &&
+      haveSamePageParams(finalInterceptionSourceMatch.params, interceptionSourceMatch.params) &&
+      isSameInterceptionSource(finalInterceptionSourceMatch, {
+        params: interceptionSourceMatch.authorizationParams ?? interceptionSourceMatch.params,
+        route: interceptionSourceMatch.authorizationRoute ?? interceptionSourceMatch.route,
+      });
     if (interceptionIdHeader !== null && !hasVerifiedFinalInterceptionSource) {
       options.clearRequestContext();
       setInterceptionResponseUncacheable(true);

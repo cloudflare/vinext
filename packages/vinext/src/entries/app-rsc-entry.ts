@@ -621,17 +621,21 @@ const __requestHandler = createAppRscRequestHandler({
     const intercept = __routeMatcher.findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
     const route = __routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
+    const authorizationRoute = __routes[intercept.authorizationSourceRouteIndex];
+    if (!route || !authorizationRoute) return null;
+    const pickParams = (targetRoute, source) => {
+      const params = Object.create(null);
+      for (const name of targetRoute.params) {
+        if (Object.prototype.hasOwnProperty.call(source, name)) params[name] = source[name];
       }
-    }
+      return params;
+    };
     return {
+      authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
+      authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       route,
-      params,
+      params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${
@@ -2045,17 +2049,21 @@ ${responseStageOnly ? "const __responseStageOptions = {" : "const __appRscHandle
     const intercept = findIntercept(pathname, sourcePathname, interceptionId);
     if (!intercept) return null;
     const route = routes[intercept.sourceRouteIndex];
-    if (!route) return null;
-    const params = Object.create(null);
-    for (const name of route.params) {
-      if (Object.prototype.hasOwnProperty.call(intercept.sourceMatchedParams, name)) {
-        params[name] = intercept.sourceMatchedParams[name];
+    const authorizationRoute = routes[intercept.authorizationSourceRouteIndex];
+    if (!route || !authorizationRoute) return null;
+    const pickParams = (targetRoute, source) => {
+      const params = Object.create(null);
+      for (const name of targetRoute.params) {
+        if (Object.prototype.hasOwnProperty.call(source, name)) params[name] = source[name];
       }
-    }
+      return params;
+    };
     return {
+      authorizationParams: pickParams(authorizationRoute, intercept.authorizationSourceParams),
+      authorizationRoute,
       interceptionSourceIsConcrete: intercept.sourceRouteIsConcrete,
       route,
-      params,
+      params: pickParams(route, intercept.sourceMatchedParams),
     };
   },
   ${

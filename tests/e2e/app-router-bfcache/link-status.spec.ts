@@ -46,6 +46,12 @@ async function recordVisiblePending(page: Page) {
   });
 }
 
+async function clearVisiblePending(page: Page) {
+  await page.evaluate(() => {
+    (window as unknown as { __visiblePending: string[] }).__visiblePending.length = 0;
+  });
+}
+
 async function visiblePending(page: Page) {
   return page.evaluate(() => [
     ...new Set((window as unknown as { __visiblePending: string[] }).__visiblePending),
@@ -96,9 +102,7 @@ test.describe("useLinkStatus in BFCache Activity entries", () => {
       ["photo-1-back", "Gallery", "gallery-open-photo"],
       ["gallery-open-photo", "Photo modal 1", "photo-1-back"],
     ]) {
-      await page.evaluate(() => {
-        (window as unknown as { __visiblePending: string[] }).__visiblePending.length = 0;
-      });
+      await clearVisiblePending(page);
       await page.locator(`#${link}:visible`).click();
       await expect(page.locator("h2:visible")).toHaveText(heading);
       await expect(linkStatus(page, revealed)).toHaveText("idle");
@@ -124,5 +128,54 @@ test.describe("useLinkStatus in BFCache Activity entries", () => {
     await expect(page.locator("h2:visible")).toHaveText("Shot modal 1");
     await expect(linkStatus(page, "shot-1-back")).toHaveText("idle");
     expect(await visiblePending(page)).toEqual([]);
+  });
+
+  // Shot 2, opened from shot 1, renders under the shots route like shot 1, so
+  // shot 1 is hidden rather than unmounted, with the link that left it.
+  test("links in a sibling intercept opened from another are idle when revealed", async ({
+    page,
+  }) => {
+    await page.goto("/bfcache-effects/shots");
+    await waitForAppRouterHydration(page);
+    await recordVisiblePending(page);
+
+    const steps: [() => Promise<unknown>, string, string[], string | null][] = [
+      [
+        () => page.locator("#shots-open-shot:visible").click(),
+        "Shot modal 1",
+        ["shot-1-next"],
+        "shots-open-shot",
+      ],
+      [
+        () => page.locator("#shot-1-next:visible").click(),
+        "Shot modal 2",
+        ["shot-2-next"],
+        "shot-1-next",
+      ],
+      [() => page.goBack(), "Shot modal 1", ["shot-1-back", "shot-1-next"], null],
+      [() => page.goBack(), "Shots", ["shots-open-shot"], null],
+      [() => page.goForward(), "Shot modal 1", ["shot-1-next"], null],
+      [() => page.goForward(), "Shot modal 2", ["shot-2-next"], null],
+      [
+        () => page.locator("#shot-2-next:visible").click(),
+        "Shot modal 3",
+        ["shot-3-next"],
+        "shot-2-next",
+      ],
+      // Three shots evict the shots page, and shot 1 comes back from its entry.
+      [
+        () => page.locator("#shot-3-next:visible").click(),
+        "Shot modal 1",
+        ["shot-1-back", "shot-1-next"],
+        "shot-3-next",
+      ],
+    ];
+    for (const [navigate, heading, revealed, clicked] of steps) {
+      await clearVisiblePending(page);
+      await navigate();
+      await expect(page.locator("h2:visible")).toHaveText(heading);
+      for (const link of revealed) await expect(linkStatus(page, link)).toHaveText("idle");
+      expect((await visiblePending(page)).filter((id) => id !== `${clicked}-status`)).toEqual([]);
+    }
   });
 });
