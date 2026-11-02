@@ -798,6 +798,21 @@ test.describe("BFCache Activity effects", () => {
     await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
   });
 
+  // As in Next.js, a sibling intercept reads the target's params, which its
+  // source page doesn't have.
+  test("reads the target's params in a sibling intercept", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expect(page.getByTestId("params-shot-modal:1")).toHaveText('{"id":"1"}');
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expect(page.getByTestId("params-shot-modal:2")).toHaveText('{"id":"2"}');
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shot modal 1" })).toBeVisible();
+    await expect(page.getByTestId("params-shot-modal:1")).toHaveText('{"id":"1"}');
+  });
+
   // shots/(.)[id] intercepts at the shots level itself, so each shot is its
   // own entry of that level's list, inside the "shots" entry of the effects
   // layout's list: leaving the shots for search evicts none of them.

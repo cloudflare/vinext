@@ -1496,12 +1496,17 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
 
           // These headers describe the current routed request, not the shared
           // RSC bytes. Compose them above the adapter so a cache HIT cannot
-          // replay another query/path and never loses dynamic params.
+          // replay another query/path and never loses dynamic params. An
+          // intercepted response's params include its target's, which this
+          // match lacks, so the response stage keeps them under an
+          // interception context, in its cache identity.
           const headers = new Headers(response.headers);
-          if (Object.keys(props.params).length > 0) {
-            headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(props.params)));
-          } else {
-            headers.delete(VINEXT_PARAMS_HEADER);
+          if (props.interceptionContext === null || !headers.has(VINEXT_PARAMS_HEADER)) {
+            if (Object.keys(props.params).length > 0) {
+              headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(props.params)));
+            } else {
+              headers.delete(VINEXT_PARAMS_HEADER);
+            }
           }
           headers.set(
             VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,

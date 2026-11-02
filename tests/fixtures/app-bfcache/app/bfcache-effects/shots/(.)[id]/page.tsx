@@ -1,5 +1,6 @@
 import { Suspense } from "react";
 import { EffectProbe } from "../../effect-probe";
+import { ParamsProbe } from "../../params-probe";
 import { StatusLink } from "../../../link-status/status-link";
 
 export function generateStaticParams() {
@@ -12,6 +13,7 @@ export default async function Page({ params }: { params: Promise<{ id: string }>
   return (
     <>
       <h2>Shot modal {id}</h2>
+      <ParamsProbe name={`shot-modal:${id}`} />
       <Suspense fallback={<div>Loading...</div>}>
         <EffectProbe name={`shot-modal:${id}`} />
       </Suspense>
