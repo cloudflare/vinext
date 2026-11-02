@@ -2663,10 +2663,13 @@ async function createPagesRouterRequestHandler(
       }
       const renderPath =
         locale !== null && locale !== i18nConfig?.defaultLocale ? `/${locale}/404` : "/404";
+      const headers = filterInternalHeaders(nodeHeadersToWebHeaders(req.headers));
+      // Like the Pages request stage, never pass the build's secret to user code.
+      headers.delete(VINEXT_PRERENDER_SECRET_HEADER);
       try {
         const response = await renderPage(
           new Request(new URL(renderPath, `http://${resolveHost(req, `${host}:${port}`)}`), {
-            headers: filterInternalHeaders(nodeHeadersToWebHeaders(req.headers)),
+            headers,
           }),
           renderPath,
           ssrManifest,
