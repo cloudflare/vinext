@@ -122,6 +122,10 @@ type ParallelSlot = {
   loadingTreePositions?: number[];
   /** Absolute path to the slot's error component */
   errorPath: string | null;
+  /** Every error convention from the slot root to its active page, outermost first. */
+  errorPaths?: string[];
+  /** Slot-root-relative tree positions aligned with errorPaths. */
+  errorTreePositions?: number[];
   /** Nearest not-found convention for the slot's active branch. */
   notFoundPath?: string | null;
   /** Tree position of that convention relative to the slot root. */
@@ -1682,7 +1686,24 @@ function withSlotLoadingEntries<TSlot extends ParallelSlot>(
     ...slot,
     loadingPaths: loadingEntries.map((entry) => entry.path),
     loadingTreePositions: loadingEntries.map((entry) => entry.treePosition),
+    ...findSlotErrorFields(slot.ownerDir, pagePath, matcher),
     ...findSlotNotFoundFields(slot.ownerDir, pagePath, matcher),
+  };
+}
+
+/**
+ * Every error convention on the slot's active branch. Each catches errors in
+ * its own segment, below that segment's layout.
+ */
+function findSlotErrorFields(
+  slotDir: string,
+  pagePath: string | null,
+  matcher: ValidFileMatcher,
+): Pick<ParallelSlot, "errorPaths" | "errorTreePositions"> {
+  const entries = findSlotSegmentFileEntries(slotDir, pagePath, "error", matcher);
+  return {
+    errorPaths: entries.map((entry) => entry.path),
+    errorTreePositions: entries.map((entry) => entry.treePosition),
   };
 }
 
@@ -2585,6 +2606,7 @@ function discoverParallelSlots(
       loadingPaths: loadingEntries.map((loading) => loading.path),
       loadingTreePositions: loadingEntries.map((loading) => loading.treePosition),
       errorPath: findFile(slotDir, "error", matcher),
+      ...findSlotErrorFields(slotDir, pagePath, matcher),
       ...findSlotNotFoundFields(slotDir, pagePath, matcher),
       interceptingRoutes,
       layoutIndex: -1, // Will be set by discoverInheritedParallelSlots

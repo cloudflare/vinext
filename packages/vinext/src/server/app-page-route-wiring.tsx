@@ -135,6 +135,8 @@ export type AppPageRouteWiringSlot<
   configLayouts?: readonly (TModule | null | undefined)[] | null;
   configLayoutTreePositions?: readonly number[] | null;
   error?: TErrorModule | null;
+  errors?: readonly (TErrorModule | null | undefined)[] | null;
+  errorTreePositions?: readonly number[] | null;
   layout?: TModule | null;
   layoutIndex: number;
   loading?: TModule | null;
@@ -1712,13 +1714,20 @@ export function buildAppPageElements<
     // Its error.tsx files catch errors in their own segments too, including
     // its page's generateMetadata() errors, as Next.js renders the page's
     // MetadataOutlet in its segment. The slot's own error.tsx stays at its root.
+    // A slot's default.tsx carries none of them, like its not-found files.
     const branchErrors = new Map<number, AppPageErrorComponent>();
-    if (overrideOrPageComponent && hasSlotTreeOverride) {
-      for (const [index, errorModule] of (slotOverride?.errorModules ?? []).entries()) {
-        const component = getErrorBoundaryExport(errorModule);
-        const treePosition = slotOverride?.errorTreePositions?.[index];
-        if (component && treePosition !== undefined) branchErrors.set(treePosition, component);
-      }
+    const slotErrorModules = !overrideOrPageComponent
+      ? undefined
+      : hasSlotTreeOverride
+        ? slotOverride?.errorModules
+        : slot.errors;
+    const slotErrorTreePositions = hasSlotTreeOverride
+      ? slotOverride?.errorTreePositions
+      : slot.errorTreePositions;
+    for (const [index, errorModule] of (slotErrorModules ?? []).entries()) {
+      const component = getErrorBoundaryExport(errorModule);
+      const treePosition = slotErrorTreePositions?.[index];
+      if (component && treePosition !== undefined) branchErrors.set(treePosition, component);
     }
     // The id of the innermost of those boundaries above a component at
     // `treePosition`, which catches its notFound() on the client. The document

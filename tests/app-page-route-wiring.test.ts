@@ -3337,6 +3337,70 @@ describe("app page route wiring helpers", () => {
     ]);
   });
 
+  it("wraps a named slot's page in the error boundaries of its own segments", () => {
+    // An error.tsx inside a slot catches in its own segment, so hidden
+    // entries above it stay mounted, as for an intercepted slot branch.
+    function SlotError() {
+      return createElement("p", null, "slot error");
+    }
+    function PhotoError() {
+      return createElement("p", null, "photo error");
+    }
+    const elements = buildAppPageElements({
+      element: createElement(PageProbe),
+      makeThenableParams(value) {
+        return Promise.resolve(value);
+      },
+      matchedParams: { id: "1" },
+      route: {
+        error: null,
+        errors: [null],
+        layoutTreePositions: [],
+        layouts: [],
+        loading: null,
+        notFound: null,
+        notFounds: [null],
+        routeSegments: [],
+        slots: {
+          modal: {
+            default: null,
+            error: { default: SlotError },
+            errors: [{ default: SlotError }, { default: PhotoError }],
+            errorTreePositions: [0, 2],
+            layout: null,
+            layoutIndex: -1,
+            loading: null,
+            name: "modal",
+            page: { default: SlotPage },
+            routeSegments: ["photos", "[id]"],
+          },
+        },
+        templateTreePositions: [],
+        templates: [],
+      },
+      routePath: "/photos/1",
+      rootNotFoundModule: null,
+    });
+
+    const spine: string[] = [];
+    findElement(elements[AppElementsWire.encodeSlotId("modal", "/")], (element) => {
+      const typeName = getElementTypeName(element.type);
+      if (typeName === "BfcacheSegmentBoundary") {
+        spine.push(`entry ${String(element.props.stateKey)}`);
+      } else if (typeName === "ErrorBoundary") {
+        spine.push(`error ${getElementTypeName(element.props.fallback)}`);
+      }
+      return false;
+    });
+    expect(spine).toEqual([
+      "entry photos",
+      "error SlotError",
+      "entry id|1|d",
+      "entry __PAGE__",
+      "error PhotoError",
+    ]);
+  });
+
   it("retains matching intercepted layouts with marker-bearing branch segments", () => {
     function PhotosLayout(props: { children?: ReactNode }) {
       return createElement("section", { "data-photos-layout": true }, props.children);
