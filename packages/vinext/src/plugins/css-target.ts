@@ -3,8 +3,9 @@ import type { Plugin, UserConfig } from "vite";
 type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
 
 /**
- * CSS minification target. Vite/esbuild defaults to the same target
- * as JS (modern evergreens), which lets esbuild's CSS minifier rewrite
+ * CSS minification target. Vite defaults it to the same target as JS
+ * (modern evergreens), which lets the CSS minifier (Lightning CSS by
+ * default, or esbuild) rewrite
  * `@media (max-width: 768px)` to the Media Queries Level 4 range
  * syntax `@media (width <= 768px)`. Both forms are semantically
  * equivalent in modern browsers, but the rewrite is observable to
@@ -14,7 +15,7 @@ type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
  * pipeline preserves the original syntax), so user code carried
  * over from Next.js can break when migrating to vinext.
  *
- * esbuild lowers a CSS feature when ANY target in the list lacks
+ * The minifier lowers a CSS feature when ANY target in the list lacks
  * support, so we only need to pin one engine below the range-syntax
  * baseline. Range syntax shipped in Chrome 104, Edge 104, Firefox 63,
  * and Safari 16.4 (per esbuild's `internal/compat/css_table.go`
@@ -23,7 +24,7 @@ type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
  * Safari 16.4) is sufficient to suppress the rewrite on its own.
  *
  * The other three targets are pinned to ~2023 baselines instead of
- * the absolute oldest supported version so esbuild does NOT
+ * the absolute oldest supported version so the minifier does NOT
  * collaterally downlevel unrelated modern CSS features. With
  * chrome111/edge111/firefox114 we keep through:
  *   - `:is()` pseudo-class (Chrome 88, Firefox 78)
@@ -74,7 +75,7 @@ export function createCssTargetPlugin(): Plugin {
       },
     },
     configResolved: {
-      // Before any other plugin's configResolved can read the marker.
+      // Before normal and post-ordered configResolved hooks read the target.
       order: "pre",
       handler(config) {
         const builds = [

@@ -2,7 +2,7 @@
  * CSS media-query syntax preservation in production builds.
  *
  * Verifies that vinext's `build.cssTarget` is pinned old enough to stop
- * esbuild's CSS minifier from rewriting `@media (max-width: ...)` queries
+ * the CSS minifier from rewriting `@media (max-width: ...)` queries
  * to the Media Queries Level 4 range syntax `@media (width <= ...)`.
  *
  * Ported from Next.js: test/e2e/app-dir/css-media-query/css-media-query.test.ts
@@ -20,39 +20,16 @@ import os from "node:os";
 import path from "node:path";
 import { resolveConfig, type InlineConfig, type Plugin, type UserConfig } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import { createIsolatedFixture } from "./helpers.js";
 
 type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
 
-const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
+const PAGES_FIXTURE = path.resolve(import.meta.dirname, "fixtures/css-media-query-pages");
+const APP_FIXTURE = path.resolve(import.meta.dirname, "fixtures/app-basic");
+const PIN = ["chrome111", "edge111", "firefox114", "safari15"];
 
-async function makeFixture(): Promise<string> {
-  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-css-mq-"));
-  await fs.symlink(ROOT_NODE_MODULES, path.join(tmpDir, "node_modules"), "junction");
-
-  const stylesPath = path.join(tmpDir, "styles.css");
-  await fs.writeFile(
-    stylesPath,
-    "h1 { color: red; }\n" +
-      "@media screen and (max-width: 768px) {\n" +
-      "  h1 { color: blue; }\n" +
-      "}\n",
-  );
-
-  const pagesDir = path.join(tmpDir, "pages");
-  await fs.mkdir(pagesDir, { recursive: true });
-  await fs.writeFile(
-    path.join(pagesDir, "_app.tsx"),
-    'import "../styles.css";\n' +
-      "export default function App({ Component, pageProps }: any) {\n" +
-      "  return <Component {...pageProps} />;\n" +
-      "}\n",
-  );
-  await fs.writeFile(
-    path.join(pagesDir, "index.tsx"),
-    "export default function Home() {\n" + "  return <h1>CSS Media Query Test</h1>;\n" + "}\n",
-  );
-
-  return tmpDir;
+function makeFixture(): Promise<string> {
+  return createIsolatedFixture(PAGES_FIXTURE, "vinext-css-mq-");
 }
 
 async function findBuiltCss(dir: string): Promise<string> {
@@ -110,33 +87,45 @@ describe("CSS media-query syntax preservation in production build", () => {
   // older version of each browser, so an app could never raise the target.
   const userTarget = ["chrome111", "edge111", "firefox121", "safari15.6"];
 
-  async function resolveTargets(config: InlineConfig) {
-    const tmpDir = await makeFixture();
-    try {
-      const resolved = await resolveConfig(
-        {
-          root: tmpDir,
-          configFile: false,
-          plugins: [vinext({ disableAppRouter: true })],
-          logLevel: "silent",
-          ...config,
-        },
-        "build",
-      );
-      return {
-        top: resolved.build.cssTarget,
-        ...Object.fromEntries(
-          Object.entries(resolved.environments).map(([name, env]) => [name, env.build.cssTarget]),
-        ),
-      };
-    } finally {
-      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
-    }
+  async function resolveTargets(config: InlineConfig, root = PAGES_FIXTURE) {
+    const resolved = await resolveConfig(
+      {
+        root,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: root === PAGES_FIXTURE })],
+        logLevel: "silent",
+        ...config,
+      },
+      "build",
+    );
+    return {
+      top: resolved.build.cssTarget,
+      ...Object.fromEntries(
+        Object.entries(resolved.environments).map(([name, env]) => [name, env.build.cssTarget]),
+      ),
+    };
   }
 
   it("pins cssTarget everywhere when nothing sets one", async () => {
-    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
-    expect(await resolveTargets({})).toEqual({ top: pin, client: pin, ssr: pin });
+    expect(await resolveTargets({})).toEqual({ top: PIN, client: PIN, ssr: PIN });
+  }, 30_000);
+
+  it("pins cssTarget in every App Router environment when nothing sets one", async () => {
+    expect(await resolveTargets({}, APP_FIXTURE)).toEqual({
+      top: PIN,
+      rsc: PIN,
+      ssr: PIN,
+      client: PIN,
+    });
+  }, 30_000);
+
+  it("does not append the pinned cssTarget to an App Router app's own", async () => {
+    expect(await resolveTargets({ build: { cssTarget: userTarget } }, APP_FIXTURE)).toEqual({
+      top: userTarget,
+      rsc: userTarget,
+      ssr: userTarget,
+      client: userTarget,
+    });
   }, 30_000);
 
   it("does not append the pinned cssTarget when the app sets its own", async () => {
@@ -168,7 +157,6 @@ describe("CSS media-query syntax preservation in production build", () => {
   );
 
   it("does not append the pinned cssTarget when a later plugin's configEnvironment hook sets one", async () => {
-    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
     const later: Plugin = {
       name: "test:later",
       enforce: "post",
@@ -178,7 +166,7 @@ describe("CSS media-query syntax preservation in production build", () => {
       },
     };
     expect(await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] })).toEqual({
-      top: pin,
+      top: PIN,
       client: false,
       ssr: userTarget,
     });
@@ -203,7 +191,6 @@ describe("CSS media-query syntax preservation in production build", () => {
   );
 
   it("keeps per-environment cssTarget values as declared", async () => {
-    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
     expect(
       await resolveTargets({
         environments: {
@@ -211,7 +198,7 @@ describe("CSS media-query syntax preservation in production build", () => {
           ssr: { build: { cssTarget: userTarget } },
         },
       }),
-    ).toEqual({ top: pin, client: false, ssr: userTarget });
+    ).toEqual({ top: PIN, client: false, ssr: userTarget });
   }, 30_000);
 
   it("minifies CSS for a raised cssTarget", async () => {
