@@ -18,7 +18,7 @@ import { build } from "vite-plus";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveConfig } from "vite";
+import { resolveConfig, type InlineConfig, type Plugin } from "vite";
 import vinext from "../packages/vinext/src/index.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
@@ -103,33 +103,93 @@ describe("CSS media-query syntax preservation in production build", () => {
     }
   }, 60_000);
 
-  it("does not append the pinned cssTarget when the app sets its own", async () => {
+  // Firefox 121 / Safari 15.6 are newer than the pin (firefox114 / safari15).
+  // Before #4413, Vite concatenated both lists and the CSS minifier kept the
+  // older version of each browser, so an app could never raise the target.
+  const userTarget = ["chrome111", "edge111", "firefox121", "safari15.6"];
+
+  async function resolveTargets(config: InlineConfig) {
     const tmpDir = await makeFixture();
-    // Firefox 121 / Safari 15.6 are newer than the pin (firefox114 / safari15).
-    // Before the fix, Vite concatenated both lists and the CSS minifier kept the
-    // older version of each browser, so an app could never raise the target.
-    const userTarget = ["chrome111", "edge111", "firefox121", "safari15.6"];
     try {
-      const config = await resolveConfig(
+      const resolved = await resolveConfig(
         {
           root: tmpDir,
           configFile: false,
           plugins: [vinext({ disableAppRouter: true })],
           logLevel: "silent",
-          build: { cssTarget: userTarget },
+          ...config,
         },
         "build",
       );
-
-      const targets = [
-        config.build.cssTarget,
-        ...Object.values(config.environments).map((env) => env.build.cssTarget),
-      ];
-      for (const target of targets) {
-        expect(target).toEqual(userTarget);
-      }
+      return {
+        top: resolved.build.cssTarget,
+        ...Object.fromEntries(
+          Object.entries(resolved.environments).map(([name, env]) => [name, env.build.cssTarget]),
+        ),
+      };
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
     }
+  }
+
+  it("pins cssTarget everywhere when nothing sets one", async () => {
+    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
+    expect(await resolveTargets({})).toEqual({ top: pin, client: pin, ssr: pin });
   }, 30_000);
+
+  it("does not append the pinned cssTarget when the app sets its own", async () => {
+    expect(await resolveTargets({ build: { cssTarget: userTarget } })).toEqual({
+      top: userTarget,
+      client: userTarget,
+      ssr: userTarget,
+    });
+  }, 30_000);
+
+  it("does not append the pinned cssTarget when a later plugin sets one", async () => {
+    const later: Plugin = {
+      name: "test:later-css-target",
+      config: () => ({ build: { cssTarget: userTarget } }),
+    };
+    expect(await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] })).toEqual({
+      top: userTarget,
+      client: userTarget,
+      ssr: userTarget,
+    });
+  }, 30_000);
+
+  it("keeps per-environment cssTarget values as declared", async () => {
+    const pin = ["chrome111", "edge111", "firefox114", "safari15"];
+    expect(
+      await resolveTargets({
+        environments: {
+          client: { build: { cssTarget: false } },
+          ssr: { build: { cssTarget: userTarget } },
+        },
+      }),
+    ).toEqual({ top: pin, client: false, ssr: userTarget });
+  }, 30_000);
+
+  it("builds when an environment sets cssTarget to false", async () => {
+    const tmpDir = await makeFixture();
+    const outDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-css-mq-build-"));
+    try {
+      // `[...pin, false]` used to reach Lightning CSS and fail the build.
+      await build({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ disableAppRouter: true })],
+        logLevel: "silent",
+        environments: { client: { build: { cssTarget: false } } },
+        build: {
+          outDir: path.join(outDir, "client"),
+          rolldownOptions: { input: "virtual:vinext-client-entry" },
+        },
+      });
+
+      expect(await findBuiltCss(path.join(outDir, "client"))).toMatch(/@media[^{]*768px/);
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+      await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
 });
