@@ -173,7 +173,8 @@ describe("image optimizer registry", () => {
 
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("source-bytes");
-    expect(response.headers.get("Cache-Control")).toContain("immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
   });
 });
 
