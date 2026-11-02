@@ -1,9 +1,10 @@
 import type { IncomingMessage } from "node:http";
+import type { TLSSocket } from "node:tls";
 import { resolveTrustedForwardedHost } from "./proxy-trust.js";
 
 /** srvx, which serves Nitro's Node presets, exposes the Node request it wraps. */
 type SrvxNodeRequest = Request & {
-  runtime?: { node?: { req?: Pick<IncomingMessage, "headers" | "url"> } };
+  runtime?: { node?: { req?: Pick<IncomingMessage, "headers" | "socket" | "url"> } };
 };
 
 /**
@@ -20,12 +21,22 @@ export function isSrvxAbsoluteFormTarget(request: Request): boolean {
 
   // srvx 0.11 writes the pathname h3 decodes (one with a `%`) back into
   // req.url, dropping the target's authority. For an origin-form target it
-  // builds an http(s) URL on the Host header (`_invalid_` when malformed);
-  // later versions keep req.url and may use an X-Forwarded-Host, which
-  // vinext accepts only from `VINEXT_TRUSTED_HOSTS`.
+  // builds the URL on the Host header (`_invalid_` when malformed), with
+  // `https:` only for TLS or an `https` X-Forwarded-Proto or `:scheme`; later
+  // versions keep req.url and may use an X-Forwarded-Host, which vinext
+  // accepts only from `VINEXT_TRUSTED_HOSTS`.
   if (!URL.canParse(request.url)) return false;
   const url = new URL(request.url);
-  if (url.protocol !== "http:" && url.protocol !== "https:") return true;
+  const encrypted = (req.socket as Partial<TLSSocket> | undefined)?.encrypted === true;
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  const httpsAllowed =
+    encrypted ||
+    req.headers[":scheme"] === "https" ||
+    (typeof forwardedProto === "string" &&
+      forwardedProto.split(",").some((proto) => proto.trim() === "https"));
+  if (url.protocol === "https:" ? !httpsAllowed : url.protocol !== "http:" || encrypted) {
+    return true;
+  }
   const host = req.headers.host || req.headers[":authority"];
   if (!host || typeof host !== "string" || url.hostname === "_invalid_") return false;
   const forwardedHost = resolveTrustedForwardedHost(request.headers);

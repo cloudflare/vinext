@@ -22,6 +22,7 @@ test.describe("Pages Router on Nitro (node server)", () => {
       // h3 decodes a path with a `%` back into req.url.
       "https://other.example/%61",
       `http://${host}/hello.txt`,
+      `https://${host}/%61`,
     ]) {
       const response = await getWithHost(baseURL!, target, host);
       expect({ status: response.status, body: response.body }, target).toEqual({
