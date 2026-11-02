@@ -3263,6 +3263,42 @@ describe("createAppRscHandler", () => {
     );
   });
 
+  it("keeps an intercepted response's params above the response stage", async () => {
+    const sourceRoute = createPageRoute({
+      isDynamic: true,
+      params: ["tab"],
+      pattern: "/feed/:tab",
+      routeSegments: ["feed", "[tab]"],
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      matchInterceptRoute: (pathname, sourcePathname) =>
+        pathname === "/photos/1" && sourcePathname === "/feed/recent"
+          ? { interceptionSourceIsConcrete: true, params: { tab: "recent" }, route: sourceRoute }
+          : null,
+      matchRoute: () => null,
+    });
+    const headers = createRscRequestHeaders({ interceptionContext: "/feed/recent" });
+    const url = await createRscRequestUrl("/docs/photos/1", headers);
+    const dispatch = (responseHeaders: Record<string, string>) =>
+      handler(
+        new Request(`https://example.test${url}`, { headers }),
+        null,
+        false,
+        async () => new Response("intercepted-rsc", { headers: responseHeaders }),
+      );
+    const readParams = (response: Response) =>
+      JSON.parse(decodeURIComponent(response.headers.get(VINEXT_PARAMS_HEADER)!));
+
+    // The source match lacks the target's params, which the render resolved.
+    const rendered = await dispatch({
+      [VINEXT_PARAMS_HEADER]: encodeURIComponent(JSON.stringify({ id: "1", tab: "recent" })),
+    });
+    expect(readParams(rendered)).toEqual({ id: "1", tab: "recent" });
+    // A response without them still gets the routed params.
+    expect(readParams(await dispatch({}))).toEqual({ tab: "recent" });
+  });
+
   it("preserves the raw Cookie header when middleware does not change cookies", async () => {
     const rawCookie = "encoded=hello%20world; spaced=value";
     const dispatchResponseStage = vi.fn(async (stageRequest: Request) => {

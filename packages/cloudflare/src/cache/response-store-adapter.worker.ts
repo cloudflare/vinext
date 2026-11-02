@@ -378,6 +378,9 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
  * RSC response, HITs included, so such an entry shared across queries must not
  * carry the values of the request that filled it. Every other response kind
  * (route handlers, metadata routes, HTML, Pages) keeps its headers as rendered.
+ * Under an interception context the params stay: an intercepted response's
+ * include its target's, which the request stage doesn't match, and the key
+ * holds the context.
  */
 function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
   if (
@@ -389,7 +392,9 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.delete(VINEXT_PARAMS_HEADER);
+  if (Reflect.get(responseStageProps, "interceptionContext") == null) {
+    headers.delete(VINEXT_PARAMS_HEADER);
+  }
   headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return new Response(response.body, {
     headers,
