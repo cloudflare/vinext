@@ -6,6 +6,7 @@ type EffectLogState = {
   log: string[];
   open: string[];
   mounts: Record<string, number>;
+  views: string[];
 };
 
 declare global {
@@ -15,7 +16,7 @@ declare global {
 }
 
 function getState(): EffectLogState {
-  window.__bfcacheEffects ??= { log: [], open: [], mounts: {} };
+  window.__bfcacheEffects ??= { log: [], open: [], mounts: {}, views: [] };
   return window.__bfcacheEffects;
 }
 
@@ -36,4 +37,9 @@ export function openConnection(key: string): () => void {
     state.log.push(`cleanup ${key}`);
     state.open = state.open.filter((openKey) => openKey !== key);
   };
+}
+
+// Called from an effect keyed by the pathname, like a page-view tracker.
+export function recordView(name: string, pathname: string): void {
+  getState().views.push(`${name} ${pathname}`);
 }
