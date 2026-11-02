@@ -215,6 +215,21 @@ describe("CSS media-query syntax preservation in production build", () => {
     });
   }, 30_000);
 
+  it.each<[string, CssTarget]>([
+    ["a browser", "chrome120"],
+    ["false", false],
+  ])(
+    "keeps a cssTarget that matches build.target: %s",
+    async (_, target) => {
+      expect(await resolveTargets({ build: { target, cssTarget: target } })).toEqual({
+        top: target,
+        client: target,
+        ssr: target,
+      });
+    },
+    30_000,
+  );
+
   it("keeps per-environment cssTarget values as declared", async () => {
     expect(
       await resolveTargets({

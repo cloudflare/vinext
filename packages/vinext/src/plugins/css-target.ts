@@ -48,34 +48,49 @@ const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
  * Vite merges config by concatenating arrays, and the CSS minifier keeps the
  * oldest version of each browser, so a pin merged onto a chosen target would
  * stop an app from ever raising it. Instead nothing is set while config hooks
- * run, so the app and every plugin hook see and merge plain Vite values.
+ * run, so the app and every plugin hook see and merge plain Vite values. The
+ * last `config` and `configEnvironment` hooks only note where a target was
+ * set, and the pin is applied once config is resolved.
  *
- * Once config is resolved, Vite has filled an unset `cssTarget` with
- * `cssTarget ?? target`, so it is the very value of `target` (the arrays are
- * the same object). A chosen array is always a separate object, because Vite
- * copies `target` through `unique()`. Only an app that sets both to the same
- * string is pinned anyway, as every app was before #4413.
- *
- * The top-level `build` (read by dev and `builder.sharedConfigBuild` builds)
- * and every environment's `build` are checked.
+ * Both the top-level `build`, which Vite's CSS plugin minifies with (a copy of
+ * the environment's in per-environment builds), and every environment's `build`
+ * are checked.
  */
 export function createCssTargetPlugin(): Plugin {
+  let topLevelConfigured = false;
+  const configuredEnvironments = new Set<string>();
+
   return {
     name: "vinext:css-target",
+    config: {
+      order: "post",
+      handler(config) {
+        topLevelConfigured = config.build?.cssTarget !== undefined;
+        configuredEnvironments.clear();
+      },
+    },
+    configEnvironment: {
+      order: "post",
+      handler(name, config) {
+        if (config.build?.cssTarget !== undefined) configuredEnvironments.add(name);
+      },
+    },
     configResolved: {
       // Before normal and post-ordered configResolved hooks read the target.
       order: "pre",
       handler(config) {
-        const builds = [
-          config.build,
-          ...Object.values(config.environments).map((env) => env.build),
-        ];
-        for (const build of builds) {
-          if (build.cssTarget === build.target) {
-            (build as { cssTarget: CssTarget }).cssTarget = [...DEFAULT_CSS_TARGET];
-          }
+        pinUnsetCssTarget(config.build, topLevelConfigured);
+        for (const [name, environment] of Object.entries(config.environments)) {
+          pinUnsetCssTarget(environment.build, configuredEnvironments.has(name));
         }
       },
     },
   };
+}
+
+function pinUnsetCssTarget(build: { cssTarget: CssTarget; target: unknown }, configured: boolean) {
+  // Vite resolves an unset `cssTarget` to the very value of `target`. A target
+  // set by a hook that ran after the ones above is a separate value.
+  if (configured || build.cssTarget !== build.target) return;
+  build.cssTarget = [...DEFAULT_CSS_TARGET];
 }
