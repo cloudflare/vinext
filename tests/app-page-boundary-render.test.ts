@@ -355,6 +355,47 @@ describe("app page boundary render helpers", () => {
     }
   });
 
+  it("buffers a prerendered fallback's RSC payload to catch an error reported late", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        isRscRequest: true,
+        matchedParams: { slug: "missing" },
+        renderToReadableStream(element, options) {
+          let pulls = 0;
+          return new ReadableStream<Uint8Array>({
+            pull(controller) {
+              pulls++;
+              if (pulls === 1) {
+                controller.enqueue(new TextEncoder().encode(JSON.stringify(element)));
+                return;
+              }
+              options?.onError?.(new Error("late render error"), undefined, undefined);
+              controller.close();
+            },
+          });
+        },
+        rootLayouts: [rootLayoutModule],
+        route: {
+          layoutTreePositions: [0],
+          layouts: [rootLayoutModule],
+          notFound: notFoundModule,
+          params: { slug: "missing" },
+          pattern: "/posts/[slug]",
+          routeSegments: ["posts", "[slug]"],
+        },
+        statusCode: 404,
+        tracksPrerenderRenderErrors: true,
+      });
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(await response?.text()).toContain("route:/posts/missing");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("keeps a prerender's error when a redirect replaces the root not-found page", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
     try {
@@ -458,6 +499,7 @@ describe("app page boundary render helpers", () => {
     const renderNotFound = (options: {
       notFound?: TestModule;
       rootLayouts?: TestModule[];
+      skipLayoutWrapping?: boolean;
       usesDynamicApi?: boolean;
       throwsShell?: boolean;
     }) =>
@@ -474,6 +516,7 @@ describe("app page boundary render helpers", () => {
             return renderElementToStream(element);
           },
           route: null,
+          skipLayoutWrapping: options.skipLayoutWrapping,
           statusCode: 404,
         }),
       );
@@ -484,6 +527,14 @@ describe("app page boundary render helpers", () => {
       });
       expect(forceDynamic?.status).toBe(404);
       expect(forceDynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Unless the page renders outside it.
+      const unwrapped = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],
+        skipLayoutWrapping: true,
+      });
+      expect(unwrapped?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
       const revalidateZero = await renderNotFound({
         rootLayouts: [{ ...rootLayoutModule, revalidate: 0 }],
       });
