@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import fs from "node:fs";
-import { createServer, type Server, type ServerResponse } from "node:http";
+import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -748,75 +748,103 @@ describe("prerenderApp — RSC extraction", () => {
     );
 
     const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
-    const prerenderWithRscFallback = async (answerRsc: (res: ServerResponse) => void) => {
-      let pageRequestCount = 0;
-      let rscRequestCount = 0;
-      const server = createServer((req, res) => {
-        const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+    let pageRequestCount = 0;
+    let rscRequestCount = 0;
+    const server = createServer((req, res) => {
+      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-        if (req.url === "/__vinext_nonexistent_for_404__") {
-          res.statusCode = 404;
-          res.end("<html><body>not found</body></html>");
-          return;
-        }
-
-        if (isRsc) {
-          rscRequestCount++;
-          answerRsc(res);
-          return;
-        }
-
-        pageRequestCount++;
-        res.setHeader("content-type", "text/html");
-        res.end(middlewareHtml);
-      });
-
-      const port = await listen(server);
-      try {
-        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-        const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-        const routes = await appRouter(appDir);
-        const config = await resolveNextConfig({});
-
-        const prerenderResult = await prerenderApp({
-          mode: "default",
-          rscBundlePath: path.join(root, "dist", "server", "index.js"),
-          routes,
-          outDir,
-          config,
-          _prodServer: { server, port },
-        });
-        expect(fs.existsSync(path.join(outDir, "index.rsc"))).toBe(false);
-        expect(pageRequestCount).toBe(1);
-        expect(rscRequestCount).toBe(1);
-        return findRoute(prerenderResult.routes, "/");
-      } finally {
-        await closeServer(server);
+      if (req.url === "/__vinext_nonexistent_for_404__") {
+        res.statusCode = 404;
+        res.end("<html><body>not found</body></html>");
+        return;
       }
-    };
 
-    try {
-      const route = await prerenderWithRscFallback((res) => {
+      if (isRsc) {
+        rscRequestCount++;
         res.statusCode = 500;
         res.end("fallback failed");
+        return;
+      }
+
+      pageRequestCount++;
+      res.setHeader("content-type", "text/html");
+      res.end(middlewareHtml);
+    });
+
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = await appRouter(appDir);
+      const config = await resolveNextConfig({});
+
+      const prerenderResult = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(root, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config,
+        _prodServer: { server, port },
       });
+
+      const route = findRoute(prerenderResult.routes, "/");
       expect(route).toMatchObject({
         route: "/",
         status: "error",
       });
       if (route?.status !== "error") throw new Error("expected route to fail prerender");
       expect(route.error).toContain("[vinext] prerenderApp: RSC fallback returned 500 for /");
+      expect(fs.existsSync(path.join(outDir, "index.rsc"))).toBe(false);
+      expect(pageRequestCount).toBe(1);
+      expect(rscRequestCount).toBe(1);
+    } finally {
+      await closeServer(server);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-      // A fallback whose render reported an error fails the build.
-      const marked = await prerenderWithRscFallback((res) => {
+  // As in `next build`, a page whose render reported an error fails the build,
+  // also when its RSC payload comes from the middleware short-circuit fallback.
+  it("fails the build on a middleware short-circuit fallback RSC response that reports an error", async () => {
+    const outDir = tmpDir("vinext-prerender-rsc-fallback-marked-");
+    const server = createServer((req, res) => {
+      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+      if (isRsc) {
         res.setHeader("content-type", "text/x-component");
         res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
         res.end("0:null\n");
+        return;
+      }
+      res.statusCode = req.url === "/static-test" ? 200 : 404;
+      res.setHeader("content-type", "text/html");
+      res.end("<html><body>middleware short-circuit</body></html>");
+    });
+    const port = await listen(server);
+    try {
+      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const routes = (await appRouter(path.join(APP_FIXTURE, "app"))).filter(
+        (route) => route.pattern === "/static-test",
+      );
+      expect(routes).toHaveLength(1);
+      const result = await prerenderApp({
+        mode: "default",
+        rscBundlePath: path.join(outDir, "dist", "server", "index.js"),
+        routes,
+        outDir,
+        config: await resolveNextConfig({}),
+        _prodServer: { server, port },
       });
-      expect(marked).toMatchObject({ route: "/", status: "error", fatal: true });
+      expect(findRoute(result.routes, "/static-test")).toMatchObject({
+        status: "error",
+        fatal: true,
+      });
+      expect(fs.existsSync(path.join(outDir, "static-test.rsc"))).toBe(false);
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      await closeServer(server);
+      fs.rmSync(outDir, { recursive: true, force: true });
     }
   });
 });

@@ -478,6 +478,82 @@ describe("app page render lifecycle", () => {
     await recovered.text();
   });
 
+  it("leaves unmarked a prerender that turned dynamic or a PPR fallback shell's aborted render", async () => {
+    const reportError = (usesDynamicApi: boolean) => ({
+      renderToReadableStream(
+        _element: unknown,
+        options?: { onError?: (error: unknown, ...rest: unknown[]) => unknown },
+      ) {
+        if (usesDynamicApi) markDynamicUsage();
+        options?.onError?.(new Error("suspended failure"), undefined, undefined);
+        return createStream(["flight-data"]);
+      },
+    });
+    const inRequest = <T>(render: () => Promise<T>) =>
+      runWithHeadersContext(
+        headersContextFromRequest(new Request("https://example.test/posts/post")),
+        render,
+      );
+
+    for (const revalidateSeconds of [null, 60]) {
+      const dynamic = await inRequest(() =>
+        renderAppPageLifecycle({
+          ...createCommonOptions().options,
+          isPrerender: true,
+          isProduction: true,
+          revalidateSeconds,
+          ...reportError(true),
+        }),
+      );
+      expect(dynamic.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      await dynamic.text();
+    }
+
+    const recovered = await inRequest(() =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender: true,
+        isProduction: true,
+        loadSsrHandler: async () => ({
+          async handleSsr(
+            _rscStream: ReadableStream<Uint8Array>,
+            _navContext: unknown,
+            _fontData: unknown,
+            options?: { onSsrError?: (error: unknown) => unknown },
+          ) {
+            markDynamicUsage();
+            options?.onSsrError?.(new Error("shell failure"));
+            return {
+              htmlStream: createStream(['<html id="__next_error__"></html>']),
+              metadataReady: Promise.resolve(),
+              capturedRscData: null,
+              shellErrorRecovered: true,
+            };
+          },
+        }),
+      }),
+    );
+    expect(recovered.status).toBe(500);
+    expect(recovered.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await recovered.text();
+
+    // A fallback shell's render is marked until its abort ends it on purpose.
+    for (const [signal, marker] of [
+      [new AbortController().signal, "1"],
+      [AbortSignal.abort(), null],
+    ] as const) {
+      const shell = await renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender: true,
+        isProduction: true,
+        pprFallbackShellSignal: signal,
+        ...reportError(false),
+      });
+      expect(shell.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(marker);
+      await shell.text();
+    }
+  });
+
   it("marks the error page of a speculative prerender whose shell throws", async () => {
     const renderPage = (usesDynamicApi = false) => {
       const common = createCommonOptions();

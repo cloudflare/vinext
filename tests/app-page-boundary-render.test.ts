@@ -181,6 +181,7 @@ type TestModule = {
   dynamic?: string;
   fetchCache?: string;
   revalidate?: number;
+  runtime?: string;
 };
 
 const rootLayoutModule = {
@@ -539,6 +540,11 @@ describe("app page boundary render helpers", () => {
         rootLayouts: [{ ...rootLayoutModule, revalidate: 0 }],
       });
       expect(revalidateZero?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Nor under an edge runtime one.
+      const edge = await renderNotFound({
+        rootLayouts: [{ ...rootLayoutModule, runtime: "edge" }],
+      });
+      expect(edge?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
       // Nor one whose render used a dynamic API.
       const dynamic = await renderNotFound({ usesDynamicApi: true });
       expect(dynamic?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
