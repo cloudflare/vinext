@@ -251,3 +251,27 @@ status, stage and promote traffic, and apply triggers.
 
 With Vite+, use `vpx @vinext/cloudflare deploy`, or
 `vp exec vinext-cloudflare deploy` when running the locally installed bin.
+
+### Cloudflare Workers Builds (Git Integration)
+
+When deploying a Vinext application via Cloudflare dashboard's Git integration (Workers Builds), the default deployment command `npx wrangler deploy` does not work because Vinext produces Cloudflare Build Output rather than a standard Wrangler script.
+
+Configure your project in the Cloudflare dashboard settings as follows:
+
+- **Build command:**
+  ```sh
+  pnpm run build
+  ```
+- **Deploy command:**
+  ```sh
+  pnpm exec vinext-cloudflare deploy --skip-build
+  ```
+  *(or `npx @vinext/cloudflare deploy --skip-build`)*
+
+If your project uses **Response Store** (`RESPONSE_STORE` service binding), deploy the Response Store Worker once initially (and whenever its configuration changes) prior to application deployment:
+
+```sh
+pnpm run build
+pnpm run deploy:response-store
+pnpm exec vinext-cloudflare deploy --skip-build
+```
