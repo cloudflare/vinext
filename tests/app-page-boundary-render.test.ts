@@ -341,6 +341,7 @@ describe("app page boundary render helpers", () => {
     Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
       value: true,
     });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
       const failed = await renderNotFound(new Error("not-found shell failed"), true);
       expect(failed?.status).toBe(500);
@@ -351,7 +352,11 @@ describe("app page boundary render helpers", () => {
       const untracked = await renderNotFound(new Error("not-found shell failed"));
       expect(untracked?.status).toBe(500);
       expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      // Each is logged, as the prerender server's catch-all logged it.
+      expect(consoleError).toHaveBeenCalledTimes(3);
+      expect(consoleError).toHaveBeenCalledWith("[vinext] Server error:", bindingError);
     } finally {
+      consoleError.mockRestore();
       vi.unstubAllEnvs();
     }
   });

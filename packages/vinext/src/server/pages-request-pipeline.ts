@@ -697,7 +697,7 @@ export async function runPagesRequest(
     if (result.responseHeaders) {
       for (const [key, value] of result.responseHeaders) {
         // vinext's own marker, which middleware can't forge.
-        if (key === VINEXT_PRERENDER_RENDER_ERROR_HEADER) continue;
+        if (key.toLowerCase() === VINEXT_PRERENDER_RENDER_ERROR_HEADER) continue;
         if (key === "set-cookie") {
           const existing = middlewareHeaders[key];
           if (Array.isArray(existing)) {

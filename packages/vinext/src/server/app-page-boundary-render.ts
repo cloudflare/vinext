@@ -739,6 +739,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
   try {
     return await renderHttpAccessFallback(options, prerender);
   } catch (error) {
+    // Logged like the prerender server's own catch-all, which this replaces.
+    console.error("[vinext] Server error:", error);
     const response = new Response("Internal Server Error", { status: 500 });
     return prerender.tracksRenderErrors &&
       isPrerenderBuildFailingError(error) &&

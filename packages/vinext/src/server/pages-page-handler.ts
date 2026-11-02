@@ -434,10 +434,6 @@ function buildI18nRenderContext(
   };
 }
 
-// ---------------------------------------------------------------------------
-// createPagesPageHandler
-// ---------------------------------------------------------------------------
-
 // Next.js resolves a page's runtime as `runtime ?? config.runtime`.
 // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/analysis/get-page-static-info.ts
 function getPagesPageRuntime(pageModule: object): string | undefined {
@@ -459,13 +455,16 @@ function hasCustomGetInitialProps(component: unknown): boolean {
   );
 }
 
+// ---------------------------------------------------------------------------
+// createPagesPageHandler
+// ---------------------------------------------------------------------------
+
 /**
  * Create the Pages Router render function (`_renderPage`).
  *
  * The returned function is self-recursive for 404/500 fallback renders and
  * accepts the same options shape the generated entry always passed inline.
  */
-
 export function createPagesPageHandler(
   opts: CreatePagesPageHandlerOptions,
 ): (
