@@ -12,6 +12,8 @@ packages:
   - examples/*
   - tests/fixtures/*
   - "!tests/fixtures/global-not-found-not-present"
+  # Declares the React pins vinext init upgrades; never installed.
+  - "!tests/fixtures/init-react-upgrade"
   - tests/fixtures/ecosystem/*
   - tests/e2e/sentry-nextjs-16-static/fixture
   - benchmarks/vinext
