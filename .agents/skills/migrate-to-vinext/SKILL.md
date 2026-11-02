@@ -42,19 +42,53 @@ See [references/compatibility.md](references/compatibility.md) for supported/uns
 
 ## Phase 2: Automated Migration (Recommended)
 
-Run `vinext init`. This command:
+Ask the user which deployment target they want (Cloudflare Workers or Node), then pass it with `--platform`. For Cloudflare, also ask for the cache and image choices below and pass every one as a flag. `vinext init` prompts only in an interactive terminal, so agents and CI must not rely on its prompts or on what it does without a terminal. Do not pick a choice for the user.
 
-1. Runs `vinext check` for a compatibility report
-2. Installs `vite` as a devDependency (and `@vitejs/plugin-rsc` for App Router)
-3. Adds `"type": "module"` to package.json
-4. Renames CJS config files (e.g., `postcss.config.js` → `.cjs`) to avoid ESM conflicts
-5. Adds `dev:vinext` and `build:vinext` scripts to package.json
-6. Generates a minimal `vite.config.ts`
-7. Adds `/dist/` and `.vinext/` to `.gitignore`
+```bash
+npx vinext init --platform=node
+npx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender
+```
+
+### Cloudflare init flags
+
+| Flag                               | Values                                                                   | Meaning                                                                                                                                                                                                                                  |
+| ---------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--cdn-cache`                      | `none`, `response-store`, `workers-cache`, `static-assets`, `data-cache` | Response cache. `none`: no shared cache. `response-store`: Workers Response Store, which also handles data. `workers-cache`: Workers Cache. `static-assets`: read-only build-time prerender. `data-cache`: responses and data both in KV |
+| `--response-store-mode`            | `service-binding` (default), `self-contained`                            | Only with `--cdn-cache=response-store`. `service-binding` runs the cache in a separate Worker deployed with `deploy:response-store`; `self-contained` adds its bindings to the app Worker                                                |
+| `--data-cache`                     | `kv`, `none`                                                             | Data cache for `fetch`, `unstable_cache`, and `"use cache"`. Must be `none` with `--cdn-cache=none` or `response-store`, and `kv` with `--cdn-cache=data-cache`                                                                          |
+| `--image-optimization`             | `cloudflare-images`, `none`                                              | `cloudflare-images` adds `imagesOptimizer()` and an `IMAGES` binding; `none` configures no optimizer                                                                                                                                     |
+| `--prerender` / `--no-prerender`   | flag                                                                     | Prerender all static routes at build time. `static-assets` always prerenders and rejects `--no-prerender`                                                                                                                                |
+| `--warm-cache` / `--no-warm-cache` | flag                                                                     | Add `--warm-cache` to the deploy script. Only with `--cdn-cache=response-store` or `workers-cache`                                                                                                                                       |
+| `--name <name>`                    | Worker name                                                              | Worker name for the generated config (default: derived from `package.json`)                                                                                                                                                              |
+
+Example with Workers Response Store and Cloudflare Images:
+
+```bash
+npx vinext init --platform=cloudflare --cdn-cache=response-store --response-store-mode=service-binding --data-cache=none --image-optimization=cloudflare-images --no-prerender --no-warm-cache
+```
+
+Other options: `--port <port>` (dev script port, default 3001), `--skip-check`, `--no-install` (add dependency entries without installing), `--force` (Node: overwrite an existing `vite.config.ts`).
+
+### What init does
+
+1. Runs `vinext check` for a compatibility report (skip with `--skip-check`)
+2. Adds `"type": "module"` to package.json and renames CJS config files (e.g., `postcss.config.js` → `.cjs`) to avoid ESM conflicts
+3. Adds `dev:vinext` (`vite dev --port 3001`), `build:vinext` (`vite build`), and `start:vinext` scripts. `start:vinext` is `vinext start` for Node and `vite preview` for Cloudflare. Cloudflare also gets `deploy:vinext` (`vinext-cloudflare deploy`), plus `deploy:response-store` in Response Store service-binding mode
+4. Generates `vite.config.ts`. For Node, an existing Vite config is kept unless you pass `--force`. For Cloudflare, init updates an existing Vite config instead, adding the `cloudflare()` plugin and the selected cache and image adapters, and generates `cloudflare.config.ts` (Worker name, entrypoint, assets routing, and bindings) if it does not exist
+5. Adds `/dist/` and `.vinext/` to `.gitignore`, plus `.cloudflare/` for Cloudflare
+6. Installs `vinext`, `vite`, and `@vitejs/plugin-react`. App Router adds `react-server-dom-webpack` and `@vitejs/plugin-rsc`. Cloudflare adds `@vinext/cloudflare`, `@cloudflare/vite-plugin` (v2 beta), and `cf`, plus `@cloudflare/workers-response-store` in Response Store service-binding mode
 
 This is non-destructive — the existing Next.js setup continues to work alongside vinext. Use the `dev:vinext` script to test before fully switching over.
 
-If `vinext init` succeeds, skip to Phase 4 (Verify). If it fails or the user prefers manual control, continue to Phase 3.
+### Existing Wrangler config
+
+Cloudflare init stops if the project root already has `wrangler.toml`, `wrangler.json`, `wrangler.jsonc`, or `wrangler.response-store.jsonc`, because it does not migrate them. Ask the user which way to go:
+
+- Move its bindings to `cloudflare.config.ts`, remove the Wrangler config, and rerun init.
+- If the Wrangler config belongs to an unrelated Worker, pass `--ignore-wrangler-config`. Init sets up `cloudflare.config.ts` and leaves that file untouched.
+- **Legacy:** pass `--legacy-wrangler-cloudflare-init` to keep a Wrangler setup. Init then generates or updates `wrangler.jsonc` (it rejects `wrangler.toml`), installs `@cloudflare/vite-plugin@1` and `wrangler`, ignores `.wrangler/`, and uses `wrangler dev --config dist/server/wrangler.json` and `vinext-cloudflare deploy --config dist/server/wrangler.json` as the start and deploy scripts. Use it only when the user wants to stay on Wrangler.
+
+If `vinext init` succeeds, skip Phase 3 and continue with Phase 4 (Deployment) or Phase 5 (Verify). If it fails or the user prefers manual control, continue to Phase 3.
 
 ## Phase 3: Manual Migration
 
@@ -129,7 +163,11 @@ Ensure vinext-generated output and caches are ignored:
 
 ### Option A: Cloudflare Workers (recommended for Cloudflare)
 
-If the user wants to deploy to Cloudflare Workers, use `npx @vinext/cloudflare deploy`. With Vite+, use `vp exec vinext-cloudflare deploy` when running the locally installed bin. It builds and deploys via wrangler.
+Set the project up first with `vinext init --platform=cloudflare` and the flags from Phase 2. It installs `cf` and Cloudflare Vite plugin v2 and generates `cloudflare.config.ts`, which is the deployment source of truth. Commit `vite.config.ts` and `cloudflare.config.ts`; the generated Build Output under `.cloudflare/` stays gitignored.
+
+Authenticate with `npx cf auth login`. In CI, use a `CLOUDFLARE_API_TOKEN` instead of browser login. Set the account with `accountId` at the top level of `defineConfig` in `cloudflare.config.ts` (outside `worker`), or with `CLOUDFLARE_ACCOUNT_ID`.
+
+Deploy with the generated `deploy:vinext` script or `npx @vinext/cloudflare deploy`. With Vite+, use `vp exec vinext-cloudflare deploy` when running the locally installed bin. It validates the setup, builds, and deploys the application Worker with `cf` (or with Wrangler for a legacy Wrangler project). In Response Store service-binding mode, build and run `deploy:response-store` before the first application deploy; `vinext-cloudflare deploy` deploys only the application Worker.
 
 For manual setup or custom worker entries, see [references/config-examples.md](references/config-examples.md).
 
@@ -148,7 +186,21 @@ export default async function Page() {
 
 This works because `@cloudflare/vite-plugin` runs server environments in workerd, where `cloudflare:workers` is a native module. No custom worker entry, no `getPlatformProxy()`, no special configuration needed. Just import and use.
 
-Bindings must be defined in `wrangler.jsonc`. For TypeScript types, run `wrangler types`.
+Define each binding in the Worker's `env` in `cloudflare.config.ts`, using `bindings` from `cf/config`:
+
+```ts
+import { bindings } from "cf/config";
+
+env: {
+  // ...existing bindings
+  DB: bindings.d1({ name: "my-db" }),
+  CACHE: bindings.kv(),
+},
+```
+
+For TypeScript, add `.cloudflare/types` to the `include` list in `tsconfig.json`. Binding and runtime types are generated there during dev and build; run `cf workers types` before a standalone type-check.
+
+**Legacy:** a project set up with `--legacy-wrangler-cloudflare-init` defines bindings in `wrangler.jsonc` instead and generates types with `wrangler types`.
 
 **IMPORTANT:** Do not use `getPlatformProxy()`, `getRequestContext()`, or custom worker entries with `fetch(request, env)` to access bindings. These are older patterns. `cloudflare:workers` is the recommended approach and works out of the box with vinext.
 
@@ -211,6 +263,8 @@ See [references/troubleshooting.md](references/troubleshooting.md) for common mi
 - **Do not rewrite `next/*` imports** to `vinext/*` in application code. Imports like `next/image`, `next/link`, `next/server` resolve automatically.
 - **Do not copy webpack/Turbopack config** into Vite config. Use Vite-native plugins instead.
 - **Do not skip the compatibility check.** Run `vinext check` before migration to surface issues early.
+- **Do not run Cloudflare init without its choices, or choose them for the user.** Ask the user, then pass `--cdn-cache`, `--data-cache`, and `--image-optimization` (plus `--response-store-mode` for Response Store) explicitly.
+- **Do not write `wrangler.jsonc` for a new Cloudflare setup.** Current init uses `cf` and `cloudflare.config.ts`; the Wrangler setup is legacy and only for users who ask for `--legacy-wrangler-cloudflare-init`.
 - **Do not remove `next.config.js`** unless replacing it with `next.config.ts` or `.mjs`. vinext reads it for redirects, rewrites, headers, basePath, i18n, images, and env config.
 - **Do not use `getPlatformProxy()` or custom worker entries for bindings.** Use `import { env } from "cloudflare:workers"` instead. This is the modern pattern and works out of the box with vinext and `@cloudflare/vite-plugin`.
 - **For Cloudflare Workers, prefer the native integration over Nitro.** `npx @vinext/cloudflare deploy` / `vp exec vinext-cloudflare deploy` / `@cloudflare/vite-plugin` provides the best experience with `cloudflare:workers` bindings, KV caching, and image optimization. Nitro works for Cloudflare but the native setup is recommended.

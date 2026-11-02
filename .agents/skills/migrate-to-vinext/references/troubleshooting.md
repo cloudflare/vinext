@@ -11,7 +11,7 @@
 | `vinext: command not found`                   | vinext not installed or not in PATH                               | Install vinext: `npm install vinext`, then run via `npx vinext` or package.json scripts                                                                                                                                 |
 | RSC environment crash on dev start            | Native Node module (sharp, @resvg/resvg-js) loaded in Worker code | Workers cannot load Node-API addons: use a Workers alternative (Cloudflare Images, `@resvg/resvg-wasm`), or `resolve.alias` the module to your own file if a dependency imports it on a path that never runs on Workers |
 | `Could not load empty-stub.js`                | `resolve.alias` entries written by an older `vinext init`         | Delete the `empty-stub.js` aliases from `vite.config`, and its `path` import if nothing else uses it                                                                                                                    |
-| `ASSETS binding not found`                    | wrangler.jsonc missing assets config                              | Add `"assets": { "not_found_handling": "none" }` to wrangler.jsonc                                                                                                                                                      |
+| `ASSETS binding not found`                    | Worker config missing the assets binding                          | Add `ASSETS: bindings.assets()` to the Worker's `env` in `cloudflare.config.ts` (legacy Wrangler projects: `"binding": "ASSETS"` in the `assets` block of wrangler.jsonc)                                               |
 
 ## Vite 8 Migration Notes
 
@@ -74,11 +74,11 @@ imported from \node_modules.pnpm\validator@13.15.26\node_modules\validator\es\li
 
 **Symptom:** Image optimization returns 404 or broken images.
 **Cause:** Missing Cloudflare Images binding.
-**Fix:** Add `"images": { "binding": "IMAGES" }` and `"assets": { "binding": "ASSETS" }` to wrangler.jsonc.
+**Fix:** Add `images: { optimizer: imagesOptimizer() }` to `vinext()` and `IMAGES: bindings.images()` to the Worker's `env` in `cloudflare.config.ts`. Legacy Wrangler projects add `"images": { "binding": "IMAGES" }` to wrangler.jsonc instead.
 
 **Symptom:** ISR pages not caching across requests.
 **Cause:** Default `MemoryCacheHandler` doesn't persist across Worker invocations.
-**Fix:** Use `KVCacheHandler` from `vinext/cloudflare` with a KV namespace binding. See [config-examples.md](config-examples.md).
+**Fix:** Configure a persistent cache. On a fresh setup, pass a cache to `vinext init --platform=cloudflare` (for example `--cdn-cache=response-store --data-cache=none`, or `--cdn-cache=data-cache --data-cache=kv` for KV; see the Phase 2 flags table in [SKILL.md](../SKILL.md)). Init does not add bindings to an existing `cloudflare.config.ts`, so for an existing setup add the adapter to `vinext()` and its bindings to `cloudflare.config.ts` by hand, as described in [Caching on Cloudflare](https://vinext.dev/docs/guides/caching).
 
 ## Verification Checklist
 

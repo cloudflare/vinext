@@ -32,6 +32,44 @@ Response Store service-binding mode declares its second Worker in the typed conf
 
 For TypeScript projects, add `.cloudflare/types` to the `include` list in `tsconfig.json`. The plugin generates binding and runtime declarations there during development and builds; these files stay gitignored. Run `cf workers types` to generate them before a standalone type-check without building the app.
 
+### Cache and image choices
+
+Each Cloudflare choice that init asks about has a flag:
+
+- **`--cdn-cache`** chooses how rendered responses are cached:
+  - `none`: no shared response or data cache.
+  - `response-store`: [Workers Response Store](/docs/guides/caching#workers-response-store), which also handles the data cache. This is the default when you enable caching at the prompt.
+  - `workers-cache`: Workers Cache for responses, with the data cache chosen by `--data-cache`.
+  - `static-assets`: read-only responses prerendered at build time and served from Workers Static Assets. Init configures prerendering for all routes, so `--no-prerender` is rejected.
+  - `data-cache`: no separate response cache; responses and data are both cached in Workers KV.
+- **`--response-store-mode`** applies only to `--cdn-cache=response-store`: `service-binding` (the default) runs the cache in a separate Worker that you deploy with `deploy:response-store`, and `self-contained` adds the cache bindings to the application Worker.
+- **`--data-cache`** chooses where cached `fetch` calls, `unstable_cache`, and `"use cache"` results are stored: `kv` (Workers KV) or `none`. With `--cdn-cache=none` or `response-store` it must be `none`, and with `--cdn-cache=data-cache` it must be `kv`.
+- **`--image-optimization`** chooses how `next/image` requests are optimized: `cloudflare-images` adds Cloudflare Images (an `IMAGES` binding and `imagesOptimizer()`), and `none` configures no optimizer.
+
+Init also asks whether to prerender all static routes, and, for `response-store` or `workers-cache`, whether the deploy script warms the cache. Answer these with `--prerender` or `--no-prerender` and `--warm-cache` or `--no-warm-cache`. `--warm-cache` is rejected with the other CDN caches. See [Caching on Cloudflare](/docs/guides/caching) to choose between the caches.
+
+### Run init without prompts
+
+Init prompts only in an interactive terminal. In agents and CI, pass every choice as a flag, so the result does not depend on prompts or on what init does without a terminal. Agents should ask the user for each choice instead of picking one. This command sets up Cloudflare with no cache and no image optimization:
+
+<PackageManagerCommand
+  commands={{
+    pnpm: "pnpm dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    npm: "npx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    yarn: "yarn dlx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    bun: "bunx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+    vp: "vpx vinext init --platform=cloudflare --cdn-cache=none --data-cache=none --image-optimization=none --no-prerender",
+  }}
+/>
+
+To set up Workers Response Store and Cloudflare Images instead:
+
+```sh
+npx vinext init --platform=cloudflare --cdn-cache=response-store \
+  --response-store-mode=service-binding --data-cache=none \
+  --image-optimization=cloudflare-images --no-prerender --no-warm-cache
+```
+
 ## 2. Authenticate
 
 <PackageManagerCommand
