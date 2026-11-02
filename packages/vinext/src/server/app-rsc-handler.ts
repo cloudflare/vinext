@@ -1194,7 +1194,8 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (prerenderEndpointResponse) return prerenderEndpointResponse;
   }
 
-  if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
+  // Only its unprefixed form, the one the prerender server's secret gate checks.
+  if (url.pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
     // Like `next build` prerendering `/_not-found`, render the root not-found
     // page for `/404` on its own, never through redirects, middleware,
     // rewrites or a route that would answer a nonexistent path.

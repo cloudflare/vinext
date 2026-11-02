@@ -485,36 +485,45 @@ describe("createAppRscHandler", () => {
       renderNotFound,
       setNavigationContext,
     });
-    const request = () =>
-      new Request(`https://example.test/docs${VINEXT_PRERENDER_NOT_FOUND_PATH}`);
+    const request = () => new Request(`https://example.test${VINEXT_PRERENDER_NOT_FOUND_PATH}`);
+    const prefixedUrl = `https://example.test/docs${VINEXT_PRERENDER_NOT_FOUND_PATH}`;
+
+    const expectRouted = async (url: string) => {
+      runMiddleware.mockClear();
+      matchRoute.mockClear();
+      const response = await handler(new Request(url), null);
+      expect(await response.text()).toBe("page");
+      expect(runMiddleware).toHaveBeenCalled();
+      expect(matchRoute).toHaveBeenCalled();
+      expect(renderNotFound).not.toHaveBeenCalled();
+    };
 
     try {
       vi.stubEnv("VINEXT_PRERENDER", "1");
       // The build requests it without the basePath, as its other endpoints.
-      for (const url of [`https://example.test${VINEXT_PRERENDER_NOT_FOUND_PATH}`, request().url]) {
-        renderNotFound.mockClear();
-        const response = await handler(new Request(url), null);
-        expect(response.status).toBe(404);
-        expect(await response.text()).toBe("not found page");
-        expect(renderNotFound).toHaveBeenCalledOnce();
-        expect(renderNotFound.mock.calls[0][0]).toMatchObject({ isRscRequest: false, route: null });
-        expect(new URL(renderNotFound.mock.calls[0][0].request.url).pathname).toBe("/docs/404");
-      }
+      const response = await handler(request(), null);
+      expect(response.status).toBe(404);
+      expect(await response.text()).toBe("not found page");
+      expect(renderNotFound).toHaveBeenCalledOnce();
+      expect(renderNotFound.mock.calls[0][0]).toMatchObject({ isRscRequest: false, route: null });
+      expect(new URL(renderNotFound.mock.calls[0][0].request.url).pathname).toBe("/docs/404");
       expect(setNavigationContext).toHaveBeenCalledWith(
         expect.objectContaining({ pathname: "/404", params: {} }),
       );
       expect(runMiddleware).not.toHaveBeenCalled();
       expect(matchRoute).not.toHaveBeenCalled();
+      renderNotFound.mockClear();
+
+      // The prerender server's secret gate only checks the unprefixed form.
+      await expectRouted(prefixedUrl);
     } finally {
       vi.unstubAllEnvs();
     }
-    renderNotFound.mockClear();
 
     // Outside the prerender, the path is an ordinary request.
-    const response = await handler(request(), null);
-    expect(await response.text()).toBe("page");
-    expect(runMiddleware).toHaveBeenCalled();
-    expect(matchRoute).toHaveBeenCalled();
+    await expectRouted(prefixedUrl);
+    const outsideBasePath = await handler(request(), null);
+    expect(outsideBasePath.status).toBe(404);
     expect(renderNotFound).not.toHaveBeenCalled();
   });
 

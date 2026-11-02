@@ -17,7 +17,7 @@ function createPagesBuild(options?: { instrumentationFailure?: boolean }): strin
       "export const vinextConfig = {};",
       "export async function renderPage() { return new Response('ok', { headers: { 'content-type': 'text/html' } }); }",
       "export async function handleApiRoute() { return new Response('api'); }",
-      "export async function runMiddleware() { return null; }",
+      "export async function runMiddleware() { return { continue: true }; }",
       ...(options?.instrumentationFailure
         ? ["export function __ensureInstrumentation() { throw new Error('register failed'); }"]
         : []),
@@ -83,6 +83,33 @@ describe("startProdServer logging", () => {
     expect(messages).toEqual([`[vinext] Production server running at http://127.0.0.1:${port}`]);
   });
 
+  it("gates the Pages 404 endpoint only in the prerender", async () => {
+    const root = createPagesBuild();
+    roots.push(root);
+
+    const { startProdServer } = await import("../packages/vinext/src/server/prod-server.js");
+    const { server, port } = await startProdServer({
+      port: 0,
+      host: "127.0.0.1",
+      outDir: path.join(root, "dist"),
+      noCompression: true,
+      silent: true,
+    });
+    try {
+      vi.stubEnv("VINEXT_PRERENDER", "");
+      const response = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/not-found`);
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe("ok");
+      // In the prerender, it needs the build's secret, which this build lacks.
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      const denied = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/not-found`);
+      expect(denied.status).toBe(403);
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("logs a prerender-specific production server URL when requested", async () => {
     const root = createPagesBuild();
     roots.push(root);
@@ -136,6 +163,12 @@ describe("startProdServer logging", () => {
       silent: true,
     });
     try {
+      // Outside the prerender, the 404 endpoint's path is an ordinary request.
+      vi.stubEnv("VINEXT_PRERENDER", "");
+      const routed = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/not-found`);
+      expect(routed.status).toBe(200);
+      await expect(routed.text()).resolves.toBe("ok");
+      vi.stubEnv("VINEXT_PRERENDER", "1");
       for (const endpoint of [
         "/__vinext/prerender/static-params",
         "/__vinext/prerender/not-found",
@@ -149,6 +182,7 @@ describe("startProdServer logging", () => {
         await expect(allowed.text()).resolves.toBe("ok");
       }
     } finally {
+      vi.unstubAllEnvs();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });

@@ -1346,10 +1346,13 @@ export async function prerenderPages({
           }
         }
         // Only an error of the 404 page's own render fails it, not one of a
-        // dynamic page the routed nonexistent path reached.
+        // dynamic page the routed nonexistent path reached. Rendered without
+        // routing, any error is the 404 page's own.
+        const renderError = notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER);
         if (
-          notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
-          (rendersNotFoundDirectly || !hasCustom404 ? VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR : "1")
+          rendersNotFoundDirectly
+            ? renderError !== null
+            : renderError === (hasCustom404 ? "1" : VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR)
         ) {
           void notFoundRes.body?.cancel().catch(() => {});
           results.push(prerenderRenderErrorResult("/404"));
@@ -2282,11 +2285,8 @@ export async function prerenderApp({
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),
       );
-      // Only an error of the not-found page's own render fails it.
-      if (
-        notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
-        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR
-      ) {
+      // Rendered without routing, any error is the not-found page's own.
+      if (notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== null) {
         await notFoundRes.body?.cancel();
         results.push(prerenderRenderErrorResult("/404"));
       } else if (notFoundRes.status === 404) {

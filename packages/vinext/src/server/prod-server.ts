@@ -2163,7 +2163,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       pathname === "/__vinext/prerender/static-params" ||
       pathname === "/__vinext/prerender/pages-static-paths" ||
       pathname === "/__vinext/prerender/metadata-routes" ||
-      pathname === VINEXT_PRERENDER_NOT_FOUND_PATH
+      // Only the prerender serves it; at runtime it is an ordinary request.
+      (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1")
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
@@ -2641,14 +2642,15 @@ async function createPagesRouterRequestHandler(
     // Like `next build` prerendering `/404` from `pages/404` or `_error`,
     // render the build's 404 page on its own, never through redirects,
     // middleware, rewrites or a route that would answer a nonexistent path.
-    if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH) {
+    // Only the prerender serves it; at runtime it is an ordinary request.
+    if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
         res.writeHead(403);
         res.end("Forbidden");
         return;
       }
-      if (process.env.VINEXT_PRERENDER !== "1" || typeof renderPage !== "function") {
+      if (typeof renderPage !== "function") {
         res.writeHead(404);
         res.end("This page could not be found");
         return;

@@ -1067,15 +1067,16 @@ describe("prerender — a 404 page whose render reports an error", () => {
     }
   }
 
-  it("fails the App Router's /404", async () => {
-    const failed = await prerenderAppNotFound(VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR);
-    expect(failed.route).toMatchObject({ status: "error", fatal: true });
-    expect(failed.has404).toBe(false);
-
-    // Not for an error marked as another page's.
-    const page = await prerenderAppNotFound("1");
-    expect(page.route).toMatchObject({ status: "rendered" });
-  });
+  // Rendered without routing, any error is the not-found page's own, even
+  // one the server reports before rendering it.
+  it.each([VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR, "1"])(
+    "fails the App Router's /404 marked %s",
+    async (marker) => {
+      const failed = await prerenderAppNotFound(marker);
+      expect(failed.route).toMatchObject({ status: "error", fatal: true });
+      expect(failed.has404).toBe(false);
+    },
+  );
 
   it("fails the Pages Router's /404", async () => {
     const failed = await prerenderPagesNotFound(PAGES_FIXTURE, "1");
@@ -1177,32 +1178,39 @@ describe("prerender — the 404 page is rendered without routing", () => {
     60_000,
   );
 
-  it("fails the build on a pages/404 that throws, rendered without routing", async () => {
-    const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-throwing-404");
-    const pagesBundlePath = await buildPagesFixture(fixture);
-    const outDir = tmpDir("vinext-prerender-pages-direct-404-error-");
-    try {
-      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
-      const { pagesRouter, apiRouter } =
-        await import("../packages/vinext/src/routing/pages-router.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-      const pagesDir = path.join(fixture, "pages");
-      const result = await prerenderPages({
-        mode: "default",
-        pagesBundlePath,
-        routes: await pagesRouter(pagesDir),
-        apiRoutes: await apiRouter(pagesDir),
-        pagesDir,
-        outDir,
-        config: await resolveNextConfig({}),
-      });
+  it.each([
+    ["a pages/404 that throws, rendered without routing", "pages-throwing-404"],
+    ["a 404 page the server fails before rendering", "pages-failing-server-init"],
+  ])(
+    "fails the build on %s",
+    async (_name, fixtureName) => {
+      const fixture = path.resolve(import.meta.dirname, "./fixtures", fixtureName);
+      const pagesBundlePath = await buildPagesFixture(fixture);
+      const outDir = tmpDir("vinext-prerender-pages-direct-404-error-");
+      try {
+        const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+        const { pagesRouter, apiRouter } =
+          await import("../packages/vinext/src/routing/pages-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const pagesDir = path.join(fixture, "pages");
+        const result = await prerenderPages({
+          mode: "default",
+          pagesBundlePath,
+          routes: await pagesRouter(pagesDir),
+          apiRoutes: await apiRouter(pagesDir),
+          pagesDir,
+          outDir,
+          config: await resolveNextConfig({}),
+        });
 
-      expect(findRoute(result.routes, "/404")).toMatchObject({ status: "error", fatal: true });
-      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
-    } finally {
-      fs.rmSync(outDir, { recursive: true, force: true });
-    }
-  }, 60_000);
+        expect(findRoute(result.routes, "/404")).toMatchObject({ status: "error", fatal: true });
+        expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+      } finally {
+        fs.rmSync(outDir, { recursive: true, force: true });
+      }
+    },
+    60_000,
+  );
 });
 
 describe("prerenderPages — basePath export", () => {
