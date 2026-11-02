@@ -58,6 +58,13 @@ const nextConfig: NextConfig = {
     ],
   },
 
+  // Used by E2E: app-router/use-cache.spec.ts, app-router-prod/use-cache.spec.ts —
+  // a custom profile and an overridden built-in read by cacheLife().
+  cacheLife: {
+    customProfile: { revalidate: 120, expire: 3600 },
+    minutes: { stale: 30, revalidate: 90, expire: 1800 },
+  },
+
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
 
@@ -272,6 +279,17 @@ const nextConfig: NextConfig = {
           source: "/proxy-external-host-capture",
           has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
           destination: "http://:proxyHost.invalid/host-capture",
+        },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination path must stay inside that path
+        // and keep the destination's own query.
+        {
+          source: "/proxy-external-path-capture",
+          has: [
+            { type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" },
+            { type: "query", key: "file", value: "(?<file>.*)" },
+          ],
+          destination: "http://127.0.0.1::upstreamPort/public/:file?revision=published",
         },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {

@@ -659,26 +659,26 @@ Every `next/*` import is shimmed to a Vite-compatible implementation.
 
 ### Server features
 
-| Feature                                    |     | Notes                                                                                       |
-| ------------------------------------------ | --- | ------------------------------------------------------------------------------------------- |
-| SSR (Pages Router)                         | ✅  | Streaming, `_app`/`_document`, `__NEXT_DATA__`, hydration                                   |
-| SSR (App Router)                           | ✅  | RSC pipeline, nested layouts, streaming, nav context for client components                  |
-| `getStaticProps`                           | ✅  | Props, redirect, notFound, revalidate                                                       |
-| `getStaticPaths`                           | ✅  | `fallback: false`, `true`, `"blocking"`                                                     |
-| `getServerSideProps`                       | ✅  | Full context including locale                                                               |
-| ISR                                        | ✅  | Stale-while-revalidate, pluggable `CacheHandler`, background regeneration                   |
-| Server Actions (`"use server"`)            | ✅  | Action execution, FormData, re-render after mutation, `redirect()` in actions               |
-| React Server Components                    | ✅  | Via `@vitejs/plugin-rsc`. `"use client"` boundaries work correctly                          |
-| Streaming SSR                              | ✅  | Both routers                                                                                |
-| Metadata API                               | ✅  | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates             |
-| `generateStaticParams`                     | ✅  | With `dynamicParams` enforcement                                                            |
-| Metadata file routes                       | ✅  | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic)                    |
-| Static export (`output: 'export'`)         | ✅  | Generates static HTML/JSON for all routes                                                   |
-| Standalone output (`output: 'standalone'`) | ✅  | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps             |
-| `connection()`                             | ✅  | Forces dynamic rendering                                                                    |
-| `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` profiles, `cacheTag()`, stale-while-revalidate |
-| `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                 |
-| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`   |
+| Feature                                    |     | Notes                                                                                                                                                                      |
+| ------------------------------------------ | --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| SSR (Pages Router)                         | ✅  | Streaming, `_app`/`_document`, `__NEXT_DATA__`, hydration                                                                                                                  |
+| SSR (App Router)                           | ✅  | RSC pipeline, nested layouts, streaming, nav context for client components                                                                                                 |
+| `getStaticProps`                           | ✅  | Props, redirect, notFound, revalidate                                                                                                                                      |
+| `getStaticPaths`                           | ✅  | `fallback: false`, `true`, `"blocking"`                                                                                                                                    |
+| `getServerSideProps`                       | ✅  | Full context including locale                                                                                                                                              |
+| ISR                                        | ✅  | Stale-while-revalidate, pluggable `CacheHandler`, background regeneration                                                                                                  |
+| Server Actions (`"use server"`)            | ✅  | Action execution, FormData, re-render after mutation, `redirect()` in actions                                                                                              |
+| React Server Components                    | ✅  | Via `@vitejs/plugin-rsc`. `"use client"` boundaries work correctly                                                                                                         |
+| Streaming SSR                              | ✅  | Both routers                                                                                                                                                               |
+| Metadata API                               | ✅  | `metadata`, `generateMetadata`, `viewport`, `generateViewport`, title templates                                                                                            |
+| `generateStaticParams`                     | ✅  | With `dynamicParams` enforcement                                                                                                                                           |
+| Metadata file routes                       | ✅  | sitemap.xml, robots.txt, manifest, favicon, OG images (static + dynamic)                                                                                                   |
+| Static export (`output: 'export'`)         | ✅  | Generates static HTML/JSON for all routes                                                                                                                                  |
+| Standalone output (`output: 'standalone'`) | ✅  | Generates `dist/standalone` with `server.js`, build artifacts, and runtime deps                                                                                            |
+| `connection()`                             | ✅  | Forces dynamic rendering                                                                                                                                                   |
+| `"use cache"` directive                    | ✅  | File-level and function-level. `cacheLife()` with built-in and next.config `cacheLife` (or legacy `experimental.cacheLife`) profiles, `cacheTag()`, stale-while-revalidate |
+| `instrumentation.ts`                       | ✅  | `register()`, `onRequestError()`, and [framework tracing](docs/tracing.mdx)                                                                                                |
+| Route segment config                       | 🟡  | `revalidate`, `dynamic`, `dynamicParams`, `runtime` (not placement). No `preferredRegion`                                                                                  |
 
 ### Configuration
 

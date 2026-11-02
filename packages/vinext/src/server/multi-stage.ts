@@ -98,14 +98,18 @@ export type VinextResponseStageDispatchOptions = {
    *
    * Under `responseStageCacheIdentity: "query-free"`, an App page identity
    * also drops the user query from the URL and `resolvedUrl`, keeping
-   * framework representation selectors: the `.rsc` suffix, the render mode,
-   * and, for RSC requests only, the one validated `_rsc` value. That is safe
+   * framework representation selectors: the render mode and, for RSC
+   * requests only, the one validated `_rsc` value. That is safe
    * only because completed-response admission refuses a cacheable App page
    * response unless its render proved it never read `searchParams`. The
    * dispatched request still carries the real query for the render itself. A
    * page identity keeps the query when a `next.config` public cache policy
    * applies (cached per full URL, as Next.js CDN caching is), and for
-   * interception and mounted-slot dispatches.
+   * interception and mounted-slot dispatches. A Route Handler or metadata
+   * route identity keeps only the method, path (without `.rsc`) and route
+   * props, as Next.js keys a route handler by its pathname: the RSC selectors
+   * pick no representation of its response, and admission refuses a handler
+   * that read the request's URL or headers.
    */
   cacheIdentity?: {
     props: unknown;

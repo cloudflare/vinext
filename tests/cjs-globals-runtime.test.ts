@@ -1257,7 +1257,7 @@ export default handler;
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
         };
       }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
     };
@@ -1268,7 +1268,7 @@ export default handler;
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
       },
     });
     baseUrl = (await worker.url).origin;
@@ -1429,7 +1429,7 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
         };
       }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
     };
@@ -1440,7 +1440,7 @@ describe("bundled module identity on a Pages-only Cloudflare Workers runtime", (
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
       },
     });
     baseUrl = (await worker.url).origin;

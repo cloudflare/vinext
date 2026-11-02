@@ -31,8 +31,8 @@ test.describe("Cloudflare Workers Navigation", () => {
   });
 
   test("RSC endpoint returns flight data for client navigation", async ({ request }) => {
-    // The .rsc URL should return RSC flight payload (not HTML)
-    const response = await request.get(`${BASE}/about.rsc`, {
+    // An RSC request should return the RSC flight payload (not HTML)
+    const response = await request.get(`${BASE}/about?_rsc`, {
       headers: { Accept: "text/x-component", RSC: "1" },
     });
 

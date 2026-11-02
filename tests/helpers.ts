@@ -20,6 +20,10 @@ import {
   type ViteDevServer,
 } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+import {
+  createRscRequestHeaders,
+  createRscRequestUrl,
+} from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import path from "node:path";
 import type { NextConfigInput } from "../packages/vinext/src/config/next-config.js";
 import type { VinextCacheConfig } from "../packages/vinext/src/cache/cache-adapters-virtual.js";
@@ -198,6 +202,34 @@ export async function fetchHtml(
   const res = await fetch(`${baseUrl}${urlPath}`, init);
   const html = await res.text();
   return { res, html };
+}
+
+/**
+ * The path and query the client fetches for an App Router RSC payload: the
+ * `_rsc` cache-busting param matching `headers` (`RSC: 1` alone by default).
+ */
+export function rscRequestPath(
+  urlPath: string,
+  headers: Headers = createRscRequestHeaders(),
+): Promise<string> {
+  return createRscRequestUrl(urlPath, headers);
+}
+
+/**
+ * Fetch an App Router RSC payload the way the client does: `RSC: 1` plus the
+ * matching `_rsc` cache-busting param. Extra headers join the hash input.
+ * Server Action POSTs go to the plain path, as the client sends them.
+ */
+export async function fetchRsc(
+  baseUrl: string,
+  urlPath: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const headers = createRscRequestHeaders();
+  new Headers(init.headers).forEach((value, key) => headers.set(key, value));
+  const requestPath =
+    init.method?.toUpperCase() === "POST" ? urlPath : await rscRequestPath(urlPath, headers);
+  return fetch(`${baseUrl}${requestPath}`, { ...init, headers });
 }
 
 /**
