@@ -10,6 +10,7 @@ import {
   normalizeNextDataPagePathname,
   urlParserCreatesPagesDataPath,
 } from "../packages/vinext/src/server/pages-data-route.js";
+import { buildPagesDataPath } from "../packages/vinext/src/shims/internal/pages-data-url.js";
 
 describe("pages-data-route", () => {
   describe("isNextDataPathname", () => {
@@ -72,10 +73,57 @@ describe("pages-data-route", () => {
       });
     });
 
-    it("denormalizes trailing `/index` to a directory", () => {
-      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/en/index.json`, BUILD_ID)).toEqual({
-        pagePathname: "/en",
+    // Ported from Next.js's `denormalizePagePath`: only the root `index` and
+    // the encoder's leading `index/` segment are rewritten. Next.js 16.2.7
+    // renders `/blog/[slug]` with `slug: "index"` for `blog/index.json`.
+    // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/page-path/denormalize-page-path.ts
+    it.each([
+      ["blog/index", "/blog/index"],
+      ["en/index", "/en/index"],
+      ["index/index", "/index"],
+      ["index/index/foo", "/index/foo"],
+      ["index/foo", "/foo"],
+      ["index/[slug]", "/index/[slug]"],
+    ])("resolves the asset path %s to the page %s", (assetPath, pagePathname) => {
+      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/${assetPath}.json`, BUILD_ID)).toEqual({
+        pagePathname,
       });
+    });
+
+    // Next.js tests an interception marker's intercepted route for a dynamic
+    // segment, and throws (500) on an invalid one. Observed on Next.js 16.2.7.
+    it.each([
+      ["index/(.)[slug]", "/index/(.)[slug]"],
+      ["index/(...)[slug]", "/index/(...)[slug]"],
+      ["index/(..)[slug]", "/index/(..)[slug]"],
+      ["index/(...)x", "/(...)x"],
+      ["index/(group)/(.)[slug]", "/index/(group)/(.)[slug]"],
+    ])(
+      "resolves the interception-marked asset path %s to the page %s",
+      (assetPath, pagePathname) => {
+        expect(
+          parseNextDataPathname(`/_next/data/${BUILD_ID}/${assetPath}.json`, BUILD_ID),
+        ).toEqual({
+          pagePathname,
+        });
+      },
+    );
+
+    it.each(["index/(.)", "index/(..)(..)x"])(
+      "does not resolve the invalid interception route %s",
+      (assetPath) => {
+        expect(
+          parseNextDataPathname(`/_next/data/${BUILD_ID}/${assetPath}.json`, BUILD_ID),
+        ).toBeNull();
+      },
+    );
+
+    it("round-trips encoded page paths that contain index segments", () => {
+      for (const pagePathname of ["/", "/index", "/index/foo", "/blog/index", "/fr/blog/index"]) {
+        expect(parseNextDataPathname(buildPagesDataPath(BUILD_ID, pagePathname), BUILD_ID)).toEqual(
+          { pagePathname },
+        );
+      }
     });
 
     it("returns null for a mismatched buildId", () => {

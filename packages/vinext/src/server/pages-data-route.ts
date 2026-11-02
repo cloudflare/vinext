@@ -79,6 +79,7 @@ export function encodeUrlParserIgnoredCharacters(pathname: string): string {
  * `/_next/data/<buildId>/about.json`         → `/about`
  * `/_next/data/<buildId>/en/about.json`      → `/en/about`
  * `/_next/data/<buildId>/index.json`         → `/`
+ * `/_next/data/<buildId>/blog/index.json`    → `/blog/index`
  * `/_next/data/<buildId>/en.json`            → `/en`
  * `/_next/data/<wrong-id>/about.json`        → null
  * `/_next/data/<buildId>/about`              → null  (missing .json suffix)
@@ -112,22 +113,97 @@ export function nextDataMiddlewareMatchPathname(pathname: string): string | null
 }
 
 function pageFromNextDataRest(rest: string): NextDataMatch | null {
+  const pagePathname = pagePathnameFromNextDataAsset(rest);
+  return pagePathname === null ? null : { pagePathname };
+}
+
+// Next.js's strict `isDynamicRoute` test.
+const DYNAMIC_ROUTE_SEGMENT = /\/\[[^/]+\](?=\/|$)/;
+const INTERCEPTION_ROUTE_MARKERS = ["(..)(..)", "(.)", "(..)", "(...)"] as const;
+
+/**
+ * The page pathname for a data URL's asset path (between the buildId and
+ * `.json`). Ports Next.js's `denormalizePagePath`: `index` is the root page,
+ * and the encoder's extra leading `index/` segment is removed, so an explicit
+ * `pages/index/foo.tsx` (route `/index/foo`) round-trips via `index/index/foo`.
+ * Any other `index` segment is part of the page path: `blog/index` addresses
+ * `/blog/index` (e.g. `/blog/[slug]` with `slug: "index"`), not `/blog`.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/page-path/denormalize-page-path.ts
+ */
+export function pagePathnameFromNextDataAsset(assetPath: string): string | null {
   // Empty rest (`/_next/data/<buildId>/.json`) is not a valid page path.
-  if (rest.length === 0) return null;
+  if (assetPath.length === 0) return null;
+  const page = `/${assetPath}`;
+  if (page.startsWith("/index/")) {
+    const isDynamic = isStrictDynamicRoute(page);
+    // Next.js throws on an invalid interception route and answers 500.
+    if (isDynamic === null) return null;
+    if (!isDynamic) return page.slice(6);
+  }
+  return page === "/index" ? "/" : page;
+}
 
-  // Next.js denormalizes `index` to `/` to mirror file-system page paths
-  // (`pages/index.tsx` → `/`). See `denormalizePagePath` in Next.js.
-  if (rest === "index") return { pagePathname: "/" };
-  if (rest.endsWith("/index")) return { pagePathname: `/${rest.slice(0, -"/index".length)}` };
+/**
+ * Next.js's strict `isDynamicRoute`, which tests the intercepted route when the
+ * path has an interception marker: `/index/(.)[slug]` is dynamic because it
+ * resolves to `/index/[slug]`. Returns null where Next.js throws.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/is-dynamic.ts
+ */
+function isStrictDynamicRoute(route: string): boolean | null {
+  const marker = interceptionRouteMarker(route);
+  if (marker === undefined) return DYNAMIC_ROUTE_SEGMENT.test(route);
+  const interceptedRoute = resolveInterceptedRoute(route, marker);
+  return interceptedRoute === null ? null : DYNAMIC_ROUTE_SEGMENT.test(interceptedRoute);
+}
 
-  // The encoder (`getAssetPathFromRoute` in Next.js / `buildPagesDataPath` in
-  // vinext) prefixes any path beginning with `index` with an extra `index/`
-  // segment so an explicit `pages/index/foo.tsx` page (route `/index/foo`)
-  // round-trips through the data URL without colliding with `/foo`. Strip
-  // that prefix here.
-  if (rest.startsWith("index/")) return { pagePathname: `/${rest.slice("index/".length)}` };
+function interceptionRouteMarker(path: string): string | undefined {
+  for (const segment of path.split("/")) {
+    const marker = INTERCEPTION_ROUTE_MARKERS.find((m) => segment.startsWith(m));
+    if (marker) return marker;
+  }
+  return undefined;
+}
 
-  return { pagePathname: `/${rest}` };
+/**
+ * The intercepted route from Next.js's `extractInterceptionRouteInformation`,
+ * or null where it throws.
+ * https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/shared/lib/router/utils/interception-routes.ts
+ */
+function resolveInterceptedRoute(path: string, marker: string): string | null {
+  const [rawInterceptingRoute, interceptedRoute] = path.split(marker, 2);
+  if (!rawInterceptingRoute || !interceptedRoute) return null;
+  const interceptingRoute = normalizeAppPath(rawInterceptingRoute);
+  switch (marker) {
+    case "(.)":
+      return interceptingRoute === "/"
+        ? `/${interceptedRoute}`
+        : `${interceptingRoute}/${interceptedRoute}`;
+    case "(..)":
+      if (interceptingRoute === "/") return null;
+      return interceptingRoute.split("/").slice(0, -1).concat(interceptedRoute).join("/");
+    case "(...)":
+      return `/${interceptedRoute}`;
+    default: {
+      const segments = interceptingRoute.split("/");
+      if (segments.length <= 2) return null;
+      return segments.slice(0, -2).concat(interceptedRoute).join("/");
+    }
+  }
+}
+
+// Next.js's `normalizeAppPath`: drops route groups, parallel slots and a
+// trailing `page`/`route` leaf.
+function normalizeAppPath(route: string): string {
+  const segments = route.split("/");
+  let pathname = "";
+  segments.forEach((segment, index) => {
+    if (!segment) return;
+    if (segment[0] === "(" && segment.endsWith(")")) return;
+    if (segment[0] === "@") return;
+    if ((segment === "page" || segment === "route") && index === segments.length - 1) return;
+    pathname += `/${segment}`;
+  });
+  return pathname || "/";
 }
 
 export function normalizeNextDataPagePathname(pagePathname: string, trailingSlash = false): string {
