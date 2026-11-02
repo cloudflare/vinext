@@ -3266,7 +3266,7 @@ describe("createAppRscHandler", () => {
   it("composes a route's slot params above a shared RSC cache hit", async () => {
     // A single-stage render merges the params of the route's active slot
     // patterns into useParams(). The request stage never loads slot modules,
-    // so its lazy loader marks the slot active.
+    // so the generated route marks the slot's lazy loader with `true`.
     const route = createPageRoute({
       isDynamic: true,
       params: ["teamID"],
@@ -3274,7 +3274,7 @@ describe("createAppRscHandler", () => {
       routeSegments: ["[teamID]", "sub", "folder"],
       slots: {
         "slot@app/[teamID]/@slot": {
-          __loadPage() {},
+          __loadPage: true,
           name: "slot",
           page: null,
           routeSegments: ["[...catchAll]"],
