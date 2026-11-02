@@ -82,7 +82,7 @@ describe("vinext init ESLint ignores", () => {
       ].join("\n"),
     );
     expect(output).toContain(
-      "✓ Added vinext output directories to the ignores in eslint.config.mjs",
+      '✓ Added "dist/**", ".vinext/**", ".cloudflare/**" to the ignores in eslint.config.mjs',
     );
     expect(
       await ignoredPaths(root, [cloudflareOutput, nodeOutput, cacheOutput, "app/page.tsx"]),
@@ -167,6 +167,9 @@ describe("addEslintIgnores", () => {
     expect(addEslintIgnores(files.join("\n"), ["dist/**"])).toBe(undefined);
     // Entries elsewhere in the config do not count as ignored.
     const source = [
+      "/* globalIgnores([",
+      "  '.next/**',",
+      "]) */",
       "// Build output: 'dist/**'",
       "export default [",
       "  { files: ['dist/**'], rules: {} },",
@@ -178,6 +181,9 @@ describe("addEslintIgnores", () => {
     ].join("\r\n");
     expect(addEslintIgnores(source, ["dist/**"])).toBe(
       [
+        "/* globalIgnores([",
+        "  '.next/**',",
+        "]) */",
         "// Build output: 'dist/**'",
         "export default [",
         "  { files: ['dist/**'], rules: {} },",

@@ -34,12 +34,14 @@ import {
   cssModulesConfigSource,
   compactResourceName,
   findConfigKeepingWorkerName,
+  parseViteConfig,
   setupCloudflarePlatform,
   updateViteConfigForCssModules,
   usesCommonJsViteConfig,
   validateCloudflarePlatformSetup,
 } from "./init-cloudflare.js";
 import type { CloudflareInitOptions, InitPlatform } from "./init-platform.js";
+import type { ESTree } from "vite";
 import { getPluginReactUpgradeDeps } from "./utils/plugin-react-version.js";
 import { getReactUpgradeDeps } from "./utils/react-version.js";
 
@@ -656,44 +658,82 @@ function eslintIgnoreEntries(platform: InitPlatform, legacyWrangler: boolean): s
   ];
 }
 
-// The opening of a global ignore list: `globalIgnores([` or an `ignores: [`
-// that is the first key of its object.
-const ESLINT_IGNORE_LISTS = /globalIgnores\(\s*\[|\{\s*ignores:\s*\[/g;
+type EslintAstNode = ESTree.Node & { start: number; end: number };
+
+/** Global ignore lists: `globalIgnores([...])` and objects whose only key is `ignores`. */
+function findEslintIgnoreLists(node: unknown, lists: EslintAstNode[] = []): EslintAstNode[] {
+  if (!node || typeof node !== "object") return lists;
+  const current = node as ESTree.Node;
+  if (
+    current.type === "CallExpression" &&
+    current.callee.type === "Identifier" &&
+    current.callee.name === "globalIgnores" &&
+    current.arguments[0]?.type === "ArrayExpression"
+  ) {
+    lists.push(current.arguments[0] as EslintAstNode);
+  }
+  if (current.type === "ObjectExpression" && current.properties.length === 1) {
+    const [property] = current.properties;
+    if (
+      property.type === "Property" &&
+      !property.computed &&
+      property.key.type === "Identifier" &&
+      property.key.name === "ignores" &&
+      property.value.type === "ArrayExpression"
+    ) {
+      lists.push(property.value as EslintAstNode);
+    }
+  }
+  for (const child of Object.values(node)) findEslintIgnoreLists(child, lists);
+  return lists;
+}
+
+function stringValue(node: unknown): string | undefined {
+  const literal = node as ESTree.Node | null;
+  return literal?.type === "Literal" && typeof literal.value === "string"
+    ? literal.value
+    : undefined;
+}
 
 /**
  * Add `entries` to the global ignore list that create-next-app copies from
  * eslint-config-next's defaults (`".next/**"`, `"out/**"`, ...). Returns the
  * updated source, or undefined when the config has no such list.
  */
-export function addEslintIgnores(source: string, entries: string[]): string | undefined {
-  const lists: Array<{ start: number; closing: number }> = [];
-  for (const open of source.matchAll(ESLINT_IGNORE_LISTS)) {
-    const start = open.index + open[0].length;
-    const closing = source.indexOf("]", start);
-    if (closing === -1) continue;
-    // `ignores` only applies globally when it is the object's only key.
-    if (open[0].startsWith("{") && !/^,?\}/.test(source.slice(closing + 1).replace(/\s+/g, ""))) {
-      continue;
-    }
-    lists.push({ start, closing });
+export function addEslintIgnores(
+  source: string,
+  entries: string[],
+  fileName = "eslint.config.mjs",
+): string | undefined {
+  let program: ESTree.Program;
+  try {
+    program = parseViteConfig(fileName, source);
+  } catch {
+    return undefined;
   }
-  const missing = entries.filter(
-    (entry) =>
-      !lists.some(({ start, closing }) => {
-        const list = source.slice(start, closing);
-        return list.includes(`"${entry}"`) || list.includes(`'${entry}'`);
-      }),
+  const lists = findEslintIgnoreLists(program.body);
+  const ignored = new Set(
+    lists.flatMap((list) => (list as ESTree.ArrayExpression).elements.map(stringValue)),
   );
+  const missing = entries.filter((entry) => !ignored.has(entry));
   if (missing.length === 0) return source;
-  for (const { start, closing } of lists) {
-    const defaults = /^([ \t]*)(["'])\.next\/\*\*\2,[ \t]*\r?$/m.exec(source.slice(start, closing));
-    if (!defaults) continue;
-    const [, indent, quote] = defaults;
+  for (const list of lists) {
+    const elements = (list as ESTree.ArrayExpression).elements as Array<EslintAstNode | null>;
+    const defaults = elements.find((element) => stringValue(element) === ".next/**");
+    const last = elements.at(-1);
+    if (!defaults || !last) continue;
+    // Only a list with one entry per line and a trailing comma, as create-next-app writes it.
+    const closing = list.end - 1;
     const closingLineStart = source.lastIndexOf("\n", closing) + 1;
-    const beforeClosing = source.slice(0, closingLineStart).trimEnd();
-    if (source.slice(closingLineStart, closing).trim() !== "" || !beforeClosing.endsWith(",")) {
+    const indent = source.slice(source.lastIndexOf("\n", defaults.start) + 1, defaults.start);
+    if (
+      source.slice(last.end, closingLineStart).trim() !== "," ||
+      source.slice(closingLineStart, closing).trim() !== "" ||
+      indent.trim() !== ""
+    ) {
       return undefined;
     }
+    const quote = source[defaults.start];
     const newline = source.includes("\r\n") ? "\r\n" : "\n";
     const lines = missing.map((entry) => `${indent}${quote}${entry}${quote},${newline}`).join("");
     return (
@@ -720,7 +760,7 @@ export function updateEslintIgnores(
   const configPath = path.join(root, file);
   const source = fs.readFileSync(configPath, "utf-8");
   const entries = eslintIgnoreEntries(platform, legacyWrangler);
-  const updated = addEslintIgnores(source, entries);
+  const updated = addEslintIgnores(source, entries, file);
   if (updated === undefined) return { file, entries, updated: false };
   if (updated === source) return undefined;
   fs.writeFileSync(configPath, updated, "utf-8");
@@ -1235,7 +1275,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   if (eslintIgnores?.updated) {
     console.log(
-      `    ${terminalStyle.green("\u2713")} Added vinext output directories to the ignores in ${eslintIgnores.file}`,
+      `    ${terminalStyle.green("\u2713")} Added ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")} to the ignores in ${eslintIgnores.file}`,
     );
   } else if (eslintIgnores) {
     console.log(
