@@ -1235,10 +1235,16 @@ describe("app page dispatch", () => {
     });
   });
 
-  // Only a render that can never be stored may skip its layouts in a
+  // Only a render that can never be stored may skip the layouts a navigation's
+  // client holds. Only a render without PPR sends just the route tree for a
   // loading-shell prefetch without a loading boundary (buildAppPageElements).
   it.each([
-    { name: "a production static route", overrides: { isProduction: true }, expected: false },
+    {
+      name: "a production static route",
+      overrides: { isProduction: true },
+      expected: false,
+      ppr: false,
+    },
     {
       name: "a PPR fallback shell",
       overrides: {
@@ -1247,17 +1253,20 @@ describe("app page dispatch", () => {
         pprFallbackShell: { fallbackParamNames: ["slug"], routePattern: "/posts/[slug]" },
       },
       expected: false,
+      ppr: true,
     },
     {
       name: "a dynamic route without generateStaticParams",
       overrides: { isProduction: true, route: createRoute({ isDynamic: true }) },
       expected: true,
+      ppr: false,
     },
-    { name: "dev", overrides: { isProduction: false }, expected: true },
+    { name: "dev", overrides: { isProduction: false }, expected: true, ppr: false },
     {
       name: "a force-dynamic route",
       overrides: { isProduction: true, dynamicConfig: "force-dynamic" as const },
       expected: true,
+      ppr: false,
     },
     {
       name: "a draft-mode render",
@@ -1268,6 +1277,7 @@ describe("app page dispatch", () => {
         }),
       },
       expected: true,
+      ppr: false,
     },
     // Next.js renders layouts for every production prefetch with Cache
     // Components (isRoutePPREnabled in walkTreeWithFlightRouterState()).
@@ -1281,13 +1291,15 @@ describe("app page dispatch", () => {
         }),
       },
       expected: false,
+      ppr: true,
     },
     {
       name: "a Cache Components dev render",
       overrides: { isProduction: false, pprRuntime: appPagePprRuntime },
       expected: true,
+      ppr: false,
     },
-  ])("marks $name as uncacheable: $expected", async ({ overrides, expected }) => {
+  ])("marks $name as uncacheable: $expected, PPR: $ppr", async ({ overrides, expected, ppr }) => {
     const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
       React.createElement("main", null, "page"),
     );
@@ -1301,6 +1313,7 @@ describe("app page dispatch", () => {
     await response.text();
 
     expect(buildPageElement.mock.calls[0]?.[4]?.isUncacheableRender).toBe(expected);
+    expect(buildPageElement.mock.calls[0]?.[4]?.routeTreeOnlyPrefetchShell).toBe(!ppr);
   });
 
   // Next.js renders only below where a navigation diverges from the client's
@@ -4286,6 +4299,7 @@ describe("app page dispatch", () => {
       {
         isForceStatic: false,
         isUncacheableRender: true,
+        routeTreeOnlyPrefetchShell: true,
         observeMetadataSearchParamsAccess: true,
         observePageSearchParamsAccess: true,
         onHeadPrepared: expect.any(Function),
@@ -4368,6 +4382,54 @@ describe("app page dispatch", () => {
       setHeadersContext(null);
     }
   });
+
+  // A stale entry regenerates in the shape it was stored: a loading shell
+  // without a loading boundary is the route tree only without PPR, and keeps
+  // its layouts with Cache Components in production.
+  it.each([
+    { name: "without PPR", pprRuntime: undefined, expected: true },
+    { name: "with Cache Components", pprRuntime: appPagePprRuntime, expected: false },
+  ])(
+    "regenerates a stale entry with the foreground's shell shape $name",
+    async ({ pprRuntime, expected }) => {
+      let scheduledRender: (() => Promise<void>) | null = null;
+      const buildPageElement = vi.fn<DispatchOptions["buildPageElement"]>(async () =>
+        React.createElement("main", null, "fresh"),
+      );
+      const { options } = createDispatchOptions({
+        buildPageElement,
+        isProduction: true,
+        isrGet: vi.fn(async () =>
+          buildISRCacheEntry(buildCachedAppPageValue("<html>stale</html>"), true),
+        ),
+        loadSsrHandler: async () => ({
+          async handleSsr(_rscStream, _navigationContext, _fontData, captureOptions) {
+            if (captureOptions?.capturedRscDataRef) {
+              captureOptions.capturedRscDataRef.value = Promise.resolve(
+                new TextEncoder().encode("fresh-flight").buffer,
+              );
+            }
+            void captureOptions?.sideStream?.cancel().catch(() => {});
+            return createStream(["<html>fresh</html>"]);
+          },
+        }),
+        pprRuntime,
+        revalidateSeconds: 60,
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+      });
+
+      const response = await dispatchAppPage(options);
+      await response.text();
+      expect(response.headers.get("x-vinext-cache")).toBe("STALE");
+      expect(scheduledRender).not.toBeNull();
+      await scheduledRender!();
+
+      expect(buildPageElement).toHaveBeenCalledTimes(1);
+      expect(buildPageElement.mock.calls[0]?.[4]?.routeTreeOnlyPrefetchShell).toBe(expected);
+    },
+  );
 
   it("regenerates stale HTML cache entries with waitForAllReady so suspense fallbacks never leak into the cache", async () => {
     // Stale-while-revalidate regeneration must await React's `allReady` before

@@ -337,6 +337,7 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
     options?: {
       isForceStatic?: boolean;
       isUncacheableRender?: boolean;
+      routeTreeOnlyPrefetchShell?: boolean;
       /** Layouts the navigating client holds, which the render may leave out. */
       mountedLayouts?: ReadonlySet<string> | null;
       observeMetadataSearchParamsAccess?: boolean;
@@ -844,15 +845,17 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     isStaticEligible &&
     options.pprFallbackShell === undefined &&
     !isNeverStoredPath;
-  // A render that can never be stored and, in production, is never sent with
-  // static cache headers. Only it may skip layouts that would otherwise decide
-  // whether the response is cacheable. With Cache Components, Next.js renders
-  // layouts for every production prefetch (isRoutePPREnabled), so only dev
-  // skips them.
-  const isUncacheableRender =
-    !(isCacheEligibleRender && isStaticEligible) &&
+  // A render without PPR sends only the route tree for a loading-shell prefetch
+  // without a loading boundary. With Cache Components, Next.js renders layouts
+  // for every production prefetch (isRoutePPREnabled), so only dev does.
+  const routeTreeOnlyPrefetchShell =
     options.pprFallbackShell === undefined &&
     (options.pprRuntime === undefined || !options.isProduction);
+  // A render that can never be stored and, in production, is never sent with
+  // static cache headers. Only it may skip the layouts a navigation's client
+  // holds.
+  const isUncacheableRender =
+    !(isCacheEligibleRender && isStaticEligible) && routeTreeOnlyPrefetchShell;
   // A navigation names the layouts it holds, so a render that's never stored
   // can leave them out, as Next.js renders only below where a navigation
   // diverges. A stored payload stays whole for every client that reads it.
@@ -1003,6 +1006,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
                 isForceStatic: revalidationDynamicConfig === "force-static",
                 observeMetadataSearchParamsAccess: revalidationDynamicConfig !== "force-static",
                 observePageSearchParamsAccess: revalidationDynamicConfig !== "force-static",
+                // A stale loading shell regenerates in the shape it was stored.
+                routeTreeOnlyPrefetchShell,
                 // As in Next.js, a regeneration streams metadata as the
                 // request that triggered it does, into the <head> of a
                 // document it renders whole.
@@ -1286,6 +1291,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
           observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
           isUncacheableRender,
+          routeTreeOnlyPrefetchShell,
           serveStreamingMetadata: placeGeneratedMetadataInBody,
           placeStreamedMetadataInHead: options.renderWholeDocument === true,
           onHeadPrepared,
@@ -1391,6 +1397,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
             observeMetadataSearchParamsAccess: !isForceStatic,
             observePageSearchParamsAccess: !isForceStatic,
             isUncacheableRender,
+            routeTreeOnlyPrefetchShell,
             // An intercepted render keeps every layout its interception wraps.
             mountedLayouts: interceptResult.interceptOpts ? null : mountedLayouts,
             serveStreamingMetadata: placeGeneratedMetadataInBody,
