@@ -203,6 +203,8 @@ export type AppPageRouteWiringRoute<
     id: string;
     ownerTreePath: string;
     state: AppElementsSlotBinding["state"];
+    /** A slot sub-route whose children its route segments don't describe. */
+    synthetic?: boolean;
   } | null;
   /**
    * Static sibling segment names at each dynamic URL level for this route. Used
@@ -2230,8 +2232,10 @@ export function buildAppPageElements<
   // entry per leaf and evict sooner. A sibling intercept rendered on the route
   // that owns its marker follows the intercepting route's segments down to its
   // page element, so /photo/1 shares the "feed" entry with /feed. Other
-  // interceptions and synthetic children-slot routes render children that
-  // their route segments don't describe, so they keep a single list per layout.
+  // interceptions, and slot sub-routes whose children render a default, a
+  // sibling catch-all, or nothing, render children that their route segments
+  // don't describe, so they keep a single list per layout. A page under a
+  // layout with named slots binds its children slot too, and keeps its levels.
   const firstLayoutWithElementTreePosition = layoutEntries.find(
     (entry) => getDefaultExport(entry.layoutModule) !== null,
   )?.treePosition;
@@ -2239,7 +2243,7 @@ export function buildAppPageElements<
   const keepsSegmentLevelLists =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
     firstLayoutWithElementTreePosition !== undefined &&
-    !options.route.childrenSlot &&
+    !options.route.childrenSlot?.synthetic &&
     (options.semanticPageIdentity === undefined || siblingInterceptSegmentKeys !== null);
   const spineSegmentCount = siblingInterceptSegmentKeys?.length ?? routeSegments.length;
   const spineTreePositions = keepsSegmentLevelLists

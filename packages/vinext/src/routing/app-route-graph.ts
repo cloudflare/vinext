@@ -181,6 +181,12 @@ export type AppRoute = {
     id: string;
     ownerTreePath: string;
     state: "active" | "default" | "unmatched";
+    /**
+     * Set on a sub-route minted for a slot page with no children page of its
+     * own: its children render a default, a sibling catch-all, or nothing, so
+     * its route segments don't describe them.
+     */
+    synthetic?: true;
   };
   /**
    * Interception markers not wrapped in an `@slot` directory.
@@ -1459,6 +1465,7 @@ function discoverSlotSubRoutes(
           id: childrenSlotId,
           ownerTreePath: childrenOwnerTreePath,
           state: childrenDefault ? "default" : childrenCatchAll ? "active" : "unmatched",
+          synthetic: true,
         },
         // The parent loading convention becomes an ancestor boundary for the
         // synthetic sub-route; it is no longer the synthetic route's leaf.

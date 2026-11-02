@@ -1052,6 +1052,85 @@ describe("app page route wiring helpers", () => {
     }
   });
 
+  it("keeps segment levels for a page under a layout with named slots", () => {
+    const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
+    process.env.__NEXT_CACHE_COMPONENTS = "true";
+    try {
+      const buildSpine = (childrenSlot: { state: "active" | "default"; synthetic?: boolean }) => {
+        const elements = buildAppPageElements({
+          element: createElement(PageProbe),
+          makeThenableParams(params) {
+            return Promise.resolve(params);
+          },
+          matchedParams: { id: "a" },
+          route: {
+            childrenSlot: {
+              id: "graph-slot:children",
+              ownerTreePath: "/panels",
+              ...childrenSlot,
+            },
+            error: null,
+            errors: [null, null],
+            layoutTreePositions: [0, 1],
+            layouts: [{ default: RootLayout }, { default: GroupLayout }],
+            loading: null,
+            notFound: null,
+            notFounds: [null, null],
+            routeSegments: ["panels", "[id]", "more"],
+            slots: {
+              panel: {
+                default: { default: SlotPage },
+                error: null,
+                layout: null,
+                layoutIndex: 1,
+                loading: null,
+                name: "panel",
+                page: null,
+                routeSegments: null,
+              },
+            },
+            templateTreePositions: [],
+            templates: [],
+          },
+          routePath: "/panels/a/more",
+          rootNotFoundModule: null,
+        });
+        return collectBfcacheSpine(elements["route:/panels/a/more"]);
+      };
+
+      // Every page under the panels layout binds its children slot. Like
+      // Next.js, the layout still keys its list by [id], so /panels/a and
+      // /panels/a/more share an entry.
+      const childrenSlotId = AppElementsWire.encodeSlotId("children", "/panels");
+      expect(buildSpine({ state: "active" })).toEqual([
+        "layout:/",
+        "list layout:/panels",
+        "layout:/panels",
+        `list ${segmentKey(["panels", "id|a|d"])}`,
+        `list ${segmentKey(["panels", "id|a|d", "more"])}`,
+        `list ${childrenSlotId}`,
+        childrenSlotId,
+      ]);
+      // A slot sub-route's segments name the slot page, not the default or
+      // sibling catch-all its children render, so it keeps one list.
+      const singleList = [
+        "layout:/",
+        "list layout:/panels",
+        "layout:/panels",
+        `list ${childrenSlotId}`,
+        childrenSlotId,
+      ];
+      expect(buildSpine({ state: "default", synthetic: true })).toEqual(singleList);
+      expect(buildSpine({ state: "active", synthetic: true })).toEqual(singleList);
+    } finally {
+      if (previousCacheComponents === undefined) {
+        delete process.env.__NEXT_CACHE_COMPONENTS;
+      } else {
+        process.env.__NEXT_CACHE_COMPONENTS = previousCacheComponents;
+      }
+    }
+  });
+
   it("keys a loading shell's segment levels like the full render", () => {
     const previousCacheComponents = process.env.__NEXT_CACHE_COMPONENTS;
     process.env.__NEXT_CACHE_COMPONENTS = "true";
