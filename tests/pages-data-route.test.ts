@@ -152,6 +152,15 @@ describe("pages-data-route", () => {
       expect(result.notFoundResponse).toBeNull();
     });
 
+    it("preserves basePath for a page whose first segment equals it", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/root/about.json`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.normalizedPathname).toBe("/root/about");
+      expect(result.request.url).toBe("http://localhost/root/root/about");
+    });
+
     it("applies trailingSlash after preserving basePath for middleware", () => {
       const buildId = "abc123";
       const req = new Request(`http://localhost/root/_next/data/${buildId}/about.json?x=1`);
