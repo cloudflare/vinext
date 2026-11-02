@@ -6,15 +6,16 @@ import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { createIsolatedFixture } from "./helpers.js";
 
-// The second fixture moves every asset URL: basePath, a path assetPrefix and a
-// deployment id. The hashes are keyed by the URLs the renderer emits.
+// The second fixture moves every asset URL: a basePath, which also becomes the
+// asset prefix, and a deployment id, which turns on Vite's renderBuiltUrl. The
+// hashes are keyed by the URLs the renderer emits.
 describe.each([
   { fixture: "app-sri", algorithm: "sha256", pagePath: "/", assetPath: "/_next/static/" },
   {
     fixture: "app-sri-asset-prefix",
     algorithm: "sha384",
     pagePath: "/base",
-    assetPath: "/cdn/_next/static/",
+    assetPath: "/base/_next/static/",
   },
 ] as const)(
   "App Router production experimental.sri ($fixture)",
