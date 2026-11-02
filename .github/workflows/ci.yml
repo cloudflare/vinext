@@ -466,9 +466,7 @@ jobs:
 
   e2e:
     name: E2E (${{ matrix.label }})
-    # Playwright doesn't support Ubuntu 26.04, which ubuntu-latest now runs, so
-    # browser jobs stay on 24.04.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
