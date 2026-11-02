@@ -209,12 +209,6 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  // The image endpoint runs through middleware and rewrites like any request;
-  // the handler then signals that the Worker may serve the image itself.
-  // Without an optimizer the Worker serves the source unoptimized, as the
-  // Pages Router Worker and the Node server do.
-  const servesImages = Boolean(assets);
-
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
   // /evil.com/) and block encoded protocol-relative shapes (/%5Cevil.com/,
   // /%2F/evil.com/). Check BEFORE decode so both literal and percent-encoded
@@ -296,7 +290,11 @@ async function handleRequest(
 
   if (result instanceof Response) {
     let response = result;
-    const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+    // The image endpoint runs through middleware and rewrites like any request;
+    // the handler then signals that the Worker may serve the image itself.
+    // Without an optimizer the Worker serves the source unoptimized, as the
+    // Pages Router Worker and the Node server do.
+    const imageSignal = assets ? readImageOptimizationSignal(response) : null;
     if (imageSignal && assets) {
       const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
         await import("./worker-image-optimization.js");
