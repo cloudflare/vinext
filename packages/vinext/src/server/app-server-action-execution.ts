@@ -43,7 +43,7 @@ import {
 } from "./app-rsc-cache-busting.js";
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";

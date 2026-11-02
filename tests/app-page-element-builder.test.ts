@@ -35,10 +35,10 @@ import {
   buildPageElements,
   resolveInterceptedSlotIdentitySegments,
   resolveInterceptedSlotSegments,
-  resolveAppPageNavigationParams,
   resolveSiblingInterceptSegmentKeys,
   type AppPageBuildRoute,
 } from "../packages/vinext/src/server/app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "../packages/vinext/src/server/app-page-navigation-params.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { ClientPageRoot } from "../packages/vinext/src/shims/client-page-root.js";
 import {
