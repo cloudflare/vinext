@@ -1,4 +1,5 @@
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import os from "node:os";
 import fs from "node:fs/promises";
 import { createBuilder, resolveConfig } from "vite";
@@ -171,6 +172,56 @@ describe("vinext plugin configures Vite resolve.extensions", () => {
     }
   }, 30000);
 
+  it("keeps Nitro's Bun entry resolvable when app extensions omit .mjs", async () => {
+    const vinext = (await import("../packages/vinext/src/index.js")).default;
+    const nitroModule = (await import(
+      pathToFileURL(
+        path.resolve(
+          import.meta.dirname,
+          "../examples/app-router-nitro/node_modules/nitro/dist/vite.mjs",
+        ),
+      ).href
+    )) as { nitro(options: { preset: string }): import("vite").Plugin[] };
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-nitro-resolve-extensions-"));
+    const nitroNodeModules = path.resolve(
+      import.meta.dirname,
+      "../examples/app-router-nitro/node_modules",
+    );
+    await fs.symlink(nitroNodeModules, path.join(tmpDir, "node_modules"), "junction");
+    await fs.mkdir(path.join(tmpDir, "app"), { recursive: true });
+    await fs.writeFile(
+      path.join(tmpDir, "package.json"),
+      JSON.stringify({ name: "nitro-resolve-extensions-fixture", private: true, type: "module" }),
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "next.config.mjs"),
+      `export default { turbopack: { resolveExtensions: [".tsx", ".ts"] } };`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "layout.tsx"),
+      `export default function Layout({ children }) { return <html><body>{children}</body></html>; }`,
+    );
+    await fs.writeFile(
+      path.join(tmpDir, "app", "page.tsx"),
+      `export default function Page() { return <p>Nitro Bun</p>; }`,
+    );
+
+    try {
+      const builder = await createBuilder({
+        root: tmpDir,
+        configFile: false,
+        plugins: [vinext({ appDir: tmpDir }), nitroModule.nitro({ preset: "bun" })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      await expect(
+        fs.stat(path.join(tmpDir, ".output", "server", "index.mjs")),
+      ).resolves.toBeDefined();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 30000);
+
   it("forwards turbopack.resolveExtensions for extensionless asset imports", async () => {
     // Ported from Next.js: test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/resolve-extensions/resolve-extensions.test.ts
@@ -241,6 +292,7 @@ describe("vinext plugin configures Vite resolve.extensions", () => {
         {
           root: tmpDir,
           configFile: false,
+          environments: { nitro: { consumer: "server" } },
           plugins: [vinext({ appDir: tmpDir })],
           logLevel: "silent",
         },
@@ -252,6 +304,11 @@ describe("vinext plugin configures Vite resolve.extensions", () => {
         ".ts",
       ]);
       expect(resolved.environments.ssr.resolve.extensions).toEqual([
+        ".server.ts",
+        ".prod.ts",
+        ".ts",
+      ]);
+      expect(resolved.environments.nitro.resolve.extensions).toEqual([
         ".server.ts",
         ".prod.ts",
         ".ts",
