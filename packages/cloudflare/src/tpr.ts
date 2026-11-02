@@ -249,8 +249,9 @@ export function filterTrafficPaths(
   const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
-    // Resolve dot segments (including encoded ones) as candidate discovery does.
-    const pathname = new URL(e.path, "http://vinext.local").pathname;
+    // Resolve dot segments (including encoded ones) as candidate discovery does,
+    // without reading a leading `//` as a host.
+    const pathname = new URL(`http://vinext.local${e.path}`).pathname;
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
     if (pathname.startsWith("/cdn-cgi/")) return false;
     // Static assets
