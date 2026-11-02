@@ -75,7 +75,7 @@ describe("use cache File identity and replay in Workers", () => {
     );
     worker = new Miniflare({
       compatibilityDate: "2026-02-12",
-      compatibilityFlags: ["nodejs_compat"],
+      compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
       modules: await Promise.all(
         ["index.js", ...files].map(async (file) => ({
           path: file,

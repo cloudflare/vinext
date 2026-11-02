@@ -2,7 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "benchmarks",
   "compatibility_date": "2026-02-12",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "main": "./worker/index.ts",
   "preview_urls": true,
   "assets": {

@@ -5,7 +5,7 @@ const responseStore = await createWorkersResponseStoreServiceBindingConfig({
   worker: {
     name: "vinext-web-response-store",
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
     observability: { enabled: true },
   },
   bucket: "vinext-web-response-store-cache-bodies",
@@ -22,7 +22,7 @@ export default defineConfig({
     workersDev: true,
     entrypoint: "./worker/index.ts",
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
     previewUrls: true,
     assets: {
       htmlHandling: "none",

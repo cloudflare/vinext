@@ -3,7 +3,7 @@
   "name": "vinext-workers-response-store-service-poc",
   "main": "../../dist/service.js",
   "compatibility_date": "2026-09-04",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "workers_dev": false,
   "preview_urls": false,
   "placement": { "region": "aws:eu-west-2" },

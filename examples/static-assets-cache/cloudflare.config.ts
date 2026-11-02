@@ -6,7 +6,7 @@ export default defineConfig({
     name: "static-assets-cache",
     entrypoint: "vinext/server/fetch-handler",
     compatibilityDate: "2026-04-08",
-    compatibilityFlags: ["nodejs_compat"],
+    compatibilityFlags: ["nodejs_compat", "typescript_implemented_streams"],
     previewUrls: true,
     assets: {
       htmlHandling: "none",

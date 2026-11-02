@@ -4,7 +4,7 @@
   "main": "vinext/server/fetch-handler",
   "preview_urls": true,
   "compatibility_date": "2026-08-06",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat", "typescript_implemented_streams"],
   "assets": {
     "directory": "dist/client",
     "binding": "STATIC",
