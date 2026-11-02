@@ -193,6 +193,7 @@ describe("TPR route resolution", () => {
             { path: "/docs/x/%2E%2e/videos/hero.webm", requests: 2 },
             { path: "/x/%2e%2E/cdn-cgi/zaraz/t", requests: 2 },
             { path: "//docs/videos/hero.webm", requests: 2 },
+            { path: "//cdn-cgi/zaraz/t", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },
             { path: "/docs/%00", requests: 1 },

@@ -250,8 +250,8 @@ export function filterTrafficPaths(
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
     // Resolve dot segments (including encoded ones) as candidate discovery does,
-    // without reading a leading `//` as a host.
-    const pathname = new URL(`http://vinext.local${e.path}`).pathname;
+    // without reading a leading `//` as a host, then collapse repeated separators.
+    const pathname = new URL(`http://vinext.local${e.path}`).pathname.replace(/\/+/g, "/");
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
     if (pathname.startsWith("/cdn-cgi/")) return false;
     // Static assets
