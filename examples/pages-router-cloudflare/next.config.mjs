@@ -22,6 +22,12 @@ export default {
         source: "/about",
         headers: [{ key: "X-Page-Header", value: "about-page" }],
       },
+      // /_next/image keeps a source max-age above minimumCacheTTL, as Next.js does.
+      // Coverage: tests/e2e/cloudflare-pages-router/image-bypass-types.spec.ts
+      {
+        source: "/vinext-icon.ico",
+        headers: [{ key: "Cache-Control", value: "public, max-age=86400" }],
+      },
       {
         source: "/headers-before-middleware-rewrite",
         headers: [{ key: "x-rewrite-source-header", value: "1" }],

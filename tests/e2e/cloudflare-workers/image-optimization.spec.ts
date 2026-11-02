@@ -44,12 +44,14 @@ test.describe("Cloudflare Workers /_next/image cache-state headers", () => {
 test.describe("Cloudflare Workers /_next/image formats it does not optimize", () => {
   const imagePath = (source: string) => `/_next/image?url=${encodeURIComponent(source)}&w=64&q=75`;
 
-  for (const [source, contentType] of [
-    ["/vinext-icon.ico", "image/x-icon"],
-    ["/vinext-animated.gif", "image/gif"],
+  const revalidated = "public, max-age=14400, must-revalidate";
+  for (const [source, contentType, cacheControl] of [
+    ["/vinext-icon.ico", "image/x-icon", revalidated],
+    ["/vinext-animated.gif", "image/gif", revalidated],
     // Workers static assets serve ICNS without an image type; Next.js types
-    // a source by its bytes.
-    ["/vinext-icon.icns", "image/x-icns"],
+    // a source by its bytes. next.config.mjs gives it a longer max-age, which
+    // Next.js keeps over minimumCacheTTL.
+    ["/vinext-icon.icns", "image/x-icns", "public, max-age=86400, must-revalidate"],
   ] as const) {
     test(`serves ${source} as-is instead of transforming it`, async ({ request }) => {
       const original = Buffer.from(await (await request.get(source)).body());
@@ -60,8 +62,7 @@ test.describe("Cloudflare Workers /_next/image formats it does not optimize", ()
       expect(response.status()).toBe(200);
       expect(response.headers()["content-type"]).toBe(contentType);
       expect(Buffer.from(await response.body()).equals(original)).toBe(true);
-      // Next.js's image policy at the default `images.minimumCacheTTL`.
-      expect(response.headers()["cache-control"]).toBe("public, max-age=14400, must-revalidate");
+      expect(response.headers()["cache-control"]).toBe(cacheControl);
       expect(response.headers()["vary"]).toBe("Accept");
       expect(response.headers()["content-security-policy"]).toBe(
         "script-src 'none'; frame-src 'none'; sandbox;",

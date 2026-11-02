@@ -6,12 +6,14 @@ const imagePath = (source: string) => `/_next/image?url=${encodeURIComponent(sou
 // https://github.com/vercel/next.js/blob/v16.2.6/test/integration/image-optimizer/test/util.ts
 // Next.js serves formats it does not optimize (`BYPASS_TYPES` in
 // packages/next/src/server/image-optimizer.ts) as-is, SVG included under
-// `images.dangerouslyAllowSVG`, which this example sets. Observed with
-// `next start` on next@16.2.7.
+// `images.dangerouslyAllowSVG`, which this example sets. Each is cached for
+// the larger of minimumCacheTTL and the max-age a direct request gets, here
+// from a `headers()` rule for the ICO. Observed with `next start` on
+// next@16.2.7.
 test.describe("/_next/image formats Next.js does not optimize", () => {
-  for (const [source, contentType] of [
-    ["/vinext-logo.svg", "image/svg+xml"],
-    ["/vinext-icon.ico", "image/x-icon"],
+  for (const [source, contentType, cacheControl] of [
+    ["/vinext-logo.svg", "image/svg+xml", "public, max-age=14400, must-revalidate"],
+    ["/vinext-icon.ico", "image/x-icon", "public, max-age=86400, must-revalidate"],
   ] as const) {
     test(`serves ${source} as-is with the image endpoint's headers`, async ({ request }) => {
       const original = Buffer.from(await (await request.get(source)).body());
@@ -22,8 +24,7 @@ test.describe("/_next/image formats Next.js does not optimize", () => {
       expect(response.status()).toBe(200);
       expect(response.headers()["content-type"]).toBe(contentType);
       expect(Buffer.from(await response.body()).equals(original)).toBe(true);
-      // Next.js's image policy at the default `images.minimumCacheTTL`.
-      expect(response.headers()["cache-control"]).toBe("public, max-age=14400, must-revalidate");
+      expect(response.headers()["cache-control"]).toBe(cacheControl);
       expect(response.headers()["vary"]).toBe("Accept");
       expect(response.headers()["content-security-policy"]).toBe(
         "script-src 'none'; frame-src 'none'; sandbox;",

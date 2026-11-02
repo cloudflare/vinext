@@ -24,7 +24,6 @@ import { isAnimatedImage } from "./image-animation.js";
 import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
-import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
 /** The pathname that triggers image optimization (matches Next.js). */
 export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
@@ -508,23 +507,20 @@ async function withSniffedImageContentType(source: Response): Promise<Response> 
     return source;
   }
   const reader = source.body.getReader();
+  // Replay the chunks read, copying only the signature's bytes.
   const head: Uint8Array[] = [];
+  const signature = new Uint8Array(IMAGE_SIGNATURE_LENGTH);
   let length = 0;
   while (length < IMAGE_SIGNATURE_LENGTH) {
     const { done, value } = await reader.read();
     if (done) break;
     head.push(value);
-    length += value.byteLength;
-  }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of head) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+    signature.set(value.subarray(0, IMAGE_SIGNATURE_LENGTH - length), length);
+    length += Math.min(value.byteLength, IMAGE_SIGNATURE_LENGTH - length);
   }
   const body = new ReadableStream<Uint8Array>({
     start(controller) {
-      if (bytes.byteLength > 0) controller.enqueue(bytes);
+      for (const chunk of head) controller.enqueue(chunk);
     },
     async pull(controller) {
       const { done, value } = await reader.read();
@@ -536,7 +532,7 @@ async function withSniffedImageContentType(source: Response): Promise<Response> 
     },
   });
   const headers = new Headers(source.headers);
-  const type = sniffImageContentType(bytes);
+  const type = sniffImageContentType(signature.subarray(0, length));
   if (type !== null) headers.set("Content-Type", type);
   return new Response(body, { status: source.status, statusText: source.statusText, headers });
 }
@@ -616,20 +612,35 @@ function cacheControlMaxAge(cacheControl: string | null): number {
   return Number.isNaN(seconds) ? 0 : seconds;
 }
 
+const IMAGE_BUILD_ASSET = Symbol.for("vinext.imageBuildAsset");
+
 /**
- * Next.js's Cache-Control for a source it serves as-is: a hashed build asset
- * stays immutable, and any other source is revalidated after the larger of
+ * Mark a source the host fetched from its `_next/static` build output, which
+ * is served immutably like Next.js' `isStatic` sources. A public file is never
+ * marked, whatever its path.
+ */
+export function markImageBuildAsset(response: Response): Response {
+  Reflect.set(response, IMAGE_BUILD_ASSET, true);
+  return response;
+}
+
+function isImageBuildAsset(response: Response): boolean {
+  return Reflect.get(response, IMAGE_BUILD_ASSET) === true;
+}
+
+/**
+ * Next.js's Cache-Control for a source it serves as-is: a build asset stays
+ * immutable, and any other source is revalidated after the larger of
  * `images.minimumCacheTTL` and the source's own max-age. Next.js ignores the
  * source's max-age when it falls back after a failed transform, so that
  * fallback passes null.
  */
 export function sourceImageCacheControl(
-  imageUrl: string,
+  isBuildAsset: boolean,
   upstreamCacheControl: string | null,
   config?: ImageConfig,
 ): string {
-  const { pathname } = new URL(imageUrl, "http://localhost");
-  if (pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return IMAGE_CACHE_CONTROL;
+  if (isBuildAsset) return IMAGE_CACHE_CONTROL;
   const maxAge = Math.max(
     config?.minimumCacheTTL ?? DEFAULT_MINIMUM_CACHE_TTL,
     cacheControlMaxAge(upstreamCacheControl),
@@ -726,7 +737,9 @@ export async function handleImageOptimization(
   const { imageUrl, width, quality } = params;
 
   // Fetch source image
-  const source = await withSniffedImageContentType(await handlers.fetchAsset(imageUrl, request));
+  const fetchedSource = await handlers.fetchAsset(imageUrl, request);
+  const isBuildAsset = isImageBuildAsset(fetchedSource);
+  const source = await withSniffedImageContentType(fetchedSource);
   if (!source.ok || !source.body) {
     return invalidImageSourceResponse();
   }
@@ -746,7 +759,7 @@ export async function handleImageOptimization(
   // once dangerouslyAllowSVG admitted it above.
   const sourceMediaType = imageMediaType(sourceContentType);
   const sourceCacheControl = sourceImageCacheControl(
-    imageUrl,
+    isBuildAsset,
     source.headers.get("Cache-Control"),
     imageConfig,
   );
@@ -814,7 +827,7 @@ export async function handleImageOptimization(
   // the source is served as-is; after a failed transform Next.js keeps it
   // for the minimum TTL only.
   const fallbackCacheControl = handlers.transformImage
-    ? sourceImageCacheControl(imageUrl, null, imageConfig)
+    ? sourceImageCacheControl(isBuildAsset, null, imageConfig)
     : sourceCacheControl;
   try {
     return createPassthroughImageResponse(

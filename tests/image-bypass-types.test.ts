@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 import { isAnimatedImage } from "../packages/vinext/src/server/image-animation.js";
 import {
   handleImageOptimization,
+  markImageBuildAsset,
   sniffImageContentType,
 } from "../packages/vinext/src/server/image-optimization.js";
 
@@ -157,13 +158,21 @@ describe("handleImageOptimization formats Next.js does not optimize", () => {
     );
   });
 
-  it("keeps a hashed build asset immutable", async () => {
+  it("keeps a build asset immutable, but not a public file under a _next/static folder", async () => {
     const { handlers: imageHandlers } = handlers("source-bytes", "image/x-icon");
-    const response = await handleImageOptimization(
+    const buildAsset = await handleImageOptimization(
       imageRequest("/_next/static/media/favicon.0a1b2c3d.ico"),
+      {
+        ...imageHandlers,
+        fetchAsset: async () => markImageBuildAsset(await imageHandlers.fetchAsset()),
+      },
+    );
+    expect(buildAsset.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    const publicFile = await handleImageOptimization(
+      imageRequest("/avatars/_next/static/favicon.ico"),
       imageHandlers,
     );
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(publicFile.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
   });
 
   for (const [name, bytes, contentType] of [
@@ -389,6 +398,16 @@ describe("handleImageOptimization source without an image Content-Type", () => {
       expect(new Uint8Array(await response.arrayBuffer())).toEqual(ICNS);
     });
   }
+
+  it("replays a large first chunk unchanged", async () => {
+    const bytes = new Uint8Array(1_000_000);
+    bytes.set(ICNS);
+    const response = await handleImageOptimization(imageRequest("/icon.icns"), {
+      fetchAsset: async () => new Response(bytes, { status: 200 }),
+    });
+    expect(response.headers.get("Content-Type")).toBe("image/x-icns");
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+  });
 
   it("still rejects a source whose bytes are not an allowed image", async () => {
     for (const body of ["<!DOCTYPE html><p>page</p>", "<svg onload=alert(1)></svg>"]) {

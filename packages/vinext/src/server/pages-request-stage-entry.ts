@@ -822,7 +822,14 @@ async function handleRequestImpl(
       );
       if (sourceResult.type !== "response") return null;
       await sourceResult.response.body?.cancel().catch(() => {});
-      if (isImageSourceBodyStatus(sourceResult.response.status)) return sourceAsset;
+      if (isImageSourceBodyStatus(sourceResult.response.status) && sourceAsset !== null) {
+        // The pipeline staged middleware and `headers()` values on its response.
+        const { withStagedCacheControl } = await import("./worker-image-optimization.js");
+        return withStagedCacheControl(
+          sourceAsset,
+          sourceResult.response.headers.get("Cache-Control"),
+        );
+      }
       await sourceAsset?.body?.cancel().catch(() => {});
       return null;
     };

@@ -763,23 +763,22 @@ function staticCacheLookupPath(pathname: string): string | null {
 
 /**
  * Give a Node image passthrough Next.js's image Cache-Control instead of the
- * public-file default: a hashed build asset keeps its immutable default, and
- * any other source is revalidated after `images.minimumCacheTTL`, or after the
- * max-age a direct request for it gets (from middleware or `headers()`, else
- * the public-file default) when that is longer.
+ * public-file default: a build asset keeps its immutable default, and a public
+ * file, whatever its path, is revalidated after `images.minimumCacheTTL`, or
+ * after the max-age a direct request for it gets (from middleware or
+ * `headers()`, else the public-file default) when that is longer.
  */
 function withImageSourceCacheControl(
   headers: Record<string, string>,
-  sourcePath: string,
+  publicFileCacheControl: string | null | undefined,
   config: ImageConfig | undefined,
-  sourceCacheControl: string | null,
 ): Record<string, string> {
-  if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
+  if (publicFileCacheControl === undefined) return headers;
   return {
     ...headers,
     "Cache-Control": sourceImageCacheControl(
-      sourcePath,
-      sourceCacheControl ?? staticFileCacheControl(false),
+      false,
+      publicFileCacheControl ?? staticFileCacheControl(false),
       config,
     ),
   };
@@ -2058,9 +2057,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       "Content-Disposition":
         imageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
     };
+    // A public file passes the Cache-Control its pipeline staged, or null; a
+    // build asset passes undefined.
     const serveSource = (
       sourcePath: string,
-      sourceCacheControl: string | null = null,
+      publicFileCacheControl?: string | null,
     ): Promise<boolean> =>
       tryServeStatic(
         req,
@@ -2069,12 +2070,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        withImageSourceCacheControl(
-          imageSecurityHeaders,
-          sourcePath,
-          imageConfig,
-          sourceCacheControl,
-        ),
+        withImageSourceCacheControl(imageSecurityHeaders, publicFileCacheControl, imageConfig),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2993,9 +2989,11 @@ async function createPagesRouterRequestHandler(
               "Content-Disposition":
                 pagesImageConfig?.contentDispositionType === "attachment" ? "attachment" : "inline",
             };
+            // A public file passes the Cache-Control its pipeline staged, or
+            // null; a build asset passes undefined.
             const serveSource = (
               sourcePath: string,
-              sourceCacheControl: string | null = null,
+              publicFileCacheControl?: string | null,
             ): Promise<boolean> =>
               tryServeStatic(
                 req,
@@ -3006,9 +3004,8 @@ async function createPagesRouterRequestHandler(
                 staticCache,
                 withImageSourceCacheControl(
                   imageSecurityHeaders,
-                  sourcePath,
+                  publicFileCacheControl,
                   pagesImageConfig,
-                  sourceCacheControl,
                 ),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
