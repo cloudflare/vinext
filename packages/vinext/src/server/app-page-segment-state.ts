@@ -2,6 +2,7 @@ import type { AppPageParams } from "./app-page-boundary.js";
 import { isCatchAllSegment, isOptionalCatchAllSegment } from "../routing/utils.js";
 
 export const APP_PAGE_SEGMENT_KEY = "__PAGE__";
+export const APP_PAGE_DEFAULT_SEGMENT_KEY = "__DEFAULT__";
 
 function isDynamicSegment(segment: string): boolean {
   return segment.startsWith("[") && segment.endsWith("]") && !segment.includes(".");

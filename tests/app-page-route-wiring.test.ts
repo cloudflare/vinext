@@ -3200,13 +3200,19 @@ describe("app page route wiring helpers", () => {
     const nestedSegmentIds = Object.keys(fooIdentities)
       .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
       .sort();
-    expect(nestedSegmentIds).toHaveLength(4);
-    const [outerGroupSegmentId, usernameSegmentId, nestedGroupSegmentId, idSegmentId] =
-      nestedSegmentIds;
+    expect(nestedSegmentIds).toHaveLength(5);
+    const [
+      outerGroupSegmentId,
+      usernameSegmentId,
+      nestedGroupSegmentId,
+      idSegmentId,
+      pageSegmentId,
+    ] = nestedSegmentIds;
     expect(fooOtherIdIdentities[outerGroupSegmentId]).toBe(fooIdentities[outerGroupSegmentId]);
     expect(fooOtherIdIdentities[usernameSegmentId]).toBe(fooIdentities[usernameSegmentId]);
     expect(fooOtherIdIdentities[nestedGroupSegmentId]).toBe(fooIdentities[nestedGroupSegmentId]);
     expect(fooOtherIdIdentities[idSegmentId]).not.toBe(fooIdentities[idSegmentId]);
+    expect(fooOtherIdIdentities[pageSegmentId]).not.toBe(fooIdentities[pageSegmentId]);
 
     const fooBfcacheIds = createNextBfcacheIdMap({
       current: {},
@@ -3322,8 +3328,8 @@ describe("app page route wiring helpers", () => {
       .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
       .sort();
 
-    expect(nestedIds).toHaveLength(3);
-    const [photosSegmentId, albumSegmentId, idSegmentId] = nestedIds;
+    expect(nestedIds).toHaveLength(4);
+    const [photosSegmentId, albumSegmentId, idSegmentId, pageSegmentId] = nestedIds;
     const slotElement = firstElements[modalSlotId];
     expect(isValidElement(slotElement) && getElementTypeName(slotElement.type)).toBe(
       "BfcacheSegmentBoundary",
@@ -3351,6 +3357,7 @@ describe("app page route wiring helpers", () => {
     ).toBe("id|1|d");
     expect(changedLeafIdentities[albumSegmentId]).toBe(firstIdentities[albumSegmentId]);
     expect(changedLeafIdentities[idSegmentId]).not.toBe(firstIdentities[idSegmentId]);
+    expect(changedLeafIdentities[pageSegmentId]).not.toBe(firstIdentities[pageSegmentId]);
 
     const firstBfcacheIds = createNextBfcacheIdMap({
       current: {},
@@ -3458,8 +3465,8 @@ describe("app page route wiring helpers", () => {
       .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
       .sort();
 
-    expect(nestedIds).toHaveLength(3);
-    const [sourceSegmentId, targetSegmentId, leafSegmentId] = nestedIds;
+    expect(nestedIds).toHaveLength(4);
+    const [sourceSegmentId, targetSegmentId, leafSegmentId, pageSegmentId] = nestedIds;
     expect(isValidElement(firstElements[modalSlotId])).toBe(true);
     expect(getElementTypeName((firstElements[modalSlotId] as ReactElement).type)).toBe(
       "BfcacheSegmentBoundary",
@@ -3469,6 +3476,7 @@ describe("app page route wiring helpers", () => {
     expect(changedLeafIdentities[sourceSegmentId]).toBe(firstIdentities[sourceSegmentId]);
     expect(changedLeafIdentities[targetSegmentId]).toBe(firstIdentities[targetSegmentId]);
     expect(changedLeafIdentities[leafSegmentId]).not.toBe(firstIdentities[leafSegmentId]);
+    expect(changedLeafIdentities[pageSegmentId]).not.toBe(firstIdentities[pageSegmentId]);
     expect(otherSourceIdentities[modalSlotId]).toBe(firstIdentities[modalSlotId]);
     expect(otherSourceIdentities[sourceSegmentId]).not.toBe(firstIdentities[sourceSegmentId]);
     expect(otherTargetIdentities[sourceSegmentId]).toBe(firstIdentities[sourceSegmentId]);
@@ -3881,9 +3889,10 @@ describe("app page route wiring helpers", () => {
           .filter((candidate) => candidate.startsWith("slot:\0vinext_bfcache_segment_"))
           .sort();
         const groupSegmentId = nestedSegmentIds[0];
-        const nestedSegmentId = nestedSegmentIds.at(-1);
+        const nestedSegmentId = nestedSegmentIds[1];
 
-        expect(nestedSegmentIds).toHaveLength(2);
+        // The group and [id] levels, then the page's.
+        expect(nestedSegmentIds).toHaveLength(3);
         expect(nestedSegmentId).toBeTypeOf("string");
         if (nestedSegmentId === undefined) return;
         expect(firstIdentities[panelSlotId]).toBe(secondIdentities[panelSlotId]);
@@ -4316,12 +4325,15 @@ describe("app page route wiring helpers", () => {
       .filter((id) => id.startsWith("slot:\0vinext_bfcache_segment_"))
       .sort();
 
-    expect(baseSegmentIds).toHaveLength(2);
-    expect(extendedSegmentIds).toHaveLength(3);
+    // Below [id], the base page and the details segment are two entries of
+    // one level, like Next.js's __PAGE__ and details.
+    expect(baseSegmentIds).toHaveLength(3);
+    expect(extendedSegmentIds).toHaveLength(4);
     expect(extended[extendedSegmentIds[0]!]).toBe(base[baseSegmentIds[0]!]);
     expect(extended[extendedSegmentIds[1]!]).toBe(base[baseSegmentIds[1]!]);
-    expect(base[extendedSegmentIds[2]!]).toBeUndefined();
+    expect(extendedSegmentIds[2]).toBe(baseSegmentIds[2]);
     expect(extended[extendedSegmentIds[2]!]).toBeTypeOf("string");
+    expect(extended[extendedSegmentIds[2]!]).not.toBe(base[baseSegmentIds[2]!]);
   });
 
   it("keys synthetic children-slot page elements with their emitted identity", () => {

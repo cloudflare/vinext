@@ -978,6 +978,106 @@ describe("App Router optimistic routing", () => {
     expect(createTemplate("beta", true).omittedBfcacheSegmentIds).toEqual([]);
   });
 
+  it("reifies an omitted slot page level for the target params", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    // The level below [slug], keyed by the page it renders.
+    const pageSegmentId = createNestedBfcacheSlotSegmentId(sidebarSlotId, 2);
+    const routeId = "route:/:slug";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: true,
+          paramNames: ["slug"],
+          pattern: "/:slug",
+          patternParts: [":slug"],
+          slotIds: [sidebarSlotId],
+        }),
+      ],
+      [
+        {
+          defaultId: null,
+          id: `${routeId}::${sidebarSlotId}`,
+          ownerLayoutId: rootLayoutId,
+          routeId,
+          routeSegments: ["[slug]"],
+          slotId: sidebarSlotId,
+          slotParamNames: ["slug"],
+          slotPatternParts: [":slug"],
+          state: "active",
+        },
+      ],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identityFor = (slug: string) =>
+      deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: JSON.stringify([`slug|${slug}|d`, "__PAGE__"]),
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: rootLayoutId,
+        slotGraphId: sidebarSlotId,
+        state: "active",
+      });
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageSegmentId]: identityFor("alpha") },
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/alpha",
+      }),
+      [pageSegmentId]: null,
+      [rootLayoutId]: createElement("div", null, "root"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: { [pageSegmentId]: identityFor("beta") },
+          interceptionContext: null,
+          layoutIds: [rootLayoutId],
+          rootLayoutTreePath: "/",
+          routeId: "route:/beta",
+        }),
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageSegmentId]: null,
+        [rootLayoutId]: createElement("div", null, "root"),
+        "page:/:slug": null,
+        "route:/beta": createElement("div", null, "Slot loading"),
+      },
+      href: "/beta",
+      interceptionContext: null,
+      mountedSlotsHeader: "sidebar",
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    expect(template.omittedBfcacheSegmentIds).toEqual([pageSegmentId]);
+
+    const canCommit = (slug: string) =>
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug },
+        targetUrlParts: [slug],
+        template,
+      });
+    expect(canCommit("alpha")).toBe(false);
+    expect(canCommit("gamma")).toBe(true);
+  });
+
   it("reifies omitted empty slot branches", () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
