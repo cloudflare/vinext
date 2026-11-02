@@ -92,7 +92,9 @@ import {
 import {
   applyAppRscConfigHeaders,
   finalizeAppRscResponse,
+  isStreamedActionRedirectResponse,
   markAppRscResponseConfigHeadersApplied,
+  markStreamedActionRedirectResponse,
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
@@ -137,6 +139,7 @@ import {
   isCdnResponsePolicyHeader,
   NEVER_CACHE_CONTROL,
   reconcileCdnResponseHeadersAfterOuterPolicy,
+  SERVER_ACTION_CACHE_CONTROL,
 } from "./cache-control.js";
 import {
   cloneRequestWithHeaders,
@@ -909,10 +912,13 @@ function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   return cloneRequestWithUrl(request, url.toString());
 }
 
-/** Send a response with the never-cache policy, rebuilding immutable headers. */
-function withNeverCacheControl(response: Response): Response {
+/** Send a response with a never-cache policy, rebuilding immutable headers. */
+function withNeverCacheControl(
+  response: Response,
+  cacheControl: string = NEVER_CACHE_CONTROL,
+): Response {
   const applyNoStore = (headers: Headers): void => {
-    applyCdnResponseHeaders(headers, { cacheControl: NEVER_CACHE_CONTROL });
+    applyCdnResponseHeaders(headers, { cacheControl });
   };
   let markedResponse = response;
   try {
@@ -940,6 +946,24 @@ function withUnmatchedRouteCacheControl(response: Response): Response {
   const markedResponse = withNeverCacheControl(response);
   unmatchedRouteResponses.add(markedResponse);
   return markedResponse;
+}
+
+// As in Next.js, every response to a Server Action carries its never-cache
+// policy, reasserted after next.config headers and over middleware's.
+const serverActionResponses = new WeakSet<Response>();
+
+function markServerActionResponse(response: Response): Response {
+  serverActionResponses.add(response);
+  return response;
+}
+
+/**
+ * A fetch action's redirect that streams its target's render keeps the
+ * target's policy, as in Next.js. Every other action response is never cached.
+ */
+function withServerActionCacheControl(response: Response): Response {
+  if (isStreamedActionRedirectResponse(response)) return response;
+  return withNeverCacheControl(response, SERVER_ACTION_CACHE_CONTROL);
 }
 
 async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
@@ -2224,7 +2248,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!filesystemRouteEligible || !isPostRequest || !actionId) return null;
     if (routeMatch && isAppRouteHandlerRoute(routeMatch.route)) return null;
     if (!options.handleServerActionRequest) {
-      return createMissingServerActionResponse(options, actionId);
+      return markServerActionResponse(createMissingServerActionResponse(options, actionId));
     }
     const sourceConfigHeaders = new Headers();
     await applyAppRscConfigHeaders(sourceConfigHeaders, request, {
@@ -2236,7 +2260,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       recordCacheability: dispatchResponseStage === undefined,
       requestContext: preMiddlewareRequestContext,
     });
-    return options.handleServerActionRequest({
+    const serverActionResponse = await options.handleServerActionRequest({
       actionId,
       cleanPathname,
       contentType,
@@ -2252,6 +2276,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       sourceConfigHeaders,
       searchParams: getResolvedSearchParams(),
     });
+    return serverActionResponse && markServerActionResponse(serverActionResponse);
   };
   let progressiveActionHandled = false;
   let progressiveActionFormState: ProgressiveActionFormStateResult | null = null;
@@ -2264,7 +2289,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     if (!options.handleProgressiveActionRequest) {
       return unrenderedRouteMatch?.route.__loadPage &&
         !unrenderedRouteMatch.route.__loadRouteHandler
-        ? createMissingServerActionResponse(options, null)
+        ? markServerActionResponse(createMissingServerActionResponse(options, null))
         : null;
     }
     const progressiveActionResult = await options.handleProgressiveActionRequest({
@@ -2275,7 +2300,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       request,
       routeMatch,
     });
-    if (progressiveActionResult instanceof Response) return progressiveActionResult;
+    if (progressiveActionResult instanceof Response) {
+      return markServerActionResponse(progressiveActionResult);
+    }
     if (progressiveActionResult?.kind !== "form-state") return null;
     // Other errors answer a plain 500 before the render, so this is an action
     // that failed to find another Server Action.
@@ -3005,7 +3032,9 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   // res.setHeader('set-cookie', ...) flush in action-handler.ts / app-render.tsx.
   // Issue: https://github.com/cloudflare/vinext/issues/1483
   if (progressiveActionFormState) {
-    return applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState);
+    return markServerActionResponse(
+      applyProgressiveActionSideEffects(pageResponse, progressiveActionFormState),
+    );
   }
   return pageResponse;
 }
@@ -3269,6 +3298,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
             recordCacheability: dispatchResponseStage === undefined,
             requestContext: preMiddlewareRequestContext,
           });
+          if (serverActionResponses.has(response)) return withServerActionCacheControl(response);
           return interceptionResponseUncacheable || unmatchedRouteResponses.has(response)
             ? withNeverCacheControl(response)
             : response;
@@ -3286,7 +3316,11 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
       await closeAfterResponse(requestContext);
       throw error;
     }
-    return closeAfterResponseWithBody(response, requestContext);
+    const closedResponse = closeAfterResponseWithBody(response, requestContext);
+    // A forwarded action's streamed redirect is read back through this wrapper.
+    return isStreamedActionRedirectResponse(response)
+      ? markStreamedActionRedirectResponse(closedResponse)
+      : closedResponse;
   };
 
   const appRscHandler = async function appRscHandler(
