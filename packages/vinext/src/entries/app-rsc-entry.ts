@@ -374,6 +374,13 @@ function buildAppRequestRouteMetadata(routes: AppRoute[]): unknown[] {
         {
           id: slot.id ?? null,
           name: slot.name,
+          // useParams() merges an active slot's pattern params, so the request
+          // stage composes them too. It never loads slot modules: a marker
+          // stands in for each lazy loader.
+          __loadPage: slot.pagePath ? true : null,
+          __loadDefault: slot.defaultPath ? true : null,
+          slotPatternParts: slot.slotPatternParts ?? null,
+          slotParamNames: slot.slotParamNames ?? null,
           intercepts: slot.interceptingRoutes.map((intercept) => ({
             id: intercept.id ?? null,
             targetPattern: intercept.targetPattern,

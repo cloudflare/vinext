@@ -21,7 +21,7 @@ import { PAGES_RESPONSE_STAGE_POLICY_OWNER_HEADER } from "../packages/vinext/src
 import { VINEXT_CACHE_IDENTITY_ORIGIN } from "../packages/vinext/src/server/multi-stage.js";
 import type { PagesRouteDataKind } from "../packages/vinext/src/server/pages-route-data-kind.js";
 import { createAppRscRouteMatcher } from "../packages/vinext/src/server/app-rsc-route-matching.js";
-import type { AppRouteTreePrefetchRoute } from "../packages/vinext/src/server/app-route-tree-prefetch.js";
+import type { AppRscHandlerRoute } from "../packages/vinext/src/server/app-rsc-handler.js";
 import {
   NEXT_ROUTER_PREFETCH_HEADER,
   NEXT_ROUTER_SEGMENT_PREFETCH_HEADER,
@@ -137,7 +137,7 @@ type TestRoute = {
   rootParamNames?: readonly string[];
   routeHandler?: { GET?: () => Response; runtime?: string } | null;
   routeSegments: readonly string[];
-  slots?: AppRouteTreePrefetchRoute["slots"];
+  slots?: AppRscHandlerRoute["slots"];
 };
 
 type HandlerOptions = Parameters<typeof createAppRscHandler<TestRoute>>[0];
@@ -3261,6 +3261,47 @@ describe("createAppRscHandler", () => {
     expect(decodeURIComponent(response.headers.get(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER)!)).toBe(
       "/items/one?tab=current",
     );
+  });
+
+  it("composes a route's slot params above a shared RSC cache hit", async () => {
+    // A single-stage render merges the params of the route's active slot
+    // patterns into useParams(). The request stage never loads slot modules,
+    // so the generated route marks the slot's lazy loader with `true`.
+    const route = createPageRoute({
+      isDynamic: true,
+      params: ["teamID"],
+      pattern: "/:teamID/sub/folder",
+      routeSegments: ["[teamID]", "sub", "folder"],
+      slots: {
+        "slot@app/[teamID]/@slot": {
+          __loadPage: true,
+          name: "slot",
+          page: null,
+          routeSegments: ["[...catchAll]"],
+          slotParamNames: ["teamID", "catchAll"],
+          slotPatternParts: [":teamID", ":catchAll+"],
+        },
+      },
+    });
+    const handler = createHandler({
+      configHeaders: [],
+      matchRoute: (pathname) =>
+        pathname === "/vercel/sub/folder" ? { params: { teamID: "vercel" }, route } : null,
+    });
+    const headers = createRscRequestHeaders();
+    const url = await createRscRequestUrl("/docs/vercel/sub/folder", headers);
+
+    const response = await handler(
+      new Request(`https://example.test${url}`, { headers }),
+      null,
+      false,
+      async () => new Response("cached-rsc", { headers: { "X-Vinext-Cache": "HIT" } }),
+    );
+
+    expect(JSON.parse(decodeURIComponent(response.headers.get(VINEXT_PARAMS_HEADER)!))).toEqual({
+      catchAll: ["sub", "folder"],
+      teamID: "vercel",
+    });
   });
 
   it("keeps an intercepted response's params above the response stage", async () => {

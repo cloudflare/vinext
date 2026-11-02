@@ -2110,6 +2110,46 @@ describe("App Router entry templates", () => {
     }
   });
 
+  it("serializes a slot's pattern params for the request stage's useParams()", () => {
+    const code = generateAppRequestRscEntry("/tmp/test/app", [
+      {
+        ...minimalAppRoutes[0],
+        isDynamic: true,
+        params: ["teamID"],
+        pattern: "/:teamID/sub/folder",
+        parallelSlots: [
+          {
+            key: "slot@app/[teamID]/@slot",
+            name: "slot",
+            ownerDir: "/tmp/test/app/[teamID]",
+            ownerTreePath: "/[teamID]",
+            hasPage: true,
+            pagePath: "/tmp/test/app/[teamID]/@slot/[...catchAll]/page.tsx",
+            defaultPath: null,
+            layoutPath: null,
+            loadingPath: null,
+            errorPath: null,
+            interceptingRoutes: [],
+            layoutIndex: 0,
+            routeSegments: ["[...catchAll]"],
+            slotParamNames: ["teamID", "catchAll"],
+            slotPatternParts: [":teamID", ":catchAll+"],
+          },
+        ],
+      },
+    ]);
+    const serializedRoutes = code.match(/^const __routes = (.+);$/m)?.[1];
+    const [route] = JSON.parse(serializedRoutes!) as Array<{ slots: Record<string, unknown> }>;
+
+    expect(route.slots["slot@app/[teamID]/@slot"]).toMatchObject({
+      __loadDefault: null,
+      __loadPage: true,
+      slotParamNames: ["teamID", "catchAll"],
+      slotPatternParts: [":teamID", ":catchAll+"],
+    });
+    expect(code).not.toContain("/tmp/test/app/[teamID]/@slot/[...catchAll]/page.tsx");
+  });
+
   it("reads MDX exports for plain and compound MDX page extensions", () => {
     // The decoded-pathname list reads MDX segment config only when the build
     // loads the MDX reader, which `page.mdx` files need as much as `.mdx` ones.

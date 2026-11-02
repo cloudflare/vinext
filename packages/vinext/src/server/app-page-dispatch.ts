@@ -61,7 +61,7 @@ import {
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { isAppPageStaticEligible } from "./app-segment-config.js";
-import { resolveAppPageNavigationParams } from "./app-page-element-builder.js";
+import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
   buildAppPageElement,

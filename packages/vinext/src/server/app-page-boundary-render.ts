@@ -47,10 +47,8 @@ import {
   resolveHttpAccessFallbackMetadata,
   resolveHttpAccessFallbackViewport,
 } from "./app-page-http-access-fallback-metadata.js";
-import {
-  resolveSlotParamOverrides,
-  type AppPageInterceptOptions,
-} from "./app-page-element-builder.js";
+import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
+import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {

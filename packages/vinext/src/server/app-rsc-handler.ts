@@ -98,6 +98,10 @@ import {
 } from "./app-rsc-response-finalizer.js";
 import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import { isAppRouteHandlerRoute } from "./app-rsc-route-matching.js";
+import {
+  resolveAppPageNavigationParams,
+  type AppPageNavigationParamSlot,
+} from "./app-page-navigation-params.js";
 import { buildNextDataNotFoundResponse, normalizePagesDataRequest } from "./pages-data-route.js";
 import {
   normalizeDefaultLocalePathname,
@@ -393,7 +397,12 @@ export type AppRscHandlerRoute = {
   rootParamNames?: readonly string[];
   routeHandler?: unknown;
   routeSegments: readonly string[];
-  slots?: AppRouteTreePrefetchRoute["slots"];
+  slots?: Readonly<
+    Record<
+      string,
+      NonNullable<AppRouteTreePrefetchRoute["slots"]>[string] & AppPageNavigationParamSlot
+    >
+  > | null;
 };
 
 type AppRscRouteMatch<TRoute> = {
@@ -446,6 +455,39 @@ function applyMiddlewareContextToResponse(
       status: response.status === 304 ? 304 : (middlewareContext.status ?? response.status),
       statusText: response.statusText,
       headers,
+    }),
+  );
+}
+
+/**
+ * These headers describe the current routed request, not the shared RSC
+ * bytes, so they are composed above a transported response stage: a cache HIT
+ * cannot replay another query/path and never loses dynamic params. An
+ * intercepted response's params include its target's, which this match lacks,
+ * so the response stage keeps them under an interception context, in its
+ * cache identity.
+ */
+function withRoutedRscHeaders(
+  response: Response,
+  navigationParams: AppPageParams,
+  resolvedUrl: string,
+  keepsRenderedParams: boolean,
+): Response {
+  const headers = new Headers(response.headers);
+  if (!keepsRenderedParams || !headers.has(VINEXT_PARAMS_HEADER)) {
+    if (Object.keys(navigationParams).length > 0) {
+      headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(navigationParams)));
+    } else {
+      headers.delete(VINEXT_PARAMS_HEADER);
+    }
+  }
+  headers.set(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER, encodeURIComponent(resolvedUrl));
+  return preserveFullyBufferedBodyMetadata(
+    response,
+    new Response(response.body, {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
     }),
   );
 }
@@ -1514,36 +1556,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
               statusText: response.statusText,
             });
           }
-          if (props.kind !== "app-page" || !props.isRscRequest) {
-            return response;
-          }
-
-          // These headers describe the current routed request, not the shared
-          // RSC bytes. Compose them above the adapter so a cache HIT cannot
-          // replay another query/path and never loses dynamic params. An
-          // intercepted response's params include its target's, which this
-          // match lacks, so the response stage keeps them under an
-          // interception context, in its cache identity.
-          const headers = new Headers(response.headers);
-          if (props.interceptionContext === null || !headers.has(VINEXT_PARAMS_HEADER)) {
-            if (Object.keys(props.params).length > 0) {
-              headers.set(VINEXT_PARAMS_HEADER, encodeURIComponent(JSON.stringify(props.params)));
-            } else {
-              headers.delete(VINEXT_PARAMS_HEADER);
-            }
-          }
-          headers.set(
-            VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
-            encodeURIComponent(props.resolvedUrl),
-          );
-          return preserveFullyBufferedBodyMetadata(
-            response,
-            new Response(response.body, {
-              headers,
-              status: response.status,
-              statusText: response.statusText,
-            }),
-          );
+          return response;
         }
       : undefined;
   const responseStageRequest = (stageRequest = request): Request => {
@@ -2979,7 +2992,20 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
         routePattern: route.pattern,
         routePathname: responseStageRoutePathname,
         scriptNonce: scriptNonce ?? null,
-      }).then(composeResponseStageResponse)
+      })
+        .then((response) =>
+          transportedResponseStage && isRscRequest
+            ? withRoutedRscHeaders(
+                response,
+                // As a single-stage render does, include the params of the
+                // route's active slot patterns.
+                resolveAppPageNavigationParams(route, params, cleanPathname),
+                resolvedUrl,
+                interceptionSourceContext !== null,
+              )
+            : response,
+        )
+        .then(composeResponseStageResponse)
     : await options.dispatchMatchedPage({
         bypassInterceptionContextCache,
         cachePathname,
