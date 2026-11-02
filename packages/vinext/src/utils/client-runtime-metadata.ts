@@ -26,6 +26,7 @@ import {
 } from "./manifest-paths.js";
 import { isAbsoluteAssetPrefix, resolveAssetsDir } from "./asset-prefix.js";
 import type { ClientReferenceChunks } from "./client-reference-chunks.js";
+import type { SriAlgorithm } from "../config/next-config.js";
 
 type ClientRuntimeMetadata = {
   clientEntryFile?: string;
@@ -141,7 +142,7 @@ function collectAppBootstrapPreinitFiles(
  */
 function collectAppBootstrapIntegrity(
   clientDir: string,
-  algorithm: string,
+  algorithm: SriAlgorithm,
   files: (string | undefined)[],
   applyUrl: (file: string) => string,
 ): Record<string, string> | undefined {
@@ -183,7 +184,7 @@ export function computeClientRuntimeMetadata(opts: {
   assetBase: string;
   assetPrefix: string;
   includeClientEntry?: boolean | "pages-client-entry";
-  sriAlgorithm?: string;
+  sriAlgorithm?: SriAlgorithm;
 }): ClientRuntimeMetadata {
   const buildManifestPath = path.join(opts.clientDir, ".vite", "manifest.json");
   const buildManifest = readClientBuildManifest(buildManifestPath);
