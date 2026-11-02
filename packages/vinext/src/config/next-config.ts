@@ -365,8 +365,9 @@ export type NextConfig = {
     domains?: string[];
     /**
      * Local sources the image optimization endpoint may serve. Statically
-     * imported images are always allowed. When unset, any local path without
-     * a query string is allowed (matches Next.js).
+     * imported images are allowed too, except under a basePath (the added
+     * pattern is unprefixed, as in Next.js). When unset, any local path
+     * without a query string is allowed (matches Next.js).
      */
     localPatterns?: Array<{ pathname?: string; search?: string }>;
     unoptimized?: boolean;
@@ -1364,7 +1365,8 @@ async function resolveBuildId(
 /**
  * Mirror Next.js's config resolution of `images.localPatterns`: statically
  * imported images (`/_next/static/media/**`) stay allowed whatever the app
- * lists. An unset list stays unset; the image endpoint then applies the
+ * lists, though like Next.js the pattern is unprefixed, so it never matches
+ * under a basePath. An unset list stays unset; the image endpoint then applies the
  * Next.js default.
  */
 function resolveImageLocalPatterns(
