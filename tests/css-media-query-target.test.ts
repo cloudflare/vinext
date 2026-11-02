@@ -18,8 +18,10 @@ import { build } from "vite-plus";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { resolveConfig, type InlineConfig, type Plugin } from "vite";
+import { resolveConfig, type InlineConfig, type Plugin, type UserConfig } from "vite";
 import vinext from "../packages/vinext/src/index.js";
+
+type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -181,6 +183,24 @@ describe("CSS media-query syntax preservation in production build", () => {
       ssr: userTarget,
     });
   }, 30_000);
+
+  it.each<[string, CssTarget[], CssTarget]>([
+    ["a later scalar replaces an earlier one", ["firefox114", false], false],
+    ["two scalars resolve to the last", ["firefox114", "safari17"], "safari17"],
+    ["an explicit empty array is kept", [[]], []],
+  ])(
+    "resolves later plugin targets like Vite: %s",
+    async (_, targets, expected) => {
+      const later = targets.map((cssTarget, index): Plugin => ({
+        name: `test:later-${index}`,
+        config: { order: "post", handler: () => ({ build: { cssTarget } }) },
+      }));
+      expect(
+        await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), ...later] }),
+      ).toEqual({ top: expected, client: expected, ssr: expected });
+    },
+    30_000,
+  );
 
   it("keeps per-environment cssTarget values as declared", async () => {
     const pin = ["chrome111", "edge111", "firefox114", "safari15"];

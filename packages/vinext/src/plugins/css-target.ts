@@ -42,6 +42,13 @@ type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
 const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
 
 /**
+ * Stands in for {@link DEFAULT_CSS_TARGET} until config is resolved. As a
+ * single string it merges like an unset value: a later scalar replaces it,
+ * and a later array is concatenated after it.
+ */
+const DEFAULT_CSS_TARGET_MARKER = "vinext:default-css-target";
+
+/**
  * Applies {@link DEFAULT_CSS_TARGET} only where nobody chose a target (#4413).
  *
  * Vite merges config by concatenating arrays, and the CSS minifier keeps the
@@ -49,36 +56,41 @@ const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
  * stop an app from ever raising it. `false` is a real Vite value (skip CSS
  * syntax lowering), so only `undefined` means "not chosen".
  *
- * The pin is set at the top level, which dev and `builder.sharedConfigBuild`
- * builds read and Vite folds into every environment. A target set later, per
- * environment or by another plugin's hook, is merged after the pin, so once
- * config is resolved the pin is dropped from any target it prefixes.
+ * The marker is set at the top level, which dev and `builder.sharedConfigBuild`
+ * builds read and Vite folds into every environment. Once config is resolved,
+ * a marker left on its own becomes the pin, and a marker inside an array is
+ * removed. Every target set by the app or another plugin's hook, at any level
+ * or hook order, then resolves exactly as it would without vinext.
  */
 export function createCssTargetPlugin(): Plugin {
-  let pinned = false;
-
   return {
     name: "vinext:css-target",
     config: {
       order: "post",
       handler(config) {
-        pinned = config.build?.cssTarget === undefined;
-        if (pinned) return { build: { cssTarget: [...DEFAULT_CSS_TARGET] } };
+        if (config.build?.cssTarget === undefined) {
+          return { build: { cssTarget: DEFAULT_CSS_TARGET_MARKER } };
+        }
       },
     },
-    configResolved(config) {
-      if (!pinned) return;
-      const builds = [config.build, ...Object.values(config.environments).map((env) => env.build)];
-      for (const build of builds) {
-        (build as { cssTarget: CssTarget }).cssTarget = withoutDefaultCssTarget(build.cssTarget);
-      }
+    configResolved: {
+      // Before any other plugin's configResolved can read the marker.
+      order: "pre",
+      handler(config) {
+        const builds = [
+          config.build,
+          ...Object.values(config.environments).map((env) => env.build),
+        ];
+        for (const build of builds) {
+          (build as { cssTarget: CssTarget }).cssTarget = resolveCssTarget(build.cssTarget);
+        }
+      },
     },
   };
 }
 
-function withoutDefaultCssTarget(target: CssTarget): CssTarget {
-  if (!Array.isArray(target) || target.length <= DEFAULT_CSS_TARGET.length) return target;
-  if (DEFAULT_CSS_TARGET.some((entry, index) => target[index] !== entry)) return target;
-  const chosen: unknown[] = target.slice(DEFAULT_CSS_TARGET.length);
-  return chosen.length === 1 && chosen[0] === false ? false : (chosen as string[]);
+function resolveCssTarget(target: CssTarget): CssTarget {
+  if (target === DEFAULT_CSS_TARGET_MARKER) return [...DEFAULT_CSS_TARGET];
+  if (!Array.isArray(target)) return target;
+  return target.filter((entry) => entry !== DEFAULT_CSS_TARGET_MARKER);
 }
