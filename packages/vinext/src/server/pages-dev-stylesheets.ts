@@ -97,7 +97,7 @@ async function collectManifestStylesheetAssets(
 
   const moduleGraph = server.environments.client?.moduleGraph;
   const seen = new Set<string>();
-  const assets: PagesDevStylesheetAsset[] = [];
+  const assets: Promise<PagesDevStylesheetAsset>[] = [];
   for (const moduleId of moduleIds) {
     const files = getManifestFilesForModule(ssrManifest, moduleId);
     if (!files) continue;
@@ -105,13 +105,16 @@ async function collectManifestStylesheetAssets(
       if (!DEV_STYLESHEET_ASSET_RE.test(file) || seen.has(file)) continue;
       seen.add(file);
       const href = createPagesDevAssetUrl(file);
-      assets.push({
-        href,
-        viteDevId: moduleGraph ? await resolvePagesDevStylesheetId(moduleGraph, href) : null,
-      });
+      // Resolve every manifest stylesheet together; output keeps manifest order.
+      assets.push(
+        (async () => ({
+          href,
+          viteDevId: moduleGraph ? await resolvePagesDevStylesheetId(moduleGraph, href) : null,
+        }))(),
+      );
     }
   }
-  return assets;
+  return Promise.all(assets);
 }
 
 async function collectTransformedStylesheetAssets(
@@ -242,8 +245,10 @@ export async function collectPagesDevInitialStylesheetHeadHTML(
   moduleIds: (string | null | undefined)[],
   nonceAttr: string,
 ): Promise<string> {
-  const manifestAssets = await collectManifestStylesheetAssets(server, runner, moduleIds);
-  const transformedAssets = await collectTransformedStylesheetAssets(server, moduleIds);
+  const [manifestAssets, transformedAssets] = await Promise.all([
+    collectManifestStylesheetAssets(server, runner, moduleIds),
+    collectTransformedStylesheetAssets(server, moduleIds),
+  ]);
   const assets: PagesDevStylesheetAsset[] = [];
   const assetKeyIndexes = new Map<string, number>();
   for (const asset of [...manifestAssets, ...transformedAssets]) {

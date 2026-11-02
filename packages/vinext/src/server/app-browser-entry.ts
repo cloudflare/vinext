@@ -2698,6 +2698,29 @@ function bootstrapHydration(
           }
         }
 
+        // Start the live request before learning optimistic templates: decoding
+        // settled prefetch entries can take a while and load their chunks, and
+        // the request does not depend on it. A navigation superseded during
+        // learning aborts this request when the next one begins.
+        let sentMountedLayouts = false;
+        let liveNavResponse: Promise<Response> | null = null;
+        if (!navResponse) {
+          let liveRequestHeaders = requestHeaders;
+          if (mountedLayoutsHeader !== null && requestInterceptionContext === null) {
+            liveRequestHeaders = new Headers(requestHeaders);
+            liveRequestHeaders.set(VINEXT_MOUNTED_LAYOUTS_HEADER, mountedLayoutsHeader);
+            sentMountedLayouts = true;
+          }
+          liveNavResponse = fetch(rscUrl, {
+            headers: liveRequestHeaders,
+            credentials: "include",
+            priority: "auto",
+            signal: navigationAbortHandle.signal,
+          });
+          // An early return below leaves the request unawaited.
+          liveNavResponse.catch(() => {});
+        }
+
         // The optimistic shell is intentionally not gated by
         // `shouldBypassNavigationCache`. A same-page search change can still
         // render an optimistic shell from cached route templates before the
@@ -2777,20 +2800,9 @@ function bootstrapHydration(
           }
         }
 
-        let sentMountedLayouts = false;
         if (!navResponse) {
-          let liveRequestHeaders = requestHeaders;
-          if (mountedLayoutsHeader !== null && requestInterceptionContext === null) {
-            liveRequestHeaders = new Headers(requestHeaders);
-            liveRequestHeaders.set(VINEXT_MOUNTED_LAYOUTS_HEADER, mountedLayoutsHeader);
-            sentMountedLayouts = true;
-          }
-          navResponse = await fetch(rscUrl, {
-            headers: liveRequestHeaders,
-            credentials: "include",
-            priority: "auto",
-            signal: navigationAbortHandle.signal,
-          });
+          // Started above whenever no cached response was reused.
+          navResponse = await liveNavResponse!;
         }
 
         if (!browserNavigationController.isCurrentNavigation(navId)) return;

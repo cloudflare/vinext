@@ -1577,36 +1577,44 @@ export function createSSRHandler(
           element = wrapWithRouterContext(element);
         }
 
+        // Collect any <Head> tags that were rendered during data fetching
+        // (shell head tags — Suspense children's head tags arrive late,
+        // matching Next.js behavior)
+        const nonceAttr = createNonceAttribute(scriptNonce);
+        const appAssetPath = AppComponent ? appFilePath : null;
+        // Each module-runner import is a fetchModule round trip even once the
+        // module is evaluated, so start these framework imports and the
+        // stylesheet walk together.
+        const [headShim, dynamicShim, assetHeadHTML, fontGoogleImport, fontLocalImport] =
+          await Promise.all([
+            importModule(runner, "next/head"),
+            importModule(runner, "next/dynamic"),
+            collectPagesDevInitialStylesheetHeadHTML(
+              server,
+              runner,
+              [appAssetPath, route.filePath],
+              nonceAttr,
+            ),
+            importModule(runner, "next/font/google").catch(() => null),
+            importModule(runner, "next/font/local").catch(() => null),
+          ]);
+
         // Reset SSR head collector before rendering so <Head> tags are captured
-        const headShim = await importModule(runner, "next/head");
         if (typeof headShim.resetSSRHead === "function") {
           headShim.resetSSRHead();
         }
 
         // Flush any pending dynamic() preloads so components are ready
-        const dynamicShim = await importModule(runner, "next/dynamic");
         if (typeof dynamicShim.flushPreloads === "function") {
           await dynamicShim.flushPreloads();
         }
 
-        // Collect any <Head> tags that were rendered during data fetching
-        // (shell head tags — Suspense children's head tags arrive late,
-        // matching Next.js behavior)
-        const nonceAttr = createNonceAttribute(scriptNonce);
-
         // Collect SSR font links (Google Fonts <link> tags) and font class styles
         let fontHeadHTML = "";
-        const appAssetPath = AppComponent ? appFilePath : null;
-        const assetHeadHTML = await collectPagesDevInitialStylesheetHeadHTML(
-          server,
-          runner,
-          [appAssetPath, route.filePath],
-          nonceAttr,
-        );
         const allFontStyles: string[] = [];
         const allFontPreloads: Array<{ href: string; type: string }> = [];
         try {
-          const fontGoogle = await importModule(runner, "next/font/google");
+          const fontGoogle = fontGoogleImport ?? {};
           if (typeof fontGoogle.getSSRFontLinks === "function") {
             const fontUrls = fontGoogle.getSSRFontLinks();
             for (const fontUrl of fontUrls) {
@@ -1625,7 +1633,7 @@ export function createSSRHandler(
           // next/font/google not used — skip
         }
         try {
-          const fontLocal = await importModule(runner, "next/font/local");
+          const fontLocal = fontLocalImport ?? {};
           if (typeof fontLocal.getSSRFontStyles === "function") {
             allFontStyles.push(...fontLocal.getSSRFontStyles());
           }
