@@ -80,6 +80,7 @@ import {
   type NavigationContext,
 } from "../packages/vinext/src/shims/navigation.js";
 import { notFound } from "../packages/vinext/src/shims/navigation-errors.js";
+import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "../packages/vinext/src/server/app-rsc-route-matching.js";
 import { cacheLife } from "../packages/vinext/src/shims/cache.js";
 import {
   setCurrentFetchCacheMode,
@@ -3788,6 +3789,59 @@ describe("app page dispatch", () => {
     expect(response.headers.get("cache-control")).toBe(
       "cacheControl" in testCase ? testCase.cacheControl : "no-store, must-revalidate",
     );
+  });
+
+  it("classifies a sibling interception by its own dynamic segment", async () => {
+    // app/shots/(.)[id]/page.tsx intercepts from the static app/shots/page.tsx.
+    // The route graph strips the marker, so its branch is `[id]`.
+    const dispatchSibling = async (page: Record<string, unknown>) => {
+      const { options } = createDispatchOptions({
+        async buildPageElement(route) {
+          return route.pattern;
+        },
+        cleanPathname: "/shots/123",
+        findIntercept: () => ({
+          interceptBranchSegments: ["[id]"],
+          matchedParams: { id: "123" },
+          page,
+          slotKey: SIBLING_PAGE_INTERCEPT_SLOT_KEY,
+          sourcePageSegments: ["shots", "(.)[id]"],
+          sourceRouteIndex: 1,
+        }),
+        getSourceRoute(sourceRouteIndex) {
+          return sourceRouteIndex === 1
+            ? createRoute({
+                layouts: [{ default: () => null }],
+                layoutTreePositions: [0],
+                params: [],
+                pattern: "/shots",
+                routeSegments: ["shots"],
+              })
+            : undefined;
+        },
+        isProduction: false,
+        isRscRequest: true,
+        renderToReadableStream(element) {
+          return createStream([typeof element === "string" ? element : "unexpected-element"]);
+        },
+        route: createRoute({
+          isDynamic: true,
+          params: ["id"],
+          pattern: "/shots/[id]",
+          routeSegments: ["shots", "[id]"],
+        }),
+      });
+      const response = await dispatchAppPage(options);
+      await expect(response.text()).resolves.toBe("/shots");
+      return response.headers.get("cache-control");
+    };
+
+    await expect(dispatchSibling({ default: "modal-page" })).resolves.toBe(
+      "no-store, must-revalidate",
+    );
+    await expect(
+      dispatchSibling({ default: "modal-page", generateStaticParams: async () => [] }),
+    ).resolves.toBeNull();
   });
 
   it("fresh-renders mounted-slot intercepted RSC requests without persistent cache reuse", async () => {
