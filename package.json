@@ -32,6 +32,7 @@
     "@mswjs/interceptors": "catalog:",
     "@playwright/test": "catalog:",
     "@sentry/nextjs": "catalog:",
+    "@tanstack/redact": "catalog:",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",

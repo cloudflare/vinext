@@ -35,6 +35,7 @@ catalog:
   "@tailwindcss/postcss": 4.1.4
   "@tailwindcss/typography": 0.5.16
   "@tailwindcss/vite": ^4.1.0
+  "@tanstack/redact": 0.2.0
   "@takumi-rs/image-response": ^0.72.0
   "@types/mdx": 2.0.13
   "@types/ms": 2.1.0
@@ -164,3 +165,6 @@ allowBuilds:
   # @sentry/nextjs pulls in @sentry/cli for source-map upload tooling. The
   # tests only exercise the runtime SDK, so the CLI postinstall is unnecessary.
   "@sentry/cli": false
+
+patchedDependencies:
+  "@tanstack/redact@0.2.0": patches/@tanstack__redact@0.2.0.patch

@@ -64,6 +64,8 @@ export default {
         "@changesets/get-release-plan",
         "@changesets/apply-release-plan",
         "@changesets/should-skip-package",
+        // .github/scripts/enable-redact.mjs adds it to example Vite configs for PR previews.
+        "@tanstack/redact",
       ],
     },
     "packages/vinext": {
