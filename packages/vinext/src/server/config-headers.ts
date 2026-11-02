@@ -311,6 +311,8 @@ export function applyConfigHeadersToHeaderRecord(
     findHeaderRecordKey(headers, "set-cookie") !== undefined;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
+    // vinext's own marker, which a config header can't forge.
+    if (lowerName === VINEXT_PRERENDER_RENDER_ERROR_HEADER) continue;
     if (lowerName === "set-cookie") {
       if (!middlewareSetsCookie) appendHeaderRecord(headers, lowerName, header.value);
     } else if (lowerName === "vary") {

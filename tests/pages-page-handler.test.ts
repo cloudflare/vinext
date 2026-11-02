@@ -2278,6 +2278,14 @@ describe("createPagesPageHandler — prerender render errors", () => {
     }
     const custom = await renderNotFound(Object.assign(() => null, { getInitialProps }));
     expect(custom.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    // Also for a `React.memo()` one, which is an object.
+    const memo = await renderNotFound(
+      Object.assign(
+        React.memo(() => null),
+        { getInitialProps },
+      ),
+    );
+    expect(memo.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
   });
 });
 

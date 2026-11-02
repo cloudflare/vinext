@@ -10,6 +10,7 @@ import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 import {
   VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -317,6 +318,40 @@ describe("app page boundary render helpers", () => {
     const runtime = await renderNotFound(null);
     expect(runtime?.status).toBe(404);
     expect(runtime?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("fails a prerender on a matched route fallback that throws only for a build-failing error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (error: Error, tracksPrerenderRenderErrors?: boolean) =>
+      renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: { slug: "missing" },
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        renderToReadableStream() {
+          throw error;
+        },
+        route: { pattern: "/posts/[slug]", params: { slug: "missing" } },
+        statusCode: 404,
+        tracksPrerenderRenderErrors,
+      });
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    try {
+      const failed = await renderNotFound(new Error("not-found shell failed"), true);
+      expect(failed?.status).toBe(500);
+      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      const binding = await renderNotFound(bindingError, true);
+      expect(binding?.status).toBe(500);
+      expect(binding?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+      const untracked = await renderNotFound(new Error("not-found shell failed"));
+      expect(untracked?.status).toBe(500);
+      expect(untracked?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("keeps a prerender's error when a redirect replaces the root not-found page", async () => {

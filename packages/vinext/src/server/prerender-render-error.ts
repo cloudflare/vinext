@@ -2,6 +2,7 @@ import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigati
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
+import { copyLinkHeaderProvenance } from "./app-response-header-provenance.js";
 import {
   VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
@@ -78,9 +79,11 @@ export function createPrerenderRenderErrorTracker(
  * every error by the time the response is finalized.
  */
 export async function bufferPrerenderResponse(response: Response): Promise<Response> {
-  return new Response(await response.arrayBuffer(), {
+  const buffered = new Response(await response.arrayBuffer(), {
     status: response.status,
     statusText: response.statusText,
     headers: response.headers,
   });
+  copyLinkHeaderProvenance(response.headers, buffered.headers);
+  return buffered;
 }

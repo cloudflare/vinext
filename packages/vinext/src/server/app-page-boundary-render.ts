@@ -728,18 +728,14 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 ): Promise<Response | null> {
   if (process.env.VINEXT_PRERENDER !== "1") return renderHttpAccessFallback(options, null);
   // As in `next build`, an error the not-found, forbidden or unauthorized page
-  // reports fails the prerender of the page whose signal it answers.
-  if (options.route) {
-    return renderHttpAccessFallback(options, {
-      isNotFoundPage: false,
-      tracksRenderErrors: options.tracksPrerenderRenderErrors === true,
-    });
-  }
-  // Without a route, it's the root not-found page's own prerender
-  // (`/_not-found`), unless Next.js doesn't prerender the page or the render
+  // reports fails the prerender of the page whose signal it answers. Without a
+  // route, it's the root not-found page's own prerender (`/_not-found`),
+  // unless Next.js doesn't prerender the page. Neither fails once the render
   // turned dynamic. That includes an error, such as one from its metadata,
   // that leaves no page to answer with.
-  const prerender = { isNotFoundPage: true, tracksRenderErrors: false };
+  const prerender = options.route
+    ? { isNotFoundPage: false, tracksRenderErrors: options.tracksPrerenderRenderErrors === true }
+    : { isNotFoundPage: true, tracksRenderErrors: false };
   try {
     return await renderHttpAccessFallback(options, prerender);
   } catch (error) {
@@ -748,7 +744,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
       isPrerenderBuildFailingError(error) &&
       !peekDynamicUsage() &&
       !isRenderDynamicLatched()
-      ? markPrerenderRenderError(response, true)
+      ? markPrerenderRenderError(response, prerender.isNotFoundPage)
       : response;
   }
 }

@@ -447,14 +447,15 @@ function getPagesPageRuntime(pageModule: object): string | undefined {
   return typeof runtime === "string" ? runtime : undefined;
 }
 
-// Like Next.js's hasCustomGetInitialProps: `next/error`'s own getInitialProps
-// doesn't count.
+// Like Next.js's hasCustomGetInitialProps, for any component type, such as a
+// `React.memo()` one: `next/error`'s own getInitialProps doesn't count.
+// https://github.com/vercel/next.js/blob/canary/packages/next/src/build/utils.ts
 function hasCustomGetInitialProps(component: unknown): boolean {
-  if (typeof component !== "function") return false;
-  const getInitialProps: unknown = Reflect.get(component, "getInitialProps");
+  if (typeof component !== "function" && (typeof component !== "object" || component === null)) {
+    return false;
+  }
   return (
-    typeof getInitialProps === "function" &&
-    getInitialProps !== Reflect.get(component, "origGetInitialProps")
+    Reflect.get(component, "getInitialProps") !== Reflect.get(component, "origGetInitialProps")
   );
 }
 

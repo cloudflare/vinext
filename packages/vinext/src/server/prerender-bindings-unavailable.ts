@@ -13,7 +13,9 @@ export function isPrerenderBindingsUnavailableError(error: unknown): boolean {
   const marker = Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY);
   // Follow a sanitized error's original or a wrapping error's cause, without
   // looping on a cyclic chain.
-  for (let depth = 0; depth < 10 && error !== null && typeof error === "object"; depth++) {
+  const visited = new WeakSet<object>();
+  while (error !== null && typeof error === "object" && !visited.has(error)) {
+    visited.add(error);
     if (Reflect.get(error, marker) === true) return true;
     error =
       ORIGINAL_SERVER_ERROR in error

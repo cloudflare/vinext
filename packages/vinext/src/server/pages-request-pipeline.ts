@@ -67,7 +67,10 @@ import {
 import { markRouteCacheabilityDynamic } from "vinext/shims/cacheability-classification";
 import type { PagesRouteDataKind } from "./pages-route-data-kind.js";
 import { setFrameworkRequestRoute } from "./request-tracing.js";
-import { VINEXT_PRERENDER_REWRITTEN_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
+} from "./headers.js";
 
 function ruleUsesUnkeyedRequestCondition(rule: NextRedirect | NextRewrite): boolean {
   return [...(rule.has ?? []), ...(rule.missing ?? [])].some(
@@ -693,6 +696,8 @@ export async function runPagesRequest(
     // Collect middleware response headers (Set-Cookie as array, same logic as both prod copies)
     if (result.responseHeaders) {
       for (const [key, value] of result.responseHeaders) {
+        // vinext's own marker, which middleware can't forge.
+        if (key === VINEXT_PRERENDER_RENDER_ERROR_HEADER) continue;
         if (key === "set-cookie") {
           const existing = middlewareHeaders[key];
           if (Array.isArray(existing)) {

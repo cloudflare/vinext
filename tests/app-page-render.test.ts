@@ -426,6 +426,57 @@ describe("form state rendering", () => {
 });
 
 describe("app page render lifecycle", () => {
+  it("marks a prerender HTML response whose render reports an error", async () => {
+    const renderHtml = (isPrerender: boolean, revalidateSeconds: number | null = null) =>
+      renderAppPageLifecycle({
+        ...createCommonOptions().options,
+        isPrerender,
+        isProduction: true,
+        revalidateSeconds,
+        renderToReadableStream(_element, options) {
+          // A Suspense boundary's error, which the page still renders around.
+          options?.onError?.(new Error("suspended failure"), undefined, undefined);
+          return createStream(["flight-data"]);
+        },
+      });
+
+    for (const revalidateSeconds of [null, 60]) {
+      const response = await renderHtml(true, revalidateSeconds);
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      await response.text();
+    }
+
+    const runtimeResponse = await renderHtml(false);
+    expect(runtimeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    await runtimeResponse.text();
+
+    // And when the error boundary recovers the shell's error.
+    const recovered = await renderAppPageLifecycle({
+      ...createCommonOptions().options,
+      isPrerender: true,
+      isProduction: true,
+      loadSsrHandler: async () => ({
+        async handleSsr(
+          _rscStream: ReadableStream<Uint8Array>,
+          _navContext: unknown,
+          _fontData: unknown,
+          options?: { onSsrError?: (error: unknown) => unknown },
+        ) {
+          options?.onSsrError?.(new Error("shell failure"));
+          return {
+            htmlStream: createStream(['<html id="__next_error__"></html>']),
+            metadataReady: Promise.resolve(),
+            capturedRscData: null,
+            shellErrorRecovered: true,
+          };
+        },
+      }),
+    });
+    expect(recovered.status).toBe(500);
+    expect(recovered.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+    await recovered.text();
+  });
+
   it("marks a prerender RSC response whose render reports an error late", async () => {
     const renderRsc = (isPrerender: boolean) =>
       renderAppPageLifecycle({
