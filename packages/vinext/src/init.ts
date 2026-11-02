@@ -540,13 +540,15 @@ function addDependencyEntries(root: string, deps: string[], { dev }: { dev: bool
   return added;
 }
 
+/** The spec in the manifest sections `isDepInstalled` reads. */
 function readDeclaredDependency(root: string, name: string): string | undefined {
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf-8")) as {
       dependencies?: Record<string, string>;
       devDependencies?: Record<string, string>;
+      peerDependencies?: Record<string, string>;
     };
-    return pkg.dependencies?.[name] ?? pkg.devDependencies?.[name];
+    return pkg.dependencies?.[name] ?? pkg.devDependencies?.[name] ?? pkg.peerDependencies?.[name];
   } catch {
     return undefined;
   }
@@ -1136,13 +1138,16 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   console.log(`  ${terminalStyle.green(terminalStyle.bold("vinext init complete!"))}\n`);
 
-  if (dependencyEntriesAdded.length > 0) {
+  // Upgrades are listed with their versions below rather than as added entries.
+  const addedDependencies = dependencyEntriesAdded.filter((name) => !upgradedFrom.has(name));
+  const addedDevDependencies = devDependencyEntriesAdded.filter((name) => !upgradedFrom.has(name));
+  if (addedDependencies.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to dependencies:`);
-    console.log(formatList(dependencyEntriesAdded, "      "));
+    console.log(formatList(addedDependencies, "      "));
   }
-  if (devDependencyEntriesAdded.length > 0) {
+  if (addedDevDependencies.length > 0) {
     console.log(`    ${terminalStyle.green("\u2713")} Added dependencies to devDependencies:`);
-    console.log(formatList(devDependencyEntriesAdded, "      "));
+    console.log(formatList(addedDevDependencies, "      "));
   }
   for (const [name, from] of upgradedFrom) {
     const to = readDeclaredDependency(root, name);

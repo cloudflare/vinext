@@ -65,5 +65,9 @@ describe("vinext init React upgrade", () => {
     expect(output).toContain(
       "    ✓ Upgraded react 19.2.4 → latest\n    ✓ Upgraded react-dom 19.2.4 → latest",
     );
+    // The upgrades are not listed again as added entries.
+    expect(output).toContain(
+      "    ✓ Added dependencies to dependencies:\n      - vinext\n      - react-server-dom-webpack\n      - @vinext/cloudflare\n",
+    );
   });
 });
