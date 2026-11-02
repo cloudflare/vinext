@@ -4,6 +4,7 @@ import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  readOptimisticStateKeyRebinder,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -26,6 +27,7 @@ import type {
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 import {
+  createBfcacheChildSegmentStateKey,
   createNestedBfcacheSlotSegmentId,
   deriveBfcacheSegmentIdentity,
 } from "../packages/vinext/src/server/bfcache-identity.js";
@@ -362,25 +364,33 @@ describe("App Router optimistic routing", () => {
     expect(AppElementsWire.readMetadata(payload.elements).bfcacheSegmentIdentities).toEqual({
       [pageId]: pageIdentity(options.targetHref),
     });
-    return { elements, pageId, pageIdentity, routeId, template };
+    return { elements, pageId, pageIdentity, payload, routeId, template };
   }
 
   it("rebinds a learned template's BFCache state keys to the target params", () => {
     // Like Next.js's reifyRouteTree: a template learned from /blog/post-1 keys
     // /blog/post-2's segments by post-2, so its optimistic segments don't take
     // over post-1's retained entry.
-    const { elements, pageId, pageIdentity, routeId, template } = reifyLearnedTemplate({
+    const { elements, pageId, pageIdentity, payload, routeId, template } = reifyLearnedTemplate({
       learnedHref: "/blog/post-1",
       routeManifest: blogManifest(),
       segmentKeys: (href) => ["blog", `slug|${href.slice("/blog/".length)}|d`],
       targetHref: "/blog/post-2",
     });
+    // A level without a layout keeps a fixed key inside the learned tree. The
+    // shell carries the function that rebinds it.
+    const rebind = readOptimisticStateKeyRebinder(payload.elements);
+    expect(
+      rebind?.(createBfcacheChildSegmentStateKey(JSON.stringify(["blog", "slug|post-1|d"]))),
+    ).toBe(createBfcacheChildSegmentStateKey(JSON.stringify(["blog", "slug|post-2|d"])));
     // The learned template itself is unchanged.
     expect(AppElementsWire.readMetadata(template.elements).bfcacheSegmentIdentities).toEqual({
       [pageId]: pageIdentity("/blog/post-1"),
     });
     // Its own URL keeps the learned keys.
-    expect(createOptimisticRouteElements(template)[routeId]).toBe(elements[routeId]);
+    const ownElements = createOptimisticRouteElements(template);
+    expect(ownElements[routeId]).toBe(elements[routeId]);
+    expect(readOptimisticStateKeyRebinder(ownElements)).toBeNull();
   });
 
   it("rebinds an optional catch-all that matches nothing in either direction", () => {

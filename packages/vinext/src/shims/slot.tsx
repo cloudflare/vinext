@@ -5,6 +5,7 @@ import {
   APP_BFCACHE_SEGMENT_IDENTITIES_KEY,
   APP_SKIPPED_LAYOUT_IDS_KEY,
   AppElementsWire,
+  readOptimisticStateKeyRebinder,
   UNMATCHED_SLOT,
   type AppElementValue,
   type AppElements,
@@ -612,9 +613,15 @@ function BfcacheChildrenActivityBoundary({
   const bfcacheIdMap = React.useContext(IdMapContext);
   // The children keep the segment id of the layout that renders them.
   const segmentId = React.useContext(SegmentContext);
+  // A fixed key is baked into the tree an optimistic shell reuses, so it names
+  // the URL the shell was learned from until the shell rebinds it.
+  const rebindStateKey = readOptimisticStateKeyRebinder(elements);
   const activeStateKey =
-    stateKey ??
-    (id === undefined ? undefined : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap));
+    stateKey !== undefined
+      ? (rebindStateKey?.(stateKey) ?? stateKey)
+      : id === undefined
+        ? undefined
+        : resolveBfcacheSegmentStateKey(id, identityMap, bfcacheIdMap);
   if (segmentId === null || activeStateKey === undefined) {
     return <>{children}</>;
   }

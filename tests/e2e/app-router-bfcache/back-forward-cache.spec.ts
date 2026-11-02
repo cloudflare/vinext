@@ -952,6 +952,53 @@ test.describe("BFCache Activity effects", () => {
     await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
   });
 
+  // rooms/[id]/notes has no layout below the effects layout, so its [id] and
+  // notes levels key their entries by fixed keys in the learned shell. The
+  // shell for /rooms/d/notes rebinds them to d, like its segment identities.
+  test("keeps retained entries of levels without a layout under an optimistic shell", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a/notes`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "notes:a#1"], true), [
+      "notes:a#1",
+      "shell#1",
+    ]);
+    await incrementEffect(page, "notes:a", 2);
+
+    await clickEffectsLink(page, "/rooms/b/notes", "Notes b");
+    await expectEffects(
+      page,
+      ["cleanup notes:a#1", ...setupEffects(["notes:b#1"], true)],
+      ["notes:b#1", "shell#1"],
+    );
+    await incrementEffect(page, "notes:b", 3);
+    // Let the page's links prefetch, so /rooms/d/notes renders the learned
+    // shell before its own payload.
+    await page.waitForLoadState("networkidle");
+
+    await page.evaluate(() => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        "/bfcache-effects/rooms/d/notes",
+      );
+    });
+    await expectEffectsHeading(page, "Notes d");
+    await expectEffects(
+      page,
+      ["cleanup notes:b#1", ...setupEffects(["notes:d#1"], true)],
+      ["notes:d#1", "shell#1"],
+    );
+    await expectHiddenEffectState(page, "notes:b", "Count: 3");
+    await expectHiddenEffectState(page, "notes:a", "Count: 2");
+
+    await clickEffectsLink(page, "/rooms/a/notes", "Notes a");
+    await expectEffects(page, ["cleanup notes:d#1", "setup notes:a#1"], ["notes:a#1", "shell#1"]);
+    await expect(effectCount(page, "notes:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b/notes", "Notes b");
+    await expectEffects(page, ["cleanup notes:a#1", "setup notes:b#1"], ["notes:b#1", "shell#1"]);
+    await expect(effectCount(page, "notes:b")).toHaveText("Count: 3");
+  });
+
   // Both clear the router's cache, so the next navigation to a retained room
   // has no payload of its own and could render the learned shell over its entry.
   for (const [trigger, testId] of [
