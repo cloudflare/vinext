@@ -392,7 +392,11 @@ export type NextConfig = {
     contentSecurityPolicy?: string;
     /** Least max-age, in seconds, of an image the endpoint serves as-is. Defaults to 14400. */
     minimumCacheTTL?: number;
-    /** Most bytes the endpoint reads of a source before answering 413. Defaults to 50000000. */
+    /**
+     * Most bytes the endpoint reads of a GIF, PNG or WebP source it buffers to
+     * detect animation (when an image optimizer is configured) before answering
+     * 413. Other sources stream unbounded. Defaults to 50000000.
+     */
     maximumResponseBody?: number;
   };
   /**

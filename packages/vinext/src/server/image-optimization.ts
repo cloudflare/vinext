@@ -99,7 +99,10 @@ export type ImageConfig = {
   contentSecurityPolicy?: string;
   /** Least max-age, in seconds, of an image served as-is. Default: 14400. */
   minimumCacheTTL?: number;
-  /** Most bytes read of a source before answering 413. Default: 50000000. */
+  /**
+   * Most bytes read of a GIF, PNG or WebP source buffered for animation
+   * detection before answering 413. Default: 50000000.
+   */
   maximumResponseBody?: number;
 };
 
@@ -672,30 +675,33 @@ async function readBoundedBody(
   declaredLength: string | null,
   limit: number,
 ): Promise<Uint8Array<ArrayBuffer> | null> {
-  if (declaredLength !== null && Number(declaredLength) > limit) {
+  const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
+  if (declared > limit) {
     await body.cancel();
     return null;
   }
-  const reader = body.getReader();
-  const chunks: Uint8Array[] = [];
+  // Read into one buffer, sized by Content-Length when declared, so the
+  // source is held once rather than as chunks plus a copy.
+  let bytes = new Uint8Array(Number.isSafeInteger(declared) && declared >= 0 ? declared : 0);
   let length = 0;
+  const reader = body.getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
-    length += value.byteLength;
-    if (length > limit) {
+    const end = length + value.byteLength;
+    if (end > limit) {
       await reader.cancel();
       return null;
     }
-    chunks.push(value);
+    if (end > bytes.byteLength) {
+      const grown = new Uint8Array(Math.min(limit, Math.max(end, bytes.byteLength * 2)));
+      grown.set(bytes.subarray(0, length));
+      bytes = grown;
+    }
+    bytes.set(value, length);
+    length = end;
   }
-  const bytes = new Uint8Array(length);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return bytes;
+  return bytes.subarray(0, length);
 }
 
 /**
@@ -801,7 +807,13 @@ export async function handleImageOptimization(
             imageConfig,
           );
         }
-        body = new Blob([sourceBytes]).stream();
+        const bytes = sourceBytes;
+        body = new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        });
       }
       const transformed = await handlers.transformImage(body, {
         width,

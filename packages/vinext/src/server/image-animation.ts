@@ -92,8 +92,9 @@ function isAnimatedPng(bytes: Uint8Array): boolean {
 }
 
 function isAnimatedWebp(bytes: Uint8Array): boolean {
+  const first = WEBP_ANIM_CHUNK[0];
   for (let offset = 0; offset < bytes.length; offset++) {
-    if (bytesAt(bytes, offset, WEBP_ANIM_CHUNK)) return true;
+    if (bytes[offset] === first && bytesAt(bytes, offset, WEBP_ANIM_CHUNK)) return true;
   }
   return false;
 }

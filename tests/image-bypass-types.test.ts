@@ -310,6 +310,35 @@ describe("handleImageOptimization source size limit", () => {
     expect(pulled).toBeLessThanOrEqual(1);
   });
 
+  it("passes the whole source to the optimizer whatever its chunking and Content-Length", async () => {
+    const bytes = new Uint8Array(100_000).map((_, i) => i % 251);
+    bytes.set(STATIC_PNG);
+    for (const contentLength of [null, "10", String(bytes.byteLength), "200000"]) {
+      let received: Uint8Array | null = null;
+      const response = await handleImageOptimization(imageRequest, {
+        fetchAsset: async () => {
+          let offset = 0;
+          const body = new ReadableStream<Uint8Array>({
+            pull(controller) {
+              if (offset >= bytes.byteLength) return controller.close();
+              controller.enqueue(bytes.slice(offset, offset + 7_000));
+              offset += 7_000;
+            },
+          });
+          const headers = new Headers({ "Content-Type": "image/png" });
+          if (contentLength !== null) headers.set("Content-Length", contentLength);
+          return new Response(body, { status: 200, headers });
+        },
+        transformImage: async (body) => {
+          received = new Uint8Array(await new Response(body).arrayBuffer());
+          return new Response("transformed", { headers: { "Content-Type": "image/webp" } });
+        },
+      });
+      expect(response.status, String(contentLength)).toBe(200);
+      expect(received, String(contentLength)).toEqual(bytes);
+    }
+  });
+
   it("uses images.maximumResponseBody as the limit", async () => {
     const response = await handleImageOptimization(
       imageRequest,
