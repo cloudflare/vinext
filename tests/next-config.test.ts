@@ -1260,6 +1260,25 @@ describe("resolveNextConfig image patterns", () => {
     ]);
   });
 
+  it("reads local pattern fields from any object Next.js's schema accepts", async () => {
+    // Next.js's zod schema reads fields by property access, so class
+    // instances and inherited fields count.
+    class Pattern {
+      pathname = "/photos/**";
+      search = "";
+    }
+    const inherited = Object.create({ pathname: "/inherited/**" }) as object;
+    const config = await resolveNextConfig(
+      { images: { localPatterns: [new Pattern(), inherited] as never } },
+      "/tmp/project",
+    );
+    expect(config.images?.localPatterns).toEqual([
+      { pathname: "/photos/**", search: "" },
+      { pathname: "/inherited/**" },
+      { pathname: "/_next/static/media/**", search: "" },
+    ]);
+  });
+
   it("leaves unset local patterns unset", async () => {
     const config = await resolveNextConfig({ images: { qualities: [75] } }, "/tmp/project");
     expect(config.images?.localPatterns).toBeUndefined();
@@ -1294,6 +1313,9 @@ describe("resolveNextConfig image patterns", () => {
       [{ pathname: "/a", host: "x" }],
       [new URL("https://example.com/photos/**")],
       [new Date()],
+      [new Map()],
+      [Promise.resolve()],
+      [Object.assign(() => {}, { pathname: "/a" })],
       sparse,
     ]) {
       await expect(

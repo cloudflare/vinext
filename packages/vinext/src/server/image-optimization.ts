@@ -17,7 +17,7 @@
  * as-is (no transformation) with security headers applied.
  */
 
-import { hasLocalMatch, type LocalPattern } from "vinext/shims/image-config";
+import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
 

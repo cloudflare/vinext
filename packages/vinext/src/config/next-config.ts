@@ -1387,25 +1387,38 @@ function resolveImageLocalPatterns(
   }
   // Array.from visits sparse holes, which map would skip.
   const patterns = Array.from(localPatterns, (pattern: unknown, index) => {
-    if (
-      typeof pattern !== "object" ||
-      pattern === null ||
-      // Plain objects only: a class instance such as a URL has no own
-      // entries and would spread to `{}`.
-      (Object.getPrototypeOf(pattern) !== Object.prototype &&
-        Object.getPrototypeOf(pattern) !== null) ||
-      Object.entries(pattern).some(
-        ([key, value]) =>
-          (key !== "pathname" && key !== "search") ||
-          (value !== undefined && typeof value !== "string"),
-      )
-    ) {
+    // Next.js's zod strictObject: any object zod doesn't type as an array,
+    // date, map, set or promise, whose enumerable keys (inherited ones too,
+    // so a URL fails) are only `pathname` and `search`, read as strings.
+    const entry = pattern as { pathname?: unknown; search?: unknown; then?: unknown };
+    let valid =
+      typeof pattern === "object" &&
+      pattern !== null &&
+      !Array.isArray(pattern) &&
+      !(pattern instanceof Date) &&
+      !(pattern instanceof Map) &&
+      !(pattern instanceof Set) &&
+      !(
+        typeof entry.then === "function" &&
+        typeof (pattern as Promise<unknown>).catch === "function"
+      ) &&
+      (entry.pathname === undefined || typeof entry.pathname === "string") &&
+      (entry.search === undefined || typeof entry.search === "string");
+    if (valid) {
+      for (const key in pattern as object) {
+        if (key !== "pathname" && key !== "search") valid = false;
+      }
+    }
+    if (!valid) {
       throw new Error(
         `Specified images.localPatterns[${index}] should be an object with optional string ` +
           "`pathname` and `search` fields.",
       );
     }
-    return { ...(pattern as { pathname?: string; search?: string }) };
+    const resolved: { pathname?: string; search?: string } = {};
+    if (entry.pathname !== undefined) resolved.pathname = entry.pathname as string;
+    if (entry.search !== undefined) resolved.search = entry.search as string;
+    return resolved;
   });
   if (
     !patterns.some(
