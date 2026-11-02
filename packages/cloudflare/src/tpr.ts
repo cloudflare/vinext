@@ -233,12 +233,9 @@ function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath =
     .join("/")
     .replace(/\/+/g, "/");
   if (!basePath) return assetPaths.has(assetPathname);
-  // Build output keeps its asset prefix directory above `_next/static`, which
-  // Static Assets serves directly; public files sit at the root below basePath.
+  // Public files sit at the assets root but are served below basePath.
   return (
-    (assetPathname.includes("/_next/static/") && assetPaths.has(assetPathname)) ||
-    (assetPathname.startsWith(`${basePath}/`) &&
-      assetPaths.has(assetPathname.slice(basePath.length)))
+    assetPathname.startsWith(`${basePath}/`) && assetPaths.has(assetPathname.slice(basePath.length))
   );
 }
 
@@ -262,8 +259,13 @@ export function filterTrafficPaths(
     if (assetPaths && isStaticAssetPath(assetPaths, pathname, options.basePath)) return [];
     // API routes
     if (pathname.startsWith("/api/")) return [];
-    // Internal routes
-    if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return [];
+    // Internal routes, and build output below any basePath or asset prefix
+    if (
+      pathname.startsWith("/_next/") ||
+      pathname.includes("/_next/static/") ||
+      pathname.startsWith("/__vinext/")
+    )
+      return [];
     return [{ path: pathname, requests: e.requests }];
   });
 }

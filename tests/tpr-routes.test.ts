@@ -188,6 +188,7 @@ describe("TPR route resolution", () => {
             { path: "/docs/videos/hero.webm", requests: 3 },
             { path: "/docs/videos//hero.webm", requests: 3 },
             { path: "/docs/_next/static/module.wasm", requests: 3 },
+            { path: "/sub/_next/static/chunk.wasm", requests: 3 },
             { path: "/docs/100%real.wasm", requests: 3 },
             { path: "/docs/linked.webm", requests: 3 },
             { path: "/docs/_HEADERS", requests: 2 },
