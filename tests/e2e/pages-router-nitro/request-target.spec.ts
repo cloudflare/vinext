@@ -16,28 +16,24 @@ test.describe("Pages Router on Nitro (node server)", () => {
       body: "Hello from public/\n",
     });
 
-    for (const target of [
-      "http://other.example/",
-      "http://other.example/hello.txt",
+    const cases: Array<[string, Record<string, string>?]> = [
+      ["http://other.example/"],
+      ["http://other.example/hello.txt"],
+      [`http://${host}/hello.txt`],
       // h3 decodes a path with a `%` back into req.url.
-      "https://other.example/%61",
-      `http://${host}/hello.txt`,
-      `https://${host}/%61`,
-    ]) {
-      const response = await getWithHost(baseURL!, target, host);
+      ["https://other.example/%61"],
+      [`https://${host}/%61`],
+      [`http://${host}/%61`, { "x-forwarded-proto": "https" }],
+      [`https://${host}/%61`, { "x-forwarded-proto": "http, https" }],
+      ["https://other.example/%61", { "x-forwarded-host": "other.example" }],
+      ["http://_invalid_/%61"],
+    ];
+    for (const [target, headers] of cases) {
+      const response = await getWithHost(baseURL!, target, host, headers);
       expect({ status: response.status, body: response.body }, target).toEqual({
         status: 404,
         body: "This page could not be found",
       });
     }
-
-    // X-Forwarded-Host names the target's host only when VINEXT_TRUSTED_HOSTS lists it.
-    const forwarded = await getWithHost(baseURL!, "https://other.example/%61", host, {
-      "x-forwarded-host": "other.example",
-    });
-    expect({ status: forwarded.status, body: forwarded.body }).toEqual({
-      status: 404,
-      body: "This page could not be found",
-    });
   });
 });

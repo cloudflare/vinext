@@ -1,48 +1,23 @@
-import type { IncomingMessage } from "node:http";
-import type { TLSSocket } from "node:tls";
-import { resolveTrustedForwardedHost } from "./proxy-trust.js";
+import { NITRO_REQUEST_TARGET_KEY } from "./nitro-request-target-plugin.js";
 
 /** srvx, which serves Nitro's Node presets, exposes the Node request it wraps. */
 type SrvxNodeRequest = Request & {
-  runtime?: { node?: { req?: Pick<IncomingMessage, "headers" | "socket" | "url"> } };
+  runtime?: { node?: { req?: { url?: string } } };
 };
 
 /**
- * Whether srvx, serving the request on Node, took the origin of `request.url`
- * from an absolute-form request target (`GET https://other.example/x`), as
- * RFC 9112 §3.2.2 asks of an origin server. `vinext start` 404s every target
- * that is not origin-form (see `getRepeatedSlashRedirect`) and Next.js never
- * routes one, so the request-based entries Nitro calls refuse them too.
+ * Whether srvx, serving the request on Node, got a request target that is not
+ * origin-form (`GET https://other.example/x`). srvx then takes the origin of
+ * `request.url` from the target, as RFC 9112 §3.2.2 asks of an origin server.
+ * `vinext start` 404s every such target (see `getRepeatedSlashRedirect`) and
+ * Next.js never routes one, so the request-based entries Nitro calls refuse
+ * them too. The raw target is the one `nitroRequestTargetPlugin` saved before
+ * h3 could rewrite `req.url`.
  */
 export function isSrvxAbsoluteFormTarget(request: Request): boolean {
   const req = (request as SrvxNodeRequest).runtime?.node?.req;
   if (!req) return false;
-  if (req.url && !req.url.startsWith("/")) return true;
-
-  // srvx 0.11 writes the pathname h3 decodes (one with a `%`) back into
-  // req.url, dropping the target's authority. For an origin-form target it
-  // builds the URL on the Host header (`_invalid_` when malformed), with
-  // `https:` only for TLS or an `https` X-Forwarded-Proto or `:scheme`; later
-  // versions keep req.url and may use an X-Forwarded-Host, which vinext
-  // accepts only from `VINEXT_TRUSTED_HOSTS`.
-  if (!URL.canParse(request.url)) return false;
-  const url = new URL(request.url);
-  const encrypted = (req.socket as Partial<TLSSocket> | undefined)?.encrypted === true;
-  const forwardedProto = req.headers["x-forwarded-proto"];
-  const httpsAllowed =
-    encrypted ||
-    req.headers[":scheme"] === "https" ||
-    (typeof forwardedProto === "string" &&
-      forwardedProto.split(",").some((proto) => proto.trim() === "https"));
-  if (url.protocol === "https:" ? !httpsAllowed : url.protocol !== "http:" || encrypted) {
-    return true;
-  }
-  const host = req.headers.host || req.headers[":authority"];
-  if (!host || typeof host !== "string" || url.hostname === "_invalid_") return false;
-  const forwardedHost = resolveTrustedForwardedHost(request.headers);
-  const names = forwardedHost === undefined ? [host] : [host, forwardedHost];
-  return !names.some((name) => {
-    const origin = `${url.protocol}//${name}`;
-    return URL.canParse(origin) && new URL(origin).host === url.host;
-  });
+  const saved: unknown = Reflect.get(req, Symbol.for(NITRO_REQUEST_TARGET_KEY));
+  const target = typeof saved === "string" ? saved : req.url;
+  return !!target && !target.startsWith("/");
 }

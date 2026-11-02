@@ -1,16 +1,12 @@
 import { describe, expect, it } from "vite-plus/test";
-import { trustedHosts } from "../packages/vinext/src/server/proxy-trust.js";
+import nitroRequestTargetPlugin from "../packages/vinext/src/server/nitro-request-target-plugin.js";
 import { isSrvxAbsoluteFormTarget } from "../packages/vinext/src/server/srvx-request-target.js";
 
 function srvxRequest(
   url: string,
   rawTarget: string,
-  headers: Record<string, string>,
-  socket: { encrypted?: boolean } = {},
-): Request {
-  return Object.assign(new Request(url, { headers }), {
-    runtime: { node: { req: { url: rawTarget, headers, socket } } },
-  });
+): Request & { runtime: { node: { req: { url: string } } } } {
+  return Object.assign(new Request(url), { runtime: { node: { req: { url: rawTarget } } } });
 }
 
 describe("isSrvxAbsoluteFormTarget", () => {
@@ -18,75 +14,27 @@ describe("isSrvxAbsoluteFormTarget", () => {
     expect(isSrvxAbsoluteFormTarget(new Request("https://other.example/x"))).toBe(false);
   });
 
-  it("accepts an origin-form target", () => {
-    const request = srvxRequest("http://shop.example/x", "/x", { host: "shop.example" });
-    expect(isSrvxAbsoluteFormTarget(request)).toBe(false);
-  });
-
-  it("rejects an absolute-form target, even one naming the Host header", () => {
-    for (const target of ["https://other.example/x", "http://shop.example/x"]) {
-      const request = srvxRequest(target, target, { host: "shop.example" });
+  it("rejects a raw target that is not origin-form", () => {
+    expect(isSrvxAbsoluteFormTarget(srvxRequest("http://shop.example/x", "/x"))).toBe(false);
+    for (const target of ["https://other.example/x", "http://shop.example/x", "*"]) {
+      const request = srvxRequest("http://other.example/x", target);
       expect(isSrvxAbsoluteFormTarget(request), target).toBe(true);
     }
   });
 
   // srvx 0.11 writes the pathname h3 decodes back into req.url.
-  it("rejects an origin the headers don't name after req.url was rewritten", () => {
-    for (const url of [
-      "https://other.example/x",
-      "https://shop.example/x",
-      "ftp://shop.example/x",
-    ]) {
-      const request = srvxRequest(url, "/x", { host: "shop.example" });
-      expect(isSrvxAbsoluteFormTarget(request), url).toBe(true);
-    }
-    const forwarded = srvxRequest("https://other.example/x", "/x", {
-      host: "shop.example",
-      "x-forwarded-host": "other.example",
-    });
-    expect(isSrvxAbsoluteFormTarget(forwarded)).toBe(true);
-    const plainOverTls = srvxRequest(
-      "http://shop.example/x",
-      "/x",
-      { host: "shop.example" },
-      {
-        encrypted: true,
+  it("reads the target the Nitro plugin saved before h3 rewrote req.url", () => {
+    const seen: Request[] = [];
+    const nitroApp = {
+      fetch: (request: Request) => {
+        seen.push(request);
+        (request as ReturnType<typeof srvxRequest>).runtime.node.req.url = "/a";
+        return new Response();
       },
-    );
-    expect(isSrvxAbsoluteFormTarget(plainOverTls)).toBe(true);
-  });
-
-  it("accepts the origins srvx builds for an origin-form target", () => {
-    const cases: Array<[string, Record<string, string>]> = [
-      ["https://shop.example/x", { host: "Shop.Example:443" }],
-      ["https://shop.example/x", { host: "shop.example", "x-forwarded-proto": "http, https" }],
-      ["http://_invalid_/x", { host: "shop.example/x" }],
-      ["http://127.0.0.1:3000/x", {}],
-      ["http://127.0.0.1:3000/x", { host: "" }],
-    ];
-    for (const [url, headers] of cases) {
-      expect(
-        isSrvxAbsoluteFormTarget(
-          srvxRequest(url, "/x", headers, {
-            encrypted: url.startsWith("https:") && !headers["x-forwarded-proto"],
-          }),
-        ),
-        url,
-      ).toBe(false);
-    }
-  });
-
-  // srvx 0.12 and later can build request.url on X-Forwarded-Host.
-  it("accepts an X-Forwarded-Host from VINEXT_TRUSTED_HOSTS", () => {
-    trustedHosts.add("public.example");
-    try {
-      const request = srvxRequest("http://public.example/x", "/x", {
-        host: "shop.example",
-        "x-forwarded-host": "public.example",
-      });
-      expect(isSrvxAbsoluteFormTarget(request)).toBe(false);
-    } finally {
-      trustedHosts.delete("public.example");
-    }
+    };
+    nitroRequestTargetPlugin(nitroApp);
+    void nitroApp.fetch(srvxRequest("https://other.example/a", "https://other.example/%61"));
+    void nitroApp.fetch(srvxRequest("http://shop.example/a", "/%61"));
+    expect(seen.map(isSrvxAbsoluteFormTarget)).toEqual([true, false]);
   });
 });
