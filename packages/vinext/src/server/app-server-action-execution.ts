@@ -45,6 +45,11 @@ import {
 import { applyEdgeRuntimeHeader } from "./app-page-response.js";
 import { resolveAppPageActionRerenderTarget } from "./app-page-request.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfigOptions,
+  type AppPageInterceptSegmentConfigRoute,
+} from "./app-page-intercept-segment-config.js";
 import { deferUntilStreamConsumed } from "./app-page-stream.js";
 import { buildAppPageTags } from "./implicit-tags.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
@@ -1967,9 +1972,17 @@ export async function handleServerActionRscRequest<
       );
       // Hydrate the re-render target before reading its page module.
       await options.ensureRouteLoaded?.(actionRerenderTarget.route);
-      const actionRerenderDynamicConfig = options.resolveRouteDynamicConfig?.(
-        actionRerenderTarget.route,
-      );
+      // An intercepted re-render renders the interception, which takes its
+      // config from its own loader tree, as on an intercepted navigation.
+      const actionInterceptConfig = actionRerenderTarget.interceptOpts
+        ? resolveAppPageInterceptSegmentConfig(
+            actionRerenderTarget.route as AppPageInterceptSegmentConfigRoute,
+            actionRerenderTarget.interceptOpts as unknown as AppPageInterceptSegmentConfigOptions,
+          )
+        : null;
+      const actionRerenderDynamicConfig = actionInterceptConfig
+        ? actionInterceptConfig.dynamicConfig
+        : options.resolveRouteDynamicConfig?.(actionRerenderTarget.route);
       const actionRerenderSearchParams = prepareActionPageRerenderContext({
         draftModeCookie: actionDraftCookie,
         draftModeSecret: options.draftModeSecret,
@@ -1988,10 +2001,14 @@ export async function handleServerActionRscRequest<
         ? `${options.cleanPathname}?${renderedSearch}`
         : options.cleanPathname;
       setCurrentFetchCacheMode(
-        options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.fetchCacheMode
+          : (options.resolveRouteFetchCacheMode?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentFetchRevalidate(
-        options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null,
+        actionInterceptConfig
+          ? actionInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(actionRerenderTarget.route) ?? null),
       );
       setCurrentForceDynamicFetchDefault(actionRerenderDynamicConfig === "force-dynamic");
       setCurrentFetchSoftTags(

@@ -60,16 +60,11 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
+import { isAppPageStaticEligible } from "./app-segment-config.js";
 import {
-  collectAppPageStaticGenerationRuntimes,
-  collectAppPageStaticParamsWalkSegments,
-  hasAppPageGenerateStaticParamsAtLastDynamicSegment,
-  isAppPageStaticEligible,
-  isEdgeRuntime,
-  resolveAppPageSegmentConfig,
-  resolveAppPageStaticGenerationRuntime,
-} from "./app-segment-config.js";
-import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfig,
+} from "./app-page-intercept-segment-config.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
@@ -644,130 +639,6 @@ function toInterceptOptions(
     interceptSourcePageSegments: intercept.sourcePageSegments ?? null,
     interceptTargetPatternParts: intercept.targetPatternParts ?? null,
     interceptTargetRouteGraphId: intercept.targetRouteGraphId ?? null,
-  };
-}
-
-type AppPageInterceptSegmentConfig = {
-  dynamicConfig: string | undefined;
-  fetchCacheMode: FetchCacheMode | null;
-  isStaticEligible: boolean;
-  revalidateSeconds: number | null;
-};
-
-/**
- * Next.js renders an interception as its own route, whose loader tree holds
- * the owner's layouts and the intercepting page, never the source's page, so
- * its segment config comes from those modules alone. A sibling intercept's
- * branch takes the children position below its owner folder; a slot
- * intercept's branch takes its slot, beside the other slots of the owner's
- * layouts, and children renders the owner's default.
- */
-function resolveAppPageInterceptSegmentConfig(
-  route: AppPageDispatchRoute,
-  interceptOpts: AppPageDispatchInterceptOptions,
-): AppPageInterceptSegmentConfig {
-  const isSiblingIntercept = interceptOpts.interceptSlotKey === SIBLING_PAGE_INTERCEPT_SLOT_KEY;
-  const interceptedSlot = isSiblingIntercept
-    ? undefined
-    : route.slots?.[interceptOpts.interceptSlotKey];
-  const branchSegments = interceptOpts.interceptBranchSegments ?? [];
-  const interceptLayouts = (interceptOpts.interceptLayouts ?? []) as AppPageModule[];
-  const interceptLayoutPositions = (interceptOpts.interceptLayoutSegments ?? []).map(
-    (segments) => segments.length,
-  );
-  // The main-tree position of the folder that owns the interception.
-  const ownerPosition = isSiblingIntercept
-    ? interceptOpts.interceptSourcePageSegments
-      ? interceptOpts.interceptSourcePageSegments.length - branchSegments.length
-      : route.routeSegments.length
-    : (interceptedSlot?.ownerTreePosition ??
-      route.layoutTreePositions?.[interceptedSlot?.layoutIndex ?? -1] ??
-      route.routeSegments.length);
-  const ownerLayoutIndexes = route.layouts.flatMap((_, index) =>
-    (route.layoutTreePositions?.[index] ?? 0) <= ownerPosition ? [index] : [],
-  );
-  const ownerLayouts = ownerLayoutIndexes.map((index) => route.layouts[index]);
-  const ownerLayoutPositions = ownerLayoutIndexes.map(
-    (index) => route.layoutTreePositions?.[index] ?? 0,
-  );
-  const ownerSegments = route.routeSegments.slice(0, ownerPosition);
-  const page = interceptOpts.interceptPage as AppPageModule | null | undefined;
-  // The other slots of the owner's layouts render beside the interception:
-  // a matched one with its own layouts and page, one without a page as a
-  // lone `__DEFAULT__` segment, without the slot's layouts.
-  const retainedBranches = Object.entries(route.slots ?? {}).flatMap(([slotKey, slot]) =>
-    slotKey !== interceptOpts.interceptSlotKey &&
-    (slot.ownerTreePosition ?? route.layoutTreePositions?.[slot.layoutIndex ?? 0] ?? 0) <=
-      ownerPosition
-      ? [
-          {
-            configLayouts: slot.page ? slot.configLayouts : null,
-            configLayoutTreePositions: slot.page ? slot.configLayoutTreePositions : null,
-            isDefault: !slot.page,
-            layout: slot.page ? slot.layout : null,
-            name: slot.name,
-            ownerTreePosition: slot.ownerTreePosition,
-            page: slot.page ?? slot.default,
-            routeSegments: slot.routeSegments,
-          },
-        ]
-      : [],
-  );
-  const tree = isSiblingIntercept
-    ? {
-        layouts: [...ownerLayouts, ...interceptLayouts],
-        layoutTreePositions: [
-          ...ownerLayoutPositions,
-          ...interceptLayoutPositions.map((position) => ownerPosition + position),
-        ],
-        page,
-        parallelBranches: retainedBranches,
-        routeSegments: [...ownerSegments, ...branchSegments],
-      }
-    : {
-        layouts: ownerLayouts,
-        layoutTreePositions: ownerLayoutPositions,
-        page: null,
-        parallelBranches: [
-          ...retainedBranches,
-          {
-            configLayouts: interceptLayouts,
-            configLayoutTreePositions: interceptLayoutPositions,
-            layout: interceptedSlot?.layout,
-            name: interceptedSlot?.name,
-            ownerTreePosition: ownerPosition,
-            page,
-            routeSegments: branchSegments,
-          },
-        ],
-        routeSegments: ownerSegments,
-      };
-  // The intercepting page and its layouts are the route's own segments, so
-  // their `dynamic` applies as a page's would, in a slot as well.
-  const config = resolveAppPageSegmentConfig({
-    layouts: [
-      ...ownerLayouts,
-      ...(isSiblingIntercept ? [] : [interceptedSlot?.layout]),
-      ...interceptLayouts,
-    ],
-    page,
-    parallelBranches: retainedBranches,
-  });
-  return {
-    dynamicConfig: config.dynamicConfig,
-    fetchCacheMode: config.fetchCache ?? null,
-    isStaticEligible: isAppPageStaticEligible({
-      dynamicConfig: config.dynamicConfig,
-      hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree),
-      isDynamicRoute: collectAppPageStaticParamsWalkSegments(tree).some(
-        (segment) => segment.dynamic,
-      ),
-      isStaticGenerationEdgeRuntime: isEdgeRuntime(
-        resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)),
-      ),
-      revalidateSeconds: config.revalidateSeconds,
-    }),
-    revalidateSeconds: config.revalidateSeconds,
   };
 }
 

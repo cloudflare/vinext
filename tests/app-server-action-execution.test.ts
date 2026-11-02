@@ -3849,6 +3849,77 @@ describe("app server action execution helpers", () => {
     revalidateSpy.mockRestore();
     forceDynamicSpy.mockRestore();
   });
+
+  it("takes an intercepted re-render's fetch defaults from the interception, not its source route", async () => {
+    const fetchCacheShims = await import("../packages/vinext/src/shims/fetch-cache.js");
+    const modeSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchCacheMode");
+    const revalidateSpy = vi.spyOn(fetchCacheShims, "setCurrentFetchRevalidate");
+    const forceDynamicSpy = vi.spyOn(fetchCacheShims, "setCurrentForceDynamicFetchDefault");
+    // app/feed/page.tsx is force-static; app/feed/@modal/(.)photos/[id] isn't.
+    const sourceRoute: TestRoute = {
+      id: "feed",
+      page: {},
+      params: [],
+      pattern: "/feed",
+      routeSegments: ["feed"],
+    };
+
+    const buildPageElement = vi.fn(() => "intercepted-page");
+
+    const response = await handleServerActionRscRequest(
+      createRscOptions({
+        buildPageElement,
+        cleanPathname: "/photos/42",
+        currentRouteMatch: { params: {}, route: sourceRoute },
+        currentRoutePathname: "/photos/42",
+        findIntercept() {
+          return {
+            matchedParams: { id: "42" },
+            page: { default: "modal-photo", fetchCache: "force-no-store", revalidate: 30 },
+            slotKey: "modal",
+            sourceRouteIndex: 0,
+          };
+        },
+        getSourceRoute() {
+          return sourceRoute;
+        },
+        loadServerAction() {
+          return Promise.resolve(async () => {
+            await Promise.resolve(revalidatePath("/photos/42"));
+            return "revalidated";
+          });
+        },
+        resolveRouteDynamicConfig: () => "force-static",
+        resolveRouteFetchCacheMode: () => "force-cache",
+        resolveRouteRevalidateSeconds: () => 3600,
+        toInterceptOpts(intercept) {
+          const interceptOpts = {
+            interceptBranchSegments: ["photos", "[id]"],
+            interceptPage: intercept.page,
+            interceptSlotKey: intercept.slotKey,
+            slot: intercept.slotKey,
+          };
+          return interceptOpts;
+        },
+      }),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(modeSpy).toHaveBeenLastCalledWith("force-no-store");
+    expect(revalidateSpy).toHaveBeenLastCalledWith(30);
+    expect(forceDynamicSpy).toHaveBeenLastCalledWith(false);
+    // The source's force-static would have emptied the query.
+    expect(buildPageElement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isForceStatic: false,
+        searchParams: new URLSearchParams("tab=activity"),
+      }),
+    );
+
+    modeSpy.mockRestore();
+    revalidateSpy.mockRestore();
+    forceDynamicSpy.mockRestore();
+  });
 });
 
 // The client-side counterpart of `createServerActionNotFoundResponse`: when the
