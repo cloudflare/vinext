@@ -33,7 +33,12 @@ import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import {
+  finalizeMissingStaticAssetResponse,
+  mergeHeaders,
+  mergeStaticFileHeaders,
+} from "./worker-utils.js";
+import { isImageOptimizationPath } from "./image-optimization.js";
 import { withExternalRewriteResponseHeaders } from "./middleware-response-headers.js";
 import {
   assetPrefixPathname,
@@ -541,7 +546,13 @@ export async function runPagesRequest(
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";
       // As for App Router public files, keep a partial or conditional asset
       // status (206, 304) rather than masking it while keeping its headers.
-      const response = mergeHeaders(
+      // The image endpoint's Cache-Control is the optimizer's own, which
+      // Next.js sets after middleware's; a file's is only a default.
+      const merge =
+        resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)
+          ? mergeHeaders
+          : mergeStaticFileHeaders;
+      const response = merge(
         served,
         middlewareHeaders,
         isStaticMethodNotAllowed || !served.ok || served.status === 206

@@ -1862,6 +1862,44 @@ describe("serveFilesystemRoute", () => {
     expect(result.response.status).toBe(403);
   });
 
+  // Next.js's static file server sets a Cache-Control only when none is
+  // present, while its image optimizer sets its own after middleware's.
+  // An empty value leaves the file's default in place.
+  for (const [pathname, middlewareValue, served, expected] of [
+    ["/file.txt", "private, no-store", "public, max-age=0, must-revalidate", "private, no-store"],
+    ["/file.txt", "", "public, max-age=0, must-revalidate", null],
+    [
+      "/_next/image?url=%2Ffoo.png&w=828&q=75",
+      "private, no-store",
+      "public, max-age=60, must-revalidate",
+      null,
+    ],
+  ] as const) {
+    it(`merges middleware's Cache-Control "${middlewareValue}" into ${pathname} like Next.js`, async () => {
+      for (const status of [200, 304]) {
+        const result = await runPagesRequest(
+          makeRequest(pathname),
+          baseDeps({
+            serveFilesystemRoute: vi.fn(
+              async () =>
+                new Response(status === 304 ? null : "body", {
+                  status,
+                  headers: { "cache-control": served },
+                }),
+            ),
+            runMiddleware: makeMiddleware({
+              responseHeaders: [["cache-control", middlewareValue]],
+            }),
+          }),
+        );
+        expect(result.type).toBe("response");
+        if (result.type !== "response") return;
+        expect(result.response.status).toBe(status);
+        expect(result.response.headers.get("cache-control")).toBe(expected ?? served);
+      }
+    });
+  }
+
   it("falls through to render when serveFilesystemRoute returns false", async () => {
     const renderPage = makeRenderPage(200);
     const serveFilesystemRoute = vi.fn(async () => false);
