@@ -2155,6 +2155,8 @@ importers:
 
   tests/fixtures/hybrid-i18n-api-handoff: {}
 
+  tests/fixtures/hybrid-pages-not-found: {}
+
   tests/fixtures/init-css-modules:
     dependencies:
       '@vitejs/plugin-rsc':
