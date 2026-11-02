@@ -368,6 +368,37 @@ describe("handleImageOptimization source size limit", () => {
     }
   });
 
+  it("answers 413 when cancelling the source fails or never settles", async () => {
+    for (const cancel of [
+      () => Promise.reject(new Error("cancel failed")),
+      () => new Promise<void>(() => {}),
+    ]) {
+      for (const declared of ["11", null]) {
+        const response = await handleImageOptimization(
+          imageRequest,
+          {
+            fetchAsset: async () => {
+              const body = new ReadableStream<Uint8Array>({
+                pull(controller) {
+                  controller.enqueue(new Uint8Array(6));
+                },
+                cancel,
+              });
+              const headers = new Headers({ "Content-Type": "image/png" });
+              if (declared !== null) headers.set("Content-Length", declared);
+              return new Response(body, { status: 200, headers });
+            },
+            transformImage,
+          },
+          undefined,
+          { maximumResponseBody: 10 },
+        );
+        expect(response.status).toBe(413);
+        expect(await response.text()).toBe(TOO_LARGE);
+      }
+    }
+  });
+
   it("uses images.maximumResponseBody as the limit", async () => {
     const response = await handleImageOptimization(
       imageRequest,

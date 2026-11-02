@@ -671,7 +671,11 @@ function sourceTooLargeResponse(): Response {
   });
 }
 
-/** Read a source body, or return null once it exceeds `limit` bytes. */
+/**
+ * Read a source body, or return null once it exceeds `limit` bytes. The body is
+ * cancelled without waiting, so a cancellation that fails or never settles
+ * cannot hold up or replace the 413.
+ */
 async function readBoundedBody(
   body: ReadableStream<Uint8Array>,
   declaredLength: string | null,
@@ -679,7 +683,7 @@ async function readBoundedBody(
 ): Promise<Uint8Array<ArrayBuffer> | null> {
   const declared = declaredLength === null ? Number.NaN : Number(declaredLength);
   if (declared > limit) {
-    await body.cancel();
+    body.cancel().catch(() => {});
     return null;
   }
   // Read into one buffer, sized by Content-Length when declared, so the
@@ -692,7 +696,7 @@ async function readBoundedBody(
     if (done) break;
     const end = length + value.byteLength;
     if (end > limit) {
-      await reader.cancel();
+      reader.cancel().catch(() => {});
       return null;
     }
     if (end > bytes.byteLength) {
