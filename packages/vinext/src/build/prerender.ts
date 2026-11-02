@@ -48,6 +48,7 @@ import {
   VINEXT_PRERENDER_CACHE_LIFE_HEADER,
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -1315,11 +1316,6 @@ export async function prerenderPages({
         const notFoundRes = await renderPage(
           localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
         );
-        if (notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
-          void notFoundRes.body?.cancel().catch(() => {});
-          results.push(prerenderRenderErrorResult("/404"));
-          continue;
-        }
         // Same rule as the page loop: a conditional rewrite of the 404 path to
         // another file, API, or page must not become the deployment-wide 404.
         if (
@@ -1327,6 +1323,17 @@ export async function prerenderPages({
           notFoundRes.headers.get(VINEXT_PRERENDER_REWRITTEN_HEADER) !== "0"
         ) {
           void notFoundRes.body?.cancel().catch(() => {});
+          continue;
+        }
+        // Like `next build`, which prerenders `/404` from `pages/404` or
+        // `_error`, only an error of theirs fails it, not one of a dynamic page
+        // the nonexistent path reached.
+        if (
+          notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
+          (hasCustom404 ? "1" : VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR)
+        ) {
+          void notFoundRes.body?.cancel().catch(() => {});
+          results.push(prerenderRenderErrorResult("/404"));
           continue;
         }
         const contentType = notFoundRes.headers.get("content-type") ?? "";
@@ -2261,7 +2268,13 @@ export async function prerenderApp({
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),
       );
-      if (notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) === "1") {
+      // Like `next build`, which prerenders `/_not-found` on its own, only an
+      // error of the not-found page fails it, not one of a dynamic page the
+      // nonexistent path reached.
+      if (
+        notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) ===
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR
+      ) {
         await notFoundRes.body?.cancel();
         results.push(prerenderRenderErrorResult("/404"));
       } else if (notFoundRes.status === 404) {

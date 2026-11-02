@@ -30,6 +30,17 @@ it("rejects binding access and presence checks during prerender", async () => {
     thrown = error;
   }
   expect(isPrerenderBindingsUnavailableError(thrown)).toBe(true);
+
+  // As does `waitUntil()`.
+  const { waitUntil } = await import(/* @vite-ignore */ url);
+  let waitUntilError: unknown;
+  try {
+    waitUntil(Promise.resolve());
+  } catch (error) {
+    waitUntilError = error;
+  }
+  expect(String(waitUntilError)).toContain("waitUntil is unavailable");
+  expect(isPrerenderBindingsUnavailableError(waitUntilError)).toBe(true);
 });
 
 it("links Worker base classes but rejects their use during Node prerender", async () => {

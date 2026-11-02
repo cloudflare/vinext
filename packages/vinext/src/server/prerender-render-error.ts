@@ -2,7 +2,10 @@ import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigati
 import { isPprFallbackShellAbortError } from "vinext/shims/ppr-fallback-shell";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { isAppRenderAbortError } from "./app-render-abort-error.js";
-import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "./headers.js";
+import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "./headers.js";
 import { isPrerenderBindingsUnavailableError } from "./prerender-bindings-unavailable.js";
 
 /**
@@ -28,9 +31,15 @@ export function isPrerenderBuildFailingError(error: unknown): boolean {
   );
 }
 
-/** Marks a prerender response whose render reported a build-failing error. */
-export function markPrerenderRenderError(response: Response): Response {
-  response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+/**
+ * Marks a prerender response whose render reported a build-failing error, as
+ * the not-found page's own render with `isNotFoundPage`.
+ */
+export function markPrerenderRenderError(response: Response, isNotFoundPage = false): Response {
+  response.headers.set(
+    VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+    isNotFoundPage ? VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR : "1",
+  );
   return response;
 }
 
@@ -43,9 +52,13 @@ export type PrerenderRenderErrorTracker = {
   finalize(response: Response, isDynamic: () => boolean): Response;
 };
 
-/** Tracks the errors a prerender's render reports, while `isTracking()` holds. */
+/**
+ * Tracks the errors a prerender's render reports, while `isTracking()` holds,
+ * for the not-found page's own render with `isNotFoundPage`.
+ */
 export function createPrerenderRenderErrorTracker(
   isTracking: () => boolean,
+  isNotFoundPage = false,
 ): PrerenderRenderErrorTracker {
   let reported = false;
   const failsBuild = (isDynamic: () => boolean): boolean => reported && !isDynamic();
@@ -55,7 +68,7 @@ export function createPrerenderRenderErrorTracker(
     },
     failsBuild,
     finalize(response, isDynamic) {
-      return failsBuild(isDynamic) ? markPrerenderRenderError(response) : response;
+      return failsBuild(isDynamic) ? markPrerenderRenderError(response, isNotFoundPage) : response;
     },
   };
 }

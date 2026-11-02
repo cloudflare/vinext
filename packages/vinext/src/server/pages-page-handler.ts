@@ -93,6 +93,7 @@ import {
   NEXTJS_CACHE_HEADER,
   NEXTJS_DEPLOYMENT_ID_HEADER,
   VINEXT_CACHE_HEADER,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "./headers.js";
@@ -1497,7 +1498,12 @@ export function createPagesPageHandler(
           !isEdgeApiRuntime(getPagesPageRuntime(pageModule)) &&
           !isPrerenderBindingsUnavailableError(e);
         const answerError = (response: Response): Response => {
-          if (failsPrerender) response.headers.set(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+          if (failsPrerender) {
+            response.headers.set(
+              VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+              isRouteMissErrorRender ? VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR : "1",
+            );
+          }
           return response;
         };
 

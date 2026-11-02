@@ -36,6 +36,7 @@ import {
 import { after } from "../packages/vinext/src/shims/server.js";
 import { Main, NextScript } from "../packages/vinext/src/shims/document.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_REVALIDATED_CACHE_TAG_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -2122,6 +2123,13 @@ describe("createPagesPageHandler — prerender render errors", () => {
     expect(response.status).toBe(500);
     expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
 
+    // Next.js prerenders a getStaticProps page under an `_app` with getInitialProps.
+    const withAppInitialProps = await prerenderResponse(module, {
+      AppComponent: Object.assign(() => null, { getInitialProps: async () => ({ pageProps: {} }) }),
+    });
+    expect(withAppInitialProps.status).toBe(500);
+    expect(withAppInitialProps.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+
     // A runtime render is never marked.
     const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
     try {
@@ -2264,7 +2272,9 @@ describe("createPagesPageHandler — prerender render errors", () => {
     ]) {
       const response = await renderNotFound(errorPage);
       expect(response.status).toBe(500);
-      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
     }
     const custom = await renderNotFound(Object.assign(() => null, { getInitialProps }));
     expect(custom.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);

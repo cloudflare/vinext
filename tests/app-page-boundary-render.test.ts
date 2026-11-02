@@ -10,7 +10,10 @@ import type { AppPagePreparedRouteHead } from "../packages/vinext/src/server/app
 import type { MetadataFileRoute } from "../packages/vinext/src/server/metadata-routes.js";
 import { VINEXT_RSC_VARY_HEADER } from "../packages/vinext/src/server/app-rsc-cache-busting.js";
 import { applyFileBasedMetadata } from "../packages/vinext/src/server/file-based-metadata.js";
-import { VINEXT_PRERENDER_RENDER_ERROR_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+  VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import {
   headersContextFromRequest,
   markDynamicUsage,
@@ -289,7 +292,9 @@ describe("app page boundary render helpers", () => {
     try {
       const response = await renderNotFound(null);
       expect(response?.status).toBe(404);
-      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
       expect(await response?.text()).toContain("Missing page");
 
       // A matched route's render decides its own prerender.
@@ -331,7 +336,56 @@ describe("app page boundary render helpers", () => {
         statusCode: 404,
       });
       expect(response?.status).toBe(307);
-      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("marks a prerender of the root not-found page whose SSR reports an error", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const renderNotFound = (shellError?: unknown) => {
+      const common = createCommonOptions();
+      common.loadSsrHandler.mockImplementation(async () => ({
+        async handleSsr(
+          rscStream: ReadableStream<Uint8Array>,
+          _navContext?: unknown,
+          _fontData?: unknown,
+          options?: { onSsrError?: (error: unknown) => unknown },
+        ) {
+          options?.onSsrError?.(new Error("not-found SSR failed"));
+          if (shellError) throw shellError;
+          return rscStream;
+        },
+      }));
+      return renderAppPageHttpAccessFallback<TestModule>({
+        ...common,
+        matchedParams: {},
+        rootLayouts: [rootLayoutModule],
+        rootNotFoundModule: notFoundModule,
+        route: null,
+        statusCode: 404,
+      });
+    };
+    try {
+      const response = await renderNotFound();
+      expect(response?.status).toBe(404);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+
+      // A redirect that rejects the shell afterwards doesn't hide it.
+      const redirected = await renderNotFound(
+        Object.assign(new Error("NEXT_REDIRECT"), {
+          digest: "NEXT_REDIRECT;replace;/login;307;",
+        }),
+      );
+      expect(redirected?.status).toBe(307);
+      expect(redirected?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
     } finally {
       vi.unstubAllEnvs();
     }
@@ -379,7 +433,12 @@ describe("app page boundary render helpers", () => {
       // One that couldn't render at all fails the build, unless it's dynamic.
       const failed = await renderNotFound({ throwsShell: true });
       expect(failed?.status).toBe(500);
-      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(failed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+      const dynamicFailed = await renderNotFound({ throwsShell: true, usesDynamicApi: true });
+      expect(dynamicFailed?.status).toBe(500);
+      expect(dynamicFailed?.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
       const throwingMetadataNotFound = {
         ...notFoundModule,
         generateMetadata: () => {
@@ -388,7 +447,9 @@ describe("app page boundary render helpers", () => {
       };
       const metadataFailed = await renderNotFound({ notFound: throwingMetadataNotFound });
       expect(metadataFailed?.status).toBe(500);
-      expect(metadataFailed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe("1");
+      expect(metadataFailed?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
       const dynamicMetadataFailed = await renderNotFound({
         notFound: throwingMetadataNotFound,
         rootLayouts: [{ ...rootLayoutModule, dynamic: "force-dynamic" }],

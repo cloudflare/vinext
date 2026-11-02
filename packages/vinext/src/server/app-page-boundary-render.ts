@@ -565,8 +565,10 @@ async function renderAppPageBoundaryElementResponse<TModule extends AppPageModul
     pathname,
     options.routePattern ?? pathname,
   );
+  // Only the root not-found page's render tracks its errors.
   const prerenderRenderErrors = createPrerenderRenderErrorTracker(
     () => options.tracksPrerenderRenderErrors === true,
+    true,
   );
   const isPrerenderRenderDynamic = () => peekDynamicUsage() || isRenderDynamicLatched();
   const rscErrorTracker = createAppPageRscErrorTracker((error, requestInfo, errorContext) => {
@@ -734,7 +736,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
       isPrerenderBuildFailingError(error) &&
       !peekDynamicUsage() &&
       !isRenderDynamicLatched()
-      ? markPrerenderRenderError(response)
+      ? markPrerenderRenderError(response, true)
       : response;
   }
 }

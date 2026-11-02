@@ -10,7 +10,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
 import fs from "node:fs";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -30,7 +30,9 @@ import {
 import { handleAppPrerenderEndpoint } from "../packages/vinext/src/server/app-prerender-endpoints.js";
 import { createAppPrerenderStaticParamsResolver } from "../packages/vinext/src/server/app-prerender-static-params.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+  VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -746,58 +748,74 @@ describe("prerenderApp — RSC extraction", () => {
     );
 
     const middlewareHtml = "<html><body>middleware short-circuit</body></html>";
-    let pageRequestCount = 0;
-    let rscRequestCount = 0;
-    const server = createServer((req, res) => {
-      const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
+    const prerenderWithRscFallback = async (answerRsc: (res: ServerResponse) => void) => {
+      let pageRequestCount = 0;
+      let rscRequestCount = 0;
+      const server = createServer((req, res) => {
+        const isRsc = req.headers.rsc === "1" || req.headers.accept === "text/x-component";
 
-      if (req.url === "/__vinext_nonexistent_for_404__") {
-        res.statusCode = 404;
-        res.end("<html><body>not found</body></html>");
-        return;
-      }
+        if (req.url === "/__vinext_nonexistent_for_404__") {
+          res.statusCode = 404;
+          res.end("<html><body>not found</body></html>");
+          return;
+        }
 
-      if (isRsc) {
-        rscRequestCount++;
-        res.statusCode = 500;
-        res.end("fallback failed");
-        return;
-      }
+        if (isRsc) {
+          rscRequestCount++;
+          answerRsc(res);
+          return;
+        }
 
-      pageRequestCount++;
-      res.setHeader("content-type", "text/html");
-      res.end(middlewareHtml);
-    });
-
-    const port = await listen(server);
-    try {
-      const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
-      const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
-      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
-      const routes = await appRouter(appDir);
-      const config = await resolveNextConfig({});
-
-      const prerenderResult = await prerenderApp({
-        mode: "default",
-        rscBundlePath: path.join(root, "dist", "server", "index.js"),
-        routes,
-        outDir,
-        config,
-        _prodServer: { server, port },
+        pageRequestCount++;
+        res.setHeader("content-type", "text/html");
+        res.end(middlewareHtml);
       });
 
-      const route = findRoute(prerenderResult.routes, "/");
+      const port = await listen(server);
+      try {
+        const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
+        const { appRouter } = await import("../packages/vinext/src/routing/app-router.js");
+        const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+        const routes = await appRouter(appDir);
+        const config = await resolveNextConfig({});
+
+        const prerenderResult = await prerenderApp({
+          mode: "default",
+          rscBundlePath: path.join(root, "dist", "server", "index.js"),
+          routes,
+          outDir,
+          config,
+          _prodServer: { server, port },
+        });
+        expect(fs.existsSync(path.join(outDir, "index.rsc"))).toBe(false);
+        expect(pageRequestCount).toBe(1);
+        expect(rscRequestCount).toBe(1);
+        return findRoute(prerenderResult.routes, "/");
+      } finally {
+        await closeServer(server);
+      }
+    };
+
+    try {
+      const route = await prerenderWithRscFallback((res) => {
+        res.statusCode = 500;
+        res.end("fallback failed");
+      });
       expect(route).toMatchObject({
         route: "/",
         status: "error",
       });
       if (route?.status !== "error") throw new Error("expected route to fail prerender");
       expect(route.error).toContain("[vinext] prerenderApp: RSC fallback returned 500 for /");
-      expect(fs.existsSync(path.join(outDir, "index.rsc"))).toBe(false);
-      expect(pageRequestCount).toBe(1);
-      expect(rscRequestCount).toBe(1);
+
+      // A fallback whose render reported an error fails the build.
+      const marked = await prerenderWithRscFallback((res) => {
+        res.setHeader("content-type", "text/x-component");
+        res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        res.end("0:null\n");
+      });
+      expect(marked).toMatchObject({ route: "/", status: "error", fatal: true });
     } finally {
-      await closeServer(server);
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -948,21 +966,25 @@ describe("prerenderApp — special errors that escape the shell", () => {
 
 // As in `next build`, a 404 page whose render reported an error fails the build.
 describe("prerender — a 404 page whose render reports an error", () => {
-  function createMarkedNotFoundServer(): { server: Server; requestedPaths: string[] } {
+  function createMarkedNotFoundServer(marker: string): {
+    server: Server;
+    requestedPaths: string[];
+  } {
     const requestedPaths: string[] = [];
     const server = createServer((req, res) => {
       requestedPaths.push(req.url ?? "");
       res.statusCode = 404;
       res.setHeader("content-type", "text/html");
-      res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+      res.setHeader(VINEXT_PRERENDER_REWRITTEN_HEADER, "0");
+      res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, marker);
       res.end("<html><body>not found</body></html>");
     });
     return { server, requestedPaths };
   }
 
-  it("fails the App Router's /404", async () => {
+  async function prerenderAppNotFound(marker: string) {
     const outDir = tmpDir("vinext-prerender-app-404-error-");
-    const { server, requestedPaths } = createMarkedNotFoundServer();
+    const { server, requestedPaths } = createMarkedNotFoundServer(marker);
     const port = await listen(server);
     try {
       const { prerenderApp } = await import("../packages/vinext/src/build/prerender.js");
@@ -976,17 +998,19 @@ describe("prerender — a 404 page whose render reports an error", () => {
         _prodServer: { server, port },
       });
       expect(requestedPaths).toContain("/__vinext_nonexistent_for_404__");
-      expect(findRoute(result.routes, "/404")).toMatchObject({ status: "error", fatal: true });
-      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+      return {
+        route: findRoute(result.routes, "/404"),
+        has404: fs.existsSync(path.join(outDir, "404.html")),
+      };
     } finally {
       await closeServer(server);
       fs.rmSync(outDir, { recursive: true, force: true });
     }
-  });
+  }
 
-  it("fails the Pages Router's /404", async () => {
+  async function prerenderPagesNotFound(fixture: string, marker: string) {
     const outDir = tmpDir("vinext-prerender-pages-404-error-");
-    const { server, requestedPaths } = createMarkedNotFoundServer();
+    const { server, requestedPaths } = createMarkedNotFoundServer(marker);
     const port = await listen(server);
     try {
       const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
@@ -995,18 +1019,52 @@ describe("prerender — a 404 page whose render reports an error", () => {
         mode: "default",
         routes: [],
         apiRoutes: [],
-        pagesDir: path.join(PAGES_FIXTURE, "pages"),
+        pagesDir: path.join(fixture, "pages"),
         outDir,
         config: await resolveNextConfig({}),
         _prodServer: { server, port },
       });
-      expect(requestedPaths).toContain("/404");
-      expect(findRoute(result.routes, "/404")).toMatchObject({ status: "error", fatal: true });
-      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+      return {
+        requestedPaths,
+        route: findRoute(result.routes, "/404"),
+        has404: fs.existsSync(path.join(outDir, "404.html")),
+      };
     } finally {
       await closeServer(server);
       fs.rmSync(outDir, { recursive: true, force: true });
     }
+  }
+
+  it("fails the App Router's /404", async () => {
+    const failed = await prerenderAppNotFound(VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR);
+    expect(failed.route).toMatchObject({ status: "error", fatal: true });
+    expect(failed.has404).toBe(false);
+
+    // Not for a dynamic page the nonexistent path reached.
+    const page = await prerenderAppNotFound("1");
+    expect(page.route).toMatchObject({ status: "rendered" });
+  });
+
+  it("fails the Pages Router's /404", async () => {
+    const failed = await prerenderPagesNotFound(PAGES_FIXTURE, "1");
+    expect(failed.requestedPaths).toContain("/404");
+    expect(failed.route).toMatchObject({ status: "error", fatal: true });
+    expect(failed.has404).toBe(false);
+
+    // Without `pages/404`, `_error` renders the nonexistent path, unless it
+    // reached a dynamic page.
+    const errorPageFixture = path.resolve(
+      import.meta.dirname,
+      "./fixtures/pages-i18n-public-rewrite",
+    );
+    const errorPage = await prerenderPagesNotFound(
+      errorPageFixture,
+      VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+    );
+    expect(errorPage.requestedPaths).toContain("/__vinext_nonexistent_for_404__");
+    expect(errorPage.route).toMatchObject({ status: "error", fatal: true });
+    const page = await prerenderPagesNotFound(errorPageFixture, "1");
+    expect(page.route).toMatchObject({ status: "rendered" });
   });
 });
 

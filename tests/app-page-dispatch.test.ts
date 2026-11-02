@@ -68,6 +68,7 @@ import {
   markRenderRequestApiUsage,
   setHeadersContext,
 } from "../packages/vinext/src/shims/headers.js";
+import { PRERENDER_BINDINGS_UNAVAILABLE_KEY } from "../packages/vinext/src/server/prerender-bindings-unavailable.js";
 import { isPromiseLike } from "../packages/vinext/src/utils/promise.js";
 import { isUnknownRecord } from "../packages/vinext/src/utils/record.js";
 import { extractRscCompletionMetadata } from "../packages/vinext/src/server/rsc-completion-metadata.js";
@@ -1248,11 +1249,15 @@ describe("app page dispatch", () => {
 
   it("marks the error page of a prerender whose page fails to build", async () => {
     vi.stubEnv("VINEXT_PRERENDER", "1");
-    const renderErrorPage = (isStaticGenerationEdgeRuntime?: boolean, usesDynamicApi = false) => {
+    const renderErrorPage = (
+      isStaticGenerationEdgeRuntime?: boolean,
+      usesDynamicApi = false,
+      buildError: unknown = new Error("build failed"),
+    ) => {
       const { options } = createDispatchOptions({
         buildPageElement: async () => {
           if (usesDynamicApi) markDynamicUsage();
-          throw new Error("build failed");
+          throw buildError;
         },
         isStaticGenerationEdgeRuntime,
       });
@@ -1266,7 +1271,16 @@ describe("app page dispatch", () => {
     // Next.js doesn't prerender an edge runtime page.
     const edgeResponse = await renderErrorPage(true);
     expect(edgeResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
-    // Nor a page that turned dynamic before it failed.
+    // Nor a binding the prerender can't provide.
+    const bindingError = new Error("Cloudflare bindings are unavailable");
+    Object.defineProperty(bindingError, Symbol.for(PRERENDER_BINDINGS_UNAVAILABLE_KEY), {
+      value: true,
+    });
+    const bindingResponse = await renderErrorPage(false, false, bindingError);
+    expect(bindingResponse.status).toBe(500);
+    expect(bindingResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+    // Nor a page that turned dynamic before it failed. Last, since the dynamic
+    // usage outlives this render.
     const dynamicResponse = await renderErrorPage(false, true);
     expect(dynamicResponse.status).toBe(500);
     expect(dynamicResponse.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
