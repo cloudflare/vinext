@@ -4,6 +4,7 @@ import path from "node:path";
 import { createBuilder } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
+import { computeClientRuntimeMetadata } from "../packages/vinext/src/utils/client-runtime-metadata.js";
 
 const ROOT_NODE_MODULES = path.resolve(import.meta.dirname, "../node_modules");
 
@@ -81,6 +82,60 @@ describe("client asset sidecar builds", () => {
         fs.stat(path.join(clientOutDir, ".vite", "manifest.json")),
       ).resolves.toBeTruthy();
       await expect(fs.stat(path.join(fixtureRoot, "dist", "client"))).rejects.toThrow();
+    } finally {
+      await fs.rm(fixtureRoot, { recursive: true, force: true });
+      await fs.rm(outRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never preinitializes the browser runtime when a chunk group moves it out of the entry", async () => {
+    const fixtureRoot = await createFixture();
+    const outRoot = await fs.mkdtemp(path.join(os.tmpdir(), "vinext-client-assets-group-"));
+    try {
+      const rscOutDir = path.join(outRoot, "server");
+      const ssrOutDir = path.join(outRoot, "server", "ssr");
+      const clientOutDir = path.join(outRoot, "client");
+      const builder = await createBuilder({
+        root: fixtureRoot,
+        configFile: false,
+        logLevel: "silent",
+        plugins: [vinext({ appDir: fixtureRoot, rscOutDir, ssrOutDir, clientOutDir })],
+        environments: {
+          client: {
+            build: {
+              rolldownOptions: {
+                output: {
+                  codeSplitting: {
+                    groups: [
+                      { name: "vendor", test: /[\\/](node_modules|packages[\\/]vinext)[\\/]/ },
+                    ],
+                  },
+                },
+              },
+            },
+          },
+        },
+      });
+      await builder.buildApp();
+
+      const entryManifest = JSON.parse(
+        await fs.readFile(path.join(clientOutDir, "vinext-client-entry-manifest.json"), "utf8"),
+      );
+      expect(entryManifest.appBrowserRuntime).toBeTruthy();
+      expect(entryManifest.appBrowserRuntime).not.toBe(entryManifest.appBrowserEntry);
+
+      const metadata = computeClientRuntimeMetadata({
+        clientDir: clientOutDir,
+        assetBase: "/",
+        assetPrefix: "",
+      });
+      const runtimeUrl = `/${entryManifest.appBrowserRuntime}`;
+      expect(metadata.appBootstrapPreinitModules ?? []).not.toContain(runtimeUrl);
+      expect(metadata.appBootstrapPreloadModules).toContain(runtimeUrl);
+
+      // Cloudflare builds read this sidecar rather than the client manifest.
+      const rscSidecar = await fs.readFile(path.join(rscOutDir, "vinext-client-assets.js"), "utf8");
+      expect(rscSidecar).toContain('"appBootstrapPreloadModules"');
     } finally {
       await fs.rm(fixtureRoot, { recursive: true, force: true });
       await fs.rm(outRoot, { recursive: true, force: true });
