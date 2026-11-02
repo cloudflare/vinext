@@ -135,6 +135,8 @@ export type AppPageRouteWiringSlot<
   configLayouts?: readonly (TModule | null | undefined)[] | null;
   configLayoutTreePositions?: readonly number[] | null;
   error?: TErrorModule | null;
+  errors?: readonly (TErrorModule | null | undefined)[] | null;
+  errorTreePositions?: readonly number[] | null;
   layout?: TModule | null;
   layoutIndex: number;
   loading?: TModule | null;
@@ -203,6 +205,8 @@ export type AppPageRouteWiringRoute<
     id: string;
     ownerTreePath: string;
     state: AppElementsSlotBinding["state"];
+    /** A slot sub-route whose children its route segments don't describe. */
+    synthetic?: boolean;
   } | null;
   /**
    * Static sibling segment names at each dynamic URL level for this route. Used
@@ -416,6 +420,12 @@ type BuildAppPageElementsOptions<
     sourceRouteGraphId: string;
   }> | null;
   semanticInterceptionTargetRouteId?: string | null;
+  /**
+   * A sibling intercept's segment state keys, app root first, down to the
+   * segment its page element renders. Its BFCache segment levels follow these
+   * rather than the source route's segments.
+   */
+  siblingInterceptSegmentKeys?: readonly string[] | null;
   sourcePageSegments?: readonly string[] | null;
 };
 
@@ -1704,13 +1714,20 @@ export function buildAppPageElements<
     // Its error.tsx files catch errors in their own segments too, including
     // its page's generateMetadata() errors, as Next.js renders the page's
     // MetadataOutlet in its segment. The slot's own error.tsx stays at its root.
+    // A slot's default.tsx carries none of them, like its not-found files.
     const branchErrors = new Map<number, AppPageErrorComponent>();
-    if (overrideOrPageComponent && hasSlotTreeOverride) {
-      for (const [index, errorModule] of (slotOverride?.errorModules ?? []).entries()) {
-        const component = getErrorBoundaryExport(errorModule);
-        const treePosition = slotOverride?.errorTreePositions?.[index];
-        if (component && treePosition !== undefined) branchErrors.set(treePosition, component);
-      }
+    const slotErrorModules = !overrideOrPageComponent
+      ? undefined
+      : hasSlotTreeOverride
+        ? slotOverride?.errorModules
+        : slot.errors;
+    const slotErrorTreePositions = hasSlotTreeOverride
+      ? slotOverride?.errorTreePositions
+      : slot.errorTreePositions;
+    for (const [index, errorModule] of (slotErrorModules ?? []).entries()) {
+      const component = getErrorBoundaryExport(errorModule);
+      const treePosition = slotErrorTreePositions?.[index];
+      if (component && treePosition !== undefined) branchErrors.set(treePosition, component);
     }
     // The id of the innermost of those boundaries above a component at
     // `treePosition`, which catches its notFound() on the client. The document
@@ -1864,19 +1881,6 @@ export function buildAppPageElements<
       .sort((left, right) => left - right);
     for (let index = branchTreePositions.length - 1; index >= 0; index--) {
       const treePosition = branchTreePositions[index];
-      const nestedBfcacheSegment = nestedBfcacheSegments.find(
-        (segment) => segment.treePosition === treePosition,
-      );
-      if (nestedBfcacheSegment) {
-        slotElement = (
-          <BfcacheSegmentBoundary
-            id={nestedBfcacheSegment.id}
-            stateKey={nestedBfcacheSegment.stateKey}
-          >
-            {slotElement}
-          </BfcacheSegmentBoundary>
-        );
-      }
       const loadingComponents = prefetchSlotLoadingEntry
         ? []
         : (branchLoadings.get(treePosition) ?? []);
@@ -1935,6 +1939,23 @@ export function buildAppPageElements<
           >
             {slotElement}
           </ErrorBoundary>
+        );
+      }
+
+      // Like Next.js's, each entry of a level holds its own copy of the
+      // loading, access and error boundaries of the segment above it, so an
+      // error caught in one entry leaves the hidden entries mounted.
+      const nestedBfcacheSegment = nestedBfcacheSegments.find(
+        (segment) => segment.treePosition === treePosition,
+      );
+      if (nestedBfcacheSegment) {
+        slotElement = (
+          <BfcacheSegmentBoundary
+            id={nestedBfcacheSegment.id}
+            stateKey={nestedBfcacheSegment.stateKey}
+          >
+            {slotElement}
+          </BfcacheSegmentBoundary>
         );
       }
 
@@ -2221,23 +2242,29 @@ export function buildAppPageElements<
   // without a layout still retains each child segment separately: /chat/a and
   // /chat/b are two entries in the chat level's list, and one entry, "chat", in
   // the parent layout's. Without those levels the parent's list would hold one
-  // entry per leaf and evict sooner. Interceptions and synthetic children-slot
-  // routes render children that their route segments don't describe, so they
-  // keep a single list per layout.
+  // entry per leaf and evict sooner. A sibling intercept rendered on the route
+  // that owns its marker follows the intercepting route's segments down to its
+  // page element, so /photo/1 shares the "feed" entry with /feed. Other
+  // interceptions, and slot sub-routes whose children render a default, a
+  // sibling catch-all, or nothing, render children that their route segments
+  // don't describe, so they keep a single list per layout. A page under a
+  // layout with named slots binds its children slot too, and keeps its levels.
   const firstLayoutWithElementTreePosition = layoutEntries.find(
     (entry) => getDefaultExport(entry.layoutModule) !== null,
   )?.treePosition;
+  const siblingInterceptSegmentKeys = options.siblingInterceptSegmentKeys ?? null;
   const keepsSegmentLevelLists =
     String(process.env.__NEXT_CACHE_COMPONENTS) === "true" &&
     firstLayoutWithElementTreePosition !== undefined &&
-    !options.route.childrenSlot &&
-    options.semanticPageIdentity === undefined;
+    !options.route.childrenSlot?.synthetic &&
+    (options.semanticPageIdentity === undefined || siblingInterceptSegmentKeys !== null);
+  const spineSegmentCount = siblingInterceptSegmentKeys?.length ?? routeSegments.length;
   const spineTreePositions = keepsSegmentLevelLists
     ? Array.from(
         new Set([
           ...orderedTreePositions,
           ...Array.from(
-            { length: Math.max(0, routeSegments.length - firstLayoutWithElementTreePosition) },
+            { length: Math.max(0, spineSegmentCount - firstLayoutWithElementTreePosition) },
             (_, offset) => firstLayoutWithElementTreePosition + 1 + offset,
           ),
         ]),
@@ -2259,7 +2286,7 @@ export function buildAppPageElements<
         )
       : undefined;
   let childSegmentElementId = firstLayoutBelowShell?.id ?? pageElementId;
-  let childSegmentTreePosition = firstLayoutBelowShell?.treePosition ?? routeSegments.length + 1;
+  let childSegmentTreePosition = firstLayoutBelowShell?.treePosition ?? spineSegmentCount + 1;
   // Retains the children of the segment at treePosition, keyed by the child
   // element when it's the next segment down, else by the child segment.
   const retainChildSegment = (treePosition: number, children: ReactNode): ReactNode =>
@@ -2268,7 +2295,9 @@ export function buildAppPageElements<
     ) : (
       <BfcacheChildrenBoundary
         stateKey={createBfcacheChildSegmentStateKey(
-          resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams),
+          siblingInterceptSegmentKeys
+            ? JSON.stringify(siblingInterceptSegmentKeys.slice(0, treePosition + 1))
+            : resolveAppPageTemplateStateKey(routeSegments, treePosition, options.matchedParams),
         )}
       >
         {children}

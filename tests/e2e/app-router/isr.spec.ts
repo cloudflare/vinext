@@ -249,14 +249,15 @@ test.describe("App Router ISR", () => {
     expect(cc).toContain("stale-while-revalidate");
   });
 
-  // An encoded spelling of a static sibling answers with that prerendered
-  // page, as Next.js serves it from the entry cached under the decoded path.
-  test("answers an encoded static route spelling with the static route", async ({ request }) => {
+  // Next.js answers an encoded spelling of a static sibling from the entry its
+  // prerender cached under the decoded path. Without a recorded prerender the
+  // raw match renders, and never under the static sibling's entry.
+  test("answers an encoded static route spelling with the raw match", async ({ request }) => {
     await resetIsrPath(request, "/route-cache-identity/about");
 
     const encoded = await request.get(`${baseUrl()}/route-cache-identity/%61bout`);
     expect(encoded.status()).toBe(200);
-    expect(await encoded.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
+    expect(await encoded.text()).toMatch(/CACHE_IDENTITY_CATCH_ALL:(?:<!-- -->)?about/);
 
     const literal = await waitForCacheHit(request, "/route-cache-identity/about");
     expect(await literal.text()).toContain("CACHE_IDENTITY_STATIC_PAGE");
@@ -852,6 +853,41 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     expect(value2).toBe(value1);
   });
 
+  // Next.js queues a miss's data cache write on the work store and returns:
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/web/spec-extension/unstable-cache.ts
+  // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/use-cache/use-cache-wrapper.ts
+  test("a render doesn't wait for slow unstable_cache and use cache writes", async ({
+    request,
+  }) => {
+    const run = crypto.randomUUID();
+    const readPage = async () => {
+      const res = await request.get(`${baseUrl()}/data-cache-deferred-write?run=${run}`);
+      expect(res.status()).toBe(200);
+      const html = await res.text();
+      return {
+        unstableCache: testIdText(html, "unstable-cache"),
+        useCache: testIdText(html, "use-cache"),
+        writes: testIdText(html, "writes"),
+      };
+    };
+
+    const first = await readPage();
+    expect(first.unstableCache).toBeTruthy();
+    expect(first.useCache).toBeTruthy();
+    // Both writes started, and the page rendered before either finished.
+    expect(first.writes).toBe("2/0");
+
+    await expect
+      .poll(async () => {
+        const res = await request.get(`${baseUrl()}/data-cache-deferred-write?observe=${run}`);
+        return testIdText(await res.text(), "settled");
+      })
+      .toBe("2");
+
+    // The writes still stored both entries.
+    expect(await readPage()).toEqual({ ...first, writes: "0/0" });
+  });
+
   // Next.js's IncrementalCache.set catches cache handler errors and only warns:
   // https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/server/lib/incremental-cache/index.ts
   test("a rejected data cache write still renders the computed value", async ({ request }) => {
@@ -1056,6 +1092,44 @@ test.describe("unstable_cache data cache (OpenNext compat)", () => {
     } finally {
       await request.get(`${baseUrl()}/nextjs-compat/api/draft-disable`);
     }
+  });
+
+  // Matches next@16.2.7 trackDynamic() in
+  // packages/next/src/server/route-modules/app-route/module.ts, checked
+  // against a next build of the same route handlers.
+  test("route handler request reads inside unstable_cache follow Next.js", async ({ request }) => {
+    const headers = { cookie: "session=alice", authorization: "Bearer alice" };
+    for (let i = 0; i < 2; i++) {
+      const response = await request.get(
+        `${baseUrl()}/nextjs-compat/api/unstable-cache-request-read?q=alice`,
+        { headers },
+      );
+      expect(response.status()).toBe(200);
+      const reads = (await response.json()) as Record<string, { status: string; message?: string }>;
+      expect(Object.fromEntries(Object.entries(reads).map(([k, v]) => [k, v.status]))).toEqual({
+        cookies: "threw",
+        headers: "threw",
+        url: "threw",
+        text: "threw",
+        searchParams: "threw",
+        cloneCookies: "threw",
+        method: "ok",
+        pathname: "ok",
+        host: "ok",
+        bytes: "ok",
+      });
+      expect(reads.cookies.message).toContain(
+        "`request.cookies` cannot be called inside a function cached with `unstable_cache()`",
+      );
+    }
+
+    // Next.js hands `force-dynamic` handlers the unproxied request.
+    const forceDynamic = await request.get(
+      `${baseUrl()}/nextjs-compat/api/unstable-cache-request-read/force-dynamic`,
+      { headers },
+    );
+    expect(forceDynamic.status()).toBe(200);
+    expect(await forceDynamic.json()).toEqual({ session: "alice" });
   });
 
   // Extended from Next.js: test/e2e/app-dir/app-static/app-static.test.ts

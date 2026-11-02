@@ -349,8 +349,10 @@ let _unstableIoWarned = false;
 /**
  * Set the cache lifetime for a "use cache" function.
  *
- * Accepts either a built-in profile name (e.g., "hours", "days") or a custom
- * configuration object. In Next.js, this only works inside "use cache" functions.
+ * Accepts either a profile name (a built-in like "hours", or one configured
+ * in next.config `cacheLife`) or a custom configuration object; an unknown
+ * profile name throws, like Next.js. In Next.js, this only works inside
+ * "use cache" functions.
  *
  * When called inside a "use cache" function, this sets the cache TTL.
  * The "minimum-wins" rule applies: if called multiple times, the shortest
@@ -364,15 +366,27 @@ export function cacheLife(profile: string | CacheLifeConfig): void {
   let resolvedConfig: CacheLifeConfig;
 
   if (typeof profile === "string") {
-    // Validate the profile name exists
-    if (!cacheLifeProfiles[profile]) {
-      console.warn(
-        `[vinext] cacheLife: unknown profile "${profile}". ` +
-          `Available profiles: ${Object.keys(cacheLifeProfiles).join(", ")}`,
+    // Ported from Next.js: packages/next/src/server/use-cache/cache-life.ts
+    const configuredProfile = Object.hasOwn(cacheLifeProfiles, profile)
+      ? cacheLifeProfiles[profile]
+      : undefined;
+    if (configuredProfile === undefined) {
+      if (Object.hasOwn(cacheLifeProfiles, profile.trim())) {
+        throw new Error(
+          `Unknown \`cacheLife()\` profile "${profile}" is not configured in next.config.js\n` +
+            `Did you mean "${profile.trim()}" without the spaces?`,
+        );
+      }
+      throw new Error(
+        `Unknown \`cacheLife()\` profile "${profile}" is not configured in next.config.js\n` +
+          "module.exports = {\n" +
+          "  cacheLife: {\n" +
+          `    "${profile}": ...\n` +
+          "  }\n" +
+          "}",
       );
-      return;
     }
-    resolvedConfig = { ...cacheLifeProfiles[profile] };
+    resolvedConfig = { ...configuredProfile };
   } else if (typeof profile === "object" && profile !== null) {
     // Validate the config shape
     if (
@@ -494,7 +508,9 @@ export function unstable_cacheTag(...tags: string[]): void {
 // entries produced by an older implementation unsafe to reuse. Version 2
 // prevents results created before private-in-unstable-cache validation from
 // bypassing the new synchronous boundary check after an application upgrade.
-const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v2";
+// Version 3 drops results that read a Route Handler's request before those
+// reads were rejected inside unstable_cache().
+const UNSTABLE_CACHE_KEY_PREFIX = "unstable_cache:v3";
 
 /**
  * AsyncLocalStorage to track whether we're inside an unstable_cache() callback.
@@ -620,7 +636,8 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
   cacheKey: string,
   tags: string[],
   revalidateSeconds: number | false | undefined,
-  staleEntry?: CacheHandlerValue,
+  staleEntry: CacheHandlerValue | undefined,
+  deferWrite: boolean,
 ): Promise<Result> {
   // As in Next.js, the callback gets the caller's arguments, which are keyed
   // when the cached function is called but read only after the cache is.
@@ -651,16 +668,25 @@ async function refreshUnstableCacheResult<Args extends unknown[], Result>(
 
   // A failed write skips caching but must not replace a successful result with
   // an error, matching fetch() caching here and Next.js's IncrementalCache.set.
-  try {
-    await getDataCacheHandler().set(cacheKey, cacheValue, {
-      fetchCache: true,
-      tags,
-      revalidate: revalidateSeconds,
-      // The stale entry this write refreshes, so a handler can tell a refresh from a write.
-      ...(staleEntry ? { staleEntry } : {}),
-    });
-  } catch (err) {
+  // The executor runs now, so the write starts before this returns, and a
+  // handler whose set() throws synchronously is caught too.
+  const write = new Promise<void>((resolve) => {
+    resolve(
+      getDataCacheHandler().set(cacheKey, cacheValue, {
+        fetchCache: true,
+        tags,
+        revalidate: revalidateSeconds,
+        // The stale entry this write refreshes, so a handler can tell a refresh from a write.
+        ...(staleEntry ? { staleEntry } : {}),
+      }),
+    );
+  }).catch((err) => {
     console.error("[vinext] unstable_cache write error:", err);
+  });
+  if (deferWrite) {
+    getRequestExecutionContext()?.waitUntil(write);
+  } else {
+    await write;
   }
 
   return result;
@@ -749,6 +775,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
                   tags,
                   revalidateSeconds,
                   staleEntry,
+                  false,
                 ),
               );
               return cached.value;
@@ -767,6 +794,10 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
     if (isDraftMode) {
       return await _unstableCacheAls.run(true, () => fn(...args));
     }
+    // Like Next.js, a miss in a render, Server Action or route handler returns
+    // without waiting for the write, which the request keeps alive. A stale
+    // entry refreshed in the foreground, and a call outside one (Pages Router),
+    // still wait for it.
     return await refreshUnstableCacheResult(
       fn,
       args,
@@ -775,6 +806,7 @@ export function unstable_cache<T extends (...args: any[]) => Promise<any>>(
       tags,
       revalidateSeconds,
       staleEntry,
+      !staleEntry && isInsideWorkStoreScope(),
     );
   };
 

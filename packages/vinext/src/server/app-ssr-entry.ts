@@ -456,6 +456,12 @@ export async function handleSsr(
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
     /**
+     * Whether the RSC render threw the given shell error. As in Next.js, in
+     * dev the error document carries only an error that the HTML render alone
+     * threw, for the overlay: the browser reports the others itself.
+     */
+    isServerComponentError?: (error: unknown) => boolean;
+    /**
      * The parallel slot not-found boundaries that catch the error that
      * rejected the shell, or null when none catches it. The document then
      * renders again from the same payload with them caught.
@@ -770,6 +776,7 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
+        let ssrOnlyShellError: unknown;
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
@@ -883,6 +890,7 @@ export async function handleSsr(
               // the error, so no server component runs, or reports, again.
               // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
+              if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
               htmlStream = renderSsrErrorDocumentShell(
                 bootstrapModuleUrl,
                 options?.scriptNonce,
@@ -939,7 +947,7 @@ export async function handleSsr(
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
-            options?.initialDevServerError,
+            options?.initialDevServerError ?? ssrOnlyShellError,
             options?.scriptNonce,
           );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();

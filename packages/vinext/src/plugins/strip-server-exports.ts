@@ -175,13 +175,19 @@ function isReferenceIdentifier(node: PositionedNode, parent?: PositionedNode): b
     return false;
   }
   if (
-    (parent.type === "Property" || parent.type === "MethodDefinition") &&
+    (parent.type === "Property" ||
+      parent.type === "MethodDefinition" ||
+      parent.type === "PropertyDefinition" ||
+      parent.type === "AccessorProperty" ||
+      parent.type === "ImportAttribute") &&
     parent.key === node &&
     !parent.computed &&
     !(parent.type === "Property" && parent.shorthand)
   ) {
     return false;
   }
+  // `import.meta` and `new.target` are syntax, not reads of `meta` or `target`.
+  if (parent.type === "MetaProperty") return false;
   if (
     (parent.type === "LabeledStatement" ||
       parent.type === "BreakStatement" ||

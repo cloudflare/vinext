@@ -11,6 +11,7 @@ import {
   EXTERNAL_REWRITE_HEADER_CASES,
   expectRepeatedSlashRedirects,
   fetchHtml,
+  fetchRsc,
   requestExternalRewriteHeaders,
   startFixtureServer,
 } from "./helpers.js";
@@ -318,9 +319,7 @@ describe("App Router integration", () => {
   //   .nextjs-ref/packages/next/src/client/components/app-router-headers.ts L17
   //   export const RSC_CONTENT_TYPE_HEADER = 'text/x-component' as const
   it("uses text/x-component for the RSC Content-Type with no charset suffix", async () => {
-    const res = await fetch(`${baseUrl}/about.rsc`, {
-      headers: { Accept: "text/x-component", RSC: "1" },
-    });
+    const res = await fetchRsc(baseUrl, "/about");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toBe("text/x-component");
   });
@@ -337,8 +336,8 @@ describe("App Router integration", () => {
     expect(html).toContain("Old School Pages Directory");
   });
 
-  it("returns RSC stream for .rsc requests", async () => {
-    const res = await fetch(`${baseUrl}/.rsc`);
+  it("returns RSC stream for RSC requests", async () => {
+    const res = await fetchRsc(baseUrl, "/");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
 
@@ -347,10 +346,21 @@ describe("App Router integration", () => {
     expect(text.length).toBeGreaterThan(0);
   });
 
+  // As in Next.js, `.rsc` is an ordinary part of the pathname, not a transport
+  // suffix, so it does not select the `/about` page.
+  it("does not route a .rsc suffix to the page without it", async () => {
+    const document = await fetch(`${baseUrl}/about.rsc`);
+    expect(document.status).toBe(404);
+    expect(document.headers.get("content-type")).toContain("text/html");
+    await document.arrayBuffer();
+
+    const rsc = await fetchRsc(baseUrl, "/about.rsc");
+    expect(rsc.status).toBe(404);
+    expect(await rsc.text()).not.toContain("About");
+  });
+
   it("returns flat payload metadata for app route RSC responses", async () => {
-    const res = await fetch(`${baseUrl}/dashboard.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/dashboard");
     const rscText = await res.text();
     if (res.status !== 200) {
       throw new Error(rscText);
@@ -873,7 +883,7 @@ describe("App Router integration", () => {
 
   it("renders intercepted photo modal on RSC navigation from feed", async () => {
     // RSC request simulates client-side navigation
-    const res = await fetch(`${baseUrl}/photos/42.rsc`, {
+    const res = await fetchRsc(baseUrl, "/photos/42", {
       headers: {
         Accept: "text/x-component",
         "X-Vinext-Interception-Context": "/feed",
@@ -934,7 +944,7 @@ describe("App Router integration", () => {
     // must NOT fire the interception, matching Next.js' rewrite semantics —
     // see app-rsc-route-matching.ts and the source-pathname filtering tests
     // in app-rsc-route-matching.test.ts.
-    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+    const res = await fetchRsc(baseUrl, "/team/42/settings", {
       headers: {
         Accept: "text/x-component",
         "X-Vinext-Interception-Context": "/team/42/members",
@@ -956,12 +966,10 @@ describe("App Router integration", () => {
 
   it("does NOT fire intercept on direct RSC request without interception context", async () => {
     // Mirrors Next.js: interception rewrites only fire when the Next-URL
-    // header matches the intercepting-route regex. A direct `.rsc` fetch
+    // header matches the intercepting-route regex. A direct RSC fetch
     // with no source pathname must render the underlying page.
     // https://github.com/vercel/next.js/blob/canary/packages/next/src/lib/generate-interception-routes-rewrites.ts
-    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/team/42/settings");
     expect(res.status).toBe(200);
 
     const rscPayload = await res.text();
@@ -975,7 +983,7 @@ describe("App Router integration", () => {
     // so its sourceMatchPattern is /team/:teamId/members. A source pathname
     // outside that prefix (e.g. `/feed`) must not satisfy the rewrite header
     // and the underlying settings page should render.
-    const res = await fetch(`${baseUrl}/team/42/settings.rsc`, {
+    const res = await fetchRsc(baseUrl, "/team/42/settings", {
       headers: {
         Accept: "text/x-component",
         "X-Vinext-Interception-Context": "/feed",
@@ -1408,7 +1416,7 @@ describe("App Router integration", () => {
   // must keep the cache-busting `_rsc` query on the redirect Location so the
   // browser's auto-followed request to the destination is still treated as an
   // RSC fetch. The vinext client addresses RSC navigations via the `RSC: 1`
-  // header + `?_rsc=` query (not a `.rsc` suffix), so we replicate that shape.
+  // header + `?_rsc=` query, so we replicate that shape.
   it("preserves the _rsc query on config-redirect Location for RSC navigations (#1529)", async () => {
     const res = await fetch(`${baseUrl}/old-about?_rsc=abc123`, {
       redirect: "manual",
@@ -1428,13 +1436,11 @@ describe("App Router integration", () => {
   // navigation request, Next.js returns HTTP 200 with the redirect instruction
   // encoded in the RSC flight payload. The status code must be 200 because the
   // client uses `redirect: 'manual'` fetch semantics when validating
-  // cache-busting; a raw 307 would break that flow. vinext addresses RSC
-  // payloads via the `.rsc` suffix (not the `Rsc` header — see
-  // app-rsc-request-normalization.ts), so we hit `.rsc` directly here.
+  // cache-busting; a raw 307 would break that flow.
   //
   // See: https://github.com/cloudflare/vinext/issues/1347
   it("redirect() from Server Component returns 200 + flight payload for RSC navigations", async () => {
-    const res = await fetch(`${baseUrl}/redirect-test.rsc`, {
+    const res = await fetchRsc(baseUrl, "/redirect-test", {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
@@ -1449,7 +1455,7 @@ describe("App Router integration", () => {
   });
 
   it("permanentRedirect() from Server Component returns 200 + flight payload for RSC navigations", async () => {
-    const res = await fetch(`${baseUrl}/permanent-redirect-test.rsc`, {
+    const res = await fetchRsc(baseUrl, "/permanent-redirect-test", {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
@@ -1472,7 +1478,7 @@ describe("App Router integration", () => {
   // becoming an HTTP-level 307. See:
   //   https://github.com/cloudflare/vinext/issues/1347
   it("redirect() from generateMetadata returns 200 with flight redirect payload (RSC)", async () => {
-    const res = await fetch(`${baseUrl}/metadata-redirect-test.rsc`, {
+    const res = await fetchRsc(baseUrl, "/metadata-redirect-test", {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
@@ -1519,7 +1525,7 @@ describe("App Router integration", () => {
   // as a protocol-relative URL on another host. Next.js sends the target as
   // written.
   it("keeps a layout redirect() to a path starting with /.// on the app origin (RSC)", async () => {
-    const res = await fetch(`${baseUrl}/nextjs-compat/redirect-dot-segment/layout-redirect.rsc`, {
+    const res = await fetchRsc(baseUrl, "/nextjs-compat/redirect-dot-segment/layout-redirect", {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });
@@ -1851,12 +1857,10 @@ describe("App Router integration", () => {
   });
 
   it("RSC stream for metadata-test page includes metadata head tags", async () => {
-    // The .rsc endpoint returns the RSC payload (serialized React tree).
+    // An RSC request returns the RSC payload (serialized React tree).
     // When the client deserializes and renders this, MetadataHead should produce
     // <title> and <meta> tags that React 19 hoists to <head>.
-    const res = await fetch(`${baseUrl}/metadata-test.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const res = await fetchRsc(baseUrl, "/metadata-test");
     expect(res.status).toBe(200);
     expect(res.headers.get("content-type")).toContain("text/x-component");
 
@@ -1869,12 +1873,8 @@ describe("App Router integration", () => {
 
   it("different pages have different metadata in RSC responses", async () => {
     // Fetch RSC for home page and metadata-test page
-    const homeRes = await fetch(`${baseUrl}/.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
-    const metaRes = await fetch(`${baseUrl}/metadata-test.rsc`, {
-      headers: { Accept: "text/x-component" },
-    });
+    const homeRes = await fetchRsc(baseUrl, "/");
+    const metaRes = await fetchRsc(baseUrl, "/metadata-test");
 
     const homeRsc = await homeRes.text();
     const metaRsc = await metaRes.text();
@@ -2175,7 +2175,7 @@ describe("App Router integration", () => {
     expect(html).toContain('data-testid="dynamic-error-css-module"');
     expect(html).toContain("</html>");
 
-    const rsc = await fetch(`${baseUrl}${pathname}.rsc`, { headers: { RSC: "1" } });
+    const rsc = await fetchRsc(baseUrl, pathname);
     expect(rsc.status).toBe(200);
     expect(await readBody(rsc)).toContain('"data-testid":"dynamic-error-css-module"');
   });
@@ -2374,7 +2374,7 @@ describe("App Router integration", () => {
 
   // ── CSRF protection for server actions ───────────────────────────────
   it("rejects server action POST with mismatched Origin header (CSRF protection)", async () => {
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
@@ -2388,7 +2388,7 @@ describe("App Router integration", () => {
   });
 
   it("rejects server action POST with invalid Origin header (CSRF protection)", async () => {
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
@@ -2402,7 +2402,7 @@ describe("App Router integration", () => {
   it("allows server action POST with matching Origin header", async () => {
     // Ported from Next.js: test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
     // https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/no-server-actions/no-server-actions.test.ts
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
@@ -2419,7 +2419,7 @@ describe("App Router integration", () => {
 
   it("allows server action POST without Origin header (non-fetch navigation)", async () => {
     // Requests without an Origin header should be allowed through.
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
@@ -2437,7 +2437,7 @@ describe("App Router integration", () => {
       "secondAliasedAction",
       "$$vinext_cache_custom",
     ]) {
-      const res = await fetch(`${baseUrl}/actions.rsc`, {
+      const res = await fetchRsc(baseUrl, "/actions", {
         method: "POST",
         headers: {
           "Content-Type": "text/plain",
@@ -2493,7 +2493,7 @@ describe("App Router integration", () => {
       expect(fetchAction.headers.get("x-nextjs-action-not-found")).toBe("1");
       expect(await fetchAction.text()).not.toContain(secret);
 
-      const rscAction = await fetch(`${baseUrl}/use-cache-hidden-reference.rsc`, {
+      const rscAction = await fetchRsc(baseUrl, "/use-cache-hidden-reference", {
         method: "POST",
         headers: { "Content-Type": "text/plain", "x-rsc-action": actionId },
         body: JSON.stringify(["victim"]),
@@ -2602,7 +2602,7 @@ describe("App Router integration", () => {
     const body = new FormData();
     body.set("0", '["$Q0"]');
 
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
@@ -2619,7 +2619,7 @@ describe("App Router integration", () => {
   });
 
   it("blocks server action POST with Origin 'null' (CSRF via sandboxed context)", async () => {
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "nonexistent-action",
@@ -2637,7 +2637,7 @@ describe("App Router integration", () => {
     // Sending both Origin: evil.com and X-Forwarded-Host: evil.com should
     // still be rejected. The origin check must only use the Host header,
     // not X-Forwarded-Host.
-    const res = await fetch(`${baseUrl}/actions.rsc`, {
+    const res = await fetchRsc(baseUrl, "/actions", {
       method: "POST",
       headers: {
         "x-rsc-action": "fake-action-id",
@@ -2665,7 +2665,7 @@ describe("App Router integration", () => {
   });
 
   it("blocks RSC stream requests with cross-origin Origin header", async () => {
-    const res = await fetch(`${baseUrl}/about.rsc`, {
+    const res = await fetchRsc(baseUrl, "/about", {
       headers: {
         Origin: "https://evil.com",
         Host: new URL(baseUrl).host,
@@ -2798,10 +2798,7 @@ describe("App Router route-miss root layout redirects", () => {
   // redirect propagates through renderToReadableStream's onError into the
   // lazily-consumed flight stream rather than the status line.
   it("encodes a route-miss root layout redirect into the flight payload for RSC requests", async () => {
-    // vinext routes RSC navigations by the `.rsc` suffix (see
-    // app-rsc-request-normalization.ts), matching the existing rsc-redirect
-    // tests above.
-    const res = await fetch(`${baseUrl}/random-content.rsc`, {
+    const res = await fetchRsc(baseUrl, "/random-content", {
       redirect: "manual",
       headers: {
         "x-vinext-root-layout-redirect": "1",
@@ -2824,7 +2821,7 @@ describe("App Router route-miss root layout redirects", () => {
   // and the client router shows the boundary. A redirect() in that boundary
   // travels the same way.
   it("streams a matched-route not-found boundary's redirect in the RSC flight", async () => {
-    const res = await fetch(`${baseUrl}/gated.rsc`, {
+    const res = await fetchRsc(baseUrl, "/gated", {
       redirect: "manual",
       headers: {
         "x-vinext-gated-notfound-redirect": "1",
@@ -2841,7 +2838,7 @@ describe("App Router route-miss root layout redirects", () => {
   });
 
   it("streams a matched-route not-found boundary in the RSC flight", async () => {
-    const res = await fetch(`${baseUrl}/gated.rsc`, {
+    const res = await fetchRsc(baseUrl, "/gated", {
       redirect: "manual",
       headers: { Accept: "text/x-component" },
     });

@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 // Runs against the dedicated app-bfcache fixture (cacheComponents: true), in dev
 // (app-router-bfcache) and as a production build (app-router-bfcache-prod).
@@ -304,6 +304,23 @@ async function expectEffects(page: Page, log: string[], open: string[]) {
     const state = Reflect.get(window, "__bfcacheEffects") as EffectState;
     state.log.splice(0, count);
   }, log.length);
+}
+
+// Waits for exactly `views` (`name pathname`, recorded by PageViewProbe effects)
+// to be recorded since the previous call, then consumes them.
+async function expectViews(page: Page, views: string[]) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = Reflect.get(window, "__bfcacheEffects") as { views?: string[] } | undefined;
+        return state?.views?.slice() ?? [];
+      }),
+    )
+    .toEqual(views);
+  await page.evaluate((count) => {
+    const state = Reflect.get(window, "__bfcacheEffects") as { views: string[] };
+    state.views.splice(0, count);
+  }, views.length);
 }
 
 async function expectEffectsHeading(page: Page, heading: string) {
@@ -677,5 +694,573 @@ test.describe("BFCache Activity effects", () => {
       chatOpen("a"),
     );
     await expectHiddenEffectState(page, "lobby", "Count: 2");
+  });
+
+  // A sibling intercept renders the intercepting route, gallery/(.)photo/[id],
+  // so /gallery/photo/1 sits in the "gallery" entry of the effects layout's
+  // list beside /gallery: leaving for two more routes evicts neither.
+  test("keeps a sibling intercept in its source segment's entry", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/gallery`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "gallery#1"], true), [
+      "shell#1",
+      "gallery#1",
+    ]);
+    await incrementEffect(page, "gallery", 2);
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", ...setupEffects(["photo-modal:1#1"], true)],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await incrementEffect(page, "photo-modal:1", 3);
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await clickEffectsLink(page, "/gallery", "Gallery");
+    await expectEffects(page, ["setup gallery#1"], ["shell#1", "gallery#1"]);
+    await expect(effectCount(page, "gallery")).toHaveText("Count: 2");
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+  });
+
+  test("restores a sibling intercept and its source segment on back and forward", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/gallery`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "gallery#1"], true), [
+      "shell#1",
+      "gallery#1",
+    ]);
+    await incrementEffect(page, "gallery", 2);
+
+    await clickEffectsLink(page, "/gallery/photo/1", "Photo modal 1");
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", ...setupEffects(["photo-modal:1#1"], true)],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await incrementEffect(page, "photo-modal:1", 3);
+
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(page, ["cleanup search#1", "cleanup search-query:1#1"], ["shell#1"]);
+
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["cleanup search#1", "cleanup search-query:1#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+    await expectHiddenEffectState(page, "gallery", "Count: 2");
+
+    await page.goBack();
+    await expectEffects(
+      page,
+      ["cleanup photo-modal:1#1", "setup gallery#1"],
+      ["shell#1", "gallery#1"],
+    );
+    await expect(effectCount(page, "gallery")).toHaveText("Count: 2");
+
+    await page.goForward();
+    await expectEffects(
+      page,
+      ["cleanup gallery#1", "setup photo-modal:1#1"],
+      ["shell#1", "photo-modal:1#1"],
+    );
+    await expect(effectCount(page, "photo-modal:1")).toHaveText("Count: 3");
+  });
+
+  // As in Next.js, a sibling intercept reads the target's params, which its
+  // source page doesn't have.
+  test("reads the target's params in a sibling intercept", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expect(page.getByTestId("params-shot-modal:1")).toHaveText('{"id":"1"}');
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expect(page.getByTestId("params-shot-modal:2")).toHaveText('{"id":"2"}');
+    await page.goBack();
+    await expect(page.getByRole("heading", { name: "Shot modal 1" })).toBeVisible();
+    await expect(page.getByTestId("params-shot-modal:1")).toHaveText('{"id":"1"}');
+  });
+
+  // shots/(.)[id] intercepts at the shots level itself, so each shot is its
+  // own entry of that level's list, inside the "shots" entry of the effects
+  // layout's list: leaving the shots for search evicts none of them.
+  test("keys a dynamic sibling intercept per value inside its source segment's entry", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "shots#1"], true), ["shell#1", "shots#1"]);
+    await incrementEffect(page, "shots", 2);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:1#1"], true)],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await incrementEffect(page, "shot-modal:1", 3);
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(page, ["cleanup shot-modal:1#1", "setup shots#1"], ["shell#1", "shots#1"]);
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:2#1"], true)],
+      ["shell#1", "shot-modal:2#1"],
+    );
+    await clickEffectsLink(page, "/search?q=1", "Search 1");
+    await expectEffects(
+      page,
+      ["cleanup shot-modal:2#1", "mount search#1", "setup search#1", "setup search-query:1#1"],
+      ["shell#1", "search#1", "search-query:1#1"],
+    );
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(
+      page,
+      ["cleanup search#1", "cleanup search-query:1#1", "setup shots#1"],
+      ["shell#1", "shots#1"],
+    );
+    await expect(effectCount(page, "shots")).toHaveText("Count: 2");
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", "setup shot-modal:1#1"],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await expect(effectCount(page, "shot-modal:1")).toHaveText("Count: 3");
+  });
+
+  // shots/(.)[id] intercepts at the shots level itself, which keys it per id,
+  // so three shots evict the shots page. A shot's entry doesn't depend on the
+  // page it was opened from: shot 2, opened from shot 1, is restored from
+  // /shots.
+  test("keys a dynamic sibling intercept per value in its level's list", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/shots`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "shots#1"], true), ["shell#1", "shots#1"]);
+    await incrementEffect(page, "shots", 2);
+
+    await clickEffectsLink(page, "/shots/1", "Shot modal 1");
+    await expectEffects(
+      page,
+      ["cleanup shots#1", ...setupEffects(["shot-modal:1#1"], true)],
+      ["shell#1", "shot-modal:1#1"],
+    );
+    await incrementEffect(page, "shot-modal:1", 3);
+    for (const [from, to] of [
+      ["1", "2"],
+      ["2", "3"],
+    ]) {
+      await clickEffectsLink(page, `/shots/${to}`, `Shot modal ${to}`);
+      await expectEffects(
+        page,
+        [`cleanup shot-modal:${from}#1`, ...setupEffects([`shot-modal:${to}#1`], true)],
+        ["shell#1", `shot-modal:${to}#1`],
+      );
+    }
+    await expect(effectCount(page, "shots")).toHaveCount(0);
+
+    await clickEffectsLink(page, "/shots", "Shots");
+    await expectEffects(
+      page,
+      ["cleanup shot-modal:3#1", ...setupEffects(["shots#2"], true)],
+      ["shell#1", "shots#2"],
+    );
+    await expect(effectCount(page, "shots")).toHaveText("Count: 0");
+
+    await clickEffectsLink(page, "/shots/2", "Shot modal 2");
+    await expectEffects(
+      page,
+      ["cleanup shots#2", "setup shot-modal:2#1"],
+      ["shell#1", "shot-modal:2#1"],
+    );
+    await expectHiddenEffectState(page, "shots", "Count: 0");
+  });
+
+  // A prefetch of /rooms/a or /rooms/b teaches the router an optimistic shell
+  // for rooms/[id]. Like Next.js's reifyRouteTree, a navigation to /rooms/d
+  // keys that shell by d, so it doesn't take over a retained room's entry.
+  test("keeps retained entries when an optimistic shell renders new params", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "room:a#1"], true), ["shell#1", "room:a#1"]);
+    await incrementEffect(page, "room:a", 2);
+
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(
+      page,
+      ["cleanup room:a#1", ...setupEffects(["room:b#1"], true)],
+      ["shell#1", "room:b#1"],
+    );
+    await incrementEffect(page, "room:b", 3);
+    // Let the layout's room links prefetch, so /rooms/d renders the learned
+    // shell before its own payload.
+    await page.waitForLoadState("networkidle");
+
+    await page.evaluate(() => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        "/bfcache-effects/rooms/d",
+      );
+    });
+    await expectEffectsHeading(page, "Room d");
+    await expectEffects(
+      page,
+      ["cleanup room:b#1", ...setupEffects(["room:d#1"], true)],
+      ["shell#1", "room:d#1"],
+    );
+    await expectHiddenEffectState(page, "room:b", "Count: 3");
+
+    await clickEffectsLink(page, "/rooms/a", "Room a");
+    await expectEffects(page, ["cleanup room:d#1", "setup room:a#1"], ["shell#1", "room:a#1"]);
+    await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+    await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+  });
+
+  // rooms/[id]/notes has no layout below the effects layout, so its [id] and
+  // notes levels key their entries by fixed keys in the learned shell. The
+  // shell for /rooms/d/notes rebinds them to d, like its segment identities.
+  test("keeps retained entries of levels without a layout under an optimistic shell", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a/notes`);
+    await waitForAppRouterHydration(page);
+    await expectEffects(page, setupEffects(["shell#1", "notes:a#1"], true), [
+      "notes:a#1",
+      "shell#1",
+    ]);
+    await incrementEffect(page, "notes:a", 2);
+
+    await clickEffectsLink(page, "/rooms/b/notes", "Notes b");
+    await expectEffects(
+      page,
+      ["cleanup notes:a#1", ...setupEffects(["notes:b#1"], true)],
+      ["notes:b#1", "shell#1"],
+    );
+    await incrementEffect(page, "notes:b", 3);
+    // Let the page's links prefetch, so /rooms/d/notes renders the learned
+    // shell before its own payload.
+    await page.waitForLoadState("networkidle");
+
+    await page.evaluate(() => {
+      (window as unknown as { next: { router: { push(href: string): void } } }).next.router.push(
+        "/bfcache-effects/rooms/d/notes",
+      );
+    });
+    await expectEffectsHeading(page, "Notes d");
+    await expectEffects(
+      page,
+      ["cleanup notes:b#1", ...setupEffects(["notes:d#1"], true)],
+      ["notes:d#1", "shell#1"],
+    );
+    await expectHiddenEffectState(page, "notes:b", "Count: 3");
+    await expectHiddenEffectState(page, "notes:a", "Count: 2");
+
+    await clickEffectsLink(page, "/rooms/a/notes", "Notes a");
+    await expectEffects(page, ["cleanup notes:d#1", "setup notes:a#1"], ["notes:a#1", "shell#1"]);
+    await expect(effectCount(page, "notes:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b/notes", "Notes b");
+    await expectEffects(page, ["cleanup notes:a#1", "setup notes:b#1"], ["notes:b#1", "shell#1"]);
+    await expect(effectCount(page, "notes:b")).toHaveText("Count: 3");
+  });
+
+  // Both clear the router's cache, so the next navigation to a retained room
+  // has no payload of its own and could render the learned shell over its entry.
+  for (const [trigger, testId] of [
+    ["router.refresh()", "refresh"],
+    ["a server action that revalidates", "revalidate-b"],
+  ] as const) {
+    test(`keeps a hidden entry's state after ${trigger}`, async ({ page }) => {
+      await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+      await waitForAppRouterHydration(page);
+      await expectEffects(page, setupEffects(["shell#1", "room:a#1"], true), [
+        "shell#1",
+        "room:a#1",
+      ]);
+      await incrementEffect(page, "room:a", 2);
+      await clickEffectsLink(page, "/rooms/b", "Room b");
+      await expectEffects(
+        page,
+        ["cleanup room:a#1", ...setupEffects(["room:b#1"], true)],
+        ["shell#1", "room:b#1"],
+      );
+      await incrementEffect(page, "room:b", 3);
+
+      await page.locator(`[data-testid="${testId}"]:visible`).click();
+      await page.waitForLoadState("networkidle");
+      await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+      await expectHiddenEffectState(page, "room:a", "Count: 2");
+
+      await clickEffectsLink(page, "/rooms/a", "Room a");
+      await expectEffects(page, ["cleanup room:b#1", "setup room:a#1"], ["shell#1", "room:a#1"]);
+      await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+      await page.goBack();
+      await expectEffectsHeading(page, "Room b");
+      await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+      await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+    });
+  }
+
+  // The rooms entry hides its own hidden and shown room entries with it, so a
+  // learned shell doesn't render over either after a refresh.
+  test("keeps entries hidden under a hidden entry after router.refresh()", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await incrementEffect(page, "room:a", 2);
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await incrementEffect(page, "room:b", 3);
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(["shell#1", "room:a#1"], true),
+        "cleanup room:a#1",
+        ...setupEffects(["room:b#1"], true),
+        "cleanup room:b#1",
+      ],
+      ["shell#1"],
+    );
+
+    await page.locator('[data-testid="refresh"]:visible').click();
+    await page.waitForLoadState("networkidle");
+    await expectHiddenEffectState(page, "room:a", "Count: 2");
+    await expectHiddenEffectState(page, "room:b", "Count: 3");
+
+    await clickEffectsLink(page, "/rooms/a", "Room a");
+    await expectEffects(page, ["setup room:a#1"], ["shell#1", "room:a#1"]);
+    await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+    await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+  });
+
+  // An entry that back or forward shows again commits with its own URL, so an
+  // effect it runs on reveal, like a page-view tracker, never reads the URL of
+  // the entry it replaces.
+  test("reveals a retained entry with its own URL on back and forward", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+
+    await page.goBack();
+    await expectEffectsHeading(page, "Room a");
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+
+    await page.goForward();
+    await expectEffectsHeading(page, "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+  });
+
+  test("reads the URL a revealed entry writes from a layout effect", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+
+    await page.evaluate(() => {
+      Reflect.set(window, "__writeUrlOnShow", "room:a");
+    });
+    await page.goBack();
+    await expectEffectsHeading(page, "Room a");
+    await expectViews(page, [
+      `room:a ${EFFECTS_ROUTE}/rooms/a`,
+      `room:a ${EFFECTS_ROUTE}/rooms/a?shown=1`,
+    ]);
+    await expect(page).toHaveURL(`${EFFECTS_ROUTE}/rooms/a?shown=1`);
+  });
+
+  // panels/[id] has no layout, and the panels layout has a named @panel slot.
+  // Like a layout without slots, the panels layout keeps one entry per [id],
+  // holding both /panels/a and /panels/a/more, so two more pages don't evict a.
+  // Inside @panel, the [id] level keeps the page and the more segment as two
+  // entries, so the slot page is hidden, not replaced, on /panels/a/more.
+  test("keeps a layout-less segment's pages in one entry under a layout with named slots", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/a`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await expectEffects(page, setupEffects([...panelsOpen, "panel-main:a#1", "panel:a#1"], true), [
+      ...panelsOpen,
+      "panel-main:a#1",
+      "panel:a#1",
+    ]);
+    await incrementEffect(page, "panel-main:a", 2);
+    await incrementEffect(page, "panel:a", 2);
+
+    await page.locator("#panel-a-more:visible").click();
+    await expectEffectsHeading(page, "Panels a more");
+    await expectEffects(
+      page,
+      [
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        ...setupEffects(["panel-more:a#1", "panel-slot-more:a#1"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#1"],
+    );
+    await expectHiddenEffectState(page, "panel:a", "Count: 2");
+    await incrementEffect(page, "panel-slot-more:a", 3);
+
+    await clickEffectsLink(page, "/panels", "Panels home");
+    await expectEffects(
+      page,
+      ["cleanup panel-more:a#1", ...setupEffects(["panels-home#1"], true)],
+      [...panelsOpen, "panel-slot-more:a#1", "panels-home#1"],
+    );
+
+    await clickEffectsLink(page, "/panels/b", "Panels b");
+    await expectEffects(
+      page,
+      [
+        "cleanup panels-home#1",
+        "cleanup panel-slot-more:a#1",
+        ...setupEffects(["panel-main:b#1", "panel:b#1"], true),
+      ],
+      [...panelsOpen, "panel-main:b#1", "panel:b#1"],
+    );
+    await expectHiddenEffectState(page, "panel-main:a", "Count: 2");
+    await expectHiddenEffectState(page, "panel-slot-more:a", "Count: 3");
+
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      ["cleanup panel-main:b#1", "cleanup panel:b#1", "setup panel-main:a#1", "setup panel:a#1"],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+    await expect(effectCount(page, "panel-main:a")).toHaveText("Count: 2");
+    await expect(effectCount(page, "panel:a")).toHaveText("Count: 2");
+    await expect(page.locator("#panel-a-more-status:visible")).toHaveText("idle");
+  });
+
+  test("keeps a slot's hidden entries when one entry's error boundary catches", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/b`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await incrementEffect(page, "panel:b", 3);
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(panelsOpen, true),
+        ...setupEffects(["panel-main:b#1", "panel:b#1"], true),
+        "cleanup panel-main:b#1",
+        "cleanup panel:b#1",
+        ...setupEffects(["panel-main:a#1", "panel:a#1"], true),
+      ],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+
+    // The slot's error.tsx catches inside panel a's entry, so panel b's
+    // hidden entry stays mounted.
+    await page.locator('[data-testid="throw-panel:a"]:visible').click();
+    await expect(page.getByTestId("panel-slot-error")).toBeVisible();
+    await disableDevErrorOverlay(page);
+    await expectEffects(page, ["cleanup panel:a#1"], [...panelsOpen, "panel-main:a#1"]);
+    await expectHiddenEffectState(page, "panel:b", "Count: 3");
+
+    await clickEffectsLink(page, "/panels/b", "Panels b");
+    await expectEffects(
+      page,
+      ["cleanup panel-main:a#1", "setup panel-main:b#1", "setup panel:b#1"],
+      [...panelsOpen, "panel-main:b#1", "panel:b#1"],
+    );
+    await expect(effectCount(page, "panel:b")).toHaveText("Count: 3");
+    await expect(page.getByTestId("panel-slot-error")).toBeHidden();
+  });
+
+  test("keeps a slot's hidden entries when a nested error boundary catches", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/a`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await incrementEffect(page, "panel:a", 2);
+    await page.locator("#panel-a-more:visible").click();
+    await expectEffectsHeading(page, "Panels a more");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(panelsOpen, true),
+        ...setupEffects(["panel-main:a#1", "panel:a#1"], true),
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        ...setupEffects(["panel-more:a#1", "panel-slot-more:a#1"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#1"],
+    );
+
+    // The slot's more/error.tsx catches inside its own segment, so the slot
+    // page's hidden entry stays mounted.
+    await page.locator('[data-testid="throw-panel-slot-more:a"]:visible').click();
+    await expect(page.getByTestId("panel-slot-more-error")).toBeVisible();
+    await disableDevErrorOverlay(page);
+    await expect(page.getByTestId("panel-slot-error")).toHaveCount(0);
+    await expectEffects(page, ["cleanup panel-slot-more:a#1"], [...panelsOpen, "panel-more:a#1"]);
+    await expectHiddenEffectState(page, "panel:a", "Count: 2");
+
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      ["cleanup panel-more:a#1", "setup panel-main:a#1", "setup panel:a#1"],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+    await expect(effectCount(page, "panel:a")).toHaveText("Count: 2");
+    await expect(page.getByTestId("panel-slot-more-error")).toBeHidden();
+
+    // Like Next.js's, the boundary resets when its entry is shown at a new
+    // pathname, so the more page renders again.
+    await page.locator("#panel-a-more:visible").click();
+    await expectEffectsHeading(page, "Panels a more");
+    await expectEffects(
+      page,
+      [
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        "setup panel-more:a#1",
+        ...setupEffects(["panel-slot-more:a#2"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#2"],
+    );
+    await expect(page.getByTestId("panel-slot-more-error")).toHaveCount(0);
   });
 });

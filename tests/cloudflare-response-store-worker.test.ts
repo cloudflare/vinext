@@ -806,6 +806,50 @@ describe("Cloudflare Response Store Worker query-free cache identity", () => {
     expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
   });
 
+  it("stores and regenerates an intercepted App page RSC with its params", async () => {
+    // An intercepted response's params include its target's, which the
+    // request stage doesn't match, so they can't be recomposed.
+    dispatchWithIdentity(true, {
+      interceptionContext: "/feed",
+      isRscRequest: true,
+      matchKind: "interception",
+    });
+    const params = encodeURIComponent(JSON.stringify({ id: "1" }));
+    stages.response.mockImplementation(
+      async () =>
+        new Response("rsc", {
+          headers: {
+            "Cache-Control": "public, max-age=60",
+            "X-Vinext-Params": params,
+            "X-Vinext-Rendered-Path-And-Search": encodeURIComponent("/photos/1?q=a"),
+          },
+        }),
+    );
+    const { entries, store } = createMemoryStore();
+    await (
+      await createVinextResponseStoreHandler(store).fetch(
+        new Request("https://example.com/photos/1?q=a"),
+        {} as never,
+        context(),
+      )
+    ).text();
+    const [entry] = [...entries.values()];
+    expect(entry?.headers.get("X-Vinext-Params")).toBe(params);
+    expect(entry?.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
+
+    const regenerated = await createVinextResponseStoreOptions().regenerate(
+      {
+        args: entry!.options!.revalidator!.args as string[],
+        id: "vinext:response",
+        reason: "stale",
+        request: new Request("https://example.com/photos/1"),
+      } as never,
+      { ctx: context(), env: {} } as never,
+    );
+    expect(regenerated.headers.get("X-Vinext-Params")).toBe(params);
+    expect(regenerated.headers.has("X-Vinext-Rendered-Path-And-Search")).toBe(false);
+  });
+
   it.each(["private, max-age=10", "no-store", "no-cache"])(
     "guards provisional browser policy before deferred admission: %s",
     async (cacheControl) => {

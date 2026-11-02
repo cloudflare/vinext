@@ -38,6 +38,7 @@ import {
   isInlineSrc,
   isRemoteUrl,
   isSvgUrl,
+  parseImageQuality,
   resolveImageSource,
   sanitizeBlurDataURL,
   missingLoaderError,
@@ -454,7 +455,7 @@ const ImageImpl = forwardRef<HTMLImageElement, ImageProps>(function Image(
   // When `unoptimized` is true, bypass the endpoint entirely (Next.js compat).
   // SVG sources auto-skip unless dangerouslyAllowSVG is enabled, matching
   // Next.js behavior where .svg triggers unoptimized=true by default.
-  const imgQuality = typeof quality === "string" ? Number(quality) : (quality ?? 75);
+  const imgQuality = parseImageQuality(quality) ?? 75;
   const isSvg = isSvgUrl(src);
   const skipOptimization = isSvg && !__dangerouslyAllowSVG;
 

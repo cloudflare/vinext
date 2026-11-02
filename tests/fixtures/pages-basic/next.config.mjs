@@ -16,6 +16,18 @@ const nextConfig = {
   experimental: {
     allowedRevalidateHeaderKeys: ["x-revalidate-token"],
   },
+  // Used by E2E: pages-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo.svg", search: "?.png" },
+    ],
+  },
   async redirects() {
     return [
       {
@@ -189,6 +201,17 @@ const nextConfig = {
           source: "/proxy-external-host-capture",
           has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
           destination: "http://:proxyHost.invalid/host-capture",
+        },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination path must stay inside that path
+        // and keep the destination's own query.
+        {
+          source: "/proxy-external-path-capture",
+          has: [
+            { type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" },
+            { type: "query", key: "file", value: "(?<file>.*)" },
+          ],
+          destination: "http://127.0.0.1::upstreamPort/public/:file?revision=published",
         },
         // Used by Vitest: pages-router.test.ts — beforeFiles rewrite gated on
         // a cookie injected by middleware. Middleware injects mw-before-user=1

@@ -1,4 +1,5 @@
 import { getCdnCacheAdapter } from "./cdn-cache.js";
+import { type CacheLifeConfig, parseCacheLifeProfiles } from "../utils/cache-life-profiles.js";
 import { getHeadersAccessPhase } from "./internal/headers-state.js";
 import { getOrCreateAls } from "./internal/als-registry.js";
 import {
@@ -7,21 +8,15 @@ import {
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
 
-export type CacheLifeConfig = {
-  stale?: number;
-  revalidate?: number;
-  expire?: number;
-};
+export type { CacheLifeConfig };
 
-export const cacheLifeProfiles: Record<string, CacheLifeConfig> = {
-  default: { revalidate: 900, expire: 4294967294 },
-  seconds: { stale: 30, revalidate: 1, expire: 60 },
-  minutes: { stale: 300, revalidate: 60, expire: 3600 },
-  hours: { stale: 300, revalidate: 3600, expire: 86400 },
-  days: { stale: 300, revalidate: 86400, expire: 604800 },
-  weeks: { stale: 300, revalidate: 604800, expire: 2592000 },
-  max: { stale: 300, revalidate: 2592000, expire: 31536000 },
-};
+/**
+ * The built-in profiles merged with next.config `cacheLife`, baked in at
+ * build time like Next.js's `process.env.__NEXT_CACHE_LIFE` define.
+ */
+export const cacheLifeProfiles: Record<string, CacheLifeConfig> = parseCacheLifeProfiles(
+  process.env.__VINEXT_CACHE_LIFE_PROFILES,
+);
 
 export {
   _recordUseCacheRootParamRead,
