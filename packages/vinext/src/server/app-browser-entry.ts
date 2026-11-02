@@ -179,6 +179,7 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import {
   BfcacheIdentityMapContext,
   bindAppElementsRenderedSearch,
+  isBfcacheIdentityRetained,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
 import type {
@@ -2727,7 +2728,10 @@ function bootstrapHydration(
                 currentElements: navigationInitiationState.elements,
                 currentLayoutIds: navigationInitiationState.layoutIds,
                 currentParams: navigationInitiationState.navigationSnapshot.params,
+                isBfcacheIdentityRetained,
                 routeManifest,
+                shownElements: getBrowserRouterState().elements,
+                targetElements: optimisticPayload.elements,
                 targetRouteParams: optimisticPayload.routeParams,
                 targetUrlParts: optimisticPayload.urlParts,
                 template: optimisticPayload.template,

@@ -937,6 +937,76 @@ test.describe("BFCache Activity effects", () => {
     await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
   });
 
+  // Both clear the router's cache, so the next navigation to a retained room
+  // has no payload of its own and could render the learned shell over its entry.
+  for (const [trigger, testId] of [
+    ["router.refresh()", "refresh"],
+    ["a server action that revalidates", "revalidate-b"],
+  ] as const) {
+    test(`keeps a hidden entry's state after ${trigger}`, async ({ page }) => {
+      await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+      await waitForAppRouterHydration(page);
+      await expectEffects(page, setupEffects(["shell#1", "room:a#1"], true), [
+        "shell#1",
+        "room:a#1",
+      ]);
+      await incrementEffect(page, "room:a", 2);
+      await clickEffectsLink(page, "/rooms/b", "Room b");
+      await expectEffects(
+        page,
+        ["cleanup room:a#1", ...setupEffects(["room:b#1"], true)],
+        ["shell#1", "room:b#1"],
+      );
+      await incrementEffect(page, "room:b", 3);
+
+      await page.locator(`[data-testid="${testId}"]:visible`).click();
+      await page.waitForLoadState("networkidle");
+      await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+      await expectHiddenEffectState(page, "room:a", "Count: 2");
+
+      await clickEffectsLink(page, "/rooms/a", "Room a");
+      await expectEffects(page, ["cleanup room:b#1", "setup room:a#1"], ["shell#1", "room:a#1"]);
+      await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+      await page.goBack();
+      await expectEffectsHeading(page, "Room b");
+      await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+      await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+    });
+  }
+
+  // The rooms entry hides its own hidden and shown room entries with it, so a
+  // learned shell doesn't render over either after a refresh.
+  test("keeps entries hidden under a hidden entry after router.refresh()", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await incrementEffect(page, "room:a", 2);
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await incrementEffect(page, "room:b", 3);
+    await clickEffectsLink(page, "", "Effects home");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(["shell#1", "room:a#1"], true),
+        "cleanup room:a#1",
+        ...setupEffects(["room:b#1"], true),
+        "cleanup room:b#1",
+      ],
+      ["shell#1"],
+    );
+
+    await page.locator('[data-testid="refresh"]:visible').click();
+    await page.waitForLoadState("networkidle");
+    await expectHiddenEffectState(page, "room:a", "Count: 2");
+    await expectHiddenEffectState(page, "room:b", "Count: 3");
+
+    await clickEffectsLink(page, "/rooms/a", "Room a");
+    await expectEffects(page, ["setup room:a#1"], ["shell#1", "room:a#1"]);
+    await expect(effectCount(page, "room:a")).toHaveText("Count: 2");
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
+    await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+  });
+
   // An entry that back or forward shows again commits with its own URL, so an
   // effect it runs on reveal, like a page-view tracker, never reads the URL of
   // the entry it replaces.

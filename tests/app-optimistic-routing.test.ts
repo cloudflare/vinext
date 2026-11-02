@@ -1078,6 +1078,111 @@ describe("App Router optimistic routing", () => {
     expect(canCommit("gamma")).toBe(true);
   });
 
+  it("does not commit a shell over a page a hidden BFCache entry retains", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const pageId = "page:/rooms/:id";
+    const routeId = "route:/rooms/:id";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: true,
+          paramNames: ["id"],
+          pattern: "/rooms/:id",
+          patternParts: ["rooms", ":id"],
+        }),
+      ],
+      [],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identityFor = (id: string) =>
+      deriveBfcacheSegmentIdentity({
+        boundSegmentKey: JSON.stringify(["rooms", `id|${id}|d`]),
+        graphId: pageId,
+        kind: "page",
+        rootBoundaryId: null,
+      });
+    const elementsFor = (id: string, extra: AppElements) => ({
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageId]: identityFor(id) },
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: `route:/rooms/${id}`,
+      }),
+      [rootLayoutId]: createElement("div", null, "root"),
+      ...extra,
+    });
+    // Room b is shown, learned from b's loading-shell prefetch.
+    const currentElements = elementsFor("b", { [pageId]: createElement("p", null, "Room b") });
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: elementsFor("b", {
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageId]: null,
+        "route:/rooms/b": createElement("p", null, "Loading room"),
+      }),
+      href: "/rooms/b",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+
+    // Room a's page is retained in a hidden entry.
+    const retained = new Set([identityFor("a"), identityFor("b")]);
+    const canCommit = (id: string, shownElements?: AppElements) => {
+      const payload = resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: `/rooms/${id}`,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      });
+      if (payload === null) throw new Error("Expected optimistic navigation payload");
+      return canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { id: "b" },
+        isBfcacheIdentityRetained: (identity) => retained.has(identity),
+        routeManifest,
+        shownElements,
+        targetElements: payload.elements,
+        targetRouteParams: payload.routeParams,
+        targetUrlParts: payload.urlParts,
+        template: payload.template,
+      });
+    };
+    expect(canCommit("a")).toBe(false);
+    expect(canCommit("c")).toBe(true);
+    // The shown page's identity never blocks its own shell.
+    expect(canCommit("b")).toBe(true);
+    // Once an earlier shell in the navigation shows room c, room b is hidden.
+    const shownC = elementsFor("c", { [pageId]: null });
+    expect(canCommit("b", shownC)).toBe(false);
+    expect(canCommit("c", shownC)).toBe(true);
+  });
+
   it("reifies omitted empty slot branches", () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");

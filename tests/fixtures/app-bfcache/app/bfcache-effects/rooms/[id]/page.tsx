@@ -1,5 +1,7 @@
 import { EffectProbe, PageViewProbe } from "../../effect-probe";
+import { RefreshButton } from "../../refresh-button";
 import { StatusLink } from "../../../link-status/status-link";
+import { revalidateRooms } from "../actions";
 
 export default async function RoomPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -14,6 +16,10 @@ export default async function RoomPage({ params }: { params: Promise<{ id: strin
         id={`room-${id}-switch`}
         label="Switch room"
       />
+      <RefreshButton />
+      <form action={revalidateRooms}>
+        <button data-testid={`revalidate-${id}`}>Revalidate</button>
+      </form>
     </>
   );
 }

@@ -515,11 +515,46 @@ export function canCommitOptimisticRouteTemplate(options: {
   currentElements: AppElements;
   currentLayoutIds: readonly string[];
   currentParams: Readonly<Record<string, string | string[]>>;
+  /** Whether a hidden BFCache entry retains a segment identity. */
+  isBfcacheIdentityRetained?: (identity: string) => boolean;
   routeManifest: BrowserRouteManifest;
+  /**
+   * The elements on screen, when a shell earlier in this navigation replaced
+   * the current ones. Defaults to `currentElements`.
+   */
+  shownElements?: AppElements;
+  /** The shell's elements for the target. */
+  targetElements?: AppElements;
   targetRouteParams: Readonly<Record<string, string | string[]>>;
   targetUrlParts: readonly string[];
   template: OptimisticRouteTemplate;
 }): boolean {
+  const currentIdentities = AppElementsWire.readMetadata(
+    options.currentElements,
+  ).bfcacheSegmentIdentities;
+
+  // A target segment retained in a hidden BFCache entry is shown again with
+  // its state. The shell replaces its page with a placeholder, under
+  // boundaries keyed for the URL it was learned from, so committing it would
+  // remount the entry. Next.js shows the entry's loading state while keeping
+  // it mounted; without the shell, the current page stays until the payload
+  // reveals the entry.
+  const { isBfcacheIdentityRetained, targetElements } = options;
+  if (isBfcacheIdentityRetained && targetElements) {
+    const shownIdentities = new Set(
+      Object.values(
+        options.shownElements
+          ? AppElementsWire.readMetadata(options.shownElements).bfcacheSegmentIdentities
+          : currentIdentities,
+      ),
+    );
+    for (const identity of Object.values(
+      AppElementsWire.readMetadata(targetElements).bfcacheSegmentIdentities,
+    )) {
+      if (!shownIdentities.has(identity) && isBfcacheIdentityRetained(identity)) return false;
+    }
+  }
+
   if (
     options.template.omittedLayoutIds.length === 0 &&
     options.template.omittedBfcacheSegmentIds.length === 0
@@ -528,9 +563,6 @@ export function canCommitOptimisticRouteTemplate(options: {
   }
 
   const currentLayoutIds = new Set(options.currentLayoutIds);
-  const currentIdentities = AppElementsWire.readMetadata(
-    options.currentElements,
-  ).bfcacheSegmentIdentities;
 
   for (const layoutId of options.template.omittedLayoutIds) {
     if (!currentLayoutIds.has(layoutId)) continue;
