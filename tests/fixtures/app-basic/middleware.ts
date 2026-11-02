@@ -50,6 +50,14 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
       headers: { "content-type": "text/plain" },
     });
   }
+  // A middleware Cache-Control replaces an admitted public file's default, as
+  // in Next.js. Coverage: tests/e2e/app-router-prod/public-file-encoding.spec.ts
+  if (
+    pathname.startsWith("/members%20only/") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    return NextResponse.next({ headers: { "cache-control": "private, no-store" } });
+  }
 
   if (pathname === "/middleware-image-rewrite") {
     return NextResponse.rewrite(new URL("/_next/image?url=%2Fheart.png&w=640&q=75", request.url));
@@ -134,6 +142,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
     return NextResponse.rewrite(target);
   }
+  if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
+    return NextResponse.rewrite(target);
+  }
 
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
@@ -149,6 +162,18 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/nextjs-compat/action-node-mw" && request.method === "POST") {
     await request.text();
     return NextResponse.next();
+  }
+
+  if (
+    pathname.startsWith("/action-cache-control") &&
+    request.nextUrl.searchParams.has("middleware-cache-control")
+  ) {
+    const response = NextResponse.next();
+    response.headers.set("Cache-Control", "public, max-age=60");
+    if (request.nextUrl.searchParams.has("middleware-action-redirect")) {
+      response.headers.set("x-action-redirect", "/action-cache-control/config-policy");
+    }
+    return response;
   }
 
   // next.config.ts adds config headers to /external-headers/* and proxies its
@@ -206,7 +231,7 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   const acceptsRsc = request.headers.get("accept")?.startsWith("text/x-component") ?? false;
 
   if (acceptsRsc && pathname === "/rsc-fetch-redirect-src") {
-    return NextResponse.redirect(new URL("/rsc-fetch-error-target.rsc", request.url), 307);
+    return NextResponse.redirect(new URL("/rsc-fetch-error-target", request.url), 307);
   }
 
   if (acceptsRsc && pathname === "/rsc-fetch-error-target") {
@@ -355,6 +380,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (pathname === "/encoded-parity/sibling/guarded") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
   // Throw an error to test that middleware errors return 500, not bypass auth
   if (pathname === "/middleware-throw") {
     throw new Error("middleware crash");
@@ -452,6 +482,26 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   if (pathname === "/api/header-override-stray") {
     const response = NextResponse.next();
     response.headers.set("x-middleware-request-x-added", "forged-by-middleware");
+    return response;
+  }
+
+  // Next.js copies every non-empty middleware response header onto the
+  // request after the override translation, replacing what the client sent.
+  if (
+    pathname === "/header-response-merge" ||
+    pathname === "/api/header-response-merge" ||
+    pathname === "/pages-header-response-merge" ||
+    pathname === "/api/pages-header-response-merge"
+  ) {
+    const headers = new Headers(request.headers);
+    headers.set("x-viewer-role", "from-override");
+    const response = request.nextUrl.searchParams.has("override")
+      ? NextResponse.next({ request: { headers } })
+      : NextResponse.next();
+    response.headers.set("x-viewer-role", "visitor");
+    response.headers.set("x-empty-from-middleware", "");
+    response.cookies.set("merged-cookie", "1");
+    response.cookies.set("merged-cookie-2", "2");
     return response;
   }
 
@@ -616,6 +666,8 @@ export const config = {
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
+    "/encoded-parity/rewrite-any/:path*",
+    "/encoded-parity/sibling/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",
@@ -631,6 +683,10 @@ export const config = {
     "/config-cookie-response",
     "/external-headers/:path*",
     "/api/header-override-stray",
+    "/header-response-merge",
+    "/api/header-response-merge",
+    "/pages-header-response-merge",
+    "/api/pages-header-response-merge",
     "/api/pages-og",
     "/api/pages-append-header",
     "/api/pages-fallback-to-app/:path*",
@@ -643,6 +699,7 @@ export const config = {
     "/nextjs-compat/dynamic/:path*",
     "/nextjs-compat/action-forward-loop",
     "/nextjs-compat/action-node-mw",
+    "/action-cache-control/:path*",
     "/metadata-icons-stream/:path*",
     "/config-link-preload",
     "/use-client-page-pathname/:path*",

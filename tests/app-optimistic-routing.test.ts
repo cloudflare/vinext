@@ -4,6 +4,7 @@ import {
   AppElementsWire,
   APP_PREFETCH_LOADING_SHELL_MARKER_KEY,
   APP_STREAMING_METADATA_BODY_ID_PREFIX,
+  readOptimisticStateKeyRebinder,
   type AppElements,
 } from "../packages/vinext/src/server/app-elements.js";
 import {
@@ -26,6 +27,7 @@ import type {
   RouteManifestSlotBinding,
 } from "../packages/vinext/src/routing/app-route-graph.js";
 import {
+  createBfcacheChildSegmentStateKey,
   createNestedBfcacheSlotSegmentId,
   deriveBfcacheSegmentIdentity,
 } from "../packages/vinext/src/server/bfcache-identity.js";
@@ -189,7 +191,7 @@ describe("App Router optimistic routing", () => {
     expect(
       matchOptimisticRouteManifestRoute({
         basePath: "",
-        href: "/blog/post-1.rsc?_rsc=abc",
+        href: "/blog/post-1?_rsc=abc",
         routeManifest: routes,
       }),
     ).toMatchObject({
@@ -260,7 +262,7 @@ describe("App Router optimistic routing", () => {
     const template = createOptimisticRouteTemplate({
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc?_rsc=abc",
+      href: "/blog/post-1?_rsc=abc",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -299,6 +301,142 @@ describe("App Router optimistic routing", () => {
     expect(navigationPayload?.elements[pageId]).not.toBe(elements[pageId]);
   });
 
+  // Learns a template for `learnedHref` whose page identity is keyed by
+  // `segmentKeys`, then renders it optimistically for `targetHref`.
+  function reifyLearnedTemplate(options: {
+    learnedHref: string;
+    routeManifest: RouteManifest;
+    segmentKeys: (href: string) => readonly string[];
+    targetHref: string;
+  }) {
+    const routeId = AppElementsWire.encodeRouteId(options.learnedHref, null);
+    const pageId = AppElementsWire.encodePageId(options.learnedHref, null);
+    const pageIdentity = (href: string) =>
+      deriveBfcacheSegmentIdentity({
+        boundSegmentKey: JSON.stringify(options.segmentKeys(href)),
+        graphId: "page",
+        kind: "page",
+        rootBoundaryId: null,
+      });
+    const elements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageId]: pageIdentity(options.learnedHref) },
+        interceptionContext: null,
+        layoutIds: ["layout:/"],
+        rootLayoutTreePath: "/",
+        routeId,
+      }),
+      [pageId]: createElement("article", null, "Page"),
+      [routeId]: createElement(
+        Suspense,
+        { fallback: createElement("p", null, "Loading...") },
+        createElement("section", null, "Page slot"),
+      ),
+    };
+    const template = createOptimisticRouteTemplate({
+      basePath: "",
+      elements,
+      href: options.learnedHref,
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: options.routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+
+    const payload = resolveOptimisticNavigationPayload({
+      basePath: "",
+      href: options.targetHref,
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest: options.routeManifest,
+      templates: new Map([
+        [
+          getOptimisticRouteTemplateKey({
+            interceptionContext: null,
+            mountedSlotsHeader: null,
+            routeId: template.routeId,
+          }),
+          template,
+        ],
+      ]),
+    });
+    if (payload === null) throw new Error("Expected optimistic payload");
+    expect(AppElementsWire.readMetadata(payload.elements).bfcacheSegmentIdentities).toEqual({
+      [pageId]: pageIdentity(options.targetHref),
+    });
+    return { elements, pageId, pageIdentity, payload, routeId, template };
+  }
+
+  it("rebinds a learned template's BFCache state keys to the target params", () => {
+    // Like Next.js's reifyRouteTree: a template learned from /blog/post-1 keys
+    // /blog/post-2's segments by post-2, so its optimistic segments don't take
+    // over post-1's retained entry.
+    const { elements, pageId, pageIdentity, payload, routeId, template } = reifyLearnedTemplate({
+      learnedHref: "/blog/post-1",
+      routeManifest: blogManifest(),
+      segmentKeys: (href) => ["blog", `slug|${href.slice("/blog/".length)}|d`],
+      targetHref: "/blog/post-2",
+    });
+    // A level without a layout keeps a fixed key inside the learned tree. The
+    // shell carries the function that rebinds it.
+    const rebind = readOptimisticStateKeyRebinder(payload.elements);
+    expect(
+      rebind?.(createBfcacheChildSegmentStateKey(JSON.stringify(["blog", "slug|post-1|d"]))),
+    ).toBe(createBfcacheChildSegmentStateKey(JSON.stringify(["blog", "slug|post-2|d"])));
+    // The learned template itself is unchanged.
+    expect(AppElementsWire.readMetadata(template.elements).bfcacheSegmentIdentities).toEqual({
+      [pageId]: pageIdentity("/blog/post-1"),
+    });
+    // Its own URL keeps the learned keys.
+    const ownElements = createOptimisticRouteElements(template);
+    expect(ownElements[routeId]).toBe(elements[routeId]);
+    expect(readOptimisticStateKeyRebinder(ownElements)).toBeNull();
+  });
+
+  it("rebinds an optional catch-all that matches nothing in either direction", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/docs/:parts*",
+        isDynamic: true,
+        paramNames: ["parts"],
+        pattern: "/docs/:parts*",
+        patternParts: ["docs", ":parts*"],
+      }),
+    ]);
+    // An optional catch-all that matches nothing binds "".
+    const segmentKeys = (href: string) => ["docs", `parts|${href.slice("/docs/".length)}|oc`];
+    reifyLearnedTemplate({
+      learnedHref: "/docs",
+      routeManifest,
+      segmentKeys,
+      targetHref: "/docs/a/b",
+    });
+    reifyLearnedTemplate({
+      learnedHref: "/docs/a/b",
+      routeManifest,
+      segmentKeys,
+      targetHref: "/docs",
+    });
+  });
+
+  it("rebinds params whose names hold the token separator", () => {
+    const routeManifest = manifest([
+      route({
+        id: "route:/blog/:a|b",
+        isDynamic: true,
+        paramNames: ["a|b"],
+        pattern: "/blog/:a|b",
+        patternParts: ["blog", ":a|b"],
+      }),
+    ]);
+    reifyLearnedTemplate({
+      learnedHref: "/blog/post-1",
+      routeManifest,
+      segmentKeys: (href) => ["blog", `a|b|${href.slice("/blog/".length)}|d`],
+      targetHref: "/blog/post-2",
+    });
+  });
+
   it("includes active parallel slot params in optimistic navigation payloads", () => {
     // Mirrors the immediate pre-dynamic-render assertion in Next.js:
     // test/e2e/app-dir/parallel-route-navigations/parallel-route-navigations.test.ts
@@ -334,7 +472,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/vercel/sub/folder.rsc",
+      href: "/vercel/sub/folder",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -411,7 +549,7 @@ describe("App Router optimistic routing", () => {
     const template = createOptimisticRouteTemplate({
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -440,7 +578,7 @@ describe("App Router optimistic routing", () => {
       createOptimisticRouteTemplate({
         basePath: "",
         elements,
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -452,7 +590,7 @@ describe("App Router optimistic routing", () => {
         allowLoadingShell: true,
         basePath: "",
         elements: { ...elements, [routeId]: null },
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -464,7 +602,7 @@ describe("App Router optimistic routing", () => {
         allowLoadingShell: true,
         basePath: "",
         elements: { ...elements, [AppElementsWire.encodePageId("/blog/post-1", null)]: null },
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -480,7 +618,7 @@ describe("App Router optimistic routing", () => {
       createOptimisticRouteTemplate({
         basePath: "",
         elements,
-        href: "/blog/post-1.rsc",
+        href: "/blog/post-1",
         interceptionContext: null,
         mountedSlotsHeader: null,
         routeManifest,
@@ -491,7 +629,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -509,7 +647,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createSettingsLoadingShellElements(),
-      href: "/settings.rsc",
+      href: "/settings",
       interceptionContext: null,
       mountedSlotsHeader: null,
       routeManifest,
@@ -850,6 +988,211 @@ describe("App Router optimistic routing", () => {
     expect(createTemplate("beta", true).omittedBfcacheSegmentIds).toEqual([]);
   });
 
+  it("reifies an omitted slot page level for the target params", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
+    // The level below [slug], keyed by the page it renders.
+    const pageSegmentId = createNestedBfcacheSlotSegmentId(sidebarSlotId, 2);
+    const routeId = "route:/:slug";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: true,
+          paramNames: ["slug"],
+          pattern: "/:slug",
+          patternParts: [":slug"],
+          slotIds: [sidebarSlotId],
+        }),
+      ],
+      [
+        {
+          defaultId: null,
+          id: `${routeId}::${sidebarSlotId}`,
+          ownerLayoutId: rootLayoutId,
+          routeId,
+          routeSegments: ["[slug]"],
+          slotId: sidebarSlotId,
+          slotParamNames: ["slug"],
+          slotPatternParts: [":slug"],
+          state: "active",
+        },
+      ],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identityFor = (slug: string) =>
+      deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: JSON.stringify([`slug|${slug}|d`, "__PAGE__"]),
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: rootLayoutId,
+        slotGraphId: sidebarSlotId,
+        state: "active",
+      });
+    const currentElements: AppElements = {
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageSegmentId]: identityFor("alpha") },
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: "route:/alpha",
+      }),
+      [pageSegmentId]: null,
+      [rootLayoutId]: createElement("div", null, "root"),
+    };
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: {
+        ...AppElementsWire.createMetadataEntries({
+          bfcacheSegmentIdentities: { [pageSegmentId]: identityFor("beta") },
+          interceptionContext: null,
+          layoutIds: [rootLayoutId],
+          rootLayoutTreePath: "/",
+          routeId: "route:/beta",
+        }),
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageSegmentId]: null,
+        [rootLayoutId]: createElement("div", null, "root"),
+        "page:/:slug": null,
+        "route:/beta": createElement("div", null, "Slot loading"),
+      },
+      href: "/beta",
+      interceptionContext: null,
+      mountedSlotsHeader: "sidebar",
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    expect(template.omittedBfcacheSegmentIds).toEqual([pageSegmentId]);
+
+    const canCommit = (slug: string) =>
+      canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { slug: "alpha" },
+        routeManifest,
+        targetRouteParams: { slug },
+        targetUrlParts: [slug],
+        template,
+      });
+    expect(canCommit("alpha")).toBe(false);
+    expect(canCommit("gamma")).toBe(true);
+  });
+
+  it("does not commit a shell over a page a hidden BFCache entry retains", () => {
+    const rootLayoutId = AppElementsWire.encodeLayoutId("/");
+    const pageId = "page:/rooms/:id";
+    const routeId = "route:/rooms/:id";
+    const routeManifest = manifest(
+      [
+        route({
+          id: routeId,
+          isDynamic: true,
+          paramNames: ["id"],
+          pattern: "/rooms/:id",
+          patternParts: ["rooms", ":id"],
+        }),
+      ],
+      [],
+      [
+        {
+          id: rootLayoutId,
+          paramNames: [],
+          patternParts: [],
+          rootBoundaryId: null,
+          treePath: "/",
+        },
+      ],
+    );
+    const identityFor = (id: string) =>
+      deriveBfcacheSegmentIdentity({
+        boundSegmentKey: JSON.stringify(["rooms", `id|${id}|d`]),
+        graphId: pageId,
+        kind: "page",
+        rootBoundaryId: null,
+      });
+    const elementsFor = (id: string, extra: AppElements) => ({
+      ...AppElementsWire.createMetadataEntries({
+        bfcacheSegmentIdentities: { [pageId]: identityFor(id) },
+        interceptionContext: null,
+        layoutIds: [rootLayoutId],
+        rootLayoutTreePath: "/",
+        routeId: `route:/rooms/${id}`,
+      }),
+      [rootLayoutId]: createElement("div", null, "root"),
+      ...extra,
+    });
+    // Room b is shown, learned from b's loading-shell prefetch.
+    const currentElements = elementsFor("b", { [pageId]: createElement("p", null, "Room b") });
+    const template = createOptimisticRouteTemplate({
+      allowLoadingShell: true,
+      basePath: "",
+      elements: elementsFor("b", {
+        [APP_PREFETCH_LOADING_SHELL_MARKER_KEY]: "LoadingBoundary",
+        [pageId]: null,
+        "route:/rooms/b": createElement("p", null, "Loading room"),
+      }),
+      href: "/rooms/b",
+      interceptionContext: null,
+      mountedSlotsHeader: null,
+      routeManifest,
+    });
+    if (template === null) throw new Error("Expected optimistic route template");
+    const templates = new Map([
+      [
+        getOptimisticRouteTemplateKey({
+          interceptionContext: null,
+          mountedSlotsHeader: null,
+          routeId: template.routeId,
+        }),
+        template,
+      ],
+    ]);
+
+    // Room a's page is retained in a hidden entry.
+    const retained = new Set([identityFor("a"), identityFor("b")]);
+    const canCommit = (id: string, shownElements?: AppElements) => {
+      const payload = resolveOptimisticNavigationPayload({
+        basePath: "",
+        href: `/rooms/${id}`,
+        interceptionContext: null,
+        mountedSlotsHeader: null,
+        routeManifest,
+        templates,
+      });
+      if (payload === null) throw new Error("Expected optimistic navigation payload");
+      return canCommitOptimisticRouteTemplate({
+        currentElements,
+        currentLayoutIds: [rootLayoutId],
+        currentParams: { id: "b" },
+        isBfcacheIdentityRetained: (identity) => retained.has(identity),
+        routeManifest,
+        shownElements,
+        targetElements: payload.elements,
+        targetRouteParams: payload.routeParams,
+        targetUrlParts: payload.urlParts,
+        template: payload.template,
+      });
+    };
+    expect(canCommit("a")).toBe(false);
+    expect(canCommit("c")).toBe(true);
+    // The shown page's identity never blocks its own shell.
+    expect(canCommit("b")).toBe(true);
+    // Once an earlier shell in the navigation shows room c, room b is hidden.
+    const shownC = elementsFor("c", { [pageId]: null });
+    expect(canCommit("b", shownC)).toBe(false);
+    expect(canCommit("c", shownC)).toBe(true);
+  });
+
   it("reifies omitted empty slot branches", () => {
     const rootLayoutId = AppElementsWire.encodeLayoutId("/");
     const sidebarSlotId = AppElementsWire.encodeSlotId("sidebar", "/");
@@ -944,7 +1287,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createBlogLoadingShellElements(),
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: null,
       mountedSlotsHeader: "modal",
       routeManifest,
@@ -953,7 +1296,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements: createBlogLoadingShellElements(),
-      href: "/blog/post-2.rsc",
+      href: "/blog/post-2",
       interceptionContext: null,
       mountedSlotsHeader: "drawer",
       routeManifest,
@@ -1005,7 +1348,7 @@ describe("App Router optimistic routing", () => {
   });
 
   it("scopes prefetch source learning by current router context", () => {
-    const cacheKey = "/blog/post-1.rsc\0/feed";
+    const cacheKey = "/blog/post-1\0/feed";
 
     expect(
       getOptimisticPrefetchSourceKey({
@@ -1043,7 +1386,7 @@ describe("App Router optimistic routing", () => {
       allowLoadingShell: true,
       basePath: "",
       elements,
-      href: "/blog/post-1.rsc",
+      href: "/blog/post-1",
       interceptionContext: "/feed",
       mountedSlotsHeader: null,
       routeManifest,
@@ -1071,6 +1414,7 @@ describe("optimistic route template store", () => {
       omittedBfcacheSegmentIds: [],
       omittedLayoutIds: [],
       pageElementIds: [],
+      params: {},
       routeId,
     };
   }

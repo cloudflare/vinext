@@ -16,7 +16,7 @@ import {
 } from "vite-plus/test";
 import vinext from "../packages/vinext/src/index.js";
 import { runPrerender } from "../packages/vinext/src/build/run-prerender.js";
-import { APP_FIXTURE_DIR, createIsolatedFixture, testCacheDir } from "./helpers.js";
+import { APP_FIXTURE_DIR, createIsolatedFixture, fetchRsc, testCacheDir } from "./helpers.js";
 
 type BuiltAppHandler = (request: Request) => Promise<Response | string | null | undefined>;
 
@@ -1522,8 +1522,8 @@ export default async function OpenGraphImage() {
       const notFoundRes = await fetch(`${previewUrl}/no-such-page`);
       expect(notFoundRes.status).toBe(404);
 
-      // RSC endpoint works
-      const rscRes = await fetch(`${previewUrl}/about.rsc`);
+      // RSC requests work
+      const rscRes = await fetchRsc(previewUrl!, "/about");
       expect(rscRes.status).toBe(200);
       expect(rscRes.headers.get("content-type")).toContain("text/x-component");
     } finally {

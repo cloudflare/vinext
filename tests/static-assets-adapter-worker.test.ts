@@ -105,7 +105,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
           inspector: false;
         };
       }): Promise<{
@@ -126,7 +126,7 @@ describe("staticAssetsAdapter on the Cloudflare Workers runtime", () => {
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
         // The tests never use the inspector. With it on, wrangler probes for a
         // free port near 9229, which parallel test processes can race for, and
         // waits on an inspector WebSocket that never settles `url` if it errors.

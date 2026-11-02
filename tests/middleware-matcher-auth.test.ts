@@ -163,7 +163,6 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
     { body: "protected order page", pathname: "/orders/42%3F" },
     { body: "protected order page", pathname: "/orders/42%23" },
     { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard" },
-    { body: "protected localized admin page", pathname: "/xx/admin/dash%2Fboard.rsc" },
     {
       body: "protected invoice route handler",
       pathname: "/billing/invoices/current%2Fq3",
@@ -200,6 +199,30 @@ async function assertEncodedDelimiterAuthGuard(baseUrl: string): Promise<void> {
     expect(response.status, pathname).toBe(200);
     expect(response.headers.get("x-auth-guard"), pathname).toBeNull();
     expect(body, pathname).toContain("protected order page");
+  }
+}
+
+async function assertRscSuffixAuthGuard(baseUrl: string): Promise<void> {
+  const headers = { "x-rsc-dot-segment-auth": "1" };
+  // As in Next.js, a `.rsc` suffix is an ordinary part of the last segment, so
+  // none of these can leave a `.` or `..` segment the matcher does not cover.
+  const guardedPaths = [
+    "/xx/admin/dashboard.rsc",
+    "/xx/admin/....rsc",
+    "/xx/admin/...rsc",
+    "/xx/admin/..rsc",
+    "/xx/admin/%2E%2E.rsc",
+    "/xx/admin/.%2e.rsc",
+    "/billing/invoices/current.rsc",
+    "/billing/invoices/...rsc",
+  ];
+
+  for (const pathname of guardedPaths) {
+    const response = await fetch(`${baseUrl}${pathname}`, { headers });
+    const body = await response.text();
+    expect(response.status, pathname).toBe(403);
+    expect(response.headers.get("x-auth-guard"), pathname).toBe("blocked");
+    expect(body, pathname).toBe("blocked by middleware");
   }
 }
 
@@ -352,6 +375,10 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     }, 30_000);
 
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    }, 30_000);
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     }, 30_000);
@@ -416,6 +443,10 @@ describe("valid middleware matcher auth guards", () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
     });
 
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
+    });
+
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {
       await assertHybridPagesEncodedAliasAuthGuard(baseUrl);
     });
@@ -466,7 +497,7 @@ describe("valid middleware matcher auth guards", () => {
             persist: false;
             logLevel: "none";
             watch: false;
-            server: { port: 0 };
+            server: { hostname: string; port: 0 };
           };
         }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
       };
@@ -477,7 +508,7 @@ describe("valid middleware matcher auth guards", () => {
           persist: false,
           logLevel: "none",
           watch: false,
-          server: { port: 0 },
+          server: { hostname: "127.0.0.1", port: 0 },
         },
       });
       await worker.url;
@@ -503,6 +534,10 @@ describe("valid middleware matcher auth guards", () => {
 
     it("skips extensions excluded by bounded optional matcher branches", async () => {
       await assertStaticAssetExclusionAuthGuard(baseUrl);
+    });
+
+    it("treats a `.rsc` suffix as an ordinary path segment", async () => {
+      await assertRscSuffixAuthGuard(baseUrl);
     });
 
     it("keeps double-encoded aliases out of hybrid Pages routes", async () => {

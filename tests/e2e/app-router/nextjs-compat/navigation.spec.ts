@@ -226,7 +226,7 @@ test.describe("Next.js compat: navigation (browser)", () => {
       let rscRequests = 0;
       let documentRequests = 0;
       page.on("request", (request) => {
-        if (new URL(request.url()).pathname.replace(/\.rsc$/, "") !== pathname) return;
+        if (new URL(request.url()).pathname !== pathname) return;
         if (request.resourceType() === "document") documentRequests++;
         else rscRequests++;
       });

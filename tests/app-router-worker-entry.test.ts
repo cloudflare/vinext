@@ -907,8 +907,8 @@ export default {
           outDir: writeWorkerEntry(manifest),
         });
         servers.push(server);
-        const res = await fetch(`http://localhost:${port}/page.rsc`, {
-          headers: { "Accept-Encoding": "gzip" },
+        const res = await fetch(`http://localhost:${port}/page`, {
+          headers: { "Accept-Encoding": "gzip", RSC: "1" },
         });
         expect(res.status).toBe(200);
         expect(res.headers.get("content-encoding")).toBe(expectedEncoding);
@@ -1012,6 +1012,8 @@ export default {
       const denied = await get("/protected/private.png");
       expect(denied.status).toBe(400);
       expect(denied.headers.get("x-mw")).toBe("1");
+      // Only an image replaces the Content-Type middleware or config set.
+      expect(denied.headers.get("content-type")).toBe("text/plain");
       await expect(denied.text()).resolves.toBe("The requested resource isn't a valid image.");
       expect(fetchedAssets).toEqual(["/open.png"]);
     } finally {

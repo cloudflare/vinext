@@ -2083,6 +2083,21 @@ export default class CustomDocument extends Document {
     });
   });
 
+  // Like Next.js, a trailing-slash API request is redirected before
+  // middleware runs, so its exact-pathname branch still applies.
+  it("redirects a trailing-slash API route request before middleware", async () => {
+    const res = await fetch(`${baseUrl}/api/append-header/?a=1`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/append-header?a=1");
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(res.headers.get("x-custom-middleware")).toBeNull();
+
+    const followed = await fetch(`${baseUrl}/api/append-header/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${baseUrl}/api/append-header`);
+    expect(followed.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
   it("rejects res.appendHeader after the API route wrote its headers", async () => {
     const res = await fetch(`${baseUrl}/api/append-header-after-write`);
     expect(res.status).toBe(200);
@@ -3652,6 +3667,35 @@ export const config = { matcher: "${matcher}" };
       expect(res.status).toBe(404);
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(await res.json()).toEqual({ notFound: true });
+    });
+
+    // Removing `.json` from `...json` leaves a `..` segment, and the page URL
+    // built from `/external-headers/..` resolves to `/`. The
+    // `/external-headers/:path*` rule must not decorate the home page's data.
+    // Next.js 16.2.7 never serves another page's props for these URLs.
+    it("returns JSON 404 for a data URL whose page path strips to a dot segment", async () => {
+      for (const page of [
+        "external-headers/...json",
+        "external-headers/..json",
+        "external-headers/%2E%2e.json",
+        "external-headers/.%2e.json",
+        "...json",
+      ]) {
+        const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/${page}`);
+        expect(res.status, page).toBe(404);
+        expect(res.headers.get("x-config-header"), page).toBeNull();
+        expect(await res.json(), page).toEqual({});
+      }
+
+      // `....json` strips to the ordinary segment `...`.
+      const dotted = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/....json`);
+      expect(dotted.status).toBe(200);
+      await expect(dotted.json()).resolves.toMatchObject({ pageProps: { id: "..." } });
+
+      // A double-encoded dot is an ordinary character in the param value.
+      const encoded = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/%252e%252e.json`);
+      expect(encoded.status).toBe(200);
+      await expect(encoded.json()).resolves.toMatchObject({ pageProps: { id: "%2e%2e" } });
     });
 
     it("returns JSON 404 for a stale buildId (dev)", async () => {
@@ -6372,6 +6416,14 @@ export const config = { matcher: ["/protected"] };
     );
     expect(counterManifestEntry).toBeDefined();
     expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+
+    // A class field named like a getServerSideProps-only helper must not keep
+    // that helper's server-only import in the browser graph.
+    const clientCode = jsFiles
+      .map((file) => fs.readFileSync(path.join(assetsDir, file), "utf-8"))
+      .join("\n");
+    expect(clientCode).toContain("class-field-posts");
+    expect(clientCode).not.toContain("class-field-gssp-server-only.internal");
   });
 
   it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
@@ -8112,6 +8164,21 @@ describe("Production server middleware (Pages Router)", () => {
     });
   });
 
+  // Like Next.js, a trailing-slash API request is redirected before
+  // middleware runs, so its exact-pathname branch still applies.
+  it("redirects a trailing-slash API route request before middleware in production", async () => {
+    const res = await fetch(`${prodUrl}/api/append-header/?a=1`, { redirect: "manual" });
+    expect(res.status).toBe(308);
+    expect(res.headers.get("location")).toBe("/api/append-header?a=1");
+    expect(res.headers.getSetCookie()).toEqual([]);
+    expect(res.headers.get("x-custom-middleware")).toBeNull();
+
+    const followed = await fetch(`${prodUrl}/api/append-header/`);
+    expect(followed.status).toBe(200);
+    expect(followed.url).toBe(`${prodUrl}/api/append-header`);
+    expect(followed.headers.getSetCookie()).toEqual(["mw=1; Path=/", "h=1; Path=/"]);
+  });
+
   it("rejects res.appendHeader after the API route wrote its headers in production", async () => {
     const res = await fetch(`${prodUrl}/api/append-header-after-write`);
     expect(res.status).toBe(200);
@@ -8642,6 +8709,25 @@ describe("Production server middleware (Pages Router)", () => {
     expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
   });
 
+  // Node's parser keeps a `#fragment` sent on the request line; Next.js drops
+  // it before middleware runs.
+  it("drops a request-line fragment before middleware in production", async () => {
+    const http = await import("node:http");
+    const { hostname, port } = new URL(prodUrl);
+    const body = await new Promise<string>((resolve, reject) => {
+      // A URL string would drop the fragment; `path` sends it as is.
+      http
+        .get({ hostname, port, path: "/mw-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({ url: `${prodUrl}/mw-request-url?q=1`, hash: "" });
+  });
+
   it("middleware rewrite to a dynamic route merges original query with route params in production", async () => {
     const res = await fetch(`${prodUrl}/mw-rewrite-dynamic-query?hello=world`);
     expect(res.status).toBe(200);
@@ -9084,6 +9170,35 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       expect(await res.json()).toEqual({});
+    });
+
+    // Removing `.json` from `...json` leaves a `..` segment, and the page URL
+    // built from `/external-headers/..` resolves to `/`. The
+    // `/external-headers/:path*` rule must not decorate the home page's data.
+    // Next.js 16.2.7 never serves another page's props for these URLs.
+    it("returns JSON 404 for a data URL whose page path strips to a dot segment", async () => {
+      for (const page of [
+        "external-headers/...json",
+        "external-headers/..json",
+        "external-headers/%2E%2e.json",
+        "external-headers/.%2e.json",
+        "...json",
+      ]) {
+        const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/${page}`);
+        expect(res.status, page).toBe(404);
+        expect(res.headers.get("x-config-header"), page).toBeNull();
+        expect(await res.json(), page).toEqual({});
+      }
+
+      // `....json` strips to the ordinary segment `...`.
+      const dotted = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/....json`);
+      expect(dotted.status).toBe(200);
+      await expect(dotted.json()).resolves.toMatchObject({ pageProps: { id: "..." } });
+
+      // A double-encoded dot is an ordinary character in the param value.
+      const encoded = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/%252e%252e.json`);
+      expect(encoded.status).toBe(200);
+      await expect(encoded.json()).resolves.toMatchObject({ pageProps: { id: "%2e%2e" } });
     });
 
     it("returns JSON 404 for a stale buildId", async () => {
@@ -11229,6 +11344,59 @@ describe("custom App optional pageProps envelope parity", () => {
       expect(hitResponse.headers.get("x-nextjs-cache")).toBe("HIT");
       expect(await hitResponse.text()).toContain('<div id="page-content">gsp-sent-response</div>');
     });
+  });
+
+  // Next.js pages-handler.ts gives every render that is not a getStaticProps
+  // result `revalidate: 0` (`!hasStaticProps`), so a page rendered through a
+  // page or custom App getInitialProps is never cached by a shared cache.
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/route-modules/pages/pages-handler.ts
+  it("never caches custom and page getInitialProps renders in prod", async () => {
+    const neverCache = "private, no-cache, no-store, max-age=0, must-revalidate";
+
+    const appOnly = await fetch(`${prodUrl}/with-page-props`);
+    expect(appOnly.status).toBe(200);
+    expect(appOnly.headers.get("cache-control")).toBe(neverCache);
+    const html = await appOnly.text();
+    const buildId = /"buildId":"([^"]+)"/.exec(html)?.[1];
+    expect(buildId).toBeTruthy();
+
+    const page = await fetch(`${prodUrl}/page-gip`);
+    expect(page.status).toBe(200);
+    expect(page.headers.get("cache-control")).toBe(neverCache);
+    await page.body?.cancel();
+
+    for (const pathname of ["with-page-props", "page-gip"]) {
+      const data = await fetch(`${prodUrl}/_next/data/${buildId}/${pathname}.json`, {
+        headers: { "x-nextjs-data": "1" },
+      });
+      expect(data.status).toBe(200);
+      expect(data.headers.get("cache-control")).toBe(neverCache);
+      await data.body?.cancel();
+    }
+
+    // Next.js only fills a missing raw res value: `[]` is set (and sends no
+    // header line), an empty string is not.
+    const arrayData = await fetch(
+      `${prodUrl}/_next/data/${buildId}/page-gip.json?cacheControl=array`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(arrayData.status).toBe(200);
+    expect(arrayData.headers.get("cache-control")).toBeNull();
+    await arrayData.body?.cancel();
+    const emptyData = await fetch(
+      `${prodUrl}/_next/data/${buildId}/page-gip.json?cacheControl=empty`,
+      { headers: { "x-nextjs-data": "1" } },
+    );
+    expect(emptyData.status).toBe(200);
+    expect(emptyData.headers.get("cache-control")).toBe(neverCache);
+    await emptyData.body?.cancel();
+
+    // getStaticProps results keep their ISR policy under the custom App,
+    // including a notFound drawn by the built-in error page.
+    const notFound = await fetch(`${prodUrl}/gsp-not-found-revalidate`);
+    expect(notFound.status).toBe(404);
+    expect(notFound.headers.get("cache-control")).toMatch(/^s-maxage=60, stale-while-revalidate/);
+    await notFound.body?.cancel();
   });
 
   // Next.js dev sets its development page Cache-Control after the 404 render,
