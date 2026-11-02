@@ -49,7 +49,6 @@ import {
   VINEXT_PRERENDER_REWRITTEN_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
   VINEXT_PRERENDER_NOT_FOUND_PATH,
-  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
@@ -345,6 +344,12 @@ type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
    * and passed here so `prerenderPages` does not need to locate the manifest itself.
    */
   _prerenderSecret?: string;
+  /**
+   * Set by `runPrerender` in hybrid builds, where the App Router's not-found
+   * page is the 404 page: the Pages Router's 404 page is rendered only so its
+   * own render error fails the build, and isn't written.
+   */
+  _appRendersNotFound?: boolean;
 };
 
 type PrerenderAppOptionsInternal = PrerenderAppOptions & {
@@ -352,9 +357,6 @@ type PrerenderAppOptionsInternal = PrerenderAppOptions & {
 };
 
 // ─── Concurrency helpers ──────────────────────────────────────────────────────
-
-/** Sentinel path used to trigger 404 rendering without a real route match. */
-const NOT_FOUND_SENTINEL_PATH = "/__vinext_nonexistent_for_404__";
 
 const DEFAULT_CONCURRENCY = Math.min(os.availableParallelism(), 8);
 
@@ -1332,55 +1334,32 @@ export async function prerenderPages({
     const hasCustom404 = findFileWithExtensions(path.join(pagesDir, "404"), fileMatcher);
     const hasErrorPage = findFileWithExtensions(path.join(pagesDir, "_error"), fileMatcher);
     // Like `next build`, which prerenders `/404` from `pages/404` or `_error`
-    // on its own, the Node Pages Router server's prerender endpoint renders it
-    // without routing, so no route, middleware or rewrite can answer for it.
-    // A Worker entry or a hybrid build's shared server (the same choice as
-    // startProdServer's) is still asked for the 404 path through routing.
-    const rendersNotFoundDirectly =
-      !options._prodServer &&
-      pagesBundlePath !== undefined &&
-      !fs.existsSync(path.join(path.dirname(pagesBundlePath), "index.js"));
+    // on its own, the prerender endpoint renders it without routing, so no
+    // route, middleware or rewrite can answer for it. `router=pages` selects
+    // it over the App Router's not-found page in a hybrid build.
     for (const locale of config.i18n?.locales ?? [undefined]) {
       if (!hasCustom404 && !hasErrorPage) break;
       try {
-        let notFoundRes: Response;
-        if (rendersNotFoundDirectly) {
-          const search = locale ? `?${new URLSearchParams({ locale })}` : "";
-          const port = renderPorts[renderRoundRobin++ % renderPorts.length];
-          notFoundRes = await fetch(
-            `http://127.0.0.1:${port}${VINEXT_PRERENDER_NOT_FOUND_PATH}${search}`,
-            { headers: secretHeaders, redirect: "manual" },
-          );
-        } else {
-          notFoundRes = await renderPage(
-            localizePagesPath(hasCustom404 ? "/404" : NOT_FOUND_SENTINEL_PATH, locale, config.i18n),
-          );
-          // Same rule as the page loop: a conditional rewrite of the 404 path
-          // to another file, API, or page must not become the deployment-wide 404.
-          if (
-            mode === "default" &&
-            notFoundRes.headers.get(VINEXT_PRERENDER_REWRITTEN_HEADER) !== "0"
-          ) {
-            void notFoundRes.body?.cancel().catch(() => {});
-            continue;
-          }
-        }
-        // Only an error of the 404 page's own render fails it, not one of a
-        // dynamic page the routed nonexistent path reached. Rendered without
-        // routing, any error is the 404 page's own, including the marked 403
-        // of a build missing its prerender secret.
-        const renderError = notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER);
-        if (
-          rendersNotFoundDirectly
-            ? renderError !== null
-            : renderError === (hasCustom404 ? "1" : VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR)
-        ) {
+        const search = new URLSearchParams({ router: "pages" });
+        if (locale) search.set("locale", locale);
+        const port = renderPorts[renderRoundRobin++ % renderPorts.length];
+        const notFoundRes = await fetch(
+          `http://127.0.0.1:${port}${VINEXT_PRERENDER_NOT_FOUND_PATH}?${search}`,
+          { headers: secretHeaders, redirect: "manual" },
+        );
+        // Rendered without routing, any error is the 404 page's own, including
+        // the marked 403 of a build missing its prerender secret.
+        if (notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== null) {
           void notFoundRes.body?.cancel().catch(() => {});
-          results.push(
-            rendersNotFoundDirectly
-              ? notFoundRenderErrorResult(notFoundRes)
-              : prerenderRenderErrorResult("/404"),
-          );
+          results.push(notFoundRenderErrorResult(notFoundRes));
+          continue;
+        }
+        // In a hybrid build `next build` still renders the Pages Router's
+        // `/404`, so its error fails the build, but its output is replaced by
+        // the App Router's not-found page (moveExportedAppNotFoundTo404), which
+        // the App Router phase already wrote.
+        if (options._appRendersNotFound) {
+          void notFoundRes.body?.cancel().catch(() => {});
           continue;
         }
         const contentType = notFoundRes.headers.get("content-type") ?? "";

@@ -2,6 +2,7 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import {
   VINEXT_EXPECTED_WORKER_VERSION_HEADER,
   VINEXT_PRERENDER_METADATA_ROUTES_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
   VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH,
   VINEXT_PRERENDER_READINESS_HEADER,
   VINEXT_PRERENDER_READINESS_PATH,
@@ -64,6 +65,27 @@ export function createWorkerPrerenderReadinessResponse(
       [VINEXT_PRERENDER_READINESS_HEADER]: "1",
     },
   });
+}
+
+/**
+ * Whether a Worker answers this request as the prerender's not-found
+ * endpoint: only the unprefixed path, only while `VINEXT_PRERENDER=1`, and
+ * only with the current build's capability. Any other request for the path,
+ * including every request to a deployed Worker, is routed like any other.
+ */
+export function isWorkerPrerenderNotFoundRequest(
+  request: Request,
+  expectedSecret: string | null | undefined,
+): boolean {
+  if (typeof process === "undefined" || process.env.VINEXT_PRERENDER !== "1") return false;
+  if (!request.url.includes(VINEXT_PRERENDER_NOT_FOUND_PATH)) return false;
+  const providedSecret = request.headers.get(VINEXT_PRERENDER_SECRET_HEADER);
+  return (
+    !!expectedSecret &&
+    !!providedSecret &&
+    workerCapabilityMatches(providedSecret, expectedSecret) &&
+    new URL(request.url).pathname === VINEXT_PRERENDER_NOT_FOUND_PATH
+  );
 }
 
 /**

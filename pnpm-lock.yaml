@@ -2155,6 +2155,10 @@ importers:
 
   tests/fixtures/hybrid-i18n-api-handoff: {}
 
+  tests/fixtures/hybrid-pages-404: {}
+
+  tests/fixtures/hybrid-throwing-pages-404: {}
+
   tests/fixtures/init-css-modules:
     dependencies:
       '@vitejs/plugin-rsc':
@@ -2301,6 +2305,8 @@ importers:
         version: 1.3.0(@opentelemetry/api@1.9.1)(@types/node@25.9.2)(@vitest/coverage-istanbul@5.0.5(vitest@5.0.5))(@vitest/ui@5.0.5(vitest@5.0.5))(esbuild@0.28.2)(jiti@2.7.0)(msw@2.14.6(@types/node@25.9.2)(typescript@7.0.2))(playwright@1.63.0)(sass@1.100.0)(tsx@4.21.1)(typescript@7.0.2)(yaml@2.9.0)
 
   tests/fixtures/pages-isr-query-context: {}
+
+  tests/fixtures/pages-root-dynamic-404: {}
 
   tests/fixtures/pages-router-nitro:
     dependencies:

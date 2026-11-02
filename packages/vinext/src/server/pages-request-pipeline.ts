@@ -100,6 +100,8 @@ export type PagesRenderOptions = {
   isDataReq?: boolean;
   renderErrorPageOnMiss?: boolean;
   originalUrl?: string;
+  /** Render the 404 page without matching the URL, as the prerender's not-found endpoint does. */
+  notFoundPage?: boolean;
 };
 
 export type FilesystemRoutePhase = "direct" | "beforeFiles" | "afterFiles" | "fallback";

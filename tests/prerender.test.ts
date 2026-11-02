@@ -8,16 +8,22 @@
  * Both `prerenderPages()` and `prerenderApp()` are tested against the
  * `pages-basic` and `app-basic` fixtures respectively.
  */
-import { describe, it, expect, beforeAll, afterAll } from "vite-plus/test";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vite-plus/test";
 import fs from "node:fs";
 import { createServer, type Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { execFile } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+import { createBuilder } from "vite";
+import vinext from "../packages/vinext/src/index.js";
 import {
   buildPagesFixture,
   buildAppFixture,
   buildCloudflareAppFixture,
   createIsolatedFixture,
+  testCacheDir,
 } from "./helpers.js";
 import {
   extractRscPayloadFromPrerenderedHtml,
@@ -1130,32 +1136,29 @@ describe("prerender — a 404 page whose render reports an error", () => {
     },
   );
 
-  it("fails the Pages Router's /404", async () => {
-    const failed = await prerenderPagesNotFound(PAGES_FIXTURE, "1");
-    expect(failed.requestedPaths).toContain("/404");
-    expect(failed.route).toMatchObject({ status: "error", fatal: true });
-    expect(failed.has404).toBe(false);
-
-    // Not for the page a conditional rewrite of `/404` reaches.
-    const rewritten = await prerenderPagesNotFound(PAGES_FIXTURE, "1", "1");
-    expect(rewritten.requestedPaths).toContain("/404");
-    expect(rewritten.route).toBeUndefined();
-
-    // Without `pages/404`, `_error` renders the nonexistent path, unless it
-    // reached a dynamic page.
-    const errorPageFixture = path.resolve(
-      import.meta.dirname,
-      "./fixtures/pages-i18n-public-rewrite",
-    );
-    const errorPage = await prerenderPagesNotFound(
-      errorPageFixture,
-      VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
-    );
-    expect(errorPage.requestedPaths).toContain("/__vinext_nonexistent_for_404__");
-    expect(errorPage.route).toMatchObject({ status: "error", fatal: true });
-    const page = await prerenderPagesNotFound(errorPageFixture, "1");
-    expect(page.route).toMatchObject({ status: "rendered" });
-  });
+  // The 404 page renders on its own, so any marker is its own render error,
+  // even where a conditional rewrite of `/404` would reach another page.
+  it.each([
+    { fixture: PAGES_FIXTURE, marker: "1", rewritten: "1" },
+    { fixture: PAGES_FIXTURE, marker: VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR, rewritten: "0" },
+    // Without `pages/404`, `_error` is the 404 page.
+    {
+      fixture: path.resolve(import.meta.dirname, "./fixtures/pages-i18n-public-rewrite"),
+      marker: "1",
+      rewritten: "0",
+    },
+  ])(
+    "fails the Pages Router's /404 (marker $marker, rewritten $rewritten)",
+    async ({ fixture, marker, rewritten }) => {
+      const failed = await prerenderPagesNotFound(fixture, marker, rewritten);
+      expect(failed.requestedPaths.length).toBeGreaterThan(0);
+      for (const requestedPath of failed.requestedPaths) {
+        expect(requestedPath).toMatch(`${VINEXT_PRERENDER_NOT_FOUND_PATH}?router=pages`);
+      }
+      expect(failed.route).toMatchObject({ status: "error", fatal: true });
+      expect(failed.has404).toBe(false);
+    },
+  );
 });
 
 // Like `next build`, which prerenders `/_not-found` and `/404` on their own,
@@ -1352,6 +1355,117 @@ describe("prerender — the 404 page is rendered without routing", () => {
       fs.rmSync(outDir, { recursive: true, force: true });
     }
   }, 60_000);
+
+  // The Worker entry renders the 404 page on its own too, in its single-stage
+  // handler and through the multi-stage response stage. The build prerenders
+  // in its own process: importing the Worker graph replaces Node's `process`
+  // with the Worker's, which would break the tests that follow in this one.
+  it.each([
+    { name: "single-stage", config: "vite.worker.config.ts" },
+    { name: "multi-stage", config: "vite.multi-stage.config.ts" },
+  ])(
+    "renders the Pages Router's _error beside a root catch-all page in a $name Worker build",
+    async ({ config }) => {
+      const root = await createIsolatedFixture(
+        path.resolve(import.meta.dirname, "./fixtures/pages-root-dynamic-404"),
+        "vinext-prerender-worker-direct-404-",
+        undefined,
+        path.join(CF_FIXTURE, "node_modules"),
+      );
+      try {
+        const viteCli = path.join(
+          path.dirname(fileURLToPath(import.meta.resolve("vite"))),
+          "cli.js",
+        );
+        await promisify(execFile)(process.execPath, [viteCli, "build", "--config", config], {
+          cwd: root,
+          env: { ...process.env, NODE_ENV: "production", NO_COLOR: "1" },
+          timeout: 120_000,
+          maxBuffer: 16 * 1024 * 1024,
+        });
+
+        const manifest = JSON.parse(
+          fs.readFileSync(path.join(root, "dist", "server", "vinext-prerender.json"), "utf-8"),
+        ) as { routes: PrerenderRouteResult[] };
+        expect(findRoute(manifest.routes, "/404")).toMatchObject({ status: "rendered" });
+        const html = fs.readFileSync(
+          path.join(root, "dist", "server", "prerendered-routes", "404.html"),
+          "utf-8",
+        );
+        expect(html).toContain("custom error page");
+        expect(html).not.toContain("dynamic page");
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+    150_000,
+  );
+
+  // A hybrid build's 404 page is the App Router's not-found page, as `next
+  // build` copies it over the Pages Router's 404.html
+  // (moveExportedAppNotFoundTo404), though it still renders the Pages
+  // Router's `/404` on its own and fails on its error.
+  async function withHybridBuild(
+    fixtureName: string,
+    test: (
+      root: string,
+      prerender: () => ReturnType<
+        typeof import("../packages/vinext/src/build/run-prerender.js").runPrerender
+      >,
+    ) => Promise<void>,
+  ) {
+    const root = await createIsolatedFixture(
+      path.resolve(import.meta.dirname, `./fixtures/${fixtureName}`),
+      `vinext-prerender-${fixtureName}-`,
+    );
+    try {
+      const builder = await createBuilder({
+        root,
+        configFile: false,
+        cacheDir: testCacheDir(root),
+        plugins: [vinext({ appDir: root })],
+        logLevel: "silent",
+      });
+      await builder.buildApp();
+      const { runPrerender } = await import("../packages/vinext/src/build/run-prerender.js");
+      await test(root, () => runPrerender({ root }));
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+
+  it("keeps the App Router's not-found page as a hybrid build's 404 page", async () => {
+    await withHybridBuild("hybrid-pages-404", async (root, prerender) => {
+      const result = await prerender();
+
+      const notFoundResults = (result?.routes ?? []).filter((r) => r.route === "/404");
+      expect(notFoundResults).toEqual([
+        expect.objectContaining({ status: "rendered", router: "app" }),
+      ]);
+      const html = fs.readFileSync(
+        path.join(root, "dist", "server", "prerendered-routes", "404.html"),
+        "utf-8",
+      );
+      expect(html).toContain("app not found");
+      expect(html).not.toContain("pages 404");
+    });
+  }, 120_000);
+
+  it("fails a hybrid build on a pages/404 that throws behind a rewrite of /404", async () => {
+    await withHybridBuild("hybrid-throwing-pages-404", async (_root, prerender) => {
+      const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+      try {
+        await expect(prerender()).rejects.toThrow(/\/404:/);
+        // The Pages Router's own 404 page failed, not the App Router's.
+        expect(consoleError).toHaveBeenCalledWith(
+          "[vinext] SSR error:",
+          expect.objectContaining({ message: "pages 404 failed" }),
+        );
+      } finally {
+        consoleError.mockRestore();
+      }
+    });
+  }, 120_000);
 });
 
 describe("prerenderPages — basePath export", () => {

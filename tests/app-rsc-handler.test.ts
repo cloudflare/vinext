@@ -31,6 +31,7 @@ import {
   VINEXT_PARAMS_HEADER,
   VINEXT_RENDERED_PATH_AND_SEARCH_HEADER,
   VINEXT_PRERENDER_NOT_FOUND_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_SPECIAL_ERROR_STATUS_HEADER,
 } from "../packages/vinext/src/server/headers.js";
@@ -38,6 +39,7 @@ import { applyAppMiddleware } from "../packages/vinext/src/server/app-middleware
 import { markLocaleRedirect } from "../packages/vinext/src/server/pages-i18n.js";
 import { sealForwardedMiddlewareContext } from "../packages/vinext/src/server/forwarded-middleware-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
+import { VINEXT_PRERENDER_SECRET_HEADER } from "../packages/vinext/src/utils/protocol-headers.js";
 import {
   handleMetadataRouteRequest,
   isMetadataRouteRequestPath,
@@ -262,6 +264,7 @@ function createHandler(overrides: Partial<TestHandlerOptions> = {}) {
     registerCacheAdapters: () => {},
     renderNotFound: overrides.renderNotFound ?? (async () => null),
     renderPagesFallback: overrides.renderPagesFallback,
+    renderPagesNotFound: overrides.renderPagesNotFound,
     renderResponseStageLocally: overrides.renderResponseStageLocally,
     rootParamNamesByPattern: overrides.rootParamNamesByPattern,
     setNavigationContext: overrides.setNavigationContext ?? (() => {}),
@@ -525,6 +528,81 @@ describe("createAppRscHandler", () => {
     const outsideBasePath = await handler(request(), null);
     expect(outsideBasePath.status).toBe(404);
     expect(renderNotFound).not.toHaveBeenCalled();
+  });
+
+  // Like `next build`, which in a hybrid build still prerenders the Pages
+  // Router's `/404` on its own before the App Router's not-found page replaces
+  // its output (moveExportedAppNotFoundTo404), `router=pages` renders it
+  // without routing, and its throw is the 404 page's own render error.
+  it("renders a hybrid build's Pages 404 page at the prerender endpoint without routing", async () => {
+    const matchRoute = vi.fn(() => null);
+    const runMiddleware = vi.fn(async ({ cleanPathname }: { cleanPathname: string }) => ({
+      kind: "continue" as const,
+      cleanPathname,
+      rewritten: false,
+      search: null,
+    }));
+    const renderNotFound = vi.fn(async () => new Response("app not found", { status: 404 }));
+    const renderPagesNotFound = vi.fn(
+      async (_request: Request, _pagesUrl: string) => new Response("pages 404", { status: 404 }),
+    );
+    const handler = createHandler({
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      matchRoute,
+      runMiddleware,
+      renderNotFound,
+      renderPagesNotFound,
+    });
+    const endpoint = (search: string) =>
+      new Request(`https://example.test${VINEXT_PRERENDER_NOT_FOUND_PATH}${search}`, {
+        headers: { [VINEXT_PRERENDER_SECRET_HEADER]: "secret" },
+      });
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      vi.stubEnv("VINEXT_PRERENDER", "1");
+      for (const [search, pagesUrl] of [
+        ["?router=pages&locale=fr", "/fr/404"],
+        ["?router=pages&locale=en", "/404"],
+        ["?router=pages", "/404"],
+      ]) {
+        renderPagesNotFound.mockClear();
+        const response = await handler(endpoint(search), null);
+        expect(response.status).toBe(404);
+        expect(await response.text()).toBe("pages 404");
+        expect(renderPagesNotFound).toHaveBeenCalledOnce();
+        const [pagesRequest, renderedUrl] = renderPagesNotFound.mock.calls[0];
+        expect(renderedUrl).toBe(pagesUrl);
+        expect(new URL(pagesRequest.url).pathname).toBe(pagesUrl);
+        expect(pagesRequest.headers.get(VINEXT_PRERENDER_SECRET_HEADER)).toBeNull();
+      }
+      expect(runMiddleware).not.toHaveBeenCalled();
+      expect(matchRoute).not.toHaveBeenCalled();
+      expect(renderNotFound).not.toHaveBeenCalled();
+
+      expect((await handler(endpoint("?router=pages&locale=de"), null)).status).toBe(400);
+
+      renderPagesNotFound.mockRejectedValueOnce(new Error("pages 404 failed"));
+      const failed = await handler(endpoint("?router=pages"), null);
+      expect(failed.status).toBe(500);
+      expect(failed.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+
+      // Without `router=pages` it stays the App Router's not-found page.
+      renderPagesNotFound.mockClear();
+      expect(await (await handler(endpoint(""), null)).text()).toBe("app not found");
+      expect(renderPagesNotFound).not.toHaveBeenCalled();
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
+
+    // Outside the prerender, the path is an ordinary request.
+    const response = await handler(endpoint("?router=pages"), null);
+    expect(response.status).toBe(404);
+    expect(runMiddleware).toHaveBeenCalled();
+    expect(renderPagesNotFound).not.toHaveBeenCalled();
   });
 
   // Ported from Next.js: test/e2e/opentelemetry/instrumentation/opentelemetry.test.ts

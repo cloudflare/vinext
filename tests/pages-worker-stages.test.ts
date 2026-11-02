@@ -210,6 +210,42 @@ describe("Pages Worker response stage", () => {
     expect([...stagedHeaders]).toEqual([]);
   });
 
+  // The prerender's not-found endpoint asks the response stage for the 404
+  // page itself, the way `next build` prerenders `/404` without routing.
+  it.each([
+    { notFoundPage: true, status: 200 },
+    { notFoundPage: "yes", status: 400 },
+  ])("transports the 404-page render option ($notFoundPage)", async ({ notFoundPage, status }) => {
+    stages.renderPage.mockResolvedValue(new Response("custom 404"));
+    const renderOptions = { notFoundPage, originalUrl: "/fr/404" };
+
+    const response = await handleResponseStage(
+      new Request("https://example.com/fr/404"),
+      undefined,
+      undefined,
+      {
+        buildId: "test-build",
+        cacheability: { policyHeaders: null, probeMode: null, resolvedRoutePathname: "/fr/404" },
+        kind: "pages-page",
+        protocolVersion: PAGES_RESPONSE_STAGE_PROTOCOL_VERSION,
+        requestHost: "example.com",
+        renderOptions: renderOptions as never,
+        resolvedUrl: "/fr/404",
+        sharedAcrossHosts: false,
+        stagedHeaders: null,
+      },
+      dispatchRequestStage,
+      { cache: "bypass" },
+    );
+
+    expect(response.status).toBe(status);
+    if (status === 400) {
+      expect(stages.renderPage).not.toHaveBeenCalled();
+    } else {
+      expect(stages.renderPage.mock.calls[0]?.[5]).toEqual(renderOptions);
+    }
+  });
+
   it.each([undefined, true])(
     "marks a page render as a stored-entry regeneration only when the adapter says so (%s)",
     async (regeneratesStoredEntry) => {

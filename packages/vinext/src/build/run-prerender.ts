@@ -334,7 +334,14 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
         // For hybrid builds pass the shared prod server; for single-router builds
         // fall back to the pages bundle path so prerenderPages starts its own.
         ...(sharedProdServer
-          ? { _prodServer: sharedProdServer, _prerenderSecret: sharedPrerenderSecret }
+          ? {
+              _prodServer: sharedProdServer,
+              _prerenderSecret: sharedPrerenderSecret,
+              // Next.js copies the App Router's not-found page over the Pages
+              // Router's 404.html only when it is static; vinext always
+              // serves it as the 404 page, so it always takes 404.html.
+              _appRendersNotFound: true,
+            }
           : {
               pagesBundlePath,
             }),
