@@ -121,6 +121,7 @@ import {
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
 import { hasBasePath, stripBasePath } from "./utils/base-path.js";
+import { serializeCacheLifeProfiles } from "./utils/cache-life-profiles.js";
 import {
   createRscCompatibilityId,
   findNextConfigPath,
@@ -2599,6 +2600,38 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
 
   const plugins: PluginOption[] = [
     buildLifecyclePlugins[0],
+    {
+      // ── Dev request origin check ─────────────────────────────────────
+      // Vite registers pre plugins' middlewares first, so listing this pre
+      // plugin first validates every request (including /@*, /__vite*,
+      // /node_modules* and source file paths) before Vite or any other vinext
+      // middleware serves content, such as vinext:cloudflare-dev-module-urls,
+      // which runs Vite's module middlewares itself.
+      name: "vinext:dev-origin-check",
+      apply: "serve",
+      enforce: "pre",
+      configureServer(server) {
+        server.middlewares.use((req, res, next) => {
+          const blockReason = validateDevRequest(
+            {
+              origin: req.headers.origin as string | undefined,
+              host: req.headers.host,
+              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
+              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
+              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
+            },
+            nextConfig?.allowedDevOrigins,
+          );
+          if (blockReason) {
+            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
+            res.writeHead(403, { "Content-Type": "text/plain" });
+            res.end("Forbidden");
+            return;
+          }
+          next();
+        });
+      },
+    },
     // Resolve tsconfig paths/baseUrl aliases so real-world Next.js repos
     // that use @/*, #/*, or baseUrl imports work out of the box.
     // Vite 8+ supports this natively via resolve.tsconfigPaths.
@@ -3160,6 +3193,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
         // Next.js uses this compile-time value to switch App Router navigation
         // from header-selected RSC responses to static `.txt` Flight assets.
         defines["process.env.__NEXT_CONFIG_OUTPUT"] = JSON.stringify(nextConfig.output ?? "");
+        // Next.js defines `process.env.__NEXT_CACHE_LIFE` for every bundle;
+        // the cacheLife() shim reads its profiles from this define.
+        defines["process.env.__VINEXT_CACHE_LIFE_PROFILES"] = JSON.stringify(
+          serializeCacheLifeProfiles(nextConfig.cacheLife),
+        );
         // Expose image remote patterns for validation in next/image shim
         defines["process.env.__VINEXT_IMAGE_REMOTE_PATTERNS"] = JSON.stringify(
           JSON.stringify(nextConfig.images?.remotePatterns ?? []),
@@ -6663,36 +6701,11 @@ export const loadServerActionClient = ${
           return isExistingDevPublicFile(pathname);
         };
 
-        // ── Dev request origin check ─────────────────────────────────────
-        // Registered directly (not in the returned function) so it runs
-        // BEFORE Vite's built-in middleware. This ensures all requests
-        // (including /@*, /__vite*, /node_modules* paths) are validated
-        // before Vite serves any content.
-        server.middlewares.use((req, res, next) => {
-          const blockReason = validateDevRequest(
-            {
-              origin: req.headers.origin as string | undefined,
-              host: req.headers.host,
-              "x-forwarded-host": req.headers["x-forwarded-host"] as string | undefined,
-              "sec-fetch-site": req.headers["sec-fetch-site"] as string | undefined,
-              "sec-fetch-mode": req.headers["sec-fetch-mode"] as string | undefined,
-            },
-            nextConfig?.allowedDevOrigins,
-          );
-          if (blockReason) {
-            console.warn(`[vinext] Blocked dev request: ${blockReason} (${req.url})`);
-            res.writeHead(403, { "Content-Type": "text/plain" });
-            res.end("Forbidden");
-            return;
-          }
-          next();
-        });
-
         // Like Next.js, redirect any path containing a backslash or a repeated
-        // slash once the origin check has passed (router-server.ts runs
-        // blockCrossSiteDEV before resolveRoutes) and before anything below
-        // parses it: `new URL("//", base)` throws, and `//host/x` parses as a
-        // different origin.
+        // slash once the origin check (vinext:dev-origin-check) has passed
+        // (router-server.ts runs blockCrossSiteDEV before resolveRoutes) and
+        // before anything below parses it: `new URL("//", base)` throws, and
+        // `//host/x` parses as a different origin.
         server.middlewares.use((req, res, next) => {
           if (!sendRepeatedSlashRedirect(req.url ?? "/", res)) next();
         });
@@ -6859,15 +6872,15 @@ export const loadServerActionClient = ${
           if (hasAppDir) {
             server.middlewares.use((req, res, next) => {
               const url = req.url ?? "/";
-              // Skip Vite internals, HMR, and static assets.
-              // Do NOT skip .rsc-suffixed URLs or RSC wire requests (Accept: text/x-component)
-              // — those are soft navigations and should be logged like any other page request.
+              // Skip Vite internals, HMR, and static assets. RSC wire requests
+              // (`RSC: 1`) are soft navigations and are logged like any other
+              // page request.
               const [pathname] = url.split("?");
               if (
                 url.startsWith("/@") ||
                 url.startsWith("/__vite") ||
                 url.startsWith("/node_modules") ||
-                (url.includes(".") && !pathname.endsWith(".html") && !pathname.endsWith(".rsc"))
+                (url.includes(".") && !pathname.endsWith(".html"))
               ) {
                 return next();
               }
@@ -6950,9 +6963,6 @@ export const loadServerActionClient = ${
               };
 
               res.on("finish", () => {
-                // Strip .rsc suffix — it's an internal RSC protocol detail,
-                // not part of the actual page path the user navigated to.
-                const logUrl = url.replace(/\.rsc(\?|$)/, "$1");
                 const totalMs = now() - _reqStart;
 
                 // For RSC-only responses (soft nav), renderMs is -1 (sentinel meaning
@@ -6968,7 +6978,7 @@ export const loadServerActionClient = ${
 
                 logRequest({
                   method: req.method ?? "GET",
-                  url: logUrl,
+                  url,
                   status: res.statusCode,
                   totalMs,
                   compileMs: _compileMs,
@@ -6989,7 +6999,7 @@ export const loadServerActionClient = ${
               let url: string = req.url ?? "/";
               const originalRequestUrl = url;
               // ── Cross-origin request protection (defense-in-depth) ──────
-              // The pre-Vite middleware above already blocks cross-origin
+              // The vinext:dev-origin-check middleware already blocks cross-origin
               // requests before Vite serves any content. This second check
               // guards the Pages Router handler specifically, in case the
               // middleware ordering changes or new middleware is added between
@@ -7335,6 +7345,10 @@ export const loadServerActionClient = ${
                 for (const [key, value] of nextRequestHeaders) {
                   req.headers[key] = value;
                 }
+                // Like Next.js's toNodeOutgoingHttpHeaders, keep several
+                // Set-Cookie values (iterated separately) as an array.
+                const setCookies = nextRequestHeaders.getSetCookie();
+                if (setCookies.length > 1) req.headers["set-cookie"] = setCookies;
               };
 
               // devRunMiddlewareAdapter: wraps the dev runMiddleware call and
@@ -7803,9 +7817,6 @@ export const loadServerActionClient = ${
             ) {
               return next();
             }
-
-            // Skip .rsc requests — those are for the App Router RSC handler
-            if (url.split("?")[0].endsWith(".rsc")) return next();
 
             // The Cloudflare dev proxy owns request execution and tracing in
             // workerd. Do not create a second Node-side request root here.

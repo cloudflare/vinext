@@ -1066,6 +1066,124 @@ describe("App RSC route matching", () => {
       expect(matcher.findIntercept("/hoge", "/other")).toBeNull();
     });
 
+    it("renders a sibling intercept's owner route from a deeper source", () => {
+      // Next.js rewrites a sibling interception to the fixed intercepting route,
+      // shots/(.)[id], so a source like /shots/1 never lends it its own route.
+      // The handler still authorizes the source the context names.
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/shots" },
+          pattern: "/shots",
+          patternParts: ["shots"],
+          routeSegments: ["shots"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/shots/:id",
+              sourceMatchPattern: "/shots",
+              sourcePageSegments: ["shots", "(.)[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/shots",
+              interceptLayouts: [],
+              page: "shot-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/shots/:id" },
+          pattern: "/shots/:id",
+          patternParts: ["shots", ":id"],
+          routeSegments: ["shots", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/shots/2", "/shots")).toMatchObject({
+        authorizationSourceParams: {},
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { id: "2" },
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+      });
+      expect(matcher.findIntercept("/shots/2", "/shots/1")).toMatchObject({
+        authorizationSourceParams: { id: "1" },
+        authorizationSourceRouteIndex: 1,
+        matchedParams: { id: "2" },
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+      });
+    });
+
+    it("keeps a deeper source's route for a sibling intercept whose owner is a stand-in", () => {
+      // gallery/(.)photo has no gallery page, so the graph picks another route
+      // under gallery/ to carry it. That route is not the intercepting route,
+      // so a concrete source renders as before.
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/gallery/list" },
+          pattern: "/gallery/list",
+          patternParts: ["gallery", "list"],
+          routeSegments: ["gallery", "list"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/gallery/photo/:id",
+              sourceMatchPattern: "/gallery",
+              sourcePageSegments: ["gallery", "(.)photo", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/gallery/list",
+              interceptLayouts: [],
+              page: "photo-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/gallery/photo/:id" },
+          pattern: "/gallery/photo/:id",
+          patternParts: ["gallery", "photo", ":id"],
+          routeSegments: ["gallery", "photo", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/gallery/photo/2", "/gallery/photo/1")).toMatchObject({
+        authorizationSourceRouteIndex: 1,
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 1,
+      });
+    });
+
+    it("never renders a Route Handler owner for a sibling intercept", () => {
+      // app/shots/route.ts owns shots/(.)[id], which has no page beside it.
+      const matcher = createAppRscRouteMatcher([
+        {
+          pattern: "/shots",
+          patternParts: ["shots"],
+          routeHandler: { GET() {} },
+          routeSegments: ["shots"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/shots/:id",
+              sourceMatchPattern: "/shots",
+              sourcePageSegments: ["shots", "(.)[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/shots",
+              interceptLayouts: [],
+              page: "shot-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          pattern: "/shots/:id",
+          patternParts: ["shots", ":id"],
+          routeSegments: ["shots", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/shots/2", "/shots/1")).toMatchObject({
+        authorizationSourceRouteIndex: 1,
+        sourceRouteIndex: 1,
+      });
+    });
+
     it("resolves intercepted graph identities across different parameter names", () => {
       // Ported from Next.js: packages/next/src/build/validate-app-paths.test.ts
       // https://github.com/vercel/next.js/blob/canary/packages/next/src/build/validate-app-paths.test.ts

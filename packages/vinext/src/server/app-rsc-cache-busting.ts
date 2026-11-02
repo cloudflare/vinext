@@ -73,8 +73,13 @@ function encodeBase64Url(bytes: Uint8Array): string {
   return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
 }
 
-function normalizeHeaderValue(value: string | null): string {
-  return value ?? "0";
+// Escaping the separator keeps the values apart, and escaping a literal "0"
+// keeps it apart from an absent header, so the hash input names exactly one
+// set of header values.
+function serializeHeaderValue(value: string | null): string {
+  if (value === null) return "0";
+  if (value === "0") return "\\0";
+  return value.replaceAll("\\", "\\\\").replaceAll(",", "\\,");
 }
 
 function normalizeCompatibilityId(value: string | null | undefined): string | null {
@@ -147,12 +152,12 @@ export function resolveHardNavigationTargetFromRscResponse(
   const parsed = new URL(responseUrl, origin);
   stripRscCacheBustingSearchParam(parsed);
   const origUrl = new URL(currentHref, origin);
-  let pathname = stripRscSuffix(parsed.pathname);
+  let pathname = parsed.pathname;
   if (origUrl.pathname.length > 1 && origUrl.pathname.endsWith("/") && !pathname.endsWith("/")) {
     pathname += "/";
   }
 
-  let hardNavigationTarget = pathname + parsed.search;
+  let hardNavigationTarget = toPathAbsolutePathname(pathname) + parsed.search;
   if (origUrl.hash) hardNavigationTarget += origUrl.hash;
   return hardNavigationTarget;
 }
@@ -185,34 +190,23 @@ function normalizeRenderModeHeaderValue(value: string | null): string | null {
   return renderMode === APP_RSC_RENDER_MODE_NAVIGATION ? null : renderMode;
 }
 
-type CreateCacheBustingInputOptions = {
-  includeInterceptionIdHeader?: boolean;
-  includeRenderModeHeader?: boolean;
-  includeStateFingerprintHeader?: boolean;
-};
-
-function createCacheBustingInput(
-  headers: Headers,
-  options: CreateCacheBustingInputOptions = {},
-): string | null {
-  // The order of these values determines the hash. Changing it is a breaking
-  // cache-key change and requires accepting the previous hash during rollout.
+function createCacheBustingInput(headers: Headers): string | null {
+  // The order of these values determines the hash. The server accepts only
+  // this one layout, as Next.js does: an alternative layout would let a
+  // request place the same values in other headers and select another payload
+  // under the same URL.
   const values = [
     headers.get(NEXT_ROUTER_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_SEGMENT_PREFETCH_HEADER),
     headers.get(NEXT_ROUTER_STATE_TREE_HEADER),
     headers.get(NEXT_URL_HEADER),
     headers.get(VINEXT_INTERCEPTION_CONTEXT_HEADER),
-    ...(options.includeInterceptionIdHeader === false
-      ? []
-      : [headers.get(VINEXT_INTERCEPTION_ID_HEADER)]),
+    headers.get(VINEXT_INTERCEPTION_ID_HEADER),
     headers.get(VINEXT_MOUNTED_SLOTS_HEADER),
-    ...(options.includeRenderModeHeader === false
-      ? []
-      : [normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER))]),
+    normalizeRenderModeHeaderValue(headers.get(VINEXT_RSC_RENDER_MODE_HEADER)),
   ];
   const stateFingerprint = headers.get(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-  if (options.includeStateFingerprintHeader !== false && stateFingerprint !== null) {
+  if (stateFingerprint !== null) {
     values.push(stateFingerprint);
   }
 
@@ -220,7 +214,7 @@ function createCacheBustingInput(
     return null;
   }
 
-  return values.map(normalizeHeaderValue).join(",");
+  return values.map(serializeHeaderValue).join(",");
 }
 
 async function sha256CacheBustingHash(input: string): Promise<string> {
@@ -305,14 +299,6 @@ export function keepOnlyValidatedRscCacheBustingSearchParam(url: URL, isRscReque
   const hash = isRscRequest ? url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM) : null;
   url.search = "";
   if (hash !== null) setRscCacheBustingSearchParam(url, hash);
-}
-
-/**
- * Remove a trailing `.rsc` suffix from a pathname. Returns the pathname
- * unchanged when the suffix is absent.
- */
-export function stripRscSuffix(pathname: string): string {
-  return pathname.endsWith(".rsc") ? pathname.slice(0, -4) : pathname;
 }
 
 export function createCanonicalRscRequestHeaders(
@@ -453,16 +439,23 @@ export function parseRscRequestPath(href: string): URL {
 }
 
 /**
+ * A pathname as the start of a path-absolute reference. One that begins with
+ * "//" would serialize as a protocol-relative URL naming another host, so it
+ * keeps a "/." prefix, as the WHATWG URL serializer does. URL resolution drops
+ * the dot segment, so the reference still targets the same pathname on the
+ * origin it is resolved against.
+ */
+export function toPathAbsolutePathname(pathname: string): string {
+  return pathname.startsWith("//") ? `/.${pathname}` : pathname;
+}
+
+/**
  * Serialize the path-absolute reference callers fetch against the app origin.
- * A pathname that begins with "//" would serialize as a protocol-relative URL
- * and send the request to another host, so it keeps a "/." prefix, as the
- * WHATWG URL serializer does. URL resolution drops the dot segment, so the
- * request still targets the same pathname on the app origin, as Next.js's
- * full-URL fetch does.
+ * A "//" pathname keeps its "/." prefix so the request still targets the same
+ * pathname on the app origin, as Next.js's full-URL fetch does.
  */
 export function formatRscRequestPath(url: URL): string {
-  const pathname = url.pathname.startsWith("//") ? `/.${url.pathname}` : url.pathname;
-  return `${pathname}${url.search}`;
+  return `${toPathAbsolutePathname(url.pathname)}${url.search}`;
 }
 
 export async function createRscRequestUrl(href: string, headers: Headers): Promise<string> {
@@ -534,72 +527,11 @@ export async function resolveInvalidRscCacheBustingRequest(
   const actualHash = url.searchParams.get(VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM);
   const expectedHash = await computeRscCacheBustingSearchParam(options.request.headers);
 
-  if (actualHash === null && expectedHash === "" && url.pathname.endsWith(".rsc")) {
-    return null;
-  }
-
-  const acceptedHashes = new Set<string>([expectedHash]);
-  if (actualHash !== null && actualHash !== expectedHash) {
-    acceptedHashes.add(computeLegacyRscCacheBustingSearchParam(options.request.headers));
-    const compatibilityInputs: CreateCacheBustingInputOptions[] = [];
-    const hasInterceptionId = options.request.headers.has(VINEXT_INTERCEPTION_ID_HEADER);
-    const hasStateFingerprint = options.request.headers.has(VINEXT_RSC_STATE_FINGERPRINT_HEADER);
-    const hasNormalRenderMode =
-      normalizeRenderModeHeaderValue(options.request.headers.get(VINEXT_RSC_RENDER_MODE_HEADER)) ===
-      null;
-    // The interception ID is a positional hash input, so omitting it changes
-    // hashes even when the request does not carry the header. Requests from
-    // clients predating that positional input remain compatible when the
-    // header is absent. Once the header is present, however, only hashes that
-    // include its value are safe: Cloudflare's default cache key is URL-based
-    // and does not vary on arbitrary headers, while different graph-owned IDs
-    // can intentionally select different slot bytes for one source/target.
-    if (!hasInterceptionId) {
-      compatibilityInputs.push({ includeInterceptionIdHeader: false });
-    }
-    if (hasStateFingerprint) {
-      compatibilityInputs.push({ includeStateFingerprintHeader: false });
-      if (!hasInterceptionId) {
-        compatibilityInputs.push({
-          includeInterceptionIdHeader: false,
-          includeStateFingerprintHeader: false,
-        });
-      }
-    }
-    if (hasNormalRenderMode) {
-      compatibilityInputs.push({ includeRenderModeHeader: false });
-      if (!hasInterceptionId) {
-        compatibilityInputs.push({
-          includeInterceptionIdHeader: false,
-          includeRenderModeHeader: false,
-        });
-      }
-    }
-    if (hasStateFingerprint && hasNormalRenderMode) {
-      compatibilityInputs.push({
-        includeRenderModeHeader: false,
-        includeStateFingerprintHeader: false,
-      });
-      if (!hasInterceptionId) {
-        compatibilityInputs.push({
-          includeInterceptionIdHeader: false,
-          includeRenderModeHeader: false,
-          includeStateFingerprintHeader: false,
-        });
-      }
-    }
-    for (const compatibilityOptions of compatibilityInputs) {
-      const input = createCacheBustingInput(options.request.headers, compatibilityOptions);
-      if (input === null) {
-        acceptedHashes.add("");
-      } else {
-        acceptedHashes.add(await sha256CacheBustingHash(input));
-        acceptedHashes.add(fnv1a64(input));
-      }
-    }
-  }
-
-  if (actualHash !== null && acceptedHashes.has(actualHash)) {
+  if (
+    actualHash !== null &&
+    (actualHash === expectedHash ||
+      actualHash === computeLegacyRscCacheBustingSearchParam(options.request.headers))
+  ) {
     return null;
   }
 
@@ -607,7 +539,7 @@ export async function resolveInvalidRscCacheBustingRequest(
   return new Response(null, {
     status: 307,
     headers: {
-      Location: `${url.pathname}${url.search}`,
+      Location: formatRscRequestPath(url),
     },
   });
 }

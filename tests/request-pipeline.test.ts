@@ -12,6 +12,7 @@ import {
   isOpenRedirectShaped,
   hasBasePath,
   stripBasePath,
+  stripRequestUrlFragment,
   normalizeTrailingSlash,
   resolvePublicFileRoute,
   sendRepeatedSlashRedirect,
@@ -533,7 +534,6 @@ describe("resolvePublicFileRoute", () => {
         }),
         status: 203,
       },
-      pathname: "/logo.svg",
       publicFiles: new Set(["/logo.svg"]),
       request: new Request("https://example.com/logo.svg"),
     });
@@ -563,7 +563,6 @@ describe("resolvePublicFileRoute", () => {
         }),
         status: null,
       },
-      pathname: "/video.mp4",
       publicFiles: new Set(["/video.mp4"]),
       request,
     });
@@ -615,7 +614,6 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/logo.svg",
       middlewareContext: { headers: null, requestHeaders: null, status: null },
-      pathname: "/logo.svg",
       publicFiles: new Set(["/logo.svg"]),
       request: new Request("https://example.com/logo.svg"),
     });
@@ -649,7 +647,6 @@ describe("resolvePublicFileRoute", () => {
         headers: new Headers({ "x-from-middleware": "1" }),
         status: null,
       },
-      pathname: "/logo.svg",
       publicFiles,
       request: new Request("https://example.com/logo.svg", { method: "POST" }),
     });
@@ -661,20 +658,19 @@ describe("resolvePublicFileRoute", () => {
     expect(mutationResponse?.headers.get("content-type")).toBe("text/plain; charset=utf-8");
     expect(mutationResponse?.headers.get("transfer-encoding")).toBeNull();
     await expect(mutationResponse?.text()).resolves.toBe("Method Not Allowed");
+    // A `.rsc` public file is an ordinary static file.
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/about.rsc",
         middlewareContext,
-        pathname: "/about.rsc",
         publicFiles,
         request: new Request("https://example.com/about.rsc"),
       }),
-    ).toBeNull();
+    ).not.toBeNull();
     expect(
       resolvePublicFileRoute({
         cleanPathname: "/missing.svg",
         middlewareContext,
-        pathname: "/missing.svg",
         publicFiles,
         request: new Request("https://example.com/missing.svg"),
       }),
@@ -685,7 +681,6 @@ describe("resolvePublicFileRoute", () => {
     const response = resolvePublicFileRoute({
       cleanPathname: "/hello copy.txt",
       middlewareContext: { headers: null, status: null },
-      pathname: "/hello%20copy.txt",
       publicFiles: new Set(["/hello copy.txt"]),
       request: new Request("https://example.com/hello%20copy.txt", { method: "POST" }),
     });
@@ -828,7 +823,7 @@ describe("normalizeTrailingSlash", () => {
     expect(normalizeTrailingSlash("/api/data", "", false, "")).toBeNull();
   });
 
-  it("does not redirect .rsc requests when trailingSlash is true", () => {
+  it("does not add a trailing slash to a file-like .rsc path", () => {
     expect(normalizeTrailingSlash("/about.rsc", "", true, "")).toBeNull();
   });
 
@@ -1484,6 +1479,49 @@ describe("buildRequestHeadersFromMiddlewareResponse", () => {
     expect(result!.get("x-middleware-request-x-stray")).toBe("literal");
   });
 
+  it("lets truthy middleware response headers replace the client's request headers", () => {
+    // resolve-routes.ts's generic merge writes every truthy middleware response
+    // header to the request after the override translation, except
+    // content-length and ipcForbiddenHeaders. Confirmed against Next.js 16.2.7.
+    const baseHeaders = new Headers({
+      "x-viewer-role": "staff",
+      "x-empty": "client",
+      "set-cookie": "client=1",
+      cookie: "session=abc",
+    });
+    const middlewareHeaders = new Headers({
+      "x-viewer-role": "visitor",
+      "x-empty": "",
+      "content-length": "0",
+      "transfer-encoding": "chunked",
+      "x-middleware-cache": "no-cache",
+    });
+    middlewareHeaders.append("set-cookie", "a=1; Path=/");
+    middlewareHeaders.append("set-cookie", "b=2; Path=/");
+
+    const result = buildRequestHeadersFromMiddlewareResponse(baseHeaders, middlewareHeaders);
+    expect(result!.get("x-viewer-role")).toBe("visitor");
+    expect(result!.get("x-empty")).toBe("client");
+    expect(result!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(result!.get("cookie")).toBe("session=abc");
+    expect(result!.has("content-length")).toBe(false);
+    expect(result!.has("transfer-encoding")).toBe(false);
+    expect(result!.has("x-middleware-cache")).toBe(false);
+
+    // The merge runs after the override translation, so it takes precedence.
+    const withOverrides = buildRequestHeadersFromMiddlewareResponse(baseHeaders, {
+      "x-middleware-override-headers": "x-viewer-role,x-only-override",
+      "x-middleware-request-x-viewer-role": "from-override",
+      "x-middleware-request-x-only-override": "kept",
+      "x-viewer-role": "visitor",
+      "set-cookie": ["a=1; Path=/", "b=2; Path=/"],
+    });
+    expect(withOverrides!.get("x-viewer-role")).toBe("visitor");
+    expect(withOverrides!.get("x-only-override")).toBe("kept");
+    expect(withOverrides!.getSetCookie()).toEqual(["a=1; Path=/", "b=2; Path=/"]);
+    expect(withOverrides!.has("cookie")).toBe(false);
+  });
+
   it("drops empty unlisted forwarded values", () => {
     const middlewareHeaders = new Headers({
       "x-middleware-request-x-empty": "",
@@ -1712,6 +1750,50 @@ describe("cloneRequestWithHeaders", () => {
     expect(cloned.method).toBe("GET");
     expect(cloned.body).toBeNull();
     expect(cloned.headers.get("accept")).toBe("text/html");
+  });
+});
+
+// ── stripRequestUrlFragment ──────────────────────────────────────────────
+
+describe("stripRequestUrlFragment", () => {
+  it("returns a fragment-free request as is", () => {
+    const request = new Request("https://example.com/a?q=1");
+    expect(stripRequestUrlFragment(request)).toBe(request);
+  });
+
+  it("drops the fragment and keeps the query and body", async () => {
+    const stripped = stripRequestUrlFragment(
+      new Request("https://example.com/a?q=1#planted", { method: "POST", body: "payload" }),
+    );
+    expect(stripped.url).toBe("https://example.com/a?q=1");
+    expect(stripped.method).toBe("POST");
+    expect(await stripped.text()).toBe("payload");
+  });
+
+  // srvx's NodeRequest returns its connection signal until a clone reads the
+  // body and materializes a native Request, whose signal only follows it for
+  // as long as the NodeRequest is retained.
+  it("follows the host's signal from before the clone", () => {
+    const connection = new AbortController();
+    const materialized = new AbortController();
+    let bodyRead = false;
+    const hostRequest = {
+      url: "https://example.com/a#planted",
+      method: "GET",
+      headers: new Headers(),
+      get body() {
+        bodyRead = true;
+        return null;
+      },
+      get signal() {
+        return bodyRead ? materialized.signal : connection.signal;
+      },
+    } as unknown as Request;
+
+    const stripped = stripRequestUrlFragment(hostRequest);
+    expect(stripped.url).toBe("https://example.com/a");
+    connection.abort();
+    expect(stripped.signal.aborted).toBe(true);
   });
 });
 

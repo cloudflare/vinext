@@ -19,6 +19,7 @@ import { serializeSetCookie, validateCookieName } from "./internal/cookie-serial
 import { parseEdgeRequestCookieHeader } from "../utils/parse-cookie.js";
 import {
   ensureRenderDynamicLatch,
+  getRequestContext,
   isInsideUnifiedScope,
   runWithUnifiedStateMutation,
 } from "./unified-request-context.js";
@@ -437,6 +438,12 @@ export function setHeadersContext(ctx: HeadersContext | null): void {
     state.draftModeCookieHeader = null;
     state.phase = "render";
   } else {
+    // Clearing the context does not end the request: its render can still
+    // be running and its after() callbacks are yet to run, and both must
+    // keep the request's draft-mode cache bypass.
+    if (state.headersContext && isInsideUnifiedScope()) {
+      getRequestContext().draftModeAtHeadersClear = getActiveDraftModeState() === true;
+    }
     state.headersContext = null;
     state.phase = "render";
   }
@@ -1008,10 +1015,14 @@ export function getActiveDraftModeState(): boolean | null {
 /**
  * Read the active request's draft-mode state without recording request API usage.
  * Internal cache implementations use this to bypass persistent reads and writes,
- * matching Next.js's request-level `workStore.isDraftMode` guard.
+ * matching Next.js's request-level `workStore.isDraftMode` guard. Once the
+ * headers context is cleared, the request keeps the state it had then.
  */
 export function isDraftModeEnabled(): boolean {
-  return getActiveDraftModeState() ?? false;
+  return (
+    getActiveDraftModeState() ??
+    (isInsideUnifiedScope() && getRequestContext().draftModeAtHeadersClear === true)
+  );
 }
 
 type DraftModeResult = {

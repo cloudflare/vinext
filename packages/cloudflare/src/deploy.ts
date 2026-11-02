@@ -2415,6 +2415,8 @@ export async function deploy(options: DeployOptions): Promise<void> {
         hostname: warmCdnTarget ? new URL(warmCdnTarget).hostname : undefined,
         typedConfig: deploymentTool === "cf",
         window: Math.max(1, options.tprWindow ?? 24),
+        assetsDir: path.resolve(info.root, prerenderOutputDirs?.clientOutDir ?? "dist/client"),
+        basePath: nextConfig.basePath,
       })
     : null;
   if (tpr?.skipped) console.log(`  TPR: Skipped (${tpr.skipped})`);

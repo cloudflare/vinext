@@ -59,6 +59,7 @@ import {
 } from "./cacheability-limits.js";
 import { frameworkTracer } from "./tracer.js";
 import type { FrameworkSpan } from "./framework-tracer.js";
+import { logRequestError } from "./request-error-log.js";
 
 export type AppRouteParams = Record<string, string | string[]>;
 export type AppRouteDynamicUsageFn = () => boolean;
@@ -291,7 +292,9 @@ export async function runAppRouteHandler(
       options.markDynamicUsage();
     },
     requestMode:
-      options.dynamicConfig === "force-static" || options.dynamicConfig === "error"
+      options.dynamicConfig === "force-dynamic" ||
+      options.dynamicConfig === "force-static" ||
+      options.dynamicConfig === "error"
         ? options.dynamicConfig
         : "auto",
     signal: options.requestSignal,
@@ -680,7 +683,7 @@ async function executeAppRouteHandlerImpl(
       );
     }
 
-    console.error("[vinext] Route handler error:", error);
+    logRequestError("[vinext] Route handler error:", error);
     await options.reportRequestError(
       error,
       {

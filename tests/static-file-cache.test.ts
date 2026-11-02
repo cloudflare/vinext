@@ -137,13 +137,13 @@ describe("StaticFileCache", () => {
     expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=31536000, immutable");
   });
 
-  it("sets short cache-control for non-hashed files", async () => {
+  it("sets revalidating cache-control for non-hashed files", async () => {
     await writeFile(clientDir, "favicon.ico", "icon-data");
 
     const cache = await StaticFileCache.create(clientDir);
     const entry = cache.lookup("/favicon.ico");
 
-    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=3600");
+    expect(entry!.original.headers["Cache-Control"]).toBe("public, max-age=0");
   });
 
   it("generates weak etag from filename hash for hashed assets", async () => {

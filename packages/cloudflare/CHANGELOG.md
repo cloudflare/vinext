@@ -1,5 +1,19 @@
 # @vinext/cloudflare
 
+## 1.3.1
+
+### Bug Fixes
+
+#### Cache
+
+- key Response Store route handlers and metadata routes by path like Next.js (#4445)
+- support custom cacheLife profiles from next.config (#4398)
+- return unstable_cache and "use cache" misses without waiting for the write (#4465)
+
+### Contributors
+
+- @james-elicx
+
 ## 1.3.0
 
 Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.

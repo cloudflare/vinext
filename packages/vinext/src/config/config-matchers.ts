@@ -1219,6 +1219,9 @@ export async function proxyExternalRequest(
 
   // Forward the request with appropriate headers
   const headers = new Headers(request.headers);
+  // The inbound Host after any middleware request-header override. Like
+  // Next.js, a Host that middleware dropped forwards as an empty value.
+  const requestHost = headers.get("host") ?? "";
   // Set Host to the external target (required for correct routing)
   headers.set("host", targetUrl.host);
   // Remove headers that should not be forwarded to external services.
@@ -1228,6 +1231,9 @@ export async function proxyExternalRequest(
   // proxy and backend (defense-in-depth against request smuggling,
   // ref: CVE GHSA-ggv3-7p47-pfv8).
   stripHopByHopRequestHeaders(headers);
+  // Like Next.js, replace the client's X-Forwarded-Host with the inbound Host
+  // so the upstream never sees a forwarded host this proxy did not vouch for.
+  headers.set("x-forwarded-host", requestHost);
   // Next.js forwards truthy x-middleware-request-* values that were not
   // consumed by an override list under their literal names. Other middleware
   // protocol controls must not escape to the external origin.
