@@ -1,5 +1,149 @@
 # vinext
 
+## 1.4.1
+
+### Bug Fixes
+
+#### App Router
+
+- reject route handler request reads inside unstable_cache() like Next.js (#4456)
+- report SSR-only shell errors in the dev overlay and answer error boundary documents with 500 (#4466)
+- accept _rsc values only for the headers they were computed from (#4448)
+- answer shell errors with the error document, and add VINEXT_QUIET (#4411)
+- keep a reused template seed under its destination identity (#4392)
+- apply afterFiles rewrites to a dynamic interception source (#4432)
+- keep a BFCache Activity list at layout-less segment levels (#4401)
+- keep redirect() targets whose pathname starts with // on the app origin (#4424)
+- 404 .rsc requests whose suffix strip leaves a dot segment (#4417)
+- decide RSC cacheability after a disconnected client's render finishes (#4419)
+
+#### Cache
+
+- stop stripping .rsc from route handler cache identities (#4472)
+- key Response Store route handlers and metadata routes by path like Next.js (#4445)
+- support custom cacheLife profiles from next.config (#4398)
+- return unstable_cache and "use cache" misses without waiting for the write (#4465)
+- keep the unstable_cache result when the data cache write fails (#3742)
+- resolve cacheLife like Next.js across repeated calls and nested caches (#4399)
+
+#### Misc
+
+- **Link:** settle useLinkStatus for links hidden in a BFCache Activity (#4476)
+- **Rewrites:** send the inbound Host as X-Forwarded-Host on external rewrites (#4443)
+- **Server:** drop request-line URL fragments like Next.js (#4451)
+- **Middleware:** copy middleware response headers onto the downstream request (#4441)
+- **Rewrites:** keep has captures inside a rewrite destination path like Next.js (#4440)
+- **Pages:** keep class field keys from retaining data-export-only helpers in client builds (#4435)
+- **Headers:** keep a request's draft mode after its headers context is cleared (#4437)
+- **Prerender:** skip a generateStaticParams path whose dynamic render throws a special error (#4386)
+- **Prerender:** record the revalidate getStaticProps returned for Pages routes (#4388)
+- **Dev:** run the dev origin check before vinext's pre-middlewares (#4425)
+- **Pages:** send the default Cache-Control for getInitialProps renders (#4422)
+- **Prod Server:** serve public files with Next.js's revalidating Cache-Control (#4421)
+- **Server:** apply trailing-slash redirects to /api routes like Next.js (#4418)
+
+### Contributors
+
+- @ash1day
+- @Godsenal
+- @james-elicx
+
+## 1.4.0
+
+Read the [Vinext 1.4 release post](https://vinext.dev/blog/vinext-1-4) for the highlights.
+
+### Features
+
+#### Cloudflare
+
+- share one Response Store App Router entry across hosts (#3897)
+- store the page's document when an RSC request misses its Response Store entry (#4331)
+- add --vite-config to deploy (#4215)
+
+#### Misc
+
+- **Init:** add --ignore-wrangler-config for Cloudflare init (#4216)
+- **App Router:** store the page's document when an RSC request misses its entry (#4321)
+- **App Router:** regenerate the document when a stale RSC request regenerates its page (#4319)
+
+### Bug Fixes
+
+#### App Router
+
+- assign a router history write's traversal index as it lands (#4376)
+- write router history through the live History API methods (#4354)
+- match Next.js's openGraph and twitter title templates (#4349)
+- keep static prefetches when a Server Action calls refresh() (#4281)
+- prefetch visible links again only after router.refresh() finishes (#4280)
+- keep a refreshed parallel slot's identity, so a refresh doesn't remount it (#4279)
+- fulfill a full prefetch from a recent navigation's visited response (#4298)
+- advertise staleTimes.static on unclaimed cache hits under cached navigations (#4300)
+- retain a layout's children above their own BFCache boundaries (#4326)
+- run Server Actions with their page's implicit tags (#4290)
+- match Next.js's title template rule (#4346)
+- scope copied history tree ids to their document (#4347)
+- keep another root layout's not-found out of matched routes (#4324)
+- store a page's resolved client stale time, not the pending marker (#4343)
+- log server render errors in production (#4320)
+
+#### Cache
+
+- skip data cache reads during on-demand revalidation (#4292)
+- date "use cache" entries from when their generation started, like Next.js (#4348)
+- make unstable_noStore() a no-op under Cache Components (#4293)
+- run a "use cache" function inside the render that serializes its result (#4297)
+
+#### Dev
+
+- measure App Router compile time on the wall clock under workerd (#4383)
+- pre-bundle next/image shim deps for the Pages Cloudflare Worker (#4380)
+- resolve vinext's shim paths through Vite so dev loads one instance (#4310)
+
+#### Misc
+
+- **Config:** match exact tsconfig paths keys only against the exact specifier (#4381)
+- **Pages:** apply next.config headers to res before Node API handlers run (#4382)
+- **Pages Router:** decode API request bodies with Next's bundled iconv-lite (#4366)
+- **Prefetch:** skip a URL a navigation would serve from its visited response (#4364)
+- pipe Node streams passed to Pages API res.send (#4335)
+- **Pages Router:** decode API request bodies with their declared charset (#4334)
+- **Dynamic:** let App Router next/dynamic errors reach error.tsx instead of the loading component (#4245)
+- **Cloudflare:** share one Workers Cache entry across hosts (#3924)
+- **Cloudflare:** share one Response Store static Pages entry across hosts (#3898)
+- **App:** stop retaining every route handler request on the Node server (#4328)
+- **Pages:** emit close when a raw-body handler destroys a stalled upload (#4352)
+- **Use Cache:** keep the arity of cached functions exported by name (#4287)
+- **Use Cache:** compile "use cache" modules shipped inside node_modules (#4286)
+- **Headers:** accept cookies().get({ name }) and make read-only cookie mutators throw when called (#4283)
+- **Init:** stop writing native-module aliases to a missing empty-stub.js (#4325)
+- **Response Store:** drop concurrent refreshes of a revision another write already replaced (#4307)
+- **Next Intl:** run the catalog loader on experimental.messages catalogs (#4329)
+- **Config:** keep tsconfig paths from overriding per-environment next/navigation (#4213)
+- **Fetch Cache:** bypass the fetch cache in draft mode (#4318)
+- **Image:** keep vinext/shims/image on the shim when next/image is user-aliased (#4264)
+
+### Performance
+
+#### App Router
+
+- render only below the layouts a navigation holds (#4276)
+- stop probing layouts before the render (#4273)
+- resolve layout special errors from the render (#4269)
+
+#### Misc
+
+- **Pages Router:** keep the incoming Request when header filtering changes nothing (#4373)
+
+### Contributors
+
+- @exKAZUu
+- @gengjiawen
+- @Godsenal
+- @Gourav224
+- @hakarrr
+- @james-elicx
+- @williamrogersdev
+
 ## 1.3.1
 
 ### Bug Fixes
@@ -50,7 +194,7 @@
 
 #### Misc
 
-- **Dev:** keep vinext's next/* shims out of the dependency optimizer (#4268)
+- **Dev:** keep vinext's next/\* shims out of the dependency optimizer (#4268)
 - **Deploy:** let a legacy experimental.cacheComponents override the top-level key in project detection (#4306)
 - **Router:** keep Pages data requests out of document redirects (#4299)
 - **RSC:** stop including react-server-dom-webpack/static.edge in dev (#4272)
@@ -91,7 +235,7 @@
 
 - keep the App Router runtime off pages that don't use next/navigation (#4227)
 - load page-owned client shims only on pages that use them (#4226)
-- preload the page and _app chunks in the initial HTML (#4223)
+- preload the page and \_app chunks in the initial HTML (#4223)
 
 #### Server
 

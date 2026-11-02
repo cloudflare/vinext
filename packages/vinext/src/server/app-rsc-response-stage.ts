@@ -31,7 +31,6 @@ import { normalizeRscRequest } from "./app-rsc-request-normalization.js";
 import {
   hasRscCacheBustingSearchParam,
   stripRscCacheBustingSearchParam,
-  stripRscSuffix,
   VINEXT_RSC_CACHE_BUSTING_SEARCH_PARAM,
 } from "./app-rsc-cache-busting.js";
 import { VINEXT_REVALIDATE_HOST_HEADER } from "./headers.js";
@@ -101,14 +100,6 @@ function requestWithoutRscCacheBustingSearchParam(request: Request): Request {
   const url = new URL(request.url);
   if (!hasRscCacheBustingSearchParam(url)) return request;
   stripRscCacheBustingSearchParam(url);
-  return cloneRequestWithUrl(request, url.toString());
-}
-
-function requestWithoutRscSuffix(request: Request): Request {
-  const url = new URL(request.url);
-  const pathname = stripRscSuffix(url.pathname);
-  if (pathname === url.pathname) return request;
-  url.pathname = pathname;
   return cloneRequestWithUrl(request, url.toString());
 }
 
@@ -377,12 +368,10 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           setCurrentFetchSoftTags(
             buildPageCacheTags(props.cleanPathname, [], [...route.routeSegments], "route"),
           );
-          const normalizedUserlandRequest = requestWithoutRscSuffix(request);
-          const userlandRequest =
-            requestWithoutRscCacheBustingSearchParam(normalizedUserlandRequest);
+          const userlandRequest = requestWithoutRscCacheBustingSearchParam(request);
           const routeHandlerRequest = isEdgeRouteHandler(route.routeHandler)
             ? userlandRequest
-            : normalizedUserlandRequest;
+            : request;
           const routeHandlerUrl = new URL(routeHandlerRequest.url);
           const internalRscValues = isEdgeRouteHandler(route.routeHandler)
             ? []
@@ -433,7 +422,7 @@ export async function renderAppWorkerResponseStage<TRoute extends AppRscHandlerR
           interceptionContext: normalized.interceptionContextHeader,
           interceptionId: normalized.interceptionIdHeader,
           interceptionPathname:
-            props.matchKind === "resolved" ? props.cleanPathname : normalized.requestCleanPathname,
+            props.matchKind === "resolved" ? props.cleanPathname : normalized.requestPathname,
           isProgressiveActionRender: false,
           isRscRequest: normalized.isRscRequest,
           middlewareContext,

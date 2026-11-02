@@ -1,5 +1,6 @@
 import {
   MIDDLEWARE_CACHE_HEADER,
+  MIDDLEWARE_HEADER_PREFIX,
   MIDDLEWARE_OVERRIDE_HEADERS,
   MIDDLEWARE_REQUEST_HEADER_PREFIX,
   MIDDLEWARE_SET_COOKIE_HEADER,
@@ -69,7 +70,91 @@ export function getUnconsumedMiddlewareRequestHeaders(
   return unconsumedHeaders;
 }
 
-/** Whether middleware changed the headers seen by downstream application code. */
+// Next.js filters `ipcForbiddenHeaders` and skips `content-length` before its
+// generic middleware-header merge.
+const UNMERGED_MIDDLEWARE_RESPONSE_HEADERS = new Set([
+  "accept-encoding",
+  "connection",
+  "content-encoding",
+  "content-length",
+  "expect",
+  "keep-alive",
+  "keepalive",
+  "transfer-encoding",
+]);
+
+/**
+ * Return the truthy ordinary middleware response headers. Next.js's generic
+ * middleware-header merge writes each of them to the request too, so a value
+ * middleware sets replaces one the client sent under the same name. The
+ * `x-middleware-*` namespace carries vinext's middleware protocol and is
+ * handled separately.
+ */
+function getMergedMiddlewareResponseHeaders(source: MiddlewareHeaderSource): Headers {
+  const mergedHeaders = new Headers();
+  const entries =
+    source instanceof Headers
+      ? source
+      : Object.entries(source).flatMap(([key, value]) =>
+          Array.isArray(value)
+            ? value.map((item) => [key, item] as const)
+            : [[key, value] as const],
+        );
+
+  for (const [key, value] of entries) {
+    const lowerKey = key.toLowerCase();
+    if (
+      value &&
+      !lowerKey.startsWith(MIDDLEWARE_HEADER_PREFIX) &&
+      !UNMERGED_MIDDLEWARE_RESPONSE_HEADERS.has(lowerKey)
+    ) {
+      mergedHeaders.append(lowerKey, value);
+    }
+  }
+
+  return mergedHeaders;
+}
+
+function applyMergedMiddlewareHeaders(
+  targetHeaders: Headers,
+  unconsumedHeaders: Map<string, string>,
+  mergedHeaders: Headers,
+): void {
+  for (const [key, value] of unconsumedHeaders) {
+    targetHeaders.set(key, value);
+  }
+  for (const key of new Set(mergedHeaders.keys())) {
+    targetHeaders.delete(key);
+  }
+  // Iteration yields each Set-Cookie value separately and joins the rest.
+  for (const [key, value] of mergedHeaders) {
+    targetHeaders.append(key, value);
+  }
+}
+
+/**
+ * `baseHeaders` with only Next.js's generic merge of ordinary middleware
+ * response headers applied, without the request-header protocol.
+ */
+export function applyMiddlewareResponseHeadersToRequest(
+  baseHeaders: Headers,
+  middlewareHeaders: MiddlewareHeaderSource,
+): Headers {
+  const nextHeaders = new Headers(baseHeaders);
+  applyMergedMiddlewareHeaders(
+    nextHeaders,
+    new Map(),
+    getMergedMiddlewareResponseHeaders(middlewareHeaders),
+  );
+  return nextHeaders;
+}
+
+/**
+ * Whether middleware changed the headers seen by downstream application code
+ * through its request-header protocol. Ordinary response headers are copied to
+ * the request as well, but like a client's own headers they do not opt a
+ * render out of the shared response stage.
+ */
 export function hasMiddlewareRequestHeaderOverrides(
   source: MiddlewareHeaderSource | null,
 ): boolean {
@@ -98,8 +183,9 @@ export function encodeMiddlewareRequestHeaders(
  * middleware. Never re-add absent headers from the base request — that would
  * resurrect credentials the app explicitly stripped before an external
  * rewrite. Next.js treats the empty value emitted for `new Headers()` as no
- * override. Any unconsumed `x-middleware-request-*` values are subsequently
- * copied to the request under their literal protocol-header names.
+ * override. Any unconsumed `x-middleware-request-*` values and every other
+ * truthy middleware response header are subsequently copied to the request
+ * under their literal names, replacing values the client sent.
  */
 export function buildRequestHeadersFromMiddlewareResponse(
   baseHeaders: Headers,
@@ -107,21 +193,21 @@ export function buildRequestHeadersFromMiddlewareResponse(
 ): Headers | null {
   const forwardedHeaders = getForwardedRequestHeaders(middlewareHeaders);
   const unconsumedHeaders = getUnconsumedMiddlewareRequestHeaders(middlewareHeaders);
+  const mergedHeaders = getMergedMiddlewareResponseHeaders(middlewareHeaders);
   const rawOverrideHeader = getMiddlewareHeaderValue(
     middlewareHeaders,
     MIDDLEWARE_OVERRIDE_HEADERS,
   );
 
   // Next.js guards the override translation block with this header's
-  // truthiness. Unconsumed x-middleware-request-* headers still pass through
-  // its subsequent generic middleware-header merge under their literal names.
+  // truthiness. Unconsumed x-middleware-request-* headers and ordinary
+  // response headers still pass through its subsequent generic
+  // middleware-header merge under their literal names.
   if (!rawOverrideHeader) {
-    if (unconsumedHeaders.size === 0) return null;
+    if (unconsumedHeaders.size === 0 && mergedHeaders.keys().next().done) return null;
 
     const nextHeaders = new Headers(baseHeaders);
-    for (const [key, value] of unconsumedHeaders) {
-      nextHeaders.set(key, value);
-    }
+    applyMergedMiddlewareHeaders(nextHeaders, unconsumedHeaders, mergedHeaders);
     return nextHeaders;
   }
 
@@ -136,11 +222,10 @@ export function buildRequestHeadersFromMiddlewareResponse(
   }
 
   // Values named by the override list were consumed above. Any stray values
-  // remain ordinary middleware response headers in Next.js and are copied to
-  // the request literally by resolve-routes.ts's generic merge.
-  for (const [key, value] of unconsumedHeaders) {
-    nextHeaders.set(key, value);
-  }
+  // remain ordinary middleware response headers in Next.js and, like those,
+  // are copied to the request literally by resolve-routes.ts's generic merge,
+  // which runs after the override translation and so takes precedence.
+  applyMergedMiddlewareHeaders(nextHeaders, unconsumedHeaders, mergedHeaders);
 
   return nextHeaders;
 }

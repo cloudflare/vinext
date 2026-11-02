@@ -1,0 +1,133 @@
+---
+title: "Vinext 1.4: less server work, faster hydration, and lighter prefetching"
+description: "Lower CPU per request on Workers and Node, layouts that render once per request, faster hydration, and cached HTML and RSC payloads that are filled and regenerated together and shared across hosts."
+date: "2026-10-28"
+authors:
+  - name: James Anderson
+    url: https://github.com/james-elicx
+tags:
+  - release
+  - Next.js
+  - Cloudflare Workers
+  - performance
+  - caching
+  - App Router
+---
+
+import {
+  ContentSiteChart,
+  ContentSitePrefetchChart,
+  HackerNewsBrowserChart,
+  HackerNewsLighthouseChart,
+  HackerNewsServerChart,
+  HighlightsChart,
+  RedactChart,
+} from "../../app/blog/_charts/vinext-1-4";
+
+To upgrade:
+
+```sh
+npm install vinext@1.4.0 @vinext/cloudflare@1.3.0 @cloudflare/workers-response-store@1.1.4
+```
+
+If you run Workers Response Store as a separate Worker (the default service-binding mode), deploy it as well, because this release fixes how it handles overlapping refreshes. Projects created with `vinext init` have a `deploy:response-store` script for this.
+
+Most of this release is performance work. We profiled Vinext against the Next.js version of the Hacker News app from [solid-server-component-benchmarks](https://github.com/ryansolid/solid-server-component-benchmarks) and Next.js's App Router playground, and kept finding work the server and browser didn't need to do. On the Hacker News story page, 1.4 now spends less time on the server and in the browser than Next.js does:
+
+<HighlightsChart />
+
+The rest of the release brings caching closer to Next.js: a page's cached HTML and RSC payload are now filled and regenerated together, and Cloudflare caches share them across every host an app is served on.
+
+## Less work on the server
+
+Profiling the Hacker News app showed how much time went into plumbing rather than rendering. Every streamed response was wrapped several times, by the SSR entry, the page lifecycle, tracing, the cache and `after()`, and each wrapper piped the body through its own `TransformStream`. Those wrappers now read the stream directly and merge into one when they're stacked. The RSC stream got the same treatment, and a rewrite of React's stylesheet hints that ran over every byte is gone, since React 19.3 sends those hints correctly. `<Link>` also skips the dozen hooks it used to run during SSR, where none of them do anything.
+
+On Node, Vinext now renders HTML with React's Node build, as Next.js does, instead of the edge build, which allocates a new buffer for every text node and attribute. The RSC payload embedded in the page also stays as UTF-8 bytes, instead of being decoded, escaped and encoded again.
+
+Together, rendering a 1,500-comment Hacker News story on Node now takes 43% less CPU than in 1.3, slightly less than Next.js, and the server handles 40% more requests per second under load:
+
+<HackerNewsServerChart />
+
+[@gengjiawen](https://github.com/gengjiawen) also found that the Node server kept every App Router route handler request in memory. After 500,000 requests the heap had grown to 1.18 GB. It now stays at about 10 MB.
+
+## Layouts run once per request
+
+Vinext used to run every App Router layout once before rendering the page. That early pass caught a layout's `redirect()` or `notFound()`, and classified the layout as static or dynamic so the client could skip static layouts on navigation. The cost was that a static layout ran twice on every request. In apps with a heavy layout, such as a docs sidebar or a dashboard shell, that adds up.
+
+The render now handles a layout's `redirect()`, `notFound()`, `forbidden()` and `unauthorized()` itself, as Next.js does, so the early pass is gone and every layout runs once. On a version of the Hacker News app whose root layout renders a 300-link sidebar, client navigations dropped by 14% in CPU instructions and full page loads by 8%.
+
+Client navigations can also skip the layouts the client already has, as in Next.js. The client says which layouts it holds, and the server renders only below them. Vinext does this only for responses it never caches, such as `force-dynamic` routes and dynamic routes without `generateStaticParams`. Anything cached is a full payload any client can use. [Differences from Next.js](/docs/reference/differences) lists exactly when layouts are skipped.
+
+## Faster hydration
+
+In the browser, the biggest change is that the chunks a page needs at startup now carry V8's [explicit compile hint](https://v8.dev/blog/explicit-compile-hints). Chrome 136 and later compile them on a background thread while they download, instead of compiling each function on the main thread the first time hydration calls it. On a Hacker News story with about 650 client components, at a 4× CPU throttle, hydration went from 104 ms to 87 ms.
+
+Startup scripts now load at low priority, as in Next.js, so they no longer compete with the document for bandwidth on slow connections, and the page paints sooner.
+
+The App Router browser entry also used to hold a loader for every client component in the app, which [@quantizor](https://github.com/quantizor) pointed out. Each component's RSC row now names the chunks it needs, as in Next.js, so the entry only contains what every page uses. It's also more stable: adding a client component no longer changes the entry's file name, so browsers keep it cached across deploys.
+
+On the Hacker News story page, these changes take between a fifth and a quarter off the time spent running script, both on the first load and on client navigations from the feed:
+
+<HackerNewsBrowserChart />
+
+Lighthouse simulates a slow 4G connection, which is where low-priority scripts help most. First Contentful Paint went from 3.3 s in 1.3 to 2.1 s, level with Next.js, and the score from 81 to 88:
+
+<HackerNewsLighthouseChart />
+
+Pages Router apps get faster too. The HTML now preloads the page and `_app` chunks, so they download alongside the client entry instead of after it. That alone made hydration 19–27% faster on a test app. `next/image`, `next/dynamic`, `next/script`, `next/form` and the App Router client runtime now only load on pages that use them.
+
+## Lighter prefetching
+
+Next.js doesn't render a dynamic page just to prefetch it. It prefetches the route and, if there is one, its loading state, and renders the page when you navigate. Vinext used to render the whole page for every link in view. On a prototype of a large content site, where every page renders dynamically, opening a single page prefetched 3.9 MB. Vinext 1.4 prefetches only each route's loading state, under 1 kB a route:
+
+<ContentSitePrefetchChart />
+
+## HTML and RSC cached in sync
+
+Next.js stores an App Router page's HTML and its RSC payload in one cache entry. Whichever request misses first, a full page load or a client navigation, fills both, and regenerating the page rewrites both. Vinext stored them under separate keys, so a page first reached by client navigation still missed on its first full load, as [@yoohahn](https://github.com/yoohahn) noticed.
+
+Vinext still stores them separately, but on every backend it now fills and regenerates them together. When an RSC request misses, Vinext renders the page's HTML from the payload it already has, without running your server components again, and stores both. Regenerating either part rewrites the other. Workers Cache can't store a response nobody asked for, so there Vinext fetches the other part in the background, which costs one extra request each time a page misses or refreshes.
+
+Those entries are also shared across hosts now. Next.js keys its cache by path, so an app served on several domains shares its cached pages, but Workers Response Store and Workers Cache included the host in their keys, so every domain rendered and stored its own copy. Every domain now uses the same copy, as the KV cache already did. This is safe because a render that reads the host, such as `headers().get("host")` or `request.nextUrl.hostname`, is dynamic and never stored. Pages Router pages that run `getServerSideProps` or `getInitialProps` are still only stored when a `CDN-Cache-Control` policy opts them in, and then with one entry per host. [Hosts](/docs/caching#hosts) has the details.
+
+## Benchmarking a larger app
+
+The content site prototype from the prefetching test is a harder benchmark than Hacker News, and Next.js still wins parts of it. Vinext ran under workerd, as it does on Workers, and Next.js on Node, so the server numbers compare runtimes as much as frameworks. 1.4 paints a third sooner than 1.3 and spends a fifth less time running script, and Vinext downloads 40% less JavaScript than Next.js and peaks at under half its memory:
+
+<ContentSiteChart />
+
+Next.js paints first, by about half a second. The browser can't paint until it has every stylesheet in the page's head, and Vinext's page links 15 of them, about 44 kB compressed, where Next.js links 4, about 31 kB. Turbopack merges a page's CSS into a few files, while Vite keeps one file per chunk, so a page built from many components pulls in many small stylesheets, and on Lighthouse's simulated slow 4G connection each extra request delays the first paint.
+
+Next.js also uses about a fifth less CPU per request. Some of that is the runtime: on workerd, Vinext still renders with React's edge build rather than the Node build mentioned earlier. Some of it is payload size. Vinext's RSC payload for the about page is 297 kB, against 204 kB for Next.js, and every request has to serialize it and embed it in the HTML. We're looking at more ways to shrink the payload.
+
+## Trying TanStack Redact
+
+TanStack released [Redact](https://tanstack.com/blog/introducing-tanstack-redact) this week. It swaps React and React DOM in the browser for a smaller runtime at build time, while the server keeps rendering with React, and it ships a [Vinext adapter](https://tanstack.com/redact/latest/docs/vinext). We tried it on the same Hacker News app.
+
+It does what it promises on size: every page downloads a quarter less JavaScript, and on the front page, which lists 30 stories, Redact spends 14 ms running script where React spends 51 ms. The 1,500-comment story page goes the other way. Script time on load nearly doubles, and Lighthouse's Total Blocking Time goes from 56 ms to 666 ms, which takes the score from 88 to 70.
+
+Almost all of the difference is hydration. For each of the page's 11,600 elements, Redact compares every prop with the attribute in the server-rendered HTML to catch mismatches, and for each comment's `dangerouslySetInnerHTML` it reads the HTML back, parses it and compares it. React only runs those checks in development, so Redact ends up spending about twice as long per element. Neither runtime yields during the first hydration, so it all happens in one long task, and nearly all of the extra time counts as blocking time.
+
+That's a choice Redact made rather than something Vinext can change, and dropping those checks in production builds, as React does, would likely close most of the gap. Until then, TanStack's advice to test your busiest screens is worth following: smaller pages come out ahead.
+
+<RedactChart />
+
+The adapter currently only accepts Vinext 1.3.0, so we bypassed its version check to run it against 1.4.
+
+## Other fixes
+
+- `vinext start`, `vinext-cloudflare deploy`, `vinext typegen` and custom servers that call `startProdServer()` set `NODE_ENV` to `production` unless you've set it yourself, as the matching `next` commands do. `vinext start` used to run React's development build.
+- A `next/dynamic` component whose chunk fails to load in the App Router now reaches the nearest `error.tsx`. Vinext used to render the `loading` component with an `error` prop, which most spinners ignore, so a chunk missing after a deploy left the page on "Loading..." forever. Next.js only does that in the Pages Router.
+- `revalidateTag(tag, profile)` serves older entries stale until the profile expires, as in Next.js. The in-memory and KV caches used to drop them straight away, so the next request waited for a render.
+- Response Store no longer uses up the account's Workers Cache purge budget on routine refreshes. [@williamrogersdev](https://github.com/williamrogersdev) reported this.
+- A layout that calls `notFound()` returns a 404 with the nearest not-found page above it, instead of a 500, as [@GauravKumawat2002](https://github.com/GauravKumawat2002) and [@quantizor](https://github.com/quantizor) reported. Parallel slots and intercepted routes render their own not-found, forbidden and unauthorized pages.
+- Google Tag Manager and GA4 record every client navigation again. Vinext called its own saved copy of `history.pushState`, so wrappers added after the page loaded never saw navigations. [@mattgwagner](https://github.com/mattgwagner) reported this.
+- Production servers log render errors. A failed render used to return a 500 with nothing in the logs, as [@melkir](https://github.com/melkir) found. They also reported fixes for draft mode with cached `fetch`, apps with several root layouts, and next-intl's precompiled messages.
+- [@Gourav224](https://github.com/Gourav224) added `--vite-config` to `vinext-cloudflare deploy`, and `--ignore-wrangler-config` to `vinext init` for projects with a Wrangler config for another Worker. [@ericjuta](https://github.com/ericjuta) asked for both.
+- [@hakarrr](https://github.com/hakarrr) and [@Godsenal](https://github.com/Godsenal) fixed several Pages Router API route differences from Next.js, including streamed `res.send()`, request body charsets, and `next.config` headers.
+- [@yoohahn](https://github.com/yoohahn) fixed `useSearchParams()` staying empty after hydration on `force-static` pages.
+- `vinext dev` starts after a reboot even if the previous session's lock file is still there, as [@quantizor](https://github.com/quantizor) reported.
+
+Thanks to everyone who contributed to 1.4: [@exKAZUu](https://github.com/exKAZUu), [@gengjiawen](https://github.com/gengjiawen), [@Godsenal](https://github.com/Godsenal), [@Gourav224](https://github.com/Gourav224), [@hakarrr](https://github.com/hakarrr) and [@williamrogersdev](https://github.com/williamrogersdev). Thanks also to the 1.3.1 contributors: [@Divkix](https://github.com/Divkix), [@fengmk2](https://github.com/fengmk2), [@MumuTW](https://github.com/MumuTW), [@RaphaelFakhri](https://github.com/RaphaelFakhri), [@tannerlinsley](https://github.com/tannerlinsley) and [@yoohahn](https://github.com/yoohahn). And thanks to [@BetoFrega](https://github.com/BetoFrega), [@ericjuta](https://github.com/ericjuta), [@GauravKumawat2002](https://github.com/GauravKumawat2002), [@itseasypop](https://github.com/itseasypop), [@jantimon](https://github.com/jantimon), [@mattgwagner](https://github.com/mattgwagner), [@melkir](https://github.com/melkir), [@NathanDrake2406](https://github.com/NathanDrake2406), [@pcsontos](https://github.com/pcsontos), [@quantizor](https://github.com/quantizor) and [@tonyxty](https://github.com/tonyxty) for their bug reports.
+
+The full lists of changes are in the release notes for [vinext 1.4.0](https://github.com/cloudflare/vinext/releases/tag/vinext%401.4.0), [@vinext/cloudflare 1.3.0](https://github.com/cloudflare/vinext/releases/tag/%40vinext%2Fcloudflare%401.3.0) and [@cloudflare/workers-response-store 1.1.4](https://github.com/cloudflare/vinext/releases/tag/%40cloudflare%2Fworkers-response-store%401.1.4).

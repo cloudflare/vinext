@@ -27,7 +27,12 @@ import fsp from "node:fs/promises";
 import path from "pathslash";
 import zlib from "node:zlib";
 import { resolveClientBuildFile } from "./client-build-files.js";
-import { StaticFileCache, contentTypeForPath, etagFromFilenameHash } from "./static-file-cache.js";
+import {
+  StaticFileCache,
+  contentTypeForPath,
+  etagFromFilenameHash,
+  staticFileCacheControl,
+} from "./static-file-cache.js";
 import { signalFromNodeResponse } from "./node-response-signal.js";
 import {
   isImageOptimizationPath,
@@ -37,6 +42,7 @@ import {
   parseImageParams,
   isImageSourceBodyStatus,
   isSafeImageContentType,
+  MUTABLE_IMAGE_SOURCE_CACHE_CONTROL,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -439,6 +445,9 @@ const OMIT_STATIC_RESPONSE_HEADERS: ReadonlySet<string> = new Set([
   VINEXT_PRERENDER_SPECIAL_ERROR_HEADER,
 ]);
 
+// Signal headers an App Router image endpoint 400 keeps but its image replaces.
+const IMAGE_ERROR_SIGNAL_HEADERS = ["content-type", "content-encoding"] as const;
+
 function omitHeadersCaseInsensitive(
   headersRecord: Record<string, string | string[]>,
   targets: ReadonlySet<string>,
@@ -459,6 +468,22 @@ function readHeaderCaseInsensitive(
   if (key === undefined) return undefined;
   const value = headersRecord[key];
   return Array.isArray(value) ? value.join(", ") : value;
+}
+
+/** Spell a header's name as `name`, so spreading the record replaces that key. */
+function withHeaderName(
+  headersRecord: Record<string, string | string[]>,
+  name: string,
+): Record<string, string | string[]> {
+  const lowerName = name.toLowerCase();
+  const key = Object.keys(headersRecord).find(
+    (entry) => entry !== name && entry.toLowerCase() === lowerName,
+  );
+  if (key === undefined) return headersRecord;
+  const { [key]: value, ...rest } = headersRecord;
+  const existing = rest[name];
+  rest[name] = existing === undefined ? value : [existing, value].flat();
+  return rest;
 }
 
 /** Remove one field name from a Vary header, dropping the header if it empties. */
@@ -734,6 +759,19 @@ function staticCacheLookupPath(pathname: string): string | null {
   return lookupPath;
 }
 
+/**
+ * Give a Node image passthrough Next.js's image Cache-Control instead of the
+ * public-file default: a hashed build asset keeps its immutable default, and
+ * any other source is revalidated after the default `images.minimumCacheTTL`.
+ */
+function withImageSourceCacheControl(
+  headers: Record<string, string>,
+  sourcePath: string,
+): Record<string, string> {
+  if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
+  return { ...headers, "Cache-Control": MUTABLE_IMAGE_SOURCE_CACHE_CONTROL };
+}
+
 /** Pathnames the Pages Router serves from routes rather than the client directory. */
 function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRoutePhase): boolean {
   return (
@@ -755,7 +793,7 @@ function isPagesFilesystemExcludedPath(pathname: string, phase: FilesystemRouteP
  * Without a cache, falls back to async filesystem probing (still non-blocking,
  * unlike the old sync existsSync/statSync approach).
  *
- * `extraHeaders` go on every response for the file. `representationHeaders` go
+ * `stagedHeaders` go on every response for the file. `representationHeaders` go
  * only on responses that carry the file's bytes (200 and 206), never on a 304,
  * 412, 416 or 405.
  */
@@ -766,11 +804,15 @@ async function tryServeStatic(
   pathname: string,
   compress: boolean,
   cache?: StaticFileCache,
-  extraHeaders?: Record<string, string | string[]>,
+  stagedHeaders?: Record<string, string | string[]>,
   statusCode?: number,
   representationHeaders?: Record<string, string>,
 ): Promise<boolean> {
   if (pathname === "/") return false;
+  // A Cache-Control from middleware or config headers replaces the file's
+  // default, as Next.js's `send` only sets one when none is present. Staged
+  // names arrive lowercased, so match the default's casing for the spreads.
+  const extraHeaders = stagedHeaders && withHeaderName(stagedHeaders, "Cache-Control");
   const responseStatus = statusCode ?? 200;
   const omitBody = isNoBodyResponseStatus(responseStatus);
   // Match Next.js's `send` behavior: HEAD evaluates Range like GET, then omits
@@ -983,7 +1025,7 @@ async function tryServeStatic(
   // so a single `includes` covers both the root-level `/<ASSET_PREFIX_URL_DIR>/...`
   // case and any `/<prefix>/<ASSET_PREFIX_URL_DIR>/...` assetPrefix layout.
   const isHashed = pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`);
-  const cacheControl = isHashed ? "public, max-age=31536000, immutable" : "public, max-age=3600";
+  const cacheControl = staticFileCacheControl(isHashed);
   // Use a filename-hash ETag for hashed assets (matches the fast-path cache
   // behaviour and survives deploys). Use resolved.path (not pathname) so that
   // ext and the hash extraction both come from the same file — they can diverge
@@ -1252,6 +1294,16 @@ async function statIfFile(filePath: string): Promise<{ size: number; mtimeMs: nu
   } catch {
     return null;
   }
+}
+
+/**
+ * Node's parser keeps a `#fragment` sent on the request line in `req.url`.
+ * Next.js rebuilds request URLs from pathname + search, so neither routing,
+ * middleware nor handlers observe one; drop it before anything reads the URL.
+ */
+function stripNodeRequestUrlFragment(req: IncomingMessage): void {
+  const hashIndex = req.url?.indexOf("#") ?? -1;
+  if (hashIndex !== -1) req.url = req.url?.slice(0, hashIndex);
 }
 
 // `resolveHost`, `trustedHosts`, and `trustProxy` are now imported from
@@ -1955,26 +2007,38 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   // Image optimization passthrough (Node.js prod server has no Images binding;
   // serves the original file with cache headers and security headers). Runs
   // only after the RSC handler admitted the endpoint through middleware and
-  // rewrites, whose response headers Next.js also sends with the image.
+  // rewrites. Next.js also sends config and middleware headers with the image.
   const serveImageOptimization = async (
     req: IncomingMessage,
     res: ServerResponse,
     request: Request,
     signal: ImageOptimizationSignal,
   ): Promise<void> => {
-    const stagedHeaders = omitHeadersCaseInsensitive(
-      mergeResponseHeaders({}, new Response(null, { headers: signal.middlewareHeaders })),
-      OMIT_STATIC_RESPONSE_HEADERS,
+    const signalHeaders = mergeResponseHeaders(
+      {},
+      new Response(null, { headers: signal.middlewareHeaders }),
     );
+    const stagedHeaders = omitHeadersCaseInsensitive(signalHeaders, OMIT_STATIC_RESPONSE_HEADERS);
     for (const [name, value] of Object.entries(stagedHeaders)) {
       res.setHeader(name, value);
     }
+    // Next.js sets config and middleware headers before the image handler, so
+    // only an image replaces their Content-Type and Content-Encoding.
+    const sendBadRequest = (body: string) => {
+      for (const name of IMAGE_ERROR_SIGNAL_HEADERS) {
+        const value = signalHeaders[name];
+        if (value !== undefined) res.setHeader(name, value);
+      }
+      res.writeHead(400);
+      res.end(body);
+    };
     // The query middleware and rewrites selected, which the handler validated.
     const parsedUrl = new URL(`/${signal.search}`, "http://localhost");
-    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities);
+    const params = parseImageParams(parsedUrl, appImageAllowedWidths, imageConfig?.qualities, {
+      localPatterns: imageConfig?.localPatterns,
+    });
     if (!params) {
-      res.writeHead(400);
-      res.end("Bad Request");
+      sendBadRequest("Bad Request");
       return;
     }
     // Block SVG and other unsafe content types by checking the file extension
@@ -1982,8 +2046,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // could carry an image extension. SVG is only allowed when
     // dangerouslyAllowSVG is enabled in next.config.js.
     const sendUnsafeContentType = () => {
-      res.writeHead(400);
-      res.end("The requested resource is not an allowed image type");
+      sendBadRequest("The requested resource is not an allowed image type");
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
@@ -2003,7 +2066,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        imageSecurityHeaders,
+        withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2057,8 +2120,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         if (await serveSource(sourcePath)) return;
       }
     }
-    res.writeHead(400);
-    res.end(INVALID_IMAGE_SOURCE_MESSAGE);
+    sendBadRequest(INVALID_IMAGE_SOURCE_MESSAGE);
   };
 
   // Files the client build emits outside `_next/static`, for example a
@@ -2256,6 +2318,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
   };
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {
@@ -2278,9 +2341,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
       },
       getStatus: () => res.statusCode,
       headers,
-      // Read the raw path: `new URL("//", base)` throws, and `//host/x` would
-      // parse as a different origin.
-      isRsc: target.split("?", 1)[0].endsWith(".rsc") || headers.get("RSC") === "1",
+      isRsc: headers.get("RSC") === "1",
       method: req.method ?? "GET",
       target,
     });
@@ -2455,6 +2516,7 @@ async function createPagesRouterRequestHandler(
         dangerouslyAllowSVG: vinextConfig.images.dangerouslyAllowSVG,
         dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
         qualities: vinextConfig.images.qualities,
+        localPatterns: vinextConfig.images.localPatterns,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
       }
@@ -2475,6 +2537,7 @@ async function createPagesRouterRequestHandler(
   const staticCache = await StaticFileCache.create(clientDir);
 
   const handleRequest = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    stripNodeRequestUrlFragment(req);
     try {
       await ensureInstrumentation();
     } catch (error) {
@@ -2846,15 +2909,22 @@ async function createPagesRouterRequestHandler(
             : null,
         handleApi:
           typeof handleApi === "function"
-            ? (request: Request, apiUrl: string) =>
-                handleApi(
+            ? (request: Request, apiUrl: string, _ctx: unknown, stagedHeaders: Headers) => {
+                // Next.js writes the routing response headers to `res` before the
+                // API route runs, so the handler can read and replace them.
+                // A staged Content-Length describes no API body.
+                stagedHeaders.delete("Content-Length");
+                return handleApi(
                   request,
                   apiUrl,
                   createNodeExecutionContext(),
                   resolveTrustedNodeRevalidateOrigin(req, host, port),
                   "node",
-                )
+                  stagedHeaders,
+                );
+              }
             : null,
+        handleApiAppliesStagedHeaders: true,
         // ── 5b. Serve public-directory static files (post-middleware) ──
         // Public files (favicon.ico, robots.txt, anything under public/) are served
         // after middleware so middleware can intercept or redirect them, and before
@@ -2882,6 +2952,7 @@ async function createPagesRouterRequestHandler(
               parsedUrl,
               allowedImageWidths,
               pagesImageConfig?.qualities,
+              { localPatterns: pagesImageConfig?.localPatterns },
             );
             if (!params) {
               res.writeHead(400);
@@ -2914,7 +2985,7 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                imageSecurityHeaders,
+                withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );

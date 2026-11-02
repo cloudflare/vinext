@@ -95,6 +95,8 @@ import { appendAssetDeploymentIdQuery } from "../utils/deployment-id.js";
 import { ssrAppRouterInstance } from "./app-ssr-router-instance.js";
 import { createRenderStreamCancellation, isAppRenderAbortError } from "./app-render-abort-error.js";
 import { getNextErrorDigest } from "./next-error-digest.js";
+import { isBailoutToCSRError, isDynamicServerError } from "vinext/shims/navigation-errors";
+import { isNavigationSignalError } from "../utils/navigation-signal.js";
 // @ts-expect-error — resolved by the vinext Vite plugin in SSR environments.
 import pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets, type PagesClientAssets } from "./pages-client-assets.js";
@@ -168,25 +170,38 @@ function createUtf8Stream(html: string): ReadableStream<Uint8Array> {
   });
 }
 
-function buildBootstrapModuleScript(bootstrapModuleUrl?: string, nonce?: string): string {
+function buildBootstrapModuleScript(
+  bootstrapModuleUrl?: string,
+  nonce?: string,
+  crossOrigin?: string,
+): string {
   if (!bootstrapModuleUrl) return "";
+  // As React's bootstrapModules emits it.
+  const crossOriginAttribute =
+    crossOrigin === undefined
+      ? ""
+      : ` crossorigin="${crossOrigin === "use-credentials" ? "use-credentials" : ""}"`;
   return (
     `<script type="module"${createNonceAttribute(nonce)} src="` +
     escapeHtmlAttr(bootstrapModuleUrl) +
-    '" id="_R_" async="" fetchPriority="low"></script>'
+    `"${crossOriginAttribute} id="_R_" async="" fetchPriority="low"></script>`
   );
 }
 
 function renderSsrErrorDocumentShell(
   bootstrapModuleUrl?: string,
   nonce?: string,
+  crossOrigin?: string,
 ): ReadableStream<Uint8Array> {
   const html = renderToStaticMarkup(
     createReactElement(DefaultGlobalError, {
       error: null,
     }),
-  ).replace("<style>", '<style data-vinext-error-shell-style="">');
-  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce);
+  )
+    // Like Next.js's NonIndex, which the error document's 500 status turns on.
+    .replace("<head>", '<head><meta name="robots" content="noindex"/>')
+    .replace("<style>", '<style data-vinext-error-shell-style="">');
+  const bootstrapScript = buildBootstrapModuleScript(bootstrapModuleUrl, nonce, crossOrigin);
   if (!bootstrapScript) {
     return createUtf8Stream(`<!DOCTYPE html>${html}`);
   }
@@ -440,6 +455,12 @@ export async function handleSsr(
      */
     isCacheCandidate?: boolean;
     fallbackToErrorDocumentOnShellError?: boolean;
+    /**
+     * Whether the RSC render threw the given shell error. As in Next.js, in
+     * dev the error document carries only an error that the HTML render alone
+     * threw, for the overlay: the browser reports the others itself.
+     */
+    isServerComponentError?: (error: unknown) => boolean;
     /**
      * The parallel slot not-found boundaries that catch the error that
      * rejected the shell, or null when none catches it. The document then
@@ -755,6 +776,7 @@ export async function handleSsr(
         let htmlStream: ReadableStream<Uint8Array>;
         let renderComplete = Promise.resolve();
         let shellErrorRecovered = false;
+        let ssrOnlyShellError: unknown;
         let caughtShellError: unknown;
         let caughtBoundaries: CaughtNotFoundBoundaries | null = null;
         let shouldDelayInitialHtmlPull = false;
@@ -856,13 +878,24 @@ export async function handleSsr(
               htmlStream = caughtHtmlStream;
             } else if (
               options?.fallbackToErrorDocumentOnShellError !== true ||
-              options?.waitForAllReady === true ||
-              typeof (error as { digest?: unknown } | null)?.digest === "string"
+              isNavigationSignalError(error) ||
+              isBailoutToCSRError(error) ||
+              isDynamicServerError(error)
             ) {
               throw error;
             } else {
+              // Like Next.js, any other error answers with the error document,
+              // carrying the payload this render already produced. The browser
+              // renders that payload, and the error boundary it carries catches
+              // the error, so no server component runs, or reports, again.
+              // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/app-render/app-render.tsx (getErrorRSCPayload)
               shellErrorRecovered = true;
-              htmlStream = renderSsrErrorDocumentShell(bootstrapModuleUrl, options?.scriptNonce);
+              if (options?.isServerComponentError?.(error) !== true) ssrOnlyShellError = error;
+              htmlStream = renderSsrErrorDocumentShell(
+                bootstrapModuleUrl,
+                options?.scriptNonce,
+                assetCrossOrigin,
+              );
             }
           }
         }
@@ -914,7 +947,7 @@ export async function handleSsr(
           const insertedHTML = renderInsertedHtml(renderServerInsertedHTML());
           const errorMetaHTML = errorMetaRenderer.flush();
           const initialDevServerErrorHTML = createInitialDevServerErrorScript(
-            options?.initialDevServerError,
+            options?.initialDevServerError ?? ssrOnlyShellError,
             options?.scriptNonce,
           );
           if (didInjectHeadHTML) return insertedHTML + errorMetaHTML + getRenderedSearchHTML();

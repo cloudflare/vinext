@@ -2,6 +2,7 @@
 
 import {
   createElement,
+  Fragment,
   startTransition,
   use,
   useEffect,
@@ -21,6 +22,7 @@ import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
+  activateNavigationSnapshot,
   appRouterInstance,
   commitClientNavigationState,
   consumePrefetchResponse,
@@ -177,6 +179,7 @@ import { AppRouterContext } from "vinext/shims/internal/app-router-context";
 import {
   BfcacheIdentityMapContext,
   bindAppElementsRenderedSearch,
+  isBfcacheIdentityRetained,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
 import type {
@@ -366,8 +369,9 @@ const historyController = new AppBrowserHistoryController({
   maxHistoryStateSnapshots: MAX_HISTORY_STATE_SNAPSHOTS,
   readHistoryState: () => window.history.state,
   readCurrentHref: () => window.location.href,
-  pushHistoryState: (state, href) => pushHistoryStateWithoutNotify(state, "", href),
-  replaceHistoryState: (state, href) => replaceHistoryStateWithoutNotify(state, "", href),
+  pushHistoryState: (state, href, land) => pushHistoryStateWithoutNotify(state, "", href, land),
+  replaceHistoryState: (state, href, land) =>
+    replaceHistoryStateWithoutNotify(state, "", href, land),
   readVisibleNavigationMetadata: () => {
     if (!hasBrowserRouterState()) return null;
     const routerState = getBrowserRouterState();
@@ -496,6 +500,15 @@ let latestRscHmrUpdateId = 0;
 // navigation. This is intentionally not a per-navigation set — a future
 // asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
+// Publishes a restored history entry's URL state and releases its render
+// snapshot, while that entry's synchronous commit hasn't done so yet.
+let pendingHistoryRestoreCommit: (() => void) | null = null;
+
+function flushPendingHistoryRestoreCommit(): void {
+  const commit = pendingHistoryRestoreCommit;
+  pendingHistoryRestoreCommit = null;
+  commit?.();
+}
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
 // request runner has swapped to the invalidated module graph. Give the
@@ -525,6 +538,16 @@ function restoreHistoryStateSnapshot(
           beforeCommit: () => {
             onApprovedBeforeCommit?.();
             beforeCommit();
+            // The restored tree commits before its URL state, so its hooks
+            // read the entry's own render snapshot, as Next derives them from
+            // the restored tree. A history write from one of its layout
+            // effects publishes that URL state first. A copied external
+            // entry's snapshot holds the copied tree's URL, not the one the
+            // browser shows.
+            if (!restoreCopiedExternalHistoryEntry) {
+              activateNavigationSnapshot();
+              pendingHistoryRestoreCommit = () => commitClientNavigationState(navId);
+            }
           },
           navId,
           state,
@@ -544,7 +567,11 @@ function restoreHistoryStateSnapshot(
   clientNavigationCacheGeneration += 1;
   revokeHistoryRestoreNavigationReuse(visitedResponseCache);
   disableNavigationResponsePrefetchCacheReuse();
-  commitClientNavigationState(navId, { releaseSnapshot: false });
+  if (restoreCopiedExternalHistoryEntry) {
+    commitClientNavigationState(navId, { releaseSnapshot: false });
+  } else {
+    flushPendingHistoryRestoreCommit();
+  }
   return true;
 }
 
@@ -1983,6 +2010,13 @@ function registerServerActionCallback(): void {
   });
 }
 
+// Reports the errors that only the HTML render threw, as Next.js's
+// ReplaySsrOnlyErrors does, once the client-rendered error document commits.
+function ReplayInitialDevServerErrors({ report }: { report: () => void }): null {
+  useEffect(report, [report]);
+  return null;
+}
+
 async function main(): Promise<void> {
   if (!claimInitialAppRouterBootstrap()) return;
   // Fetch the RouteManifest chunk alongside bootstrap and hydration rather than
@@ -1998,7 +2032,11 @@ async function main(): Promise<void> {
     devErrorOverlay = await import("../client/dev-error-overlay.js");
     devErrorOverlay.installDevErrorOverlay();
     devErrorOverlay.installViteHmrErrorHandler(import.meta.hot);
-    devErrorOverlay.reportInitialDevServerErrors();
+    // Rendering the error document clears the body the overlay mounts in, so
+    // the document's root reports them once it commits.
+    if (document.documentElement.id !== "__next_error__") {
+      devErrorOverlay.reportInitialDevServerErrors();
+    }
   }
 
   const initialRscBootstrap = getNavigationRuntime()?.bootstrap.rsc;
@@ -2154,7 +2192,18 @@ function bootstrapHydration(
     }
     startTransition(() => {
       const clientRoot = createRoot(document, createRootOptions);
-      clientRoot.render(children);
+      clientRoot.render(
+        import.meta.env.DEV && devErrorOverlay
+          ? createElement(
+              Fragment,
+              null,
+              children,
+              createElement(ReplayInitialDevServerErrors, {
+                report: devErrorOverlay.reportInitialDevServerErrors,
+              }),
+            )
+          : children,
+      );
       window.__VINEXT_RSC_ROOT__ = clientRoot;
     });
   } else {
@@ -2679,7 +2728,10 @@ function bootstrapHydration(
                 currentElements: navigationInitiationState.elements,
                 currentLayoutIds: navigationInitiationState.layoutIds,
                 currentParams: navigationInitiationState.navigationSnapshot.params,
+                isBfcacheIdentityRetained,
                 routeManifest,
+                shownElements: getBrowserRouterState().elements,
+                targetElements: optimisticPayload.elements,
                 targetRouteParams: optimisticPayload.routeParams,
                 targetUrlParts: optimisticPayload.urlParts,
                 template: optimisticPayload.template,
@@ -3176,7 +3228,10 @@ function bootstrapHydration(
         navigationAbortCoordinator.abortActive();
       }
     },
-    flushCommittingNavigationUrl: () => browserNavigationController.flushCommittingNavigationUrl(),
+    flushCommittingNavigationUrl: () => {
+      flushPendingHistoryRestoreCommit();
+      browserNavigationController.flushCommittingNavigationUrl();
+    },
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).

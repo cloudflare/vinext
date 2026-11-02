@@ -24,7 +24,7 @@ import { isPageNotModified } from "vinext/internal/server/http-conditional";
 import { loadVinextRequestStage } from "vinext/server/request-stage";
 import { loadVinextResponseStage } from "vinext/server/response-stage";
 import { traceCachedResponseStart } from "vinext/internal/server/response-start-tracing";
-import { hasDocumentPart, isCanonicalAppPage } from "./app-page-parts.js";
+import { isCanonicalAppPage } from "./app-page-parts.js";
 import {
   finalizeGatewayResponse,
   SHARED_RESPONSE_STAGE_HEADER,
@@ -53,6 +53,7 @@ import {
   DATA_REVALIDATOR_ID,
   runWithResponseStoreInvocation,
   setResponseStore,
+  trackResponseStoreRegenerationWork,
   type ResponseStoreInvocationCapture,
 } from "./response-store-data.runtime.js";
 
@@ -105,7 +106,10 @@ function stageContext(ctx: WorkerExecutionContext, env: VinextResponseStoreEnv):
     hostRuntime: "worker" as const,
     passThroughOnException: () => ctx.passThroughOnException(),
     ...(ctx.props === undefined ? {} : { props: ctx.props }),
-    waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise),
+    waitUntil: (promise: Promise<unknown>) => {
+      trackResponseStoreRegenerationWork(promise);
+      ctx.waitUntil(promise);
+    },
   });
 }
 
@@ -374,6 +378,9 @@ async function cacheRequest(invocation: StoredInvocation): Promise<Request> {
  * RSC response, HITs included, so such an entry shared across queries must not
  * carry the values of the request that filled it. Every other response kind
  * (route handlers, metadata routes, HTML, Pages) keeps its headers as rendered.
+ * Under an interception context the params stay: an intercepted response's
+ * include its target's, which the request stage doesn't match, and the key
+ * holds the context.
  */
 function withoutRequestScopedHeaders(response: Response, responseStageProps: unknown): Response {
   if (
@@ -385,7 +392,9 @@ function withoutRequestScopedHeaders(response: Response, responseStageProps: unk
     return response;
   }
   const headers = new Headers(response.headers);
-  headers.delete(VINEXT_PARAMS_HEADER);
+  if (Reflect.get(responseStageProps, "interceptionContext") == null) {
+    headers.delete(VINEXT_PARAMS_HEADER);
+  }
   headers.delete(VINEXT_RENDERED_PATH_AND_SEARCH_HEADER);
   return new Response(response.body, {
     headers,
@@ -487,7 +496,7 @@ function otherPagePart(identityRequest: Request, identityProps: unknown): PagePa
   if (isCanonicalAppPage(identityProps, false)) {
     return { invocation: rscPartInvocation(identityRequest, identityProps), kind: "rsc" };
   }
-  if (isCanonicalAppPage(identityProps, true) && hasDocumentPart(identityRequest.url)) {
+  if (isCanonicalAppPage(identityProps, true)) {
     return { invocation: documentPartInvocation(identityRequest, identityProps), kind: "document" };
   }
   return undefined;
@@ -731,7 +740,8 @@ const handler = {
       }
 
       // Core supplies a host-free identity for shared App Router dispatches
-      // and static Pages pages, query-free for App pages, behind
+      // and static Pages pages, query-free for App pages, Route Handlers and
+      // metadata routes, behind
       // completed-response admission. The render still receives the real
       // request; the key and RSC seed use the identity, and route replay
       // does unless the identity asks to regenerate from the dispatch.

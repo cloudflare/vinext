@@ -3,6 +3,11 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import {
+  isStreamedActionRedirectResponse,
+  markStreamedActionRedirectResponse,
+  markAppRscResponseConfigHeadersApplied,
+} from "./app-rsc-response-finalizer.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import {
   ACTION_FORWARDED_HEADER,
@@ -10,7 +15,6 @@ import {
   NEXTJS_ACTION_NOT_FOUND_HEADER,
 } from "./headers.js";
 import { mergeMiddlewareResponseHeaders } from "./middleware-response-headers.js";
-import { markAppRscResponseConfigHeadersApplied } from "./app-rsc-response-finalizer.js";
 import {
   createServerActionNotFoundResponse,
   getServerActionNotFoundMessage,
@@ -139,9 +143,12 @@ function filterActionForwardResponse(
   const isHeaderOnlyActionRedirect =
     response.headers.has(ACTION_REDIRECT_HEADER) &&
     !response.headers.get("content-type")?.startsWith("text/x-component");
-  return isHeaderOnlyActionRedirect
+  const forwardedResponse = isHeaderOnlyActionRedirect
     ? markAppRscResponseConfigHeadersApplied(filteredResponse)
     : filteredResponse;
+  return isStreamedActionRedirectResponse(response)
+    ? markStreamedActionRedirectResponse(forwardedResponse)
+    : forwardedResponse;
 }
 
 function emptyActionForwardResponse(middlewareContext: AppMiddlewareContext): Response {
