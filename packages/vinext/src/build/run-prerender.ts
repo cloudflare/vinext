@@ -252,6 +252,8 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
   // and ensures both phases render against the same built bundle.
   let sharedProdServer: { server: HttpServer; port: number } | null = null;
   let sharedPrerenderSecret: string | undefined;
+  // Whether the App Router phase wrote the not-found page to 404.html.
+  let appWroteNotFound = false;
   // Match Next's static-worker phase while user modules execute. This wider
   // scope also covers shared-server startup; the nested router helpers restore
   // back to this value and this cleanup restores the ordinary caller phase.
@@ -312,6 +314,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
 
       allRoutes.push(...result.routes);
       if (result.outputFiles) allOutputFiles.push(...result.outputFiles);
+      appWroteNotFound = result.routes.some(
+        (route) => route.route === "/404" && route.status === "rendered",
+      );
     }
 
     // ── Pages Router phase ────────────────────────────────────────────────────
@@ -337,10 +342,11 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
           ? {
               _prodServer: sharedProdServer,
               _prerenderSecret: sharedPrerenderSecret,
-              // Next.js copies the App Router's not-found page over the Pages
-              // Router's 404.html only when it is static; vinext always
-              // serves it as the 404 page, so it always takes 404.html.
-              _appRendersNotFound: true,
+              // Next.js's static export copies the App Router's prerendered
+              // not-found page to 404.html. Keep the Pages Router's 404 page
+              // when the App Router phase wrote none, e.g. because the
+              // not-found page redirects (Next.js exports its redirect shell).
+              _appRendersNotFound: appWroteNotFound,
             }
           : {
               pagesBundlePath,

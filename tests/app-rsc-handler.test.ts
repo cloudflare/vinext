@@ -531,9 +531,8 @@ describe("createAppRscHandler", () => {
   });
 
   // Like `next build`, which in a hybrid build still prerenders the Pages
-  // Router's `/404` on its own before the App Router's not-found page replaces
-  // its output (moveExportedAppNotFoundTo404), `router=pages` renders it
-  // without routing, and its throw is the 404 page's own render error.
+  // Router's `/404` on its own, `router=pages` renders it without routing,
+  // and its throw is the 404 page's own render error.
   it("renders a hybrid build's Pages 404 page at the prerender endpoint without routing", async () => {
     const matchRoute = vi.fn(() => null);
     const runMiddleware = vi.fn(async ({ cleanPathname }: { cleanPathname: string }) => ({

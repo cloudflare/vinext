@@ -1204,8 +1204,7 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
   ) {
     // Like `next build`, which in a hybrid build still prerenders the Pages
     // Router's `/404` from `pages/404` or `_error` on its own (and fails on
-    // its error) before the App Router's not-found page replaces its output,
-    // render it without routing.
+    // its error), render it without routing.
     setFrameworkRequestRoute("/404", false);
     const renderPagesNotFound = options.renderPagesNotFound;
     const { renderPagesPrerenderNotFound } = await import("./pages-prerender-not-found.js");

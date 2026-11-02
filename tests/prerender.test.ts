@@ -1401,9 +1401,8 @@ describe("prerender — the 404 page is rendered without routing", () => {
     150_000,
   );
 
-  // A hybrid build's 404 page is the App Router's not-found page, as `next
-  // build` copies it over the Pages Router's 404.html
-  // (moveExportedAppNotFoundTo404), though it still renders the Pages
+  // A hybrid build's 404.html is the App Router's not-found page, as Next.js's
+  // static export writes it, though `next build` still renders the Pages
   // Router's `/404` on its own and fails on its error.
   async function withHybridBuild(
     fixtureName: string,
@@ -1448,6 +1447,39 @@ describe("prerender — the 404 page is rendered without routing", () => {
       );
       expect(html).toContain("app not found");
       expect(html).not.toContain("pages 404");
+    });
+  }, 120_000);
+
+  it("keeps the App Router's default not-found page over a hybrid build's pages/404", async () => {
+    await withHybridBuild("hybrid-default-app-404", async (root, prerender) => {
+      const result = await prerender();
+
+      const notFoundResults = (result?.routes ?? []).filter((r) => r.route === "/404");
+      expect(notFoundResults).toEqual([
+        expect.objectContaining({ status: "rendered", router: "app" }),
+      ]);
+      const html = fs.readFileSync(
+        path.join(root, "dist", "server", "prerendered-routes", "404.html"),
+        "utf-8",
+      );
+      expect(html).toContain("This page could not be found");
+      expect(html).not.toContain("pages 404");
+    });
+  }, 120_000);
+
+  it("keeps the Pages Router's 404 page when the App Router's not-found page redirects", async () => {
+    await withHybridBuild("hybrid-redirecting-app-404", async (root, prerender) => {
+      const result = await prerender();
+
+      const notFoundResults = (result?.routes ?? []).filter((r) => r.route === "/404");
+      expect(notFoundResults).toEqual([
+        expect.objectContaining({ status: "rendered", router: "pages" }),
+      ]);
+      const html = fs.readFileSync(
+        path.join(root, "dist", "server", "prerendered-routes", "404.html"),
+        "utf-8",
+      );
+      expect(html).toContain("pages 404");
     });
   }, 120_000);
 

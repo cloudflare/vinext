@@ -345,9 +345,9 @@ type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
    */
   _prerenderSecret?: string;
   /**
-   * Set by `runPrerender` in hybrid builds, where the App Router's not-found
-   * page is the 404 page: the Pages Router's 404 page is rendered only so its
-   * own render error fails the build, and isn't written.
+   * Set by `runPrerender` in hybrid builds whose App Router phase wrote the
+   * not-found page to 404.html: the Pages Router's 404 page is then rendered
+   * only so its own render error fails the build, and isn't written.
    */
   _appRendersNotFound?: boolean;
 };
@@ -1355,9 +1355,9 @@ export async function prerenderPages({
           continue;
         }
         // In a hybrid build `next build` still renders the Pages Router's
-        // `/404`, so its error fails the build, but its output is replaced by
-        // the App Router's not-found page (moveExportedAppNotFoundTo404), which
-        // the App Router phase already wrote.
+        // `/404`, so its error fails the build, but its static export writes
+        // the App Router's not-found page to 404.html, which the App Router
+        // phase already wrote.
         if (options._appRendersNotFound) {
           void notFoundRes.body?.cancel().catch(() => {});
           continue;
