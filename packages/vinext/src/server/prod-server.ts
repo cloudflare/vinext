@@ -2168,6 +2168,11 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
+        // Marked so the build fails on a 404 page it couldn't render, unlike
+        // a 403 the page answers itself.
+        if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH) {
+          res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
+        }
         res.writeHead(403);
         res.end("Forbidden");
         return;
@@ -2646,6 +2651,9 @@ async function createPagesRouterRequestHandler(
     if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH && process.env.VINEXT_PRERENDER === "1") {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
+        // Marked so the build fails on a 404 page it couldn't render, unlike
+        // a 403 the page answers itself.
+        res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, "1");
         res.writeHead(403);
         res.end("Forbidden");
         return;

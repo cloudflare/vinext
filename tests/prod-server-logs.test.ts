@@ -104,6 +104,7 @@ describe("startProdServer logging", () => {
       vi.stubEnv("VINEXT_PRERENDER", "1");
       const denied = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/not-found`);
       expect(denied.status).toBe(403);
+      expect(denied.headers.get("x-vinext-prerender-render-error")).toBe("1");
     } finally {
       vi.unstubAllEnvs();
       await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -175,6 +176,10 @@ describe("startProdServer logging", () => {
       ]) {
         const denied = await fetch(`http://127.0.0.1:${port}${endpoint}`);
         expect(denied.status).toBe(403);
+        // Only the 404 page's refusal fails the build.
+        expect(denied.headers.get("x-vinext-prerender-render-error")).toBe(
+          endpoint === "/__vinext/prerender/not-found" ? "1" : null,
+        );
         const allowed = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
           headers: { "x-vinext-prerender-secret": "nested-secret" },
         });

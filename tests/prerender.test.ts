@@ -1078,18 +1078,32 @@ describe("prerender — a 404 page whose render reports an error", () => {
     },
   );
 
-  // Any other answer than its 404 or a redirect means the page couldn't render.
+  // Unmarked, any status is one the page answered itself, e.g. a 500 or a
+  // `forbidden()` 403 when Next.js wouldn't prerender it.
   it.each([
-    [403, { status: "error", error: "The 404 page's prerender request answered 403", fatal: true }],
-    [307, undefined],
+    [
+      403,
+      "1",
+      {
+        status: "error",
+        error: expect.stringContaining("refused to render the 404 page"),
+        fatal: true,
+      },
+    ],
+    [403, "not-found", { status: "error", error: "Error occurred prerendering page", fatal: true }],
+    [403, null, undefined],
+    [500, null, undefined],
+    [307, null, undefined],
+    [200, null, undefined],
   ])(
-    "fails the App Router's /404 answered %i only when it isn't a redirect",
-    async (status, expected) => {
+    "fails the App Router's /404 answered %i only when it's marked (%s)",
+    async (status, marker, expected) => {
       const outDir = tmpDir("vinext-prerender-app-404-status-");
       const requestedPaths: string[] = [];
       const server = createServer((req, res) => {
         requestedPaths.push(req.url ?? "");
         res.statusCode = status;
+        if (marker) res.setHeader(VINEXT_PRERENDER_RENDER_ERROR_HEADER, marker);
         res.setHeader("location", "/elsewhere");
         res.end();
       });
@@ -1268,7 +1282,7 @@ describe("prerender — the 404 page is rendered without routing", () => {
 
       expect(findRoute(result.routes, "/404")).toMatchObject({
         status: "error",
-        error: "The 404 page's prerender request answered 403",
+        error: expect.stringContaining("prerender secret is missing or stale"),
         fatal: true,
       });
       expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
@@ -1310,6 +1324,34 @@ describe("prerender — the 404 page is rendered without routing", () => {
     },
     60_000,
   );
+
+  it("doesn't fail the build on a throwing 404 page an _app with getInitialProps makes dynamic", async () => {
+    const fixture = path.resolve(import.meta.dirname, "./fixtures/pages-dynamic-throwing-404");
+    const pagesBundlePath = await buildPagesFixture(fixture);
+    const outDir = tmpDir("vinext-prerender-pages-dynamic-404-");
+    try {
+      const { prerenderPages } = await import("../packages/vinext/src/build/prerender.js");
+      const { pagesRouter, apiRouter } =
+        await import("../packages/vinext/src/routing/pages-router.js");
+      const { resolveNextConfig } = await import("../packages/vinext/src/config/next-config.js");
+      const pagesDir = path.join(fixture, "pages");
+      const result = await prerenderPages({
+        mode: "default",
+        pagesBundlePath,
+        routes: await pagesRouter(pagesDir),
+        apiRoutes: await apiRouter(pagesDir),
+        pagesDir,
+        outDir,
+        config: await resolveNextConfig({}),
+      });
+
+      expect(findRoute(result.routes, "/404")).toBeUndefined();
+      expect(result.routes.filter((route) => route.status === "error")).toEqual([]);
+      expect(fs.existsSync(path.join(outDir, "404.html"))).toBe(false);
+    } finally {
+      fs.rmSync(outDir, { recursive: true, force: true });
+    }
+  }, 60_000);
 });
 
 describe("prerenderPages — basePath export", () => {

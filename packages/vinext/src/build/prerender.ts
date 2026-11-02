@@ -146,15 +146,21 @@ function prerenderRenderErrorResult(route: string): PrerenderRouteResult {
   return { route, status: "error", error: PRERENDER_RENDER_ERROR_MESSAGE, fatal: true };
 }
 
-// Rendered without routing, the 404 page answers its 404 or a redirect it
-// threw; any other status means it couldn't render, e.g. the 403 of a build
-// whose prerender secret is missing.
-function notFoundEndpointFailure(status: number): PrerenderRouteResult | null {
-  if (status === 404 || (status >= 300 && status < 400)) return null;
+// The 404 page rendered without routing failed, or the prerender server's
+// secret gate refused to render it with a 403 marked `1`; the page's own
+// errors are marked `not-found`.
+function notFoundRenderErrorResult(response: Response): PrerenderRouteResult {
+  if (
+    response.status !== 403 ||
+    response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== "1"
+  ) {
+    return prerenderRenderErrorResult("/404");
+  }
   return {
     route: "/404",
     status: "error",
-    error: `The 404 page's prerender request answered ${status}`,
+    error:
+      "The prerender server refused to render the 404 page. Its prerender secret is missing or stale; run `vite build` to regenerate it.",
     fatal: true,
   };
 }
@@ -1361,7 +1367,8 @@ export async function prerenderPages({
         }
         // Only an error of the 404 page's own render fails it, not one of a
         // dynamic page the routed nonexistent path reached. Rendered without
-        // routing, any error is the 404 page's own.
+        // routing, any error is the 404 page's own, including the marked 403
+        // of a build missing its prerender secret.
         const renderError = notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER);
         if (
           rendersNotFoundDirectly
@@ -1369,15 +1376,11 @@ export async function prerenderPages({
             : renderError === (hasCustom404 ? "1" : VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR)
         ) {
           void notFoundRes.body?.cancel().catch(() => {});
-          results.push(prerenderRenderErrorResult("/404"));
-          continue;
-        }
-        const endpointFailure = rendersNotFoundDirectly
-          ? notFoundEndpointFailure(notFoundRes.status)
-          : null;
-        if (endpointFailure) {
-          void notFoundRes.body?.cancel().catch(() => {});
-          results.push(endpointFailure);
+          results.push(
+            rendersNotFoundDirectly
+              ? notFoundRenderErrorResult(notFoundRes)
+              : prerenderRenderErrorResult("/404"),
+          );
           continue;
         }
         const contentType = notFoundRes.headers.get("content-type") ?? "";
@@ -2308,14 +2311,13 @@ export async function prerenderApp({
         headersContextFromRequest(notFoundRequest),
         () => rscHandler(notFoundRequest),
       );
-      // Rendered without routing, any error is the not-found page's own.
-      const endpointFailure = notFoundEndpointFailure(notFoundRes.status);
+      // Rendered without routing, any error is the not-found page's own,
+      // including the marked 403 of a build missing its prerender secret.
+      // Unmarked, any other status is one the page answered itself, e.g.
+      // when Next.js wouldn't prerender it.
       if (notFoundRes.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER) !== null) {
         await notFoundRes.body?.cancel();
-        results.push(prerenderRenderErrorResult("/404"));
-      } else if (endpointFailure) {
-        await notFoundRes.body?.cancel();
-        results.push(endpointFailure);
+        results.push(notFoundRenderErrorResult(notFoundRes));
       } else if (notFoundRes.status === 404) {
         const html404 = await notFoundRes.text();
         results.push({
