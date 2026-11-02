@@ -2113,6 +2113,33 @@ describe("createPagesPageHandler — prerender render errors", () => {
     }
   };
 
+  it("drops a render error marker that `_document` sets on a prerendered page", async () => {
+    const response = await prerenderResponse(
+      makePageModule({ getStaticProps: async () => ({ props: {} }) }),
+      {
+        DocumentComponent: Object.assign(
+          () =>
+            React.createElement(
+              "html",
+              null,
+              React.createElement("body", null, React.createElement(Main)),
+            ),
+          {
+            async getInitialProps(ctx: {
+              res: { setHeader(name: string, value: string): void };
+              defaultGetInitialProps: (ctx: unknown) => Promise<Record<string, unknown>>;
+            }) {
+              ctx.res.setHeader("x-vinext-prerender-render-error", "1");
+              return ctx.defaultGetInitialProps(ctx);
+            },
+          },
+        ) as unknown as CreatePagesPageHandlerOptions["DocumentComponent"],
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
   it("marks a page that throws while prerendering", async () => {
     const module = makePageModule({
       getStaticProps: async () => {

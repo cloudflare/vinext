@@ -179,6 +179,7 @@ type TestModule = {
   metadata?: { description?: string; title?: string };
   viewport?: Record<string, unknown>;
   dynamic?: string;
+  fetchCache?: string;
   revalidate?: number;
 };
 
@@ -425,6 +426,26 @@ describe("app page boundary render helpers", () => {
       );
       expect(redirected?.status).toBe(307);
       expect(redirected?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("fails a prerender of the root not-found page with an invalid segment config", async () => {
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    try {
+      const response = await renderAppPageHttpAccessFallback<TestModule>({
+        ...createCommonOptions(),
+        matchedParams: {},
+        rootLayouts: [{ ...rootLayoutModule, fetchCache: "default-no-store" }],
+        rootNotFoundModule: { ...notFoundModule, fetchCache: "force-cache" },
+        route: null,
+        statusCode: 404,
+      });
+      expect(response?.status).toBe(500);
+      expect(response?.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
         VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
       );
     } finally {

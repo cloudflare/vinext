@@ -775,6 +775,8 @@ async function renderHttpAccessFallback<TModule extends AppPageModule>(
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   if (prerender?.isNotFoundPage) {
+    // Tracked until it resolves, so an invalid segment config fails it too.
+    prerender.tracksRenderErrors = true;
     prerender.tracksRenderErrors = isRootBoundaryStaticEligible(
       options.skipLayoutWrapping ? [] : layoutModules,
       boundaryModule,
