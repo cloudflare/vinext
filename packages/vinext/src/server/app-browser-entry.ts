@@ -116,6 +116,7 @@ import {
   createSupplementalRefreshCoordinator,
   mergeRefreshedParallelSlot,
   requireCompleteSupplementalRefresh,
+  resolvePersistedRefreshInterceptions,
   resolvePersistedSourcePageRefreshes,
   resolveServerActionSupplementalRefresh,
   resolveSupplementalRefreshes,
@@ -182,13 +183,7 @@ import {
   isBfcacheIdentityRetained,
   setAppElementsRenderedSearch,
 } from "vinext/shims/slot";
-import type {
-  BrowserRouteManifest,
-  BrowserRouteManifestInterception,
-} from "../routing/browser-route-manifest.js";
-import { matchRoutePattern } from "../routing/route-pattern.js";
-import { splitPathnameForRouteMatch } from "../routing/utils.js";
-import { restoreBasePath, stripBasePath } from "../utils/base-path.js";
+import type { BrowserRouteManifest } from "../routing/browser-route-manifest.js";
 import {
   createDevOnCaughtError,
   createOnUncaughtError,
@@ -633,67 +628,6 @@ function clearDynamicClientNavigationCaches(): void {
   historyController.invalidateRestorableClientState();
 }
 
-type PersistedRefreshInterception = {
-  interception: BrowserRouteManifestInterception;
-  interceptionContext: string;
-  targetPathname: string;
-};
-
-function getMatchedUrlPathname(matchedUrl: string): string {
-  return new URL(matchedUrl, "https://vinext.local").pathname;
-}
-
-function resolvePersistedRefreshInterceptions(
-  state: AppRouterState,
-  routeManifest: BrowserRouteManifest | null,
-  refreshUrl: URL,
-  requestInterceptionContext: string | null,
-): PersistedRefreshInterception[] {
-  if (routeManifest === null) return [];
-
-  const refreshPathname = stripBasePath(refreshUrl.pathname, __basePath);
-  const refreshPathParts = splitPathnameForRouteMatch(refreshPathname);
-  const resolved: PersistedRefreshInterception[] = [];
-
-  for (const binding of state.slotBindings) {
-    if (binding.state !== "active" || !binding.activeRouteId) continue;
-    if (!binding.interceptionId || !binding.interceptionSourceMatchedUrl) continue;
-    const activeRoute = AppElementsWire.parseElementKey(binding.activeRouteId);
-    if (activeRoute?.kind !== "route") continue;
-    const match = routeManifest.segmentGraph.interceptions.get(binding.interceptionId);
-    if (!match) continue;
-
-    const retainedInterception =
-      state.interception?.slotId === binding.slotId &&
-      matchRoutePattern(
-        splitPathnameForRouteMatch(getMatchedUrlPathname(state.interception.targetMatchedUrl)),
-        match.targetPatternParts,
-      ) !== null
-        ? state.interception
-        : null;
-    const targetPathname = retainedInterception?.targetMatchedUrl ?? activeRoute.path;
-    const targetParts = splitPathnameForRouteMatch(getMatchedUrlPathname(targetPathname));
-    const isPrimaryRefreshInterception =
-      requestInterceptionContext !== null &&
-      state.interception?.slotId === binding.slotId &&
-      matchRoutePattern(refreshPathParts, match.targetPatternParts) !== null &&
-      matchRoutePattern(targetParts, match.targetPatternParts) !== null;
-    if (isPrimaryRefreshInterception) continue;
-
-    const targetUrl = new URL(targetPathname, refreshUrl);
-    targetUrl.pathname = restoreBasePath(targetUrl.pathname, __basePath);
-    targetUrl.search = refreshUrl.search;
-    resolved.push({
-      interception: match,
-      interceptionContext:
-        retainedInterception?.sourceMatchedUrl ?? binding.interceptionSourceMatchedUrl,
-      targetPathname: `${targetUrl.pathname}${targetUrl.search}`,
-    });
-  }
-
-  return resolved;
-}
-
 async function fetchPersistedInterceptedSlotRefresh(options: {
   interceptionId: string;
   interceptionContext: string;
@@ -1006,12 +940,13 @@ async function commitSameUrlNavigatePayload(
       actionInitiation.routerState.previousNextUrl,
       __basePath,
     );
-    const persistedInterceptions = resolvePersistedRefreshInterceptions(
-      actionInitiation.routerState,
-      getBrowserRouteManifest(),
+    const persistedInterceptions = resolvePersistedRefreshInterceptions({
+      basePath: __basePath,
       refreshUrl,
       requestInterceptionContext,
-    );
+      routeManifest: getBrowserRouteManifest(),
+      state: actionInitiation.routerState,
+    });
     const sourcePageRefreshes = resolvePersistedSourcePageRefreshes({
       basePath: __basePath,
       refreshUrl,
@@ -2365,12 +2300,13 @@ function bootstrapHydration(
           (navigationKind === "traverse" && !reuseCurrentBfcacheIds);
         const persistedRefreshInterceptions =
           navigationKind === "refresh"
-            ? resolvePersistedRefreshInterceptions(
-                navigationInitiationState,
-                getBrowserRouteManifest(),
-                url,
+            ? resolvePersistedRefreshInterceptions({
+                basePath: __basePath,
+                refreshUrl: url,
                 requestInterceptionContext,
-              )
+                routeManifest: getBrowserRouteManifest(),
+                state: navigationInitiationState,
+              })
             : [];
         const persistedSourcePageRefreshes = shouldSupplementVisibleBranches
           ? resolvePersistedSourcePageRefreshes({
