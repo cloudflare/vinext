@@ -40,7 +40,30 @@ const nextConfig: NextConfig = {
   // Used by Vitest: app-router-production-server.test.ts — a next/dynamic()
   // call site inside this package only gets preload metadata when the package
   // is transpiled, matching Turbopack's foreign-code rule.
-  transpilePackages: ["fake-css-module-lib"],
+  //
+  // fake-tsconfig-exact-lib stays in the Pages server bundle, so builds into a
+  // temporary outDir don't need node_modules next to the output.
+  transpilePackages: ["fake-css-module-lib", "fake-tsconfig-exact-lib"],
+
+  // Used by E2E: app-router-prod/image-local-patterns.spec.ts — every local
+  // path without a query string (the Next.js default), plus one query string
+  // the default rejects, so the spec observes the configured list. The SVG
+  // query is listed for image-middleware.spec.ts, so that source reaches the
+  // content-type check.
+  images: {
+    localPatterns: [
+      { pathname: "/**", search: "" },
+      { pathname: "/heart.png", search: "?v=listed" },
+      { pathname: "/logo/logo.svg", search: "?.png" },
+    ],
+  },
+
+  // Used by E2E: app-router/use-cache.spec.ts, app-router-prod/use-cache.spec.ts —
+  // a custom profile and an overridden built-in read by cacheLife().
+  cacheLife: {
+    customProfile: { revalidate: 120, expire: 3600 },
+    minutes: { stale: 30, revalidate: 90, expire: 1800 },
+  },
 
   // Default is false — trailing slashes are stripped (redirects /about/ → /about)
   // trailingSlash: false,
@@ -257,6 +280,17 @@ const nextConfig: NextConfig = {
           has: [{ type: "query", key: "host", value: "(?<proxyHost>.*)" }],
           destination: "http://:proxyHost.invalid/host-capture",
         },
+        // Used by E2E: external-rewrite-host-capture.spec.ts. A request-controlled
+        // capture in an external destination path must stay inside that path
+        // and keep the destination's own query.
+        {
+          source: "/proxy-external-path-capture",
+          has: [
+            { type: "header", key: "x-test-upstream-port", value: "(?<upstreamPort>\\d+)" },
+            { type: "query", key: "file", value: "(?<file>.*)" },
+          ],
+          destination: "http://127.0.0.1::upstreamPort/public/:file?revision=published",
+        },
         // Used by Vitest: app-router.test.ts — repeated param substitution
         {
           source: "/repeat-rewrite/:slug",
@@ -426,6 +460,11 @@ const nextConfig: NextConfig = {
 
   async headers() {
     return [
+      // Used by Vitest: app-router-production-server.test.ts
+      {
+        source: "/action-cache-control/config-policy",
+        headers: [{ key: "Cache-Control", value: "public, s-maxage=300" }],
+      },
       // Used by Vitest: app-router-dev-server.test.ts, app-router-production-server.test.ts
       {
         source: "/external-headers/:path*",
@@ -446,6 +485,15 @@ const nextConfig: NextConfig = {
       {
         source: "/config-cookie-response",
         headers: [{ key: "Set-Cookie", value: "config-cookie=1; Path=/" }],
+      },
+      // Used by E2E: app-router-prod/image-middleware.spec.ts
+      {
+        source: "/_next/image",
+        headers: [
+          { key: "Content-Security-Policy", value: "config-csp" },
+          { key: "Content-Type", value: "text/x-config-image" },
+          { key: "X-Mw-Image-Endpoint", value: "config" },
+        ],
       },
       // Used by Vitest: app-router.test.ts
       {

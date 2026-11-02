@@ -25,7 +25,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, startFixtureServer } from "../helpers.js";
+import { APP_FIXTURE_DIR, startFixtureServer, fetchRsc } from "../helpers.js";
 
 const ACTION_PATH = "/nextjs-compat/action-redirect-middleware";
 const ACTIONS = "/app/nextjs-compat/action-redirect-middleware/actions.ts";
@@ -74,7 +74,7 @@ async function postAction(
   actionId: string,
   extraHeaders: Record<string, string> = {},
 ): Promise<{ res: Response; text: string }> {
-  const res = await fetch(`${baseUrl}${ACTION_PATH}.rsc`, {
+  const res = await fetchRsc(baseUrl, ACTION_PATH, {
     method: "POST",
     headers: { "Content-Type": "text/plain", "x-rsc-action": actionId, ...extraHeaders },
     body: JSON.stringify([]),

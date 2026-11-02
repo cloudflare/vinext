@@ -30,6 +30,7 @@ describe("ESM externals", () => {
       getPagesDir: () => pagesDir,
       getAliases: () => ({}),
       getTsconfigAliases: () => ({}),
+      getTsconfigExactAliases: () => ({}),
       getBundledPackages: () => new Set(),
       isEnabled: () => enabled,
     });
@@ -58,6 +59,7 @@ describe("ESM externals", () => {
       getPagesDir: () => null,
       getAliases: () => ({}),
       getTsconfigAliases: () => ({}),
+      getTsconfigExactAliases: () => ({}),
       getBundledPackages: () => new Set(),
       isEnabled: () => true,
     });

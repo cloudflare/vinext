@@ -11,7 +11,7 @@
 
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer } from "../helpers.js";
+import { APP_FIXTURE_DIR, fetchHtml, startFixtureServer, fetchRsc } from "../helpers.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -57,8 +57,7 @@ async function invokeAction(
   args: unknown[] = [],
   extraHeaders: Record<string, string> = {},
 ): Promise<{ res: Response; text: string }> {
-  const url = `${baseUrl}${path}.rsc`;
-  const res = await fetch(url, {
+  const res = await fetchRsc(baseUrl, path, {
     method: "POST",
     headers: {
       "Content-Type": "text/plain",

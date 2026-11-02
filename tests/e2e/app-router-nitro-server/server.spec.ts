@@ -65,6 +65,31 @@ test.describe("App Router on Nitro (node server)", () => {
     expect(response.headers["x-vinext-middleware"]).toBe("active");
   });
 
+  // Nitro's Node server keeps a `#fragment` sent on the request line; Next.js
+  // drops it before handlers run, so it never reaches the pathname-keyed entry.
+  test("drops a request-line fragment before a cached route handler", async ({
+    baseURL,
+    request,
+  }) => {
+    const planted = await new Promise<string>((resolve, reject) => {
+      http
+        .get(
+          { host: "localhost", port: new URL(baseURL!).port, path: "/api/url-fragment#planted" },
+          (res) => {
+            let body = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk: string) => (body += chunk));
+            res.on("end", () => resolve(body));
+          },
+        )
+        .on("error", reject);
+    });
+    expect(JSON.parse(planted)).toEqual({ pathname: "/api/url-fragment", hash: "" });
+
+    const visitor = await request.get("/api/url-fragment");
+    expect(await visitor.json()).toEqual({ pathname: "/api/url-fragment", hash: "" });
+  });
+
   test("serves a public file that a rewrite resolves to", async ({ request }) => {
     const response = await request.get("/rewrite-to-public");
     expect(response.status()).toBe(200);

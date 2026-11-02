@@ -91,7 +91,7 @@ describe("createAppRscOnErrorHandler", () => {
 
   it("reports RSC payload and on-demand revalidation context", () => {
     const reportRequestError = vi.fn();
-    const request = makeReq("https://example.com/feed.rsc", "GET", {
+    const request = makeReq("https://example.com/feed", "GET", {
       RSC: "1",
       "x-prerender-revalidate": getRevalidateSecret(),
     });

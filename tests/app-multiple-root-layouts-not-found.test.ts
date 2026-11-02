@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 import type { ViteDevServer } from "vite-plus";
-import { startFixtureServer } from "./helpers.js";
+import { fetchRsc, startFixtureServer } from "./helpers.js";
 
 // Every studio and docs route is a catch-all, so it sorts after the [locale]
 // routes and the route list starts in the [locale] tree, as in the issue.
@@ -144,7 +144,7 @@ describe("multiple root layouts: not-found boundaries stay in their root layout'
   });
 
   it("does not put another root layout's not-found in the RSC payload", async () => {
-    const res = await fetch(`${baseUrl}/studio.rsc`, { headers: { RSC: "1" } });
+    const res = await fetchRsc(baseUrl, "/studio");
     expect(res.status).toBe(200);
     expect(await res.text()).not.toContain("locale-not-found");
   });

@@ -68,7 +68,9 @@ describe("closeAfterResponseWithBody on the Cloudflare Workers runtime", () => {
         ) &&
         !src.includes(
           `${path.sep}app${path.sep}nextjs-compat${path.sep}dynamic${path.sep}node-modules-call-site`,
-        ),
+        ) &&
+        !src.includes(`${path.sep}app${path.sep}tsconfig-exact-path`) &&
+        !src.includes(`${path.sep}pages${path.sep}tsconfig-exact-path-pages`),
       CLOUDFLARE_NODE_MODULES,
     );
     // app-basic has no wrangler config of its own (it's normally only used
@@ -155,7 +157,7 @@ export const config = { matcher: ["/robots.txt"] };
           persist: false;
           logLevel: "none";
           watch: false;
-          server: { port: 0 };
+          server: { hostname: string; port: 0 };
         };
       }): Promise<{ url: Promise<URL>; dispose(): Promise<void> }>;
     };
@@ -166,7 +168,7 @@ export const config = { matcher: ["/robots.txt"] };
         persist: false,
         logLevel: "none",
         watch: false,
-        server: { port: 0 },
+        server: { hostname: "127.0.0.1", port: 0 },
       },
     });
     await worker.url;
