@@ -1944,6 +1944,7 @@ export async function handleServerActionRscRequest<
     let element: TElement;
     let errorPattern = match ? match.route.pattern : options.cleanPathname;
     let renderedPathAndSearch: string | null = null;
+    let actionRerenderIsEdgeRuntime = options.isEdgeRuntime;
     const actionRerenderIsRscRequest = true;
     if (match) {
       const { route: actionRoute, params: actionParams } = match;
@@ -1980,6 +1981,7 @@ export async function handleServerActionRscRequest<
             actionRerenderTarget.interceptOpts as unknown as AppPageInterceptSegmentConfigOptions,
           )
         : null;
+      if (actionInterceptConfig) actionRerenderIsEdgeRuntime = actionInterceptConfig.isEdgeRuntime;
       const actionRerenderDynamicConfig = actionInterceptConfig
         ? actionInterceptConfig.dynamicConfig
         : options.resolveRouteDynamicConfig?.(actionRerenderTarget.route);
@@ -2060,7 +2062,7 @@ export async function handleServerActionRscRequest<
       "Content-Type": VINEXT_RSC_CONTENT_TYPE,
       Vary: VINEXT_RSC_VARY_HEADER,
     });
-    applyEdgeRuntimeHeader(actionHeaders, options.isEdgeRuntime);
+    applyEdgeRuntimeHeader(actionHeaders, actionRerenderIsEdgeRuntime);
     mergeMiddlewareResponseHeaders(actionHeaders, options.middlewareHeaders);
     applyRscCompatibilityIdHeader(actionHeaders);
     setActionRevalidatedHeader(actionHeaders, actionRevalidationKind);

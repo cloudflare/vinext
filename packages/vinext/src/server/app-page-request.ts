@@ -125,14 +125,12 @@ type AppPageInterceptState<TRoute, TPage> =
   | { kind: "current-route"; intercept: AppPageInterceptMatch<TPage> }
   | { kind: "source-route"; intercept: AppPageInterceptMatch<TPage>; sourceRoute: TRoute };
 
-type ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts> = {
+type AppPageInterceptStateLookup<TRoute, TPage> = {
   cleanPathname: string;
   currentRoute: TRoute;
   findIntercept: (pathname: string) => AppPageInterceptMatch<TPage> | null;
-  getRouteParamNames: (route: TRoute) => readonly string[];
   getSourceRoute: (sourceRouteIndex: number) => Awaitable<TRoute | undefined>;
   isRscRequest: boolean;
-  toInterceptOpts: (intercept: AppPageInterceptMatch<TPage>) => TInterceptOpts;
 };
 
 type ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts> = {
@@ -730,8 +728,8 @@ export async function validateAppPageDynamicParams(
   return null;
 }
 
-async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
-  options: ResolveAppPageInterceptStateOptions<TRoute, TPage, TInterceptOpts>,
+async function resolveAppPageInterceptState<TRoute, TPage>(
+  options: AppPageInterceptStateLookup<TRoute, TPage>,
 ): Promise<AppPageInterceptState<TRoute, TPage>> {
   if (!options.isRscRequest) {
     return { kind: "none" };
@@ -767,6 +765,18 @@ async function resolveAppPageInterceptState<TRoute, TPage, TInterceptOpts>(
   return { kind: "source-route", intercept, sourceRoute };
 }
 
+/**
+ * The interception whose source resolves to the matched route itself, which
+ * renders through that route's own page render rather than a separate
+ * intercepted response.
+ */
+export async function resolveAppPageCurrentRouteIntercept<TRoute, TPage>(
+  options: AppPageInterceptStateLookup<TRoute, TPage>,
+): Promise<AppPageInterceptMatch<TPage> | null> {
+  const interceptState = await resolveAppPageInterceptState(options);
+  return interceptState.kind === "current-route" ? interceptState.intercept : null;
+}
+
 export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TInterceptOpts>(
   options: ResolveAppPageInterceptionRerenderTargetOptions<TRoute, TPage, TInterceptOpts>,
 ): Promise<ResolveAppPageInterceptionRerenderTargetResult<TRoute, TInterceptOpts>> {
@@ -774,10 +784,8 @@ export async function resolveAppPageInterceptionRerenderTarget<TRoute, TPage, TI
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {
@@ -821,10 +829,8 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
     cleanPathname: options.cleanPathname,
     currentRoute: options.currentRoute,
     findIntercept: options.findIntercept,
-    getRouteParamNames: options.getRouteParamNames,
     getSourceRoute: options.getSourceRoute,
     isRscRequest: options.isRscRequest,
-    toInterceptOpts: options.toInterceptOpts,
   });
 
   if (interceptState.kind === "source-route") {

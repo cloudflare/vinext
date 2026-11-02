@@ -44,8 +44,16 @@ export type AppPageInterceptSegmentConfigOptions = {
 
 export type AppPageInterceptSegmentConfig = {
   dynamicConfig: string | undefined;
+  dynamicStaleTimeSeconds: number | undefined;
   fetchCacheMode: FetchCacheMode | null;
+  /** Whether any segment of the interception exports `generateStaticParams`. */
+  hasAnyGenerateStaticParams: boolean;
+  /** Whether one sits at or below the interception's last dynamic segment. */
+  hasGenerateStaticParams: boolean;
+  /** Whether the interception's own segments choose the edge runtime. */
+  isEdgeRuntime: boolean;
   isStaticEligible: boolean;
+  isStaticGenerationEdgeRuntime: boolean;
   revalidateSeconds: number | null;
 };
 
@@ -153,21 +161,29 @@ export function resolveAppPageInterceptSegmentConfig(
     ],
     page,
     parallelBranches: retainedBranches,
+    parallelPages: retainedBranches.map((branch) => branch.page),
   });
+  const walkSegments = collectAppPageStaticParamsWalkSegments(tree);
+  const hasGenerateStaticParams = hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree);
+  const isDynamicRoute = walkSegments.some((segment) => segment.dynamic);
+  const isStaticGenerationEdgeRuntime = isEdgeRuntime(
+    resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)),
+  );
   return {
     dynamicConfig: config.dynamicConfig,
+    dynamicStaleTimeSeconds: config.dynamicStaleTimeSeconds,
     fetchCacheMode: config.fetchCache ?? null,
+    hasAnyGenerateStaticParams: walkSegments.some((segment) => segment.generateStaticParams),
+    hasGenerateStaticParams,
+    isEdgeRuntime: isEdgeRuntime(config.runtime),
     isStaticEligible: isAppPageStaticEligible({
       dynamicConfig: config.dynamicConfig,
-      hasGenerateStaticParams: hasAppPageGenerateStaticParamsAtLastDynamicSegment(tree),
-      isDynamicRoute: collectAppPageStaticParamsWalkSegments(tree).some(
-        (segment) => segment.dynamic,
-      ),
-      isStaticGenerationEdgeRuntime: isEdgeRuntime(
-        resolveAppPageStaticGenerationRuntime(collectAppPageStaticGenerationRuntimes(tree)),
-      ),
+      hasGenerateStaticParams,
+      isDynamicRoute,
+      isStaticGenerationEdgeRuntime,
       revalidateSeconds: config.revalidateSeconds,
     }),
+    isStaticGenerationEdgeRuntime,
     revalidateSeconds: config.revalidateSeconds,
   };
 }

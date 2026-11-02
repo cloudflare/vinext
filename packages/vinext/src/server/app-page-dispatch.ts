@@ -69,6 +69,7 @@ import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js"
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
   buildAppPageElement,
+  resolveAppPageCurrentRouteIntercept,
   resolveAppPageInterceptionRerenderTarget,
   resolveAppPageIntercept,
   validateAppPageDynamicParams,
@@ -667,7 +668,10 @@ function hasNoManifestAdmissionState(routePattern: string): boolean {
 export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   options: DispatchAppPageOptions<TRoute>,
 ): Promise<Response> {
-  const dispatch = () => runWithFetchDedupe(() => dispatchAppPageInner(options));
+  const dispatch = () =>
+    runWithFetchDedupe(async () =>
+      dispatchAppPageInner(await withCurrentRouteInterceptSegmentConfig(options)),
+    );
   let response: Response;
   if (!options.pprFallbackShell || !options.pprRuntime) {
     response = await dispatch();
@@ -676,6 +680,41 @@ export async function dispatchAppPage<TRoute extends AppPageDispatchRoute>(
   }
 
   return options.isRscRequest ? response : traceResponseStart(response);
+}
+
+/**
+ * Next.js renders an interception as its own route even when its source is the
+ * matched route (`app/shots/[id]` beside `app/shots/@modal/(.)[id]`, from
+ * `/shots/1` to `/shots/2`). vinext renders that through the matched route's
+ * own page render, so the interception's segment config replaces the route's
+ * before that render reads it.
+ */
+async function withCurrentRouteInterceptSegmentConfig<TRoute extends AppPageDispatchRoute>(
+  options: DispatchAppPageOptions<TRoute>,
+): Promise<DispatchAppPageOptions<TRoute>> {
+  const intercept = await resolveAppPageCurrentRouteIntercept({
+    cleanPathname: options.cleanPathname,
+    currentRoute: options.route,
+    findIntercept: options.findIntercept,
+    getSourceRoute: options.getSourceRoute,
+    isRscRequest: options.isRscRequest,
+  });
+  if (!intercept) return options;
+  const config = resolveAppPageInterceptSegmentConfig(
+    options.route,
+    toInterceptOptions(options.interceptionContext, intercept),
+  );
+  return {
+    ...options,
+    dynamicConfig: config.dynamicConfig,
+    dynamicStaleTimeSeconds: config.dynamicStaleTimeSeconds,
+    fetchCache: config.fetchCacheMode,
+    hasAnyGenerateStaticParams: config.hasAnyGenerateStaticParams,
+    hasGenerateStaticParams: config.hasGenerateStaticParams,
+    isEdgeRuntime: config.isEdgeRuntime,
+    isStaticGenerationEdgeRuntime: config.isStaticGenerationEdgeRuntime,
+    revalidateSeconds: config.revalidateSeconds,
+  };
 }
 
 async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
@@ -960,13 +999,22 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         options.renderedConcreteUrlPaths?.has(options.cleanPathname) !== true,
       renderFreshPageForCache: async ({ renderDocument }) => {
         const revalidationTarget = await resolveCacheRenderTarget();
+        // An interception regenerates as its own route, under its own config.
+        const revalidationInterceptConfig = revalidationTarget.interceptOpts
+          ? resolveAppPageInterceptSegmentConfig(
+              revalidationTarget.route,
+              revalidationTarget.interceptOpts,
+            )
+          : null;
 
-        const revalidationDynamicConfig =
-          options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? dynamicConfig : undefined);
-        const revalidationConfigRevalidateSeconds =
-          options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
-          (revalidationTarget.route === route ? currentRevalidateSeconds : null);
+        const revalidationDynamicConfig = revalidationInterceptConfig
+          ? revalidationInterceptConfig.dynamicConfig
+          : (options.resolveRouteDynamicConfig?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? dynamicConfig : undefined));
+        const revalidationConfigRevalidateSeconds = revalidationInterceptConfig
+          ? revalidationInterceptConfig.revalidateSeconds
+          : (options.resolveRouteRevalidateSeconds?.(revalidationTarget.route) ??
+            (revalidationTarget.route === route ? currentRevalidateSeconds : null));
         // A stale intercepted entry regenerates its source route, so the entry
         // takes that route's revalidate, not the matched route's read seed. A
         // static route without one keeps `revalidate = false`.
@@ -978,7 +1026,8 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
               revalidationDynamicConfig === "error" ||
               (options.isProduction &&
                 options.pprRuntime === undefined &&
-                options.resolveRouteStaticEligible(revalidationTarget.route))
+                (revalidationInterceptConfig?.isStaticEligible ??
+                  options.resolveRouteStaticEligible(revalidationTarget.route)))
                 ? Infinity
                 : null));
         const revalidationRouteHead: RouteHeadRef = {
@@ -991,9 +1040,10 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           {
             cleanPathname: options.cleanPathname,
             displayPathname: options.displayPathname,
-            currentFetchCacheMode:
-              options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
-              (revalidationTarget.route === route ? (options.fetchCache ?? null) : null),
+            currentFetchCacheMode: revalidationInterceptConfig
+              ? revalidationInterceptConfig.fetchCacheMode
+              : (options.resolveRouteFetchCacheMode?.(revalidationTarget.route) ??
+                (revalidationTarget.route === route ? (options.fetchCache ?? null) : null)),
             currentFetchRevalidate: revalidationConfigRevalidateSeconds,
             draftModeSecret: options.draftModeSecret,
             dynamicConfig: revalidationDynamicConfig,
