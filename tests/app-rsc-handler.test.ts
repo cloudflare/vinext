@@ -7909,8 +7909,9 @@ describe("createAppRscHandler", () => {
   });
 
   it("allows any quality 1-100 in production when images.qualities is unset", async () => {
-    // Matches Next.js: an unset `qualities` is not restricted to a single value,
-    // so q=70 (and any 1-100) is a normal quality even in production.
+    // Deliberately generous (Next.js 14/15 behaviour, not Next.js 16's [75]
+    // default): an unset `qualities` accepts any 1-100, so q=70 is a normal
+    // quality even in production.
     const handler = createHandler({ isDev: false });
     const response = await handler(
       new Request("https://example.test/docs/_next/image?url=%2Fimg.jpg&w=640&q=70"),
