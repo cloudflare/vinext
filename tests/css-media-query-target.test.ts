@@ -190,6 +190,31 @@ describe("CSS media-query syntax preservation in production build", () => {
     30_000,
   );
 
+  it("lets a later plugin's conditional default see an unset cssTarget", async () => {
+    const later: Plugin = {
+      name: "test:later-default",
+      enforce: "post",
+      config: {
+        order: "post",
+        handler: (config) =>
+          config.build?.cssTarget === undefined ? { build: { cssTarget: userTarget } } : undefined,
+      },
+    };
+    expect(await resolveTargets({ plugins: [vinext({ disableAppRouter: true }), later] })).toEqual({
+      top: userTarget,
+      client: userTarget,
+      ssr: userTarget,
+    });
+  }, 30_000);
+
+  it("pins cssTarget when the app sets only build.target", async () => {
+    expect(await resolveTargets({ build: { target: "es2022" } })).toEqual({
+      top: PIN,
+      client: PIN,
+      ssr: PIN,
+    });
+  }, 30_000);
+
   it("keeps per-environment cssTarget values as declared", async () => {
     expect(
       await resolveTargets({

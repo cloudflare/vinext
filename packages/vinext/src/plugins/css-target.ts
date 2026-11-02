@@ -43,37 +43,25 @@ type CssTarget = NonNullable<UserConfig["build"]>["cssTarget"];
 const DEFAULT_CSS_TARGET = ["chrome111", "edge111", "firefox114", "safari15"];
 
 /**
- * Stands in for {@link DEFAULT_CSS_TARGET} until config is resolved. As a
- * single string it merges like an unset value: a later scalar replaces it,
- * and a later array is concatenated after it.
- */
-const DEFAULT_CSS_TARGET_MARKER = "vinext:default-css-target";
-
-/**
  * Applies {@link DEFAULT_CSS_TARGET} only where nobody chose a target (#4413).
  *
  * Vite merges config by concatenating arrays, and the CSS minifier keeps the
  * oldest version of each browser, so a pin merged onto a chosen target would
- * stop an app from ever raising it. `false` is a real Vite value (skip CSS
- * syntax lowering), so only `undefined` means "not chosen".
+ * stop an app from ever raising it. Instead nothing is set while config hooks
+ * run, so the app and every plugin hook see and merge plain Vite values.
  *
- * The marker is set at the top level, which dev and `builder.sharedConfigBuild`
- * builds read and Vite folds into every environment. Once config is resolved,
- * a marker left on its own becomes the pin, and a marker inside an array is
- * removed. Every target set by the app or another plugin's hook, at any level
- * or hook order, then resolves exactly as it would without vinext.
+ * Once config is resolved, Vite has filled an unset `cssTarget` with
+ * `cssTarget ?? target`, so it is the very value of `target` (the arrays are
+ * the same object). A chosen array is always a separate object, because Vite
+ * copies `target` through `unique()`. Only an app that sets both to the same
+ * string is pinned anyway, as every app was before #4413.
+ *
+ * The top-level `build` (read by dev and `builder.sharedConfigBuild` builds)
+ * and every environment's `build` are checked.
  */
 export function createCssTargetPlugin(): Plugin {
   return {
     name: "vinext:css-target",
-    config: {
-      order: "post",
-      handler(config) {
-        if (config.build?.cssTarget === undefined) {
-          return { build: { cssTarget: DEFAULT_CSS_TARGET_MARKER } };
-        }
-      },
-    },
     configResolved: {
       // Before normal and post-ordered configResolved hooks read the target.
       order: "pre",
@@ -83,15 +71,11 @@ export function createCssTargetPlugin(): Plugin {
           ...Object.values(config.environments).map((env) => env.build),
         ];
         for (const build of builds) {
-          (build as { cssTarget: CssTarget }).cssTarget = resolveCssTarget(build.cssTarget);
+          if (build.cssTarget === build.target) {
+            (build as { cssTarget: CssTarget }).cssTarget = [...DEFAULT_CSS_TARGET];
+          }
         }
       },
     },
   };
-}
-
-function resolveCssTarget(target: CssTarget): CssTarget {
-  if (target === DEFAULT_CSS_TARGET_MARKER) return [...DEFAULT_CSS_TARGET];
-  if (!Array.isArray(target)) return target;
-  return target.filter((entry) => entry !== DEFAULT_CSS_TARGET_MARKER);
 }
