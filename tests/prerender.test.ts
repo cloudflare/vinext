@@ -1402,8 +1402,9 @@ describe("prerender — the 404 page is rendered without routing", () => {
   );
 
   // A hybrid build's 404.html is the App Router's not-found page, as Next.js's
-  // static export writes it, though `next build` still renders the Pages
-  // Router's `/404` on its own and fails on its error.
+  // static export writes it (default mode writes the same file, which nothing
+  // reads at runtime), though `next build` still renders the Pages Router's
+  // `/404` on its own and fails on its error.
   async function withHybridBuild(
     fixtureName: string,
     test: (
@@ -1467,6 +1468,8 @@ describe("prerender — the 404 page is rendered without routing", () => {
     });
   }, 120_000);
 
+  // A known divergence: Next.js's static export writes the App Router's
+  // redirect shell, which vinext's App Router export doesn't write.
   it("keeps the Pages Router's 404 page when the App Router's not-found page redirects", async () => {
     await withHybridBuild("hybrid-redirecting-app-404", async (root, prerender) => {
       const result = await prerender();

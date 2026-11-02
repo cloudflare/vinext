@@ -349,7 +349,7 @@ type PrerenderPagesOptionsInternal = PrerenderPagesOptions & {
    * not-found page to 404.html: the Pages Router's 404 page is then rendered
    * only so its own render error fails the build, and isn't written.
    */
-  _appRendersNotFound?: boolean;
+  _appWroteNotFound?: boolean;
 };
 
 type PrerenderAppOptionsInternal = PrerenderAppOptions & {
@@ -1358,7 +1358,7 @@ export async function prerenderPages({
         // `/404`, so its error fails the build, but its static export writes
         // the App Router's not-found page to 404.html, which the App Router
         // phase already wrote.
-        if (options._appRendersNotFound) {
+        if (options._appWroteNotFound) {
           void notFoundRes.body?.cancel().catch(() => {});
           continue;
         }

@@ -345,8 +345,9 @@ export async function runPrerender(options: RunPrerenderOptions): Promise<Preren
               // Next.js's static export copies the App Router's prerendered
               // not-found page to 404.html. Keep the Pages Router's 404 page
               // when the App Router phase wrote none, e.g. because the
-              // not-found page redirects (Next.js exports its redirect shell).
-              _appRendersNotFound: appWroteNotFound,
+              // not-found page redirects, unlike Next.js, which exports the
+              // App Router's redirect shell.
+              _appWroteNotFound: appWroteNotFound,
             }
           : {
               pagesBundlePath,
