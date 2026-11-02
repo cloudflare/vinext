@@ -3501,7 +3501,7 @@ test("the previous metadata schema is upgraded in place", async () => {
         "SELECT replaced_revision, invalidated_revision FROM entries WHERE key_hash = ?",
         "legacy-kept",
       ),
-      [{ invalidated_revision: -1, replaced_revision: null }],
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER, replaced_revision: null }],
     );
     assert.deepEqual(await storage.exec("SELECT tag, key_hash FROM entry_tags"), []);
     assert.deepEqual(
@@ -3698,6 +3698,12 @@ test("upgrading from schema 8 leaves existing entries untouched", async () => {
     );
     // The migration runs in the constructor's transaction, so it must not scale with the table.
     assert.deepEqual(await storage.exec("SELECT count FROM bulk_entry_updates"), [{ count: 0 }]);
+    // The previous release drops a refresh when `invalidated_revision <= replaces.revision`. Marked
+    // entries never match that, so after a rollback to it their refreshes still land.
+    assert.deepEqual(
+      await storage.exec("SELECT invalidated_revision FROM entries WHERE key_hash = 'bulk-1'"),
+      [{ invalidated_revision: Number.MAX_SAFE_INTEGER }],
+    );
     // An entry created after the upgrade has no unrecorded invalidations: it isn't marked.
     await stub.reserveWrite(
       "post-upgrade",
