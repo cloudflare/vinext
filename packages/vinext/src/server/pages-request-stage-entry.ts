@@ -197,6 +197,8 @@ const imageConfig: ImageConfig | undefined = vinextConfig?.images
       dangerouslyAllowLocalIP: vinextConfig.images.dangerouslyAllowLocalIP,
       contentDispositionType: vinextConfig.images.contentDispositionType,
       contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+      minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
+      maximumResponseBody: vinextConfig.images.maximumResponseBody,
     }
   : undefined;
 

@@ -390,6 +390,10 @@ export type NextConfig = {
     contentDispositionType?: "inline" | "attachment";
     /** Content-Security-Policy header for image responses. Defaults to "script-src 'none'; frame-src 'none'; sandbox;" */
     contentSecurityPolicy?: string;
+    /** Least max-age, in seconds, of an image the endpoint serves as-is. Defaults to 14400. */
+    minimumCacheTTL?: number;
+    /** Most bytes the endpoint reads of a source before answering 413. Defaults to 50000000. */
+    maximumResponseBody?: number;
   };
   /**
    * Enable React Strict Mode. When `true`, the client root is wrapped in

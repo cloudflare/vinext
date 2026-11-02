@@ -567,6 +567,8 @@ export const __imageConfig = ${JSON.stringify({
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
+    maximumResponseBody: config?.imageConfig?.maximumResponseBody,
   })};
 export const __clientBuildFiles = __pagesClientAssets.clientBuildFiles ?? [];
 // The matcher reads recorded prerenders, and this stage can run without the
@@ -794,6 +796,8 @@ export function generateRscEntry(
     dangerouslyAllowLocalIP: config?.imageConfig?.dangerouslyAllowLocalIP,
     contentDispositionType: config?.imageConfig?.contentDispositionType,
     contentSecurityPolicy: config?.imageConfig?.contentSecurityPolicy,
+    minimumCacheTTL: config?.imageConfig?.minimumCacheTTL,
+    maximumResponseBody: config?.imageConfig?.maximumResponseBody,
   };
   const manifestCode = buildAppRscManifestCode({
     deferEagerImports: Boolean(instrumentationPath),

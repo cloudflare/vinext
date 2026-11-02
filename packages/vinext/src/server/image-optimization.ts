@@ -98,6 +98,10 @@ export type ImageConfig = {
   contentDispositionType?: "inline" | "attachment";
   /** Content-Security-Policy header value. Default: "script-src 'none'; frame-src 'none'; sandbox;" */
   contentSecurityPolicy?: string;
+  /** Least max-age, in seconds, of an image served as-is. Default: 14400. */
+  minimumCacheTTL?: number;
+  /** Most bytes read of a source before answering 413. Default: 50000000. */
+  maximumResponseBody?: number;
 };
 
 /**
@@ -394,12 +398,6 @@ export function negotiateImageFormat(acceptHeader: string | null): string {
  */
 export const IMAGE_CACHE_CONTROL = "public, max-age=31536000, immutable";
 
-/**
- * Next.js's Cache-Control for an image whose source can change at its URL
- * (anything but a hashed build asset), at the default `images.minimumCacheTTL`.
- */
-export const MUTABLE_IMAGE_SOURCE_CACHE_CONTROL = "public, max-age=14400, must-revalidate";
-
 /** Next.js's default `images.minimumCacheTTL`, in seconds. */
 const DEFAULT_MINIMUM_CACHE_TTL = 14400;
 
@@ -407,7 +405,7 @@ const DEFAULT_MINIMUM_CACHE_TTL = 14400;
  * Next.js's default `images.maximumResponseBody`: the most it reads of a
  * source before answering 413.
  */
-const MAXIMUM_SOURCE_BODY_BYTES = 50_000_000;
+const DEFAULT_MAXIMUM_RESPONSE_BODY = 50_000_000;
 
 /**
  * Content-Security-Policy for image optimization responses.
@@ -544,14 +542,21 @@ function cacheControlMaxAge(cacheControl: string | null): number {
 /**
  * Next.js's Cache-Control for a source it serves as-is: a hashed build asset
  * stays immutable, and any other source is revalidated after the larger of
- * the default `images.minimumCacheTTL` and the source's own max-age. Next.js
- * ignores the source's max-age when it falls back after a failed transform,
- * so that fallback passes null.
+ * `images.minimumCacheTTL` and the source's own max-age. Next.js ignores the
+ * source's max-age when it falls back after a failed transform, so that
+ * fallback passes null.
  */
-function sourceImageCacheControl(imageUrl: string, upstreamCacheControl: string | null): string {
+export function sourceImageCacheControl(
+  imageUrl: string,
+  upstreamCacheControl: string | null,
+  config?: ImageConfig,
+): string {
   const { pathname } = new URL(imageUrl, "http://localhost");
   if (pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return IMAGE_CACHE_CONTROL;
-  const maxAge = Math.max(DEFAULT_MINIMUM_CACHE_TTL, cacheControlMaxAge(upstreamCacheControl));
+  const maxAge = Math.max(
+    config?.minimumCacheTTL ?? DEFAULT_MINIMUM_CACHE_TTL,
+    cacheControlMaxAge(upstreamCacheControl),
+  );
   return `public, max-age=${maxAge}, must-revalidate`;
 }
 
@@ -663,7 +668,11 @@ export async function handleImageOptimization(
   // Like Next.js, serve a format it does not optimize as-is, SVG included
   // once dangerouslyAllowSVG admitted it above.
   const sourceMediaType = imageMediaType(sourceContentType);
-  const sourceCacheControl = sourceImageCacheControl(imageUrl, source.headers.get("Cache-Control"));
+  const sourceCacheControl = sourceImageCacheControl(
+    imageUrl,
+    source.headers.get("Cache-Control"),
+    imageConfig,
+  );
   if (BYPASS_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
     const response = createPassthroughImageResponse(
       source,
@@ -691,7 +700,7 @@ export async function handleImageOptimization(
         sourceBytes = await readBoundedBody(
           source.body,
           source.headers.get("Content-Length"),
-          MAXIMUM_SOURCE_BODY_BYTES,
+          imageConfig?.maximumResponseBody ?? DEFAULT_MAXIMUM_RESPONSE_BODY,
         );
         if (sourceBytes === null) return sourceTooLargeResponse();
         if (isAnimatedImage(sourceBytes)) {
@@ -728,7 +737,7 @@ export async function handleImageOptimization(
   // the source is served as-is; after a failed transform Next.js keeps it
   // for the minimum TTL only.
   const fallbackCacheControl = handlers.transformImage
-    ? sourceImageCacheControl(imageUrl, null)
+    ? sourceImageCacheControl(imageUrl, null, imageConfig)
     : sourceCacheControl;
   try {
     return createPassthroughImageResponse(

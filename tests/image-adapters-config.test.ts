@@ -339,6 +339,29 @@ describe("registration is wired into the router/runtime entries", () => {
     }
   });
 
+  it("App Router entries inline the image endpoint's cache TTL and source size limit", () => {
+    const config = { imageConfig: { minimumCacheTTL: 60, maximumResponseBody: 1024 } };
+    for (const code of [
+      generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false, config),
+      generateAppRequestRscEntry(
+        "/tmp/test/app",
+        minimalAppRoutes,
+        null,
+        [],
+        null,
+        "",
+        false,
+        config,
+      ),
+    ]) {
+      const imageConfig = code.match(/^export const __imageConfig = (.+);$/m)?.[1];
+      expect(JSON.parse(imageConfig ?? "{}")).toMatchObject({
+        minimumCacheTTL: 60,
+        maximumResponseBody: 1024,
+      });
+    }
+  });
+
   it("App Router RSC entry falls back to Next.js default widths when images is unset", () => {
     const code = generateRscEntry("/tmp/test/app", minimalAppRoutes, null, [], null, "", false);
     // Next.js defaults: deviceSizes then imageSizes.

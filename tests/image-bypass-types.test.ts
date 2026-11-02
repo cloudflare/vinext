@@ -243,6 +243,21 @@ describe("handleImageOptimization passthrough Cache-Control", () => {
     expect(response.headers.get("Cache-Control")).toBe("public, max-age=86400, must-revalidate");
   });
 
+  it("uses images.minimumCacheTTL as the least max-age", async () => {
+    for (const [cacheControl, expected] of [
+      ["public, max-age=0", "public, max-age=60, must-revalidate"],
+      ["public, max-age=86400", "public, max-age=86400, must-revalidate"],
+    ] as const) {
+      const response = await handleImageOptimization(
+        imageRequest("/favicon.ico"),
+        source("image/x-icon", cacheControl),
+        undefined,
+        { minimumCacheTTL: 60 },
+      );
+      expect(response.headers.get("Cache-Control"), cacheControl).toBe(expected);
+    }
+  });
+
   it("uses only the minimum TTL after a failed transform", async () => {
     const response = await handleImageOptimization(imageRequest("/image.jpg"), {
       ...source("image/jpeg", "public, max-age=86400"),
@@ -281,6 +296,24 @@ describe("handleImageOptimization source size limit", () => {
     expect(response.status).toBe(413);
     expect(await response.text()).toBe(TOO_LARGE);
     expect(pulled).toBeLessThanOrEqual(1);
+  });
+
+  it("uses images.maximumResponseBody as the limit", async () => {
+    const response = await handleImageOptimization(
+      imageRequest,
+      {
+        fetchAsset: async () =>
+          new Response(new Uint8Array(11), {
+            status: 200,
+            headers: { "Content-Type": "image/png" },
+          }),
+        transformImage,
+      },
+      undefined,
+      { maximumResponseBody: 10 },
+    );
+    expect(response.status).toBe(413);
+    expect(await response.text()).toBe(TOO_LARGE);
   });
 
   it("stops reading a source once it exceeds the limit", async () => {

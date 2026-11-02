@@ -43,7 +43,7 @@ import {
   isImageSourceBodyStatus,
   IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
   isSafeImageContentType,
-  MUTABLE_IMAGE_SOURCE_CACHE_CONTROL,
+  sourceImageCacheControl,
   readImageOptimizationSignal,
   DEFAULT_DEVICE_SIZES,
   DEFAULT_IMAGE_SIZES,
@@ -764,14 +764,19 @@ function staticCacheLookupPath(pathname: string): string | null {
 /**
  * Give a Node image passthrough Next.js's image Cache-Control instead of the
  * public-file default: a hashed build asset keeps its immutable default, and
- * any other source is revalidated after the default `images.minimumCacheTTL`.
+ * any other source is revalidated after `images.minimumCacheTTL`, or the
+ * file's own max-age when that is longer.
  */
 function withImageSourceCacheControl(
   headers: Record<string, string>,
   sourcePath: string,
+  config: ImageConfig | undefined,
 ): Record<string, string> {
   if (sourcePath.includes(`/${ASSET_PREFIX_URL_DIR}/`)) return headers;
-  return { ...headers, "Cache-Control": MUTABLE_IMAGE_SOURCE_CACHE_CONTROL };
+  return {
+    ...headers,
+    "Cache-Control": sourceImageCacheControl(sourcePath, staticFileCacheControl(false), config),
+  };
 }
 
 /** Pathnames the Pages Router serves from routes rather than the client directory. */
@@ -2055,7 +2060,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
         sourcePath,
         false,
         staticCache,
-        withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
+        withImageSourceCacheControl(imageSecurityHeaders, sourcePath, imageConfig),
         undefined,
         IMAGE_REPRESENTATION_HEADERS,
       );
@@ -2508,6 +2513,8 @@ async function createPagesRouterRequestHandler(
         localPatterns: vinextConfig.images.localPatterns,
         contentDispositionType: vinextConfig.images.contentDispositionType,
         contentSecurityPolicy: vinextConfig.images.contentSecurityPolicy,
+        minimumCacheTTL: vinextConfig.images.minimumCacheTTL,
+        maximumResponseBody: vinextConfig.images.maximumResponseBody,
       }
     : undefined;
 
@@ -2974,7 +2981,7 @@ async function createPagesRouterRequestHandler(
                 sourcePath,
                 false,
                 staticCache,
-                withImageSourceCacheControl(imageSecurityHeaders, sourcePath),
+                withImageSourceCacheControl(imageSecurityHeaders, sourcePath, pagesImageConfig),
                 undefined,
                 IMAGE_REPRESENTATION_HEADERS,
               );
