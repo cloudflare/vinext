@@ -27,6 +27,79 @@ describe("pages-data-route", () => {
     });
   });
 
+  // Ported from Next.js:
+  // packages/next/src/server/lib/match-next-data-pathname.test.ts
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/match-next-data-pathname.test.ts
+  //
+  // Next.js builds this matcher with `getPathMatch('/_next/data/:path*', { sensitive: true })`
+  // (vercel/next.js#99481). `getPathMatch` is case-insensitive by default, so
+  // before that commit a case variant of the internal route was served as a
+  // Pages data request. These cases pin the exact-match contract for the dev
+  // middleware (packages/vinext/src/index.ts), the Node production server
+  // (packages/vinext/src/server/prod-server.ts) and the Worker entry — all
+  // three decide "is this a data request?" through the helpers below.
+  describe("case-sensitive internal route recognition", () => {
+    const BUILD_ID = "build-id";
+    const CASE_VARIANTS = [
+      `/_NEXT/data/${BUILD_ID}/index.json`,
+      `/_next/DATA/${BUILD_ID}/index.json`,
+      `/_NeXt/DaTa/${BUILD_ID}/index.json`,
+      `/_next/data/${BUILD_ID}/index.JSON`,
+    ];
+
+    it("matches the exact internal route", () => {
+      expect(isNextDataPathname(`/_next/data/${BUILD_ID}/index.json`)).toBe(true);
+      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/index.json`, BUILD_ID)).toEqual({
+        pagePathname: "/",
+      });
+    });
+
+    it.each(CASE_VARIANTS)("isNextDataPathname does not match a case variant: %s", (pathname) => {
+      expect(isNextDataPathname(pathname)).toBe(false);
+    });
+
+    it.each(CASE_VARIANTS)(
+      "parseNextDataPathname returns null for a case variant: %s",
+      (pathname) => {
+        expect(parseNextDataPathname(pathname, BUILD_ID)).toBeNull();
+      },
+    );
+
+    it.each(CASE_VARIANTS)(
+      "normalizePagesDataRequest leaves a case variant as an ordinary request: %s",
+      (pathname) => {
+        const req = new Request(`http://localhost${pathname}?x=1`);
+        const result = normalizePagesDataRequest(req, BUILD_ID);
+
+        expect(result.isDataReq).toBe(false);
+        expect(result.normalizedPathname).toBeNull();
+        expect(result.notFoundResponse).toBeNull();
+        // The URL is left untouched, so route matching sees the raw pathname
+        // and the request falls through to the ordinary 404 path.
+        expect(result.request).toBe(req);
+      },
+    );
+
+    it("keeps a case variant out of the data 404 JSON even when the buildId matches", () => {
+      // A wrong-buildId data URL answers with `{}` JSON so a client
+      // hard-navigates instead of parsing an HTML error page. A case variant
+      // is not a data request at all, so it must not receive that envelope.
+      const req = new Request(`http://localhost/_NEXT/data/wrong-build-id/about.json`);
+      const result = normalizePagesDataRequest(req, BUILD_ID);
+
+      expect(result.notFoundResponse).toBeNull();
+      expect(result.isDataReq).toBe(false);
+    });
+
+    it("does not treat a case variant under basePath as a data request", () => {
+      const req = new Request(`http://localhost/root/_NEXT/data/${BUILD_ID}/about.json`);
+      const result = normalizePagesDataRequest(req, BUILD_ID, "/root");
+
+      expect(result.isDataReq).toBe(false);
+      expect(result.normalizedPathname).toBeNull();
+    });
+  });
+
   describe("urlParserCreatesPagesDataPath", () => {
     it("detects ignored controls that manufacture a data path", () => {
       expect(urlParserCreatesPagesDataPath("/\t_next/data/abc/about.json")).toBe(true);
