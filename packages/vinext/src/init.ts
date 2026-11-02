@@ -672,7 +672,9 @@ export function addEslintIgnores(source: string, entries: string[]): string | un
     const closing = source.indexOf("]", start);
     if (closing === -1) continue;
     // `ignores` only applies globally when it is the object's only key.
-    if (open[0].startsWith("{") && !/^\s*,?\s*\}/.test(source.slice(closing + 1))) continue;
+    if (open[0].startsWith("{") && !/^,?\}/.test(source.slice(closing + 1).replace(/\s+/g, ""))) {
+      continue;
+    }
     lists.push({ start, closing });
   }
   const missing = entries.filter(
