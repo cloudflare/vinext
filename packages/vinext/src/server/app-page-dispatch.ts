@@ -61,6 +61,10 @@ import {
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { resolveAppPageMethodResponse } from "./app-page-method.js";
 import { isAppPageStaticEligible } from "./app-segment-config.js";
+import {
+  resolveAppPageInterceptSegmentConfig,
+  type AppPageInterceptSegmentConfig,
+} from "./app-page-intercept-segment-config.js";
 import { resolveAppPageNavigationParams } from "./app-page-navigation-params.js";
 import type { AppPageFallbackRouteHead, AppPagePreparedRouteHead } from "./app-page-head.js";
 import {
@@ -217,10 +221,17 @@ type AppPageModule = {
 };
 
 type AppPageDispatchSlot = {
+  configLayouts?: readonly (AppPageModule | null | undefined)[] | null;
+  configLayoutTreePositions?: readonly number[] | null;
   default?: AppPageModule | null;
+  layout?: AppPageModule | null;
+  layoutIndex?: number;
   loading?: AppPageModule | null;
   loadings?: readonly (AppPageModule | null | undefined)[] | null;
+  name?: string;
+  ownerTreePosition?: number | null;
   page?: AppPageModule | null;
+  routeSegments?: readonly string[] | null;
   slotPatternParts?: readonly string[] | null;
   slotParamNames?: readonly string[] | null;
 };
@@ -1219,14 +1230,13 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     return fallbackShellResponse;
   }
 
-  let interceptDynamicConfig: string | null | undefined;
-  let interceptDynamicConfigResolved = false;
-  // Whether the source route that the intercepted response renders is
-  // force-dynamic or revalidate = 0, from the config activated for its render.
-  let isInterceptSourceKnownDynamic = false;
-  // Whether that source is force-static or dynamic = "error", so its render
-  // can't read the request.
-  let isInterceptSourceRequestIndependent = false;
+  let interceptConfig: AppPageInterceptSegmentConfig | null = null;
+  // Whether the intercepted response's render is force-dynamic or
+  // revalidate = 0, from the config activated for it.
+  let isInterceptKnownDynamic = false;
+  // Whether it is force-static or dynamic = "error", so its render can't read
+  // the request.
+  let isInterceptRequestIndependent = false;
   // The head the page's render prepared, for its special-error fallback.
   const renderedRouteHead: RouteHeadRef = {
     observeSearchParams: !isForceStatic,
@@ -1250,16 +1260,15 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       // The intercept route's fetch defaults must also stay active past this
       // call — its server components fetch lazily during the
       // renderToReadableStream in renderInterceptResponse below.
-      const sourceDynamicConfig = interceptDynamicConfigResolved
-        ? interceptDynamicConfig
-        : options.resolveRouteDynamicConfig?.(interceptRoute);
-      if (sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error") {
+      interceptConfig ??= resolveAppPageInterceptSegmentConfig(interceptRoute, interceptOpts!);
+      const interceptDynamicConfig = interceptConfig.dynamicConfig;
+      if (interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error") {
         const { createStaticGenerationHeadersContext } = await import("./app-static-generation.js");
         setHeadersContext(
           createStaticGenerationHeadersContext({
             draftModeEnabled: isDraftMode,
             draftModeSecret: options.draftModeSecret,
-            dynamicConfig: sourceDynamicConfig,
+            dynamicConfig: interceptDynamicConfig,
             routeKind: "page",
             routePattern: interceptRoute.pattern,
           }),
@@ -1267,24 +1276,22 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       } else {
         setHeadersContext(requestHeadersContext);
       }
-      const sourceRevalidateSeconds =
-        options.resolveRouteRevalidateSeconds?.(interceptRoute) ?? null;
-      isInterceptSourceKnownDynamic =
-        sourceDynamicConfig === "force-dynamic" || sourceRevalidateSeconds === 0;
-      isInterceptSourceRequestIndependent =
-        sourceDynamicConfig === "force-static" || sourceDynamicConfig === "error";
-      setCurrentFetchCacheMode(options.resolveRouteFetchCacheMode?.(interceptRoute) ?? null);
-      setCurrentFetchRevalidate(sourceRevalidateSeconds);
-      setCurrentForceDynamicFetchDefault(sourceDynamicConfig === "force-dynamic");
+      isInterceptKnownDynamic =
+        interceptDynamicConfig === "force-dynamic" || interceptConfig.revalidateSeconds === 0;
+      isInterceptRequestIndependent =
+        interceptDynamicConfig === "force-static" || interceptDynamicConfig === "error";
+      setCurrentFetchCacheMode(interceptConfig.fetchCacheMode);
+      setCurrentFetchRevalidate(interceptConfig.revalidateSeconds);
+      setCurrentForceDynamicFetchDefault(interceptDynamicConfig === "force-dynamic");
       return options.buildPageElement(
         interceptRoute,
         interceptParams,
         interceptOpts,
         interceptSearchParams,
         {
-          isForceStatic: sourceDynamicConfig === "force-static",
-          observeMetadataSearchParamsAccess: sourceDynamicConfig !== "force-static",
-          observePageSearchParamsAccess: sourceDynamicConfig !== "force-static",
+          isForceStatic: interceptDynamicConfig === "force-static",
+          observeMetadataSearchParamsAccess: interceptDynamicConfig !== "force-static",
+          observePageSearchParamsAccess: interceptDynamicConfig !== "force-static",
           isUncacheableRender,
           serveStreamingMetadata: placeGeneratedMetadataInBody,
           placeStreamedMetadataInHead: options.renderWholeDocument === true,
@@ -1329,21 +1336,21 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
           encodeURIComponent(JSON.stringify(navigationParams)),
         );
       }
-      // This response renders the source route, so it takes the source's
-      // cacheability and dynamic config, not the matched target's. A source
-      // that can't be static, a render known dynamic before it starts, or a
-      // draft-mode request is never cacheable, like the source's own render.
-      // In production, so is any other source that can read the request: this
-      // response is never stored and can still reach a dynamic API as it
+      // This response renders the interception, so it takes the interception's
+      // cacheability and dynamic config, not the matched target's. One that
+      // can't be static, a render known dynamic before it starts, or a
+      // draft-mode request is never cacheable, like a page's own render. In
+      // production, so is any other interception that can read the request:
+      // this response is never stored and can still reach a dynamic API as it
       // streams. Middleware's policy still wins, merged after, as in the RSC
       // builder.
-      const isSourceStaticEligible =
-        options.pprRuntime !== undefined || options.resolveRouteStaticEligible(sourceRoute);
+      const isInterceptStaticEligible =
+        options.pprRuntime !== undefined || interceptConfig?.isStaticEligible === true;
       if (
-        !isSourceStaticEligible ||
+        !isInterceptStaticEligible ||
         isDraftMode ||
-        isInterceptSourceKnownDynamic ||
-        (options.isProduction && !isInterceptSourceRequestIndependent)
+        isInterceptKnownDynamic ||
+        (options.isProduction && !isInterceptRequestIndependent)
       ) {
         interceptHeaders.set("Cache-Control", resolveUncacheableCacheControl(options.isProduction));
       }
@@ -1355,11 +1362,12 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         headers: interceptHeaders,
       });
     },
-    async resolveSearchParams(sourceRoute, searchParams) {
+    async resolveSearchParams(sourceRoute, searchParams, interceptOpts) {
       await options.ensureRouteLoaded?.(sourceRoute);
-      interceptDynamicConfig = options.resolveRouteDynamicConfig?.(sourceRoute);
-      interceptDynamicConfigResolved = true;
-      return interceptDynamicConfig === "force-static" ? new URLSearchParams() : searchParams;
+      interceptConfig = resolveAppPageInterceptSegmentConfig(sourceRoute, interceptOpts);
+      return interceptConfig.dynamicConfig === "force-static"
+        ? new URLSearchParams()
+        : searchParams;
     },
     searchParams: options.searchParams,
     setNavigationContext: options.setNavigationContext,
