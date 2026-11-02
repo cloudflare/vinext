@@ -16,6 +16,11 @@ export const VINEXT_CLIENT_REFERENCE_SOURCES = ".vite/vinext-client-reference-so
 export type ClientEntryManifest = {
   pagesClientEntry?: string;
   appBrowserEntry?: string;
+  /**
+   * The chunk holding the App Router browser runtime, whose evaluation starts
+   * hydration. A user chunk group can move it out of `appBrowserEntry`.
+   */
+  appBrowserRuntime?: string;
   /** The App Router RouteManifest chunk, which the browser entry imports as it boots. */
   appRouteManifest?: string;
   /** What each App Router client reference loads in the browser. */
@@ -36,6 +41,9 @@ export function readClientEntryManifest(clientDir: string): ClientEntryManifest 
     }
     if (typeof value.appBrowserEntry === "string") {
       manifest.appBrowserEntry = value.appBrowserEntry;
+    }
+    if (typeof value.appBrowserRuntime === "string") {
+      manifest.appBrowserRuntime = value.appBrowserRuntime;
     }
     if (typeof value.appRouteManifest === "string") {
       manifest.appRouteManifest = value.appRouteManifest;

@@ -582,6 +582,17 @@ export async function handleSsr(
               nonce: options?.scriptNonce,
             } as PreinitModuleOptions);
           }
+          // Evaluating these starts hydration, which needs the whole shell, so
+          // only React's bootstrap script at the end of the shell may run them.
+          for (const moduleUrl of pagesClientAssets.appBootstrapPreloadModules ?? []) {
+            // React forwards fetchPriority; its types leave it out.
+            preloadModule(moduleUrl, {
+              as: "script",
+              crossOrigin: assetCrossOrigin,
+              fetchPriority: "low",
+              nonce: options?.scriptNonce,
+            } as PreloadModuleOptions);
+          }
           // The browser entry imports the RouteManifest chunk as it boots.
           // Browsers fetch a dynamic import() at high priority, ahead of the
           // document's own content; the import reuses this low-priority
