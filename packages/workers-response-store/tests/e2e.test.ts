@@ -3698,6 +3698,20 @@ test("upgrading from schema 8 leaves existing entries untouched", async () => {
     );
     // The migration runs in the constructor's transaction, so it must not scale with the table.
     assert.deepEqual(await storage.exec("SELECT count FROM bulk_entry_updates"), [{ count: 0 }]);
+    // An entry created after the upgrade has no unrecorded invalidations: it isn't marked.
+    await stub.reserveWrite(
+      "post-upgrade",
+      "/post-upgrade",
+      "runtime-cache/poc-v2/post-upgrade",
+      Date.now(),
+    );
+    assert.deepEqual(
+      await storage.exec(
+        "SELECT invalidated_revision FROM entries WHERE key_hash = ?",
+        "post-upgrade",
+      ),
+      [{ invalidated_revision: null }],
+    );
   } finally {
     await legacy?.dispose();
     await upgraded?.dispose();
