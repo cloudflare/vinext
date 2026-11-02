@@ -76,6 +76,12 @@ export const VINEXT_PRERENDER_PAGES_STATIC_PATHS_PATH = "/__vinext/prerender/pag
 /** Internal endpoint used to enumerate cached dynamic metadata route paths. */
 export const VINEXT_PRERENDER_METADATA_ROUTES_PATH = "/__vinext/prerender/metadata-routes";
 
+/**
+ * Internal endpoint that renders the build's 404 page on its own, like
+ * `next build` prerendering `/_not-found` or `/404`, without routing.
+ */
+export const VINEXT_PRERENDER_NOT_FOUND_PATH = "/__vinext/prerender/not-found";
+
 /** Internal endpoint used to verify staged Worker version routing without rendering a route. */
 export const VINEXT_PRERENDER_READINESS_PATH = "/__vinext/prerender/readiness";
 

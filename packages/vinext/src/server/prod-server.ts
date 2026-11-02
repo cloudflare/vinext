@@ -94,6 +94,8 @@ import type {
 import { collectInlineCssManifest } from "../build/inline-css.js";
 import { readPrerenderSecret, readServerCompress } from "../build/server-manifest.js";
 import {
+  VINEXT_PRERENDER_NOT_FOUND_PATH,
+  VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
   VINEXT_PRERENDER_ROUTE_PARAMS_HEADER,
   VINEXT_PRERENDER_RENDER_ERROR_HEADER,
   VINEXT_PRERENDER_SECRET_HEADER,
@@ -2160,7 +2162,8 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     if (
       pathname === "/__vinext/prerender/static-params" ||
       pathname === "/__vinext/prerender/pages-static-paths" ||
-      pathname === "/__vinext/prerender/metadata-routes"
+      pathname === "/__vinext/prerender/metadata-routes" ||
+      pathname === VINEXT_PRERENDER_NOT_FOUND_PATH
     ) {
       const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
       if (!prerenderSecret || secret !== prerenderSecret) {
@@ -2631,6 +2634,55 @@ async function createPagesRouterRequestHandler(
       } catch (e) {
         res.writeHead(500);
         res.end((e as Error).message);
+      }
+      return;
+    }
+
+    // Like `next build` prerendering `/404` from `pages/404` or `_error`,
+    // render the build's 404 page on its own, never through redirects,
+    // middleware, rewrites or a route that would answer a nonexistent path.
+    if (pathname === VINEXT_PRERENDER_NOT_FOUND_PATH) {
+      const secret = req.headers[VINEXT_PRERENDER_SECRET_HEADER];
+      if (!prerenderSecret || secret !== prerenderSecret) {
+        res.writeHead(403);
+        res.end("Forbidden");
+        return;
+      }
+      if (process.env.VINEXT_PRERENDER !== "1" || typeof renderPage !== "function") {
+        res.writeHead(404);
+        res.end("This page could not be found");
+        return;
+      }
+      const locale = new URL(rawUrl, "http://localhost").searchParams.get("locale");
+      if (locale !== null && !i18nConfig?.locales.includes(locale)) {
+        res.writeHead(400);
+        res.end("Bad Request");
+        return;
+      }
+      const renderPath =
+        locale !== null && locale !== i18nConfig?.defaultLocale ? `/${locale}/404` : "/404";
+      try {
+        const response = await renderPage(
+          new Request(new URL(renderPath, `http://${resolveHost(req, `${host}:${port}`)}`), {
+            headers: filterInternalHeaders(nodeHeadersToWebHeaders(req.headers)),
+          }),
+          renderPath,
+          ssrManifest,
+          undefined,
+          undefined,
+          { notFoundPage: true, originalUrl: renderPath },
+        );
+        await sendWebResponse(response, req, res, compress);
+      } catch (e) {
+        console.error("[vinext] Server error:", e);
+        if (!res.headersSent) {
+          res.setHeader(
+            VINEXT_PRERENDER_RENDER_ERROR_HEADER,
+            VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+          );
+          res.writeHead(500);
+          res.end("Internal Server Error");
+        }
       }
       return;
     }

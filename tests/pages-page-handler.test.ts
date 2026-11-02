@@ -338,6 +338,30 @@ describe("createPagesPageHandler — route miss", () => {
     expect(direct.headers.get("cache-control")).toBeNull();
   });
 
+  // Like `next build` prerendering `/404`, a route that answers any path
+  // doesn't render instead of the 404 page.
+  it.each(["/404", "/_error"])(
+    "renders %s for notFoundPage without matching the URL",
+    async (pattern) => {
+      const notFoundRoute = makeRoute(pattern);
+      const dynamicRoute = makeRoute("/:name");
+      const matchRoute = vi.fn(() => ({ route: dynamicRoute, params: { name: "404" } }));
+      const handler = createPagesPageHandler(
+        makeOpts({
+          pageRoutes: pattern === "/404" ? [dynamicRoute, notFoundRoute] : [dynamicRoute],
+          errorPageRoute: pattern === "/_error" ? notFoundRoute : null,
+          matchRoute,
+        }),
+      );
+      const response = await handler(makeRequest("/404"), "/404", null, null, {
+        notFoundPage: true,
+      });
+      expect(response.status).toBe(404);
+      expect(await response.text()).toContain(`"page":"${pattern}"`);
+      expect(matchRoute).not.toHaveBeenCalled();
+    },
+  );
+
   it("replaces the inner /404 CDN policy with the source notFound policy", async () => {
     const edgeAdapter: CdnCacheAdapter = {
       ownsBackgroundRevalidation: false,
@@ -2277,6 +2301,34 @@ describe("createPagesPageHandler — prerender render errors", () => {
     );
     expect(notFound.status).toBe(500);
     expect(notFound.headers.has(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(false);
+  });
+
+  it("marks the 404 page that fails to render for notFoundPage as the not-found page", async () => {
+    const handler = createPagesPageHandler(
+      makeOpts({
+        pageRoutes: [makeRoute("/:name"), makeRoute("/404")],
+        matchRoute: () => {
+          throw new Error("notFoundPage never matches the URL");
+        },
+        renderToReadableStream: async () => {
+          throw new Error("render failed");
+        },
+      }),
+    );
+    vi.stubEnv("VINEXT_PRERENDER", "1");
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const response = await handler(makeRequest("/404"), "/404", null, null, {
+        notFoundPage: true,
+      });
+      expect(response.status).toBe(500);
+      expect(response.headers.get(VINEXT_PRERENDER_RENDER_ERROR_HEADER)).toBe(
+        VINEXT_PRERENDER_NOT_FOUND_RENDER_ERROR,
+      );
+    } finally {
+      consoleError.mockRestore();
+      vi.unstubAllEnvs();
+    }
   });
 
   it("marks a 404 rendered by an `_error` without its own getInitialProps", async () => {

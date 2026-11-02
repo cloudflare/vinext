@@ -401,6 +401,11 @@ type RenderPageOptions = {
   asPath?: string;
   originalUrl?: string;
   renderErrorPageOnMiss?: boolean;
+  /**
+   * Render the 404 page (`pages/404`, else `_error`) as a route miss, without
+   * matching the URL, like `next build` prerendering `/404`.
+   */
+  notFoundPage?: boolean;
   __isInternalErrorRender?: boolean;
   __forcedRoute?: PageRoute;
   /** Source-page cache lifetime forwarded while rendering a notFound error page. */
@@ -641,7 +646,9 @@ export function createPagesPageHandler(
     let match =
       options && options.__forcedRoute
         ? { route: options.__forcedRoute, params: {} as Record<string, string | string[]> }
-        : matchRoute(routeUrl, pageRoutes);
+        : options?.notFoundPage
+          ? null
+          : matchRoute(routeUrl, pageRoutes);
     let isRouteMissErrorRender = false;
 
     let renderStatusCodeOverride = statusCode;

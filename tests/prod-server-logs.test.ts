@@ -136,13 +136,18 @@ describe("startProdServer logging", () => {
       silent: true,
     });
     try {
-      const denied = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/static-params`);
-      expect(denied.status).toBe(403);
-      const allowed = await fetch(`http://127.0.0.1:${port}/__vinext/prerender/static-params`, {
-        headers: { "x-vinext-prerender-secret": "nested-secret" },
-      });
-      expect(allowed.status).toBe(200);
-      await expect(allowed.text()).resolves.toBe("ok");
+      for (const endpoint of [
+        "/__vinext/prerender/static-params",
+        "/__vinext/prerender/not-found",
+      ]) {
+        const denied = await fetch(`http://127.0.0.1:${port}${endpoint}`);
+        expect(denied.status).toBe(403);
+        const allowed = await fetch(`http://127.0.0.1:${port}${endpoint}`, {
+          headers: { "x-vinext-prerender-secret": "nested-secret" },
+        });
+        expect(allowed.status).toBe(200);
+        await expect(allowed.text()).resolves.toBe("ok");
+      }
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
