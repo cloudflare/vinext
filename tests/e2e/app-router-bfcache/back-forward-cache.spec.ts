@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { disableDevErrorOverlay, waitForAppRouterHydration } from "../helpers";
 
 // Runs against the dedicated app-bfcache fixture (cacheComponents: true), in dev
 // (app-router-bfcache) and as a production build (app-router-bfcache-prod).
@@ -321,22 +321,6 @@ async function expectViews(page: Page, views: string[]) {
     const state = Reflect.get(window, "__bfcacheEffects") as { views: string[] };
     state.views.splice(0, count);
   }, views.length);
-}
-
-// Like expectEffects, for a hydration whose sibling subtrees may set up in
-// either order: vinext doesn't nest the same number of Activity boundaries as
-// Next.js, and React hydrates each boundary separately.
-async function expectHydratedEffects(page: Page, log: string[], open: string[]) {
-  await expect
-    .poll(async () => {
-      const state = await readEffects(page);
-      return { log: [...state.log].sort(), open: state.open };
-    })
-    .toEqual({ log: [...log].sort(), open: [...open].sort() });
-  await page.evaluate((count) => {
-    const state = Reflect.get(window, "__bfcacheEffects") as EffectState;
-    state.log.splice(0, count);
-  }, log.length);
 }
 
 async function expectEffectsHeading(page: Page, heading: string) {
@@ -995,17 +979,19 @@ test.describe("BFCache Activity effects", () => {
   // panels/[id] has no layout, and the panels layout has a named @panel slot.
   // Like a layout without slots, the panels layout keeps one entry per [id],
   // holding both /panels/a and /panels/a/more, so two more pages don't evict a.
+  // Inside @panel, the [id] level keeps the page and the more segment as two
+  // entries, so the slot page is hidden, not replaced, on /panels/a/more.
   test("keeps a layout-less segment's pages in one entry under a layout with named slots", async ({
     page,
   }) => {
     await page.goto(`${EFFECTS_ROUTE}/panels/a`);
     await waitForAppRouterHydration(page);
-    const panelsOpen = (id: string) => ["shell#1", "panels-layout#1", `panel:${id}#1`];
-    await expectHydratedEffects(
-      page,
-      setupEffects(["shell#1", "panels-layout#1", "panel-main:a#1", "panel:a#1"], true),
-      [...panelsOpen("a"), "panel-main:a#1"],
-    );
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await expectEffects(page, setupEffects([...panelsOpen, "panel-main:a#1", "panel:a#1"], true), [
+      ...panelsOpen,
+      "panel-main:a#1",
+      "panel:a#1",
+    ]);
     await incrementEffect(page, "panel-main:a", 2);
     await incrementEffect(page, "panel:a", 2);
 
@@ -1013,15 +999,21 @@ test.describe("BFCache Activity effects", () => {
     await expectEffectsHeading(page, "Panels a more");
     await expectEffects(
       page,
-      ["cleanup panel-main:a#1", ...setupEffects(["panel-more:a#1"], true)],
-      [...panelsOpen("a"), "panel-more:a#1"],
+      [
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        ...setupEffects(["panel-more:a#1", "panel-slot-more:a#1"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#1"],
     );
+    await expectHiddenEffectState(page, "panel:a", "Count: 2");
+    await incrementEffect(page, "panel-slot-more:a", 3);
 
     await clickEffectsLink(page, "/panels", "Panels home");
     await expectEffects(
       page,
       ["cleanup panel-more:a#1", ...setupEffects(["panels-home#1"], true)],
-      [...panelsOpen("a"), "panels-home#1"],
+      [...panelsOpen, "panel-slot-more:a#1", "panels-home#1"],
     );
 
     await clickEffectsLink(page, "/panels/b", "Panels b");
@@ -1029,21 +1021,60 @@ test.describe("BFCache Activity effects", () => {
       page,
       [
         "cleanup panels-home#1",
-        "cleanup panel:a#1",
+        "cleanup panel-slot-more:a#1",
         ...setupEffects(["panel-main:b#1", "panel:b#1"], true),
       ],
-      [...panelsOpen("b"), "panel-main:b#1"],
+      [...panelsOpen, "panel-main:b#1", "panel:b#1"],
     );
     await expectHiddenEffectState(page, "panel-main:a", "Count: 2");
+    await expectHiddenEffectState(page, "panel-slot-more:a", "Count: 3");
 
     await clickEffectsLink(page, "/panels/a", "Panels a");
     await expectEffects(
       page,
       ["cleanup panel-main:b#1", "cleanup panel:b#1", "setup panel-main:a#1", "setup panel:a#1"],
-      [...panelsOpen("a"), "panel-main:a#1"],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
     );
     await expect(effectCount(page, "panel-main:a")).toHaveText("Count: 2");
     await expect(effectCount(page, "panel:a")).toHaveText("Count: 2");
     await expect(page.locator("#panel-a-more-status:visible")).toHaveText("idle");
+  });
+
+  test("keeps a slot's hidden entries when one entry's error boundary catches", async ({
+    page,
+  }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/b`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await incrementEffect(page, "panel:b", 3);
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(panelsOpen, true),
+        ...setupEffects(["panel-main:b#1", "panel:b#1"], true),
+        "cleanup panel-main:b#1",
+        "cleanup panel:b#1",
+        ...setupEffects(["panel-main:a#1", "panel:a#1"], true),
+      ],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+
+    // The slot's error.tsx catches inside panel a's entry, so panel b's
+    // hidden entry stays mounted.
+    await page.locator('[data-testid="throw-panel:a"]:visible').click();
+    await expect(page.getByTestId("panel-slot-error")).toBeVisible();
+    await disableDevErrorOverlay(page);
+    await expectEffects(page, ["cleanup panel:a#1"], [...panelsOpen, "panel-main:a#1"]);
+    await expectHiddenEffectState(page, "panel:b", "Count: 3");
+
+    await clickEffectsLink(page, "/panels/b", "Panels b");
+    await expectEffects(
+      page,
+      ["cleanup panel-main:a#1", "setup panel-main:b#1", "setup panel:b#1"],
+      [...panelsOpen, "panel-main:b#1", "panel:b#1"],
+    );
+    await expect(effectCount(page, "panel:b")).toHaveText("Count: 3");
+    await expect(page.getByTestId("panel-slot-error")).toBeHidden();
   });
 });

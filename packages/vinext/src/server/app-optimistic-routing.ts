@@ -28,6 +28,8 @@ import {
   type AppElements,
 } from "./app-elements.js";
 import {
+  APP_PAGE_DEFAULT_SEGMENT_KEY,
+  APP_PAGE_SEGMENT_KEY,
   canonicalizeAppPageParams,
   createAppPageSegmentStateKeyRebinder,
   resolveAppPagePatternStateKey,
@@ -272,6 +274,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
     const ownerStateKey = ownerLayout
       ? resolveAppPagePatternStateKey(ownerLayout.patternParts, options.targetRouteParams)
       : "";
+    const deriveLevelIdentity = (segmentKeys: readonly string[]) => {
+      const identityKey = JSON.stringify(segmentKeys);
+      return deriveBfcacheSegmentIdentity({
+        activeRouteGraphId: null,
+        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
+        interceptionTargetRouteGraphId: null,
+        kind: "slot",
+        ownerLayoutGraphId: binding.ownerLayoutId,
+        slotGraphId: binding.slotId,
+        state: binding.state,
+      });
+    };
     const boundSegmentKeys: string[] = [];
     let level = 0;
     for (const segment of binding.routeSegments ?? []) {
@@ -285,16 +299,18 @@ function resolveTargetBfcacheSegmentIdentity(options: {
       );
       if (createNestedBfcacheSlotSegmentId(binding.slotId, level) !== options.segmentId) continue;
 
-      const identityKey = JSON.stringify(boundSegmentKeys);
-      return deriveBfcacheSegmentIdentity({
-        activeRouteGraphId: null,
-        boundSegmentKey: ownerStateKey ? JSON.stringify([ownerStateKey, identityKey]) : identityKey,
-        interceptionTargetRouteGraphId: null,
-        kind: "slot",
-        ownerLayoutGraphId: binding.ownerLayoutId,
-        slotGraphId: binding.slotId,
-        state: binding.state,
-      });
+      return deriveLevelIdentity(boundSegmentKeys);
+    }
+    // The level below the last segment is keyed by the page or default it
+    // renders, as the segment plan keys it.
+    if (
+      level > 0 &&
+      createNestedBfcacheSlotSegmentId(binding.slotId, level + 1) === options.segmentId
+    ) {
+      return deriveLevelIdentity([
+        ...boundSegmentKeys,
+        binding.state === "default" ? APP_PAGE_DEFAULT_SEGMENT_KEY : APP_PAGE_SEGMENT_KEY,
+      ]);
     }
 
     if (level === 0 && createNestedBfcacheSlotSegmentId(binding.slotId, 1) === options.segmentId) {
