@@ -41,6 +41,7 @@ import {
   INVALID_IMAGE_SOURCE_MESSAGE,
   parseImageParams,
   isImageSourceBodyStatus,
+  IMAGE_TYPE_NOT_ALLOWED_MESSAGE,
   isSafeImageContentType,
   MUTABLE_IMAGE_SOURCE_CACHE_CONTROL,
   readImageOptimizationSignal,
@@ -2034,7 +2035,7 @@ async function startAppRouterServer(options: AppRouterServerOptions) {
     // could carry an image extension. SVG is only allowed when
     // dangerouslyAllowSVG is enabled in next.config.js.
     const sendUnsafeContentType = () => {
-      sendBadRequest("The requested resource is not an allowed image type");
+      sendBadRequest(IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
     };
     const isSafeSourcePath = (sourcePath: string) =>
       isSafeImageContentType(contentTypeForPath(sourcePath), imageConfig?.dangerouslyAllowSVG);
@@ -2951,7 +2952,7 @@ async function createPagesRouterRequestHandler(
             // text, whose query or hash could carry an image extension.
             const sendUnsafeContentType = () => {
               res.writeHead(400);
-              res.end("The requested resource is not an allowed image type");
+              res.end(IMAGE_TYPE_NOT_ALLOWED_MESSAGE);
             };
             const isSafeSourcePath = (sourcePath: string) =>
               isSafeImageContentType(

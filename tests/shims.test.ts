@@ -30507,7 +30507,8 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(await response.text()).toBe("original-image-data");
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    // Next.js's image policy at the default `images.minimumCacheTTL`.
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30631,7 +30632,7 @@ describe("handleImageOptimization", () => {
         fetchCount += 1;
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
-          headers: { "Content-Type": "image/png" },
+          headers: { "Content-Type": "image/jpeg" },
         });
       },
       transformImage: async (body: ReadableStream) => {
@@ -30656,7 +30657,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "refetched", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "image/jpeg",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "image/avif",
             ETag: fetchCount === 1 ? '"source-etag"' : '"refetched-etag"',
           },
         });
@@ -30669,9 +30670,9 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(200);
     expect(fetchCount).toBe(2);
-    expect(response.headers.get("Content-Type")).toBe("image/jpeg");
+    expect(response.headers.get("Content-Type")).toBe("image/avif");
     expect(response.headers.get("ETag")).toBe('"refetched-etag"');
-    expect(response.headers.get("Cache-Control")).toBe("public, max-age=31536000, immutable");
+    expect(response.headers.get("Cache-Control")).toBe("public, max-age=14400, must-revalidate");
     expect(response.headers.get("Vary")).toBe("Accept");
   });
 
@@ -30686,7 +30687,7 @@ describe("handleImageOptimization", () => {
         if (fetchCount === 1) {
           return new Response("original", {
             status: 200,
-            headers: { "Content-Type": "image/png" },
+            headers: { "Content-Type": "image/jpeg" },
           });
         }
         return new Response("", { status: 404 });
@@ -30713,7 +30714,7 @@ describe("handleImageOptimization", () => {
         return new Response(fetchCount === 1 ? "original" : "<html>bad</html>", {
           status: 200,
           headers: {
-            "Content-Type": fetchCount === 1 ? "image/png" : "text/html",
+            "Content-Type": fetchCount === 1 ? "image/jpeg" : "text/html",
           },
         });
       },
@@ -30725,7 +30726,7 @@ describe("handleImageOptimization", () => {
     const response = await handleImageOptimization(request, handlers);
     expect(fetchCount).toBe(2);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("returns 400 for backslash open redirect (/\\evil.com)", async () => {
@@ -30770,7 +30771,7 @@ describe("handleImageOptimization", () => {
     };
     const response = await handleImageOptimization(request, handlers);
     expect(response.status).toBe(400);
-    expect(await response.text()).toBe("The requested resource is not an allowed image type");
+    expect(await response.text()).toBe('"url" parameter is valid but image type is not allowed');
   });
 
   it("blocks text/html content type", async () => {

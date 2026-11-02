@@ -15,11 +15,16 @@
  * spoofing. SVG content is blocked by default (following Next.js behavior).
  * When `dangerouslyAllowSVG` is enabled in next.config.js, SVGs are served
  * as-is (no transformation) with security headers applied.
+ *
+ * Like Next.js, formats it does not optimize (SVG, ICO, ICNS, BMP, JPEG XL,
+ * HEIC) and animated images are served as-is too.
  */
 
+import { isAnimatedImage } from "./image-animation.js";
 import { hasLocalMatch, type LocalPattern } from "./image-local-patterns.js";
 import { setCacheStateHeaders } from "./cache-headers.js";
 import { badRequestResponse } from "./http-error-responses.js";
+import { ASSET_PREFIX_URL_DIR } from "../utils/asset-prefix.js";
 
 /** The pathname that triggers image optimization (matches Next.js). */
 export const IMAGE_OPTIMIZATION_PATH = "/_next/image";
@@ -416,9 +421,41 @@ const SAFE_IMAGE_CONTENT_TYPES = new Set([
   "image/avif",
   "image/x-icon",
   "image/vnd.microsoft.icon",
+  "image/x-icns",
   "image/bmp",
   "image/tiff",
+  "image/jxl",
+  "image/heic",
 ]);
+
+/**
+ * Formats Next.js serves as-is instead of optimizing (`BYPASS_TYPES` in
+ * packages/next/src/server/image-optimizer.ts), with ICO's registered name.
+ */
+const BYPASS_IMAGE_CONTENT_TYPES = new Set([
+  "image/svg+xml",
+  "image/x-icon",
+  "image/vnd.microsoft.icon",
+  "image/x-icns",
+  "image/bmp",
+  "image/jxl",
+  "image/heic",
+]);
+
+/** Formats Next.js serves as-is when animated (`ANIMATABLE_TYPES`). */
+const ANIMATABLE_IMAGE_CONTENT_TYPES = new Set(["image/webp", "image/png", "image/gif"]);
+
+/** Next.js's 400 body for a source whose type it does not serve, such as SVG. */
+export const IMAGE_TYPE_NOT_ALLOWED_MESSAGE =
+  '"url" parameter is valid but image type is not allowed';
+
+function imageTypeNotAllowedResponse(): Response {
+  return new Response(IMAGE_TYPE_NOT_ALLOWED_MESSAGE, { status: 400 });
+}
+
+function imageMediaType(contentType: string | null): string {
+  return contentType?.split(";")[0].trim().toLowerCase() ?? "";
+}
 
 /**
  * Check if a Content-Type header value is a safe image type.
@@ -428,9 +465,8 @@ export function isSafeImageContentType(
   contentType: string | null,
   dangerouslyAllowSVG = false,
 ): boolean {
-  if (!contentType) return false;
   // Extract the media type, ignoring parameters (e.g., charset)
-  const mediaType = contentType.split(";")[0].trim().toLowerCase();
+  const mediaType = imageMediaType(contentType);
   if (SAFE_IMAGE_CONTENT_TYPES.has(mediaType)) return true;
   if (dangerouslyAllowSVG && mediaType === "image/svg+xml") return true;
   return false;
@@ -472,17 +508,38 @@ function setImageSecurityHeaders(headers: Headers, config?: ImageConfig): void {
 export const IMAGE_RESPONSE_CACHE_STATE = "MISS";
 
 /** Headers shared by every successful image response, transformed or not. */
-function setImageResponseHeaders(headers: Headers, config?: ImageConfig): void {
-  headers.set("Cache-Control", IMAGE_CACHE_CONTROL);
+function setImageResponseHeaders(
+  headers: Headers,
+  cacheControl: string,
+  config?: ImageConfig,
+): void {
+  headers.set("Cache-Control", cacheControl);
   headers.set("Vary", "Accept");
   setImageSecurityHeaders(headers, config);
   setCacheStateHeaders(headers, IMAGE_RESPONSE_CACHE_STATE);
 }
 
-function createPassthroughImageResponse(source: Response, config?: ImageConfig): Response {
+/**
+ * Next.js's Cache-Control for a source it serves as-is, as the Node server's
+ * passthrough sends it: a hashed build asset stays immutable, and any other
+ * source is revalidated after the default `images.minimumCacheTTL`.
+ */
+function sourceImageCacheControl(imageUrl: string): string {
+  const { pathname } = new URL(imageUrl, "http://localhost");
+  return pathname.includes(`/${ASSET_PREFIX_URL_DIR}/`)
+    ? IMAGE_CACHE_CONTROL
+    : MUTABLE_IMAGE_SOURCE_CACHE_CONTROL;
+}
+
+function createPassthroughImageResponse(
+  source: Response,
+  body: BodyInit | null,
+  imageUrl: string,
+  config?: ImageConfig,
+): Response {
   const headers = new Headers(source.headers);
-  setImageResponseHeaders(headers, config);
-  return new Response(source.body, { status: 200, headers });
+  setImageResponseHeaders(headers, sourceImageCacheControl(imageUrl), config);
+  return new Response(body, { status: 200, headers });
 }
 
 /**
@@ -537,27 +594,43 @@ export async function handleImageOptimization(
   // when dangerouslyAllowSVG is explicitly enabled in next.config.js.
   const sourceContentType = source.headers.get("Content-Type");
   if (!isSafeImageContentType(sourceContentType, imageConfig?.dangerouslyAllowSVG)) {
-    return new Response("The requested resource is not an allowed image type", { status: 400 });
+    return imageTypeNotAllowedResponse();
   }
 
-  // SVG passthrough: SVG is a vector format, so transformation (resize, format
-  // conversion) provides no benefit. Serve as-is with security headers.
-  // This matches Next.js behavior where SVG is a "bypass type".
-  const sourceMediaType = sourceContentType?.split(";")[0].trim().toLowerCase();
-  if (sourceMediaType === "image/svg+xml") {
-    return createPassthroughImageResponse(source, imageConfig);
+  // Like Next.js, serve a format it does not optimize as-is, SVG included
+  // once dangerouslyAllowSVG admitted it above.
+  const sourceMediaType = imageMediaType(sourceContentType);
+  if (BYPASS_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
+    const response = createPassthroughImageResponse(source, source.body, imageUrl, imageConfig);
+    // Next.js labels an ICO by its detected type, `image/x-icon`, where
+    // Workers static assets use the registered `image/vnd.microsoft.icon`.
+    if (sourceMediaType === "image/vnd.microsoft.icon") {
+      response.headers.set("Content-Type", "image/x-icon");
+    }
+    return response;
   }
 
   // Transform if handler provided, otherwise serve original
+  let sourceBytes: Uint8Array<ArrayBuffer> | null = null;
   if (handlers.transformImage) {
     try {
-      const transformed = await handlers.transformImage(source.body, {
+      let body = source.body;
+      // Next.js serves an animated image as-is rather than flattening it to
+      // one frame, which takes reading the whole source.
+      if (ANIMATABLE_IMAGE_CONTENT_TYPES.has(sourceMediaType)) {
+        sourceBytes = new Uint8Array(await source.arrayBuffer());
+        if (isAnimatedImage(sourceBytes)) {
+          return createPassthroughImageResponse(source, sourceBytes, imageUrl, imageConfig);
+        }
+        body = new Blob([sourceBytes]).stream();
+      }
+      const transformed = await handlers.transformImage(body, {
         width,
         format,
         quality,
       });
       const headers = new Headers(transformed.headers);
-      setImageResponseHeaders(headers, imageConfig);
+      setImageResponseHeaders(headers, IMAGE_CACHE_CONTROL, imageConfig);
 
       // Verify the transformed response also has a safe Content-Type.
       // A malicious or buggy transform handler could return HTML.
@@ -573,7 +646,12 @@ export async function handleImageOptimization(
 
   // Fallback: serve original image with cache headers
   try {
-    return createPassthroughImageResponse(source, imageConfig);
+    return createPassthroughImageResponse(
+      source,
+      sourceBytes ?? source.body,
+      imageUrl,
+      imageConfig,
+    );
   } catch (e) {
     console.error("[vinext] Image fallback error, refetching source image:", e);
     const refetchedSource = await handlers.fetchAsset(imageUrl, request);
@@ -583,10 +661,15 @@ export async function handleImageOptimization(
 
     const refetchedContentType = refetchedSource.headers.get("Content-Type");
     if (!isSafeImageContentType(refetchedContentType, imageConfig?.dangerouslyAllowSVG)) {
-      return new Response("The requested resource is not an allowed image type", { status: 400 });
+      return imageTypeNotAllowedResponse();
     }
 
-    return createPassthroughImageResponse(refetchedSource, imageConfig);
+    return createPassthroughImageResponse(
+      refetchedSource,
+      refetchedSource.body,
+      imageUrl,
+      imageConfig,
+    );
   }
 }
 

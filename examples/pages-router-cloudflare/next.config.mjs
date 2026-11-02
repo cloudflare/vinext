@@ -12,6 +12,9 @@ export default {
       { pathname: "/vinext-image.png", search: "?redirect" },
       { pathname: "/_next/static/**", search: "?members-only" },
     ],
+    // Serve SVG sources as-is, with the image endpoint's security headers.
+    // Coverage: tests/e2e/cloudflare-pages-router/image-bypass-types.spec.ts
+    dangerouslyAllowSVG: true,
   },
   async headers() {
     return [
