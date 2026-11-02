@@ -907,8 +907,8 @@ export default {
           outDir: writeWorkerEntry(manifest),
         });
         servers.push(server);
-        const res = await fetch(`http://localhost:${port}/page.rsc`, {
-          headers: { "Accept-Encoding": "gzip" },
+        const res = await fetch(`http://localhost:${port}/page`, {
+          headers: { "Accept-Encoding": "gzip", RSC: "1" },
         });
         expect(res.status).toBe(200);
         expect(res.headers.get("content-encoding")).toBe(expectedEncoding);

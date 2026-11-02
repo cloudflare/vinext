@@ -414,6 +414,9 @@ test("revalidateTag with a cacheLife profile serves the stale value while it reg
   request,
 }) => {
   test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  // Workers Cache revalidates through the edge purge API, whose rate limit is
+  // shared with production, so deployed E2Es never call it.
+  test.skip(backend === "workers-cache", "Workers Cache revalidation purges the edge");
   if (!baseURL) throw new Error("deployed test requires a base URL");
   test.setTimeout(150_000);
 
@@ -617,65 +620,6 @@ test("Workers Cache serves every query of a static page from one entry", async (
   );
 });
 
-test("res.revalidate() purges an encoded spelling of a Pages ISR path", async ({
-  baseURL,
-  request,
-}) => {
-  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
-  test.skip(backend !== "workers-cache", "the edge path-tag purge is specific to Workers Cache");
-  if (!baseURL) throw new Error("deployed test requires a base URL");
-  test.setTimeout(120_000);
-
-  // `%40` and `@` share one ISR entry but are separate edge objects. The
-  // alias copy must carry the tag that res.revalidate() purges for `@`.
-  const handle = randomUUID();
-  const aliasUrl = `${baseURL}/encoded-revalidate/%40${handle}`;
-  const readAlias = async () => {
-    const response = await request.get(aliasUrl, { headers: { accept: "text/html" } });
-    const trace = JSON.stringify(response.headers());
-    expect(response.ok(), trace).toBe(true);
-    const renderId = /encoded-revalidate-render-id[^>]*>([^<]+)</.exec(await response.text())?.[1];
-    expect(renderId, trace).toBeTruthy();
-    return { cache: response.headers()["cf-cache-status"], renderId };
-  };
-
-  let cached = {
-    cache: undefined as string | undefined,
-    renderId: undefined as string | undefined,
-  };
-  await expect
-    .poll(
-      async () => {
-        cached = await readAlias();
-        return cached.cache;
-      },
-      { intervals: [1_000], timeout: 45_000 },
-    )
-    .toBe("HIT");
-
-  const revalidate = await request.post(`${baseURL}/api/pages-revalidate`, {
-    data: { path: `/encoded-revalidate/@${handle}` },
-  });
-  const revalidateBody = await revalidate.json();
-  expect(revalidate.ok(), JSON.stringify(revalidateBody)).toBe(true);
-  expect(revalidateBody).toEqual({
-    revalidated: true,
-    target: `/encoded-revalidate/@${handle}`,
-  });
-
-  // Once purged, the alias is no longer an edge HIT of the old render. Without
-  // the decoded tag it stays one for the full year-long edge lifetime.
-  await expect
-    .poll(
-      async () => {
-        const current = await readAlias();
-        return current.cache === "HIT" && current.renderId === cached.renderId;
-      },
-      { intervals: [1_000], timeout: 45_000 },
-    )
-    .toBe(false);
-});
-
 // Next.js keys its response cache by pathname, so every host an app serves
 // shares one entry, and Workers Cache leaves the host out of its key:
 // https://developers.cloudflare.com/workers/cache/cache-keys/
@@ -813,44 +757,3 @@ for (const [first, other] of [
     cachedPageRenderId(await hit.text());
   });
 }
-
-test("Workers Cache refreshes a page's RSC payload when its document regenerates", async ({
-  baseURL,
-  request,
-}) => {
-  test.skip(
-    backend !== "workers-cache" || !baseURL?.startsWith("https://"),
-    "requires a deployed Workers Cache backend",
-  );
-  test.setTimeout(120_000);
-  const slug = `parts-${randomUUID()}`;
-  const path = `${baseURL}/cached/${slug}`;
-  const readDocument = () => request.get(path, { headers: { accept: "text/html" } });
-  const readPayload = () => request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
-
-  const documentRenderId = cachedPageRenderId(await (await readDocument()).text());
-  await waitForOtherPagePart();
-  const stored = await readPayload();
-  expect(stored.headers()["cf-cache-status"], JSON.stringify(stored.headers())).toBe("HIT");
-  const storedRenderId = cachedPageRenderId(await stored.text());
-
-  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
-    data: { tag: `post:${slug}` },
-  });
-  expect(revalidate.ok(), await revalidate.text()).toBe(true);
-  // The revalidation reaches each part's entry on its own, so a document read
-  // straight away can find its payload still fresh.
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  // Each read of the stale document refreshes it and fetches its payload.
-  await expect
-    .poll(async () => cachedPageRenderId(await (await readDocument()).text()), {
-      intervals: [1_000],
-      timeout: 60_000,
-    })
-    .not.toBe(documentRenderId);
-
-  await waitForOtherPagePart();
-  const refreshed = await readPayload();
-  expect(refreshed.headers()["cf-cache-status"], JSON.stringify(refreshed.headers())).toBe("HIT");
-  expect(cachedPageRenderId(await refreshed.text())).not.toBe(storedRenderId);
-});

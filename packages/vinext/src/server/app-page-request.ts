@@ -182,7 +182,11 @@ type ResolveAppPageInterceptOptions<TRoute, TPage, TInterceptOpts, TElement> = {
     pathname: string,
     interceptOpts: TInterceptOpts,
   ) => AppPageParams;
-  renderInterceptResponse: (route: TRoute, element: TElement) => Promise<Response> | Response;
+  renderInterceptResponse: (
+    route: TRoute,
+    element: TElement,
+    navigationParams: AppPageParams,
+  ) => Promise<Response> | Response;
   resolveSearchParams?: (
     route: TRoute,
     searchParams: URLSearchParams,
@@ -839,13 +843,14 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
       options.getRouteParamNames(interceptState.sourceRoute),
     );
 
+    const resolvedNavigationParams = options.resolveNavigationParams(
+      renderRoute,
+      navigationParams,
+      options.cleanPathname,
+      interceptOpts,
+    );
     options.setNavigationContext({
-      params: options.resolveNavigationParams(
-        renderRoute,
-        navigationParams,
-        options.cleanPathname,
-        interceptOpts,
-      ),
+      params: resolvedNavigationParams,
       pathname: options.cleanPathname,
       searchParams: renderSearchParams,
     });
@@ -858,7 +863,11 @@ export async function resolveAppPageIntercept<TRoute, TPage, TInterceptOpts, TEl
 
     return {
       interceptOpts: undefined,
-      response: await options.renderInterceptResponse(renderRoute, interceptElement),
+      response: await options.renderInterceptResponse(
+        renderRoute,
+        interceptElement,
+        resolvedNavigationParams,
+      ),
     };
   }
 

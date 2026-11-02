@@ -97,6 +97,7 @@ import {
   NEXT_ROUTER_PREFETCH_HEADER,
   VINEXT_INTERCEPTION_ID_HEADER,
   VINEXT_MOUNTED_LAYOUTS_HEADER,
+  VINEXT_PARAMS_HEADER,
   VINEXT_PRERENDER_SPECULATIVE_HEADER,
 } from "./headers.js";
 import { parseMountedLayoutsHeader } from "./app-mounted-layouts.js";
@@ -382,7 +383,6 @@ export type DispatchAppPageOptions<TRoute extends AppPageDispatchRoute> = {
   hasGenerateStaticParams: boolean;
   /** Whether any segment of the route exports `generateStaticParams`. */
   hasAnyGenerateStaticParams: boolean;
-  hasCustomGlobalError?: boolean;
   hasPageDefaultExport: boolean;
   hasPageModule: boolean;
   handlerStart: number;
@@ -1300,7 +1300,7 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
     resolveNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts) {
       return resolveAppPageNavigationParams(sourceRoute, navigationParams, pathname, interceptOpts);
     },
-    renderInterceptResponse(sourceRoute, interceptElement) {
+    renderInterceptResponse(sourceRoute, interceptElement, navigationParams) {
       const interceptOnError = options.createRscOnErrorHandler(
         options.cleanPathname,
         sourceRoute.pattern,
@@ -1314,6 +1314,14 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
         "Content-Type": VINEXT_RSC_CONTENT_TYPE,
         Vary: VINEXT_RSC_VARY_HEADER,
       });
+      // The client reads useParams() from this header, as for any page, so
+      // the intercepted target's params reach it, not just the source's.
+      if (Object.keys(navigationParams).length > 0) {
+        interceptHeaders.set(
+          VINEXT_PARAMS_HEADER,
+          encodeURIComponent(JSON.stringify(navigationParams)),
+        );
+      }
       // This response renders the source route, so it takes the source's
       // cacheability and dynamic config, not the matched target's. A source
       // that can't be static, a render known dynamic before it starts, or a
@@ -1528,7 +1536,6 @@ async function dispatchAppPageInner<TRoute extends AppPageDispatchRoute>(
       );
     },
     renderToReadableStream: options.renderToReadableStream,
-    hasCustomGlobalError: options.hasCustomGlobalError,
     prerenderToReadableStream: options.prerenderToReadableStream,
     routePattern: route.pattern,
     scriptNonce: options.scriptNonce,

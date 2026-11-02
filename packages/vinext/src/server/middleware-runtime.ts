@@ -37,6 +37,7 @@ import { nextDataMiddlewareMatchPathname } from "./pages-data-route.js";
 import { reportRequestError } from "./instrumentation.js";
 import { isValidNavigationSignalError } from "../utils/navigation-signal.js";
 import { frameworkTracer } from "./tracer.js";
+import { logRequestError } from "./request-error-log.js";
 
 export type MiddlewareModule = Record<string, unknown>;
 
@@ -593,8 +594,11 @@ async function executeMiddlewareModule(
     if (isDevelopmentNavigationSignal && e instanceof Error) {
       e.message = `Next.js navigation API is not allowed to be used in ${options.isProxy ? "Proxy" : "Middleware"}.`;
     }
-    console.error("[vinext] Middleware error:", e);
-    if (!isDevelopmentNavigationSignal) {
+    if (isDevelopmentNavigationSignal) {
+      // Not reported, so VINEXT_QUIET doesn't silence it.
+      console.error("[vinext] Middleware error:", e);
+    } else {
+      logRequestError("[vinext] Middleware error:", e);
       await reportProxyError(options, e);
     }
     const waitUntilPromises = drainFetchEvent(fetchEvent);

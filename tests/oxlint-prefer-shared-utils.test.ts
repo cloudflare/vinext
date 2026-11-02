@@ -39,6 +39,8 @@ function writeTestFixture(name: string, source: string): string {
   return path.join(testFixtureLinkDir, name);
 }
 
+// Each call spawns a full `vp lint` run, which can outlast the default 5s
+// test timeout on a busy CI runner, so the tests below set their own.
 function runLint(files: readonly string[]): { status: number | null; output: string } {
   const result = spawnSync("vp", ["lint", ...files], {
     cwd: path.resolve(import.meta.dirname, ".."),
@@ -153,7 +155,7 @@ function findFileWithExts(value) {
     expect(result.output).toContain("Use shared compareStrings");
     expect(result.output).toContain("Use shared compareAppElementsSlotIds");
     expect(result.output).toContain("Use shared findFileWithExts");
-  });
+  }, 30_000);
 
   it("reports local shared-helper definitions in tests", () => {
     const testHelperFile = writeTestFixture(
@@ -172,7 +174,7 @@ void isUnknownRecord({});
     expect(result.status).not.toBe(0);
     expect(result.output).toContain("copied-record-helper.test.ts");
     expect(result.output).toContain("Use shared isUnknownRecord");
-  });
+  }, 30_000);
 
   it("allows canonical modules, comments, and ordinary strings", () => {
     const commentsAndStringsFile = writeFixture(
@@ -193,5 +195,5 @@ export const docs = "function isPromiseLike(value) { return true; }";
 
     expect(result.status).toBe(0);
     expect(result.output).not.toContain("prefer-shared-utils");
-  });
+  }, 30_000);
 });

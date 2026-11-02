@@ -155,6 +155,18 @@ test.describe('"use cache" file-level directive', () => {
   });
 });
 
+// cacheLife() throws for a profile next.config does not define, so these
+// render only when the configured profiles reach the dev server's RSC graph.
+test.describe("next.config cacheLife profiles in dev", () => {
+  for (const path of ["/use-cache-custom-profile", "/use-cache-overridden-profile"]) {
+    test(`${path} renders with its configured profile`, async ({ request }) => {
+      const res = await request.get(`${BASE}${path}`);
+      expect(res.status()).toBe(200);
+      expect(await res.text()).toContain(`data-testid="${path.slice(1)}-page"`);
+    });
+  }
+});
+
 test.describe('"use cache" function-level directive', () => {
   test("function-level use-cache page renders correctly", async ({ page }) => {
     await page.goto(`${BASE}/use-cache-fn-test`);
