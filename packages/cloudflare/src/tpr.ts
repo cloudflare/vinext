@@ -193,49 +193,34 @@ async function queryTraffic(
   }));
 }
 
-/** Root control files Wrangler never uploads as assets. */
-const UNSERVED_ASSET_CONTROL_FILES = new Set(["/.assetsignore", "/_headers", "/_redirects"]);
-
-/**
- * URL pathnames of every file in the built static assets directory. Custom
- * `.assetsignore` patterns are not applied, so an ignored file only skips warming.
- */
+/** URL pathnames of every file in the built static assets directory. */
 function readStaticAssetPaths(assetsDir: string): Set<string> {
   if (!fs.existsSync(assetsDir)) return new Set();
   return new Set(
     fs
       .readdirSync(assetsDir, { recursive: true, withFileTypes: true })
-      .map((entry) => path.join(entry.parentPath, entry.name))
-      // Wrangler stats each entry, so file symlinks are uploaded too.
-      .filter((filePath) => fs.statSync(filePath, { throwIfNoEntry: false })?.isFile())
-      .map((filePath) => `/${path.relative(assetsDir, filePath).split(path.sep).join("/")}`)
-      // Wrangler matches its default control-file rules case-insensitively.
-      .filter((pathname) => !UNSERVED_ASSET_CONTROL_FILES.has(pathname.toLowerCase())),
+      .filter((entry) => entry.isFile())
+      .map(
+        (entry) =>
+          `/${path.relative(assetsDir, path.join(entry.parentPath, entry.name)).split(path.sep).join("/")}`,
+      ),
   );
 }
 
-/**
- * Whether a request path is an exact, case-sensitive match for a built asset
- * file, as served with the `htmlHandling: "none"` config `vinext init` generates.
- */
+/** Whether a request path names a built asset file, with or without basePath. */
 function isStaticAssetPath(assetPaths: Set<string>, pathname: string, basePath = ""): boolean {
-  // Like Static Assets, decode each segment on its own, keep malformed ones
-  // verbatim, then collapse repeated separators.
-  const assetPathname = pathname
-    .split("/")
-    .map((segment) => {
-      try {
-        return decodeURIComponent(segment);
-      } catch {
-        return segment;
-      }
-    })
-    .join("/")
-    .replace(/\/+/g, "/");
-  if (!basePath) return assetPaths.has(assetPathname);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return false;
+  }
   // Public files sit at the assets root but are served below basePath.
   return (
-    assetPathname.startsWith(`${basePath}/`) && assetPaths.has(assetPathname.slice(basePath.length))
+    assetPaths.has(decoded) ||
+    (Boolean(basePath) &&
+      decoded.startsWith(`${basePath}/`) &&
+      assetPaths.has(decoded.slice(basePath.length)))
   );
 }
 
@@ -245,28 +230,19 @@ export function filterTrafficPaths(
   options: { assetsDir?: string; basePath?: string } = {},
 ): TrafficEntry[] {
   const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
-  return entries.flatMap((e) => {
-    if (!e.path.startsWith("/")) return [];
-    // Resolve dot segments (including encoded ones) as candidate discovery does,
-    // without reading a leading `//` as a host, then collapse repeated separators.
-    // Route selection aggregates entries that canonicalize to the same path.
-    const pathname = new URL(`http://vinext.local${e.path}`).pathname.replace(/\/+/g, "/");
+  return entries.filter((e) => {
+    if (!e.path.startsWith("/")) return false;
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
-    if (pathname.startsWith("/cdn-cgi/")) return [];
+    if (e.path.startsWith("/cdn-cgi/")) return false;
     // Static assets
-    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(pathname))
-      return [];
-    if (assetPaths && isStaticAssetPath(assetPaths, pathname, options.basePath)) return [];
+    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
+      return false;
+    if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
     // API routes
-    if (pathname.startsWith("/api/")) return [];
-    // Internal routes, and build output below any basePath or asset prefix
-    if (
-      pathname.startsWith("/_next/") ||
-      pathname.includes("/_next/static/") ||
-      pathname.startsWith("/__vinext/")
-    )
-      return [];
-    return [{ path: pathname, requests: e.requests }];
+    if (e.path.startsWith("/api/")) return false;
+    // Internal routes
+    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
+    return true;
   });
 }
 
