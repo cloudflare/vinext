@@ -3757,8 +3757,8 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             // asserts `cssText` preserves `max-width: 768px`.
             //
             // This list is only the default. Vite merges a plugin's returned
-            // arrays onto the user's by concatenation, and esbuild keeps the
-            // oldest version of each browser. Always returning the pin makes
+            // arrays onto the user's by concatenation, and the CSS minifier keeps
+            // the oldest version of each browser. Always returning the pin makes
             // it impossible for an app to raise `build.cssTarget` (#4413).
             // `false` is a real Vite value (skip CSS syntax lowering), so only
             // `undefined` means "the user did not choose".

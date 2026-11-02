@@ -106,8 +106,8 @@ describe("CSS media-query syntax preservation in production build", () => {
   it("does not append the pinned cssTarget when the app sets its own", async () => {
     const tmpDir = await makeFixture();
     // Firefox 121 / Safari 15.6 are newer than the pin (firefox114 / safari15).
-    // Before the fix, Vite concatenated both lists and esbuild kept the older
-    // version of each browser, so an app could never raise the target.
+    // Before the fix, Vite concatenated both lists and the CSS minifier kept the
+    // older version of each browser, so an app could never raise the target.
     const userTarget = ["chrome111", "edge111", "firefox121", "safari15.6"];
     try {
       const config = await resolveConfig(
