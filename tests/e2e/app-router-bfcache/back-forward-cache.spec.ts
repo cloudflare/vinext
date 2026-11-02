@@ -306,6 +306,23 @@ async function expectEffects(page: Page, log: string[], open: string[]) {
   }, log.length);
 }
 
+// Waits for exactly `views` (`name pathname`, recorded by PageViewProbe effects)
+// to be recorded since the previous call, then consumes them.
+async function expectViews(page: Page, views: string[]) {
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = Reflect.get(window, "__bfcacheEffects") as { views?: string[] } | undefined;
+        return state?.views?.slice() ?? [];
+      }),
+    )
+    .toEqual(views);
+  await page.evaluate((count) => {
+    const state = Reflect.get(window, "__bfcacheEffects") as { views: string[] };
+    state.views.splice(0, count);
+  }, views.length);
+}
+
 async function expectEffectsHeading(page: Page, heading: string) {
   // Exactly one visible heading: hidden entries never show a duplicate.
   await expect(page.locator("h2:visible")).toHaveText([heading]);
@@ -918,5 +935,44 @@ test.describe("BFCache Activity effects", () => {
     await clickEffectsLink(page, "/rooms/b", "Room b");
     await expectEffects(page, ["cleanup room:a#1", "setup room:b#1"], ["shell#1", "room:b#1"]);
     await expect(effectCount(page, "room:b")).toHaveText("Count: 3");
+  });
+
+  // An entry that back or forward shows again commits with its own URL, so an
+  // effect it runs on reveal, like a page-view tracker, never reads the URL of
+  // the entry it replaces.
+  test("reveals a retained entry with its own URL on back and forward", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+
+    await page.goBack();
+    await expectEffectsHeading(page, "Room a");
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+
+    await page.goForward();
+    await expectEffectsHeading(page, "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+  });
+
+  test("reads the URL a revealed entry writes from a layout effect", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/rooms/a`);
+    await waitForAppRouterHydration(page);
+    await expectViews(page, [`room:a ${EFFECTS_ROUTE}/rooms/a`]);
+    await clickEffectsLink(page, "/rooms/b", "Room b");
+    await expectViews(page, [`room:b ${EFFECTS_ROUTE}/rooms/b`]);
+
+    await page.evaluate(() => {
+      Reflect.set(window, "__writeUrlOnShow", "room:a");
+    });
+    await page.goBack();
+    await expectEffectsHeading(page, "Room a");
+    await expectViews(page, [
+      `room:a ${EFFECTS_ROUTE}/rooms/a`,
+      `room:a ${EFFECTS_ROUTE}/rooms/a?shown=1`,
+    ]);
+    await expect(page).toHaveURL(`${EFFECTS_ROUTE}/rooms/a?shown=1`);
   });
 });

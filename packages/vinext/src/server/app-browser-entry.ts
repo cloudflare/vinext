@@ -22,6 +22,7 @@ import "../client/instrumentation-client.js";
 import { notifyAppRouterTransitionStart } from "../client/instrumentation-client-state.js";
 import {
   __basePath,
+  activateNavigationSnapshot,
   appRouterInstance,
   commitClientNavigationState,
   consumePrefetchResponse,
@@ -498,6 +499,15 @@ let latestRscHmrUpdateId = 0;
 // navigation. This is intentionally not a per-navigation set — a future
 // asynchronous scroll restore for an older navId is already stale.
 let synchronousPopstateScrollRestoreNavigationId: number | null = null;
+// Publishes a restored history entry's URL state and releases its render
+// snapshot, while that entry's synchronous commit hasn't done so yet.
+let pendingHistoryRestoreCommit: (() => void) | null = null;
+
+function flushPendingHistoryRestoreCommit(): void {
+  const commit = pendingHistoryRestoreCommit;
+  pendingHistoryRestoreCommit = null;
+  commit?.();
+}
 
 // Vite can notify the browser about an RSC HMR update before the dev server's
 // request runner has swapped to the invalidated module graph. Give the
@@ -527,6 +537,16 @@ function restoreHistoryStateSnapshot(
           beforeCommit: () => {
             onApprovedBeforeCommit?.();
             beforeCommit();
+            // The restored tree commits before its URL state, so its hooks
+            // read the entry's own render snapshot, as Next derives them from
+            // the restored tree. A history write from one of its layout
+            // effects publishes that URL state first. A copied external
+            // entry's snapshot holds the copied tree's URL, not the one the
+            // browser shows.
+            if (!restoreCopiedExternalHistoryEntry) {
+              activateNavigationSnapshot();
+              pendingHistoryRestoreCommit = () => commitClientNavigationState(navId);
+            }
           },
           navId,
           state,
@@ -546,7 +566,11 @@ function restoreHistoryStateSnapshot(
   clientNavigationCacheGeneration += 1;
   revokeHistoryRestoreNavigationReuse(visitedResponseCache);
   disableNavigationResponsePrefetchCacheReuse();
-  commitClientNavigationState(navId, { releaseSnapshot: false });
+  if (restoreCopiedExternalHistoryEntry) {
+    commitClientNavigationState(navId, { releaseSnapshot: false });
+  } else {
+    flushPendingHistoryRestoreCommit();
+  }
   return true;
 }
 
@@ -3200,7 +3224,10 @@ function bootstrapHydration(
         navigationAbortCoordinator.abortActive();
       }
     },
-    flushCommittingNavigationUrl: () => browserNavigationController.flushCommittingNavigationUrl(),
+    flushCommittingNavigationUrl: () => {
+      flushPendingHistoryRestoreCommit();
+      browserNavigationController.flushCommittingNavigationUrl();
+    },
   });
 
   // Note: This popstate handler runs for App Router (RSC navigation available).
