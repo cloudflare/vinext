@@ -33,7 +33,12 @@ import { buildMiddlewarePrefetchSkipResponse } from "./pages-data-route.js";
 import { cloneRequestWithUrl, normalizeTrailingSlash } from "./request-pipeline.js";
 import { applyConfigHeadersToHeaderRecord } from "./config-headers.js";
 import type { HeaderRecord } from "./request-pipeline.js";
-import { finalizeMissingStaticAssetResponse, mergeHeaders } from "./worker-utils.js";
+import {
+  finalizeMissingStaticAssetResponse,
+  mergeHeaders,
+  mergeStaticFileHeaders,
+} from "./worker-utils.js";
+import { isImageOptimizationPath } from "./image-optimization.js";
 import { withExternalRewriteResponseHeaders } from "./middleware-response-headers.js";
 import {
   assetPrefixPathname,
@@ -46,7 +51,7 @@ import {
   stripI18nLocaleForApiRoute,
 } from "./pages-i18n.js";
 import { mergeRewriteQuery } from "../utils/query.js";
-import { addBasePathToPathname } from "../utils/base-path.js";
+import { restoreBasePath } from "../utils/base-path.js";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { normalizePathnameForRouteMatchStrict } from "../routing/utils.js";
 import {
@@ -336,7 +341,7 @@ export function wrapMiddlewareWithBasePath(
   if (!hadBasePath || !basePath) return runMiddleware;
   return (request, ctx, opts) => {
     const mwUrl = new URL(request.url);
-    mwUrl.pathname = addBasePathToPathname(mwUrl.pathname, basePath);
+    mwUrl.pathname = restoreBasePath(mwUrl.pathname, basePath);
     // Keep Workers `cf` metadata, which NextRequest.ip / .geo rely on.
     return runMiddleware(cloneRequestWithUrl(request, mwUrl.toString()), ctx, opts);
   };
@@ -541,7 +546,13 @@ export async function runPagesRequest(
         served.status === 405 && served.headers.get("allow") === "GET, HEAD";
       // As for App Router public files, keep a partial or conditional asset
       // status (206, 304) rather than masking it while keeping its headers.
-      const response = mergeHeaders(
+      // The image endpoint's Cache-Control is the optimizer's own, which
+      // Next.js sets after middleware's; a file's is only a default.
+      const merge =
+        resolvedPathnameHasBasePath && isImageOptimizationPath(requestPathname)
+          ? mergeHeaders
+          : mergeStaticFileHeaders;
+      const response = merge(
         served,
         middlewareHeaders,
         isStaticMethodNotAllowed || !served.ok || served.status === 206
@@ -830,11 +841,10 @@ export async function runPagesRequest(
     if (typeof deps.handleApi === "function") {
       let apiRequest = request;
       // Prod re-adds basePath only when the original request carried it.
-      // Dev reconstructs Vite's stripped basePath in api-handler.ts; the paths
-      // differ only for an out-of-basePath request middleware-rewritten into an API.
+      // Dev reads the pre-Vite request URL in api-handler.ts instead.
       if (basePath && hadBasePath) {
         const apiRequestUrl = new URL(request.url);
-        apiRequestUrl.pathname = addBasePathToPathname(apiRequestUrl.pathname, basePath);
+        apiRequestUrl.pathname = restoreBasePath(apiRequestUrl.pathname, basePath);
         apiRequest = cloneRequestWithUrl(request, apiRequestUrl.toString());
       }
       const response = await deps.handleApi(

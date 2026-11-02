@@ -22,7 +22,6 @@ import {
 } from "./app-page-execution.js";
 import { buildRscRedirectFlightStream } from "./app-rsc-redirect-flight.js";
 import { createArtifactCompatibilityEnvelope } from "./artifact-compatibility.js";
-import { stripRscSuffix } from "./app-rsc-cache-busting.js";
 import {
   isRenderDynamicLatched,
   isStaticGenerationAccessError,
@@ -48,10 +47,8 @@ import {
   resolveHttpAccessFallbackMetadata,
   resolveHttpAccessFallbackViewport,
 } from "./app-page-http-access-fallback-metadata.js";
-import {
-  resolveSlotParamOverrides,
-  type AppPageInterceptOptions,
-} from "./app-page-element-builder.js";
+import type { AppPageInterceptOptions } from "./app-page-element-builder.js";
+import { resolveSlotParamOverrides } from "./app-page-navigation-params.js";
 import { resolveAppPageBranchParams, resolveAppPageSegmentParams } from "./app-page-params.js";
 import { SIBLING_PAGE_INTERCEPT_SLOT_KEY } from "./app-rsc-route-matching.js";
 import {
@@ -685,8 +682,7 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
 
   const layoutModules = options.layoutModules ?? options.route?.layouts ?? options.rootLayouts;
   const pathname = new URL(options.requestUrl).pathname;
-  const routePathname =
-    options.routePathname ?? stripRscSuffix(stripBasePath(pathname, options.basePath ?? ""));
+  const routePathname = options.routePathname ?? stripBasePath(pathname, options.basePath ?? "");
   const headBoundaryModule = options.headBoundaryModule ?? boundaryModule;
   const headLayoutModules = options.headLayoutModules ?? layoutModules;
   const routeSegments = resolveHttpAccessFallbackHeadRouteSegments(
@@ -1072,8 +1068,8 @@ export async function renderAppPageHttpAccessFallback<TModule extends AppPageMod
         key: "metadata",
         metadata,
         // As for the route's own render: relative canonical and alternate URLs
-        // resolve against the normalized route pathname, never the `.rsc` or
-        // pre-rewrite request path.
+        // resolve against the normalized route pathname, never the pre-rewrite
+        // request path.
         pathname: routePathname,
         trailingSlash: options.trailingSlash,
       }),
@@ -1259,6 +1255,10 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
     });
   };
 
+  // A render error sends a document with a 500, whichever boundary catches it,
+  // as in Next.js. A local boundary's payload streams with a 200, as Next.js's
+  // payload carrying the error does.
+  const isErrorStatus = errorBoundary.isGlobalError || !options.isRscRequest;
   const renderWith = async (BoundaryComponent: AppPageComponent): Promise<Response> => {
     const response = await renderAppPageBoundaryElementResponse({
       ...options,
@@ -1268,9 +1268,9 @@ export async function renderAppPageErrorBoundary<TModule extends AppPageModule>(
       navigationParams: matchedParams,
       route: options.route,
       routePattern: options.route?.pattern,
-      status: errorBoundary.isGlobalError ? 500 : 200,
+      status: isErrorStatus ? 500 : 200,
     });
-    if (errorBoundary.isGlobalError) {
+    if (isErrorStatus) {
       applyCdnResponseHeaders(response.headers, { cacheControl: NEVER_CACHE_CONTROL });
     }
     return response;

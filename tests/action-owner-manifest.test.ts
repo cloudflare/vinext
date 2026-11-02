@@ -256,6 +256,7 @@ describe("server action owner manifest", () => {
             configLayoutPaths: ["/app/@slot/config-layout.tsx"],
             defaultPath: "/app/@slot/default.tsx",
             errorPath: "/app/@slot/error.tsx",
+            errorPaths: ["/app/@slot/nested-error.tsx"],
             hasPage: true,
             interceptingRoutes: [
               {
@@ -325,6 +326,7 @@ describe("server action owner manifest", () => {
       "/app/@slot/loading.tsx",
       "/app/@slot/nested-loading.tsx",
       "/app/@slot/error.tsx",
+      "/app/@slot/nested-error.tsx",
       "/app/@slot/not-found.tsx",
       "/app/@slot/outer-not-found.tsx",
       "/app/@slot/(.)item/page.tsx",

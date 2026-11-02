@@ -16,6 +16,7 @@ import { PHASE_DEVELOPMENT_SERVER } from "vinext/shims/constants";
 import { DEFAULT_PAGE_EXTENSIONS, normalizePageExtensions } from "../routing/file-matcher.js";
 import { getHtmlLimitedBotRegex } from "../utils/html-limited-bots.js";
 import { flattenPluginOptions } from "../utils/plugin-options.js";
+import { type CacheLifeConfig, resolveCacheLifeProfiles } from "../utils/cache-life-profiles.js";
 import { isUnknownRecord } from "../utils/record.js";
 import { escapeRegExp } from "../utils/regex.js";
 import { applyLocaleToRoutes, configSourceError, isExternalUrl } from "./config-matchers.js";
@@ -362,12 +363,24 @@ export type NextConfig = {
         }
     >;
     domains?: string[];
+    /**
+     * Local sources the image optimization endpoint may serve. Statically
+     * imported images are allowed too, except under a basePath (the added
+     * pattern is unprefixed, as in Next.js). When unset, any local path
+     * without a query string is allowed (matches Next.js).
+     */
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     unoptimized?: boolean;
     /** Allowed device widths for image optimization. Defaults to Next.js defaults: [640, 750, 828, 1080, 1200, 1920, 2048, 3840] */
     deviceSizes?: number[];
     /** Allowed image sizes for fixed-width images. Defaults to Next.js defaults: [32, 48, 64, 96, 128, 256, 384] */
     imageSizes?: number[];
-    /** Allowed image qualities. When unset, any quality from 1-100 is permitted (matches Next.js). */
+    /**
+     * Allowed image qualities. When set, the endpoint accepts only these and the
+     * default loader rounds `quality` to the closest entry, as in Next.js. When
+     * unset, any quality from 1-100 is permitted: a deliberate divergence from
+     * Next.js 16's `[75]` default that keeps Next.js 14/15 apps working.
+     */
     qualities?: number[];
     /** Allow SVG images through the image optimization endpoint. SVG can contain scripts, so only enable if you trust all image sources. */
     dangerouslyAllowSVG?: boolean;
@@ -741,6 +754,11 @@ export type ResolvedNextConfig = {
    */
   staleTimes: { dynamic: number; static: number };
   /**
+   * `cacheLife` profiles (or legacy `experimental.cacheLife`) merged over the
+   * built-ins with Next.js's rules; read by the `cacheLife()` shim.
+   */
+  cacheLife: Record<string, CacheLifeConfig>;
+  /**
    * Mirrors Next.js `experimental.useLightningcss`. When `true`, switch
    * Vite's CSS pipeline from PostCSS to lightningcss for both transforms
    * and minification, so the user's `lightningCssFeatures` config takes
@@ -1112,7 +1130,7 @@ function warnDeprecatedConfigOptions(config: NextConfig, root: string): void {
   }
   // Next.js drops nullish nested values before warning about a moved key.
   const experimental = readOptionalRecord(config.experimental);
-  for (const key of ["skipTrailingSlashRedirect", "cacheComponents"] as const) {
+  for (const key of ["skipTrailingSlashRedirect", "cacheComponents", "cacheLife"] as const) {
     if (experimental?.[key] != null) {
       warnConfigOnce(
         `\`experimental.${key}\` has been moved to \`${key}\`. Please update your ${configFileName} file accordingly.`,
@@ -1347,6 +1365,74 @@ async function resolveBuildId(
   }
 
   return trimmed;
+}
+
+/**
+ * Mirror Next.js's config resolution of `images.localPatterns`: statically
+ * imported images (`/_next/static/media/**`) stay allowed whatever the app
+ * lists, though like Next.js the pattern is unprefixed, so it never matches
+ * under a basePath. An unset list stays unset; the image endpoint then applies the
+ * Next.js default.
+ */
+function resolveImageLocalPatterns(
+  localPatterns: unknown,
+): Array<{ pathname?: string; search?: string }> | undefined {
+  if (localPatterns === undefined) return undefined;
+  if (!Array.isArray(localPatterns)) {
+    throw new Error(
+      `Specified images.localPatterns should be an Array received ${localPatterns === null ? "null" : typeof localPatterns}.\n` +
+        "See more info here: https://nextjs.org/docs/messages/invalid-images-config",
+    );
+  }
+  // Next.js rejects anything else with its config schema (fatal for
+  // `images`). A malformed entry must not become `{}`, which matches every
+  // local URL.
+  if (localPatterns.length > 25) {
+    throw new Error("Specified images.localPatterns can have at most 25 entries.");
+  }
+  // Array.from visits sparse holes, which map would skip.
+  const patterns = Array.from(localPatterns, (pattern: unknown, index) => {
+    // Next.js's zod strictObject: any object zod doesn't type as an array,
+    // date, map, set or promise, whose enumerable keys (inherited ones too,
+    // so a URL fails) are only `pathname` and `search`, read as strings.
+    const entry = pattern as { pathname?: unknown; search?: unknown; then?: unknown };
+    let valid =
+      typeof pattern === "object" &&
+      pattern !== null &&
+      !Array.isArray(pattern) &&
+      !(pattern instanceof Date) &&
+      !(pattern instanceof Map) &&
+      !(pattern instanceof Set) &&
+      !(
+        typeof entry.then === "function" &&
+        typeof (pattern as Promise<unknown>).catch === "function"
+      ) &&
+      (entry.pathname === undefined || typeof entry.pathname === "string") &&
+      (entry.search === undefined || typeof entry.search === "string");
+    if (valid) {
+      for (const key in pattern as object) {
+        if (key !== "pathname" && key !== "search") valid = false;
+      }
+    }
+    if (!valid) {
+      throw new Error(
+        `Specified images.localPatterns[${index}] should be an object with optional string ` +
+          "`pathname` and `search` fields.",
+      );
+    }
+    const resolved: { pathname?: string; search?: string } = {};
+    if (entry.pathname !== undefined) resolved.pathname = entry.pathname as string;
+    if (entry.search !== undefined) resolved.search = entry.search as string;
+    return resolved;
+  });
+  if (
+    !patterns.some(
+      (pattern) => pattern.pathname === "/_next/static/media/**" && pattern.search === "",
+    )
+  ) {
+    patterns.push({ pathname: "/_next/static/media/**", search: "" });
+  }
+  return patterns;
 }
 
 /**
@@ -1974,6 +2060,11 @@ export async function resolveNextConfig(
       instrumentationServerValueInjections: {},
       clientTraceMetadata: undefined,
       staleTimes: { ...DEFAULT_STALE_TIMES },
+      cacheLife: resolveCacheLifeProfiles(
+        undefined,
+        { expireTime: DEFAULT_EXPIRE_TIME, staticStaleTime: DEFAULT_STALE_TIMES.static },
+        warnConfigOnce,
+      ),
       useLightningcss: false,
       lightningCssFeatures: { include: 0, exclude: 0 },
     };
@@ -2128,6 +2219,9 @@ export async function resolveNextConfig(
   // Next.js copies a set legacy `experimental.cacheComponents` over the
   // top-level key (warnOptionHasBeenMovedOutOfExperimental).
   const cacheComponents = (experimental?.cacheComponents ?? config.cacheComponents) === true;
+  const expireTime =
+    typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME;
+  const staleTimes = resolveStaleTimes(experimental);
   const serverActionsConfig = readOptionalRecord(experimental?.serverActions);
   const serverActionsAllowedOrigins = readStringArray(serverActionsConfig?.allowedOrigins);
   const serverActionsBodySizeLimitConfig = readOptionalBodySizeLimit(
@@ -2331,6 +2425,7 @@ export async function resolveNextConfig(
               }
             : { ...pattern },
         ),
+        localPatterns: resolveImageLocalPatterns(config.images.localPatterns),
       }
     : undefined;
 
@@ -2391,7 +2486,7 @@ export async function resolveNextConfig(
     globalNotFound,
     serverActionsBodySizeLimit,
     serverActionsBodySizeLimitLabel,
-    expireTime: typeof config.expireTime === "number" ? config.expireTime : DEFAULT_EXPIRE_TIME,
+    expireTime,
     reactMaxHeadersLength:
       typeof config.reactMaxHeadersLength === "number"
         ? config.reactMaxHeadersLength
@@ -2430,7 +2525,14 @@ export async function resolveNextConfig(
           (value): value is string => typeof value === "string",
         )
       : undefined,
-    staleTimes: resolveStaleTimes(experimental),
+    staleTimes,
+    // Next.js copies a set legacy `experimental.cacheLife` over the top-level
+    // key (warnOptionHasBeenMovedOutOfExperimental).
+    cacheLife: resolveCacheLifeProfiles(
+      experimental?.cacheLife ?? config.cacheLife,
+      { expireTime, staticStaleTime: staleTimes.static },
+      warnConfigOnce,
+    ),
     useLightningcss,
     lightningCssFeatures,
   };

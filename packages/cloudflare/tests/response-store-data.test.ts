@@ -9,6 +9,7 @@ import {
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
   runWithResponseStoreInvocation,
+  trackResponseStoreRegenerationWork,
   WorkersResponseStoreCacheHandler,
   type ResponseStoreInvocationCapture,
 } from "../src/cache/response-store-data.runtime";
@@ -205,6 +206,24 @@ test("stores the other entries a regeneration recomputes before returning its ta
     ),
   ).rejects.toThrow("render failed");
   expect(stored).toEqual(["sibling", "failed-sibling"]);
+});
+
+test("captures a target that a delegating handler writes after the regeneration returns", async () => {
+  const handler = new WorkersResponseStoreCacheHandler(new TestStore());
+  const cacheControl = { revalidate: 1, expire: 2 };
+
+  const captured = await captureResponseStoreDataRegeneration("target", () =>
+    runWithResponseStoreInvocation("page", true, async () => {
+      // A miss in a render hands its write to waitUntil, and a wrapping handler
+      // reaches the Store's handler later.
+      const write = new Promise((resolve) => setTimeout(resolve, 20)).then(() =>
+        handler.set("target", null, { cacheControl }),
+      );
+      trackResponseStoreRegenerationWork(write);
+    }),
+  );
+
+  expect(captured.headers.get("X-Vinext-Response-Store-Replayable")).toBe("1");
 });
 
 test("skips a regenerated entry the Store could not regenerate itself", async () => {

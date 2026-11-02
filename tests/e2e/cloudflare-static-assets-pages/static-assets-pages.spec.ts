@@ -261,7 +261,9 @@ test("i18n domains render their own context instead of a locale-only snapshot", 
     ["en.example", "en"],
     ["fr.example", "fr"],
   ]) {
-    const response = await request.get(`${i18nBaseURL}/en`, { headers: { Host: host } });
+    // Request the trailing-slash URL directly: Playwright resets Host to the
+    // redirect target when it follows the `/en` -> `/en/` redirect.
+    const response = await request.get(`${i18nBaseURL}/en/`, { headers: { Host: host } });
     expect(response.status()).toBe(200);
     expect(response.headers()["x-vinext-cache"]).not.toBe("HIT");
     const html = await response.text();
@@ -476,4 +478,20 @@ test("rewrites serve public assets but cannot expose private cache artifacts", a
       }
     }
   }
+});
+
+// Verified against Next.js 16.2.7 `next start`: its static file server sets a
+// Cache-Control only when middleware or `headers()` set none.
+test("a public file keeps the headers() Cache-Control over the asset default", async ({
+  request,
+}) => {
+  const file = await request.get("/visible.txt");
+  expect(file.status()).toBe(200);
+  expect(file.headers()["cache-control"]).toBe("private, no-store");
+
+  const etag = file.headers()["etag"];
+  expect(etag).toBeTruthy();
+  const revalidated = await request.get("/visible.txt", { headers: { "if-none-match": etag } });
+  expect(revalidated.status()).toBe(304);
+  expect(revalidated.headers()["cache-control"]).toBe("private, no-store");
 });

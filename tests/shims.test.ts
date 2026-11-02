@@ -6629,7 +6629,7 @@ describe("next/cache shim", () => {
     try {
       await unstable_cache(async (value: string) => value, ["x".repeat(1000)])("y".repeat(1000));
       expect(keys).toHaveLength(1);
-      expect(keys[0]).toMatch(/^unstable_cache:v2:[0-9a-f]{64}$/);
+      expect(keys[0]).toMatch(/^unstable_cache:v3:[0-9a-f]{64}$/);
     } finally {
       setCacheHandler(new MemoryCacheHandler());
     }
@@ -7463,12 +7463,11 @@ describe("next/cache shim", () => {
     expect(() => cacheLife({ stale: 60, revalidate: 300, expire: 3600 })).not.toThrow();
   });
 
-  it("cacheLife warns on unknown profile", async () => {
+  it("cacheLife throws on unknown profile", async () => {
     const { cacheLife } = await import("../packages/vinext/src/shims/cache.js");
-    const consoleWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    cacheLife("nonexistent-profile");
-    expect(consoleWarn).toHaveBeenCalledWith(expect.stringContaining("unknown profile"));
-    consoleWarn.mockRestore();
+    expect(() => cacheLife("nonexistent-profile")).toThrow(
+      'Unknown `cacheLife()` profile "nonexistent-profile" is not configured in next.config.js',
+    );
   });
 
   it("cacheLife warns when expire < revalidate", async () => {
@@ -7493,10 +7492,12 @@ describe("next/cache shim", () => {
       cacheLife({ expire: 60 });
 
       expect(_peekRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });
       expect(_consumeRequestScopedCacheLife()).toEqual({
+        stale: 300,
         revalidate: 900,
         expire: 60,
       });
@@ -7625,7 +7626,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:stale-swr-test:[]",
+              url: "unstable_cache:v3:stale-swr-test:[]",
             },
             tags: ["stale-swr"],
             revalidate: 1,
@@ -7772,7 +7773,7 @@ describe("next/cache shim", () => {
             data: {
               headers: {},
               body: JSON.stringify({ v: "stale-value" }),
-              url: "unstable_cache:v2:foreground-test:[]",
+              url: "unstable_cache:v3:foreground-test:[]",
             },
             tags: ["foreground"],
             revalidate: 1,
@@ -11392,6 +11393,25 @@ describe("middleware matcher patterns", () => {
         defaultLocale: "en",
       }),
     ).toBe(true);
+  });
+
+  // Next.js compiles every matcher with optional App Router transport suffixes:
+  // packages/next/src/build/analysis/get-page-static-info.ts
+  it("matchesMiddleware: matchers cover App Router transport suffixes", async () => {
+    const { matchesMiddleware } = await import("../packages/vinext/src/server/middleware.js");
+    const { matchesMiddlewarePathname } =
+      await import("../packages/vinext/src/server/middleware-matcher.js");
+    const i18n = { locales: ["en", "fr"], defaultLocale: "en" };
+    for (const pathname of ["/about.rsc", "/about.segments/_tree.segment.rsc"]) {
+      expect(matchesMiddleware(pathname, "/about"), pathname).toBe(true);
+      expect(matchesMiddleware(pathname, [{ source: "/about" }]), pathname).toBe(true);
+      expect(matchesMiddlewarePathname(pathname, ["/about"]), pathname).toBe(true);
+      expect(matchesMiddleware(`/fr${pathname}`, "/about", undefined, i18n), pathname).toBe(true);
+    }
+    expect(matchesMiddleware("/admin/dashboard.rsc", "/admin/dashboard")).toBe(true);
+    expect(matchesMiddleware("/index.rsc", "/")).toBe(true);
+    expect(matchesMiddleware("/about.rsc", "/")).toBe(false);
+    expect(matchesMiddleware("/aboutx.rsc", "/about")).toBe(false);
   });
 
   it("matchesMiddleware: locale-prefixed negative-lookahead matchers keep internal paths excluded", async () => {
@@ -17077,6 +17097,82 @@ describe("matchRewrite with external URLs", () => {
       expect(result).toContain(".api.example.com/v1/");
       expect(URL.canParse(result)).toBe(false);
     }
+  });
+
+  it("keeps has captures inside a rewrite destination path like Next.js", async () => {
+    const { matchRewrite } = await import("../packages/vinext/src/config/config-matchers.js");
+    const match = (destination: string, file: string) =>
+      matchRewrite(
+        "/download",
+        [
+          {
+            source: "/download",
+            has: [{ type: "query" as const, key: "file", value: "(?<file>[^]*)" }],
+            destination,
+          },
+        ],
+        { ...emptyCtx, query: new URLSearchParams({ file }) },
+      );
+    const external = "https://storage.example.com/public/:file?revision=published";
+
+    // Next.js 16.2.7 escapes `?`, cuts the path at `#` and always keeps the
+    // destination's query; the upstream receives control characters and
+    // spaces percent-encoded, and `\` as `/`.
+    for (const [file, expected] of [
+      ["a/b.txt", "https://storage.example.com/public/a/b.txt?revision=published"],
+      [
+        "a.txt?revision=draft&x=",
+        "https://storage.example.com/public/a.txt%3Frevision=draft&x=?revision=published",
+      ],
+      ["x#y", "https://storage.example.com/public/x?revision=published#y"],
+      ["a\tb c", "https://storage.example.com/public/a%09b%20c?revision=published"],
+      ["a%2Fb", "https://storage.example.com/public/a%2Fb?revision=published"],
+      // A parsed URL cannot carry the `..` Next.js sends, so captured dot
+      // segments are escaped once more instead of being resolved.
+      [
+        "../private/secret.txt",
+        "https://storage.example.com/public/%252E%252E/private/secret.txt?revision=published",
+      ],
+      [
+        "%2e%2E/private",
+        "https://storage.example.com/public/%252e%252E/private?revision=published",
+      ],
+      ["..\\private", "https://storage.example.com/public/%252E%252E\\private?revision=published"],
+      ["x/.", "https://storage.example.com/public/x/%252E?revision=published"],
+      ["..#", "https://storage.example.com/public/%252E%252E?revision=published"],
+    ]) {
+      expect(match(external, file), file).toBe(expected);
+    }
+    // A param also escapes a dot segment it completes or ends.
+    for (const [destination, file, expected] of [
+      ["https://s.example.com/p/.:file?r=1", ".", "https://s.example.com/p/%252E%252E?r=1"],
+      ["https://s.example.com/p/%2:file?r=1", "e", "https://s.example.com/p/%252e?r=1"],
+      ["https://s.example.com/p/..:file?r=1", "/x", "https://s.example.com/p/%252E%252E/x?r=1"],
+      ["https://s.example.com/p/:file..?r=1", "x/", "https://s.example.com/p/x/%252E%252E?r=1"],
+      ["https://s.example.com/p/:file/../x?r=1", "a\t", "https://s.example.com/p/a%09/../x?r=1"],
+    ]) {
+      expect(match(destination, file), destination).toBe(expected);
+    }
+    // The URL parser would trim a trailing space or control character; Next.js
+    // sends the space encoded too (and answers 500 for a NUL).
+    for (const [file, expected] of [
+      [".. ", "/public/..%20"],
+      ["..\0", "/public/..%00"],
+      ["..\n", "/public/..%0A"],
+    ]) {
+      const url = new URL(match("https://storage.example.com/public/:file", file)!);
+      expect(url.pathname, file).toBe(expected);
+    }
+    // The destination's own dot segments still resolve.
+    expect(match("https://storage.example.com/a/../b/:file", "c")).toBe(
+      "https://storage.example.com/a/../b/c",
+    );
+
+    // A local destination keeps a `?` in the routed path and drops what follows `#`.
+    expect(match("/echo/:file?fixed=1", "x?fixed=2&y=")).toBe("/echo/x%3Ffixed=2&y=?fixed=1");
+    expect(match("/echo/:file?fixed=1", "x#y")).toBe("/echo/x?fixed=1#y");
+    expect(match("/echo/:file?fixed=1", "x#")).toBe("/echo/x?fixed=1");
+    expect(match("/echo/:file?fixed=1", "../a\tb")).toBe("/echo/../a\tb?fixed=1");
   });
 
   it("encodes a host capture after extra slashes the URL parser skips", async () => {
@@ -29823,6 +29919,59 @@ describe("image optimization URL generation", () => {
     expect(url).toContain("q=80");
   });
 
+  it("imageOptimizationUrl rounds quality only when images.qualities is configured", async () => {
+    // Deliberately generous when unset (Next.js 14/15 behaviour, not Next.js
+    // 16's `[75]` default): the prop is used as written, 75 when absent.
+    const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
+    expect(imageOptimizationUrl("/img.png", 640, 90)).toContain("q=90");
+    expect(imageOptimizationUrl("/img.png", 640, 1)).toContain("q=1");
+    expect(imageOptimizationUrl("/img.png", 640, 0)).toContain("q=75");
+    expect(imageOptimizationUrl("/img.png", 640)).toContain("q=75");
+
+    // With a list, match the Next.js default loader
+    // (shared/lib/find-closest-quality.ts): the closest entry wins.
+    vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[50,90]");
+    vi.resetModules();
+    try {
+      const configured = await import("../packages/vinext/src/shims/image.js");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 90)).toContain("q=90");
+      expect(configured.imageOptimizationUrl("/img.png", 640, 60)).toContain("q=50");
+      expect(configured.imageOptimizationUrl("/img.png", 640)).toContain("q=90");
+
+      // Next.js sorts the list first, so a tie resolves to the lower quality.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[90,60]");
+      vi.resetModules();
+      const unsorted = await import("../packages/vinext/src/shims/image.js");
+      expect(unsorted.imageOptimizationUrl("/img.png", 640, 75)).toContain("q=60");
+
+      // Next.js parses the prop with getInt first: non-finite numbers and
+      // non-digit strings become NaN, which rounds from the default 75.
+      vi.stubEnv("__VINEXT_IMAGE_QUALITIES", "[25,60,90]");
+      vi.resetModules();
+      const parsed = await import("../packages/vinext/src/shims/image.js");
+      const qualityOf = (quality: unknown) =>
+        new URL(
+          parsed.getImageProps({
+            src: "/img.png",
+            alt: "",
+            width: 64,
+            height: 64,
+            quality: quality as number,
+          }).props.src,
+          "http://localhost",
+        ).searchParams.get("q");
+      expect(qualityOf(Infinity)).toBe("60");
+      expect(qualityOf("1e2")).toBe("60");
+      expect(qualityOf("90")).toBe("90");
+      // Only real strings are parsed, as in Next.js.
+      expect(qualityOf(new String("90"))).toBe("60");
+      expect(qualityOf(90n)).toBe("60");
+    } finally {
+      vi.unstubAllEnvs();
+      vi.resetModules();
+    }
+  });
+
   it("imageOptimizationUrl uses default quality of 75", async () => {
     const { imageOptimizationUrl } = await import("../packages/vinext/src/shims/image.js");
     const url = imageOptimizationUrl("/img.png", 640);
@@ -29983,9 +30132,9 @@ describe("image optimization request parsing", () => {
   });
 
   it("parseImageParams permits any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` is not restricted to a single
-    // value. Regression test for non-75 qualities (e.g. `<Image quality={90}>`)
-    // returning 400 from the image optimization endpoint.
+    // Intentional divergence from Next.js 16 (which defaults the list to [75]):
+    // an unset `images.qualities` keeps the Next.js 14/15 behaviour so apps
+    // migrating from those versions don't get 400s for `<Image quality={90}>`.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     for (const q of [1, 50, 75, 90, 100]) {
@@ -30119,8 +30268,8 @@ describe("image optimization request parsing", () => {
   });
 
   it("parseImageParams allows any quality 1-100 when qualities is unset", async () => {
-    // Matches Next.js: an unset `images.qualities` does not restrict the quality
-    // to a single value — any integer from 1-100 is accepted.
+    // Intentional divergence from Next.js 16's [75] default: an unset
+    // `images.qualities` accepts any integer from 1-100, like Next.js 14/15.
     const { parseImageParams } =
       await import("../packages/vinext/src/server/image-optimization.js");
     expect(

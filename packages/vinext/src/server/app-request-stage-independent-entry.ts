@@ -80,7 +80,7 @@ export function handleRequestStage(
         ),
       getStatus: (response) => response?.status,
       headers: request.headers,
-      isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+      isRsc: request.headers.get(RSC_HEADER) === "1",
       method: request.method,
       target: url.pathname + url.search,
     });

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 // The matcher is written without the basePath; Next.js prefixes it, so it
-// gates only /docs/private/* and /docs/mw-rewrite/*.
+// gates only /docs/private/*, /docs/mw-rewrite/* and /docs/docs/*.
 export function middleware(request) {
   const { pathname } = request.nextUrl;
   // A rewrite destination resolves only under the basePath, so these
@@ -18,9 +18,12 @@ export function middleware(request) {
   if (pathname === "/mw-rewrite/inside-page/") {
     return NextResponse.rewrite(new URL("/docs/hello/", request.url));
   }
-  return new Response("blocked by middleware", { status: 403 });
+  return new Response("blocked by middleware", {
+    status: 403,
+    headers: { "x-guard-pathname": pathname },
+  });
 }
 
 export const config = {
-  matcher: ["/private/:path*", "/mw-rewrite/:path*"],
+  matcher: ["/private/:path*", "/mw-rewrite/:path*", "/docs/:path*"],
 };

@@ -11,12 +11,15 @@ import { waitForAppRouterHydration } from "../helpers";
 const BASE = "http://localhost:4174";
 
 test.describe("Config Redirects (OpenNext compat)", () => {
-  test("config redirects are applied to direct RSC requests", async ({ page }) => {
-    await page.goto(`${BASE}/redirect-test-config.rsc`);
-    expect(page.url()).toMatch(/\/about/);
-
-    const el = page.getByText("About", { exact: true });
-    await expect(el).toBeVisible();
+  test("config redirects are applied to direct RSC requests", async ({ request }) => {
+    const rsc = await request.get(`${BASE}/redirect-test-config?_rsc`, {
+      maxRedirects: 0,
+      headers: { RSC: "1" },
+    });
+    expect(rsc.status()).toBe(307);
+    const location = new URL(rsc.headers()["location"], BASE);
+    expect(location.pathname).toBe("/about");
+    expect(location.searchParams.has("_rsc")).toBe(true);
   });
 
   test("config redirects are applied to soft-nav RSC requests and update request path", async ({
@@ -142,7 +145,7 @@ test.describe("Config Redirects (OpenNext compat)", () => {
     const document = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo`, {
       maxRedirects: 0,
     });
-    const rsc = await request.get(`${BASE}/control-capture-redirect.rsc?x=a%0Afoo`, {
+    const rsc = await request.get(`${BASE}/control-capture-redirect?x=a%0Afoo&_rsc`, {
       maxRedirects: 0,
       headers: { RSC: "1" },
     });

@@ -68,6 +68,18 @@ export function markAppRscResponseConfigHeadersApplied(response: Response): Resp
   return response;
 }
 
+const streamedActionRedirects = new WeakSet<Response>();
+
+/** Mark a Server Action redirect that streams its target's render, and so keeps its policy. */
+export function markStreamedActionRedirectResponse(response: Response): Response {
+  streamedActionRedirects.add(response);
+  return response;
+}
+
+export function isStreamedActionRedirectResponse(response: Response): boolean {
+  return streamedActionRedirects.has(response);
+}
+
 /** Apply only the matching next.config headers for an App Router request. */
 export async function applyAppRscConfigHeaders(
   headers: Headers,
@@ -150,6 +162,9 @@ export async function finalizeAppRscResponse(
     // completed and the render has proved reusable. Capture before config
     // headers run so any later private/no-store override still vetoes.
     captureRouteCacheabilityResponsePolicy(captureCdnResponsePolicyHeaders(response.headers));
+    // A static-file signal carries only a Cache-Control that middleware or
+    // config headers set; otherwise the file layer supplies the default.
+    if (isStaticFileSignal(response)) response.headers.delete("Cache-Control");
   }
 
   if (configHeadersAlreadyApplied.has(response)) {

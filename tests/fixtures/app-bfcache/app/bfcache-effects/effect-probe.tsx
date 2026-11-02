@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RefObject } from "react";
-import { openConnection, recordMount } from "./effect-log";
+import { usePathname, useSearchParams } from "next/navigation";
+import { openConnection, recordMount, recordView } from "./effect-log";
 
 // Models a component that opens a live connection on mount (a chat stream,
 // a subscription) and keeps local state the user has built up.
@@ -29,4 +30,23 @@ export function EffectProbe({ name }: { name: string }) {
       <span data-testid={`count-${name}`}>Count: {count}</span>
     </div>
   );
+}
+
+// Models a page-view tracker: hidden entries run no effects, so only the URL a
+// visible entry commits with is recorded.
+export function PageViewProbe({ name }: { name: string }) {
+  const pathname = usePathname();
+  const search = useSearchParams().toString();
+  // A spec can make the probe write the URL from a layout effect the next time
+  // it's shown, like a component that syncs its state to the URL.
+  useLayoutEffect(() => {
+    const flags = window as Window & { __writeUrlOnShow?: string };
+    if (flags.__writeUrlOnShow !== name) return;
+    delete flags.__writeUrlOnShow;
+    window.history.replaceState(null, "", "?shown=1");
+  }, [name]);
+  useEffect(() => {
+    recordView(name, search ? `${pathname}?${search}` : pathname);
+  }, [name, pathname, search]);
+  return null;
 }

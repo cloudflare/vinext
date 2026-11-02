@@ -3669,6 +3669,35 @@ export const config = { matcher: "${matcher}" };
       expect(await res.json()).toEqual({ notFound: true });
     });
 
+    // Removing `.json` from `...json` leaves a `..` segment, and the page URL
+    // built from `/external-headers/..` resolves to `/`. The
+    // `/external-headers/:path*` rule must not decorate the home page's data.
+    // Next.js 16.2.7 never serves another page's props for these URLs.
+    it("returns JSON 404 for a data URL whose page path strips to a dot segment", async () => {
+      for (const page of [
+        "external-headers/...json",
+        "external-headers/..json",
+        "external-headers/%2E%2e.json",
+        "external-headers/.%2e.json",
+        "...json",
+      ]) {
+        const res = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/${page}`);
+        expect(res.status, page).toBe(404);
+        expect(res.headers.get("x-config-header"), page).toBeNull();
+        expect(await res.json(), page).toEqual({});
+      }
+
+      // `....json` strips to the ordinary segment `...`.
+      const dotted = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/....json`);
+      expect(dotted.status).toBe(200);
+      await expect(dotted.json()).resolves.toMatchObject({ pageProps: { id: "..." } });
+
+      // A double-encoded dot is an ordinary character in the param value.
+      const encoded = await fetch(`${baseUrl}/_next/data/${BUILD_ID}/posts/%252e%252e.json`);
+      expect(encoded.status).toBe(200);
+      await expect(encoded.json()).resolves.toMatchObject({ pageProps: { id: "%2e%2e" } });
+    });
+
     it("returns JSON 404 for a stale buildId (dev)", async () => {
       // Mirrors the prod-server path: when the buildId in the URL doesn't
       // match the resolved buildId we surface a JSON 404 right away so the
@@ -6387,6 +6416,14 @@ export const config = { matcher: ["/protected"] };
     );
     expect(counterManifestEntry).toBeDefined();
     expect(counterManifestEntry?.[1].some((file: string) => file.endsWith(".js"))).toBe(true);
+
+    // A class field named like a getServerSideProps-only helper must not keep
+    // that helper's server-only import in the browser graph.
+    const clientCode = jsFiles
+      .map((file) => fs.readFileSync(path.join(assetsDir, file), "utf-8"))
+      .join("\n");
+    expect(clientCode).toContain("class-field-posts");
+    expect(clientCode).not.toContain("class-field-gssp-server-only.internal");
   });
 
   it("preserves basePath on backfilled SSR manifest entries and emitted asset tags", async () => {
@@ -8672,6 +8709,25 @@ describe("Production server middleware (Pages Router)", () => {
     expect(nextData.props.pageProps.query).toMatchObject({ hello: "world" });
   });
 
+  // Node's parser keeps a `#fragment` sent on the request line; Next.js drops
+  // it before middleware runs.
+  it("drops a request-line fragment before middleware in production", async () => {
+    const http = await import("node:http");
+    const { hostname, port } = new URL(prodUrl);
+    const body = await new Promise<string>((resolve, reject) => {
+      // A URL string would drop the fragment; `path` sends it as is.
+      http
+        .get({ hostname, port, path: "/mw-request-url?q=1#planted" }, (res) => {
+          let text = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk: string) => (text += chunk));
+          res.on("end", () => resolve(text));
+        })
+        .on("error", reject);
+    });
+    expect(JSON.parse(body)).toEqual({ url: `${prodUrl}/mw-request-url?q=1`, hash: "" });
+  });
+
   it("middleware rewrite to a dynamic route merges original query with route params in production", async () => {
     const res = await fetch(`${prodUrl}/mw-rewrite-dynamic-query?hello=world`);
     expect(res.status).toBe(200);
@@ -9114,6 +9170,35 @@ describe("Production server middleware (Pages Router)", () => {
       expect(res.headers.get("content-type")).toContain("application/json");
       expect(res.headers.get("x-nextjs-matched-path")).toBe("/totally-missing-page");
       expect(await res.json()).toEqual({});
+    });
+
+    // Removing `.json` from `...json` leaves a `..` segment, and the page URL
+    // built from `/external-headers/..` resolves to `/`. The
+    // `/external-headers/:path*` rule must not decorate the home page's data.
+    // Next.js 16.2.7 never serves another page's props for these URLs.
+    it("returns JSON 404 for a data URL whose page path strips to a dot segment", async () => {
+      for (const page of [
+        "external-headers/...json",
+        "external-headers/..json",
+        "external-headers/%2E%2e.json",
+        "external-headers/.%2e.json",
+        "...json",
+      ]) {
+        const res = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/${page}`);
+        expect(res.status, page).toBe(404);
+        expect(res.headers.get("x-config-header"), page).toBeNull();
+        expect(await res.json(), page).toEqual({});
+      }
+
+      // `....json` strips to the ordinary segment `...`.
+      const dotted = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/....json`);
+      expect(dotted.status).toBe(200);
+      await expect(dotted.json()).resolves.toMatchObject({ pageProps: { id: "..." } });
+
+      // A double-encoded dot is an ordinary character in the param value.
+      const encoded = await fetch(`${prodUrl}/_next/data/${BUILD_ID}/posts/%252e%252e.json`);
+      expect(encoded.status).toBe(200);
+      await expect(encoded.json()).resolves.toMatchObject({ pageProps: { id: "%2e%2e" } });
     });
 
     it("returns JSON 404 for a stale buildId", async () => {

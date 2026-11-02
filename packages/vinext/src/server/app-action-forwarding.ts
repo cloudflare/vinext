@@ -3,6 +3,10 @@ import type { ExecutionContextLike } from "vinext/shims/request-context";
 import { patternToNextFormat } from "../routing/route-validation.js";
 import { buildRequestHeadersFromMiddlewareResponse } from "../utils/middleware-request-headers.js";
 import type { AppMiddlewareContext } from "./app-middleware.js";
+import {
+  isStreamedActionRedirectResponse,
+  markStreamedActionRedirectResponse,
+} from "./app-rsc-response-finalizer.js";
 import { getSetCookieName } from "./cookie-utils.js";
 import {
   ACTION_FORWARDED_HEADER,
@@ -126,11 +130,14 @@ function filterActionForwardResponse(
   const preserveResponseStatus =
     response.headers.get(NEXTJS_ACTION_NOT_FOUND_HEADER) === "1" ||
     response.headers.has(ACTION_REDIRECT_HEADER);
-  return new Response(response.body, {
+  const forwardedResponse = new Response(response.body, {
     headers,
     status: preserveResponseStatus ? response.status : (sourceMiddlewareStatus ?? response.status),
     statusText: response.statusText,
   });
+  return isStreamedActionRedirectResponse(response)
+    ? markStreamedActionRedirectResponse(forwardedResponse)
+    : forwardedResponse;
 }
 
 function emptyActionForwardResponse(middlewareContext: AppMiddlewareContext): Response {

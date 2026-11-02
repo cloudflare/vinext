@@ -359,7 +359,7 @@ function getLinkPrefetchRouterMode(): LinkPrefetchRouterMode {
 /**
  * Prefetch a URL for faster navigation.
  *
- * For App Router (RSC): fetches the .rsc payload in the background and
+ * For App Router (RSC): fetches the RSC payload in the background and
  * stores it in an in-memory cache for instant use during navigation.
  * For Pages Router: warms the page chunk, prefetches data only for SSG pages,
  * and falls back to a document prefetch hint when no page loader matches.
@@ -877,7 +877,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
       getPrefetchInterceptionContext,
       promotePrefetchCacheEntryForNavigation,
     },
-    { parseRscRequestPath, stripRscCacheBustingSearchParam, stripRscSuffix },
+    { parseRscRequestPath, stripRscCacheBustingSearchParam },
   ] = await Promise.all([loadNavigationModule(), loadAppRscCacheBustingModule()]);
 
   let target: URL;
@@ -913,7 +913,7 @@ async function promotePrefetchEntriesForNavigation(href: string): Promise<void> 
       continue;
     }
     stripRscCacheBustingSearchParam(cached);
-    if (stripRscSuffix(cached.pathname) === target.pathname && cached.search === target.search) {
+    if (cached.pathname === target.pathname && cached.search === target.search) {
       promotePrefetchCacheEntryForNavigation(cacheKey, entry);
     }
   }
@@ -1376,23 +1376,24 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
   }
 
   // Track pending state for useLinkStatus()
+  // Pending writes are never gated on the effect being mounted: a <Link> whose
+  // navigation hides it in a BFCache Activity runs its effect cleanup but keeps
+  // its state, and must still settle to idle before it is shown again. Next.js
+  // gets this from useOptimistic reverting when the transition ends; React drops
+  // updates to a truly unmounted component.
   const [pending, setPending] = useState(false);
-  const mountedRef = useRef(true);
   const pendingPagesIntentPrefetchRef = useRef<(() => void) | null>(null);
   // Stable setter so the global navigation registry can reset this link's
   // pending state from another navigation without depending on render identity.
-  const setPendingRef = useRef<PendingLinkSetter>((next: boolean) => {
-    if (mountedRef.current) setPending(next);
-  });
+  const setPendingRef = useRef<PendingLinkSetter>(setPending);
   useEffect(() => {
-    mountedRef.current = true;
     const setter = setPendingRef.current;
     return () => {
-      mountedRef.current = false;
       pendingPagesIntentPrefetchRef.current?.();
       pendingPagesIntentPrefetchRef.current = null;
-      // Drop our setter from the global registry on unmount so a later
-      // navigation never calls into an unmounted component.
+      // Drop our setter from the global registry on unmount or BFCache hide,
+      // like Next.js's unmountLinkForCurrentNavigation. A navigation this link
+      // started still settles it through its own completion handler.
       if (setter) clearLinkForCurrentNavigation(setter);
     };
   }, []);
@@ -1697,7 +1698,7 @@ const Link = forwardRef<HTMLAnchorElement, LinkProps>(function Link(
       React.startTransition(() => {
         void navigateClientSide(navigateHref, replace ? "replace" : "push", scroll, false).finally(
           () => {
-            if (mountedRef.current) setPending(false);
+            setPending(false);
             if (setter) clearLinkForCurrentNavigation(setter);
           },
         );

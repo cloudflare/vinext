@@ -66,6 +66,7 @@ import {
   formatViteOpenInEditorFile,
   installReactRefreshErrorRecovery,
   normalizeViteHmrError,
+  selectUnreportedInitialDevServerErrors,
 } from "../packages/vinext/src/client/dev-error-overlay.js";
 import {
   dismissOverlay,
@@ -1047,7 +1048,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target?tab=1#details",
         origin: "https://example.com",
         responseCompatibilityId: null,
-        responseUrl: "https://example.com/target.rsc?tab=1&_rsc=stale",
+        responseUrl: "https://example.com/target?tab=1&_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target?tab=1#details",
@@ -1060,7 +1061,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target/",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com/target.rsc?_rsc=stale",
+        responseUrl: "https://example.com/target?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/target/",
@@ -1075,7 +1076,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/.//other.test/out",
         origin: "https://example.com",
         responseCompatibilityId: "compat-b",
-        responseUrl: "https://example.com//other.test/out.rsc?_rsc=stale",
+        responseUrl: "https://example.com//other.test/out?_rsc=stale",
       }),
     ).toEqual({
       hardNavigationTarget: "/.//other.test/out",
@@ -1092,7 +1093,7 @@ describe("app browser entry navigation scheduling", () => {
         currentHref: "/target",
         origin: "https://example.com",
         responseCompatibilityId: "compat-a",
-        responseUrl: "https://example.com/target.rsc?_rsc=fresh",
+        responseUrl: "https://example.com/target?_rsc=fresh",
       }),
     ).toEqual({ kind: "compatible" });
   });
@@ -1159,7 +1160,7 @@ describe("app browser entry navigation scheduling", () => {
   it("creates replayable cached RSC snapshots with compatibility IDs", async () => {
     stubWindow("https://example.com/current");
 
-    const responseUrl = "https://example.com/target.rsc?_rsc=fresh";
+    const responseUrl = "https://example.com/target?_rsc=fresh";
     const snapshot = navigationShim.createCachedRscResponseSnapshot(
       new Response("unused", {
         headers: {
@@ -8996,7 +8997,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: "/feed",
-      responseUrl: "https://example.com/target.rsc?tab=1&_rsc=abc",
+      responseUrl: "https://example.com/target?tab=1&_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9015,7 +9016,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/items.rsc?sort=new&_rsc=abc",
+      responseUrl: "https://example.com/items?sort=new&_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9033,7 +9034,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/new.rsc?_rsc=abc",
+      responseUrl: "https://example.com/new?_rsc=abc",
     });
 
     expect(decision).toMatchObject({
@@ -9069,7 +9070,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 2,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com/b.rsc?_rsc=abc",
+      responseUrl: "https://example.com/b?_rsc=abc",
     });
 
     expect(decision).toEqual({
@@ -9122,7 +9123,7 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 0,
       requestPreviousNextUrl: null,
-      responseUrl: "https://example.com//other.test/out.rsc?_rsc=abc",
+      responseUrl: "https://example.com//other.test/out?_rsc=abc",
     });
 
     expect(decision).toMatchObject({ href: "/.//other.test/out", kind: "follow" });
@@ -9226,11 +9227,11 @@ describe("app browser RSC redirect lifecycle", () => {
       origin: "https://example.com",
       redirectDepth: 1,
       requestPreviousNextUrl: null,
-      streamedRedirectTarget: "/target.rsc?visible=1&_rsc=abc#details",
+      streamedRedirectTarget: "/target?visible=1&_rsc=abc#details",
     });
 
     expect(decision).toEqual({
-      href: "/target.rsc?visible=1&_rsc=abc#details",
+      href: "/target?visible=1&_rsc=abc#details",
       historyUpdateMode: "replace",
       kind: "follow",
       previousNextUrl: null,
@@ -9882,6 +9883,7 @@ describe("dev overlay store", () => {
 
       reportToOverlay({
         source: "caught",
+        name: undefined,
         message: "boom",
         stack: undefined,
         ignoredStackFrames: undefined,
@@ -9900,6 +9902,74 @@ describe("dev overlay store", () => {
       unsubscribe();
       dismissOverlay();
     }
+  });
+});
+
+describe("selectUnreportedInitialDevServerErrors", () => {
+  function reported(
+    source: "caught" | "window-error" | "server",
+    name: string | undefined,
+    message: string,
+  ) {
+    return {
+      id: 0,
+      source,
+      name,
+      message,
+      stack: undefined,
+      ignoredStackFrames: undefined,
+      projectRoot: undefined,
+      codeFrame: undefined,
+      componentStack: undefined,
+    };
+  }
+
+  it("skips an error the browser's render threw again, once for each report", () => {
+    const payload = { name: "Error", message: "boom" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload, payload],
+        [reported("caught", "Error", "boom")],
+      ),
+    ).toEqual([payload]);
+    // App Router reports an error its root boundary catches as a window error.
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [payload],
+        [reported("window-error", "Error", "boom")],
+      ),
+    ).toEqual([]);
+  });
+
+  it("keeps an error whose name or source differs from the browser's report", () => {
+    const typeError = { name: "TypeError", message: "load failed" };
+    const serverError = { name: "Error", message: "load failed" };
+
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError, serverError],
+        [reported("caught", "Error", "other"), reported("server", "Error", "load failed")],
+      ),
+    ).toEqual([typeError, serverError]);
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [typeError],
+        [reported("caught", "Error", "load failed")],
+      ),
+    ).toEqual([typeError]);
+  });
+
+  it("matches a thrown non-Error value, reported raw or coerced to an Error", () => {
+    expect(
+      selectUnreportedInitialDevServerErrors(
+        [{ message: "plain string" }, { message: "plain string" }],
+        [
+          reported("caught", undefined, "plain string"),
+          reported("window-error", "Error", "plain string"),
+        ],
+      ),
+    ).toEqual([]);
   });
 });
 
