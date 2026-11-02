@@ -5,6 +5,7 @@ import {
   parseNextDataPathname,
   buildNextDataNotFoundResponse,
   encodeUrlParserIgnoredCharacters,
+  nextDataMiddlewareMatchPathname,
   normalizePagesDataRequest,
   shouldAddTrailingSlashToPagesDataPath,
   normalizeNextDataPagePathname,
@@ -90,6 +91,22 @@ describe("pages-data-route", () => {
       expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/.json`, BUILD_ID)).toBeNull();
     });
 
+    it("returns null when stripping `.json` leaves a dot segment", () => {
+      for (const page of [
+        "blog/...json",
+        "blog/..json",
+        "...json",
+        "blog/%2E%2e.json",
+        "blog/.%2e.json",
+      ]) {
+        expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/${page}`, BUILD_ID), page).toBeNull();
+      }
+      expect(nextDataMiddlewareMatchPathname("/_next/data/stale-id/dashboard/...json")).toBeNull();
+      expect(parseNextDataPathname(`/_next/data/${BUILD_ID}/blog/....json`, BUILD_ID)).toEqual({
+        pagePathname: "/blog/...",
+      });
+    });
+
     it("returns null for non-_next/data paths", () => {
       expect(parseNextDataPathname("/about", BUILD_ID)).toBeNull();
       expect(parseNextDataPathname("/_next/static/x.json", BUILD_ID)).toBeNull();
@@ -150,6 +167,15 @@ describe("pages-data-route", () => {
       expect(result.search).toBe("?x=1");
       expect(result.request.url).toBe("http://localhost/root/about?x=1");
       expect(result.notFoundResponse).toBeNull();
+    });
+
+    it("preserves basePath for a page whose first segment equals it", () => {
+      const buildId = "abc123";
+      const req = new Request(`http://localhost/root/_next/data/${buildId}/root/about.json`);
+      const result = normalizePagesDataRequest(req, buildId, "/root");
+
+      expect(result.normalizedPathname).toBe("/root/about");
+      expect(result.request.url).toBe("http://localhost/root/root/about");
     });
 
     it("applies trailingSlash after preserving basePath for middleware", () => {

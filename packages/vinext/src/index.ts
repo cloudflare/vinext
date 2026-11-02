@@ -120,7 +120,7 @@ import {
   normalizePathnameForRouteMatch,
   normalizePathnameForRouteMatchStrict,
 } from "./routing/utils.js";
-import { hasBasePath, stripBasePath } from "./utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "./utils/base-path.js";
 import { serializeCacheLifeProfiles } from "./utils/cache-life-profiles.js";
 import {
   createRscCompatibilityId,
@@ -3217,9 +3217,11 @@ export default function vinext(options: VinextOptions = {}): PluginOption[] {
             JSON.stringify(deviceSizes),
           );
           defines["process.env.__VINEXT_IMAGE_SIZES"] = JSON.stringify(JSON.stringify(imageSizes));
-          // Emit the configured qualities allowlist, or `null` when unset so the
-          // runtime permits any quality 1-100 (matches Next.js: an unset
-          // `images.qualities` is not restricted to a single value).
+          // Emit the configured qualities allowlist, or `null` when unset. With a
+          // list, the default loader rounds `quality` to the closest entry like
+          // Next.js. When unset, vinext deliberately keeps the Next.js 14/15
+          // behaviour (any quality 1-100, the prop used as written) rather than
+          // Next.js 16's `[75]` default, so migrating apps don't break.
           defines["process.env.__VINEXT_IMAGE_QUALITIES"] = JSON.stringify(
             JSON.stringify(nextConfig.images?.qualities ?? null),
           );
@@ -7108,16 +7110,23 @@ export const loadServerActionClient = ${
               // NOTE: When basePath is set, we also set Vite's `base` config to
               // `basePath + "/"`. Vite's connect middleware stack strips the base
               // prefix from req.url before passing it to our middleware, so the
-              // URL will already lack the basePath prefix. We still attempt to
-              // strip it (for robustness) but don't reject paths that don't start
-              // with basePath — Vite has already done the filtering.
+              // URL will usually already lack the basePath prefix. Strip it here
+              // only when Vite has not (the pre-Vite public-file hook), and don't
+              // reject paths that don't start with basePath — Vite has already
+              // done the filtering.
               const bp = nextConfig?.basePath ?? "";
               const viteBase = server.config.base;
               const viteBasePath =
                 viteBase.startsWith("/") && viteBase !== "/" ? viteBase.replace(/\/+$/, "") : "";
               const routingBasePath = bp || viteBasePath;
+              // Every URL below loses the basePath at most once: a route like
+              // /docs/a under basePath /docs still starts with the basePath once
+              // stripped. Middleware gets that basePath back, so record whether
+              // it was there.
+              const viteStrippedBasePath = originalRequestUrl !== originalEncodedUrl;
+              let originalUrlHadBasePath = false;
               if (routingBasePath) {
-                if (hasBasePath(pathname, routingBasePath)) {
+                if (!viteStrippedBasePath && hasBasePath(pathname, routingBasePath)) {
                   const stripped = stripBasePath(pathname, routingBasePath);
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
                   url = stripped + qs;
@@ -7125,6 +7134,7 @@ export const loadServerActionClient = ${
                 }
                 const middlewarePathname = middlewareUrl.split("?")[0];
                 if (hasBasePath(middlewarePathname, routingBasePath)) {
+                  originalUrlHadBasePath = true;
                   const middlewareQs = middlewareUrl.includes("?")
                     ? middlewareUrl.slice(middlewareUrl.indexOf("?"))
                     : "";
@@ -7138,7 +7148,7 @@ export const loadServerActionClient = ${
                   routeUrl = stripBasePath(routePathname, routingBasePath) + routeQs;
                 }
               }
-              let configMatchPathname = stripBasePath(middlewareUrl.split("?")[0], routingBasePath);
+              let configMatchPathname = middlewareUrl.split("?")[0];
 
               if (nextConfig && !nextConfig.skipTrailingSlashRedirect) {
                 const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -7187,7 +7197,9 @@ export const loadServerActionClient = ${
                 // for page requests and the production data normalization:
                 // `/%66r/...` is no locale and `a%2561` decodes once.
                 const rawDataMatch = parseNextDataPathname(rawRoutePathname, devBuildId);
-                const dataMatch = rawDataMatch ? parseNextDataPathname(pathname, devBuildId) : null;
+                const dataMatch = rawDataMatch
+                  ? parseNextDataPathname(pathname, devBuildId, true)
+                  : null;
                 if (dataMatch && rawDataMatch) {
                   isDataReq = true;
                   const qs = url.includes("?") ? url.slice(url.indexOf("?")) : "";
@@ -7371,7 +7383,14 @@ export const loadServerActionClient = ${
                       const mwProto =
                         rawProto === "https" || rawProto === "http" ? rawProto : "http";
                       const mwOrigin = `${mwProto}://${requestHost}`;
-                      const middlewareRequest = new Request(new URL(middlewareUrl, mwOrigin), {
+                      const middlewareRequestUrl = new URL(middlewareUrl, mwOrigin);
+                      if (originalUrlHadBasePath) {
+                        middlewareRequestUrl.pathname = restoreBasePath(
+                          middlewareRequestUrl.pathname,
+                          bp,
+                        );
+                      }
+                      const middlewareRequest = new Request(middlewareRequestUrl, {
                         method: req.method,
                         headers: nodeRequestHeaders,
                         signal: webRequest.signal,
@@ -7687,6 +7706,9 @@ export const loadServerActionClient = ${
                     allowedRevalidateHeaderKeys: nextConfig?.allowedRevalidateHeaderKeys,
                     trailingSlash: nextConfig?.trailingSlash,
                     skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect,
+                    requestPathname: originalUrlHadBasePath
+                      ? restoreBasePath(routeUrl.split("?")[0], bp)
+                      : routeUrl.split("?")[0],
                   },
                 );
                 if (handled) return;

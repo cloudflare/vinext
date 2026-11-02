@@ -142,6 +142,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
     target.pathname = pathname.replace("/encoded-parity/middleware/", "/encoded-parity/page/");
     return NextResponse.rewrite(target);
   }
+  if (pathname.startsWith("/encoded-parity/rewrite-any/")) {
+    const target = request.nextUrl.clone();
+    target.pathname = pathname.replace("/encoded-parity/rewrite-any/", "/encoded-parity/");
+    return NextResponse.rewrite(target);
+  }
 
   // Record this invocation so tests can detect double-execution.
   // In a hybrid app+pages fixture the Vite connect handler runs middleware
@@ -372,6 +377,11 @@ export async function middleware(request: NextRequest, event: NextFetchEvent) {
   }
 
   if (pathname === "/admin") {
+    return new Response("Blocked by middleware", { status: 403 });
+  }
+
+  // A pathname comparison, as in the Next.js authentication guide.
+  if (pathname === "/encoded-parity/sibling/guarded") {
     return new Response("Blocked by middleware", { status: 403 });
   }
 
@@ -656,6 +666,8 @@ export const config = {
     "/admin",
     "/%61dmin",
     "/encoded-parity/middleware/:path*",
+    "/encoded-parity/rewrite-any/:path*",
+    "/encoded-parity/sibling/:path*",
     "/middleware-throw",
     "/middleware-event",
     "/middleware-fetch-dedupe",

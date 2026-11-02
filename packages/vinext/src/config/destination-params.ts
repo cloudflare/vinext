@@ -124,17 +124,27 @@ function substituteRewritePath(
   const pathHash = hash === undefined ? undefined : hash ? `#${hash}` : "";
   if (!absolute) return [path, pathHash];
 
-  const escapedPath = path.replace(DOT_SEGMENT_RE, (segment: string, offset: number) =>
-    paramRanges.some(([start, end]) => start <= offset + segment.length && end >= offset)
-      ? segment.replace(/\.|%(?=2e)/gi, (char) => (char === "." ? "%252E" : "%25"))
-      : segment,
+  const escapedPath = path.replace(
+    DOT_SEGMENT_RE,
+    (_match: string, separator: string, segment: string, offset: number) => {
+      const start = offset + separator.length;
+      return paramRanges.some(
+        ([paramStart, end]) => paramStart <= start + segment.length && end >= start,
+      )
+        ? separator + segment.replace(/\.|%(?=2e)/gi, (char) => (char === "." ? "%252E" : "%25"))
+        : separator + segment;
+    },
   );
   return [escapedPath, pathHash];
 }
 
 // A `.` or `..` path segment, also spelled with `%2e`, as the URL parser
-// resolves it; it reads `\` as `/`.
-const DOT_SEGMENT_RE = /(?<=^|[/\\])(?:\.|%2e){1,2}(?=[/\\]|$)/gi;
+// resolves it; it reads `\` as `/`. The separator before the segment is
+// captured, not looked behind for: a bundler cannot lower a lookbehind for a
+// client target without it (Safari below 16.4), and this module reaches the
+// client. A match never consumes the separator after its segment, so the next
+// segment still finds its own.
+const DOT_SEGMENT_RE = /(^|[/\\])((?:\.|%2e){1,2})(?=[/\\]|$)/gi;
 
 function encodePathQueryDelimiter(value: string): string {
   return value.replaceAll("?", "%3F");

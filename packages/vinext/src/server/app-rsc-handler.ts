@@ -60,7 +60,7 @@ import {
   runWithRequestContext,
 } from "vinext/shims/unified-request-context";
 import { flattenErrorCauses } from "../utils/error-cause.js";
-import { addBasePathToPathname, hasBasePath, stripBasePath } from "../utils/base-path.js";
+import { hasBasePath, restoreBasePath, stripBasePath } from "../utils/base-path.js";
 import { mergeRewriteQuery } from "../utils/query.js";
 import {
   buildRequestHeadersFromMiddlewareResponse,
@@ -149,6 +149,7 @@ import {
   cloneRequestWithHeaders,
   cloneRequestWithUrl,
   filterInternalHeaders,
+  hasUrlParserDotSegment,
   normalizeTrailingSlash,
   normalizeTrailingSlashPathname,
   resolvePublicFileRoute,
@@ -363,13 +364,6 @@ function readCacheabilityRequestProjection(
     };
   }
   return parsedCacheabilityRequestProjection.manifest;
-}
-
-function hasUrlParserDotSegment(pathname: string): boolean {
-  return pathname.split("/").some((segment) => {
-    const decodedDots = segment.replaceAll(/%2e/gi, ".");
-    return decodedDots === "." || decodedDots === "..";
-  });
 }
 
 type RunAppMiddlewareOptions = {
@@ -1728,12 +1722,13 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
     isPostRequest && !actionId && contentType.startsWith("multipart/form-data");
 
   // Next.js checks the filesystem after each rewrite phase, so late rewrites
-  // to the endpoint are served as well.
+  // to the endpoint are served as well. Like Next.js, it compares the raw
+  // pathname, so `/_next/%69mage` is not the endpoint.
   const serveImageEndpointIfMatched = async (): Promise<Response | null> => {
     if (
       !filesystemRouteEligible ||
       !resolvedPathnameHasBasePath ||
-      !isImageOptimizationPath(cleanPathname)
+      !isImageOptimizationPath(cleanPathnameIsRequestPathname ? requestPathname : cleanPathname)
     ) {
       return null;
     }
@@ -1942,15 +1937,10 @@ async function handleAppRscRequest<TRoute extends AppRscHandlerRoute>(
       sourceUrl.search = new URL(resolvedUrl, url).search;
       // Source middleware must see the URL a direct request to the source
       // carries: the raw, still-encoded context, under the basePath the
-      // target's rewrites resolved to. Concatenate basePath rather
-      // than using `addBasePathToPathname`, which leaves a context that already
-      // starts with basePath unprefixed, so middleware would miss that segment.
-      const sourceUrlPathname =
-        resolvedPathnameHasBasePath && options.basePath
-          ? sourceRequestPathname === "/"
-            ? options.basePath
-            : options.basePath + sourceRequestPathname
-          : sourceRequestPathname;
+      // target's rewrites resolved to.
+      const sourceUrlPathname = resolvedPathnameHasBasePath
+        ? restoreBasePath(sourceRequestPathname, options.basePath)
+        : sourceRequestPathname;
       sourceUrl.pathname = sourceUrlPathname;
       if (sourceUrl.pathname !== sourceUrlPathname) {
         options.clearRequestContext();
@@ -3235,7 +3225,7 @@ export function createAppRscRequestHandler<TRoute extends AppRscHandlerRoute>(
     let appRequest = rawRequest;
     if (pagesDataNormalization?.isDataReq) {
       const appRequestUrl = new URL(pagesDataNormalization.request.url);
-      appRequestUrl.pathname = addBasePathToPathname(appRequestUrl.pathname, options.basePath);
+      appRequestUrl.pathname = restoreBasePath(appRequestUrl.pathname, options.basePath);
       appRequest = cloneRequestWithUrl(pagesDataCandidate!, appRequestUrl.toString());
     }
     const request = cloneRequestWithHeaders(appRequest, filteredHeaders);
