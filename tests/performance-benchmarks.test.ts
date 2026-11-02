@@ -99,6 +99,10 @@ describe("paired performance benchmarks", () => {
       join(import.meta.dirname, "../benchmarks/perf/build-time.mjs"),
       "utf8",
     );
+    const productionColdStart = readFileSync(
+      join(import.meta.dirname, "../benchmarks/perf/production-cold-start.mjs"),
+      "utf8",
+    );
 
     expect(workflow).toContain("vinext-perf-head");
     expect(workflow).toContain("vinext-perf-base");
@@ -185,6 +189,105 @@ describe("paired performance benchmarks", () => {
     expect(buildTime).not.toContain(
       'rm(join(projectDir, framework === "vinext" ? "dist" : ".next")',
     );
+    expect(productionColdStart).toContain('name.startsWith("VINEXT_PERF_")');
+    expect(productionColdStart).toContain(
+      'const profiling = process.env.VINEXT_PERF_PROFILE === "true"',
+    );
+    expect(productionColdStart).toContain('join(projectDir, "node_modules/vinext/dist/cli.js")');
+    expect(productionColdStart).not.toContain('execFileSync("which", ["vp"]');
+    expect(productionColdStart).toContain("detached: true");
+    expect(productionColdStart).toContain("return targetUser && !profiling");
+    expect(productionColdStart).not.toContain("rm(");
+  });
+
+  it("builds both benchmark apps during setup for the production cold start", () => {
+    const scenarios = JSON.parse(
+      readFileSync(join(import.meta.dirname, "../benchmarks/perf/scenarios.json"), "utf8"),
+    ) as {
+      setup: Array<{ command: string[]; cwd?: string; implementationId?: string }>;
+      scenarios: Array<{
+        id: string;
+        implementations: Array<{ id: string; profile: boolean; compareBase: boolean }>;
+      }>;
+    };
+    const setupCommands = scenarios.setup.map((setup) => [
+      setup.implementationId,
+      setup.cwd,
+      ...setup.command,
+    ]);
+    const coldStart = scenarios.scenarios.find(
+      (scenario) => scenario.id === "prod-cold-start-dashboard",
+    );
+
+    expect(setupCommands).toContainEqual(["vinext", "benchmarks/vinext", "vp", "build"]);
+    expect(setupCommands).toContainEqual(["nextjs", "benchmarks/nextjs", "npm", "run", "build"]);
+    expect(coldStart?.implementations.map((implementation) => implementation.id)).toEqual([
+      "nextjs",
+      "vinext",
+    ]);
+    for (const implementation of coldStart?.implementations ?? []) {
+      expect(implementation.compareBase).toBe(true);
+      // validate-profile-traces.mjs requires Vite and Rolldown frames, which a
+      // production server never samples.
+      expect(implementation.profile).toBe(false);
+    }
+  });
+
+  it("measures a production server from launch until the route serves the expected markup", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-production-cold-start-"));
+    const samplesPath = join(directory, "samples.jsonl");
+    const cliPath = fakeProductionCli(directory);
+
+    execFileSync(
+      process.execPath,
+      ["benchmarks/perf/production-cold-start.mjs", "vinext", "/dashboard"],
+      {
+        cwd: join(import.meta.dirname, ".."),
+        env: productionColdStartEnvironment(directory, samplesPath),
+        stdio: "pipe",
+      },
+    );
+
+    const sample = JSON.parse(readFileSync(samplesPath, "utf8"));
+    expect(sample.benchmarkId).toBe("vinext-prod-cold-start-dashboard");
+    expect(sample.unit).toBe("ms");
+    expect(sample.value).toBeGreaterThan(0);
+    expect(readFileSync(join(directory, "requests.log"), "utf8")).toContain("/dashboard\n");
+    expect(cliPath).toContain("node_modules/vinext/dist/cli.js");
+  });
+
+  it("fails a production cold start that never serves the expected markup", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-production-cold-start-miss-"));
+    const samplesPath = join(directory, "samples.jsonl");
+    fakeProductionCli(directory);
+
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        ["benchmarks/perf/production-cold-start.mjs", "vinext", "/about"],
+        {
+          cwd: join(import.meta.dirname, ".."),
+          env: {
+            ...productionColdStartEnvironment(directory, samplesPath),
+            VINEXT_PERF_TIMEOUT_MS: "500",
+          },
+          stdio: "pipe",
+        },
+      ),
+    ).toThrow("Production server did not serve http://127.0.0.1:");
+  });
+
+  it("requires the production build before measuring a production cold start", () => {
+    const directory = mkdtempSync(join(tmpdir(), "vinext-perf-production-cold-start-unbuilt-"));
+    mkdirSync(join(directory, "benchmarks/vinext"), { recursive: true });
+
+    expect(() =>
+      execFileSync(process.execPath, ["benchmarks/perf/production-cold-start.mjs", "vinext"], {
+        cwd: join(import.meta.dirname, ".."),
+        env: productionColdStartEnvironment(directory, join(directory, "samples.jsonl")),
+        stdio: "pipe",
+      }),
+    ).toThrow("Build output not found");
   });
 
   it("requires dispatched workflow code to come from main", () => {
@@ -1303,6 +1406,54 @@ function profileWithSources(sources: string[]) {
       },
     ],
   });
+}
+
+/**
+ * Stand in for `vinext start` inside a throwaway benchmark root: a Node HTTP
+ * server that only serves the Timer markup on /dashboard and logs every request
+ * path so a test can prove the measured request hit the benchmark route.
+ */
+function fakeProductionCli(directory: string) {
+  const projectDirectory = join(directory, "benchmarks/vinext");
+  const packageDirectory = join(projectDirectory, "node_modules/vinext");
+  const cliPath = join(packageDirectory, "dist/cli.js");
+  mkdirSync(join(projectDirectory, "dist/server"), { recursive: true });
+  mkdirSync(join(packageDirectory, "dist"), { recursive: true });
+  writeFileSync(join(packageDirectory, "package.json"), '{"type":"module"}');
+  writeFileSync(
+    cliPath,
+    `import { appendFileSync } from "node:fs";
+import { createServer } from "node:http";
+
+const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
+const hostname = process.argv[process.argv.indexOf("--hostname") + 1];
+createServer((request, response) => {
+  appendFileSync(${JSON.stringify(join(directory, "requests.log"))}, request.url + "\\n");
+  response.setHeader("content-type", "text/html");
+  response.end(
+    request.url === "/dashboard" ? "<span>Uptime: <!-- -->0<!-- -->s</span>" : "<p>About</p>",
+  );
+}).listen(port, hostname);
+`,
+  );
+  return cliPath;
+}
+
+function productionColdStartEnvironment(directory: string, samplesPath: string) {
+  return {
+    ...process.env,
+    VINEXT_PERF_TARGET_ROOT: directory,
+    VINEXT_PERF_SAMPLES: samplesPath,
+    VINEXT_PERF_BENCHMARK_ID: "vinext-prod-cold-start-dashboard",
+    VINEXT_PERF_SCENARIO_ID: "prod-cold-start-dashboard",
+    VINEXT_PERF_SUITE: "Production",
+    VINEXT_PERF_LABEL: "Production server cold start",
+    VINEXT_PERF_IMPLEMENTATION_ID: "vinext",
+    VINEXT_PERF_IMPLEMENTATION_LABEL: "vinext",
+    VINEXT_PERF_UNIT: "ms",
+    VINEXT_PERF_LOWER_IS_BETTER: "true",
+    VINEXT_PERF_REVISION: "head",
+  };
 }
 
 function gitTreeEntry(path: string, sha: string) {
