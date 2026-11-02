@@ -209,7 +209,8 @@ function readStaticAssetPaths(assetsDir: string): Set<string> {
       // Wrangler stats each entry, so file symlinks are uploaded too.
       .filter((filePath) => fs.statSync(filePath, { throwIfNoEntry: false })?.isFile())
       .map((filePath) => `/${path.relative(assetsDir, filePath).split(path.sep).join("/")}`)
-      .filter((pathname) => !UNSERVED_ASSET_CONTROL_FILES.has(pathname)),
+      // Wrangler matches its default control-file rules case-insensitively.
+      .filter((pathname) => !UNSERVED_ASSET_CONTROL_FILES.has(pathname.toLowerCase())),
   );
 }
 
@@ -248,16 +249,18 @@ export function filterTrafficPaths(
   const assetPaths = options.assetsDir ? readStaticAssetPaths(options.assetsDir) : undefined;
   return entries.filter((e) => {
     if (!e.path.startsWith("/")) return false;
+    // Resolve dot segments (including encoded ones) as candidate discovery does.
+    const pathname = new URL(e.path, "http://vinext.local").pathname;
     // Cloudflare answers its reserved /cdn-cgi/ endpoints before the Worker runs.
-    if (e.path.startsWith("/cdn-cgi/")) return false;
+    if (pathname.startsWith("/cdn-cgi/")) return false;
     // Static assets
-    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(e.path))
+    if (/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff2?|ttf|eot|map|webp|avif)$/i.test(pathname))
       return false;
-    if (assetPaths && isStaticAssetPath(assetPaths, e.path, options.basePath)) return false;
+    if (assetPaths && isStaticAssetPath(assetPaths, pathname, options.basePath)) return false;
     // API routes
-    if (e.path.startsWith("/api/")) return false;
+    if (pathname.startsWith("/api/")) return false;
     // Internal routes
-    if (e.path.startsWith("/_next/") || e.path.startsWith("/__vinext/")) return false;
+    if (pathname.startsWith("/_next/") || pathname.startsWith("/__vinext/")) return false;
     return true;
   });
 }

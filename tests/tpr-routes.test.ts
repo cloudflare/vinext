@@ -176,7 +176,7 @@ describe("TPR route resolution", () => {
     try {
       fs.mkdirSync(path.join(assetsDir, "videos"));
       fs.writeFileSync(path.join(assetsDir, "videos/hero.webm"), "");
-      fs.writeFileSync(path.join(assetsDir, "_headers"), "");
+      fs.writeFileSync(path.join(assetsDir, "_HEADERS"), "");
       fs.mkdirSync(path.join(assetsDir, "docs/_next/static"), { recursive: true });
       fs.writeFileSync(path.join(assetsDir, "docs/_next/static/module.wasm"), "");
       fs.writeFileSync(path.join(assetsDir, "100%real.wasm"), "");
@@ -189,7 +189,9 @@ describe("TPR route resolution", () => {
             { path: "/docs/_next/static/module.wasm", requests: 3 },
             { path: "/docs/100%real.wasm", requests: 3 },
             { path: "/docs/linked.webm", requests: 3 },
-            { path: "/docs/_headers", requests: 2 },
+            { path: "/docs/_HEADERS", requests: 2 },
+            { path: "/docs/x/%2E%2e/videos/hero.webm", requests: 2 },
+            { path: "/x/%2e%2E/cdn-cgi/zaraz/t", requests: 2 },
             { path: "/docs/videos", requests: 2 },
             { path: `/docs/${"a".repeat(300)}`, requests: 1 },
             { path: "/docs/%00", requests: 1 },
@@ -199,7 +201,7 @@ describe("TPR route resolution", () => {
           { assetsDir, basePath: "/docs" },
         ).map(({ path }) => path),
       ).toEqual([
-        "/docs/_headers",
+        "/docs/_HEADERS",
         "/docs/videos",
         `/docs/${"a".repeat(300)}`,
         "/docs/%00",
