@@ -1147,4 +1147,58 @@ test.describe("BFCache Activity effects", () => {
     await expect(effectCount(page, "panel:b")).toHaveText("Count: 3");
     await expect(page.getByTestId("panel-slot-error")).toBeHidden();
   });
+
+  test("keeps a slot's hidden entries when a nested error boundary catches", async ({ page }) => {
+    await page.goto(`${EFFECTS_ROUTE}/panels/a`);
+    await waitForAppRouterHydration(page);
+    const panelsOpen = ["shell#1", "panels-layout#1"];
+    await incrementEffect(page, "panel:a", 2);
+    await page.locator("#panel-a-more:visible").click();
+    await expectEffectsHeading(page, "Panels a more");
+    await expectEffects(
+      page,
+      [
+        ...setupEffects(panelsOpen, true),
+        ...setupEffects(["panel-main:a#1", "panel:a#1"], true),
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        ...setupEffects(["panel-more:a#1", "panel-slot-more:a#1"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#1"],
+    );
+
+    // The slot's more/error.tsx catches inside its own segment, so the slot
+    // page's hidden entry stays mounted.
+    await page.locator('[data-testid="throw-panel-slot-more:a"]:visible').click();
+    await expect(page.getByTestId("panel-slot-more-error")).toBeVisible();
+    await disableDevErrorOverlay(page);
+    await expect(page.getByTestId("panel-slot-error")).toHaveCount(0);
+    await expectEffects(page, ["cleanup panel-slot-more:a#1"], [...panelsOpen, "panel-more:a#1"]);
+    await expectHiddenEffectState(page, "panel:a", "Count: 2");
+
+    await clickEffectsLink(page, "/panels/a", "Panels a");
+    await expectEffects(
+      page,
+      ["cleanup panel-more:a#1", "setup panel-main:a#1", "setup panel:a#1"],
+      [...panelsOpen, "panel-main:a#1", "panel:a#1"],
+    );
+    await expect(effectCount(page, "panel:a")).toHaveText("Count: 2");
+    await expect(page.getByTestId("panel-slot-more-error")).toBeHidden();
+
+    // Like Next.js's, the boundary resets when its entry is shown at a new
+    // pathname, so the more page renders again.
+    await page.locator("#panel-a-more:visible").click();
+    await expectEffectsHeading(page, "Panels a more");
+    await expectEffects(
+      page,
+      [
+        "cleanup panel-main:a#1",
+        "cleanup panel:a#1",
+        "setup panel-more:a#1",
+        ...setupEffects(["panel-slot-more:a#2"], true),
+      ],
+      [...panelsOpen, "panel-more:a#1", "panel-slot-more:a#2"],
+    );
+    await expect(page.getByTestId("panel-slot-more-error")).toHaveCount(0);
+  });
 });
