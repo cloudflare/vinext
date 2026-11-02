@@ -13,6 +13,8 @@ import {
 } from "../packages/vinext/src/init-cloudflare.js";
 import { readPagesRouterEntrySource } from "./worker-entry-source.js";
 
+const DEFAULT_RUN_WORKER_FIRST = ["/*", "!/_next/static/*", "!/*/_next/static/*"];
+
 function expectValidConfig(output: string): void {
   const parsed = parseSync("vite.config.ts", output, {
     astType: "ts",
@@ -34,18 +36,40 @@ describe("CSS Modules configuration", () => {
       "dist/client",
       true,
     ),
-    generatePagesRouterViteConfig(
-      undefined,
-      undefined,
-      "IMAGES",
-      "CF_VERSION_METADATA",
-      false,
-      true,
-    ),
+    generatePagesRouterViteConfig(undefined, "IMAGES", "CF_VERSION_METADATA", false, true),
   ])("generates a default-only plugin and stable scoped names", (config) => {
     expectValidConfig(config);
     expect(config).toContain('patchCssModules({ exportMode: "default" })');
     expect(config).toContain("generateScopedName(name: string, filename: string)");
+    expect(config.match(/import path from "node:path"/g)).toHaveLength(1);
+  });
+
+  it.each(['import "node:path";', 'import { resolve } from "node:path";'])(
+    "adds a separate default path import for %s",
+    (existingImport) => {
+      const output = updateViteConfigForCssModules(
+        "vite.config.ts",
+        `${existingImport}\nexport default { plugins: [vinext()] };\n`,
+      ).code;
+
+      expectValidConfig(output);
+      expect(output).toContain(existingImport);
+      expect(output).toContain('import path from "node:path";');
+      expect(output).toContain("path.relative(");
+    },
+  );
+
+  it("allocates collision-free bindings for inserted imports", () => {
+    const output = updateViteConfigForCssModules(
+      "vite.config.ts",
+      "const path = 1; const createHash = 2; export default { plugins: [vinext()] };\n",
+    ).code;
+
+    expectValidConfig(output);
+    expect(output).toContain('import path2 from "node:path"');
+    expect(output).toContain('import { createHash as createHash2 } from "node:crypto"');
+    expect(output).toContain("path2.relative(");
+    expect(output).toContain('createHash2("sha256")');
   });
 
   it("patches a literal Vite config idempotently without dropping options", () => {
@@ -152,46 +176,49 @@ export default defineConfig({ plugins: [vinext(), cloudflare()], server: { port:
     expect(result.preservedExistingGenerateScopedName).toBe(true);
     expect(result.code).not.toContain('from "node:crypto"');
   });
-
-  it("keeps native-module aliases alongside CSS Modules without duplicate path imports", () => {
-    const config = generateAppRouterViteConfig(
-      {
-        root: "/tmp/app",
-        projectName: "app",
-        isAppRouter: true,
-        hasISR: false,
-        hasMDX: false,
-        nativeModulesToStub: ["sharp"],
-      },
-      undefined,
-      "IMAGES",
-      "CF_VERSION_METADATA",
-      false,
-      "ASSETS",
-      "dist/client",
-      true,
-    );
-    expectValidConfig(config);
-    expect(config.match(/import path from "node:path"/g)).toHaveLength(1);
-    expect(config).toContain('"sharp": path.resolve(');
-  });
 });
 
 describe("generateWranglerConfig", () => {
-  it("routes private Static Assets cache files through the Worker", () => {
-    const output = generateWranglerConfig(
-      {
-        root: "/tmp/my-app",
-        projectName: "my-app",
-        isAppRouter: true,
-        hasISR: false,
-        hasMDX: false,
-        nativeModulesToStub: [],
-      },
-      { cdnCache: "static-assets", dataCache: "none", imageOptimization: "none" },
-    );
-    expect(JSON.parse(output).assets.run_worker_first).toEqual(["/_vinext/static-cache/*"]);
-  });
+  it.each(["none", "static-assets"] as const)(
+    "routes public files, but not the build output, through the Worker (CDN cache: %s)",
+    (cdnCache) => {
+      const output = generateWranglerConfig(
+        {
+          root: "/tmp/my-app",
+          projectName: "my-app",
+          isAppRouter: true,
+          hasISR: false,
+          hasMDX: false,
+        },
+        { cdnCache, dataCache: "none", imageOptimization: "none" },
+      );
+      // `/*` also covers the private Static Assets cache directory.
+      expect(JSON.parse(output).assets.run_worker_first).toEqual(DEFAULT_RUN_WORKER_FIRST);
+    },
+  );
+
+  it.each([
+    { cdnCache: "none" as const, expected: undefined },
+    { cdnCache: "static-assets" as const, expected: ["/_vinext/static-cache/*"] },
+  ])(
+    "keeps asset-first serving for a static export (CDN cache: $cdnCache)",
+    ({ cdnCache, expected }) => {
+      const output = generateWranglerConfig(
+        {
+          root: "/tmp/my-app",
+          projectName: "my-app",
+          isAppRouter: true,
+          hasISR: false,
+          hasMDX: false,
+          isStaticExport: true,
+        },
+        { cdnCache, dataCache: "none", imageOptimization: "none" },
+      );
+      const { assets } = JSON.parse(output);
+      expect(assets.html_handling).toBeUndefined();
+      expect(assets.run_worker_first).toEqual(expected);
+    },
+  );
 
   it.each(["service-binding", "self-contained"] as const)(
     "pretty-prints the generated %s Response Store config",
@@ -203,7 +230,6 @@ describe("generateWranglerConfig", () => {
           isAppRouter: true,
           hasISR: true,
           hasMDX: false,
-          nativeModulesToStub: [],
         },
         {
           dataCache: "none",
@@ -221,17 +247,18 @@ describe("generateWranglerConfig", () => {
 
 describe("updateViteConfigForCloudflare", () => {
   it("keeps a compact config's comma attached to its last property and matches import quotes", () => {
-    const input = `import vinext from 'vinext';
-import { cloudflare } from '@cloudflare/vite-plugin';
-export default { plugins: [vinext(), cloudflare()], server: { port: 3902 } };
+    const input = `import { defineConfig } from 'vite';
+export default { server: { port: 3902 } };
 `;
-    const options = { isAppRouter: false, nativeModulesToStub: ["sharp"] };
+    const options = {
+      isAppRouter: false,
+      cache: { dataCache: "none", cdnCache: "none", imageOptimization: "none" } as const,
+    };
     const output = updateViteConfigForCloudflare("vite.config.ts", input, options);
 
     expectValidConfig(output);
-    expect(output).toContain("export default {\n  plugins:");
-    expect(output).toContain("],\n  server: { port: 3902 },\n  resolve:");
-    expect(output).toContain("import path from 'node:path';");
+    expect(output).toContain("export default {\n  server: { port: 3902 },\n  plugins:");
+    expect(output).toContain("import vinext from 'vinext';");
     expect(updateViteConfigForCloudflare("vite.config.ts", output, options)).toBe(output);
   });
 
@@ -241,7 +268,6 @@ export default { plugins: [vinext({ custom: true })] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv" as const,
         cdnCache: "workers-cache" as const,
@@ -263,7 +289,6 @@ export default { plugins: [vinext({ custom: true })] };
   it("adds multiple properties to a compact object with no spaces", () => {
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv" as const,
         cdnCache: "workers-cache" as const,
@@ -287,7 +312,6 @@ export default { plugins: [vinext({ custom: true })] };
     const input = "export default {plugins: [vinext()]};";
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -296,26 +320,22 @@ export default { plugins: [vinext({ custom: true })] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: false,
-        nativeModulesToStub: [],
       }),
     ).toBe(output);
   });
 
   it("keeps trailing comments after the last property without adding a second comma", () => {
     const input = `import vinext from "vinext";
-import { cloudflare } from "@cloudflare/vite-plugin";
 export default {
-  plugins: [vinext(), cloudflare()],
   server: { port: 3902 }, /* keep server comment */
 };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: ["sharp"],
     });
 
     expectValidConfig(output);
-    expect(output).toContain("server: { port: 3902 }, /* keep server comment */");
+    expect(output).toMatch(/server: \{ port: 3902 \}, \/\* keep server comment \*\/\s+plugins: \[/);
     expect(output).not.toContain("*/,");
   });
 
@@ -334,7 +354,6 @@ export default { plugins: [vinext()] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "response-store" as const,
@@ -378,7 +397,6 @@ export default { plugins: [vinext()] };
 `;
     const updated = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: options,
     });
     expectValidConfig(updated);
@@ -387,7 +405,6 @@ export default { plugins: [vinext()] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", updated, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: options,
       }),
     ).toBe(updated);
@@ -399,7 +416,6 @@ export default { plugins: [vinext({ prerender: false })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "kv",
         cdnCache: "static-assets",
@@ -420,7 +436,6 @@ export default { plugins: [vinext({ cache: { cdn: staticAssetsAdapter() } })] };
 `;
     const options = {
       isAppRouter: true,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "static-assets" as const,
@@ -443,7 +458,6 @@ export default { plugins: [vinext({ clientOutDir: "build/client" })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "static-assets",
@@ -462,7 +476,6 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "static-assets",
@@ -506,8 +519,10 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
     expect(service).toMatchObject({
       name: "my-app-response-store",
       main: "./node_modules/@cloudflare/workers-response-store/dist/service.js",
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
+        default: { type: "worker", cache: { enabled: false } },
+        ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
         CacheMetadata: { type: "durable-object", storage: "sqlite" },
       },
       r2_buckets: [{ binding: "CACHE_BODIES", bucket_name: "my-app-response-store-cache-bodies" }],
@@ -530,7 +545,7 @@ export default { plugins: [vinext({ cache: { cdn: customCdn() } })] };
       { root: "/tmp/vinext-missing-response-store-config" },
     );
     expect(JSON.parse(selfContained)).toMatchObject({
-      cache: { enabled: true },
+      cache: { enabled: false },
       exports: {
         Other: { type: "worker", cache: { enabled: false } },
         ResponseStoreBinding: { type: "worker", cache: { enabled: true } },
@@ -637,7 +652,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
 `;
     const options = {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none" as const,
         cdnCache: "response-store" as const,
@@ -664,7 +678,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ mode }) }), cl
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "response-store",
@@ -684,7 +697,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter({ shards: 16 }) 
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "response-store",
@@ -708,7 +720,6 @@ export default { plugins: [vinext({ cache: responseStoreAdapter() })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "none",
@@ -726,7 +737,6 @@ export default { plugins: [vinext({ cache: { data: customData() } })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "none",
@@ -745,7 +755,6 @@ export default { plugins: [vinext({ cache: { cdn: workersCacheCdnAdapter() } })]
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "response-store",
@@ -770,7 +779,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expect(output).toContain('import custom from "./custom.js"');
@@ -791,7 +799,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -800,7 +807,6 @@ export default defineConfig({
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: true,
-        nativeModulesToStub: [],
       }),
     ).toBe(output);
   });
@@ -817,7 +823,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: true,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -835,7 +840,6 @@ export default { plugins: [vinext(), cloudflare(cloudflareOptions)] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -854,7 +858,6 @@ export default { plugins: [vinext(), cloudflare({ viteEnvironment: {} })] };
     expect(() =>
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
       }),
     ).toThrow('viteEnvironment option must statically set name: "rsc"');
   });
@@ -870,7 +873,6 @@ export default { plugins: [vinext(), cloudflare({
     expect(
       updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: true,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -892,7 +894,6 @@ export default defineConfig({
 
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expect(output).not.toContain("viteEnvironment");
@@ -907,7 +908,6 @@ module.exports = defineConfig({ plugins: [vinext()] });
 
     const output = updateViteConfigForCloudflare("vite.config.cjs", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expect(output).toContain('const { cloudflare } = require("@cloudflare/vite-plugin");');
@@ -917,7 +917,6 @@ module.exports = defineConfig({ plugins: [vinext()] });
   it("adds both plugins to an empty config with one plugins property", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -930,7 +929,7 @@ module.exports = defineConfig({ plugins: [vinext()] });
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       'import custom from "./custom.js";\nexport default { plugins: [custom()] };\n',
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -947,7 +946,6 @@ export default { plugins: [first(), /* keep second */ second()] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "data-cache",
@@ -961,7 +959,6 @@ export default { plugins: [first(), /* keep second */ second()] };
     expect(
       updateViteConfigForCloudflare("vite.config.ts", output, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "data-cache",
@@ -982,7 +979,6 @@ export default {
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
 
     expectValidConfig(output);
@@ -997,7 +993,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `import custom from "./custom.js";\nexport default { plugins: [custom(), /*${suffix}*/] };\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
     expectValidConfig(output);
     expect(output).toContain("vinext()");
@@ -1010,7 +1006,7 @@ export default {
       const output = updateViteConfigForCloudflare(
         "vite.config.ts",
         `import custom from "./custom.js";\nexport default { plugins: [${expression},] };\n`,
-        { isAppRouter: false, nativeModulesToStub: [] },
+        { isAppRouter: false },
       );
       expectValidConfig(output);
       expect(output).not.toContain(`${expression},,`);
@@ -1022,17 +1018,15 @@ export default {
   it("allocates collision-free bindings for inserted imports", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
-      "const vinext = 1; const cloudflare = 2; const path = 3; export default {};\n",
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
+      "const vinext = 1; const cloudflare = 2; export default {};\n",
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
     expect(output).toContain('import vinext2 from "vinext"');
     expect(output).toContain('import { cloudflare as cloudflare2 } from "@cloudflare/vite-plugin"');
-    expect(output).toContain('import path2 from "node:path"');
     expect(output).toContain("vinext2()");
     expect(output).toContain("cloudflare2()");
-    expect(output).toContain('path2.resolve(__dirname, "empty-stub.js")');
   });
 
   it("uses the collision-free Response Store adapter binding", () => {
@@ -1041,7 +1035,6 @@ export default {
       "const responseStoreAdapter = customFactory; export default { plugins: [] };\n",
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "response-store",
@@ -1064,7 +1057,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `${declaration}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -1078,7 +1071,7 @@ export default {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `${existingImport}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: [] },
+      { isAppRouter: false },
     );
 
     expectValidConfig(output);
@@ -1087,33 +1080,15 @@ export default {
     expect(output).toContain("vinext()");
   });
 
-  it.each([
-    ['import "node:path";', 'import path from "node:path";'],
-    ['import { resolve } from "node:path";', 'import path from "node:path";'],
-  ])("adds a separate default path import for %s", (existingImport, expectedImport) => {
-    const output = updateViteConfigForCloudflare(
-      "vite.config.ts",
-      `${existingImport}\nexport default {};\n`,
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
-    );
-
-    expectValidConfig(output);
-    expect(output).toContain(existingImport);
-    expect(output).toContain(expectedImport);
-    expect(output).toContain('path.resolve(__dirname, "empty-stub.js")');
-  });
-
   it("is idempotent", () => {
     const input = `import vinext from "vinext";
 export default { plugins: [vinext()] };
 `;
     const once = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
     const twice = updateViteConfigForCloudflare("vite.config.ts", once, {
       isAppRouter: false,
-      nativeModulesToStub: [],
     });
     expectValidConfig(twice);
     expect(twice).toBe(once);
@@ -1125,7 +1100,6 @@ export default { plugins: [vinext()] };
       `import vinext from "vinext";\nexport default { plugins: [vinext()] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "kv",
           cdnCache: "workers-cache",
@@ -1145,7 +1119,6 @@ export default { plugins: [vinext({ prerender: true })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1159,7 +1132,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nexport default { plugins: [vinext({ images: { optimizer: ${value} } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "workers-cache",
@@ -1177,7 +1149,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nimport { imagesOptimizer } from "@vinext/cloudflare/images/images-optimizer";\nexport default { plugins: [vinext({ images: { optimizer: imagesOptimizer() } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
@@ -1196,7 +1167,6 @@ export default { plugins: [vinext({ prerender: true })] };
       `import vinext from "vinext";\nexport default { plugins: [vinext({ images: { optimizer: customOptimizer() } })] };\n`,
       {
         isAppRouter: false,
-        nativeModulesToStub: [],
         imagesBinding: "CUSTOM_IMAGES",
         cache: {
           dataCache: "none",
@@ -1209,18 +1179,18 @@ export default { plugins: [vinext({ prerender: true })] };
     expect(output).not.toContain("imagesOptimizer");
   });
 
-  it("adds native module aliases through AST object updates", () => {
+  // vinext does not stub native modules, so init has no alias to add (#4196).
+  it("leaves resolve.alias alone", () => {
     const output = updateViteConfigForCloudflare(
       "vite.config.ts",
       `import vinext from "vinext";
 export default { plugins: [vinext()], resolve: { alias: { existing: "/tmp/existing" } } };
 `,
-      { isAppRouter: false, nativeModulesToStub: ["sharp"] },
+      { isAppRouter: false },
     );
 
-    expect(output).toContain('import path from "node:path"');
-    expect(output).toContain('"sharp": path.resolve(__dirname, "empty-stub.js")');
-    expect(output).toContain('existing: "/tmp/existing"');
+    expect(output).toContain('resolve: { alias: { existing: "/tmp/existing" } }');
+    expect(output).not.toContain("node:path");
   });
 
   it("rejects dynamic plugin arrays", () => {
@@ -1228,7 +1198,7 @@ export default { plugins: [vinext()], resolve: { alias: { existing: "/tmp/existi
       updateViteConfigForCloudflare(
         "vite.config.ts",
         `const plugins = []; export default { plugins };`,
-        { isAppRouter: false, nativeModulesToStub: [] },
+        { isAppRouter: false },
       ),
     ).toThrow("plugins option must be an array");
   });
@@ -1240,7 +1210,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "kv", cdnCache: "workers-cache", imageOptimization: "cloudflare-images" },
     });
     expectValidConfig(output);
@@ -1252,7 +1221,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
   it("falls through to the data cache and omits image optimization", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1265,7 +1233,6 @@ export default { plugins: [vinext({ cache: { data: existingData() } })] };
   it("configures image optimization independently of cache adapters", () => {
     const output = updateViteConfigForCloudflare("vite.config.ts", "export default {};\n", {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: {
         dataCache: "none",
         cdnCache: "data-cache",
@@ -1283,7 +1250,6 @@ export default { plugins: [vinext({ imageOptimization: true })] };
 `;
     const output = updateViteConfigForCloudflare("vite.config.ts", input, {
       isAppRouter: false,
-      nativeModulesToStub: [],
       cache: { dataCache: "none", cdnCache: "data-cache", imageOptimization: "none" },
     });
     expectValidConfig(output);
@@ -1328,9 +1294,28 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(JSON.parse(output)).toEqual({
       name: "existing",
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
+      assets: {
+        directory: "dist/client",
+        html_handling: "none",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
     });
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+  });
+
+  it("adds asset-first assets to an existing static export Wrangler config", () => {
+    const output = updateWranglerConfigForCloudflare(
+      `{ "name": "existing" }\n`,
+      { dataCache: "none", cdnCache: "none", imageOptimization: "none" },
+      { isStaticExport: true },
+    );
+    expect(JSON.parse(output).assets).toEqual({
+      directory: "dist/client",
+      not_found_handling: "none",
+      binding: "ASSETS",
+    });
   });
 
   it("preserves an existing Worker entry and assets", () => {
@@ -1384,7 +1369,7 @@ export default { plugins: [vinext({ imageOptimization: true })] };
   });
 
   it.each([
-    { assets: undefined, expected: ["/_vinext/static-cache/*"] },
+    { assets: undefined, expected: DEFAULT_RUN_WORKER_FIRST },
     {
       assets: { directory: "build/client", binding: "STATIC" },
       expected: ["/_vinext/static-cache/*"],
@@ -1395,6 +1380,14 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     {
       assets: { run_worker_first: ["/_vinext/static-cache/*"] },
       expected: ["/_vinext/static-cache/*"],
+    },
+    {
+      assets: { run_worker_first: DEFAULT_RUN_WORKER_FIRST },
+      expected: DEFAULT_RUN_WORKER_FIRST,
+    },
+    {
+      assets: { run_worker_first: ["/api/*", "!/_next/static/*"] },
+      expected: ["/api/*", "!/_next/static/*", "/_vinext/static-cache/*"],
     },
   ])("protects Static Assets when updating $assets", ({ assets, expected }) => {
     const options = {
@@ -1434,9 +1427,9 @@ export default { plugins: [vinext({ imageOptimization: true })] };
       cdnCache: "workers-cache",
       imageOptimization: "cloudflare-images",
     });
+    expect(JSON.parse(output).cache).toBeUndefined();
     expect(JSON.parse(output)).toMatchObject({
       name: "existing",
-      cache: { enabled: true },
       images: { binding: "IMAGES" },
       kv_namespaces: [{ binding: "VINEXT_KV_CACHE" }],
       version_metadata: { binding: "CF_VERSION_METADATA" },
@@ -1456,24 +1449,65 @@ export default { plugins: [vinext({ imageOptimization: true })] };
     expect(output).toContain("// keep this comment");
     expect(JSON.parse(output.replace("  // keep this comment\n", ""))).toEqual({
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
+      assets: {
+        directory: "dist/client",
+        html_handling: "none",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
       images: { binding: "IMAGES" },
     });
     expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
   });
 
-  it("enables an existing disabled Workers Cache config", () => {
-    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": false } }\n`, {
+  it("disables a Worker-wide cache for Workers Cache, whose adapter enables only its own entrypoint", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": true } }\n`, {
       dataCache: "none",
       cdnCache: "workers-cache",
       imageOptimization: "none",
     });
     expect(JSON.parse(output)).toEqual({
       main: "vinext/server/fetch-handler",
-      assets: { directory: "dist/client", not_found_handling: "none", binding: "ASSETS" },
-      cache: { enabled: true },
+      assets: {
+        directory: "dist/client",
+        html_handling: "none",
+        not_found_handling: "none",
+        binding: "ASSETS",
+        run_worker_first: DEFAULT_RUN_WORKER_FIRST,
+      },
+      cache: { enabled: false },
       version_metadata: { binding: "CF_VERSION_METADATA" },
     });
+  });
+
+  it.each(["static-assets", "data-cache", "none"] as const)(
+    "disables a Workers Cache config left by an earlier setup when switching to %s",
+    (cdnCache) => {
+      const options = { dataCache: "none" as const, cdnCache, imageOptimization: "none" as const };
+      const input = `{
+  "main": "vinext/server/fetch-handler",
+  "assets": { "directory": "dist/client", "binding": "ASSETS", "run_worker_first": ["/*"] },
+  "cache": {
+    // keep this comment
+    "enabled": /* before */ true /* after */, // trailing
+    "cross_version_cache": true
+  }
+}\n`;
+      const output = updateWranglerConfigForCloudflare(input, options);
+      expect(output).toBe(input.replace("*/ true /*", "*/ false /*"));
+      expect(updateWranglerConfigForCloudflare(output, options)).toBe(output);
+    },
+  );
+
+  it("disables the Worker-wide cache for Response Store", () => {
+    const output = updateWranglerConfigForCloudflare(`{ "cache": { "enabled": true } }\n`, {
+      dataCache: "none",
+      cdnCache: "response-store",
+      responseStoreMode: "self-contained",
+      imageOptimization: "none",
+    });
+    expect(JSON.parse(output).cache).toEqual({ enabled: false });
   });
 
   it("preserves a custom Wrangler version metadata binding for the CDN adapter", () => {
@@ -1515,7 +1549,6 @@ export default defineConfig({
 `;
       const output = updateViteConfigForCloudflare("vite.config.ts", input, {
         isAppRouter: false,
-        nativeModulesToStub: [],
         cache: {
           dataCache: "none",
           cdnCache: "workers-cache",
@@ -1529,7 +1562,6 @@ export default defineConfig({
       expect(
         updateViteConfigForCloudflare("vite.config.ts", output, {
           isAppRouter: false,
-          nativeModulesToStub: [],
           cache: {
             dataCache: "none",
             cdnCache: "workers-cache",
@@ -1554,7 +1586,7 @@ export default defineConfig({
       imageOptimization: "cloudflare-images",
     });
     expect(output).toContain('"images": { "binding": "CUSTOM_IMAGES" }');
-    expect(output).toContain('"cache": { "enabled": true }');
+    expect(output).not.toContain('"cache"');
     expect(getWranglerImagesBinding(output)).toBe("CUSTOM_IMAGES");
     const vite = generateAppRouterViteConfig(undefined, options, "CUSTOM_IMAGES");
     expect(vite).toContain('imagesOptimizer({ binding: "CUSTOM_IMAGES" })');

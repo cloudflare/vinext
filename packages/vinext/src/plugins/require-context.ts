@@ -21,10 +21,11 @@
 import type { Dirent } from "node:fs";
 import { readdir, realpath, stat } from "node:fs/promises";
 import path, { toSlash } from "pathslash";
-import { parseAst, type ESTree, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
 import MagicString from "magic-string";
 import {
   booleanLiteralValue,
+  parseProgram,
   SCRIPT_MODULE_ID_RE,
   scriptParserLanguage,
   stringLiteralValue,
@@ -174,9 +175,9 @@ async function transformRequireContext(code: string, id: string): Promise<Transf
 
   const lang = scriptParserLanguage(id)!;
 
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code, { lang });
+    ast = parseProgram(code, { lang });
   } catch {
     return null;
   }

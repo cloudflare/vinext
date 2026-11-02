@@ -1,10 +1,18 @@
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, describe, expect, it } from "vite-plus/test";
 import {
   createAppRscRouteMatcher,
   SIBLING_PAGE_INTERCEPT_SLOT_KEY,
 } from "../packages/vinext/src/server/app-rsc-route-matching.js";
+import {
+  addPregeneratedConcretePath,
+  clearPregeneratedConcretePaths,
+} from "../packages/vinext/src/server/pregenerated-concrete-paths.js";
 
 describe("App RSC route matching", () => {
+  afterEach(() => {
+    clearPregeneratedConcretePaths();
+  });
+
   it("matches app routes through the shared route trie", () => {
     const matcher = createAppRscRouteMatcher([
       route("/", []),
@@ -56,20 +64,25 @@ describe("App RSC route matching", () => {
     });
   });
 
-  it("canonicalizes encoded URL parts before matching app routes", () => {
-    // Next.js canonicalizes URL pathname parts before deriving dynamic segment
-    // cache keys; vinext should apply the same decode-first discipline at the
-    // App RSC route-match boundary so encoded static segments and params use
-    // one normalized representation.
-    // https://github.com/vercel/next.js/blob/47bcfa0956679c2a5fea0b941b76bb2d69878d9c/packages/next/src/client/route-params.ts
+  it("matches rewritten static segments on their raw spelling", () => {
+    // Next.js 16.2.7 routes a rewrite destination like a direct request to it,
+    // so an encoded static segment does not name the literal one. Dynamic
+    // params keep the canonical encoded representation.
     const matcher = createAppRscRouteMatcher([
       route("/_sites/:subdomain", ["_sites", ":subdomain"]),
       route("/files/:name", ["files", ":name"]),
+      route("/:locale/dashboard", [":locale", "dashboard"]),
     ]);
 
-    expect(matcher.matchRoute("/%5Fsites/demo")).toMatchObject({
+    expect(matcher.matchRoute("/%5Fsites/demo")).toBeNull();
+    expect(matcher.matchRoute("/_sites/demo")).toMatchObject({
       route: { pattern: "/_sites/:subdomain" },
       params: { subdomain: "demo" },
+    });
+    expect(matcher.matchRoute("/en/%64ashboard")).toBeNull();
+    expect(matcher.matchRoute("/en/dashboard")).toMatchObject({
+      route: { pattern: "/:locale/dashboard" },
+      params: { locale: "en" },
     });
     expect(matcher.matchRoute("/files/a%252Fb")).toMatchObject({
       params: { name: "a%252Fb" },
@@ -118,9 +131,7 @@ describe("App RSC route matching", () => {
       { ...route("/api/:name", ["api", ":name"]), routeHandler: {} },
     ]);
 
-    expect(matcher.matchRoute("/%61dmin")).toMatchObject({
-      route: { pattern: "/admin" },
-    });
+    expect(matcher.matchRoute("/%61dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/%61dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/%2561dmin")).toBeNull();
     expect(matcher.matchRequestRoute("/files/%61")).toMatchObject({
@@ -138,6 +149,197 @@ describe("App RSC route matching", () => {
     expect(matcher.matchRequestRoute("/api/a%2Fb")).toMatchObject({
       params: { name: "a/b" },
     });
+  });
+
+  it("answers an encoded static page pathname beside a dynamic sibling with the static page", () => {
+    // Next.js 16.2.7 production: `/%61` and `/caf%C3%A9` beside `/[slug]`
+    // render the prerendered `/a` and `/café`; a force-dynamic page has no
+    // prerender, so `/[slug]` renders; without a dynamic sibling the raw path
+    // stays a 404; a Route Handler sibling keeps the request.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/a", ["a"]),
+        route("/café", ["café"]),
+        route("/live", ["live"]),
+        route("/:slug", [":slug"]),
+        route("/blog/new", ["blog", "new"]),
+        route("/blog/:slug", ["blog", ":slug"]),
+        route("/members/:user/settings", ["members", ":user", "settings"]),
+        route("/members/:user/:tab", ["members", ":user", ":tab"]),
+        route("/solo/only", ["solo", "only"]),
+        route("/files/new", ["files", "new"]),
+        { ...route("/files/:name", ["files", ":name"]), routeHandler: {} },
+      ],
+      ["/a", "/café", "/blog/new", "/solo/only", "/files/new"],
+    );
+    for (const pathname of ["/a", "/café", "/blog/new", "/solo/only", "/files/new"]) {
+      addPregeneratedConcretePath(pathname, pathname);
+    }
+    const pattern = (pathname: string) => matcher.matchRequestRoute(pathname)?.route.pattern;
+    // Next.js answers a rewrite destination like a direct request to it.
+    expect(matcher.matchRoute("/%61")?.route.pattern).toBe("/a");
+    expect(matcher.matchRoute("/members/bob/%73ettings")?.route.pattern).toBe(
+      "/members/:user/:tab",
+    );
+
+    expect(matcher.matchRequestRoute("/%61")).toEqual({
+      route: expect.objectContaining({ pattern: "/a" }),
+      params: {},
+    });
+    expect(pattern("/caf%C3%A9")).toBe("/café");
+    expect(pattern("/caf%c3%a9")).toBe("/café");
+    expect(pattern("/%63af%C3%A9/")).toBe("/café");
+    expect(pattern("/blog/%6Eew")).toBe("/blog/new");
+    // An exact static raw match keeps its route.
+    expect(
+      createAppRscRouteMatcher(
+        [route("/%61", ["%61"]), route("/a", ["a"])],
+        ["/a"],
+      ).matchRequestRoute("/%61")?.route.pattern,
+    ).toBe("/%61");
+    // Draft mode and server actions render the raw match instead.
+    expect(matcher.matchRawRequestRoute("/%61")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "a" },
+    });
+
+    expect(matcher.matchRequestRoute("/%6Cive")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "live" },
+    });
+    expect(matcher.matchRequestRoute("/%2561")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "%2561" },
+    });
+    expect(matcher.matchRequestRoute("/blog%2Fnew")).toMatchObject({
+      route: { pattern: "/:slug" },
+      params: { slug: "blog%2Fnew" },
+    });
+    // Static segments below a dynamic parent compare against the raw path.
+    expect(matcher.matchRequestRoute("/members/bob/%73ettings")).toMatchObject({
+      route: { pattern: "/members/:user/:tab" },
+      params: { user: "bob", tab: "settings" },
+    });
+    expect(matcher.matchRequestRoute("/solo/%6Fnly")).toBeNull();
+    expect(matcher.matchRequestRoute("/files/%6Eew")).toMatchObject({
+      route: { pattern: "/files/:name" },
+      params: { name: "new" },
+    });
+  });
+
+  it("renders the dynamic sibling for another spelling of a page without a recorded prerender", () => {
+    // Next.js 16.2.7: a page that reads cookies() or searchParams has no
+    // prerender, so `/%61dmin` beside `/[slug]` renders `/[slug]`, and
+    // middleware that compared the pathname with `/admin` never saw `/admin`.
+    // A rewrite destination is routed the same way.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"]),
+        route("/café", ["café"]),
+        route("/:slug", [":slug"]),
+        route("/blog/new", ["blog", "new"]),
+        route("/blog/:slug", ["blog", ":slug"]),
+        route("/docs/admin/billing", ["docs", "admin", "billing"]),
+        route("/docs/:path+", ["docs", ":path+"]),
+        route("/q&a", ["q&a"]),
+        route("/a b", ["a b"]),
+      ],
+      ["/admin", "/café", "/blog/new", "/docs/admin/billing", "/q&a", "/a b"],
+    );
+
+    for (const pathname of ["/%61dmin", "/admi%6E", "/%61%64%6d%69%6e", "/%61dmin?page=2"]) {
+      for (const match of [matcher.matchRequestRoute(pathname), matcher.matchRoute(pathname)]) {
+        expect(match).toMatchObject({
+          route: { pattern: "/:slug" },
+          params: { slug: "admin" },
+        });
+      }
+    }
+    expect(matcher.matchRequestRoute("/blog/%6Eew")).toMatchObject({
+      route: { pattern: "/blog/:slug" },
+      params: { slug: "new" },
+    });
+    for (const pathname of ["/docs/%61dmin/billing", "/docs/admin/%62illing"]) {
+      expect(matcher.matchRequestRoute(pathname)).toMatchObject({
+        route: { pattern: "/docs/:path+" },
+        params: { path: ["admin", "billing"] },
+      });
+    }
+
+    // The exact spelling a browser sends for `/café` is the page's own
+    // pathname, not another spelling of it, so it needs no prerender.
+    expect(matcher.matchRequestRoute("/caf%C3%A9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRoute("/caf%C3%A9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRequestRoute("/a%20b")?.route.pattern).toBe("/a b");
+    expect(matcher.matchRequestRoute("/q&a")?.route.pattern).toBe("/q&a");
+    for (const pathname of ["/caf%c3%a9", "/%63af%C3%A9", "/caf%C3%a9", "/q%26a", "/a%20%62"]) {
+      expect(matcher.matchRequestRoute(pathname)?.route.pattern).toBe("/:slug");
+      expect(matcher.matchRoute(pathname)?.route.pattern).toBe("/:slug");
+    }
+
+    // A recorded prerender is the response Next.js answers from.
+    addPregeneratedConcretePath("/admin", "/admin");
+    addPregeneratedConcretePath("/café", "/café");
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.matchRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.matchRequestRoute("/caf%c3%a9")?.route.pattern).toBe("/café");
+    expect(matcher.matchRequestRoute("/blog/%6Eew")?.route.pattern).toBe("/blog/:slug");
+  });
+
+  it("keeps a static interception source gate raw when a direct request decodes", () => {
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/admin",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+        route("/:slug", [":slug"]),
+      ],
+      ["/admin"],
+    );
+    addPregeneratedConcretePath("/admin", "/admin");
+
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.findIntercept("/photos/1", "/admin")).not.toBeNull();
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toBeNull();
+  });
+
+  it("keeps a dynamic interception source owner for an encoded static alias", () => {
+    // Next.js tests the raw Next-Url against the owner's pattern, so
+    // `/%61dmin` is a `/:slug` source even though a direct request to it
+    // renders the static `/admin`, which doesn't own the intercept.
+    const matcher = createAppRscRouteMatcher(
+      [
+        route("/admin", ["admin"]),
+        route("/:slug", [":slug"], {
+          modal: {
+            intercepts: [
+              {
+                sourceMatchPattern: "/:slug",
+                targetPattern: "/photos/:id",
+                interceptLayouts: ["modal-layout"],
+                page: "photo-page",
+                params: ["id"],
+              },
+            ],
+          },
+        }),
+      ],
+      ["/admin"],
+    );
+    addPregeneratedConcretePath("/admin", "/admin");
+
+    expect(matcher.matchRequestRoute("/%61dmin")?.route.pattern).toBe("/admin");
+    expect(matcher.findIntercept("/photos/1", "/%61dmin")).toMatchObject({ sourceRouteIndex: 1 });
   });
 
   it("preserves encoded interception target identity and canonicalizes target params", () => {
@@ -942,6 +1144,124 @@ describe("App RSC route matching", () => {
 
       // Wrong source: must return null
       expect(matcher.findIntercept("/hoge", "/other")).toBeNull();
+    });
+
+    it("renders a sibling intercept's owner route from a deeper source", () => {
+      // Next.js rewrites a sibling interception to the fixed intercepting route,
+      // shots/(.)[id], so a source like /shots/1 never lends it its own route.
+      // The handler still authorizes the source the context names.
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/shots" },
+          pattern: "/shots",
+          patternParts: ["shots"],
+          routeSegments: ["shots"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/shots/:id",
+              sourceMatchPattern: "/shots",
+              sourcePageSegments: ["shots", "(.)[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/shots",
+              interceptLayouts: [],
+              page: "shot-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/shots/:id" },
+          pattern: "/shots/:id",
+          patternParts: ["shots", ":id"],
+          routeSegments: ["shots", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/shots/2", "/shots")).toMatchObject({
+        authorizationSourceParams: {},
+        authorizationSourceRouteIndex: 0,
+        matchedParams: { id: "2" },
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+      });
+      expect(matcher.findIntercept("/shots/2", "/shots/1")).toMatchObject({
+        authorizationSourceParams: { id: "1" },
+        authorizationSourceRouteIndex: 1,
+        matchedParams: { id: "2" },
+        sourceMatchedParams: {},
+        sourceRouteIndex: 0,
+        sourceRouteIsConcrete: true,
+      });
+    });
+
+    it("keeps a deeper source's route for a sibling intercept whose owner is a stand-in", () => {
+      // gallery/(.)photo has no gallery page, so the graph picks another route
+      // under gallery/ to carry it. That route is not the intercepting route,
+      // so a concrete source renders as before.
+      const matcher = createAppRscRouteMatcher([
+        {
+          ids: { route: "graph-route:/gallery/list" },
+          pattern: "/gallery/list",
+          patternParts: ["gallery", "list"],
+          routeSegments: ["gallery", "list"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/gallery/photo/:id",
+              sourceMatchPattern: "/gallery",
+              sourcePageSegments: ["gallery", "(.)photo", "[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/gallery/list",
+              interceptLayouts: [],
+              page: "photo-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          ids: { route: "graph-route:/gallery/photo/:id" },
+          pattern: "/gallery/photo/:id",
+          patternParts: ["gallery", "photo", ":id"],
+          routeSegments: ["gallery", "photo", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/gallery/photo/2", "/gallery/photo/1")).toMatchObject({
+        authorizationSourceRouteIndex: 1,
+        sourceMatchedParams: { id: "1" },
+        sourceRouteIndex: 1,
+      });
+    });
+
+    it("never renders a Route Handler owner for a sibling intercept", () => {
+      // app/shots/route.ts owns shots/(.)[id], which has no page beside it.
+      const matcher = createAppRscRouteMatcher([
+        {
+          pattern: "/shots",
+          patternParts: ["shots"],
+          routeHandler: { GET() {} },
+          routeSegments: ["shots"],
+          siblingIntercepts: [
+            {
+              targetPattern: "/shots/:id",
+              sourceMatchPattern: "/shots",
+              sourcePageSegments: ["shots", "(.)[id]"],
+              slotId: "slot:__vinext_sibling_intercept:/shots",
+              interceptLayouts: [],
+              page: "shot-modal",
+              params: ["id"],
+            },
+          ],
+        },
+        {
+          pattern: "/shots/:id",
+          patternParts: ["shots", ":id"],
+          routeSegments: ["shots", "[id]"],
+        },
+      ] as any);
+
+      expect(matcher.findIntercept("/shots/2", "/shots/1")).toMatchObject({
+        authorizationSourceRouteIndex: 1,
+        sourceRouteIndex: 1,
+      });
     });
 
     it("resolves intercepted graph identities across different parameter names", () => {

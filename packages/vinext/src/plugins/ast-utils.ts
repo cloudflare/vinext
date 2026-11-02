@@ -1,4 +1,4 @@
-import type { ESTree } from "vite";
+import { parse, parseSync, type ESTree, type ParseResult, type ParserOptions } from "vite";
 
 export type ScriptParserLanguage = "js" | "jsx" | "ts" | "tsx";
 
@@ -10,7 +10,7 @@ export const SCRIPT_MODULE_ID_RE = /\.(?:[cm]?[jt]s|[jt]sx)(?:[?#].*)?$/i;
  * Static imports — `import x from "..."`, `import { ... } from "..."`,
  * `import "..."` — never place a `(` (nor a comment leading to one) immediately
  * after the `import` keyword. Plugins that act only on dynamic `import(...)` use
- * this to skip `parseAst` for the overwhelming majority of modules in a large
+ * this to skip parsing for the overwhelming majority of modules in a large
  * app: at ~5k routes, where almost every module is a static-import-only page,
  * it removes most of the build's AST-parse/GC cost. This is a deliberate,
  * measured performance filter — keep it a regex, never a parse.
@@ -51,6 +51,120 @@ export function scriptParserLanguage(id: string): ScriptParserLanguage | null {
   if (extension === ".ts" || extension === ".mts" || extension === ".cts") return "ts";
   if (extension === ".tsx") return "tsx";
   return "jsx";
+}
+
+// `parseAst`'s defaults. `parseSync` otherwise infers the language from the
+// filename and emits non-standard `ParenthesizedExpression` nodes.
+const PROGRAM_PARSER_DEFAULTS: ParserOptions = { lang: "js", preserveParens: false };
+const PARSE_FILENAME = "file.js";
+
+/** The import/export record oxc builds alongside the AST. */
+export type ModuleRecord = ParseResult["module"];
+
+function programOrThrow(result: ParseResult): ESTree.Program {
+  if (result.errors.length > 0) {
+    const frames = result.errors.slice(0, 5).map((error) => error.codeframe ?? error.message);
+    throw new SyntaxError(
+      `Parse failed with ${result.errors.length} error${result.errors.length === 1 ? "" : "s"}:\n${frames.join("\n")}`,
+    );
+  }
+  return result.program;
+}
+
+/**
+ * Parse `code` into an ESTree program, throwing on syntax errors.
+ *
+ * Replaces Vite's deprecated `parseAst` with the same defaults and contract.
+ * Callers that only need import/export declarations should use
+ * {@link parseModuleRecord}, which skips building the JS AST.
+ */
+export function parseProgram(code: string, options?: ParserOptions): ESTree.Program {
+  return programOrThrow(
+    parseSync(PARSE_FILENAME, code, { ...PROGRAM_PARSER_DEFAULTS, ...options }),
+  );
+}
+
+/** Async {@link parseProgram}; replaces Vite's deprecated `parseAstAsync`. */
+export async function parseProgramAsync(
+  code: string,
+  options?: ParserOptions,
+): Promise<ESTree.Program> {
+  return programOrThrow(
+    await parse(PARSE_FILENAME, code, { ...PROGRAM_PARSER_DEFAULTS, ...options }),
+  );
+}
+
+/**
+ * Parse `code` and return only its static import/export and dynamic import
+ * record, or `null` when it has syntax errors.
+ *
+ * Reading the record never deserializes the JS AST, which is most of the cost
+ * of a parse (about 4x cheaper than {@link parseProgram} on large modules).
+ * The record omits import attributes; see {@link hasImportAttributes}.
+ */
+export function parseModuleRecord(code: string, lang: ParserOptions["lang"]): ModuleRecord | null {
+  const result = parseSync(PARSE_FILENAME, code, { lang });
+  return result.errors.length > 0 ? null : result.module;
+}
+
+/**
+ * One whitespace character or comment. Each alternative can only match one
+ * way (a block comment stops at the first `*\/`, a line comment runs to the
+ * line end), so repeating it cannot backtrack exponentially.
+ */
+export const TRIVIA_PATTERN = String.raw`(?:\s|\/\*(?:[^*]|\*(?!\/))*\*\/|\/\/[^\n\r\u2028\u2029]*(?![^\n\r\u2028\u2029]))`;
+
+/** Leading whitespace and comments. */
+export const LEADING_TRIVIA_RE = new RegExp(`^${TRIVIA_PATTERN}*`);
+
+/**
+ * Whether the static import/export statement ending at `statementEnd` has
+ * `with { ... }` (or legacy `assert { ... }`) attributes after its source
+ * string, which ends at `sourceEnd`. The module record does not report
+ * attributes.
+ */
+export function hasImportAttributes(
+  code: string,
+  sourceEnd: number,
+  statementEnd: number,
+): boolean {
+  const afterSource = code.slice(sourceEnd, statementEnd);
+  const triviaLength = LEADING_TRIVIA_RE.exec(afterSource)?.[0].length ?? 0;
+  return /^(?:with|assert)\b/.test(afterSource.slice(triviaLength));
+}
+
+const EMPTY_TYPE_IMPORT_RE = new RegExp(
+  String.raw`^import${TRIVIA_PATTERN}*type${TRIVIA_PATTERN}*\{`,
+);
+
+/**
+ * Whether a static import is erased by TypeScript: every binding is
+ * type-only, or it is `import type {} from "x"`, which the module record
+ * reports with no entries (like a runtime `import {} from "x"`).
+ */
+export function isTypeOnlyImport(
+  code: string,
+  statement: ModuleRecord["staticImports"][number],
+): boolean {
+  if (statement.entries.length > 0) return statement.entries.every((entry) => entry.isType);
+  return EMPTY_TYPE_IMPORT_RE.test(code.slice(statement.start, statement.moduleRequest.start));
+}
+
+/**
+ * The value of the string literal or expression-free template literal spanning
+ * `span`, or `null` for any other expression. The module record gives only the
+ * span of a dynamic import's source.
+ */
+export function quotedStringAt(code: string, span: { start: number; end: number }): string | null {
+  const text = code.slice(span.start, span.end);
+  const match = /^(?:"([^"\\\r\n]*)"|'([^'\\\r\n]*)'|`([^`\\$]*)`)$/.exec(text);
+  if (match) return match[1] ?? match[2] ?? match[3];
+  if (!/^["'`]/.test(text)) return null;
+
+  // Escapes and `$` are rare: let the parser cook just this literal.
+  const result = parseSync(PARSE_FILENAME, `(${text})`, PROGRAM_PARSER_DEFAULTS);
+  const statement = result.errors.length > 0 ? undefined : result.program.body[0];
+  return statement?.type === "ExpressionStatement" ? staticStringValue(statement.expression) : null;
 }
 
 const SKIP_CHILD_KEYS = new Set(["type", "parent", "loc", "start", "end"]);

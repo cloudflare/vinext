@@ -14,13 +14,19 @@ declare module "virtual:vinext-rsc-entry" {
   export const __assetPrefix: string;
   export const __basePath: string;
   export const __cacheabilityManifest: string | null;
+  export const __clientBuildFiles: string[];
   export const __hasPagesDir: boolean;
   export const __imageAllowedWidths: number[];
   export const __prerenderSecret: string;
-  export function __ensureHybridPagesApplication(): void | Promise<unknown>;
-  export function __ensureInstrumentation(): void | Promise<void>;
+  export function __ensureHybridPagesApplication(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<unknown>;
+  export function __ensureInstrumentation(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
@@ -44,12 +50,18 @@ declare module "virtual:vinext-app-request-entry" {
   export default requestHandler;
   export const __assetPrefix: string;
   export const __basePath: string;
+  export const __clientBuildFiles: string[];
   export const __imageAllowedWidths: number[];
   export const __prerenderSecret: string;
-  export function __ensureHybridPagesApplication(): void | Promise<unknown>;
-  export function __ensureInstrumentation(): void | Promise<void>;
+  export function __ensureHybridPagesApplication(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<unknown>;
+  export function __ensureInstrumentation(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<void>;
   export const __imageConfig: {
     qualities?: number[];
+    localPatterns?: Array<{ pathname?: string; search?: string }>;
     dangerouslyAllowSVG?: boolean;
     dangerouslyAllowLocalIP?: boolean;
     contentDispositionType?: "inline" | "attachment";
@@ -70,7 +82,11 @@ declare module "virtual:vinext-app-response-entry" {
     ): Promise<Response>;
   };
   export const __cacheabilityManifest: string | null;
-  export function __ensureHybridPagesApplication(): void | Promise<unknown>;
-  export function __ensureInstrumentation(): void | Promise<void>;
+  export function __ensureHybridPagesApplication(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<unknown>;
+  export function __ensureInstrumentation(
+    ctx?: import("vinext/shims/request-context").ExecutionContextLike | null,
+  ): void | Promise<void>;
   export default handler;
 }

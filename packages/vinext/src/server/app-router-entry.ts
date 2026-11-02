@@ -27,6 +27,7 @@ import rscHandler, {
   __assetPrefix as __rscAssetPrefix,
   __basePath as __rscBasePath,
   __cacheabilityManifest as __rscCacheabilityManifest,
+  __clientBuildFiles as __rscClientBuildFiles,
   __ensureInstrumentation,
   __ensureHybridPagesApplication,
   __imageAllowedWidths as __rscImageAllowedWidths,
@@ -40,14 +41,12 @@ import { registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import { applyCdnResponseIdentityHeaders, validateCdnRequest } from "./cache-control.js";
 // @ts-expect-error -- virtual module resolved by vinext at build time
 import { registerConfiguredImageOptimizer } from "virtual:vinext-image-adapters";
-import {
-  getImageOptimizer,
-  handleConfiguredImageOptimization,
-  isImageOptimizationPath,
-} from "./image-optimization.js";
+import { getImageOptimizer, readImageOptimizationSignal } from "./image-optimization.js";
 import { createStaticAssetRequest, resolveStaticAssetSignal } from "./worker-utils.js";
+import { resolveClientBuildFile } from "./client-build-files.js";
 import {
   cloneRequestWithHeaders,
+  cloneRequestWithUrl,
   filterInternalHeaders,
   guardProtocolRelativeUrl,
 } from "./request-pipeline.js";
@@ -83,6 +82,9 @@ import type { VinextRequestStageContext } from "./multi-stage.js";
 // detection. Both `__basePath` and `__assetPrefix` are inlined as
 // compile-time constants in the generated RSC entry — see entries/app-rsc-entry.ts.
 const __workerBasePath: string = typeof __rscBasePath === "string" ? __rscBasePath : "";
+const __workerClientBuildFiles: ReadonlySet<string> = new Set(
+  Array.isArray(__rscClientBuildFiles) ? __rscClientBuildFiles : [],
+);
 const __workerAssetPathPrefix: string = assetPrefixPathname(
   typeof __rscAssetPrefix === "string" ? __rscAssetPrefix : "",
 );
@@ -108,14 +110,14 @@ export default {
     ctx?: ExecutionContextLike & VinextRequestStageContext,
   ): Promise<Response> {
     const handleFetch = async () => {
-      await __ensureInstrumentation();
+      await __ensureInstrumentation(ctx);
       const url = new URL(request.url);
       return traceFrameworkRequest({
         callback: async () =>
           applyCdnResponseIdentityHeaders(await handleRequest(request, env, ctx), request),
         getStatus: (response) => response?.status,
         headers: request.headers,
-        isRsc: url.pathname.endsWith(".rsc") || request.headers.get(RSC_HEADER) === "1",
+        isRsc: request.headers.get(RSC_HEADER) === "1",
         method: request.method,
         target: url.pathname + url.search,
       });
@@ -146,7 +148,7 @@ async function handleRequest(
   let ctx = createWorkerPrerenderDiscoveryContext(requestCtx, request, __rscPrerenderSecret);
   const readinessResponse = createWorkerPrerenderReadinessResponse(ctx, request);
   if (readinessResponse) {
-    if (readinessResponse.status === 204) await __ensureHybridPagesApplication();
+    if (readinessResponse.status === 204) await __ensureHybridPagesApplication(ctx);
     return (await validateCdnRequest(request)) ?? readinessResponse;
   }
   let finalizeCacheabilityResponse:
@@ -172,7 +174,7 @@ async function handleRequest(
       const probeUrl = new URL(request.url);
       if (probeUrl.searchParams.has(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM)) {
         probeUrl.searchParams.delete(VINEXT_CACHEABILITY_PROBE_QUERY_PARAM);
-        request = new Request(probeUrl, request);
+        request = cloneRequestWithUrl(request, probeUrl.href);
       }
     }
   }
@@ -207,14 +209,9 @@ async function handleRequest(
 
   const url = new URL(request.url);
 
-  if (isImageOptimizationPath(url.pathname) && assets && getImageOptimizer()) {
-    return handleConfiguredImageOptimization(
-      request,
-      (assetPath) => Promise.resolve(assets.fetch(new Request(new URL(assetPath, request.url)))),
-      __rscImageAllowedWidths,
-      __rscImageConfig,
-    );
-  }
+  // The image endpoint runs through middleware and rewrites like any request;
+  // the handler then signals that the Worker may serve the image itself.
+  const servesImages = Boolean(assets) && getImageOptimizer() !== null;
 
   // Redirect repeated slashes / backslashes like Next.js (//evil.com/ →
   // /evil.com/) and block encoded protocol-relative shapes (/%5Cevil.com/,
@@ -232,6 +229,21 @@ async function handleRequest(
   } catch {
     // Malformed percent-encoding (e.g. /%E0%A4%A) — return 400 instead of throwing.
     return badRequestResponse();
+  }
+
+  // Client build files outside `_next/static` are build output like the
+  // hashed assets, so serve them before middleware when the Worker runs first.
+  // They resolve no application route, so they keep the ASSETS cache policy
+  // instead of passing through route cacheability admission.
+  if (assets && (request.method === "GET" || request.method === "HEAD")) {
+    const clientBuildFile = resolveClientBuildFile(
+      url.pathname,
+      __workerBasePath,
+      __workerClientBuildFiles,
+    );
+    if (clientBuildFile) {
+      return await assets.fetch(createStaticAssetRequest(clientBuildFile, request));
+    }
   }
 
   // Valid assets are served by Cloudflare's ASSETS binding before the worker
@@ -282,10 +294,35 @@ async function handleRequest(
 
   if (result instanceof Response) {
     let response = result;
-    if (assets) {
+    const imageSignal = servesImages ? readImageOptimizationSignal(response) : null;
+    if (imageSignal && assets) {
+      const { fetchSignalledPublicFile, serveWorkerImageOptimization } =
+        await import("./worker-image-optimization.js");
+      response = await serveWorkerImageOptimization(
+        request,
+        imageSignal,
+        __rscImageAllowedWidths,
+        __rscImageConfig,
+        {
+          assets,
+          basePath: __workerBasePath,
+          assetPathPrefix: __workerAssetPathPrefix,
+          clientBuildFiles: __workerClientBuildFiles,
+          // The source runs outside this request's cacheability context.
+          fetchPublicFile: async (sourceRequest) => {
+            const sourceResult = await runWithExecutionContext(requestCtx, () =>
+              rscHandler(sourceRequest, requestCtx),
+            );
+            return sourceResult instanceof Response
+              ? fetchSignalledPublicFile(sourceResult, sourceRequest, assets)
+              : null;
+          },
+        },
+      );
+    } else if (assets) {
       const assetResponse = await resolveStaticAssetSignal(response, {
-        fetchAsset: (path) =>
-          Promise.resolve(assets.fetch(createStaticAssetRequest(path, request))),
+        fetchAsset: (path, requestHeaders) =>
+          Promise.resolve(assets.fetch(createStaticAssetRequest(path, request, requestHeaders))),
       });
       if (assetResponse) response = assetResponse;
     }

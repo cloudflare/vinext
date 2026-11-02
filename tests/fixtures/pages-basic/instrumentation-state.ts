@@ -73,9 +73,12 @@ export function releaseRequestErrorReport(): void {
   (globalThis as any)[RELEASE_ERROR_REPORT_KEY]?.();
 }
 
-/** Reset all state (used between test runs). */
+/**
+ * Reset the per-request state between tests. register() runs once at server
+ * startup and never again, so its flag is kept: clearing it would fail a
+ * startup test running in another worker against the same server.
+ */
 export function resetInstrumentationState(): void {
-  (globalThis as any)[REGISTER_KEY] = false;
   (globalThis as any)[ERRORS_KEY] = [];
   (globalThis as any)[ERROR_REPORT_STARTED_KEY] = false;
   delete (globalThis as any)[RELEASE_ERROR_REPORT_KEY];

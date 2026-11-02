@@ -20,7 +20,11 @@ import {
   setCdnCacheAdapter,
   type CdnCacheAdapter,
 } from "../packages/vinext/src/shims/cdn-cache.js";
-import { VINEXT_SPECIAL_ERROR_STATUS_HEADER } from "../packages/vinext/src/server/headers.js";
+import {
+  NEXT_ROUTER_STALE_TIME_HEADER,
+  VINEXT_SPECIAL_ERROR_STATUS_HEADER,
+  VINEXT_STALE_TIME_PENDING_HEADER,
+} from "../packages/vinext/src/server/headers.js";
 import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import { finalizeAppPageCacheabilityEvaluationResponse } from "../packages/vinext/src/server/app-page-cache-finalizer.js";
 import type { AppPageRenderObservationState } from "../packages/vinext/src/server/app-page-render-observation.js";
@@ -614,6 +618,41 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe(`<head>${tracedHtml}</head><main>dynamic</main>`);
   });
 
+  it("never stores a cookie-reading App Page under a public config policy with Vary: Cookie", async () => {
+    // The request stage applies the config Vary above the response stage, so
+    // the shared entry has no cookie variance. Storing it would serve one
+    // session's page to every other session.
+    setCdnCacheAdapter(new CloudflareCdnCacheAdapter());
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      new Request("https://example.com/page", { headers: { cookie: "session=alice" } }),
+      null,
+      "build-a",
+      true,
+      undefined,
+      undefined,
+      undefined,
+      { applyCompletedResponsePolicy: true },
+    );
+    const state = cacheabilityState(context);
+    state.route = { kind: "app-page", pattern: "/page" };
+    state.frameworkResponseCachePolicy = new Headers({ "Cache-Control": "no-store" });
+    state.completion = Promise.resolve({ cacheable: false, dynamicUsage: true });
+
+    const response = await finalizeWorkerCacheabilityResponse(
+      applyResponseStageCachePolicy(
+        new Response("<main>session=alice</main>", { headers: { "Cache-Control": "no-store" } }),
+        context,
+        [["Cache-Control", "public, s-maxage=300"]],
+      ),
+      context,
+    );
+
+    expect(response.headers.get("Cloudflare-CDN-Cache-Control")).toBe("no-store");
+    expect(response.headers.get("Cache-Control")).toBe("public, s-maxage=300");
+    await expect(response.text()).resolves.toBe("<main>session=alice</main>");
+  });
+
   it("probes a dynamic App Page with a final public config policy as dynamic", async () => {
     const context = createWorkerCacheabilityContext(
       { waitUntil() {} },
@@ -776,6 +815,49 @@ describe("single-request cacheability admission", () => {
     expect(response.headers.get("Cache-Control")).toContain("no-store");
     await expect(response.text()).resolves.toBe("private");
   });
+
+  it.each(
+    (["app-route", "pages-api"] as const).flatMap((kind) =>
+      ["none", "authorization", "cookie", "proxy-authorization", "x-api-key"].map((credential) => ({
+        kind,
+        credential,
+      })),
+    ),
+  )(
+    "admits an explicit $kind provider policy only without credentials ($credential)",
+    async ({ kind, credential }) => {
+      const adapter = new CloudflareCdnCacheAdapter();
+      setCdnCacheAdapter(adapter);
+      const headers = new Headers({ Accept: "*/*" });
+      if (credential !== "none") headers.set(credential, "secret");
+      const context = createWorkerCacheabilityAdmissionContext(
+        { waitUntil() {} },
+        new Request("https://example.com/api/data", { headers }),
+        null,
+        "build-a",
+        true,
+      );
+      const state = cacheabilityState(context);
+      state.route = { kind, pattern: "/api/data" };
+      state.explicitResponseCachePolicy = true;
+
+      const response = await finalizeWorkerCacheabilityResponse(
+        new Response("public", {
+          headers: {
+            "Cache-Control": "public, max-age=10",
+            "Cloudflare-CDN-Cache-Control": "max-age=3600",
+          },
+        }),
+        context,
+      );
+
+      expect(response.headers.get("Cache-Control")).toBe("public, max-age=10");
+      expect(adapter.responsePolicy.readCacheControl(response.headers)).toBe(
+        credential === "none" ? "public, max-age=3600" : "no-store",
+      );
+      await expect(response.text()).resolves.toBe("public");
+    },
+  );
 
   it("preserves a safely completed Route Handler public policy", async () => {
     const context = createWorkerCacheabilityAdmissionContext(
@@ -1311,6 +1393,109 @@ describe("single-request cacheability admission", () => {
     await expect(response.text()).resolves.toBe("static");
   });
 
+  // An ISR replay carries the stored render's stale time, never the pending
+  // marker its live stream committed before cacheLife settled.
+  it.each([
+    { name: "with a cacheLife stale time", cacheLife: { stale: 120 }, staleTime: "120" },
+    { name: "without a cacheLife stale time", cacheLife: undefined, staleTime: null },
+  ])("admits a rendered App page $name", async ({ cacheLife, staleTime }) => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-page", pattern: "/page" };
+    const rendered = runWithExecutionContext(context, () =>
+      finalizeAppPageCacheabilityEvaluationResponse(
+        new Response("flight", { headers: { [VINEXT_STALE_TIME_PENDING_HEADER]: "1" } }),
+        {
+          consumeDynamicUsage: () => false,
+          consumeRenderObservationState: () => ({ dynamicFetches: [], requestApis: [] }),
+          getPageTags: () => ["/page"],
+          getRequestCacheLife: () => cacheLife ?? null,
+          isStaticEligible: true,
+          revalidateSeconds: 60,
+        },
+      ),
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(response.headers.has(VINEXT_STALE_TIME_PENDING_HEADER)).toBe(false);
+    expect(response.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe(staleTime);
+  });
+
+  it("keeps middleware's stale time on an admitted App page, as an ISR replay does", async () => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-page", pattern: "/page" };
+    const rendered = runWithExecutionContext(context, () =>
+      finalizeAppPageCacheabilityEvaluationResponse(
+        new Response("flight", {
+          headers: {
+            [NEXT_ROUTER_STALE_TIME_HEADER]: "45",
+            [VINEXT_STALE_TIME_PENDING_HEADER]: "1",
+          },
+        }),
+        {
+          consumeDynamicUsage: () => false,
+          consumeRenderObservationState: () => ({ dynamicFetches: [], requestApis: [] }),
+          getPageTags: () => ["/page"],
+          getRequestCacheLife: () => ({ stale: 120 }),
+          isStaticEligible: true,
+          revalidateSeconds: 60,
+        },
+      ),
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+    expect(response.headers.get("Cache-Control")).toContain("s-maxage=60");
+    expect(response.headers.has(VINEXT_STALE_TIME_PENDING_HEADER)).toBe(false);
+    expect(response.headers.get(NEXT_ROUTER_STALE_TIME_HEADER)).toBe("45");
+  });
+
+  it("keeps the pending stale time on a rendered App page it doesn't admit", async () => {
+    const { raw } = staticManifestRoute();
+    const context = createWorkerCacheabilityAdmissionContext(
+      { waitUntil() {} },
+      request,
+      raw,
+      "build-a",
+    );
+    cacheabilityState(context).route = { kind: "app-page", pattern: "/page" };
+    const rendered = runWithExecutionContext(context, () =>
+      finalizeAppPageCacheabilityEvaluationResponse(
+        new Response("flight", { headers: { [VINEXT_STALE_TIME_PENDING_HEADER]: "1" } }),
+        {
+          consumeDynamicUsage: () => false,
+          consumeRenderObservationState: () => ({
+            dynamicFetches: [],
+            requestApis: ["searchParams"],
+          }),
+          getPageTags: () => ["/page"],
+          getRequestCacheLife: () => ({ stale: 120 }),
+          isStaticEligible: true,
+          revalidateSeconds: 60,
+        },
+      ),
+    );
+
+    const response = await finalizeWorkerCacheabilityResponse(await rendered, context);
+
+    expect(response.headers.get("Cache-Control")).toContain("no-store");
+    expect(response.headers.get(VINEXT_STALE_TIME_PENDING_HEADER)).toBe("1");
+    expect(response.headers.has(NEXT_ROUTER_STALE_TIME_HEADER)).toBe(false);
+  });
+
   it.each([true, false])(
     "requires a searchParams proof when config adds only Vary (proof: %s)",
     async (searchParamsUnread) => {
@@ -1689,7 +1874,7 @@ describe("single-request cacheability admission", () => {
 
     const rscContext = createWorkerCacheabilityAdmissionContext(
       { waitUntil() {} },
-      new Request("https://example.com/posts/static.rsc", {
+      new Request("https://example.com/posts/static?_rsc", {
         headers: { Accept: "text/x-component", RSC: "1" },
       }),
       raw,

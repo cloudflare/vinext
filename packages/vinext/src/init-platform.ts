@@ -20,7 +20,11 @@ export type CloudflareInitOptions = {
   responseStoreMode?: InitResponseStoreMode;
   warmCdnCache?: boolean;
   legacyWrangler?: boolean;
+  /** Proceed even though the root Wrangler config belongs to another Worker. */
+  ignoreWranglerConfig?: boolean;
   prerender?: boolean;
+  /** Worker name for generated config, instead of one derived from package.json. */
+  name?: string;
 };
 
 export const INIT_PLATFORMS = {
@@ -85,6 +89,38 @@ export function parsePlatformArg(args: string[]): InitPlatform | undefined {
   }
 
   return undefined;
+}
+
+const WORKER_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+const WORKER_NAME_MAX_LENGTH = 63;
+
+export function parseNameArg(args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    let value: string | undefined;
+    if (arg === "--name") {
+      value = args[index + 1];
+      if (!value || value.startsWith("-")) {
+        throw new Error("--name requires a Worker name.");
+      }
+    } else if (arg.startsWith("--name=")) {
+      value = arg.slice("--name=".length);
+      if (!value) throw new Error("--name requires a Worker name.");
+    }
+    if (value) {
+      validateWorkerName(value);
+      return value;
+    }
+  }
+  return undefined;
+}
+
+export function validateWorkerName(value: string): void {
+  if (value.length > WORKER_NAME_MAX_LENGTH || !WORKER_NAME_PATTERN.test(value)) {
+    throw new Error(
+      `Invalid --name value "${value}". Worker names must be at most ${WORKER_NAME_MAX_LENGTH} characters of lowercase letters, numbers, and dashes, and cannot start or end with a dash.`,
+    );
+  }
 }
 
 function parseChoiceArg<T extends string>(
@@ -244,6 +280,13 @@ export async function resolveInitOptions(
     undefined,
     '--legacy-wrangler-cloudflare-init expects true or false when using the "--legacy-wrangler-cloudflare-init=value" form.',
   );
+  const ignoreWranglerConfig = parseBooleanArg(
+    args,
+    "--ignore-wrangler-config",
+    undefined,
+    '--ignore-wrangler-config expects true or false when using the "--ignore-wrangler-config=value" form.',
+  );
+  const name = parseNameArg(args);
   const platform =
     legacyWrangler && !parsePlatformArg(args)
       ? "cloudflare"
@@ -252,6 +295,17 @@ export async function resolveInitOptions(
   const explicitWarmCdnCache = parseWarmCdnCacheArg(args);
   if (legacyWrangler && platform !== "cloudflare") {
     throw new Error("--legacy-wrangler-cloudflare-init requires --platform=cloudflare.");
+  }
+  if (ignoreWranglerConfig && platform !== "cloudflare") {
+    throw new Error("--ignore-wrangler-config requires --platform=cloudflare.");
+  }
+  if (ignoreWranglerConfig && legacyWrangler) {
+    throw new Error(
+      "--ignore-wrangler-config cannot be combined with --legacy-wrangler-cloudflare-init.",
+    );
+  }
+  if (name && platform !== "cloudflare") {
+    throw new Error("--name requires --platform=cloudflare.");
   }
   const explicitPrerender = parsePrerenderArg(args);
   if (
@@ -289,7 +343,9 @@ export async function resolveInitOptions(
             ...platformOptions,
             warmCdnCache,
             ...(legacyWrangler ? { legacyWrangler } : {}),
+            ...(ignoreWranglerConfig ? { ignoreWranglerConfig } : {}),
             ...(prerender ? { prerender: true } : {}),
+            ...(name ? { name } : {}),
           }
         : undefined,
   };

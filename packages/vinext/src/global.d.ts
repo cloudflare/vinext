@@ -20,7 +20,7 @@ import type { Root } from "react-dom/client";
 import type { OnRequestErrorHandler } from "./server/instrumentation";
 import type { InitialDevServerErrorPayload } from "./server/dev-initial-server-error";
 import type { CachedRscResponse, PrefetchCacheEntry } from "vinext/shims/navigation";
-import type { NextRedirect } from "./config/next-config";
+import type { ClientRedirect } from "./client/client-redirects";
 import type { ClientRewrites } from "./client/client-rewrites";
 
 // `window.next` is declared inline in `./client/window-next.ts` (mirroring
@@ -116,7 +116,7 @@ declare global {
     __VINEXT_PAGES_SSP_PATTERNS__: string[] | undefined;
 
     /** Resolved client-safe Pages Router redirects from next.config.js. */
-    __VINEXT_CLIENT_REDIRECTS__: NextRedirect[] | undefined;
+    __VINEXT_CLIENT_REDIRECTS__: ClientRedirect[] | undefined;
 
     /** Resolved client-safe rewrites from next.config.js. */
     __VINEXT_CLIENT_REWRITES__: ClientRewrites | undefined;
@@ -187,7 +187,7 @@ declare global {
     __VINEXT_RSC_PENDING__: Promise<void> | null | undefined;
 
     /**
-     * In-memory cache of prefetched RSC responses, keyed by `.rsc` URL.
+     * In-memory cache of prefetched RSC responses, keyed by RSC request URL.
      * Lazily initialised on `window` by `shims/navigation.ts` so the same Map
      * instance is shared between the navigation shim and the Link component.
      */
@@ -313,6 +313,14 @@ declare global {
    */
   // oxlint-disable-next-line no-var
   var __vite_rsc_client_require__: ((id: string) => Promise<unknown>) | undefined;
+
+  /**
+   * Vite RSC's RSC-side server-reference module loader. Set by
+   * `@vitejs/plugin-rsc`; vinext wraps it so server-reference modules are
+   * evaluated outside the request that first names them.
+   */
+  // oxlint-disable-next-line no-var
+  var __vite_rsc_server_require__: ((id: string) => unknown) | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -360,9 +368,10 @@ declare global {
       __VINEXT_SHARED_BUILD_ID?: string;
 
       /**
-       * Public App Router RSC compatibility identity injected via Vite
-       * `define`. Used by browser navigation code to reject RSC payloads from
-       * a different Vite build without exposing the raw build ID header.
+       * Public App Router RSC compatibility identity, a server-only Vite
+       * `define` (the browser bundle gets ""). The server sends it with each
+       * page and RSC response so browser navigation can reject RSC payloads
+       * from a different build without exposing the raw build ID.
        */
       __VINEXT_RSC_COMPATIBILITY_ID?: string;
 
@@ -429,6 +438,12 @@ declare global {
       __VINEXT_PREFETCH_INLINING?: string;
 
       /**
+       * JSON-encoded `cacheLife` profiles: the built-ins merged with
+       * `next.config.js` → `cacheLife` (or legacy `experimental.cacheLife`).
+       */
+      __VINEXT_CACHE_LIFE_PROFILES?: string;
+
+      /**
        * JSON-encoded array of `RemotePattern` objects from
        * `next.config.js` → `images.remotePatterns`.
        */
@@ -451,6 +466,13 @@ declare global {
        * `next.config.js` → `images.sizes`.
        */
       __VINEXT_IMAGE_SIZES?: string;
+
+      /**
+       * JSON-encoded array of allowed image qualities from
+       * `next.config.js` → `images.qualities`, or `null` when unset (any
+       * quality allowed; see ImageConfig.qualities).
+       */
+      __VINEXT_IMAGE_QUALITIES?: string;
 
       /**
        * `"true"` or `"false"` — whether SVG sources are allowed through the

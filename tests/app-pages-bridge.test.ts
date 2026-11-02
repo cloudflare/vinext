@@ -25,7 +25,6 @@ describe("renderPagesFallback", () => {
       }
       return merged;
     },
-    decodePathParams: (pathname: string) => decodeURIComponent(pathname),
     applyRouteHandlerMiddlewareContext: (res: Response, mwCtx: AppMiddlewareContext) => {
       const mergedHeaders = new Headers(res.headers);
       if (mwCtx.headers) {
@@ -133,6 +132,45 @@ describe("renderPagesFallback", () => {
     await expect(response?.text()).resolves.toBe("page");
   });
 
+  // A page the build found static can still run a getInitialProps that reads
+  // the request, so an entry every host shares cannot store its render.
+  // A Workers Cache probe classifies the same render, so it sees it as dynamic.
+  it.each([
+    ["admit", true, "initial", "getInitialProps render shares a cache entry across hosts"],
+    ["probe", true, "initial", "getInitialProps render shares a cache entry across hosts"],
+    ["admit", true, "static", undefined],
+    ["admit", false, "initial", undefined],
+  ] as const)(
+    "marks the render dynamic in %s mode when shared across hosts is %s and the page is %s",
+    async (mode, sharedAcrossHosts, runtimeDataKind, reason) => {
+      const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode } };
+      const request = new Request("https://example.com/page");
+      const getRuntimePageDataKind = vi.fn(() => runtimeDataKind);
+      await runWithExecutionContext(context, () =>
+        renderPagesFallback(
+          {
+            isRscRequest: false,
+            request,
+            sharedAcrossHosts,
+            url: new URL(request.url),
+            middlewareContext: { headers: null, requestHeaders: null, status: null },
+          },
+          {
+            ...defaultDeps,
+            loadPagesEntry: () => ({
+              getRuntimePageDataKind,
+              matchPageRoute: () => ({ route: { isDynamic: false, pattern: "/page" } }),
+              renderPage: async () => new Response("page"),
+            }),
+          },
+        ),
+      );
+      const state = context[CACHEABILITY_REQUEST_STATE] as { forcedDynamicReason?: string };
+      expect(state.forcedDynamicReason).toBe(reason);
+      expect(getRuntimePageDataKind).toHaveBeenCalledTimes(sharedAcrossHosts ? 1 : 0);
+    },
+  );
+
   it("passes cacheability context and ownership into the separate Pages API renderer", async () => {
     const context = { waitUntil() {}, [CACHEABILITY_REQUEST_STATE]: { mode: "admit" as const } };
     const request = new Request("https://example.com/api/page");
@@ -210,6 +248,65 @@ describe("renderPagesFallback", () => {
     );
 
     expect(handleApiRoute).toHaveBeenCalledOnce();
+    expect(renderPage).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the request body for the App Router when no Pages route matches", async () => {
+    const body = new FormData();
+    body.set("message", "hello");
+    const request = new Request("http://localhost/contact", { method: "POST", body });
+    const matchPageRoute = vi.fn<NonNullable<PagesEntry["matchPageRoute"]>>(() => null);
+    const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(() => new Response("page"));
+
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: {
+          headers: null,
+          requestHeaders: new Headers({ "x-from-middleware": "1" }),
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      { ...defaultDeps, loadPagesEntry: () => ({ matchPageRoute, renderPage }) },
+    );
+
+    expect(response).toBeNull();
+    expect(matchPageRoute.mock.calls[0]?.[1].headers.get("x-from-middleware")).toBe("1");
+    expect(renderPage).not.toHaveBeenCalled();
+    expect(request.bodyUsed).toBe(false);
+    expect((await request.formData()).get("message")).toBe("hello");
+  });
+
+  it("passes the request body and middleware headers to a matched Pages route", async () => {
+    const request = new Request("http://localhost/contact", { method: "POST", body: "hello" });
+    const renderPage = vi.fn<NonNullable<PagesEntry["renderPage"]>>(async (pagesRequest) => {
+      expect(pagesRequest.headers.get("x-from-middleware")).toBe("1");
+      return new Response(await pagesRequest.text());
+    });
+
+    const response = await renderPagesFallback(
+      {
+        isRscRequest: false,
+        middlewareContext: {
+          headers: null,
+          requestHeaders: new Headers({ "x-from-middleware": "1" }),
+          status: null,
+        },
+        request,
+        url: new URL(request.url),
+      },
+      {
+        ...defaultDeps,
+        loadPagesEntry: () => ({
+          matchPageRoute: () => ({ params: {}, route: { isDynamic: false, pattern: "/contact" } }),
+          renderPage,
+        }),
+      },
+    );
+
+    expect(await response?.text()).toBe("hello");
     expect(renderPage).toHaveBeenCalledOnce();
   });
 
@@ -667,7 +764,7 @@ describe("renderPagesFallback", () => {
     expect(Buffer.from(await response!.arrayBuffer())).toEqual(encodedBody);
   });
 
-  it("routes normal paths through renderPage and passes decoded pathname + search", async () => {
+  it("routes normal paths through renderPage and passes the raw pathname + search", async () => {
     const renderPage = vi.fn((_req: Request, _url: string) => new Response("page-response"));
     const deps = {
       ...defaultDeps,
@@ -688,7 +785,7 @@ describe("renderPagesFallback", () => {
     );
 
     expect(renderPage).toHaveBeenCalledTimes(1);
-    expect(renderPage.mock.calls[0][1]).toBe("/about us?foo=bar");
+    expect(renderPage.mock.calls[0][1]).toBe("/about%20us?foo=bar");
     expect(res).not.toBeNull();
     expect(await res!.text()).toBe("page-response");
   });
@@ -772,7 +869,7 @@ describe("renderPagesFallback", () => {
     expect(handleApiRoute).toHaveBeenCalledTimes(1);
   });
 
-  it("decodes rewritten page paths without decoding their query", async () => {
+  it("keeps rewritten page paths raw for Pages matching", async () => {
     const matchPageRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/café" },
     }));
@@ -794,17 +891,17 @@ describe("renderPagesFallback", () => {
       },
     );
 
-    expect(matchPageRoute).toHaveBeenCalledWith("/café?value=hello%20world", request);
+    expect(matchPageRoute).toHaveBeenCalledWith("/caf%C3%A9?value=hello%20world", request);
     expect(renderPage).toHaveBeenCalledWith(
       request,
-      "/café?value=hello%20world",
+      "/caf%C3%A9?value=hello%20world",
       {},
       undefined,
       null,
     );
   });
 
-  it("decodes rewritten API paths without decoding their query", async () => {
+  it("keeps rewritten API paths raw for Pages matching", async () => {
     const matchApiRoute = vi.fn(() => ({
       route: { isDynamic: false, pattern: "/api/café" },
     }));
@@ -826,12 +923,12 @@ describe("renderPagesFallback", () => {
       },
     );
 
-    expect(matchApiRoute).toHaveBeenCalledWith("/api/café?value=hello%20world", request);
+    expect(matchApiRoute).toHaveBeenCalledWith("/api/caf%C3%A9?value=hello%20world", request);
     expect(handleApiRoute).toHaveBeenCalledWith(
       request,
-      "/api/café?value=hello%20world",
+      "/api/caf%C3%A9?value=hello%20world",
       undefined,
-      "http://localhost",
+      undefined,
       "node",
     );
   });

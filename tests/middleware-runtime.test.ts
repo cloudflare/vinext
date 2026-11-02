@@ -3,6 +3,7 @@ import {
   executeMiddleware,
   runGeneratedMiddleware,
 } from "../packages/vinext/src/server/middleware-runtime.js";
+import { runWithExecutionContext } from "../packages/vinext/src/shims/request-context.js";
 import type { NextRequest } from "../packages/vinext/src/shims/server.js";
 
 describe("middleware pathname matching", () => {
@@ -112,21 +113,31 @@ describe("middleware pathname matching", () => {
     expect(invoked).toBe(true);
   });
 
-  it.each(["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"])(
-    "matches the encoded request pathname before the decoded %s form",
-    async (encoded) => {
+  // `.` cannot match a decoded line terminator, so every matcher whose token
+  // relies on `.*` must keep the request in scope through its encoded form.
+  it.each(
+    [
+      ["/((?!api|_next/static|_next/image|favicon.ico).*)", "/xx{}/admin/dashboard"],
+      ["/(.*)", "/xx{}/admin/dashboard"],
+      ["/orders/:id(.*)", "/orders/42{}"],
+    ].flatMap(([matcher, template]) =>
+      ["%0A", "%0D", "%E2%80%A8", "%E2%80%A9"].map((encoded) => [matcher, template, encoded]),
+    ),
+  )(
+    "keeps %s in scope for %s with an encoded %s line terminator",
+    async (matcher, template, encoded) => {
       let observedPathname: string | undefined;
-      const requestPathname = `/xx${encoded}/admin/dashboard`;
+      const requestPathname = template.replace("{}", encoded);
       const result = await executeMiddleware({
         isProxy: false,
         module: {
-          config: { matcher: "/((?!api|_next/static|_next/image|favicon.ico).*)" },
+          config: { matcher },
           default(request: NextRequest) {
             observedPathname = request.nextUrl.pathname;
             return new Response("blocked", { status: 403 });
           },
         },
-        normalizedPathname: `/xx${decodeURIComponent(encoded)}/admin/dashboard`,
+        normalizedPathname: template.replace("{}", decodeURIComponent(encoded)),
         request: new Request(`http://localhost:3000${requestPathname}`),
       });
 
@@ -1103,5 +1114,223 @@ describe("middleware nextUrl basePath", () => {
 
     expect(result.continue).toBe(true);
     expect(captured.request?.nextUrl.pathname).toBe("/%61bout");
+  });
+});
+
+// With `skipProxyUrlNormalize`, Pages adapters hand middleware the raw
+// `/_next/data/<buildId>/<page>.json` URL. Next.js compiles every matcher with
+// an optional `_next/data/<buildId>` prefix and `.json` suffix, so a matcher
+// guarding a page also guards its data URL, including one with a stale buildId.
+// https://github.com/vercel/next.js/blob/v16.2.7/packages/next/src/build/analysis/get-page-static-info.ts
+describe("middleware matching for raw data requests", () => {
+  async function observedPathname(
+    pathname: string,
+    matcher: string,
+    options: {
+      basePath?: string;
+      i18nConfig?: { defaultLocale: string; locales: string[] };
+      isDataRequest?: boolean;
+      isStaleDataRequest?: boolean;
+      matcherConfig?: unknown;
+      headers?: HeadersInit;
+    } = {},
+  ): Promise<string | undefined> {
+    let observed: string | undefined;
+    await executeMiddleware({
+      basePath: options.basePath,
+      i18nConfig: options.i18nConfig,
+      isDataRequest: options.isDataRequest ?? true,
+      isStaleDataRequest: options.isStaleDataRequest,
+      isProxy: false,
+      module: {
+        config: { matcher: options.matcherConfig ?? matcher },
+        default(request: NextRequest) {
+          observed = request.nextUrl.pathname;
+          return new Response("forbidden", { status: 403 });
+        },
+      },
+      request: new Request(`http://localhost:3000${pathname}`, { headers: options.headers }),
+    });
+    return observed;
+  }
+
+  it.each([
+    ["the current build", "/_next/data/build-id/admin.json", "/admin"],
+    ["a stale build", "/_next/data/stale-build/admin.json", "/admin"],
+    ["the index page", "/_next/data/build-id/index.json", "/"],
+    // vinext routes this URL to the `/admin` page, so its guard must apply.
+    ["a nested index page", "/_next/data/build-id/admin/index.json", "/admin"],
+    ["an encoded page path", "/_next/data/build-id/adm%69n.json", "/admin"],
+  ])("applies a page matcher to the data URL of %s", async (_label, pathname, matcher) => {
+    // Middleware still observes the raw URL it was given.
+    await expect(observedPathname(pathname, matcher)).resolves.toBe(pathname);
+  });
+
+  it("applies a page matcher to a data URL inside basePath", async () => {
+    await expect(
+      observedPathname("/docs/_next/data/build-id/admin.json", "/admin", { basePath: "/docs" }),
+    ).resolves.toBe("/_next/data/build-id/admin.json");
+  });
+
+  it.each(["/_next/data/build-id/fr/admin.json", "/_next/data/build-id/admin.json"])(
+    "applies a page matcher to the locale data URL %s",
+    async (pathname) => {
+      const i18nConfig = { defaultLocale: "en", locales: ["en", "fr"] };
+      await expect(observedPathname(pathname, "/admin", { i18nConfig })).resolves.toBe(pathname);
+    },
+  );
+
+  it.each([
+    ["a different page", "/_next/data/build-id/admin/settings.json"],
+    ["a sibling page", "/_next/data/build-id/administrator.json"],
+  ])("does not widen an exact matcher to %s", async (_label, pathname) => {
+    await expect(observedPathname(pathname, "/admin")).resolves.toBeUndefined();
+  });
+
+  it("applies has conditions to a page matcher on its data URL", async () => {
+    const matcherConfig = [{ source: "/admin", missing: [{ type: "cookie", key: "session" }] }];
+    const pathname = "/_next/data/build-id/admin.json";
+    await expect(observedPathname(pathname, "/admin", { matcherConfig })).resolves.toBe(pathname);
+    await expect(
+      observedPathname(pathname, "/admin", { matcherConfig, headers: { cookie: "session=1" } }),
+    ).resolves.toBeUndefined();
+  });
+
+  // Next.js normalizes only a current-build data URL. A stale one is matched
+  // raw against the compiled matcher: optional `_next/data/<buildId>` prefix,
+  // internal locale segment under i18n, optional `.json` suffix. Every row was
+  // observed on Next.js 16.2.7 with `skipProxyUrlNormalize`.
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, true],
+    ["/admin", "/_next/data/stale/other.json", true, false],
+    ["/admin", "/_next/data/stale/admin/index.json", true, false],
+    ["/", "/_next/data/stale/index.json", true, true],
+    ["/_next/data/:path*", "/_next/data/stale/admin.json", true, true],
+    ["/_next/data/:path*", "/_next/data/build-id/admin.json", false, false],
+    ["/report.json", "/_next/data/stale/report.json", true, true],
+    ["/report.json", "/_next/data/stale/report.json.json", true, true],
+    ["/report.json", "/_next/data/build-id/report.json", false, false],
+  ])("matches %s against %s like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, matcher, { isStaleDataRequest: stale });
+    expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  it.each([
+    ["/admin", "/_next/data/stale/admin.json", true, false],
+    ["/admin", "/_next/data/stale/fr/admin.json", true, true],
+    ["/admin", "/_next/data/stale/zz/admin.json", true, true],
+    ["/admin", "/_next/data/build-id/admin.json", false, true],
+    ["/admin", "/_next/data/build-id/fr/admin.json", false, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/admin.json", true, true],
+    [{ source: "/admin", locale: false }, "/_next/data/stale/fr/admin.json", true, false],
+    [{ source: "/admin", locale: false }, "/_next/data/build-id/en/admin.json", false, false],
+  ])("matches %j against %s with i18n like Next.js", async (matcher, pathname, stale, invoked) => {
+    const observed = await observedPathname(pathname, "", {
+      i18nConfig: { defaultLocale: "en", locales: ["en", "fr"] },
+      isStaleDataRequest: stale,
+      matcherConfig: [matcher],
+    });
+    expect(observed).toBe(invoked ? pathname : undefined);
+  });
+
+  it("leaves ordinary requests matched against their own pathname", async () => {
+    await expect(
+      observedPathname("/_next/data/build-id/admin.json", "/admin", { isDataRequest: false }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("middleware rewrite carrying x-middleware-next", () => {
+  // next-intl's App Router playground proxy builds a rewrite from the headers
+  // of the `NextResponse.next()` its i18n middleware returned, so the response
+  // carries both `x-middleware-next` and `x-middleware-rewrite`. Next.js drops
+  // `x-middleware-next` and applies the rewrite:
+  // https://github.com/vercel/next.js/blob/canary/packages/next/src/server/lib/router-utils/resolve-routes.ts
+  // https://github.com/amannn/next-intl/blob/main/examples/example-app-router-playground/src/proxy.ts
+  it("applies the rewrite instead of continuing to the original path", async () => {
+    const { NextResponse } = await import("../packages/vinext/src/shims/server.js");
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default(request: Request) {
+          const next = NextResponse.next({ headers: { "x-from-next": "1" } });
+          return NextResponse.rewrite(new URL("/de/about/v2", request.url), {
+            headers: next.headers,
+          });
+        },
+      },
+      request: new Request("http://localhost:3000/de/about"),
+    });
+
+    expect(result.continue).toBe(true);
+    expect(result.rewriteUrl).toBe("/de/about/v2");
+    expect(result.responseHeaders?.get("x-from-next")).toBe("1");
+    expect(result.responseHeaders?.has("x-middleware-next")).toBe(false);
+  });
+
+  it("still lets a redirect win over x-middleware-next", async () => {
+    const result = await executeMiddleware({
+      isProxy: false,
+      module: {
+        default: () =>
+          new Response(null, {
+            status: 307,
+            headers: { Location: "/elsewhere", "x-middleware-next": "1" },
+          }),
+      },
+      request: new Request("http://localhost:3000/start"),
+    });
+
+    expect(result.continue).toBe(false);
+    expect(result.redirectUrl).toBe("/elsewhere");
+  });
+});
+
+describe("middleware origin", () => {
+  const i18nConfig = {
+    defaultLocale: "en",
+    domains: [{ defaultLocale: "fr", domain: "example.fr" }],
+    locales: ["en", "fr"],
+  };
+
+  async function observe(request: Request, middlewareOrigin?: string) {
+    let seen: { domain?: string; url: string } | undefined;
+    const run = () =>
+      executeMiddleware({
+        i18nConfig,
+        isProxy: false,
+        module: {
+          default(req: NextRequest) {
+            seen = { domain: req.nextUrl.domainLocale?.domain, url: req.url };
+          },
+        },
+        request,
+      });
+    if (middlewareOrigin) {
+      await runWithExecutionContext({ middlewareOrigin, waitUntil() {} }, run);
+    } else {
+      await run();
+    }
+    return seen;
+  }
+
+  it("runs on a server-owned origin with the requested host's domain locale", async () => {
+    const request = new Request("http://example.fr/about", { headers: { host: "example.fr" } });
+    expect(await observe(request, "http://localhost:3000")).toEqual({
+      domain: "example.fr",
+      url: "http://localhost:3000/about",
+    });
+  });
+
+  it("keeps the request URL's host for the domain locale without a server origin", async () => {
+    // A trusted X-Forwarded-Host keeps the request origin, while Host can
+    // still name the upstream.
+    const request = new Request("http://example.fr/about", {
+      headers: { host: "origin.internal" },
+    });
+    expect(await observe(request)).toEqual({
+      domain: "example.fr",
+      url: "http://example.fr/about",
+    });
   });
 });

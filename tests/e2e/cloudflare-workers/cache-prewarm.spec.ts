@@ -127,6 +127,44 @@ test("browser caches private responses without putting them in the backing store
   expect((await direct.json()).renderId).not.toBe(first.body.renderId);
 });
 
+test("a public Pages API response is never shared across x-api-key callers", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL || !hasResponseCache, "requires a configured response cache backend");
+  test.skip(
+    backend === "workers-cache" && !baseURL?.startsWith("https://"),
+    "Workers Cache storage requires the deployed edge",
+  );
+  // A keyless entry would serve credentialed callers too, so isolate the URL.
+  const url = `${baseURL}/api/credential-echo?run=${randomUUID()}`;
+  const read = async (apiKey: string) => {
+    const response = await request.get(url, { headers: { "x-api-key": apiKey } });
+    expect(response.status()).toBe(200);
+    expect(response.headers()[cacheStatusHeader]).not.toBe("HIT");
+    expect((await response.json()).credentials["x-api-key"]).toBe(apiKey);
+  };
+  await read(`first-${randomUUID()}`);
+  // A stored first response would reach a later caller once its write lands.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    await read(`second-${randomUUID()}`);
+  }
+  // The same URL is stored without credentials, so the reads above prove the
+  // credential guardrail rather than a route the backend never stores.
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(url);
+        const status = response.headers()[cacheStatusHeader];
+        expect((await response.json()).credentials["x-api-key"]).toBeNull();
+        return status;
+      },
+      { timeout: 15_000 },
+    )
+    .toBe("HIT");
+});
+
 test("backing store freshness follows its own policy in both directions", async ({
   baseURL,
   request,
@@ -301,6 +339,48 @@ test("a dynamic-segment route without generateStaticParams is never cached", asy
   expect(renderIds[1]).not.toBe(renderIds[0]);
 });
 
+// The request stage applies a next.config `Vary` above the shared response
+// entry, so a page that reads cookies() under a public config policy must not
+// be stored: one session's page would otherwise reach every other session.
+test("a next.config public policy with Vary: Cookie keeps each session's page private", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+
+  test.setTimeout(90_000);
+
+  const url = `${baseURL}/vary-cookie?case=${randomUUID()}`;
+  const renderIds = new Set<string>();
+  const expectPrivateRender = async (session?: string) => {
+    const response = await request.get(url, {
+      headers: { accept: "text/html", ...(session ? { cookie: `session=${session}` } : {}) },
+    });
+    const headers = response.headers();
+    const trace = JSON.stringify({ backend, session, headers });
+    expect(response.ok(), trace).toBe(true);
+    expect(headers["x-vinext-cache"], trace).not.toBe("HIT");
+    expect(headers["cf-cache-status"], trace).not.toBe("HIT");
+    expect(headers.vary?.toLowerCase().split(/,\s*/), trace).toContain("cookie");
+    const body = await response.text();
+    expect(/data-vary-cookie-viewer="([^"]*)"/.exec(body)?.[1], trace).toBe(session ?? "anonymous");
+    const renderId = /data-render-id="([^"]*)"/.exec(body)?.[1];
+    expect(renderId, trace).toBeTruthy();
+    expect(renderIds.has(renderId!), trace).toBe(false);
+    renderIds.add(renderId!);
+  };
+
+  for (const session of ["alice", "alice", "bob", undefined]) await expectPrivateRender(session);
+  // Backends publish a completed response in waitUntil, which may run up to
+  // 30 seconds after the response returns, so keep probing other sessions
+  // past that window, in which a wrongly stored entry would appear.
+  for (let attempt = 0; attempt < 16; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await expectPrivateRender(attempt % 2 === 0 ? `visitor-${attempt}` : undefined);
+  }
+});
+
 test("a static page with no revalidate source is served from the configured cache", async ({
   baseURL,
   request,
@@ -325,6 +405,51 @@ test("a static page with no revalidate source is served from the configured cach
       { intervals: [1_000], timeout: 45_000 },
     )
     .toBe(true);
+});
+
+// Ported from Next.js revalidateTag(tag, profile) semantics, as in
+// https://github.com/vercel/next.js/blob/canary/test/e2e/app-dir/use-cache-swr/use-cache-swr.test.ts
+test("revalidateTag with a cacheLife profile serves the stale value while it regenerates", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  // Workers Cache revalidates through the edge purge API, whose rate limit is
+  // shared with production, so deployed E2Es never call it.
+  test.skip(backend === "workers-cache", "Workers Cache revalidation purges the edge");
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(150_000);
+
+  const read = async () => {
+    const response = await request.get(`${baseURL}/use-cache-getter-args-tagged`);
+    expect(response.ok(), JSON.stringify({ backend, headers: response.headers() })).toBe(true);
+    const value = /data-testid="getter-args-tagged">([^<]+)</.exec(await response.text())?.[1];
+    expect(value).toMatch(/^getter-args-tagged:/);
+    return value!;
+  };
+  // Wait until the cached value is stored and served.
+  let before = await read();
+  await expect
+    .poll(
+      async () => {
+        const value = await read();
+        const reused = value === before;
+        before = value;
+        return reused;
+      },
+      { intervals: [1_000], timeout: 30_000 },
+    )
+    .toBe(true);
+
+  // The demo route revalidates with the "default" profile, so the next read
+  // still serves the stale value and the backend regenerates it.
+  const revalidate = await request.post(`${baseURL}/api/revalidate-tag`, {
+    data: { tag: "getter-args-tagged" },
+  });
+  expect(revalidate.ok(), await revalidate.text()).toBe(true);
+  expect(await read()).toBe(before);
+  // KV colos may cache the earlier marker read for up to 60 seconds.
+  await expect.poll(read, { intervals: [1_000], timeout: 75_000 }).not.toBe(before);
 });
 
 test("useSearchParams() inside Suspense keeps the query out of a static page", async ({
@@ -374,6 +499,52 @@ test("useSearchParams() server-renders the real query once the page is dynamic",
   expect(/search-value[^>]*>([^<]+)</.exec(await response.text())?.[1]).toBe(query);
   expect(headers["x-vinext-cache"]).not.toBe("HIT");
   expect(headers["cf-cache-status"]).not.toBe("HIT");
+});
+
+test("a query-bearing miss stores nothing of its query for a query-free visitor", async ({
+  baseURL,
+  request,
+}) => {
+  test.skip(!baseURL?.startsWith("https://"), "requires a deployed Cloudflare Worker");
+  test.skip(
+    backend === "workers-cache",
+    "the edge admits Workers Cache entries; its cross-query test covers what it stores",
+  );
+  if (!baseURL) throw new Error("deployed test requires a base URL");
+  test.setTimeout(90_000);
+
+  // Next.js keeps the request's query out of a static page's HTML, including
+  // its navigation payload, so the one stored entry serves every query. The
+  // on-demand path starts cold and every request carries a token no earlier
+  // request used, so only a query-bearing render can be the HIT.
+  const path = `/cached/${randomUUID()}`;
+  const secrets: string[] = [];
+  const expectNoSecrets = (body: string, trace: string) => {
+    for (const secret of secrets) expect(body, trace).not.toContain(secret);
+  };
+  await expect
+    .poll(
+      async () => {
+        const secret = randomUUID();
+        secrets.push(secret);
+        const response = await request.get(`${baseURL}${path}?token=${secret}`);
+        const headers = response.headers();
+        const trace = JSON.stringify({ backend, headers });
+        expect(response.ok(), trace).toBe(true);
+        expectNoSecrets(await response.text(), trace);
+        return headers[cacheStatusHeader];
+      },
+      // KV caches the miss's "not found" read in its location for up to 60s.
+      { intervals: [1_000], timeout: 75_000 },
+    )
+    .toBe("HIT");
+
+  // A query-free visitor gets that entry.
+  const visitor = await request.get(`${baseURL}${path}`);
+  const headers = visitor.headers();
+  const trace = JSON.stringify({ backend, headers });
+  expect(headers[cacheStatusHeader], trace).toBe("HIT");
+  expectNoSecrets(await visitor.text(), trace);
 });
 
 test("Workers Cache serves every query of a static page from one entry", async ({
@@ -449,7 +620,140 @@ test("Workers Cache serves every query of a static page from one entry", async (
   );
 });
 
+// Next.js keys its response cache by pathname, so every host an app serves
+// shares one entry, and Workers Cache leaves the host out of its key:
+// https://developers.cloudflare.com/workers/cache/cache-keys/
+// A preview alias and a Version URL are two hosts of one uploaded version:
+// https://developers.cloudflare.com/workers/configuration/previews/
+// A Version URL is not compared with production traffic: on a deployed Worker
+// it never reached the entries production requests filled, which those docs
+// leave unspecified.
+const previewAliasURL = process.env.VINEXT_E2E_PREVIEW_ALIAS_URL;
+const previewAlias = process.env.VINEXT_E2E_PREVIEW_ALIAS;
+
+test("Workers Cache shares one entry across the hosts of a deployed Worker", async ({
+  request,
+}) => {
+  test.skip(backend !== "workers-cache", "the preview URL host is specific to Workers Cache");
+  test.skip(!previewAliasURL || !previewAlias, "requires a preview alias of a deployed Worker");
+  test.setTimeout(240_000);
+  const baseURL = previewAliasURL!;
+
+  const versionResponse = await request.get(`${baseURL}/api/worker-version`);
+  expect(versionResponse.ok()).toBe(true);
+  const { id } = (await versionResponse.json()) as { id: string | null };
+  expect(id).toMatch(/^[0-9a-f-]{36}$/);
+  const aliasHost = new URL(baseURL).hostname;
+  expect(aliasHost.startsWith(`${previewAlias}-`)).toBe(true);
+  const previewURL = `https://${id!.slice(0, 8)}${aliasHost.slice(previewAlias!.length)}`;
+
+  // Only an entry shared across hosts gives the Version URL a HIT carrying
+  // the render the alias was served. Each data center has its own lower-tier
+  // cache and consults one upper tier on a miss, so the alias is a HIT, its
+  // render stored, before the Version URL first asks for it:
+  // https://developers.cloudflare.com/workers/cache/
+  // A retry asks for new entries, never ones an earlier attempt filled.
+  const attempt = `?attempt=${test.info().retry}`;
+  for (const [pathname, renderOf] of [
+    ["/static-default", (body: string) => /static-default-render-id[^>]*>([^<]+)</.exec(body)?.[1]],
+    [
+      "/host-shared-static",
+      (body: string) => /data-testid="render-id"[^>]*>([^<]+)</.exec(body)?.[1],
+    ],
+    ["/api/host-shared", (body: string) => (JSON.parse(body) as { renderId?: string }).renderId],
+  ] as const) {
+    let filledRender: string | undefined;
+    await expect
+      .poll(
+        async () => {
+          const filled = await request.get(`${baseURL}${pathname}${attempt}`);
+          expect(filled.ok(), pathname).toBe(true);
+          filledRender = renderOf(await filled.text());
+          return filled.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+    expect(filledRender, pathname).toBeTruthy();
+    // The first request answers: a later one could hit an entry the Version
+    // URL filled itself.
+    const other = await request.get(`${previewURL}${pathname}${attempt}`);
+    const otherRender = other.ok() ? renderOf(await other.text()) : undefined;
+    expect({
+      pathname,
+      otherStatus: other.status(),
+      otherCacheStatus: other.headers()["cf-cache-status"],
+      sameRender: otherRender === filledRender,
+    }).toEqual({ pathname, otherStatus: 200, otherCacheStatus: "HIT", sameRender: true });
+  }
+
+  // A page whose getInitialProps runs renders per request, as in Next.js, so
+  // a CDN policy stores it per host and each host hits its own entry.
+  for (const origin of [baseURL, previewURL]) {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(`${origin}/host-echo-initial`);
+          expect(response.ok()).toBe(true);
+          expect(await response.text()).toContain(`>${new URL(origin).host}</output>`);
+          return response.headers()["cf-cache-status"];
+        },
+        { intervals: [1_000], timeout: 45_000 },
+      )
+      .toBe("HIT");
+  }
+});
+
 if (backend) {
   testRouteHandlerStoragePolicies();
   testPagesStoragePolicies();
+}
+
+const RSC_HEADERS = { accept: "text/x-component", rsc: "1" };
+
+/** The render id a page's document or RSC payload carries. */
+function cachedPageRenderId(body: string): string {
+  const renderId = /data-render-id\W+([0-9a-f]{8}-[0-9a-f-]{27})/.exec(body)?.[1];
+  expect(renderId).toBeTruthy();
+  return renderId!;
+}
+
+/**
+ * Workers Cache renders a page's other part in the background, and stores it
+ * once its body has been read. A request for that part before then would
+ * render and store it itself, so wait once instead of polling.
+ */
+function waitForOtherPagePart(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 5_000));
+}
+
+for (const [first, other] of [
+  ["document", "RSC payload"],
+  ["RSC payload", "document"],
+] as const) {
+  test(`Workers Cache stores a page's ${other} when its ${first} misses`, async ({
+    baseURL,
+    request,
+  }) => {
+    test.skip(
+      backend !== "workers-cache" || !baseURL?.startsWith("https://"),
+      "requires a deployed Workers Cache backend",
+    );
+    const path = `${baseURL}/cached/parts-${randomUUID()}`;
+    const read = (part: "document" | "RSC payload") =>
+      part === "document"
+        ? request.get(path, { headers: { accept: "text/html" } })
+        : request.get(`${path}?_rsc`, { headers: RSC_HEADERS });
+
+    const miss = await read(first);
+    expect(miss.ok(), JSON.stringify(miss.headers())).toBe(true);
+    expect(miss.headers()["cf-cache-status"]).toBe("MISS");
+    await miss.dispose();
+
+    await waitForOtherPagePart();
+    const hit = await read(other);
+    expect(hit.ok(), JSON.stringify(hit.headers())).toBe(true);
+    expect(hit.headers()["cf-cache-status"], JSON.stringify(hit.headers())).toBe("HIT");
+    cachedPageRenderId(await hit.text());
+  });
 }

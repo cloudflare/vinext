@@ -20,9 +20,12 @@ type ProductionApp = {
     boundaryOnly: string;
     cachedProtected: string;
     cookieOwner: string;
+    describeArgument: string;
+    describeBoundArgument: string;
     dynamicProtected: string;
     globalErrorOnly: string;
     globalNotFoundOnly: string;
+    inlineArgument: string;
     loop: string;
     objectWrapped: string;
     packageClient: string;
@@ -123,9 +126,12 @@ async function buildAndServeFixture(): Promise<ProductionApp> {
       boundaryOnly: findActionId(builtSource, "boundaryOnlyAction"),
       cachedProtected: findOnlyCacheActionId(builtSource),
       cookieOwner: findActionId(builtSource, "$$hoist_0_readForwardedCredentials"),
+      describeArgument: findActionId(builtSource, "describeArgument"),
+      describeBoundArgument: findActionId(builtSource, "describeBoundArgument"),
       dynamicProtected: findActionId(builtSource, "$$hoist_0_dynamicProtectedAction"),
       globalErrorOnly: findActionId(builtSource, "globalErrorOnlyAction"),
       globalNotFoundOnly: findActionId(builtSource, "globalNotFoundOnlyAction"),
+      inlineArgument: findActionId(builtSource, "$$hoist_0_inlineArgumentAction"),
       loop: findActionId(builtSource, "$$hoist_0_loopAction"),
       objectWrapped: findActionId(builtSource, "objectWrappedAction"),
       packageClient: findActionId(builtSource, "packageClientAction"),
@@ -197,6 +203,33 @@ async function postRawAction(
       };
     },
     { actionId, body, contentType, pathname },
+  );
+}
+
+async function postMultipartAction(
+  page: Page,
+  pathname: string,
+  actionId: string | null,
+  parts: ReadonlyArray<readonly [string, string]>,
+) {
+  await page.goto(`${app.baseUrl}${pathname}`);
+  return page.evaluate(
+    async ({ actionId, parts, pathname }) => {
+      const body = new FormData();
+      for (const [key, value] of parts) body.append(key, value);
+      const response = await fetch(pathname, {
+        body,
+        headers: actionId ? { "next-action": actionId } : {},
+        method: "POST",
+      });
+      return {
+        body: await response.text(),
+        headers: Object.fromEntries(response.headers),
+        status: response.status,
+        url: response.url,
+      };
+    },
+    { actionId, parts, pathname },
   );
 }
 
@@ -522,6 +555,109 @@ test.describe("production server action ownership", () => {
     expect(response.status).toBe(200);
     expect(response.body).toBe("{}");
     expect(response.body).not.toContain("LOOP_ACTION_EXECUTED");
+  });
+
+  test("decodes only route-owned Server Actions as argument references", async ({ page }) => {
+    const postArgumentReference = (parts: ReadonlyArray<readonly [string, string]>) =>
+      postMultipartAction(page, "/ownership/argument-refs", app.actionIds.describeArgument, parts);
+    const metadata = (id: string, bound: string | null = null) => JSON.stringify({ id, bound });
+    const reference = (id: string) =>
+      [
+        ["0", JSON.stringify(["$h1"])],
+        ["1", metadata(id)],
+      ] as const;
+    // React reads stream and async-iterable arguments from `S<id>` parts.
+    const streamed = (type: "$R1" | "$x1", id: string) =>
+      [
+        ["0", JSON.stringify([type])],
+        ["S1", JSON.stringify("$h2")],
+        ["2", metadata(id)],
+      ] as const;
+    // The page module also exports its component; it is a server-reference
+    // module because of its inline action, but `default` is not an action.
+    const pageComponentId = app.actionIds.inlineArgument.replace(/#.*$/, "#default");
+
+    for (const parts of [
+      reference(app.actionIds.describeArgument),
+      reference(app.actionIds.inlineArgument),
+      streamed("$R1", app.actionIds.inlineArgument),
+      streamed("$x1", app.actionIds.inlineArgument),
+    ]) {
+      const response = await postArgumentReference(parts);
+      expect(response.status).toBe(200);
+      expect(response.body).toContain("FUNCTION_ARGUMENT");
+    }
+
+    // Like Next.js's page-scoped server module map, an id outside this route
+    // fails to resolve: the reply or the argument carrying it errors.
+    for (const parts of [
+      reference(app.actionIds.protected),
+      reference(pageComponentId),
+      // React retries a missing id without its last `#name`, keeping `name`
+      // as the export, which would reach this owned module's `default`.
+      reference(`${app.actionIds.inlineArgument}#default`),
+      [
+        ["0", JSON.stringify(["$h1"])],
+        ["1", metadata(app.actionIds.describeArgument, "$@2")],
+        ["2", JSON.stringify(["$h3"])],
+        ["3", metadata(app.actionIds.protected)],
+      ],
+      // A repeated part must not swap in a reference after an owned one.
+      [...reference(app.actionIds.describeArgument), ["1", metadata(app.actionIds.protected)]],
+      streamed("$R1", app.actionIds.protected),
+      streamed("$x1", app.actionIds.protected),
+    ] as const) {
+      const response = await postArgumentReference(parts);
+      expect(response.status).toBe(500);
+      expect(response.body).not.toContain("_ARGUMENT");
+    }
+  });
+
+  test("decodes only route-owned Server Actions in progressive bound arguments", async ({
+    page,
+  }) => {
+    const postBoundAction = (parts: ReadonlyArray<readonly [string, string]>) =>
+      postMultipartAction(page, "/ownership/argument-refs", null, [
+        ["$ACTION_REF_1", ""],
+        ["$ACTION_1:0", JSON.stringify({ id: app.actionIds.describeBoundArgument, bound: "$@1" })],
+        ...parts,
+      ]);
+    const metadata = (id: string) => JSON.stringify({ id, bound: null });
+    const reference = (id: string) =>
+      [
+        ["$ACTION_1:1", JSON.stringify(["$h2"])],
+        ["$ACTION_1:2", metadata(id)],
+      ] as const;
+    const pageComponentId = app.actionIds.inlineArgument.replace(/#.*$/, "#default");
+
+    // The action redirects with its description of the bound argument.
+    const owned = await postBoundAction(reference(app.actionIds.inlineArgument));
+    expect(owned.status).toBe(200);
+    expect(new URL(owned.url).searchParams.get("described")).toBe("FUNCTION_ARGUMENT");
+
+    // React resolves bound arguments through the route-scoped manifest, so an id
+    // outside this route fails decoding as it does in Next.js.
+    const streamed = (type: "$R3" | "$x3", id: string) =>
+      [
+        ["$ACTION_1:1", JSON.stringify([type])],
+        ["$ACTION_1:S3", JSON.stringify("$h2")],
+        ["$ACTION_1:2", metadata(id)],
+      ] as const;
+    for (const parts of [
+      reference(app.actionIds.protected),
+      reference(pageComponentId),
+      reference(`${app.actionIds.inlineArgument}#default`),
+      [
+        ...reference(app.actionIds.inlineArgument),
+        ["$ACTION_1:2", metadata(app.actionIds.protected)],
+      ],
+      streamed("$R3", app.actionIds.protected),
+      streamed("$x3", app.actionIds.protected),
+    ] as const) {
+      const response = await postBoundAction(parts);
+      expect(response.status).toBe(500);
+      expect(response.url).not.toContain("described=");
+    }
   });
 
   test("fails closed for unknown action ids", async ({ page }) => {

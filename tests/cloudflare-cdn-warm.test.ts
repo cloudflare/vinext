@@ -268,53 +268,6 @@ describe("Cloudflare CDN warmup", () => {
     });
   });
 
-  it("preserves opt-in prerender fallback-shell warming", () => {
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({
-        buildId: "build-a",
-        excludedWarmPaths: ["/blog/[slug]"],
-        paths: ["/", "/cached/intro"],
-      }),
-    );
-    writeFile(
-      "dist/server/vinext-prerender.json",
-      JSON.stringify({
-        buildId: "build-a",
-        routes: [
-          { route: "/", status: "rendered", router: "app", fallback: false },
-          {
-            route: "/blog/:slug",
-            path: "/blog/[slug]",
-            status: "rendered",
-            router: "app",
-            fallback: true,
-          },
-        ],
-      }),
-    );
-
-    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual(["/"]);
-  });
-
-  it("falls back to discovered paths when fallback shells were not locally rendered", () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    writeFile("dist/server/BUILD_ID", "build-a\n");
-    writeFile(
-      "dist/server/vinext-prerender-paths.json",
-      JSON.stringify({ buildId: "build-a", paths: ["/", "/cached/intro"] }),
-    );
-
-    expect(readPrerenderWarmPlan(tmpDir, { includeFallbackShells: true }).paths).toEqual([
-      "/",
-      "/cached/intro",
-    ]);
-    expect(warn).toHaveBeenCalledWith(
-      "[vinext] CDN warmup fallback shells requested, but prerender manifest not found; warming build-discovered paths only.",
-    );
-  });
-
   it("rejects a stale discovery manifest in strict mode", () => {
     writeFile("dist/server/BUILD_ID", "build-b\n");
     writeFile(

@@ -366,3 +366,45 @@ test("keeps fallback:true params out of the shell until hydration", async ({
   await expect(page.locator("#ready")).toHaveText("true");
   expect(consoleErrors).toEqual([]);
 });
+
+test("keeps a missing request's path out of the shared /404 document", async ({
+  browser,
+  page,
+  productionApp,
+}) => {
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+
+  const token = "SHARED_404_BROWSER_PATH_TOKEN";
+  const victim = await page.goto(`${productionApp.baseUrl}${BASE_PATH}/share/${token}`, {
+    waitUntil: "load",
+  });
+  expect(victim?.status()).toBe(404);
+  expect(victim?.headers()["x-vinext-cache"]).toBe("MISS");
+  expect(await victim?.text()).not.toContain(token);
+  await waitForHydration(page);
+  // As in Next.js, the browser router publishes the visited URL after hydration.
+  await expect(page.locator("#client-as-path")).toHaveText(`/share/${token}`);
+
+  const attackerContext = await browser.newContext();
+  try {
+    const attackerPage = await attackerContext.newPage();
+    attackerPage.on("pageerror", (error) => pageErrors.push(error.message));
+    const attacker = await attackerPage.goto(
+      `${productionApp.baseUrl}${BASE_PATH}/missing/attacker`,
+      { waitUntil: "load" },
+    );
+    expect(attacker?.status()).toBe(404);
+    // Either state serves the document the victim's request stored.
+    expect(["HIT", "STALE"]).toContain(attacker?.headers()["x-vinext-cache"]);
+    const attackerHtml = await attacker?.text();
+    expect(attackerHtml).not.toContain(token);
+    expect(attackerHtml).toContain('<p id="as-path">/404</p>');
+    await waitForHydration(attackerPage);
+    await expect(attackerPage.locator("#client-as-path")).toHaveText("/missing/attacker");
+    expect(await attackerPage.content()).not.toContain(token);
+  } finally {
+    await attackerContext.close();
+  }
+  expect(pageErrors).toEqual([]);
+});

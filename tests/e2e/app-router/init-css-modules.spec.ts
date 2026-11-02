@@ -56,9 +56,13 @@ test("init CSS Modules styles are applied in dev and production", async ({ page 
       await expect(page.locator("main")).toHaveCSS("position", "absolute");
       await expect(page.locator("span")).toHaveCSS("color", "rgb(0, 128, 0)");
     } finally {
-      await new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      // close() waits for every open connection to end. The page still holds
+      // connections to this server, and one left open kept close() pending
+      // until the test timed out on CI, so destroy them once close() starts.
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+        server.closeAllConnections();
+      });
     }
   } finally {
     process.chdir(previousCwd);

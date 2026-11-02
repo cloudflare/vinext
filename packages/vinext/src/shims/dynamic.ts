@@ -1,16 +1,18 @@
 /**
  * next/dynamic shim
  *
- * SSR-safe dynamic imports. On the server, uses React.lazy + Suspense so that
+ * SSR-safe dynamic imports. On the server, uses React.lazy so that
  * renderToReadableStream suspends until the dynamically-imported component is
- * available. On the client, also uses React.lazy for code splitting.
+ * available. On the client, also uses React.lazy for code splitting. As in
+ * the Next.js App Router, a Suspense boundary is added only for `ssr: false`
+ * or an explicit `loading` component. Other trees (Pages Router) keep it.
  *
  * Works in RSC, SSR, and client environments:
- * - RSC: Uses React.lazy + Suspense (available in React 19.x react-server).
+ * - RSC: Uses React.lazy (available in React 19.x react-server).
  *   Falls back to async component pattern if a future React version
  *   strips lazy from react-server.
- * - SSR: React.lazy + Suspense (renderToReadableStream suspends)
- * - Client: React.lazy + Suspense (standard code splitting)
+ * - SSR: React.lazy (renderToReadableStream suspends)
+ * - Client: React.lazy (standard code splitting)
  *
  * Supports:
  * - dynamic(import('./Component'))
@@ -20,6 +22,7 @@
  * - dynamic(() => import('./Component'), { ssr: false })
  */
 import React, { type ComponentType } from "react";
+import { AppRouterTreeContext } from "./app-router-tree-context.js";
 import { DynamicPreloadChunks } from "./dynamic-preload-chunks.js";
 import type {
   DynamicOptions,
@@ -97,13 +100,37 @@ function normalizeDynamicOptions<P>(
   };
 }
 
-function createLazyComponent<P>(loader: LoaderFn<P>) {
-  return React.lazy(async () => {
-    const mod = await loader();
-    if (hasDefaultExport(mod)) return mod;
-    return { default: mod };
-  });
+type ShareLoad = <T>(load: Promise<T>) => Promise<T>;
+
+function createLazyComponent<P>(loader: LoaderFn<P>, share: ShareLoad = (load) => load) {
+  return React.lazy(() =>
+    share(
+      (async () => {
+        const mod = await loader();
+        if (hasDefaultExport(mod)) return mod;
+        return { default: mod };
+      })(),
+    ),
+  );
 }
+
+// Installed by server/isolate-shared-promise.ts; keep the key in sync.
+const SHARE_ISOLATE_PROMISE_KEY = Symbol.for("vinext.shareIsolatePromise");
+
+/**
+ * The server React.lazy is created once per dynamic() call, so every request
+ * in the isolate renders the same load. On Workers, the request that starts it
+ * owns its I/O; if that request is canceled first, the load never settles and
+ * every later render of the component hangs. The server installs
+ * `shareIsolatePromise` on a global symbol, which keeps the starting request
+ * alive until the load settles, without this shim importing request state.
+ */
+const shareServerLoad: ShareLoad = (load) => {
+  const share = (globalThis as { [SHARE_ISOLATE_PROMISE_KEY]?: ShareLoad })[
+    SHARE_ISOLATE_PROMISE_KEY
+  ];
+  return share ? share(load) : load;
+};
 
 function useRetryableLazyComponent<P>(
   loader: LoaderFn<P>,
@@ -136,9 +163,11 @@ type DynamicErrorBoundaryState = {
 
 /**
  * Lightweight error boundary that renders the loading component with the error
- * when a dynamic() loader rejects. Without this, loader failures would propagate
- * uncaught through React's rendering — this preserves the Next.js behavior where
- * the `loading` component can display errors.
+ * when a dynamic() loader rejects, as the Pages Router's react-loadable does by
+ * passing `error` to `loading`. App Router trees never get it: Next.js's App
+ * Router next/dynamic is React.lazy inside Suspense with no boundary of its own,
+ * so loader and render errors reach the nearest error.tsx.
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
  *
  * Lazily created because React.Component is not available in the RSC environment
  * (server components use a slimmed-down React that doesn't include class components).
@@ -187,8 +216,75 @@ function getDynamicErrorBoundary() {
 const isServer = typeof window === "undefined";
 
 /**
+ * Whether this dynamic() renders in an App Router tree. RSC renders the App
+ * Router only, and react-server has no context support. On the server, the
+ * App Router SSR entry marks its tree; in the browser, App Router documents
+ * set `window.next.appDir` before anything renders, which also covers
+ * separate client roots (e.g. a modal rendered with createRoot). Everything
+ * else (Pages Router pages, `pages/_document`, ad-hoc react-dom/server
+ * renders) keeps the boundary, since Pages next/dynamic is react-loadable,
+ * which never suspends.
+ */
+function useIsAppRouterTree(): boolean {
+  if (!isServer) return window.next?.appDir === true;
+  return AppRouterTreeContext ? React.use(AppRouterTreeContext) : true;
+}
+
+/**
+ * The element tree around an SSR-enabled dynamic() component. The client
+ * renders empty slots where the server renders the preload chunks, so both
+ * sides render the same shape and useId values inside the dynamic component
+ * match on hydration.
+ *
+ * Match Next.js App Router Loadable: the component only gets a Suspense
+ * boundary when it has a `loading` component. Without one, the lazy component
+ * suspends up to the nearest parent boundary, so the server shell waits for
+ * the import instead of flushing an empty boundary and streaming the
+ * component in after first paint. Other trees always get the boundary.
+ *
+ * React hoists the preload links out of place, but a hoisted <link> right
+ * after a text node leaves a `<!-- -->` separator behind. Next.js avoids it by
+ * hinting scripts with ReactDOM.preload(), which renders nothing. vinext
+ * renders real modulepreload links (preloadModule() drops the nonce and
+ * fetchPriority), so they go where text rarely precedes them: first inside the
+ * boundary, or after the content when there is no boundary (a component whose
+ * output ends in text still gets a separator after it). Stylesheets stay
+ * before the boundary: a precedence stylesheet inside it makes React outline
+ * the boundary even when its content is already resolved, and rendering them
+ * ahead of the content keeps their nonce when the content links the same CSS.
+ * A dynamic component with CSS right after text therefore still gets the
+ * separator.
+ */
+function createDynamicBoundary(
+  fallback: React.ReactNode,
+  content: React.ReactNode,
+  preloadModuleIds: readonly string[] | undefined,
+  hasBoundary: boolean,
+): React.ReactElement {
+  const preloadChunks = (assets: "styles" | "scripts") =>
+    isServer
+      ? React.createElement(DynamicPreloadChunks, { moduleIds: preloadModuleIds, assets })
+      : null;
+  if (!hasBoundary) {
+    return React.createElement(
+      React.Fragment,
+      null,
+      preloadChunks("styles"),
+      content,
+      preloadChunks("scripts"),
+    );
+  }
+  return React.createElement(
+    React.Fragment,
+    null,
+    preloadChunks("styles"),
+    React.createElement(React.Suspense, { fallback }, preloadChunks("scripts"), content),
+  );
+}
+
+/**
  * Retained for the Pages Router render pipeline, which calls this before
- * rendering. Dynamic imports now use React.lazy + Suspense, so there is no
+ * rendering. Dynamic imports now use React.lazy, so there is no
  * separate preload work to await.
  */
 export function flushPreloads(): Promise<void[]> {
@@ -242,6 +338,7 @@ function dynamic<P = {}>(
     const InitialLazyComponent = createLazyComponent(loader);
 
     const ClientSSRFalse = (props: P) => {
+      const isAppRouterTree = useIsAppRouterTree();
       const [mounted, setMounted] = React.useState(false);
       const { LazyComponent, retry, retryKey } = useRetryableLazyComponent(
         loader,
@@ -262,7 +359,7 @@ function dynamic<P = {}>(
         : null;
       const lazyElement = createElementWithProps(LazyComponent, props);
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -306,17 +403,18 @@ function dynamic<P = {}>(
 
     // SSR path: Use React.lazy so that renderToReadableStream can suspend
     // until the dynamically-imported component is available.
-    const LazyServer = createLazyComponent(loader);
+    const LazyServer = createLazyComponent(loader, shareServerLoad);
 
     const ServerDynamic = (props: P) => {
+      const isAppRouterTree = useIsAppRouterTree();
       const fallback = LoadingComponent
         ? React.createElement(LoadingComponent, createDynamicLoadingProps())
         : null;
       const lazyElement = createElementWithProps(LazyServer, props);
-      // Wrap with error boundary so loader rejections render the loading
-      // component with the error instead of propagating uncaught.
+      // Outside the App Router, loader rejections render the loading
+      // component with the error, as react-loadable does.
       let content: React.ReactNode = lazyElement;
-      if (LoadingComponent) {
+      if (LoadingComponent && !isAppRouterTree) {
         const ErrorBoundary = getDynamicErrorBoundary();
         if (ErrorBoundary) {
           content = React.createElement(
@@ -326,11 +424,11 @@ function dynamic<P = {}>(
           );
         }
       }
-      return React.createElement(
-        React.Fragment,
-        null,
-        React.createElement(DynamicPreloadChunks, { moduleIds: preloadModuleIds }),
-        React.createElement(React.Suspense, { fallback }, content),
+      return createDynamicBoundary(
+        fallback,
+        content,
+        preloadModuleIds,
+        LoadingComponent != null || !isAppRouterTree,
       );
     };
 
@@ -345,12 +443,13 @@ function dynamic<P = {}>(
       loader,
       InitialLazyComponent,
     );
+    const isAppRouterTree = useIsAppRouterTree();
     const fallback = LoadingComponent
       ? React.createElement(LoadingComponent, createDynamicLoadingProps({ retry }))
       : null;
     const lazyElement = createElementWithProps(LazyComponent, props);
     let content: React.ReactNode = lazyElement;
-    if (LoadingComponent) {
+    if (LoadingComponent && !isAppRouterTree) {
       const ErrorBoundary = getDynamicErrorBoundary();
       if (ErrorBoundary) {
         content = React.createElement(
@@ -360,7 +459,12 @@ function dynamic<P = {}>(
         );
       }
     }
-    return React.createElement(React.Suspense, { fallback }, content);
+    return createDynamicBoundary(
+      fallback,
+      content,
+      preloadModuleIds,
+      LoadingComponent != null || !isAppRouterTree,
+    );
   };
 
   ClientDynamic.displayName = "DynamicClient";

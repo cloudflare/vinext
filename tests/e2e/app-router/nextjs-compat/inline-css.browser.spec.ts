@@ -1,22 +1,19 @@
 import fs from "node:fs/promises";
-import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { test as base, expect } from "../../fixtures";
+import {
+  startChildProductionServer,
+  stopChildProductionServer,
+  type ChildProductionServer,
+} from "../../production-server";
 
 type ProductionApp = {
   baseUrl: string;
   fixtureRoot: string;
-  server: Server;
+  server: ChildProductionServer;
 };
-
-async function closeServer(server: Server): Promise<void> {
-  const closed = new Promise<void>((resolve) => server.close(() => resolve()));
-  server.closeIdleConnections();
-  server.closeAllConnections();
-  await closed;
-}
 
 async function writeInlineCssFixture(fixtureRoot: string): Promise<void> {
   const appDir = path.join(fixtureRoot, "app");
@@ -172,20 +169,14 @@ async function buildAndServeInlineCssFixture(): Promise<ProductionApp> {
   });
   await builder.buildApp();
 
-  const { startProdServer } = await import(
-    pathToFileURL(path.resolve(process.cwd(), "packages/vinext/dist/server/prod-server.js")).href
-  );
-  const started = await startProdServer({
-    host: "127.0.0.1",
-    port: 0,
-    outDir: path.join(fixtureRoot, "dist"),
-    noCompression: true,
-  });
+  // Font registration is process-wide. Keep this fixture's fonts out of
+  // apps that later tests prerender in the same Playwright worker.
+  const started = await startChildProductionServer(fixtureRoot);
 
   return {
     baseUrl: `http://127.0.0.1:${started.port}`,
     fixtureRoot,
-    server: started.server,
+    server: started,
   };
 }
 
@@ -201,7 +192,7 @@ const test = base.extend<{ inlineCssApp: ProductionApp }>({
       // requestIdleCallback and can fire after the test body finishes, hitting
       // a closed port and logging ERR_CONNECTION_REFUSED to the console.
       await page.close();
-      await closeServer(app.server);
+      await stopChildProductionServer(app.server);
       await fs.rm(app.fixtureRoot, { recursive: true, force: true });
     }
   },

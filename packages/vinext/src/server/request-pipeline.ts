@@ -1,7 +1,10 @@
 import { hasBasePath, stripBasePath, removeTrailingSlash } from "../utils/base-path.js";
 import { INTERNAL_HEADERS, MIDDLEWARE_HEADER_PREFIX, VINEXT_INTERNAL_HEADERS } from "./headers.js";
 import { MIDDLEWARE_CACHE_HEADER } from "../utils/protocol-headers.js";
-import { getUnconsumedMiddlewareRequestHeaders } from "../utils/middleware-request-headers.js";
+import {
+  buildRequestHeadersFromMiddlewareResponse,
+  getUnconsumedMiddlewareRequestHeaders,
+} from "../utils/middleware-request-headers.js";
 import {
   forbiddenResponse,
   methodNotAllowedResponse,
@@ -41,6 +44,17 @@ export function canonicalizeRequestUrlPathname(url: string): string {
   const pathname = queryIndex === -1 ? url : url.slice(0, queryIndex);
   const search = queryIndex === -1 ? "" : url.slice(queryIndex);
   return canonicalizeRequestPathname(pathname) + search;
+}
+
+/**
+ * Whether the pathname has a segment the URL parser resolves as `.` or `..`,
+ * literally or percent-encoded. Such a pathname changes when it becomes a URL.
+ */
+export function hasUrlParserDotSegment(pathname: string): boolean {
+  return pathname.split("/").some((segment) => {
+    const decodedDots = segment.replaceAll(/%2e/gi, ".");
+    return decodedDots === "." || decodedDots === "..";
+  });
 }
 
 /**
@@ -119,13 +133,17 @@ export type HeaderRecord = Record<string, string | string[]>;
 
 type ResolvePublicFileRouteOptions = {
   cleanPathname: string;
-  middlewareContext: StaticFileSignalContext;
-  pathname: string;
+  /** `requestHeaders` holds middleware's request-header override instructions. */
+  middlewareContext: StaticFileSignalContext & { requestHeaders?: Headers | null };
   publicFiles: ReadonlySet<string>;
   request: Request;
 };
 
-const FILE_LIKE_PATHNAME_RE = /\.[^/]+\/?$/;
+// The sources of Next.js's two internal trailingSlash: true redirects
+// (lib/load-custom-routes): a slashed path whose last segment ends in `.\w+`
+// loses its slash, and an unslashed path whose last segment has no dot gains one.
+const SLASHED_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/]+\.\w+\/$/;
+const UNSLASHED_NON_FILE_PATHNAME_RE = /^\/(?:[^/]+\/)*[^/.]+$/;
 
 function isWellKnownPathname(pathname: string): boolean {
   return pathname === "/.well-known" || pathname.startsWith("/.well-known/");
@@ -136,44 +154,42 @@ function isWellKnownPathname(pathname: string): boolean {
  *
  * Public files are checked after middleware and before afterFiles/fallback
  * rewrites. The generated App Router entry provides the public-file set; this
- * helper owns the RSC exclusion, existence-first method enforcement, and
+ * helper owns existence-first method enforcement and
  * static-file signaling. Missing mutation targets continue through routing.
  */
 export function resolvePublicFileRoute(options: ResolvePublicFileRouteOptions): Response | null {
-  if (options.pathname.endsWith(".rsc")) return null;
   if (!options.publicFiles.has(options.cleanPathname)) return null;
   if (options.request.method !== "GET" && options.request.method !== "HEAD") {
     return methodNotAllowedResponse("GET, HEAD", {
       headers: options.middlewareContext.headers ?? undefined,
     });
   }
-  return createStaticFileSignal(options.cleanPathname, options.middlewareContext);
+  const { requestHeaders } = options.middlewareContext;
+  return createStaticFileSignal(
+    options.cleanPathname,
+    options.middlewareContext,
+    requestHeaders
+      ? buildRequestHeadersFromMiddlewareResponse(options.request.headers, requestHeaders)
+      : null,
+  );
 }
 
 export function normalizeTrailingSlashPathname(
   pathname: string,
   trailingSlash: boolean,
 ): string | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
-
-  const hasTrailing = pathname.endsWith("/");
+  if (pathname === "/") return null;
 
   if (trailingSlash) {
-    // Next.js emits two internal redirect rules for trailingSlash:true:
-    // file-looking paths lose a trailing slash, non-file paths gain one, and
-    // /.well-known stays untouched for RFC-defined discovery URLs.
+    // /.well-known stays untouched for RFC-defined discovery URLs. Paths that
+    // match neither rule, such as `/foo.a-b/` or `/foo.`, are left as they are.
     if (isWellKnownPathname(pathname)) return null;
-    if (FILE_LIKE_PATHNAME_RE.test(pathname)) {
-      const normalized = removeTrailingSlash(pathname);
-      return normalized === pathname ? null : normalized;
-    }
-    if (!hasTrailing && !pathname.endsWith(".rsc")) return `${pathname}/`;
+    if (SLASHED_FILE_PATHNAME_RE.test(pathname)) return pathname.slice(0, -1);
+    if (UNSLASHED_NON_FILE_PATHNAME_RE.test(pathname)) return `${pathname}/`;
     return null;
   }
 
-  if (hasTrailing) return removeTrailingSlash(pathname);
+  if (pathname.endsWith("/")) return removeTrailingSlash(pathname);
   return null;
 }
 
@@ -181,8 +197,8 @@ export function normalizeTrailingSlashPathname(
  * Check if the pathname needs a trailing slash redirect, and return the
  * redirect Response if so.
  *
- * Follows Next.js behavior:
- * - `/api` routes are never redirected
+ * Follows Next.js behavior, whose internal trailing-slash redirects cover
+ * every path, `/api` included:
  * - The root path `/` is never redirected
  * - If `trailingSlash` is true, redirect `/about` → `/about/`
  * - If `trailingSlash` is true, redirect file-looking `/file.ext/` → `/file.ext`
@@ -201,9 +217,7 @@ export function normalizeTrailingSlash(
   trailingSlash: boolean,
   search: string,
 ): Response | null {
-  if (pathname === "/" || pathname === "/api" || pathname.startsWith("/api/")) {
-    return null;
-  }
+  if (pathname === "/") return null;
   // Defense-in-depth: `guardProtocolRelativeUrl` runs earlier and should
   // have rejected these shapes. Refuse to emit a Location header that the
   // browser would resolve as protocol-relative, even if a caller somehow
@@ -474,7 +488,21 @@ export function isOriginAllowed(origin: string, allowed: string[]): boolean {
  *
  * @param headers - The Headers object to modify in place
  */
+/**
+ * Next.js drops each empty middleware Set-Cookie value when it converts
+ * middleware's response headers, so blank values never reach the response.
+ */
+export function dropEmptyMiddlewareSetCookie(headers: Headers): void {
+  const cookies = headers.getSetCookie();
+  if (!cookies.includes("")) return;
+  headers.delete("set-cookie");
+  for (const cookie of cookies) {
+    if (cookie) headers.append("set-cookie", cookie);
+  }
+}
+
 export function processMiddlewareHeaders(headers: Headers): void {
+  dropEmptyMiddlewareSetCookie(headers);
   const keysToDelete: string[] = [];
   const unconsumedRequestHeaders = getUnconsumedMiddlewareRequestHeaders(headers);
 
@@ -596,6 +624,40 @@ export function cloneRequestWithHeaders(request: Request, headers: Headers): Req
   return attachRequestCfMetadata(cloned, request);
 }
 
+export function haveSameHeaders(first: Headers, second: Headers): boolean {
+  const firstEntries = [...first];
+  const secondEntries = [...second];
+  return (
+    firstEntries.length === secondEntries.length &&
+    firstEntries.every(
+      ([name, value], index) =>
+        name === secondEntries[index]?.[0] && value === secondEntries[index]?.[1],
+    )
+  );
+}
+
+// Node hosts can hand over Request look-alikes, such as srvx's NodeRequest,
+// that pass `instanceof Request` but lack its internal state, so native
+// Request code throws on them. Only the native getter tells them apart.
+function isNativeRequest(request: Request): boolean {
+  try {
+    Reflect.get(Request.prototype, "url", request);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * `cloneRequestWithHeaders`, except that a native request whose headers
+ * already match is returned as is, so its body stays where it is.
+ */
+export function withRequestHeaders(request: Request, headers: Headers): Request {
+  return isNativeRequest(request) && haveSameHeaders(headers, request.headers)
+    ? request
+    : cloneRequestWithHeaders(request, headers);
+}
+
 /**
  * Clone a Request while overriding the URL, preserving headers and metadata
  * when possible.
@@ -635,4 +697,20 @@ export function cloneRequestWithUrl(request: Request, url: string): Request {
     cloned = new Request(url, init);
   }
   return attachRequestCfMetadata(cloned, request);
+}
+
+/**
+ * Drop a `#fragment` the host kept from the request line. Next.js rebuilds
+ * request URLs from pathname + search, so neither middleware nor handlers
+ * ever observe one, and pathname-keyed cache entries must not either.
+ */
+export function stripRequestUrlFragment(request: Request): Request {
+  const hashIndex = request.url.indexOf("#");
+  if (hashIndex === -1) return request;
+  // Read before cloning: srvx returns its own connection signal only until a
+  // clone materializes its native Request, whose signal merely follows it and
+  // stops following once nothing retains the original request.
+  const signal = request.signal;
+  const stripped = cloneRequestWithUrl(request, request.url.slice(0, hashIndex));
+  return attachRequestCfMetadata(new Request(stripped, { signal }), request);
 }

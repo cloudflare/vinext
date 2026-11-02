@@ -14,11 +14,9 @@ import type { Server } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import type { PrerenderRouteResult } from "../packages/vinext/src/build/prerender.js";
-import { buildAppFixture } from "./helpers.js";
+import { buildAppFixture, fetchRsc } from "./helpers.js";
 
 const FIXTURE_DIR = path.resolve(import.meta.dirname, "fixtures", "ecosystem", "next-intl");
-const RSC_HEADERS = { Accept: "text/x-component", RSC: "1" };
-
 describe("next-intl static rendering (production)", () => {
   let buildDir: string;
   let prerenderDir: string;
@@ -90,12 +88,31 @@ describe("next-intl static rendering (production)", () => {
   });
 
   it("serves the RSC payload from the ISR cache", async () => {
-    const first = await fetch(`${baseUrl}/ssg/en/about.rsc`, { headers: RSC_HEADERS });
+    const first = await fetchRsc(baseUrl, "/ssg/en/about");
     expect(first.status).toBe(200);
     expect(await first.text()).toContain("About");
 
-    const second = await fetch(`${baseUrl}/ssg/en/about.rsc`, { headers: RSC_HEADERS });
+    const second = await fetchRsc(baseUrl, "/ssg/en/about");
     expect(second.headers.get("x-vinext-cache")).toBe("HIT");
     expect(second.headers.get("cache-control")).toBe("s-maxage=31536000, stale-while-revalidate");
+  });
+
+  it("renders the built-in 404 when the locale layout calls notFound()", async () => {
+    // Issue #4045: [locale]/not-found.tsx is inside the [locale] layout and
+    // needs its NextIntlClientProvider, so it cannot catch that layout's
+    // notFound(). Next.js renders the boundary above the layout instead.
+    const response = await fetch(`${baseUrl}/missing.webp`);
+    expect(response.status).toBe(404);
+    const html = await response.text();
+    expect(html).toContain("This page could not be found.");
+    expect(html).not.toContain("locale-not-found");
+
+    const rsc = await fetchRsc(baseUrl, "/missing.webp");
+    // vinext answers 404 for RSC requests here; Next.js answers 200 and puts
+    // the not-found in the flight.
+    expect(rsc.status).toBe(404);
+    const flight = await rsc.text();
+    expect(flight).toContain("This page could not be found.");
+    expect(flight).not.toContain("locale-not-found");
   });
 });

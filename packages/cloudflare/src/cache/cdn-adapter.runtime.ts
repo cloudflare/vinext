@@ -212,6 +212,10 @@ function toEdgeCacheControl(cacheControl: string): string {
 const MAX_CACHE_TAG_BYTES = 16 * 1024;
 const CACHE_TAG_PREFIX = "vinext-";
 
+// Cloudflare caps a tag purge or invalidation request at 100 tags.
+// https://developers.cloudflare.com/cache/how-to/purge-cache/#availability-and-limits
+const MAX_TAGS_PER_PURGE = 100;
+
 /** Encode a case-sensitive Next.js tag into a fixed Workers Cache tag. */
 export function encodeCloudflareCacheTag(tag: string): string {
   // Two domain-separated 64-bit rounds keep accidental collisions negligible
@@ -231,6 +235,10 @@ function formatCacheTag(tags: readonly string[]): string | null {
 
 export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
   readonly requiresCompletedResponseAdmission = true;
+  // Workers Cache keys the dispatched path and query, not the host, so the
+  // response stage keys a shared dispatch by core's host-free identity.
+  // https://developers.cloudflare.com/workers/cache/cache-keys/
+  readonly responseStageCacheIdentity = "host-free" as const;
   readonly responseVary = "verbatim" as const;
   readonly responsePolicy = {
     isHeader(name: string): boolean {
@@ -373,13 +381,32 @@ export class CloudflareCdnCacheAdapter implements CdnCacheAdapter {
     );
     if (tagList.length === 0) return;
 
-    const options = { tags: tagList.map(encodeCloudflareCacheTag) };
+    const encodedTags = [...new Set(tagList.map(encodeCloudflareCacheTag))];
     const operation = isStaleTagInvalidation(durations) ? "invalidate" : "purge";
-    const result = (await (operation === "invalidate"
-      ? invalidateOrPurge(cache, options)
-      : cache.purge(options))) as WorkersCachePurgeResult | undefined;
-    if (result?.success === false) {
-      const errors = result.errors.map(({ code, message }) => `${code}: ${message}`).join(", ");
+    const chunks: string[][] = [];
+    for (let i = 0; i < encodedTags.length; i += MAX_TAGS_PER_PURGE) {
+      chunks.push(encodedTags.slice(i, i + MAX_TAGS_PER_PURGE));
+    }
+    // Settle every chunk before reporting, so no started purge is left
+    // un-awaited (Workers can cancel it).
+    const settled = await Promise.allSettled(
+      chunks.map(
+        async (chunk) =>
+          (await (operation === "invalidate"
+            ? invalidateOrPurge(cache, { tags: chunk })
+            : cache.purge({ tags: chunk }))) as WorkersCachePurgeResult | undefined,
+      ),
+    );
+    const rejection = settled.find((result) => result.status === "rejected");
+    if (rejection) throw rejection.reason;
+    const failures = settled.flatMap((result) =>
+      result.status === "fulfilled" && result.value?.success === false ? [result.value] : [],
+    );
+    if (failures.length > 0) {
+      const errors = failures
+        .flatMap((result) => result.errors)
+        .map(({ code, message }) => `${code}: ${message}`)
+        .join(", ");
       throw new Error(`[vinext] Workers Cache ${operation} failed${errors ? `: ${errors}` : ""}`);
     }
   }

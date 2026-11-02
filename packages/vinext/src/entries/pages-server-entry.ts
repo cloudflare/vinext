@@ -23,6 +23,7 @@ const _pagesI18nPath = resolveEntryPath("../server/pages-i18n.js", import.meta.u
 const _pagesDataRoutePath = resolveEntryPath("../server/pages-data-route.js", import.meta.url);
 const _pagesDefault404Path = resolveEntryPath("../server/pages-default-404.js", import.meta.url);
 const _pagesApiRoutePath = resolveEntryPath("../server/pages-api-route.js", import.meta.url);
+const _requestErrorLogPath = resolveEntryPath("../server/request-error-log.js", import.meta.url);
 const _serverGlobalsPath = resolveEntryPath("../server/server-globals.js", import.meta.url);
 const _queryUtilsPath = resolveEntryPath("../utils/query.js", import.meta.url);
 const _pagesPageHandlerPath = resolveEntryPath("../server/pages-page-handler.js", import.meta.url);
@@ -39,12 +40,44 @@ const _instrumentationRuntimePath = resolveEntryPath(
   "../server/instrumentation-runtime.js",
   import.meta.url,
 );
+const _isolateSharedPromisePath = resolveEntryPath(
+  "../server/isolate-shared-promise.js",
+  import.meta.url,
+);
 
-async function getPagesDataKind(filePath: string): Promise<"static" | "server" | "none"> {
+type PagesRouteData = { dataKind: "static" | "server" | "none"; runsInitialProps: boolean };
+
+const GET_INITIAL_PROPS_NAME = /\bgetInitialProps\b/;
+
+/**
+ * Whether a module's source names getInitialProps. Next.js serves a page
+ * without data functions as one static file only when neither it nor a
+ * custom _app defines getInitialProps, which it checks on the loaded modules:
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/build/utils.ts
+ * https://github.com/vercel/next.js/blob/canary/packages/next/src/build/index.ts
+ * The source is all the request stage has. A getInitialProps an imported
+ * wrapper attaches is only seen once the page renders.
+ */
+async function namesGetInitialProps(filePath: string | null): Promise<boolean> {
+  if (filePath === null) return false;
+  return GET_INITIAL_PROPS_NAME.test(await readFile(filePath, "utf8"));
+}
+
+async function getPagesRouteData(
+  filePath: string,
+  appRunsInitialProps: boolean,
+): Promise<PagesRouteData> {
   const source = await readFile(filePath, "utf8");
-  if (hasExportedName(source, "getStaticProps")) return "static";
-  if (hasExportedName(source, "getServerSideProps")) return "server";
-  return "none";
+  if (hasExportedName(source, "getStaticProps")) {
+    return { dataKind: "static", runsInitialProps: false };
+  }
+  if (hasExportedName(source, "getServerSideProps")) {
+    return { dataKind: "server", runsInitialProps: false };
+  }
+  return {
+    dataKind: "none",
+    runsInitialProps: appRunsInitialProps || GET_INITIAL_PROPS_NAME.test(source),
+  };
 }
 
 type GeneratePagesServerEntryOptions = {
@@ -73,10 +106,16 @@ export async function generatePagesRequestEntry(
   // imported base class. Keep the request-independent stage conservative
   // instead of growing a second JavaScript analyzer for this cache optimization.
   const hasRequestAwareDocument = documentPath !== null;
+  const appRunsInitialProps = await namesGetInitialProps(
+    findFileWithExts(pagesDir, "_app", fileMatcher),
+  );
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (route: Route) => {
-      const dataKind = await getPagesDataKind(route.filePath);
-      return `  { pattern: ${JSON.stringify(route.pattern)}, patternParts: ${JSON.stringify(route.patternParts)}, isDynamic: ${route.isDynamic}, params: ${JSON.stringify(route.params)}, dataKind: ${JSON.stringify(dataKind)} }`;
+      const { dataKind, runsInitialProps } = await getPagesRouteData(
+        route.filePath,
+        appRunsInitialProps,
+      );
+      return `  { pattern: ${JSON.stringify(route.pattern)}, patternParts: ${JSON.stringify(route.patternParts)}, isDynamic: ${route.isDynamic}, params: ${JSON.stringify(route.params)}, dataKind: ${JSON.stringify(dataKind)}, runsInitialProps: ${runsInitialProps} }`;
     }),
   );
   const apiRouteEntries = apiRoutes.map(
@@ -95,6 +134,7 @@ export async function generatePagesRequestEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect ?? false,
     skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -111,6 +151,7 @@ export async function generatePagesRequestEntry(
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       qualities: nextConfig?.images?.qualities,
+      localPatterns: nextConfig?.images?.localPatterns,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
@@ -119,7 +160,8 @@ export async function generatePagesRequestEntry(
   });
   const instrumentationImportCode = instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(_isolateSharedPromisePath)};`
     : "";
   const instrumentationInitCode = instrumentationPath
     ? `let __applicationInitialization;
@@ -127,8 +169,8 @@ async function __initializeApplication() {
   await __ensureInstrumentationRegistered(_instrumentation, ${JSON.stringify(instrumentationPath)});
   ${middlewarePath ? `middlewareModule = await import(${JSON.stringify(middlewarePath)});` : ""}
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}";
   const middlewareImportCode = middlewarePath
@@ -138,21 +180,23 @@ export function __ensureInstrumentation() {
     : "";
   const middlewareExportCode = middlewarePath
     ? `export async function runMiddleware(request, ctx, options) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
+    isStaleDataRequest: options?.isStaleDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }`
-    : `export async function runMiddleware() {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+    : `export async function runMiddleware(request, ctx) {
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return { continue: true };
 }`;
 
@@ -163,6 +207,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath } from ${JSON.stringify(_pagesDataRoutePath)};
 import { isOnDemandRevalidateRequest as __isOnDemandRevalidateRequest } from ${JSON.stringify(_revalidationRequestPath)};
+import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 ${instrumentationImportCode}
 
 ${instrumentationInitCode}
@@ -176,6 +221,7 @@ export const hasMiddleware = ${JSON.stringify(Boolean(middlewarePath))};
 export const hasRequestAwareDocument = ${JSON.stringify(hasRequestAwareDocument)};
 export const vinextConfig = ${vinextConfigJson};
 export const publicFiles = new Set(${JSON.stringify(publicFiles)});
+export const clientBuildFiles = new Set(__pagesClientAssets.clientBuildFiles ?? []);
 
 export function normalizeDataRequest(request) {
   return __normalizePagesDataRequest(
@@ -291,10 +337,16 @@ export async function generateServerEntry(
   );
 
   // Build the route table — include filePath for SSR manifest lookup
+  const appRunsInitialProps = await namesGetInitialProps(
+    findFileWithExts(pagesDir, "_app", fileMatcher),
+  );
   const pageRouteEntries = await Promise.all(
     pageRoutes.map(async (r: Route, i: number) => {
-      const dataKind = await getPagesDataKind(r.filePath);
-      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: ${instrumentationPath ? "null" : `page_${i}`}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)} }`;
+      const { dataKind, runsInitialProps } = await getPagesRouteData(
+        r.filePath,
+        appRunsInitialProps,
+      );
+      return `  { pattern: ${JSON.stringify(r.pattern)}, patternParts: ${JSON.stringify(r.patternParts)}, isDynamic: ${r.isDynamic}, params: ${JSON.stringify(r.params)}, module: ${instrumentationPath ? "null" : `page_${i}`}, filePath: ${JSON.stringify(r.filePath)}, dataKind: ${JSON.stringify(dataKind)}, runsInitialProps: ${runsInitialProps} }`;
     }),
   );
 
@@ -357,6 +409,7 @@ export async function generateServerEntry(
     basePath: nextConfig?.basePath ?? "",
     assetPrefix: nextConfig?.assetPrefix ?? "",
     trailingSlash: nextConfig?.trailingSlash ?? false,
+    skipTrailingSlashRedirect: nextConfig?.skipTrailingSlashRedirect ?? false,
     skipProxyUrlNormalize: nextConfig?.skipProxyUrlNormalize ?? false,
     redirects: nextConfig?.redirects ?? [],
     rewrites: nextConfig?.rewrites ?? { beforeFiles: [], afterFiles: [], fallback: [] },
@@ -376,6 +429,7 @@ export async function generateServerEntry(
       deviceSizes: nextConfig?.images?.deviceSizes,
       imageSizes: nextConfig?.images?.imageSizes,
       qualities: nextConfig?.images?.qualities,
+      localPatterns: nextConfig?.images?.localPatterns,
       dangerouslyAllowSVG: nextConfig?.images?.dangerouslyAllowSVG,
       dangerouslyAllowLocalIP: nextConfig?.images?.dangerouslyAllowLocalIP,
       contentDispositionType: nextConfig?.images?.contentDispositionType,
@@ -393,7 +447,8 @@ export async function generateServerEntry(
   // all code within the Worker (same global scope).
   const instrumentationImportCode = instrumentationPath
     ? `import * as _instrumentation from ${JSON.stringify(instrumentationPath)};
-import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};`
+import { ensureInstrumentationRegistered as __ensureInstrumentationRegistered } from ${JSON.stringify(_instrumentationRuntimePath)};
+import { shareIsolatePromise as __shareIsolatePromise } from ${JSON.stringify(_isolateSharedPromisePath)};`
     : "";
 
   const specialModuleInitializers = instrumentationPath
@@ -420,8 +475,8 @@ async function __initializeApplication() {
   _errorPageRoute.module = ErrorPageModule;
   _renderPage = __createRenderPage();
 }
-export function __ensureInstrumentation() {
-  return __applicationInitialization ??= __initializeApplication();
+export function __ensureInstrumentation(ctx) {
+  return __applicationInitialization ??= __shareIsolatePromise(__initializeApplication(), ctx);
 }`
     : "export function __ensureInstrumentation() {}";
   const openTelemetryLoaderCode = options.nodeOpenTelemetryLoader
@@ -452,23 +507,25 @@ if (process.env.VINEXT_PRERENDER !== "1" && !globalThis[__openTelemetryLoaderKey
     ? middlewarePath
       ? `
 export async function runMiddleware(request, ctx, options) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return __runGeneratedMiddleware({
     basePath: vinextConfig.basePath,
     ctx,
     filePath: ${JSON.stringify(middlewarePath)},
     i18nConfig,
     isDataRequest: options?.isDataRequest === true,
+    isStaleDataRequest: options?.isStaleDataRequest === true,
     isProxy: ${JSON.stringify(isProxyFile(middlewarePath))},
     module: middlewareModule,
     request,
+    skipTrailingSlashRedirect: vinextConfig.skipTrailingSlashRedirect,
     trailingSlash: vinextConfig.trailingSlash,
   });
 }
 `
       : `
-export async function runMiddleware(request) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+export async function runMiddleware(request, ctx) {
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   return { continue: true };
 }
 `
@@ -479,20 +536,20 @@ export async function runMiddleware(request) {
   return `
 import ${JSON.stringify(_serverGlobalsPath)};
 import React from "react";
-import { renderToReadableStream } from "react-dom/server.edge";
+import { renderToReadableStream } from "react-dom/server";
 import { resetSSRHead, getSSRHeadHTML, setDocumentInitialHead } from "next/head";
 import { flushPreloads } from "next/dynamic";
 import Router, { setSSRContext, wrapWithRouterContext, getPagesNavigationIsReadyFromSerializedState } from "next/router";
-import { _runWithCacheState } from "vinext/shims/cache-request-state";
+import "vinext/shims/cache-request-state";
 import { configureMemoryCacheHandler as __configureMemoryCacheHandler } from "vinext/shims/cache-handler";
 import { registerConfiguredCacheAdapters as __registerConfiguredCacheAdapters } from "virtual:vinext-cache-adapters";
 import __pagesClientAssets from "virtual:vinext-pages-client-assets";
 import { setPagesClientAssets as __setPagesClientAssets } from "vinext/server/pages-client-assets";
-import { runWithPrivateCache } from "vinext/cache-runtime";
-import { ensureFetchPatch, runWithFetchCache } from "vinext/fetch-cache";
+import "vinext/cache-runtime";
+import { ensureFetchPatch } from "vinext/fetch-cache";
 import "vinext/router-state";
-import { runWithServerInsertedHTMLState } from "vinext/navigation-state";
-import { runWithHeadState } from "vinext/head-state";
+import "vinext/navigation-state";
+import "vinext/head-state";
 import "vinext/i18n-state";
 import { setI18nContext } from "vinext/i18n-context";
 import { safeJsonStringify } from "vinext/html";
@@ -506,6 +563,7 @@ import { buildRouteTrie as _buildRouteTrie, trieMatch as _trieMatch } from ${JSO
 import { reportRequestError as _reportRequestError } from "vinext/instrumentation";
 import { resolvePagesI18nRequest } from ${JSON.stringify(_pagesI18nPath)};
 import { handlePagesApiRoute as __handlePagesApiRoute } from ${JSON.stringify(_pagesApiRoutePath)};
+import { logRequestError as __logRequestError } from ${JSON.stringify(_requestErrorLogPath)};
 import { normalizePagesDataRequest as __normalizePagesDataRequest, shouldAddTrailingSlashToPagesDataPath as __shouldAddTrailingSlashToPagesDataPath, buildNextDataNotFoundResponse as __buildNextDataNotFoundResponse } from ${JSON.stringify(_pagesDataRoutePath)};
 import { buildDefaultPagesNotFoundResponse as __buildDefaultPagesNotFoundResponse } from ${JSON.stringify(_pagesDefault404Path)};
 import { createPagesPageHandler as __createPagesPageHandler } from ${JSON.stringify(_pagesPageHandlerPath)};
@@ -559,37 +617,6 @@ __configureMemoryCacheHandler({ cacheMaxMemorySize: vinextConfig.cacheMaxMemoryS
 // _app's CSS/JS chunks in the SSR manifest so any global styles imported
 // by _app are included in every page's <link rel="stylesheet"> set.
 const _appAssetPath = ${appAssetPathJson};
-
-async function _renderToStringAsync(element) {
-  const stream = await renderToReadableStream(element);
-  await stream.allReady;
-  return new Response(stream).text();
-}
-
-async function _renderIsrPassToStringAsync(element, onHeadReady) {
-  // The cache-fill render is a second render pass for the same request.
-  // Reset render-scoped state so it cannot leak from the streamed response
-  // render or affect async work that is still draining from that stream.
-  // Keep request identity state (pathname/query/locale/executionContext)
-  // intact: this second pass still belongs to the same request.
-  return await runWithServerInsertedHTMLState(() =>
-    runWithHeadState(() =>
-      _runWithCacheState(() =>
-        runWithPrivateCache(() =>
-          runWithFetchCache(async () => {
-            const html = await _renderToStringAsync(element);
-            // next/head tags are collected as a side effect of the render
-            // above and live in this ALS scope only, so a caller that wants
-            // the regenerated head has to read it here — after the render,
-            // before the scope unwinds.
-            await onHeadReady?.();
-            return html;
-          }),
-        ),
-      ),
-    ),
-  );
-}
 
 ${pageImports.join("\n")}
 ${apiImports.join("\n")}
@@ -724,7 +751,6 @@ function __createRenderPage() {
     } catch { return []; }
   },
   renderToReadableStream,
-  renderIsrPassToStringAsync: _renderIsrPassToStringAsync,
   safeJsonStringify,
   sanitizeDestination: sanitizeDestinationLocal,
   createPageElement(PageComponent, AppComponent, props) {
@@ -764,7 +790,7 @@ function __createRenderPage() {
 ${instrumentationPath ? "let _renderPage;" : "const _renderPage = __createRenderPage();"}
 
 export async function renderPage(request, url, manifest, ctx, middlewareHeaders, options, initialResponseHeaders) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   __registerConfiguredCacheAdapters();
   if (ctx) return _runWithExecutionContext(ctx, () => _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders));
   return _renderPage(request, url, manifest, middlewareHeaders, options, initialResponseHeaders);
@@ -773,7 +799,7 @@ export async function renderPage(request, url, manifest, ctx, middlewareHeaders,
 
 
 export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin, edgeRuntime = "worker", initialResponseHeaders) {
-  ${instrumentationPath ? "await __ensureInstrumentation();" : ""}
+  ${instrumentationPath ? "await __ensureInstrumentation(ctx);" : ""}
   __registerConfiguredCacheAdapters();
   const match = matchRoute(url, apiRoutes);
   return __handlePagesApiRoute({
@@ -786,7 +812,7 @@ export async function handleApiRoute(request, url, ctx, trustedRevalidateOrigin,
     trustedRevalidateOrigin,
     url,
     reportRequestError(error, routePattern) {
-      console.error("[vinext] API error:", error);
+      __logRequestError("[vinext] API error:", error);
       return _reportRequestError(
         error,
         { path: url, method: request.method, headers: Object.fromEntries(request.headers.entries()) },

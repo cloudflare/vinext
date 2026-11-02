@@ -9,5 +9,5 @@
     "skipLibCheck": true,
     "types": ["vinext/types"]
   },
-  "include": ["app", "worker"]
+  "include": ["app", "pages", "worker"]
 }

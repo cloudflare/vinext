@@ -1,5 +1,5 @@
 import mdx from "@mdx-js/rollup";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "vite-plus/test";
 import { rehypeHeadingLinks } from "../apps/web/rehype-heading-links";
 
 describe("docs heading links", () => {

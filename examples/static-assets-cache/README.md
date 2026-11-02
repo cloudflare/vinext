@@ -28,6 +28,6 @@ Every page shows where it was rendered. `build-time` means the response came fro
 
 ## Cloudflare config
 
-The cache entries live inside the deployed assets directory. `cloudflare.config.ts` declares the `ASSETS` binding and routes `/_vinext/static-cache/*` to the Worker with `runWorkerFirst`. The Vite plugin selects the built client output as the assets directory. Without this rule, Workers Static Assets would serve the raw entries directly, skipping the Worker and any middleware.
+The cache entries live inside the deployed assets directory. `cloudflare.config.ts` declares the `ASSETS` binding and routes every path except the `/_next/static` build output to the Worker with `runWorkerFirst`, as `vinext init` does, which covers `/_vinext/static-cache/*`. The Vite plugin selects the built client output as the assets directory. Without this rule, Workers Static Assets would serve the raw entries directly, skipping the Worker and any middleware.
 
 The cache is read-only. `revalidatePath()` and `revalidateTag()` do not change it; deploying a new build replaces it.

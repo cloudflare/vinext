@@ -1,3 +1,8 @@
+import {
+  getDocumentHeadOpenMarker,
+  getDocumentScriptsPlaceholder,
+} from "vinext/shims/document-placeholders";
+import { escapeRegExp } from "../utils/regex.js";
 import { escapeHtmlAttr } from "./html.js";
 
 export type DocumentAssetProps = {
@@ -27,12 +32,27 @@ function removeAttributes(tag: string, names: readonly string[]): string {
   return tag.replace(new RegExp(`\\s(?:${names.join("|")})="[^"]*"`, "g"), "");
 }
 
-export function extractDocumentAssetProps(html: string): {
+/**
+ * Read and strip the nonce and crossOrigin props that `<Head>` and
+ * `<NextScript />` recorded on their tags, found by this render's token.
+ */
+export function extractDocumentAssetProps(
+  html: string,
+  token: string,
+): {
   html: string;
   props: DocumentAssetProps;
 } {
-  const headTag = html.match(/<head\b[^>]*>/i)?.[0];
-  const nextScriptTag = html.match(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i)?.[0];
+  const headTagPattern = new RegExp(
+    `<head\\b[^>]*${escapeRegExp(getDocumentHeadOpenMarker(token))}[^>]*>`,
+    "i",
+  );
+  const nextScriptTagPattern = new RegExp(
+    `<span\\b[^>]*>(?=${escapeRegExp(getDocumentScriptsPlaceholder(token))})`,
+    "i",
+  );
+  const headTag = html.match(headTagPattern)?.[0];
+  const nextScriptTag = html.match(nextScriptTagPattern)?.[0];
   const props = {
     headNonce: readAttribute(headTag, HEAD_NONCE_ATTR),
     headCrossOrigin: readAttribute(headTag, HEAD_CROSS_ORIGIN_ATTR),
@@ -40,10 +60,10 @@ export function extractDocumentAssetProps(html: string): {
     scriptCrossOrigin: readAttribute(nextScriptTag, SCRIPT_CROSS_ORIGIN_ATTR),
   };
   const cleanedHtml = html
-    .replace(/<head\b[^>]*>/i, (tag) =>
+    .replace(headTagPattern, (tag) =>
       removeAttributes(tag, [HEAD_NONCE_ATTR, HEAD_CROSS_ORIGIN_ATTR]),
     )
-    .replace(/<span\b[^>]*>(?=<!-- __NEXT_SCRIPTS__ -->)/i, (tag) =>
+    .replace(nextScriptTagPattern, (tag) =>
       removeAttributes(tag, [SCRIPT_NONCE_ATTR, SCRIPT_CROSS_ORIGIN_ATTR]),
     );
   return { html: cleanedHtml, props };
@@ -59,7 +79,7 @@ function addAttribute(
   const attributePattern = new RegExp(`\\s${name}(?:="[^"]*")?`, "i");
   if (attributePattern.test(tag)) {
     return replaceExisting
-      ? tag.replace(attributePattern, ` ${name}="${escapeHtmlAttr(value)}"`)
+      ? tag.replace(attributePattern, () => ` ${name}="${escapeHtmlAttr(value)}"`)
       : tag;
   }
   if (!tag.endsWith(">")) return tag;

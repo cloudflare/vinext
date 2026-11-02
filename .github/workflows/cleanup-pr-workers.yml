@@ -1,0 +1,178 @@
+name: Clean up stale PR Workers
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "List the Workers that would be deleted without deleting them"
+        type: boolean
+        default: false
+
+concurrency:
+  group: cleanup-pr-workers
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  cleanup:
+    name: Delete pr-* Workers older than 3 days
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      pull-requests: read
+    steps:
+      - name: Delete stale PR Workers
+        shell: bash
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
+          MAX_AGE_DAYS: 3
+        run: |
+          set -euo pipefail
+
+          api="https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts"
+          cutoff="$(date -u -d "${MAX_AGE_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)"
+
+          scripts="$(curl -fsS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "$api")"
+          if [[ "$(jq -r '.success' <<<"$scripts")" != "true" ]]; then
+            echo "::error::Failed to list Workers: $(jq -c '.errors' <<<"$scripts")"
+            exit 1
+          fi
+
+          # Per-PR Workers are named pr-<number>-<suffix>. modified_on is bumped on
+          # every deploy, so a PR that was pushed recently keeps its Workers. A
+          # missing timestamp would compare as older than the cutoff, so require one.
+          # Cloudflare timestamps carry fractional seconds and the cutoff doesn't, so
+          # drop the fraction before comparing them as strings.
+          candidates="$(jq -r --arg cutoff "$cutoff" '
+            [
+              .result[]
+              | select((.id | type) == "string" and (.id | test("^pr-[0-9]+-")))
+              | select((.modified_on | type) == "string" and (.modified_on | sub("\\.[0-9]+"; "")) < $cutoff)
+              | .id
+            ]
+            | sort[]
+          ' <<<"$scripts")"
+          mapfile -t stale < <(printf '%s' "$candidates")
+
+          {
+            echo "## Stale PR Workers"
+            echo
+            echo "Cutoff: \`${cutoff}\` (last deployed more than ${MAX_AGE_DAYS} days ago)"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [[ ${#stale[@]} -eq 0 ]]; then
+            echo "No stale PR Workers found."
+            echo "No stale PR Workers found." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          echo "Found ${#stale[@]} stale PR Workers."
+
+          # PR numbers with an unfinished Deploy Examples run. Runs don't always list
+          # their PR, so resolve them through the run's head branch instead.
+          active_prs() {
+            local runs branches branch status
+            runs=""
+            for status in queued in_progress waiting requested pending; do
+              runs+="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-examples.yml/runs?event=pull_request&status=${status}&per_page=100")" || return 1
+            done
+            branches="$(jq -r --arg repo "$GITHUB_REPOSITORY" '.workflow_runs[] | select(.head_repository.full_name == $repo) | .head_branch' <<<"$runs" | sort -u)" || return 1
+            while IFS= read -r branch; do
+              [[ -n "$branch" ]] || continue
+              gh api -X GET "repos/${GITHUB_REPOSITORY}/pulls" -f head="${GITHUB_REPOSITORY_OWNER}:${branch}" -f state=all --jq '.[].number' || return 1
+            done <<<"$branches"
+          }
+
+          deleted=()
+          failed=()
+          skipped=()
+          checked_pr=""
+          active=""
+          for name in "${stale[@]}"; do
+            # The delete API has no precondition, so leave a PR alone while its deploy
+            # workflow is running. A run that starts after this check has to build
+            # before it deploys, so it can't land before this PR's deletes finish.
+            pr="${name#pr-}"
+            pr="${pr%%-*}"
+            if [[ "$pr" != "$checked_pr" ]]; then
+              if ! active="$(active_prs)"; then
+                echo "::warning::Failed to list running Deploy Examples workflows for ${name}"
+                failed+=("$name")
+                continue
+              fi
+              checked_pr="$pr"
+            fi
+            if grep -qx "$pr" <<<"$active"; then
+              echo "Skipping ${name}: Deploy Examples is running for PR #${pr}"
+              skipped+=("$name")
+              continue
+            fi
+
+            # The listing above can be minutes old by now, so re-check the newest
+            # deployment right before deleting in case the PR was pushed meanwhile.
+            deployments="$(curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}/deployments" || true)"
+            latest="$(jq -r '
+              if .success == true then ([.result.deployments[]?.created_on | strings | sub("\\.[0-9]+"; "")] | max // "")
+              elif any(.errors[]?; .code == 10007) then "gone"
+              else "error" end
+            ' <<<"$deployments" 2>/dev/null || echo error)"
+            if [[ "$latest" == "gone" ]]; then
+              echo "Skipping ${name}: already deleted"
+              skipped+=("$name")
+              continue
+            fi
+            if [[ "$latest" == "error" ]]; then
+              echo "::warning::Failed to re-check ${name}: ${deployments}"
+              failed+=("$name")
+              continue
+            fi
+            if [[ -n "$latest" && ! "$latest" < "$cutoff" ]]; then
+              echo "Skipping ${name}: deployed at ${latest}"
+              skipped+=("$name")
+              continue
+            fi
+
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "Would delete ${name}"
+              deleted+=("$name")
+              continue
+            fi
+
+            # force=true also removes Workers that other (equally stale) PR Workers
+            # still reference through service bindings.
+            response="$(curl -sS -X DELETE -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" "${api}/${name}?force=true" || true)"
+            if [[ "$(jq -r '.success // false' <<<"$response" 2>/dev/null)" == "true" ]]; then
+              echo "Deleted ${name}"
+              deleted+=("$name")
+            else
+              echo "::warning::Failed to delete ${name}: ${response}"
+              failed+=("$name")
+            fi
+          done
+
+          {
+            if [[ "$DRY_RUN" == "true" ]]; then
+              echo "**Dry run:** ${#deleted[@]} of ${#stale[@]} stale PR Workers would be deleted (${#skipped[@]} skipped as deploying, redeployed or already removed)."
+            else
+              echo "Deleted ${#deleted[@]} of ${#stale[@]} stale PR Workers (${#skipped[@]} skipped as deploying, redeployed or already removed)."
+            fi
+            if [[ ${#deleted[@]} -gt 0 ]]; then
+              echo
+              printf -- "- \`%s\`\n" "${deleted[@]}"
+            fi
+            if [[ ${#failed[@]} -gt 0 ]]; then
+              echo
+              echo "Failed:"
+              printf -- "- \`%s\`\n" "${failed[@]}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [[ ${#failed[@]} -gt 0 ]]; then
+            exit 1
+          fi

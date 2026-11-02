@@ -86,6 +86,7 @@ import {
   type UrlQuery,
 } from "../utils/query.js";
 import { matchRoutePattern, routePattern, routePatternParts } from "../routing/route-pattern.js";
+import { disableSmoothScrollDuringRouteTransition } from "./disable-smooth-scroll.js";
 import { scrollToHashTarget } from "./hash-scroll.js";
 import {
   installPagesRouterRuntime,
@@ -100,7 +101,10 @@ import { getCurrentRoutePathnameForWarning } from "./internal/route-pattern-for-
 import { getCurrentBrowserLocale } from "./client-locale.js";
 import { getDeploymentId, NEXT_DEPLOYMENT_ID_HEADER } from "../utils/deployment-id.js";
 import type { RequestContext } from "../config/config-matchers.js";
+import { substituteDestinationParams } from "../config/destination-params.js";
 import type { ClientRewrite } from "../client/client-rewrites.js";
+import { execConfigSource } from "../config/config-source.js";
+import { clientRewriteAppendsParams } from "../client/client-rewrite-params.js";
 
 /** basePath from next.config.js, injected by the plugin at build time */
 const __basePath: string = process.env.__NEXT_ROUTER_BASEPATH ?? "";
@@ -263,19 +267,9 @@ function scrollToPagesRouterPosition({ x, y }: ScrollPosition): void {
     return;
   }
 
-  const htmlElement = document.documentElement;
-  const shouldDisableSmoothScroll = htmlElement.dataset.scrollBehavior === "smooth";
-
-  if (!shouldDisableSmoothScroll) {
+  disableSmoothScrollDuringRouteTransition(() => {
     window.scrollTo(x, y);
-    return;
-  }
-
-  const previousScrollBehavior = htmlElement.style.scrollBehavior;
-  htmlElement.style.scrollBehavior = "auto";
-  htmlElement.getClientRects();
-  window.scrollTo(x, y);
-  htmlElement.style.scrollBehavior = previousScrollBehavior;
+  });
 }
 
 function isAtScrollPosition({ x, y }: ScrollPosition): boolean {
@@ -1724,12 +1718,6 @@ function isAppComponent(value: unknown): value is NonNullable<Window["__VINEXT_A
 function resolveSameOriginRedirectedUrl(responseUrl: string): string | null {
   const appPath = toSameOriginAppPath(responseUrl, __basePath);
   if (appPath === null) return null;
-  // Keep a same-origin absolute URL when stripping its origin/basePath would
-  // expose a leading `//`; performNavigation uses that absolute form for the
-  // history URL while retaining the app path for route state and fetching.
-  if (appPath.startsWith("//")) {
-    return normalizePathTrailingSlash(responseUrl, __trailingSlash);
-  }
   // Followed HTML redirects re-enter performNavigation(), so return its
   // app-relative input rather than a browser URL that already has basePath.
   return normalizePathTrailingSlash(appPath, __trailingSlash);
@@ -1763,7 +1751,14 @@ function resolveLocalRedirectUrl(location: string): string | null {
       // Data redirect headers can already be browser paths with basePath.
       // Convert back to app paths before toBrowserNavigationHref re-applies it.
       const parsed = new URL(location, "http://vinext.local");
-      appPath = stripBasePath(parsed.pathname, __basePath) + parsed.search + parsed.hash;
+      const pathname = stripBasePath(parsed.pathname, __basePath);
+      // A leading `//` (from stripping basePath, or dot segments such as
+      // `/docs/..//x` escaping it) would point at another host as a local
+      // path. Resolve it as a browser URL so toSameOriginAppPath() collapses
+      // it and checks basePath on the normalized path.
+      appPath = pathname.startsWith("//")
+        ? toSameOriginAppPath(new URL(location, window.location.href).href, __basePath)
+        : pathname + parsed.search + parsed.hash;
     } catch {
       appPath = location;
     }
@@ -1772,19 +1767,6 @@ function resolveLocalRedirectUrl(location: string): string | null {
   }
 
   if (appPath === null) return null;
-  // Stripping an origin or basePath can expose a leading `//` that the browser
-  // would reinterpret as a different authority. Resolve the original target
-  // to a validated same-origin absolute URL; recursive navigation retains its
-  // `//` app path as route state but uses this absolute form for browser I/O.
-  if (appPath.startsWith("//")) {
-    try {
-      const browserUrl = new URL(location, window.location.href);
-      if (browserUrl.origin !== getWindowOrigin()) return null;
-      return normalizePathTrailingSlash(browserUrl.href, __trailingSlash);
-    } catch {
-      return null;
-    }
-  }
   // Internal redirects are re-dispatched through performNavigation(), whose
   // input contract is app-relative. Keep basePath stripped here so the fresh
   // navigation applies it exactly once when deriving its browser URL.
@@ -1808,7 +1790,11 @@ function hasClientRedirectRules(): boolean {
 
 function hasClientAppRouteManifest(): boolean {
   const routes = window.__VINEXT_LINK_PREFETCH_ROUTES__;
-  return Array.isArray(routes) && routes.length > 0;
+  const routeHandlers = window.__VINEXT_APP_ROUTE_HANDLERS__;
+  return (
+    (Array.isArray(routes) && routes.length > 0) ||
+    (Array.isArray(routeHandlers) && routeHandlers.length > 0)
+  );
 }
 
 function getClientConfigRouteContext(href: string): {
@@ -1841,6 +1827,18 @@ function getClientConfigRouteContext(href: string): {
   };
 }
 
+/**
+ * matchRedirect has already applied basePath to a config destination, so a
+ * local one that resolves outside it (`/../outside`, or a `basePath: false`
+ * rule) is another app's URL. resolveLocalRedirectUrl would treat it as an app
+ * path and re-add basePath, so it is followed as a document navigation instead,
+ * landing where the server's redirect does.
+ */
+function configRedirectLeavesBasePath(location: string): boolean {
+  if (!__basePath || !location.startsWith("/") || location.startsWith("//")) return false;
+  return !hasBasePath(new URL(location, "http://vinext.local").pathname, __basePath);
+}
+
 async function resolveClientConfigRedirect(href: string): Promise<string | null> {
   const redirects = window.__VINEXT_CLIENT_REDIRECTS__;
   if (!redirects || redirects.length === 0) return null;
@@ -1848,9 +1846,12 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   const routeContext = getClientConfigRouteContext(href);
   if (!routeContext) return null;
 
-  const { matchRedirect, preserveRedirectDestinationQuery } =
-    await import("../config/config-matchers.js");
-  const redirect = matchRedirect(
+  const [{ matchClientRedirect }, { encodeRedirectLocation, preserveRedirectDestinationQuery }] =
+    await Promise.all([
+      import("../client/client-redirect-matcher.js"),
+      import("../config/config-matchers.js"),
+    ]);
+  const redirect = matchClientRedirect(
     routeContext.pathname,
     redirects,
     routeContext.context,
@@ -1858,14 +1859,16 @@ async function resolveClientConfigRedirect(href: string): Promise<string | null>
   );
   if (!redirect) return null;
 
-  const destination =
-    __basePath &&
-    routeContext.basePathState.hadBasePath &&
-    !isExternalUrl(redirect.destination) &&
-    !hasBasePath(redirect.destination, __basePath)
-      ? __basePath + redirect.destination
-      : redirect.destination;
-  return preserveRedirectDestinationQuery(destination, routeContext.search);
+  // matchClientRedirect has already prefixed a local destination with basePath.
+  // Encoded like the server's Location, so the URL parser cannot strip captured
+  // control characters and land somewhere else.
+  return encodeRedirectLocation(
+    preserveRedirectDestinationQuery(
+      redirect.destination,
+      routeContext.search,
+      redirect.destinationQuery,
+    ),
+  );
 }
 
 async function applyClientConfigRewrite(
@@ -1901,68 +1904,14 @@ function shouldEvaluateClientConfigRule(
   return ruleBasePath === false ? !state.hadBasePath : state.hadBasePath;
 }
 
-function matchSimpleClientConfigPattern(
-  pathname: string,
-  source: string,
-): Record<string, string> | null | undefined {
-  if (source.includes("(") || source.includes("\\") || /:[\w-]+[*+][^/]/.test(source)) {
-    return undefined;
+function isSerializedRewriteDestination(destination: string): boolean {
+  if (!destination.startsWith("/") || destination.startsWith("//")) return true;
+  try {
+    const parsed = new URL(destination, "http://n");
+    return parsed.pathname + parsed.search + parsed.hash === destination;
+  } catch {
+    return false;
   }
-
-  const sourceParts = removeTrailingSlash(source).split("/");
-  const pathParts = removeTrailingSlash(pathname).split("/");
-  const params: Record<string, string> = {};
-  let pathIndex = 0;
-
-  for (let sourceIndex = 0; sourceIndex < sourceParts.length; sourceIndex++) {
-    const sourcePart = sourceParts[sourceIndex]!;
-    const pathPart = pathParts[pathIndex];
-    if (sourcePart.startsWith(":")) {
-      const catchAll = sourcePart.match(/^:([\w-]+)([*+])$/);
-      if (catchAll) {
-        const rest = pathParts.slice(pathIndex).join("/");
-        if (catchAll[2] === "+" && rest === "") return null;
-        params[catchAll[1]!] = rest;
-        return sourceIndex === sourceParts.length - 1 ? params : undefined;
-      }
-      if (pathPart === undefined) return null;
-      params[sourcePart.slice(1)] = pathPart;
-      pathIndex++;
-      continue;
-    }
-
-    if (pathPart !== sourcePart) return null;
-    pathIndex++;
-  }
-
-  return pathIndex === pathParts.length ? params : null;
-}
-
-function simpleClientConfigSourceCouldMatch(pathname: string, source: string): boolean {
-  const wildcardIndex = source.search(/[:(\\*+?]/);
-  const literalPrefix = wildcardIndex === -1 ? source : source.slice(0, wildcardIndex);
-  const normalizedPrefix = removeTrailingSlash(literalPrefix);
-  if (!normalizedPrefix || normalizedPrefix === "/") return true;
-  const normalizedPathname = removeTrailingSlash(pathname);
-  return (
-    normalizedPathname === normalizedPrefix || normalizedPathname.startsWith(`${normalizedPrefix}/`)
-  );
-}
-
-function substituteSimpleClientConfigDestination(
-  destination: string,
-  params: Record<string, string>,
-): string {
-  const keys = Object.keys(params);
-  if (keys.length === 0) return destination;
-  const alternation = keys
-    .sort((a, b) => b.length - a.length)
-    .map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
-    .join("|");
-  return destination.replace(
-    new RegExp(`:(${alternation})([+*])?(?![A-Za-z0-9_])`, "g"),
-    (_token, key: string) => params[key] ?? _token,
-  );
 }
 
 function isExternalClientConfigUrl(url: string): boolean {
@@ -1980,11 +1929,7 @@ function clientConfigRedirectCouldMatch(href: string): boolean {
     if (!shouldEvaluateClientConfigRule(redirect.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, redirect.source)) {
-      continue;
-    }
-    const params = matchSimpleClientConfigPattern(routeContext.pathname, redirect.source);
-    if (params !== null) return true;
+    if (execConfigSource(routeContext.pathname, redirect.source) !== null) return true;
   }
 
   return false;
@@ -2002,16 +1947,22 @@ function resolveClientConfigRewriteSync(href: string): ClientConfigRewriteResolu
     if (!shouldEvaluateClientConfigRule(rewrite.basePath, routeContext.basePathState)) {
       continue;
     }
-    if (!simpleClientConfigSourceCouldMatch(routeContext.pathname, rewrite.source)) {
-      continue;
-    }
+    const match = execConfigSource(routeContext.pathname, rewrite.source);
+    if (match === null) continue;
     if (rewrite.has || rewrite.requiresServerEvaluation) return undefined;
+    // The exact matcher never appends optional params that did not match to
+    // the destination query; leave those rewrites to it.
+    if (match.unmatched.length > 0) return undefined;
+    const { params } = match;
+    // The exact matcher URL-parses a local destination template before it
+    // substitutes params, which may drop dot segments and the params in them.
+    if (!isSerializedRewriteDestination(rewrite.destination)) return undefined;
+    if (clientRewriteAppendsParams(rewrite.destination, params)) return undefined;
 
-    const params = matchSimpleClientConfigPattern(routeContext.pathname, rewrite.source);
-    if (params === undefined) return undefined;
-    if (params === null) continue;
-
-    const rewritten = substituteSimpleClientConfigDestination(rewrite.destination, params);
+    const rewritten = substituteDestinationParams(rewrite.destination, params, "rewrite");
+    // The exact matcher collapses a leading run of slashes (sanitizeDestination);
+    // leave anything but a plain local or http(s) destination to it.
+    if (!/^(?:https?:\/\/|\/(?![\\/\t\n\r]))/.test(rewritten)) return undefined;
     if (isExternalClientConfigUrl(rewritten)) return { kind: "document" };
     currentHref = mergeRewriteQuery(currentHref, rewritten);
     matched = true;
@@ -2920,7 +2871,9 @@ async function navigateClient(
           ? await resolveClientConfigRedirect(browserUrl)
           : null;
       if (configRedirect) {
-        const redirectedUrl = resolveLocalRedirectUrl(configRedirect);
+        const redirectedUrl = configRedirectLeavesBasePath(configRedirect)
+          ? null
+          : resolveLocalRedirectUrl(configRedirect);
         if (!redirectedUrl) {
           scheduleHardNavigationAndThrow(configRedirect, "Navigation redirected externally");
         }
@@ -3336,6 +3289,13 @@ async function performNavigation(
   const currentRoute =
     window.__NEXT_DATA__?.page ?? stripBasePath(window.location.pathname, __basePath);
   const currentAs = stripBasePath(window.location.pathname, __basePath) + window.location.search;
+  // Next.js prepareUrlAs() resolves relative hrefs against the current route
+  // before locale handling. Doing the same keeps locale prefixes and
+  // cross-domain locale URLs from being joined to a path without a leading `/`.
+  const resolveRelativeRoutePath = (href: string): string =>
+    href === "" || /^[/?#]/.test(href) || isAbsoluteUrl(href)
+      ? href
+      : resolvePagesRouterHref(href, { pathname: currentRoute, asPath: currentAs }, __basePath);
   const preparedHistoryHref =
     (isAbsoluteUrl(inputHref) ? toSameOriginAppPath(inputHref, __basePath) : null) ??
     absoluteHistoryUrl ??
@@ -3359,7 +3319,7 @@ async function performNavigation(
     credentialedHistoryAs ?? (!as ? credentialedHistoryHref : undefined);
 
   // Next.js treats a falsy `as` as omitted in prepareUrlAs().
-  as = as ? resolveUrl(as, true) : undefined;
+  as = as ? resolveRelativeRoutePath(resolveUrl(as, true)) : undefined;
 
   // Defence-in-depth dangerous-scheme guard. The synchronous guard inside
   // `Router.push` / `Router.replace` (see RouterMethods below) is the primary
@@ -3378,7 +3338,7 @@ async function performNavigation(
   const urlForResolution = isQueryOnlyString
     ? `${stripBasePath(window.location.pathname, __basePath)}${url}`
     : url;
-  const unlocalizedRouteHref = resolveUrl(urlForResolution);
+  const unlocalizedRouteHref = resolveRelativeRoutePath(resolveUrl(urlForResolution));
   const localRouteHref = isExternalUrl(unlocalizedRouteHref)
     ? toSameOriginAppPath(unlocalizedRouteHref, __basePath)
     : unlocalizedRouteHref;
@@ -3811,7 +3771,7 @@ async function performNavigation(
     // ordering of scroll-during-commit, then completion event.
     if (doScroll) {
       if (hash) scrollToHashTarget(hash);
-      else window.scrollTo(0, 0);
+      else scrollToPagesRouterPosition({ x: 0, y: 0 });
     }
   }
   onStateUpdate?.();

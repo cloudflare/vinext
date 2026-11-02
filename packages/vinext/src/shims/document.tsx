@@ -13,6 +13,13 @@ import type {
 } from "@vinext/types/next/upstream/dist/shared/lib/utils";
 import type { HtmlProps } from "@vinext/types/next/upstream/dist/shared/lib/html-context.shared-runtime";
 import { safeJsonStringify } from "../server/html.js";
+import {
+  DOCUMENT_HEAD_CLOSE_ATTRIBUTE,
+  DOCUMENT_HEAD_OPEN_ATTRIBUTE,
+  getDocumentMainPlaceholder,
+  getDocumentScriptsPlaceholder,
+  useDocumentPlaceholderToken,
+} from "./document-placeholders.js";
 
 const documentAssetMarkerAttributes = {
   headNonce: "data-vinext-head-nonce",
@@ -87,19 +94,37 @@ export class Head extends React.Component<HeadProps> {
   render(): React.ReactElement {
     const { children, nonce, crossOrigin, ...props } = this.props;
     return (
-      <head
+      <DocumentHeadElement
         {...props}
         {...(nonce ? { [documentAssetMarkerAttributes.headNonce]: nonce } : {})}
         {...(crossOrigin ? { [documentAssetMarkerAttributes.headCrossOrigin]: crossOrigin } : {})}
       >
         {children}
-      </head>
+      </DocumentHeadElement>
     );
   }
 }
 
+function DocumentHeadElement({
+  children,
+  ...props
+}: React.ComponentPropsWithoutRef<"head">): React.ReactElement {
+  const token = useDocumentPlaceholderToken();
+  // The renderer inserts `next/head` output after the opening tag, which ends
+  // at the open marker attribute, and asset tags at the closing <template>.
+  return (
+    <head {...props} {...(token ? { [DOCUMENT_HEAD_OPEN_ATTRIBUTE]: token } : {})}>
+      {children}
+      {token ? <template {...{ [DOCUMENT_HEAD_CLOSE_ATTRIBUTE]: token }} /> : null}
+    </head>
+  );
+}
+
 export function Main(): React.ReactElement {
-  return <div id="__next" dangerouslySetInnerHTML={{ __html: "__NEXT_MAIN__" }} />;
+  const token = useDocumentPlaceholderToken();
+  return (
+    <div id="__next" dangerouslySetInnerHTML={{ __html: getDocumentMainPlaceholder(token) }} />
+  );
 }
 
 // oxlint-disable-next-line no-redeclare, typescript/consistent-type-definitions, typescript/no-unsafe-declaration-merging -- type-only class augmentation avoids emitting a Babel-incompatible declare field
@@ -135,13 +160,19 @@ export class NextScript extends React.Component<OriginProps> {
   render(): React.ReactElement {
     const { nonce, crossOrigin } = this.props;
     return (
-      <span
+      <NextScriptPlaceholder
         {...(nonce ? { [documentAssetMarkerAttributes.scriptNonce]: nonce } : {})}
         {...(crossOrigin ? { [documentAssetMarkerAttributes.scriptCrossOrigin]: crossOrigin } : {})}
-        dangerouslySetInnerHTML={{ __html: "<!-- __NEXT_SCRIPTS__ -->" }}
       />
     );
   }
+}
+
+function NextScriptPlaceholder(props: Record<string, string>): React.ReactElement {
+  const token = useDocumentPlaceholderToken();
+  return (
+    <span {...props} dangerouslySetInnerHTML={{ __html: getDocumentScriptsPlaceholder(token) }} />
+  );
 }
 
 // oxlint-disable-next-line @typescript-eslint/no-empty-object-type

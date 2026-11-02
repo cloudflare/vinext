@@ -30,11 +30,12 @@ test.describe("headers() and cookies() in Server Components", () => {
     expect(html).toMatch(/Cookies:.*2/s);
   });
 
-  test("headers() works on RSC client navigation (.rsc request)", async ({ request }) => {
+  test("headers() works on RSC client navigation (RSC request)", async ({ request }) => {
     // Simulate an RSC request (what happens during client-side navigation)
-    const res = await request.get(`${BASE}/headers-test.rsc`, {
+    const res = await request.get(`${BASE}/headers-test?_rsc`, {
       headers: {
         Accept: "text/x-component",
+        RSC: "1",
         "User-Agent": "RSCNavigationAgent/1.0",
       },
     });
@@ -48,10 +49,11 @@ test.describe("headers() and cookies() in Server Components", () => {
     expect(rscPayload).toContain("RSCNavigationAgent");
   });
 
-  test("cookies() works on RSC client navigation (.rsc request)", async ({ request }) => {
-    const res = await request.get(`${BASE}/headers-test.rsc`, {
+  test("cookies() works on RSC client navigation (RSC request)", async ({ request }) => {
+    const res = await request.get(`${BASE}/headers-test?_rsc`, {
       headers: {
         Accept: "text/x-component",
+        RSC: "1",
         Cookie: "nav_cookie=value123",
       },
     });
@@ -99,7 +101,6 @@ test.describe("headers() and cookies() in Server Components", () => {
  *
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/middleware.cookies.test.ts
  * Ported from: https://github.com/opennextjs/opennextjs-cloudflare/blob/main/examples/e2e/app-router/e2e/headers.test.ts
- * Tests: ON-6 and ON-8 in TRACKING.md
  *
  * OpenNext verifies that internal middleware headers (x-middleware-set-cookie,
  * x-middleware-next) are NOT exposed in the response, and that middleware-set

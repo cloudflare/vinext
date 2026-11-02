@@ -1,0 +1,64 @@
+{
+  "ApiRoute": {
+    "hello": "Hallo {name}!"
+  },
+  "AsyncComponent": {
+    "basic": "AsyncComponent",
+    "markup": "Markup with <important>bold content</important>",
+    "rich": "This is a <important>rich</important> text."
+  },
+  "Client": {
+    "description": "Deze pagina wordt aan de clientzijde gehydrateerd.",
+    "title": "Client"
+  },
+  "ClientCounter": {
+    "count": "Huidige telling: {count}",
+    "increment": "Verhogen"
+  },
+  "Counter": {
+    "count": "Huidige telling:",
+    "increment": "Verhogen"
+  },
+  "Index": {
+    "description": "Dit is de startpagina.",
+    "rich": "Dit is een <b>opgemaakte</b> tekst.",
+    "title": "Home"
+  },
+  "JustIn": {
+    "title": "Net binnen"
+  },
+  "LocaleLayout": {
+    "description": "Dit is een voorbeeld van het gebruik van next-intl in de `app` directory.",
+    "title": "next-intl voorbeeld"
+  },
+  "LocaleSwitcher": {
+    "switchLocale": "Schakel naar {locale, select, de {Duits} en {Engels} es {Spaans} ja {Japans} nl {Nederlands} other {Onbekend}}"
+  },
+  "Navigation": {
+    "about": "Over (MDX)",
+    "client": "Client pagina",
+    "home": "Home",
+    "nested": "Geneste pagina",
+    "newsArticle": "Nieuwsartikel #{articleId}"
+  },
+  "Nested": {
+    "description": "Dit is een geneste pagina.",
+    "title": "Genest"
+  },
+  "NewsArticle": {
+    "title": "Nieuwsartikel #{articleId}"
+  },
+  "NotFound": {
+    "title": "Deze pagina is niet gevonden (404)"
+  },
+  "OpenGraph": {
+    "title": "next-intl voorbeeld"
+  },
+  "ServerActions": {
+    "item": "Item #{id}"
+  },
+  "ZodFormExample": {
+    "task": "Voer een taak in",
+    "taskEmpty": "Voer alstublieft een taak in."
+  }
+}

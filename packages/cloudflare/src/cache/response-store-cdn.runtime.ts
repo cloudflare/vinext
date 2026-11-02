@@ -1,4 +1,5 @@
 import type {
+  CdnAppPageDocument,
   CdnCacheAdapter,
   CdnCacheableHeaderInput,
   CdnResponseHeaders,
@@ -6,8 +7,10 @@ import type {
 
 import createCloudflareCdnCacheAdapter from "./cdn-adapter.runtime.js";
 import {
+  captureResponseStoreAppPageDocument,
   captureResponseStoreRscData,
   deferResponseStoreAdmission,
+  deferResponseStoreNotModified,
 } from "./response-store-data.runtime.js";
 
 /** Response Store owns page serving and SWR; vinext only emits admitted response policy. */
@@ -44,6 +47,12 @@ class ResponseStoreCdnCacheAdapter implements CdnCacheAdapter {
   }
   captureAppPageRscData(rscData: Promise<ArrayBuffer>): void {
     captureResponseStoreRscData(rscData);
+  }
+  captureAppPageDocument(): ((document: CdnAppPageDocument | null) => void) | undefined {
+    return captureResponseStoreAppPageDocument();
+  }
+  deferNotModifiedResponse(): boolean {
+    return deferResponseStoreNotModified();
   }
   async revalidateTag(): Promise<void> {
     // The unified data adapter invalidates both response and data entries in

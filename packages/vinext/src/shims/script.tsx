@@ -607,7 +607,7 @@ function Script(props: ScriptProps): React.ReactElement | null {
         const registered: BeforeInteractiveInlineScript = {
           id,
           src: src ?? undefined,
-          // Escape `</script>` sequences exactly as the inline render path does
+          // Escape `<script`/`</script` sequences exactly as the inline render path does
           // (see buildBeforeInteractiveScriptProps); keep the escape colocated
           // with the emit boundary so it never gets accidentally skipped. src
           // scripts have no inline body.

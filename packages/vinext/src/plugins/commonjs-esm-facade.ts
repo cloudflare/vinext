@@ -1,5 +1,6 @@
 import MagicString from "magic-string";
-import { parseAst, type Plugin } from "vite";
+import type { ESTree, Plugin } from "vite";
+import { parseProgram } from "./ast-utils.js";
 
 // vite-plugin-commonjs appends its export facade between these markers.
 const EXPORT_FACADE_START = "/* [vite-plugin-commonjs] export-statement-S */";
@@ -11,9 +12,9 @@ const EXPORT_KEYWORD_RE = /\bexport\b(?!-)/;
 /** Whether `code` has a top-level ESM export statement. */
 function hasEsmExports(code: string): boolean {
   if (!EXPORT_KEYWORD_RE.test(code)) return false;
-  let ast: ReturnType<typeof parseAst>;
+  let ast: ESTree.Program;
   try {
-    ast = parseAst(code);
+    ast = parseProgram(code);
   } catch {
     return false;
   }

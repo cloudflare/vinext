@@ -178,11 +178,14 @@ export function applyConfigHeadersToResponse(
     ),
   );
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
+  const configCookies: string[] = [];
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     // vinext's own marker, which a config header can't forge.
     if (lowerName === VINEXT_SPECIAL_ERROR_STATUS_HEADER) continue;
-    if (lowerName === "link") {
+    if (lowerName === "set-cookie") {
+      configCookies.push(header.value);
+    } else if (lowerName === "link") {
       if (options.middlewareHeaders?.get(lowerName)) continue;
 
       const postConfigLink = options.appendToPostConfigLink ? responseHeaders.get(lowerName) : null;
@@ -211,6 +214,20 @@ export function applyConfigHeadersToResponse(
       responseHeaders.set(header.key, header.value);
     }
   }
+
+  // Next.js stages config headers before middleware and replaces the staged
+  // Set-Cookie with middleware's own, so config cookies only reach the
+  // response when middleware sets none. Every cookie already on the response
+  // then comes from the handler or renderer, which Next.js appends after the
+  // staged headers.
+  // Like Next.js, an empty middleware Set-Cookie is not staged.
+  if (configCookies.length > 0 && !options.middlewareHeaders?.get("set-cookie")) {
+    const responseCookies = responseHeaders.getSetCookie();
+    responseHeaders.delete("set-cookie");
+    for (const cookie of [...configCookies, ...responseCookies]) {
+      responseHeaders.append("set-cookie", cookie);
+    }
+  }
 }
 
 /** Apply matched next.config.js headers to an early response header record. */
@@ -228,10 +245,16 @@ export function applyConfigHeadersToHeaderRecord(
     ),
   );
   if (options.recordCacheability !== false) markExplicitConfigResponseVeto(matched);
+  // Next.js replaces staged config Set-Cookie values with middleware's own.
+  // Callers either stage config into the middleware header record or pass the
+  // middleware response's headers.
+  const middlewareSetsCookie =
+    Boolean(options.middlewareHeaders?.get("set-cookie")) ||
+    findHeaderRecordKey(headers, "set-cookie") !== undefined;
   for (const header of matched) {
     const lowerName = header.key.toLowerCase();
     if (lowerName === "set-cookie") {
-      appendHeaderRecord(headers, lowerName, header.value);
+      if (!middlewareSetsCookie) appendHeaderRecord(headers, lowerName, header.value);
     } else if (lowerName === "vary") {
       appendVaryHeaderRecord(headers, header.value);
     } else if (findHeaderRecordKey(headers, lowerName) === undefined) {

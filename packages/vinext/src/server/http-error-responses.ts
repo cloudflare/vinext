@@ -8,7 +8,7 @@
  * `new Response(...)` boilerplate.
  *
  * Sites with route-specific bodies (e.g. `"404 - API route not found"`,
- * `"Image not found"`, generated worker templates) intentionally remain inline
+ * generated worker templates) intentionally remain inline
  * because their bodies are either tested-against fixtures or run inside template
  * strings that have no access to runtime imports.
  *

@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { toSlash } from "pathslash";
 import type { ViteDevServer } from "vite";
 import { describe, expect, it } from "vite-plus/test";
 import {
@@ -37,11 +39,16 @@ const SITE_FOOTER_SOURCE = [
   "    </footer>",
 ].join("\n");
 
+// Server environment transform ids are resolved, forward-slash paths.
+function canonical(file: string): string {
+  return toSlash(path.resolve(file));
+}
+
 type DevStackMiddleware = (req: IncomingMessage, res: ServerResponse, next: () => void) => void;
 
 function createServer(
   sourceMap: SourceMapPayload | null = SOURCE_MAP,
-  options: { root?: string } = {},
+  options: { root?: string; resolveId?: (id: string) => string } = {},
 ): {
   server: ViteDevServer;
   transformRequests: string[];
@@ -58,6 +65,11 @@ function createServer(
         },
       },
       rsc: {
+        pluginContainer: {
+          async resolveId(id: string) {
+            return { id: options.resolveId?.(id) ?? id };
+          },
+        },
         async transformRequest(viteUrl: string) {
           transformRequests.push(`rsc:${viteUrl}`);
           return { map: sourceMap };
@@ -66,6 +78,10 @@ function createServer(
     },
     config: {
       root: options.root ?? "/repo/app",
+      // Non-strict fs lets every in-root path through isFileLoadingAllowed.
+      // The fs.allow/deny gate is covered against a real Vite dev server in
+      // tests/e2e/app-with-src/original-stack-trace-fs-access.spec.ts.
+      server: { fs: { strict: false } },
     },
     middlewares: {
       use(handler: DevStackMiddleware) {
@@ -458,7 +474,9 @@ describe("mapStackLine", () => {
       isFrame: true,
       ignored: false,
     });
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+    expect(transformRequests).toEqual([
+      `rsc:${canonical("/repo/app/app/_components/site-footer.tsx")}`,
+    ]);
   });
 
   it("returns a code frame for the mapped app frame when source content is available", async () => {
@@ -500,7 +518,9 @@ describe("mapStackLine", () => {
         ],
       },
     });
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+    expect(transformRequests).toEqual([
+      `rsc:${canonical("/repo/app/app/_components/site-footer.tsx")}`,
+    ]);
   });
 
   it("maps local filesystem frames through the RSC environment source map", async () => {
@@ -519,7 +539,9 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toBe(`    at SiteFooter (${mappedFileUrl}:6:9)`);
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+    expect(transformRequests).toEqual([
+      `rsc:${canonical("/repo/app/app/_components/site-footer.tsx")}`,
+    ]);
   });
 
   // V8 frames carry backslash paths only on Windows, where `toSlash` is active.
@@ -537,7 +559,7 @@ describe("mapStackLine", () => {
           new Map<string, Promise<SourceMapPayload | null>>(),
         ),
       ).resolves.toBe(line);
-      expect(transformRequests).toEqual(["rsc:C:\\repo\\app\\app\\_components\\site-footer.tsx"]);
+      expect(transformRequests).toEqual(["rsc:C:/repo/app/app/_components/site-footer.tsx"]);
     },
   );
 
@@ -553,7 +575,63 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toBe(line);
-    expect(transformRequests).toEqual(["rsc:/repo/app/app/_components/site-footer.tsx"]);
+    expect(transformRequests).toEqual([
+      `rsc:${canonical("/repo/app/app/_components/site-footer.tsx")}`,
+    ]);
+  });
+
+  it("does not server-transform local filesystem frames that traverse out of the project root", async () => {
+    const { server, transformRequests } = createServer();
+
+    await mapStackLineForTest(
+      server,
+      "    at secret (/repo/app/../outside/secret.js:1:1)",
+      undefined,
+      new Map<string, Promise<SourceMapPayload | null>>(),
+    );
+    // Only the client environment, which keeps Vite's server.fs checks, sees it.
+    expect(transformRequests).toEqual(["client:/repo/outside/secret.js"]);
+  });
+
+  it("server-transforms the same local filesystem frame id whose resolution was checked", async () => {
+    // transformRequest resolves its argument again. Passing it the already
+    // resolved id would resolve a second alias hop (b.js -> denied.js) that
+    // was never checked against server.fs.
+    const aliases: Record<string, string> = {
+      "/repo/app/a.js": "/repo/app/b.js",
+      "/repo/app/b.js": "/repo/app/denied.js",
+    };
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      resolveId: (id) => aliases[id] ?? id,
+    });
+
+    await mapStackLineForTest(
+      server,
+      "    at aliased (/repo/app/a.js:1:1)",
+      undefined,
+      new Map<string, Promise<SourceMapPayload | null>>(),
+    );
+    expect(transformRequests).toEqual([`rsc:${canonical("/repo/app/a.js")}`]);
+  });
+
+  it("does not server-transform local filesystem frames that resolve to virtual modules", async () => {
+    // e.g. vinext resolves `<root>/virtual:vinext-rsc-entry` to its generated
+    // RSC entry, whose source embeds dev-only secrets.
+    const { server, transformRequests } = createServer(SOURCE_MAP, {
+      resolveId: (id) =>
+        id.endsWith("/virtual:vinext-rsc-entry") ? "\0virtual:vinext-rsc-entry" : id,
+    });
+    const line = "    at entry (/repo/app/virtual:vinext-rsc-entry:960:1)";
+
+    await expect(
+      mapStackLineForTest(
+        server,
+        line,
+        undefined,
+        new Map<string, Promise<SourceMapPayload | null>>(),
+      ),
+    ).resolves.toBe(line);
+    expect(transformRequests).toEqual([]);
   });
 
   it("maps React Server component frame URLs through the RSC environment source map", async () => {
@@ -576,7 +654,7 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
-    expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
+    expect(transformRequests).toEqual([`rsc:${canonical(fileURLToPath(footerUrl))}`]);
   });
 
   it("decodes file URLs before asking Vite for a server source map", async () => {
@@ -596,7 +674,7 @@ describe("mapStackLine", () => {
         new Map<string, Promise<SourceMapPayload | null>>(),
       ),
     ).resolves.toBe(`    at SiteFooter (${footerUrl}:6:9)`);
-    expect(transformRequests).toEqual([`rsc:${fileURLToPath(footerUrl)}`]);
+    expect(transformRequests).toEqual([`rsc:${canonical(fileURLToPath(footerUrl))}`]);
   });
 });
 

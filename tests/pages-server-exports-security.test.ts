@@ -89,6 +89,21 @@ export default function DirectPage() {
 `,
   );
   await writeFile(
+    path.join(tmpDir, "pages", "conditional.tsx"),
+    `import { readSecret } from "../server/secret";
+
+let getServerSideProps;
+if (process.env.VINEXT_PRIVATE_PAGE !== "off") {
+  getServerSideProps = async () => ({ props: { secret: readSecret() } });
+}
+export { getServerSideProps };
+
+export default function ConditionalPage() {
+  return <h1>conditional page</h1>;
+}
+`,
+  );
+  await writeFile(
     path.join(tmpDir, "pages", "admin", "_error.tsx"),
     `import { readSecret } from "../../server/secret";
 
@@ -161,7 +176,7 @@ afterAll(async () => {
 });
 
 describe("Pages Router server export isolation", () => {
-  it("does not include direct or re-exported server modules and secrets in client assets", async () => {
+  it("does not include direct, re-exported, or conditionally assigned server modules and secrets in client assets", async () => {
     const clientJavaScript = await collectJavaScript(path.join(tmpDir, "dist", "client"));
     expect(clientJavaScript).not.toContain(CLIENT_SECRET);
     expect(clientJavaScript).not.toContain("server-only");

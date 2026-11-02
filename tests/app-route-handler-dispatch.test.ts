@@ -7,8 +7,18 @@ import {
   setDataCacheHandler,
 } from "../packages/vinext/src/shims/cache-handler.js";
 import type { ISRCacheEntry } from "../packages/vinext/src/server/isr-cache.js";
+import {
+  DefaultCdnCacheAdapter,
+  getCdnCacheAdapter,
+  setCdnCacheAdapter,
+} from "../packages/vinext/src/shims/cdn-cache.js";
 import { draftMode, setHeadersContext } from "../packages/vinext/src/shims/headers.js";
 import { after } from "../packages/vinext/src/shims/server.js";
+import { _isOnDemandRevalidate } from "../packages/vinext/src/shims/cache-request-state.js";
+import {
+  createRequestContext,
+  runWithRequestContext,
+} from "../packages/vinext/src/shims/unified-request-context.js";
 import {
   getRevalidateSecret,
   PRERENDER_REVALIDATE_HEADER,
@@ -851,6 +861,183 @@ describe("app route handler dispatch", () => {
     forceDynamicSpy.mockRestore();
   });
 
+  // Next.js's ResponseCache doesn't resolve the previous entry for an
+  // on-demand revalidation, so the handler runs in the foreground and is stored.
+  it.each([
+    { isStale: false, name: "fresh" },
+    { isStale: true, name: "stale" },
+  ])(
+    "regenerates a $name entry in the foreground for an on-demand revalidation",
+    async ({ isStale }) => {
+      const readPolicy: boolean[] = [];
+      const isrGet = vi.fn(async () =>
+        buildISRCacheEntry(buildCachedRouteValue("stored"), isStale),
+      );
+      let releaseWrite!: () => void;
+      const writeReleased = new Promise<void>((resolve) => {
+        releaseWrite = resolve;
+      });
+      const isrSet = vi.fn((_key: string, ..._rest: unknown[]) => writeReleased);
+      const scheduleBackgroundRegeneration = vi.fn();
+
+      await runWithRequestContext(
+        createRequestContext({ isOnDemandRevalidate: true }),
+        async () => {
+          let dispatched = false;
+          const pending = dispatchAppRouteHandler({
+            cleanPathname: "/api/on-demand",
+            clearRequestContext() {},
+            draftModeSecret: "test-draft-secret",
+            i18n: null,
+            isDevelopment: false,
+            isProduction: true,
+            isrGet,
+            isrRouteKey(pathname) {
+              return "route:" + pathname;
+            },
+            isrSet,
+            middlewareContext: { headers: null, status: null },
+            middlewareRequestHeaders: null,
+            params: {},
+            request: new Request("https://example.com/api/on-demand", {
+              headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+            }),
+            route: {
+              pattern: "/api/on-demand",
+              routeHandler: {
+                revalidate: 60,
+                GET() {
+                  readPolicy.push(_isOnDemandRevalidate());
+                  return new Response("regenerated");
+                },
+              },
+              routeSegments: ["api", "on-demand"],
+            },
+            scheduleBackgroundRegeneration,
+            searchParams: new URLSearchParams(),
+          }).then((response) => {
+            dispatched = true;
+            return response;
+          });
+          // Like Next.js, it answers only once the regenerated entry is stored.
+          await vi.waitFor(() => expect(isrSet).toHaveBeenCalled());
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          expect(dispatched).toBe(false);
+          releaseWrite();
+          const response = await pending;
+          expect(await response.text()).toBe("regenerated");
+        },
+      );
+
+      expect(isrGet).not.toHaveBeenCalled();
+      expect(scheduleBackgroundRegeneration).not.toHaveBeenCalled();
+      expect(readPolicy).toEqual([true]);
+      expect(isrSet).toHaveBeenCalledTimes(1);
+      expect(isrSet.mock.calls[0]?.[0]).toBe("route:/api/on-demand");
+    },
+  );
+
+  // Next.js stores an ISR route's regenerated response whatever its status.
+  it.each([400, 500])("stores a %s response from an on-demand revalidation", async (status) => {
+    const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+    const response = await runWithRequestContext(
+      createRequestContext({ isOnDemandRevalidate: true }),
+      () =>
+        dispatchAppRouteHandler({
+          cleanPathname: "/api/on-demand",
+          clearRequestContext() {},
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          isrGet: async () => null,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: {},
+          request: new Request("https://example.com/api/on-demand", {
+            headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+          }),
+          route: {
+            pattern: "/api/on-demand",
+            routeHandler: {
+              revalidate: 60,
+              GET: () => new Response("regenerated error", { status }),
+            },
+            routeSegments: ["api", "on-demand"],
+          },
+          scheduleBackgroundRegeneration: vi.fn(),
+          searchParams: new URLSearchParams(),
+        }),
+    );
+
+    expect(response.status).toBe(status);
+    await expect.poll(() => isrSet.mock.calls.length).toBe(1);
+    expect((isrSet.mock.calls[0]?.[1] as { status?: number } | undefined)?.status).toBe(status);
+  });
+
+  // Next.js batches ResponseCache work by its key and isOnDemandRevalidate, so
+  // concurrent on-demand revalidations of one route share a run and a write.
+  it("shares one handler run between concurrent on-demand revalidations", async () => {
+    let runs = 0;
+    let releaseRun!: () => void;
+    const runReleased = new Promise<void>((resolve) => {
+      releaseRun = resolve;
+    });
+    const isrSet = vi.fn(async (_key: string, ..._rest: unknown[]) => {});
+    const revalidate = () =>
+      runWithRequestContext(createRequestContext({ isOnDemandRevalidate: true }), () =>
+        dispatchAppRouteHandler({
+          cleanPathname: "/api/on-demand",
+          clearRequestContext() {},
+          draftModeSecret: "test-draft-secret",
+          i18n: null,
+          isDevelopment: false,
+          isProduction: true,
+          isrGet: async () => null,
+          isrRouteKey(pathname) {
+            return "route:" + pathname;
+          },
+          isrSet,
+          middlewareContext: { headers: null, status: null },
+          middlewareRequestHeaders: null,
+          params: {},
+          request: new Request("https://example.com/api/on-demand", {
+            headers: { [PRERENDER_REVALIDATE_HEADER]: getRevalidateSecret() },
+          }),
+          route: {
+            pattern: "/api/on-demand",
+            routeHandler: {
+              revalidate: 60,
+              async GET() {
+                runs++;
+                await runReleased;
+                return new Response("regenerated");
+              },
+            },
+            routeSegments: ["api", "on-demand"],
+          },
+          scheduleBackgroundRegeneration: vi.fn(),
+          searchParams: new URLSearchParams(),
+        }),
+      );
+
+    const pending = [revalidate(), revalidate()];
+    await vi.waitFor(() => expect(runs).toBe(1));
+    releaseRun();
+    const responses = await Promise.all(pending);
+
+    expect(runs).toBe(1);
+    expect(isrSet).toHaveBeenCalledTimes(1);
+    expect(await Promise.all(responses.map((response) => response.text()))).toEqual([
+      "regenerated",
+      "regenerated",
+    ]);
+  });
+
   it("drains tag invalidation during stale route background regeneration", async () => {
     const previousHandler = getDataCacheHandler();
     let markInvalidationStarted!: () => void;
@@ -928,6 +1115,123 @@ describe("app route handler dispatch", () => {
     } finally {
       releaseInvalidation();
       setDataCacheHandler(previousHandler);
+    }
+  });
+
+  it("batches CDN purges queued during stale route background regeneration", async () => {
+    const previousAdapter = getCdnCacheAdapter();
+    const cdnCalls: string[][] = [];
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    try {
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-batch",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-batch"),
+        route: {
+          pattern: "/api/stale-batch",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              revalidateTag("posts");
+              revalidateTag("feed");
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-batch"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+      await scheduledRender();
+      expect(cdnCalls).toEqual([["posts", "feed"]]);
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
+    }
+  });
+
+  it("purges CDN tags revalidated by after() callbacks during stale route regeneration", async () => {
+    const previousAdapter = getCdnCacheAdapter();
+    const cdnCalls: string[][] = [];
+    setCdnCacheAdapter(
+      Object.assign(new DefaultCdnCacheAdapter(), {
+        async revalidateTag(tags: string | string[]) {
+          cdnCalls.push(Array.isArray(tags) ? tags : [tags]);
+        },
+      }),
+    );
+    let scheduledRender: (() => Promise<void>) | undefined;
+
+    try {
+      await dispatchAppRouteHandler({
+        cleanPathname: "/api/stale-after",
+        clearRequestContext() {},
+        draftModeSecret: "test-draft-secret",
+        i18n: null,
+        isDevelopment: false,
+        isProduction: true,
+        async isrGet() {
+          return buildISRCacheEntry(buildCachedRouteValue("stale"), true);
+        },
+        isrRouteKey(pathname) {
+          return "route:" + pathname;
+        },
+        async isrSet() {},
+        middlewareContext: { headers: null, status: null },
+        middlewareRequestHeaders: null,
+        params: {},
+        request: new Request("https://example.com/api/stale-after"),
+        route: {
+          pattern: "/api/stale-after",
+          routeHandler: {
+            revalidate: 60,
+            GET() {
+              after(() => revalidateTag("late"));
+              return new Response("regenerated");
+            },
+          },
+          routeSegments: ["api", "stale-after"],
+        },
+        scheduleBackgroundRegeneration(_key, renderFn) {
+          scheduledRender = renderFn;
+        },
+        searchParams: new URLSearchParams(),
+      });
+
+      if (!scheduledRender) {
+        throw new Error("expected stale route handler cache to schedule regeneration");
+      }
+      await scheduledRender();
+      await expect.poll(() => cdnCalls).toEqual([["late"]]);
+    } finally {
+      setCdnCacheAdapter(previousAdapter);
     }
   });
 });

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
 import { Miniflare } from "miniflare";
-import { afterEach, beforeEach, test } from "vitest";
+import { afterEach, beforeEach, test } from "vite-plus/test";
 
 const cacheWorkerScript = fileURLToPath(
   new URL("../dist/service-cache/service.js", import.meta.url),

@@ -140,6 +140,8 @@ export async function runMiddleware(
   trailingSlash?: boolean,
   isDataRequest?: boolean,
   normalizedPathname?: string,
+  isStaleDataRequest?: boolean,
+  skipTrailingSlashRedirect?: boolean,
 ): Promise<MiddlewareResult> {
   // Load the middleware module via the direct-call ModuleRunner.
   // This bypasses the hot channel entirely and is safe with all Vite plugin
@@ -152,18 +154,19 @@ export async function runMiddleware(
   return runGeneratedMiddleware({
     basePath,
     filePath: middlewarePath,
-    // The dev server only invokes this with Vite-stripped URLs — basePath is
-    // removed before the request reaches the pipeline (the dev adapter
-    // hardcodes `hadBasePath: true` in its PagesPipelineDeps for the same
-    // reason), so it cannot be derived from the request URL here.
+    // The dev adapter restores the basePath it stripped before calling this,
+    // and treats every request as inside the basePath (it hardcodes
+    // `hadBasePath: true` in its PagesPipelineDeps too).
     hadBasePath: true,
     i18nConfig,
     includeErrorDetails: process.env.NODE_ENV !== "production",
     isDataRequest,
+    isStaleDataRequest,
     isProxy: isProxyFile(middlewarePath),
     module: mod,
     normalizedPathname,
     request,
+    skipTrailingSlashRedirect,
     trailingSlash,
   });
 }

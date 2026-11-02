@@ -11,6 +11,7 @@ import React from "react";
 import ReactDOMServer from "react-dom/server";
 import { renderToReadableStream } from "react-dom/server.edge";
 import dynamic, { flushPreloads } from "../packages/vinext/src/shims/dynamic.js";
+import { withAppRouterTree } from "../packages/vinext/src/shims/app-router-tree-context.js";
 
 // ─── Test components ────────────────────────────────────────────────────
 
@@ -38,7 +39,7 @@ describe("next/dynamic SSR", () => {
     // Verifies that next/dynamic doesn't crash
     const DynamicHello = dynamic(() => Promise.resolve({ default: Hello }));
 
-    // On server, this uses React.lazy + Suspense
+    // On server, this uses React.lazy
     // renderToString will resolve the lazy component synchronously for simple promises
     expect(DynamicHello.displayName).toBe("DynamicServer");
   });
@@ -70,6 +71,34 @@ describe("next/dynamic SSR", () => {
     });
 
     await expect(renderDynamicToHtml(DynamicComponent)).resolves.toContain("Hello from dynamic");
+  });
+});
+
+// ─── Suspense boundary ──────────────────────────────────────────────────
+
+describe("next/dynamic Suspense boundary without loading (issue #3718)", () => {
+  function createSlowDynamic() {
+    return dynamic(
+      () =>
+        new Promise<{ default: typeof Hello }>((resolve) => {
+          setTimeout(() => resolve({ default: Hello }), 20);
+        }),
+    );
+  }
+
+  it("renders inline with no boundary in an App Router tree", async () => {
+    // Ported from Next.js App Router Loadable: a boundary only for ssr:false or loading.
+    // https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/lazy-dynamic/loadable.tsx
+    const SlowDynamic = createSlowDynamic();
+    const AppTree = () => withAppRouterTree(React.createElement(SlowDynamic));
+    const html = await renderDynamicToHtml(AppTree);
+    expect(html).toBe("<div>Hello from dynamic</div>");
+  });
+
+  it("keeps the boundary outside an App Router tree (Pages Router, pages/_document, ad-hoc renders)", async () => {
+    const html = await renderDynamicToHtml(createSlowDynamic());
+    expect(html).toContain("<!--$");
+    expect(html).toContain("<div>Hello from dynamic</div>");
   });
 });
 

@@ -127,13 +127,15 @@ const SELF_CLOSING_HEAD_TAGS = new Set(["meta", "link", "base"]);
 /** Tags whose content is raw text — closing-tag sequences must be escaped during SSR. */
 const RAW_CONTENT_TAGS = new Set(["script", "style"]);
 
-// Pre-compiled regexes for escapeInlineContent — one per RAW_CONTENT_TAGS member.
-// The capture group preserves original casing in the replacement. `gi` flags,
-// no `lastIndex` hazard since they're only used via String.prototype.replace.
-const INLINE_CLOSE_TAG_RES: Record<string, RegExp> = {
-  script: /<\/(script)/gi,
-  style: /<\/(style)/gi,
-};
+// Pre-compiled regexes for escapeInlineContent. `gi` flags, no `lastIndex`
+// hazard since they're only used via String.prototype.replace.
+//
+// Script content matches React Fizz's `scriptRegex`: both `<script` and
+// `</script` are rewritten, because `<!--<script` moves the HTML tokenizer into
+// the double-escaped script state, where the element's real `</script>` no
+// longer closes it.
+const INLINE_SCRIPT_TAG_RE = /(<\/|<)(s)(cript)/gi;
+const INLINE_STYLE_CLOSE_TAG_RE = /<\/(style)/gi;
 
 type HeadDOMElement = Pick<HTMLElement, "innerHTML" | "setAttribute" | "textContent">;
 
@@ -271,8 +273,15 @@ const SAFE_ATTR_NAME_RE = /^[a-zA-Z][a-zA-Z0-9\-:.]*$/;
 
 export function isSafeAttrName(name: string): boolean {
   if (!SAFE_ATTR_NAME_RE.test(name)) return false;
-  // Block inline event handlers (onclick, onerror, etc.)
-  if (name.length > 2 && name[0] === "o" && name[1] === "n" && name[2] >= "A" && name[2] <= "z")
+  // Block inline event handlers (onclick, onerror, etc.). HTML attribute names
+  // are case-insensitive, so `ONERROR` or `Onload` become working handlers once
+  // parsed. Match React's server renderer, which drops every name longer than
+  // two characters that starts with "on" in any case.
+  if (
+    name.length > 2 &&
+    (name[0] === "o" || name[0] === "O") &&
+    (name[1] === "n" || name[1] === "N")
+  )
     return false;
   return true;
 }
@@ -367,18 +376,28 @@ export function escapeAttr(s: string): string {
 
 /**
  * Escape content that will be placed inside a raw <script> or <style> tag
- * during SSR. The HTML parser treats `</script>` (or `</style>`) as the end
- * of the block regardless of JavaScript string context, so any occurrence
- * of `</` followed by the tag name must be escaped.
+ * during SSR, so nothing in the content can move where the element ends.
  *
- * We replace `</script` and `</style` (case-insensitive) with `<\/script`
- * and `<\/style` respectively. The `<\/` form is harmless in JS/CSS string
- * context but prevents the HTML parser from seeing a closing tag.
+ * For scripts we mirror React Fizz's escaping of script children: `<script`
+ * and `</script` (case-insensitive) become `<\u0073cript` and `</\u0073cript`
+ * (`\u0053` for an uppercase `S`). The escape is equivalent in JS strings,
+ * regexes, template literals, comments and identifiers. Escaping only the
+ * closing tag is not enough: `<!--<script>` puts the tokenizer in the
+ * double-escaped script state, where the real `</script>` no longer closes it.
+ *
+ * For styles we replace `</style` with `<\/style`, which is harmless in CSS
+ * string context but prevents the HTML parser from seeing a closing tag.
  */
 export function escapeInlineContent(content: string, tag: string): string {
-  const pattern = INLINE_CLOSE_TAG_RES[tag];
-  if (!pattern) return content;
-  return content.replace(pattern, "<\\/$1");
+  if (tag === "script") {
+    return content.replace(
+      INLINE_SCRIPT_TAG_RE,
+      (_match, prefix: string, s: string, suffix: string) =>
+        `${prefix}${s === "s" ? "\\u0073" : "\\u0053"}${suffix}`,
+    );
+  }
+  if (tag === "style") return content.replace(INLINE_STYLE_CLOSE_TAG_RE, "<\\/$1");
+  return content;
 }
 
 function getDangerouslySetInnerHTML(value: unknown): string | undefined {

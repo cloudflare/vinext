@@ -380,6 +380,31 @@ describe("handleApiRoute", () => {
   // ── Body parsing ───────────────────────────────────────────────────
 
   describe("body parsing", () => {
+    it("settles when the client disconnects while the body decoder loads", async () => {
+      const handler = vi.fn();
+      const req = mockReq("POST", "/api/test", "+ZeVnLIqe-");
+      // Disconnect once parseBody() is awaiting the decoder, as when iconv-lite
+      // takes time to load.
+      Object.defineProperty(req.headers, "content-type", {
+        get() {
+          queueMicrotask(() => req.destroy());
+          return "text/plain; charset=utf-7";
+        },
+      });
+      const handled = handleApiRoute(
+        mockServer({ default: handler }),
+        req,
+        mockRes(),
+        "/api/test",
+        [route("/api/test")],
+      );
+      const timedOut = Symbol("timed out");
+      await expect(
+        Promise.race([handled, new Promise((resolve) => setTimeout(resolve, 1000, timedOut))]),
+      ).resolves.not.toBe(timedOut);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
     it("does not expose process environment variables on the request", async () => {
       const previousValue = process.env.VINEXT_API_REQUEST_ENV_TEST;
       process.env.VINEXT_API_REQUEST_ENV_TEST = "secret";
@@ -506,6 +531,21 @@ describe("handleApiRoute", () => {
       await handleApiRoute(server, req, res, "/api/users", [route("/api/users")]);
 
       expect(capturedBody).toEqual({});
+    });
+
+    it("keeps a text body that decodes to nothing as an empty string", async () => {
+      const bodies: unknown[] = [];
+      const handler = vi.fn((req: any) => {
+        bodies.push(req.body);
+      });
+      const server = mockServer({ default: handler });
+      for (const body of [Buffer.from([0xef, 0xbb, 0xbf]), undefined]) {
+        const req = mockReq("POST", "/api/users", body, { "content-type": "text/plain" });
+        await handleApiRoute(server, req, mockRes(), "/api/users", [route("/api/users")]);
+      }
+
+      // The decoder strips the BOM, and Next.js still hands over "".
+      expect(bodies).toEqual(["", undefined]);
     });
 
     it("parses application/ld+json bodies as JSON", async () => {
@@ -1374,18 +1414,20 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("reconstructs Vite-stripped basePath for edge API nextUrl", async () => {
+    it("uses the dev server's basePath-restored pathname for edge API nextUrl", async () => {
       const handler = vi.fn((request: Request) => {
         const nextUrl = (request as Request & { nextUrl?: { basePath: string; pathname: string } })
           .nextUrl;
         return Response.json({ basePath: nextUrl?.basePath, pathname: nextUrl?.pathname });
       });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
+      // Vite has stripped the basePath from req.url.
       const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
       await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
         basePath: "/docs",
+        requestPathname: "/docs/api/hello",
       });
 
       expect(JSON.parse(res._body.toString())).toEqual({
@@ -1394,17 +1436,25 @@ describe("handleApiRoute", () => {
       });
     });
 
-    it("does not double-prefix an exact basePath edge API rewrite", async () => {
-      const handler = vi.fn((request: Request) => Response.json({ url: request.url }));
+    it("keeps a route segment equal to the basePath in the restored pathname", async () => {
+      const handler = vi.fn((request: Request) => {
+        const nextUrl = (request as Request & { nextUrl?: { pathname: string } }).nextUrl;
+        return Response.json({ url: request.url, pathname: nextUrl?.pathname });
+      });
       const server = mockServer({ config: { runtime: "edge" }, default: handler });
-      const req = mockReq("GET", "/docs", undefined, { host: "example.com" });
+      // basePath "/api" and pages/api/hello: Vite strips /api/api/hello to /api/hello.
+      const req = mockReq("GET", "/api/hello?a=b", undefined, { host: "example.com" });
       const res = mockRes();
 
-      await handleApiRoute(server, req, res, "/api/hello", [route("/api/hello")], {
-        basePath: "/docs",
+      await handleApiRoute(server, req, res, "/api/hello?a=b", [route("/api/hello")], {
+        basePath: "/api",
+        requestPathname: "/api/api/hello",
       });
 
-      expect(JSON.parse(res._body.toString())).toEqual({ url: "http://example.com/docs" });
+      expect(JSON.parse(res._body.toString())).toEqual({
+        url: "http://example.com/api/api/hello?a=b",
+        pathname: "/api/hello",
+      });
     });
 
     it("recognises bare \"export const runtime = 'edge'\" as an edge API route", async () => {

@@ -1,4 +1,5 @@
 import type { MetadataRoute } from "next";
+import { blogLastModified, postPath, posts } from "./blog/_source";
 import { docs } from "./docs/_source";
 
 export default function sitemap(): MetadataRoute.Sitemap {
@@ -18,6 +19,20 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "daily",
       priority: 0.8,
     },
+    {
+      url: "https://vinext.dev/blog",
+      lastModified: blogLastModified,
+      changeFrequency: "weekly",
+      priority: 0.8,
+    },
+    ...posts
+      .filter((post) => !post.draft)
+      .map((post) => ({
+        url: `https://vinext.dev${postPath(post)}`,
+        lastModified: post.updated ?? post.date,
+        changeFrequency: "monthly" as const,
+        priority: 0.7,
+      })),
     ...docs
       .filter((page) => !page.external)
       .map((page) => ({

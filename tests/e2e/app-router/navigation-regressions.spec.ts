@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { waitForAppRouterHydration } from "../helpers";
+import { isAppRouterRscRequestForPath, waitForAppRouterHydration } from "../helpers";
 
 // Hardcoded BASE URL matches the convention used in all other E2E test files in
 // this directory (navigation.spec.ts, server-client-only.spec.ts, after.spec.ts,
@@ -288,5 +288,189 @@ test.describe("Navigation regression tests (#652 Firefox hang fix)", () => {
     // No full page reload occurred
     const marker = await page.evaluate(() => (window as any).__CANCELLED_NAV_MARKER__);
     expect(marker).toBe("active");
+  });
+});
+
+test.describe("RSC request URLs for pathnames that start with //", () => {
+  test("a local href that resolves to a // pathname keeps its RSC fetch on the app origin", async ({
+    page,
+  }) => {
+    // "/.//a//attacker.example/z" starts with a single "/", so apps accept it
+    // as local, but its pathname is "//a//attacker.example/z". Next.js fetches
+    // that pathname on the app origin; it must never become a protocol-relative
+    // request to attacker.example.
+    await page.goto(`${BASE}/about`);
+    await waitForAppRouterHydration(page);
+
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+
+    const rscRequest = page.waitForRequest((request) =>
+      isAppRouterRscRequestForPath(request, "//a//attacker.example/z"),
+    );
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      void router.push("/.//a//attacker.example/z");
+    });
+
+    expect(new URL((await rscRequest).url()).origin).toBe(BASE);
+    // As in Next.js, the server collapses the repeated slashes and the
+    // navigation settles on the same-origin path.
+    await expect(page).toHaveURL(`${BASE}/a/attacker.example/z`);
+    expect(offOriginRequests).toEqual([]);
+  });
+});
+
+test.describe("router.prefetch for hrefs that resolve to a // pathname", () => {
+  test("keeps the prefetch RSC request on the app origin", async ({ page }) => {
+    // "/.//a//attacker.example/p" starts with a single "/", but its pathname is
+    // "//a//attacker.example/p". Next.js prefetches the full same-origin URL;
+    // the credentialed prefetch fetch must never go to attacker.example.
+    await page.goto(`${BASE}/about`);
+    await waitForAppRouterHydration(page);
+
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+
+    // Match the RSC request wherever it is sent, so a regression reports the
+    // off-origin URL instead of timing out.
+    const rscRequest = page.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return url.searchParams.has("_rsc") && url.href.includes("attacker.example");
+    });
+    await page.evaluate(() => {
+      const router = window.next?.router;
+      if (!router) throw new Error("window.next.router is not installed");
+      router.prefetch("/.//a//attacker.example/p");
+    });
+
+    const request = await rscRequest;
+    const requestUrl = new URL(request.url());
+    expect(requestUrl.origin).toBe(BASE);
+    expect(requestUrl.pathname).toBe("//a//attacker.example/p");
+    expect(request.headers()["next-router-prefetch"]).toBe("1");
+    expect(offOriginRequests).toEqual([]);
+  });
+});
+
+// Tag managers loaded after hydration (GTM History Change, GA4 enhanced
+// measurement) wrap history.pushState/replaceState to observe navigations.
+// Next.js writes router history through the live window.history methods, so a
+// wrapper installed after boot still sees every App Router navigation (#4339).
+test.describe("History API wrappers installed after hydration", () => {
+  type HistoryWrapperWindow = Window & {
+    __historyCalls__?: { method: string; url: string | null }[];
+  };
+
+  async function installHistoryWrapper(page: import("@playwright/test").Page) {
+    await page.evaluate(() => {
+      const calls: { method: string; url: string | null }[] = [];
+      (window as HistoryWrapperWindow).__historyCalls__ = calls;
+      for (const method of ["pushState", "replaceState"] as const) {
+        const previous = window.history[method];
+        window.history[method] = function (data, unused, url) {
+          calls.push({ method, url: url == null ? null : String(url) });
+          return previous.call(window.history, data, unused, url);
+        };
+      }
+    });
+  }
+
+  async function readHistoryCalls(page: import("@playwright/test").Page) {
+    // Let post-commit effects run so a trailing history write is not missed.
+    await page.evaluate(
+      () => new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 50))),
+    );
+    return page.evaluate(() => (window as HistoryWrapperWindow).__historyCalls__ ?? []);
+  }
+
+  test("a Link navigation calls the wrapped pushState", async ({ page }) => {
+    await page.goto(`${BASE}/nav-flash/link-sync`);
+    await waitForAppRouterHydration(page);
+    await installHistoryWrapper(page);
+
+    await page.click("#link-list");
+    await expect(page.locator("#list-title")).toHaveText("Nav Flash List");
+    await expect(page).toHaveURL(`${BASE}/nav-flash/list`);
+
+    // Like Next.js, one pushState per navigation and no extra state-only
+    // writes that a GTM History Change trigger would count as page views.
+    expect(await readHistoryCalls(page)).toEqual([
+      { method: "pushState", url: expect.stringMatching(/\/nav-flash\/list$/) },
+    ]);
+  });
+
+  test("router.push and router.replace call the wrapped history methods", async ({ page }) => {
+    await page.goto(`${BASE}/nextjs-compat/search-params-key`);
+    await waitForAppRouterHydration(page);
+    await installHistoryWrapper(page);
+
+    await page.click("#push-foo-bar");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/search-params-key?foo=bar`);
+    await page.click("#replace-foo-baz");
+    await expect(page).toHaveURL(`${BASE}/nextjs-compat/search-params-key?foo=baz`);
+
+    expect(await readHistoryCalls(page)).toEqual([
+      { method: "pushState", url: expect.stringMatching(/\?foo=bar$/) },
+      { method: "replaceState", url: expect.stringMatching(/\?foo=baz$/) },
+    ]);
+  });
+});
+
+test.describe("redirect() targets whose pathname starts with //", () => {
+  // "/.//other.invalid/landing" starts with a single "/", so apps accept it as
+  // local, but its pathname is "//other.invalid/landing". Next.js sends the
+  // target as written and the browser stays on the app origin; it must never
+  // become a protocol-relative redirect to other.invalid.
+  const TARGET = `${BASE}/other.invalid/landing`;
+
+  async function trackOffOriginRequests(page: import("@playwright/test").Page) {
+    const offOriginRequests: string[] = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).origin !== BASE) offOriginRequests.push(request.url());
+    });
+    await page.route(
+      (url) => url.origin !== BASE,
+      (route) => route.fulfill({ status: 200, body: "off-origin" }),
+    );
+    return offOriginRequests;
+  }
+
+  test("a layout redirect() answering a client navigation stays on the app origin", async ({
+    page,
+  }) => {
+    const offOriginRequests = await trackOffOriginRequests(page);
+    await page.goto(`${BASE}/nextjs-compat/redirect-dot-segment`);
+    await waitForAppRouterHydration(page);
+
+    await page.click("#redirect-dot-segment-layout-redirect");
+
+    // As in Next.js, the server collapses the repeated slashes and the
+    // navigation settles on the same-origin path.
+    await expect(page).toHaveURL(TARGET);
+    expect(offOriginRequests).toEqual([]);
+  });
+
+  test("a metadata redirect() answered with a refresh meta tag stays on the app origin", async ({
+    page,
+  }) => {
+    const offOriginRequests = await trackOffOriginRequests(page);
+    await page.goto(`${BASE}/nextjs-compat/redirect-dot-segment/metadata-redirect`);
+
+    await expect(page).toHaveURL(TARGET);
+    expect(offOriginRequests).toEqual([]);
   });
 });

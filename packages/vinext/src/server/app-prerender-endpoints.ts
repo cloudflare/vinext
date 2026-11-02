@@ -6,6 +6,10 @@ import {
 } from "./headers.js";
 import { notFoundResponse } from "./http-error-responses.js";
 import type { RootParams } from "vinext/shims/root-params";
+import {
+  runInWorkStoreScope,
+  runOutsideWorkStoreScope,
+} from "vinext/shims/internal/work-store-scope";
 
 type GenerateStaticParams = (args: { params: RootParams; rejectEmptyResults?: boolean }) => unknown;
 
@@ -88,13 +92,16 @@ async function handleStaticParamsEndpoint(
 
   try {
     const params = parseParentParams(url.searchParams.get("parentParams"));
-    const result = await callAppPrerenderStaticParams({
-      fn: generateStaticParams,
-      params,
-      pattern,
-      rejectEmptyResults: url.searchParams.get("rejectEmptyResults") === "1",
-      rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
-    });
+    // Next.js calls generateStaticParams with a work store, getStaticPaths without.
+    const result = await runInWorkStoreScope(() =>
+      callAppPrerenderStaticParams({
+        fn: generateStaticParams,
+        params,
+        pattern,
+        rejectEmptyResults: url.searchParams.get("rejectEmptyResults") === "1",
+        rootParamNamesByPattern: options.rootParamNamesByPattern ?? {},
+      }),
+    );
     if (result === null) return jsonNullResponse();
     return jsonResponse(result);
   } catch (error) {
@@ -124,7 +131,7 @@ async function handlePagesStaticPathsEndpoint(
 
     const locales = parseLocales(url.searchParams.get("locales"));
     const defaultLocale = url.searchParams.get("defaultLocale") ?? "";
-    const result = await getStaticPaths({ locales, defaultLocale });
+    const result = await runOutsideWorkStoreScope(() => getStaticPaths({ locales, defaultLocale }));
     return jsonResponse(result);
   } catch (error) {
     return jsonResponse({ error: String(error) }, 500);
