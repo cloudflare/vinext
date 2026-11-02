@@ -1,6 +1,6 @@
 import { testPagesStoragePolicies } from "../pages-storage-policy";
 import { testRouteHandlerStoragePolicies } from "../route-handler-storage-policy";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { waitForStablePromotion } from "./promotion.js";
 import { randomUUID } from "node:crypto";
@@ -757,3 +757,70 @@ for (const [first, other] of [
     cachedPageRenderId(await hit.text());
   });
 }
+
+/** Waits for the Link prefetch of `path` in `renderMode` from the page. */
+function waitForPrefetch(page: Page, renderMode: string, pathAndSearch: string) {
+  return page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    url.searchParams.delete("_rsc");
+    return (
+      response.request().headers()["x-vinext-rsc-render-mode"] === renderMode &&
+      url.pathname + url.search === pathAndSearch
+    );
+  });
+}
+
+/** The render id in a /prefetch-shells target's RSC payload. */
+function prefetchTargetRenderId(body: string): string | undefined {
+  return /"render-id","children":"([^"]+)"/.exec(body)?.[1];
+}
+
+// Issue #4496: a static page with no loading boundary needs no layout for its
+// loading shell. Without PPR, Next.js sends only the router state there.
+test("prefetches only the route tree for a static page's loading shell", async ({
+  baseURL,
+  page,
+}) => {
+  test.skip(!baseURL || !backend, "requires a configured response-store-demo backend");
+  const shell = waitForPrefetch(page, "prefetch-loading-shell", "/prefetch-shells/route-tree");
+  await page.goto(`${baseURL}/prefetch-shells`);
+  const response = await shell;
+  expect(response.status()).toBe(200);
+  const body = await response.text();
+  expect(body).toContain("route:/prefetch-shells/route-tree");
+  // The root layout's nav, and the page itself.
+  expect(body).not.toContain("Demo deployments");
+  expect(prefetchTargetRenderId(body)).toBeUndefined();
+});
+
+// Issue #4496: a search-param shell renders its page with empty search params,
+// so it is served from the page's own navigation entry, whatever the query.
+test("serves a static page's search-param prefetches from its navigation entry", async ({
+  baseURL,
+  page,
+  request,
+}) => {
+  test.skip(!baseURL || !hasResponseCache, "requires a Response Store or Workers Cache backend");
+  let navigationRenderId: string | undefined;
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`${baseURL}/prefetch-shells/search-params?_rsc`, {
+          headers: RSC_HEADERS,
+        });
+        navigationRenderId = prefetchTargetRenderId(await response.text());
+        return response.headers()[cacheStatusHeader];
+      },
+      { intervals: [1_000], timeout: 15_000 },
+    )
+    .toBe("HIT");
+
+  const prefetches = [1, 2].map((tab) =>
+    waitForPrefetch(page, "prefetch-dynamic-shell", `/prefetch-shells/search-params?tab=${tab}`),
+  );
+  await page.goto(`${baseURL}/prefetch-shells`);
+  for (const response of await Promise.all(prefetches)) {
+    expect(response.headers()[cacheStatusHeader], response.url()).toBe("HIT");
+    expect(prefetchTargetRenderId(await response.text())).toBe(navigationRenderId);
+  }
+});
