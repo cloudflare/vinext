@@ -1,0 +1,265 @@
+import { hash } from "node:crypto";
+import type { RscPluginManager } from "@vitejs/plugin-rsc";
+import type { Plugin, ResolvedConfig, Rolldown } from "vite";
+
+const INLINE_SOURCEMAP_RE =
+  /(\/\/# sourceMappingURL=data:application\/json;(?:charset=utf-8;)?base64,)([A-Za-z0-9+/=]+)(\s*)$/;
+
+type SourceMap = {
+  sourceRoot?: string;
+  sources?: (string | null)[];
+  sourcesContent?: (string | null)[];
+  // An index map keeps its originals in its sections' maps.
+  sections?: { map?: SourceMap }[];
+};
+
+// A data: URL segment, possibly behind a relative prefix added by Rolldown.
+const DATA_URL_SOURCE_RE = /(?:^|\/)(data:[^,]*),(.*)$/is;
+
+const contentHash = (content: string) => hash("sha256", content);
+
+/**
+ * The content a data: URL source carries in its name: `undefined` when it is
+ * not one, `null` when it cannot be decoded.
+ */
+function dataUrlContent(source: string | null | undefined): string | null | undefined {
+  const match = source && DATA_URL_SOURCE_RE.exec(source);
+  if (!match) return undefined;
+  try {
+    return /;base64$/i.test(match[1]!)
+      ? Buffer.from(match[2]!, "base64").toString("utf8")
+      : decodeURIComponent(match[2]!);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The map's sources with `sourceRoot` prepended when it starts a data: URL,
+ * which can then span the root and each source.
+ */
+function resolvedSources(map: SourceMap): (string | null)[] | undefined {
+  if (!map.sourceRoot || !/(?:^|\/)data:/i.test(map.sourceRoot)) return map.sources;
+  const sources = map.sources?.length ? map.sources : [""];
+  return sources.map((source) => (source == null ? source : map.sourceRoot + source));
+}
+
+/** Every original a map carries, in `sourcesContent` or in a data: URL source. */
+function originalContents(map: SourceMap): string[] {
+  const contents = (map.sourcesContent ?? []).filter((content) => content != null);
+  for (const source of resolvedSources(map) ?? []) {
+    const content = dataUrlContent(source);
+    if (content != null) contents.push(content);
+  }
+  for (const section of map.sections ?? []) {
+    if (section.map) contents.push(...originalContents(section.map));
+  }
+  return contents;
+}
+
+/** Whether a data: URL is absent or carries only kept content. */
+function isKeptDataUrl(
+  url: string | null | undefined,
+  keep: (content: string) => boolean,
+): boolean {
+  const content = dataUrlContent(url);
+  return content === undefined || (content !== null && keep(content));
+}
+
+/** Drop every original that is not kept; returns whether anything changed. */
+function scrubSourcesContent(map: SourceMap, keep: (content: string) => boolean): boolean {
+  let changed = false;
+  const sources = resolvedSources(map);
+  if (sources !== map.sources) {
+    map.sources = sources;
+    delete map.sourceRoot;
+    changed = true;
+  }
+  // Check every sourcesContent entry, including any past the end of `sources`.
+  map.sourcesContent?.forEach((content, index) => {
+    if (content != null && !keep(content)) {
+      map.sourcesContent![index] = null;
+      changed = true;
+    }
+  });
+  map.sources?.forEach((source, index) => {
+    // A data: URL source carries its own content, independent of sourcesContent.
+    if (isKeptDataUrl(source, keep)) return;
+    map.sources![index] = "data:,";
+    changed = true;
+  });
+  for (const section of map.sections ?? []) {
+    if (section.map && scrubSourcesContent(section.map, keep)) changed = true;
+  }
+  return changed;
+}
+
+function scrubSourcemapJson(
+  source: string | Uint8Array,
+  keep: (content: string) => boolean,
+): string | null {
+  const json = typeof source === "string" ? source : Buffer.from(source).toString("utf8");
+  const map = JSON.parse(json) as SourceMap;
+  return scrubSourcesContent(map, keep) ? JSON.stringify(map) : null;
+}
+
+/**
+ * Keep `"use server"` module source out of production browser sourcemaps.
+ *
+ * In client environments `@vitejs/plugin-rsc` replaces a `"use server"`
+ * module with `createServerReference()` proxies, so its implementation never
+ * reaches browser JavaScript. Rolldown still records the module's loaded
+ * source as the original in the chunk's sourcemap, so an enabled client
+ * sourcemap would publish the full server-only module in `sourcesContent`.
+ *
+ * Next.js drops the original mappings when compiling server actions for the
+ * client in production builds, and keeps them in development and server builds:
+ * crates/next-custom-transforms/src/transforms/server_actions.rs (#76157),
+ * test/e2e/app-dir/actions/app-action.test.ts
+ * ("should not expose action content in sourcemaps").
+ *
+ * Rolldown takes a module's original source from whichever loader returned it
+ * (including any map that loader supplied), and later transforms cannot
+ * replace it. So this scrubs the emitted maps instead: the chunk's `map`, its
+ * `.map` asset and any inline map, both before and after every other
+ * `generateBundle` hook. That holds for any loader and for sourcemaps enabled
+ * late through `outputOptions`. Action modules are the ones plugin-rsc itself
+ * registered as server references; its client transform drops the claim for
+ * every module it does not proxy. In a chunk containing one, a source keeps
+ * its content only when that content belongs to one of the chunk's other
+ * modules: their loaded code, or an original their combined map points to
+ * after every transform. Matching content rather than source names holds for
+ * colliding names, loader-supplied maps and custom map locations. The proxy's
+ * mappings still name the action module, without its content.
+ */
+export function createServerActionClientSourcemapPlugin(options: {
+  getManager: (config: ResolvedConfig) => Promise<RscPluginManager | undefined>;
+}): Plugin[] {
+  let config: ResolvedConfig;
+  const loadedCode = new Map<string, Map<string, string[]>>();
+  const getHashes = (environment: { name: string } | undefined) =>
+    environment && loadedCode.get(environment.name);
+
+  async function scrubBundle(
+    environment: { name: string } | undefined,
+    bundle: Rolldown.OutputBundle,
+  ) {
+    const hashes = getHashes(environment);
+    if (!hashes) return;
+    const serverReferences = (await options.getManager(config))?.serverReferences.metaMap;
+    if (!serverReferences?.size) return;
+
+    for (const chunk of Object.values(bundle)) {
+      if (chunk.type !== "chunk") continue;
+      if (!chunk.moduleIds.some((id) => serverReferences.has(id))) continue;
+
+      const publicContent = new Set(
+        chunk.moduleIds
+          .filter((id) => !serverReferences.has(id))
+          .flatMap((id) => hashes.get(id) ?? []),
+      );
+      const keep = (content: string) => publicContent.has(contentHash(content));
+
+      // Rolldown only syncs top-level assignments back from the bundle.
+      const map = chunk.map;
+      if (map && scrubSourcesContent(map, keep)) chunk.map = map;
+      // Rolldown sets `sourcemapFileName` only when it emits an external map.
+      const asset = chunk.sourcemapFileName ? bundle[chunk.sourcemapFileName] : undefined;
+      if (asset?.type === "asset") {
+        const scrubbed = scrubSourcemapJson(asset.source, keep);
+        if (scrubbed !== null) asset.source = scrubbed;
+      }
+
+      const inline = INLINE_SOURCEMAP_RE.exec(chunk.code);
+      if (inline) {
+        const json = Buffer.from(inline[2]!, "base64").toString("utf8");
+        const scrubbed = scrubSourcemapJson(json, keep);
+        if (scrubbed !== null) {
+          chunk.code =
+            chunk.code.slice(0, inline.index) +
+            inline[1] +
+            Buffer.from(scrubbed).toString("base64") +
+            inline[3];
+        }
+      }
+    }
+  }
+
+  const scrub: Plugin = {
+    name: "vinext:server-action-client-sourcemap",
+    apply: "build",
+    enforce: "pre",
+    configResolved: {
+      order: "post",
+      handler(resolvedConfig) {
+        config = resolvedConfig;
+        // Hooks with the same `order` run in plugin order, so put the scrub
+        // first and the tracker last: no other `generateBundle` hook sees an
+        // unscrubbed map, and no transform runs after the tracker. Every
+        // environment's plugins come from this list.
+        const plugins = resolvedConfig.plugins as Plugin[] | undefined;
+        if (!plugins) return;
+        for (const [plugin, first] of [
+          [scrub, true],
+          [track, false],
+        ] as const) {
+          const index = plugins.indexOf(plugin);
+          if (index === -1) continue;
+          plugins.splice(index, 1);
+          if (first) plugins.unshift(plugin);
+          else plugins.push(plugin);
+        }
+      },
+    },
+    buildStart() {
+      if (this.environment?.config.consumer === "client") {
+        loadedCode.set(this.environment.name, new Map());
+      }
+    },
+    transform: {
+      order: "pre",
+      handler(code, id) {
+        const hashes = getHashes(this.environment);
+        if (!hashes) return;
+        hashes.set(id, [contentHash(code)]);
+      },
+    },
+    // Scrub before any other `generateBundle` hook can copy the maps.
+    generateBundle: {
+      order: "pre",
+      handler(_outputOptions, bundle) {
+        return scrubBundle(this.environment, bundle);
+      },
+    },
+  };
+
+  // Loaders and any transform can map a public module back to another
+  // original, so record its combined map once every transform has run. Read it
+  // even without a configured sourcemap: `outputOptions` can still enable one.
+  const track: Plugin = {
+    name: "vinext:server-action-client-sourcemap:track",
+    apply: "build",
+    enforce: "post",
+    transform: {
+      order: "post",
+      handler(_code, id) {
+        const hashes = getHashes(this.environment)?.get(id);
+        if (!hashes) return;
+        try {
+          for (const content of originalContents(this.getCombinedSourcemap())) {
+            hashes.push(contentHash(content));
+          }
+        } catch {}
+      },
+    },
+    // Scrub again after every other `generateBundle` hook has run.
+    generateBundle: {
+      order: "post",
+      handler(_outputOptions, bundle) {
+        return scrubBundle(this.environment, bundle);
+      },
+    },
+  };
+
+  return [scrub, track];
+}
