@@ -1,0 +1,16 @@
+{
+  "name": "init-eslint-next",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint"
+  },
+  "devDependencies": {
+    "eslint": "9.39.5",
+    "eslint-config-next": "16.3.5",
+    "typescript": "5.9.3"
+  }
+}

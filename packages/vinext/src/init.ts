@@ -9,7 +9,8 @@
  *   4. Add vinext scripts to package.json
  *   5. Generate vite.config.ts and platform files, plus a Tailwind PostCSS
  *      config when Tailwind is only set up as a Turbopack loader
- *   6. Update .gitignore to include /dist/ and .vinext/
+ *   6. Update .gitignore to include /dist/ and .vinext/, and add them to the
+ *      ignores of a create-next-app ESLint config
  *   7. Install dependencies (vite, @vitejs/plugin-react, and App Router deps)
  *   8. Print summary
  *
@@ -638,6 +639,76 @@ export function updateGitignore(
   return true;
 }
 
+const ESLINT_CONFIG_FILES = [
+  "eslint.config.js",
+  "eslint.config.mjs",
+  "eslint.config.cjs",
+  "eslint.config.ts",
+  "eslint.config.mts",
+  "eslint.config.cts",
+];
+
+function eslintIgnoreEntries(platform: InitPlatform, legacyWrangler: boolean): string[] {
+  return [
+    "dist/**",
+    ".vinext/**",
+    ...(platform === "cloudflare" ? [legacyWrangler ? ".wrangler/**" : ".cloudflare/**"] : []),
+  ];
+}
+
+/**
+ * Add `entries` to the ignore list that create-next-app copies from
+ * eslint-config-next's defaults (`".next/**"`, `"out/**"`, ...). Returns the
+ * updated source, or undefined when the config has no such list.
+ */
+export function addEslintIgnores(source: string, entries: string[]): string | undefined {
+  const missing = entries.filter(
+    (entry) => !source.includes(`"${entry}"`) && !source.includes(`'${entry}'`),
+  );
+  if (missing.length === 0) return source;
+  const defaults = /^([ \t]*)(["'])\.next\/\*\*\2,[ \t]*$/m.exec(source);
+  if (!defaults) return undefined;
+  const [, indent, quote] = defaults;
+  const closing = source.indexOf("]", defaults.index);
+  if (closing === -1) return undefined;
+  const closingLineStart = source.lastIndexOf("\n", closing) + 1;
+  const beforeClosing = source.slice(0, closingLineStart).trimEnd();
+  if (source.slice(closingLineStart, closing).trim() !== "" || !beforeClosing.endsWith(",")) {
+    return undefined;
+  }
+  const lines = missing.map((entry) => `${indent}${quote}${entry}${quote},\n`).join("");
+  return (
+    source.slice(0, closingLineStart) +
+    `${indent}// vinext build output:\n${lines}` +
+    source.slice(closingLineStart)
+  );
+}
+
+/**
+ * ESLint's flat config neither reads .gitignore nor skips dot-directories, and
+ * eslint-config-next ignores only Next.js output, so `eslint .` would lint the
+ * output directories init adds to .gitignore. Add them to the ESLint config.
+ */
+export function updateEslintIgnores(
+  root: string,
+  platform: InitPlatform = "node",
+  legacyWrangler = false,
+): { file: string; entries: string[]; updated: boolean } | undefined {
+  const file = ESLINT_CONFIG_FILES.find((name) => fs.existsSync(path.join(root, name)));
+  if (!file) return undefined;
+  const configPath = path.join(root, file);
+  const source = fs.readFileSync(configPath, "utf-8");
+  // A config that loads .gitignore (`includeIgnoreFile` from @eslint/compat)
+  // already ignores what init adds there.
+  if (source.includes("includeIgnoreFile")) return undefined;
+  const entries = eslintIgnoreEntries(platform, legacyWrangler);
+  const updated = addEslintIgnores(source, entries);
+  if (updated === undefined) return { file, entries, updated: false };
+  if (updated === source) return undefined;
+  fs.writeFileSync(configPath, updated, "utf-8");
+  return { file, entries, updated: true };
+}
+
 /**
  * Read `output` from the Next.js config as `vinext build` does: an inline
  * `vinext({ nextConfig })` in the Vite config wins over next.config, and both
@@ -960,6 +1031,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
   // ── Step 5: Update .gitignore ──────────────────────────────────────────
 
   const updatedGitignore = updateGitignore(root, platform, options.cloudflare?.legacyWrangler);
+  const eslintIgnores = updateEslintIgnores(
+    root,
+    platform,
+    options.cloudflare?.legacyWrangler ?? false,
+  );
 
   // ── Step 6: Install dependencies last ──────────────────────────────────
 
@@ -1137,6 +1213,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (updatedGitignore) {
     console.log(
       `    ${terminalStyle.green("\u2713")} Added vinext output directories to .gitignore`,
+    );
+  }
+  if (eslintIgnores?.updated) {
+    console.log(
+      `    ${terminalStyle.green("\u2713")} Added vinext output directories to the ignores in ${eslintIgnores.file}`,
+    );
+  } else if (eslintIgnores) {
+    console.log(
+      `    ${terminalStyle.yellow("!")} ESLint does not read .gitignore; add ${eslintIgnores.entries.map((entry) => JSON.stringify(entry)).join(", ")} to the ignores in ${eslintIgnores.file}`,
     );
   }
   if (hasCssModules) {
